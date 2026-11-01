@@ -345,6 +345,15 @@ static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *rest
 	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -4);
 }
 
+static uint32_t CudaSavedStates(const CudaEngine *engine)
+{
+	uint32_t index,count = 0u;
+	for (index=0u; index<engine->cache.entry_capacity; index++)
+		if ( (engine->cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED_STATE) != 0u )
+			count++;
+	return(count);
+}
+
 static void CudaRemoveTree(const char *directory)
 {
 	char path[1200];
@@ -372,7 +381,7 @@ int main(int argc,char **argv)
 	char directory[512];
 	uint64_t prefill_ns = 0u,restore_ns = 0u,cold_ns = 0u,read_bytes;
 	int32_t result;
-	uint32_t index,differences = 0u;
+	uint32_t index,differences = 0u,states;
 	if ( argc != 2 || argv[1][0] != '/' )
 	{
 		fprintf(stderr,"usage: %s ABSOLUTE_PARENT_DIRECTORY\n",argv[0]);
@@ -385,11 +394,13 @@ int main(int argc,char **argv)
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
 	CHECK(result == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
+	states = CudaSavedStates(&source);
+	CHECK(states != 0u && source.snapshot.save_page_count == CUDA_PROMPT_PAGES + states && source.snapshot.save_failure_count == 0u &&
+		store.file_count == CUDA_PROMPT_PAGES + states && store.write_failure_count == 0u);
 	CudaEngineClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u,CUDA_SNAPSHOT_RESERVE) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u,CUDA_SNAPSHOT_RESERVE) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES + states);
 	CHECK(CudaEngineOpen(&fresh,&store) == 0);
 	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns);
 	CHECK(result == 0);

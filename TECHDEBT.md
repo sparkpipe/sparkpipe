@@ -578,14 +578,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   in under 15 s; a store at its budget that keeps the newest conversations
   whole while older ones go tip-first; and the first open that removes the
   previous layout's flat files.
-- `tests/test_kv_snapshot_cuda.c`, the only GPU test that saves a prompt's
-  pages, restores them into a fresh engine and compares logits bit for bit,
-  fails on main with five failed checks: not all 16 prompt pages reach the
-  store, so the restore misses, and the page store answers `BUSY` from its
-  write queue (`cache/kv_page_store.c:863`) during the run. It wires its own
-  engine instead of the common binding, and no gate runs it
-  (`make test-kv-snapshot-cuda`). Close it by driving the test through
-  `SparkStageKvBinding` and adding it to the CUDA gate.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
