@@ -78,9 +78,11 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.
 
-6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad.
+6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad. This does not apply to a transfer that Customer itself asks for, to or from a host it names, such as a download into its Customer storage, or an export or backup to its own storage.
 
 6.6. **Rebuild credit.** If an event on a Fleet that Customer holds destroys every copy we keep of part of Customer's working state on that Fleet, so that its cached state has to be rebuilt, we credit Customer, once for each such event, HC equal to 24 hours of that Fleet at its Rate, within 24 hours after we find the loss, and we tell Customer what was lost. This credit, with any credit under clause 4.4 for the same event, is Customer's only remedy for the loss of working state, whatever its cause, subject to clause 8.5.
+
+6.7. **Credentials.** A credential Customer sends with a request for another service, such as a token for a model repository, is used only to carry out that request and only with the hosts it is meant for. We hold it only while that request runs, and we never store, log or show it.
 
 ## 7. Models and Functions
 
