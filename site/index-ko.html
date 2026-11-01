@@ -313,11 +313,11 @@ curl $OPENAI_BASE_URL/chat/completions \
 <section id="technology" class="sec">
   <div class="sec-rail">
     <p class="label">09 기술</p>
-    <p class="label">오픈 소스</p>
+    <p class="label">소스 공개</p>
   </div>
   <div class="sec-body">
     <h2>작은 상자 16대, 프런티어 모델 하나.</h2>
-    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 플릿의 노드 16대에 나누어, 각 노드는 자기 몫인 16분의 1만 읽고, 부분 결과를 100 Gb/s RDMA 메시로 16~38마이크로초 만에 합칩니다. 엔진은 C와 CUDA로 처음부터 작성했으며 Apache 2.0 라이선스로 공개합니다.</p>
+    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 플릿의 노드 16대에 나누어, 각 노드는 자기 몫인 16분의 1만 읽고, 부분 결과를 100 Gb/s RDMA 메시로 16~38마이크로초 만에 합칩니다. 엔진은 C와 CUDA로 처음부터 작성했으며, 소스는 Functional Source License로 공개합니다. 언제든 자체 하드웨어에서 자신의 작업에 쓸 수 있지만, 경쟁 서비스로 제공할 수는 없습니다. 각 버전은 공개 2년 후 Apache 2.0이 됩니다.</p>
     <figure class="screen" role="img" aria-label="플릿의 애니메이션 도해: 스위치 하나와 노드 쌍 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드들이 부분 결과를 주고받아 토큰 하나가 나옵니다.">
       <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 한국</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
       <canvas id="fleet-canvas" width="1600" height="700"></canvas>
