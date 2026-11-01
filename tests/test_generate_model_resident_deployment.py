@@ -85,6 +85,7 @@ def main() -> int:
             candidate = copy.deepcopy(specification)
             if metadata is not None:
                 candidate["tokenizer"] = metadata
+                candidate["runtime_limits"]["output_vocabulary"] = metadata["vocabulary_size"]
             generated = module.build_deployment(candidate)
             assert generated.get("tokenizer") == metadata
             output.write_text(module.render_deployment(generated), encoding="utf-8")
@@ -105,6 +106,9 @@ def main() -> int:
         invalid = copy.deepcopy(specification)
         invalid["tokenizer"] = metadata
         expect_failure(module, invalid, f"invalid tokenizer accepted: {metadata!r}")
+    mismatched = copy.deepcopy(specification)
+    mismatched["tokenizer"] = tokenizer
+    expect_failure(module, mismatched, "a tokenizer whose vocabulary differs from runtime_limits.output_vocabulary was accepted")
     with tempfile.TemporaryDirectory(prefix="deployment-generator-chat-") as directory:
         output = Path(directory) / "deployment.json"
         for family in ("glm5_next", "gemma4", "glm52"):
@@ -112,6 +116,7 @@ def main() -> int:
                 (ROOT / "model-families" / family / "chat_template.json").read_text(encoding="utf-8"))
             candidate = copy.deepcopy(specification)
             candidate["tokenizer"] = tokenizer
+            candidate["runtime_limits"]["output_vocabulary"] = tokenizer["vocabulary_size"]
             candidate["chat_template"] = chat_template
             generated = module.build_deployment(candidate)
             assert generated["chat_template"] == chat_template

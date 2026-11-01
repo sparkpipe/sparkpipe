@@ -353,6 +353,8 @@ def build_deployment(specification: dict[str, Any]) -> dict[str, Any]:
                                              4294967295),
             "sha256": digest,
         }
+        if deployment["tokenizer"]["vocabulary_size"] != deployment["runtime_limits"]["output_vocabulary"]:
+            raise DeploymentError("runtime_limits.output_vocabulary must equal tokenizer.vocabulary_size")
     if "chat_template" in specification:
         deployment["chat_template"] = chat_template_value(
             specification["chat_template"])
