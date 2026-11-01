@@ -568,6 +568,7 @@ struct Glm5NextStage
 		SparkStatus status;
 		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 				SparkGlm5NextIndexCpGatherSequences(rows, Glm5NextLocalStride(state, context)), b->index_local_scores, (void *)b->index_gathered_scores);
@@ -578,7 +579,6 @@ struct Glm5NextStage
 				b->query_latent_bf16, b->shard_query_gathered_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = Launch(Glm5NextAttentionPartial(b, rows, stream), "attention partial", layer);
-		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, SparkGlm5NextKvShardPartialSequences(rows, D, UINT32_MAX),
 				b->shard_partials_f32, b->shard_partials_received_f32);
