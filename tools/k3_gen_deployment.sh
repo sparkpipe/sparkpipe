@@ -48,7 +48,8 @@ print(token)' "$ROOT/model_contracts/k3_authoritative.json")
   echo '    "max_input_rows": 16,'
   echo '    "resident_sequence_capacity": '$RESIDENT_SEQUENCES','
   echo '    "kv_logical_page_capacity": '$KV_PAGES','
-  echo '    "kv_physical_page_capacity": '$KV_PAGES
+  echo '    "kv_physical_page_capacity": '$KV_PAGES','
+  echo '    "output_vocabulary": 163840'
   echo '  },'
   echo '  "nodes": ['
   for i in $(seq 0 15); do
@@ -72,6 +73,7 @@ print(token)' "$ROOT/model_contracts/k3_authoritative.json")
     echo '      "kv_backing_maximum_bytes": 137438953472,'
     echo '      "kv_snapshot_directory": "/home/'$host'/sparkdata/k3.mxfp4.'$RT'/kvsnapshot",'
     echo '      "kv_snapshot_maximum_bytes": 68719476736,'
+    echo '      "kv_partition_reserve_bytes": 549755813888,'
     echo '      "control_endpoint": {'
     echo '        "kind": "tcp",'
     echo '        "host": "'$host'",'

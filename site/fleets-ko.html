@@ -4,16 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe 플릿 목록</title>
-<meta name="description" content="SparkPipe 플릿 목록: 플릿, 요율, 이용 가능한 모델과 그 라이선스.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<meta name="description" content="SparkPipe 플릿 목록: 플릿과 그 캐시·저장공간, 요율, 이용 가능한 모델과 그 라이선스.">
+<meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/fleets.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/fleets-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/fleets.html">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 <style>
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(36px, 6vw, 64px); }
@@ -36,12 +35,12 @@
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index-ko.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿 목록</span></a>
+    <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿 목록</span></a>
     <nav class="nav-links" aria-label="섹션">
       <a href="#fleets">플릿</a>
       <a href="#models">모델</a>
       <a href="#speculation">추측 디코딩</a>
-      <a href="#estimates">추정치</a>
+      <a href="#prefill">긴 프롬프트</a>
       <a href="terms-ko.html">약관</a>
       <a href="index-ko.html">홈</a>
     </nav>
@@ -54,28 +53,29 @@
 <main class="wrap policy">
   <section>
     <h1>플릿 목록</h1>
-    <p class="effective">2026년 10월 25일 갱신</p>
-    <p>이 페이지는 <a href="hourly-terms-ko.html">시간제 이용약관</a>(제1.1조, 제8.2조)과 <a href="agreement-ko.html">2년 예약 플릿 서비스 계약서</a>(정의 및 제10.1조)가 가리키는 플릿 목록이자 이용 가능한 모델 목록입니다. 각 플릿의 요율은 그 플릿의 1시간이 소비하는 시간 수입니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
+    <p class="effective">2026년 11월 1일 갱신</p>
+    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 이용 가능한 모델의 목록입니다. 모든 플릿은 저희가 서울에서 직접 운영하는 장비로 이루어져 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 그 플릿의 1주는 <span data-week="hc">144</span> HC에 요율을 곱한 값입니다. 데모 플릿은 시간 단위로만 예약하며 고정되지 않습니다. 모든 플릿은 그 플릿을 보유한 고객에게 8 TB의 캐시와 <span data-storage>4 TB</span>의 고객 저장공간을 제공합니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
   </section>
 
-  <div class="notice"><p><b>약관은 검토용으로 공개되어 있으며 아직 효력이 없습니다.</b> 플릿시간 판매는 2026년 12월 1일에 시작되며, 그 전에는 누구도 구매하거나 결제할 수 없습니다.</p></div>
+  <div class="notice"><p><b>약관은 검토용으로 공개되어 있습니다.</b> 데모 시간은 <span data-start="demo">2026년 12월 1일</span>부터, 고정 플릿의 주는 <span data-start="weeks">2027년 1월 4일</span>부터 예약할 수 있습니다.</p></div>
 
   <section id="fleets">
     <h2>플릿</h2>
     <div class="scroll">
     <table>
-      <tr><th>플릿</th><th>장비</th><th>위치</th><th>상태</th><th class="num">요율</th><th>모델</th></tr>
-      <tr><td><b>플릿&nbsp;1</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리, 100 Gb/s RDMA 스위치와 노드 쌍 직결 링크로 연결</td><td>서울</td><td>가동 중</td><td class="num">1</td><td>아래 모델</td></tr>
-      <tr><td><b>플릿&nbsp;2</b></td><td>Apple Mac Studio(M5 Ultra) 8대, 각 256GB, 1.2 TB/s: 합계 2TB, 9.6 TB/s로 플릿 1 메모리 대역폭의 2.2배</td><td>서울</td><td>구축 중</td><td class="num">1</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;3</b></td><td>NVIDIA DGX Spark(GB10) 16대</td><td>서울</td><td>구축 중</td><td class="num">1</td><td>플릿을 열 때 여기에 게시</td></tr>
+      <tr><th>플릿</th><th>장비</th><th>상태</th><th>예약</th><th class="num">시간당 HC(요율)</th><th class="num">캐시</th><th class="num">고객 저장공간</th><th>모델</th></tr>
+      <tr><td><b>플릿&nbsp;1</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리, 100 Gb/s RDMA 스위치와 노드 쌍 직결 링크로 연결</td><td>가동 중</td><td>데모 플릿: 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>아래 모델</td></tr>
+      <tr><td><b>플릿&nbsp;3</b></td><td>NVIDIA DGX Spark(GB10) 16대</td><td>구축 중</td><td>주 단위, 고정</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
     </table>
     </div>
-    <p>저희 시스템은 플릿별 상태와 구간별 예약 가능 시간을 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
+    <p>각 노드는 1 TB의 캐시와 500 GB의 고객 저장공간을 자체 NVMe 드라이브에 두고, 노드 쌍 직결 링크로 짝 노드에 미러링합니다. 그래서 플릿 하나에 8 TB의 캐시와 4 TB의 저장공간이 있으며, 노드 하나가 고장 나도 어느 것도 잃지 않습니다.</p>
+    <p>저희 시스템은 플릿별 상태, 그 플릿이 데모 플릿인지, 고정되어 있는지 또는 비어 있는지, 그리고 대기 중인 대기 명단 잠금 수를 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
   </section>
+
 
   <section id="models">
     <h2>플릿 1의 모델</h2>
-    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 어떤 예약에서든 고를 수 있고, 2년 계약의 선택 모델로 지정할 수 있습니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
+    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 고객이 보유한 어느 플릿에서든 고객 자신의 키로 저희 API를 통해 쓸 수 있습니다. 고객이 자신의 저장공간에 추가한 모델은 그 고객의 계정에만 표시됩니다. 플릿은 한 번에 하나의 모델을 적재하므로, 플릿이 적재하지 않은 모델에 대한 요청은 플릿이 그 모델로 전환하는 동안(보통 20~80초) 기다립니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
     <div class="scroll">
     <table>
       <tr><th>모델</th><th>게시자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 8K 프롬프트</th><th>분류</th><th>제공 여부</th></tr>
@@ -101,7 +101,8 @@
     </table>
     </div>
     <p>컨텍스트 창은 제공 기준입니다. 디코드는 추측 디코딩 없는 단일 요청으로, 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
-    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다. ³ 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다. ⁴ 추측 디코딩을 켜면 약 3,800토큰 파일에서 함수 하나의 이름만 바꿔 전체를 다시 쓰는 요청이 K-EXAONE 2.0에서 190.9 tok/s, A.X K2에서 298.0 tok/s, Solar Open 2에서 426.6 tok/s로 처리되며(프롬프트 프리필 포함), 출력은 추측 디코딩 없이 디코딩한 결과와 같습니다(2026-10-26).</p>
+    <p>¹ DeepSeek V4.1 Flash는 2026-10-24에 1,047,883토큰 프롬프트로 측정했습니다. 디코드는 그 프롬프트 뒤의 단일 요청이고, 프리필은 그 프롬프트의 평균 속도입니다. ² 다른 작업이 모든 노드에서 CPU 코어 16개를 쓰는 동안 측정했으므로 하한값입니다. ³ 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다. ⁴ 추측 디코딩을 켜면 약 3,800토큰 파일에서 함수 하나의 이름만 바꿔 전체를 다시 쓰는 요청이 K-EXAONE 2.0에서 190.9 tok/s, A.X K2에서 298.0 tok/s, Solar Open 2에서 513.7 tok/s로 처리되며(프롬프트 프리필 포함), 출력은 추측 디코딩 없이 디코딩한 결과와 같습니다(2026-10-26).</p>
+    <p>Qwen 3.8 Max는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 메모리 2TB보다 크므로, 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4) 중 하나로 제공합니다.</p>
     <p>Qwen 3.8 Flash는 제공하지 않습니다. 그 라이선스는 모델을 서비스로 제공하는 모든 사업에 Qwen과의 별도 계약을 요구하므로, 저희 회사 내부에서만 씁니다.</p>
   </section>
 
@@ -122,27 +123,10 @@
     <p>근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문), 2026-10-15 ~ 2026-10-24.</p>
   </section>
 
-  <section id="estimates">
-    <h2>대형 모델과 국산 모델의 가까운 미래 속도(추정치)</h2>
-    <p><b>추정치</b>는 저희 실측치와 하드웨어의 공개 수치로 계산한 예측이며, 측정값이 아닙니다. 달성할 수 있다고 보는 값만 싣고, 그 바탕이 되는 하드웨어나 소프트웨어가 가동되면 실측치로 바꿉니다. 실측으로 표시한 칸은 이미 실측치입니다.</p>
-    <div class="scroll">
-    <table>
-      <tr><th>모델</th><th class="num">크기</th><th class="num">디코드, 플릿 1</th><th class="num">디코드, 플릿 2</th><th class="num">플릿 2, 추측 디코딩</th><th class="num">128K 프롬프트, 가속기 박스 4대</th><th class="num">박스 8대</th></tr>
-      <tr><td><b>Kimi K3</b></td><td class="num">1.56 TB</td><td class="num">16.2 tok/s, 실측</td><td class="num">23 tok/s</td><td class="num">35 tok/s</td><td class="num">37초</td><td class="num">18초</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b>, 4비트 빌드</td><td class="num">1.37–1.48 TB</td><td class="num">10.4 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">17초</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b>, LG</td><td class="num">1.50 TB</td><td class="num">27.3 tok/s, 실측</td><td class="num">–</td><td class="num">–</td><td class="num">35초</td><td class="num">18초</td></tr>
-      <tr><td><b>A.X K2</b>, SKT</td><td class="num">0.69 TB</td><td class="num">23.8 tok/s, 실측</td><td class="num">33 tok/s</td><td class="num">49 tok/s</td><td class="num">16초</td><td class="num">8초</td></tr>
-    </table>
-    </div>
-    <p><b>M5 Ultra Mac Studio 한 대에서 실측</b>(플릿 2의 장비, SparkPipe Metal 엔진, 2026-10-26): Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 20.1 tok/s로 디코딩하며, 이는 Studio에서 실측한 1.14 TB/s 메모리 대역폭이 허용하는 22.3 tok/s의 90%입니다. 여러 요청이 가중치 읽기를 함께 사용하므로 동시 요청 2개에서 합계 39.0 tok/s, 8개 130, 16개 231, 32개 366, 64개 442 tok/s입니다. 프리필은 1K 토큰 프롬프트에서 1,429 tok/s, 8K에서 1,501 tok/s입니다.</p>
-    <p>100만 토큰 Kimi K3 프롬프트를 처음부터 처리하는 시간은 가속기 박스 4대로 약 17분, 8대로 9분으로 추정합니다. 플릿 1과 플릿 2를 합치면 4TB이고 플릿 3이 2TB를 더하므로, 공개된 정밀도로는 플릿 하나에 담기지 않는 모델도 두 플릿에 걸쳐 실행할 수 있습니다. FP8의 Qwen 3.8 Max(2.5TB)와 BF16의 Inkling(1.9TB)이 그렇습니다.</p>
-    <p>추정 방법:</p>
-    <ul>
-      <li><b>디코드:</b> 토큰 하나의 시간은 각 노드가 그 토큰에 쓰이는 가중치 중 자기 몫을 플릿 1에서 실측한 245 GB/s로 읽는 시간에, 그 읽기를 둘러싼 커널과 집합 통신의 고정 비용으로 레이어마다 0.44 ms를 더한 값입니다. Kimi K3는 0.44 ms, GLM 5.3은 0.31 ms로 실측됩니다. 지금의 디코드 시간은 대부분 메모리가 아니라 이 고정 비용이므로, 저희 작업으로 이 비용이 줄면 추정치도 올라갑니다. 플릿 2는 Mac Studio의 1.2 TB/s 중 90%와 같은 레이어당 비용으로 잡았으며, 50 Gb/s 링크와 10GbE로 연결된 8대 전체에 모델을 나눕니다. Qwen 3.8 Max의 10.4 tok/s는 아직 이 방식으로 설명되지 않아 플릿 2 추정치를 싣지 않았습니다. K-EXAONE 2.0의 플릿 2 추정치는 전문가(expert)를 노드에 고르게 나눈 뒤라 다시 계산하고 있습니다.</li>
-      <li><b>추측 디코딩</b>은 에이전트 코딩 턴에서 짧은 편집의 실측치대로 일반 디코드의 1.5배로 잡았습니다. 파일 전체 재작성은 8.3배, 새 산문은 1.0~1.2배로 실측됩니다.</li>
-      <li><b>프리필 가속기</b>는 RTX 5080 4장을 담은 박스로, 박스 안에서는 PCIe로 결과를 합치고 박스마다 100 Gb/s로 400 Gb/s 스위치를 거쳐 플릿에 연결됩니다. 긴 프롬프트마다 모델 가중치를 링크 속도의 85%로 박스에 한 번 흘려보내며(박스 4대 42.5 GB/s, 8대 85 GB/s), 카드는 밀집 연산 최대치의 40%(카드당 FP8 약 450 TFLOPS, BF16 225)로 프롬프트의 어텐션 비용까지 계산합니다. 약 2만 토큰보다 짧은 프롬프트는 플릿 자체의 프리필로 처리합니다.</li>
-      <li><b>Qwen 3.8 Max</b>는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 2TB보다 큽니다. 이 행은 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4)를 가정합니다.</li>
-    </ul>
+  <section id="prefill">
+    <h2>긴 프롬프트(실측)</h2>
+    <p>플릿 1만으로, 프리필 전용으로 설정해 그동안 디코드는 제공하지 않은 상태에서 측정했습니다. 100만 토큰 Kimi K3 프롬프트를 최근 측정에서 처음부터 15.6분에 프리필합니다. 2026-10-30에 측정한 990,879토큰 프롬프트는 16.9분이 걸렸고 요청 후 18.0분에 첫 답을 냈습니다. 258,338토큰 프롬프트는 150초 한 번에 프리필합니다. 고객이 보유한 플릿에서는 프롬프트를 한 번 프리필하면 그 캐시가 남으므로, 이후 턴은 거기서 시작합니다.</p>
+    <p>두 플릿을 합치면 메모리가 4TB이므로, 공개된 정밀도로는 플릿 하나에 담기지 않는 모델도 두 플릿에 걸쳐 실행할 수 있습니다. FP8의 Qwen 3.8 Max(2.5TB)나, 캐시 공간을 남기는 BF16의 Inkling(1.9TB)이 그렇습니다.</p>
   </section>
 
   <section id="next-models">
@@ -161,7 +145,7 @@
 
   <section id="licenses">
     <h2>모델 라이선스</h2>
-    <p>각 모델은 게시자가 자체 라이선스로 공개한 오픈 웨이트 소프트웨어이며, 고객은 그 라이선스를 지켜야 합니다(시간제 이용약관 제8.1조, 계약서 제10.3조). 제공 모델의 조건은 다음과 같습니다.</p>
+    <p>각 모델은 게시자가 자체 라이선스로 공개한 오픈 웨이트 소프트웨어이며, 고객은 그 라이선스를 지켜야 합니다(<a href="agreement-ko.html">SparkPipe 고객 계약</a>). 제공 모델의 조건은 다음과 같습니다.</p>
     <ul>
       <li><b>Kimi K3:</b> 그룹 매출이 어느 12개월 동안이든 2,000만 달러를 넘는 모델 서비스 사업은 Moonshot AI와 별도 계약이 필요하며, 월간 활성 사용자가 1억 명을 넘거나 월 매출이 2,000만 달러를 넘는 상용 제품은 인터페이스에 "Kimi K3"를 표시해야 합니다.</li>
       <li><b>GLM 5.3:</b> 그룹 매출이 어느 12개월 동안이든 100억 달러를 넘는 모델 서비스 사업은 상업적 이용 전에 Z.AI의 보안 심사를 통과해야 합니다.</li>
@@ -177,8 +161,10 @@
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="바닥글"><a href="index-ko.html">홈</a><a href="buy.html" hreflang="en">플릿시간 (영문)</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="바닥글"><a href="index-ko.html">홈</a><a href="buy.html" hreflang="en">시간 크레딧 구매 (영문)</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
+<script src="pricing.js"></script>
+<script src="prices.js"></script>
 </body>
 </html>

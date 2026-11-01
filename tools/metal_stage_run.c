@@ -83,6 +83,17 @@ static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, S
 	SparkMimo26FlashDeviceStageModelAt, SparkMimo26ProDeviceStageModelAt,
 	SparkGlm53FullDeviceStageModelAt, SparkAxk2DeviceStageModelAt };
 
+typedef struct RunOutputVocabulary
+{
+	const char *model;
+	uint32_t vocabulary;
+} RunOutputVocabulary;
+
+static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "gemma4-26b-a4b", 262144u },
+	{ "gemma4-31b", 262144u }, { "muse-glimmer-30b", 202048u }, { "mimo-v2.6-flash", 151675u }, { "mimo-v2.6-pro", 151675u },
+	{ "laguna-s-2.1", 100352u }, { "k-exaone-2.0", 153600u }, { "ling-3.0-flash", 157153u }, { "ling-3.0-flash-fin", 157153u },
+	{ "solar-open-2", 196608u }, { "hy4-preview", 120832u }, { "glm-5.3-flash", 154856u }, { "glm-5.3-full", 154856u }, { "ax-k2", 163840u } };
+
 static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t tp_degree)
 {
 	uint32_t index;
@@ -97,6 +108,15 @@ static const SparkStageRunnerModelInterface *RunModel(const char *name, uint32_t
 		if ( strcmp(name,run_models[index]()->weightd_model) == 0 )
 			return(run_models[index]());
 	return(0);
+}
+
+static uint32_t RunModelOutputVocabulary(const SparkStageRunnerModelInterface *model)
+{
+	uint32_t index;
+	for ( index = 0u; index < sizeof(run_output_vocabularies) / sizeof(run_output_vocabularies[0]); index++ )
+		if ( strcmp(model->weightd_model,run_output_vocabularies[index].model) == 0 )
+			return(run_output_vocabularies[index].vocabulary);
+	return(0u);
 }
 
 static int Usage(const char *program)
@@ -1151,7 +1171,8 @@ int main(int argc, char **argv)
 	setvbuf(stdout,0,_IOLBF,0);
 	memset(&collective,0,sizeof(collective));
 	memset(&config,0,sizeof(config));
-	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model,options.tp_degree)) == 0 )
+	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model,options.tp_degree)) == 0 ||
+		(config.output_vocabulary = RunModelOutputVocabulary(config.model)) == 0u )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);

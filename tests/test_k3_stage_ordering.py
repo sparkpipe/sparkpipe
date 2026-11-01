@@ -112,6 +112,10 @@ def check_adapter(failures):
                             f"execution stream the step kernels run on")
     if re.search(r"\(void\)SparkMemoryBufferCopy\(", adapter):
         failures.append("the adapter discards a copy result")
+    emits = re.findall(r"if \(([^\n]*)\)\s*\n\s*StageServingTapEmit\(", adapter)
+    if not emits or any("SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u" not in guard for guard in emits):
+        failures.append("a deferred prefill wave emits drafter taps, but its rows have not "
+                        "run and the tap rows hold an earlier wave's hidden states")
 
 
 def check_transport(failures):
@@ -138,7 +142,8 @@ def main():
         return 1
     print("K3 stage copies run on the execution stream and sync before use; a "
           "failed copy or collective fails the step; each step keys and ends its "
-          "device-collective chain; the runner refuses more resident sequences than recurrent state slots")
+          "device-collective chain; the runner refuses more resident sequences than recurrent state slots; "
+          "deferred prefill waves emit no drafter taps")
     return 0
 
 

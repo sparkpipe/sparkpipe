@@ -53,6 +53,11 @@ typedef struct SparkStageServingState
 	uint64_t state_memory_bytes;
 	char *device_backend_path;
 	char *device_local_host;
+	uint32_t saves_held;
+	uint32_t streamed_failed;
+	char *streamed_partner_pack;
+	char *streamed_fabric_device;
+	char *streamed_pair_device;
 	uint32_t max_rows;
 	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
@@ -164,6 +169,31 @@ static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object
 	if ( token < 0 )
 		return SPARK_STATUS_OK;
 	return SparkJsonCopyString(doc, token, out) == SPARK_STATUS_OK ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
+}
+
+static SparkStatus StageServingParseStreamed(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
+{
+	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
+	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
+		StageServingCopyMember(doc, object, "partner_pack", &state->streamed_partner_pack) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "fabric_device", &state->streamed_fabric_device) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "pair_device", &state->streamed_pair_device) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	streamed->node_rows = StageServingJsonU32(doc, object, "node_rows", 0u);
+	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
+	streamed->pair_gid_index = StageServingJsonU32(doc, object, "pair_gid_index", streamed->gid_index);
+	streamed->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
+	streamed->dense_buffers = StageServingJsonU32(doc, object, "dense_buffers", 1u);
+	streamed->expert_slots = StageServingJsonU32(doc, object, "expert_slots", 2u);
+	streamed->partner_pack_path = state->streamed_partner_pack;
+	streamed->fabric_device = state->streamed_fabric_device;
+	streamed->pair_device = state->streamed_pair_device;
+	if ( streamed->node_rows == 0u || streamed->partner_pack_path == 0 || streamed->fabric_device == 0 || streamed->pair_device == 0 )
+	{
+		fprintf(stderr, "%s adapter: streamed_prefill needs node_rows, partner_pack, fabric_device and pair_device\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus StageServingLoadSessionPorts(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev,
@@ -661,6 +691,9 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	token = SparkJsonFindObjectMember(doc, root, "taps");
 	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
+	token = SparkJsonFindObjectMember(doc, root, "streamed_prefill");
+	if ( token >= 0 && StageServingParseStreamed(state, doc, token) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "device_collective");
 	if ( token >= 0 )
 		return StageServingLoadDeviceCollective(state, doc, token);
@@ -809,6 +842,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 	kv.snapshot_directory = configuration->kv_snapshot_directory;
 	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
+	kv.partition_reserve_bytes = configuration->kv_partition_reserve_bytes;
 	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1000,6 +1034,7 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->runner_config.max_active_sequence_count : model->descriptor->max_verify_row_count;
 	if ( state->runner_config.head_row_capacity > state->max_rows )
 		state->runner_config.head_row_capacity = state->max_rows;
+	state->runner_config.output_vocabulary = configuration->runtime_limits.output_vocabulary;
 	fprintf(stderr, "%s adapter: rows=%u shared_rows=%u head_rows=%u\n", model->module_tag, state->max_rows,
 		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;
@@ -1052,6 +1087,9 @@ static void StageServingDestroy(void *adapter_state)
 	free(state->stray_working_set_path);
 	free(state->device_backend_path);
 	free(state->device_local_host);
+	free(state->streamed_partner_pack);
+	free(state->streamed_fabric_device);
+	free(state->streamed_pair_device);
 	free(state);
 }
 
@@ -1365,6 +1403,8 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->descriptor_bytes = (uint32_t)sizeof(*dispatch);
 	dispatch->flags = submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL :
 		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY : 0u;
+	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) != 0u )
+		dispatch->flags |= SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER;
 	dispatch->request_id = submission->request_id;
 	dispatch->sequence_id = submission->sequence_id;
 	dispatch->sequence_position = submission->sequence_position;
@@ -1524,6 +1564,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	continuity.bound = bound;
 	continuity.sequence_ids = sequence_ids;
 	continuity.next_positions = next_positions;
+	if ( state->streamed_failed != 0u )
+	{
+		fprintf(stderr, "%s adapter: submit refused: a streamed prefill failed and left published blocks without KV; restart the lane with its KV wiped\n",
+			state->model->module_tag);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	status = SparkStageModuleIndexSetClaimAndPrepare(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES,
 		row_slots, active, StageServingPrepareContinuity, &continuity);
 	if ( status != SPARK_STATUS_OK )
@@ -1554,7 +1600,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
 	marks[2] = StageServingNowNs();
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && state->saves_held == 0u )
+	{
+		status = SparkStageKvBindingHoldSaves(&state->kv, 1u);
+		state->saves_held = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
+	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
@@ -1580,9 +1631,20 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && state->tap_stream != 0 && state->tap_socket < 0 && state->tap_count != 0u &&
 		state->runner_config.tp_rank == state->tap_rank && StageServingNowNs() >= state->tap_retry_ns )
 		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
-	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u )
+	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
 	finished = StageServingFinish(state, active, row_slots, bound, sequence_ids, next_positions, steps - 1u, verify, status);
+	if ( state->saves_held != 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
+	{
+		if ( status == SPARK_STATUS_OK && finished == SPARK_STATUS_OK && SparkStageKvBindingHoldSaves(&state->kv, 0u) == SPARK_STATUS_OK )
+			state->saves_held = 0u;
+		else
+		{
+			state->streamed_failed = 1u;
+			fprintf(stderr, "%s adapter: the wave after deferred prefill tokens failed status=%d; their published blocks hold no KV, so this lane refuses work until it restarts with its KV wiped\n",
+				state->model->module_tag, (int)(status != SPARK_STATUS_OK ? status : finished));
+		}
+	}
 	marks[5] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);

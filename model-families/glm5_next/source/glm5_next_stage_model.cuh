@@ -666,8 +666,9 @@ struct Glm5NextStage
 
 	static SparkStatus DenseMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)
 	{
-		(void)state;
-		return Launch(Glm5NextDenseMlp(&frame.b, frame.step->rows, frame.step->multiprocessors, frame.stream), "dense mlp", layer);
+		const SparkStatus status = Launch(Glm5NextDenseMlp(&frame.b, frame.step->rows, frame.step->multiprocessors, frame.stream), "dense mlp", layer);
+		state->services->layer_done(state->services->context, layer);
+		return status;
 	}
 
 	static SparkStatus RoutedMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)

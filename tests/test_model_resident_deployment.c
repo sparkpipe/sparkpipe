@@ -120,6 +120,10 @@ static void TestRuntimeMemberShared(const char *member,SparkStatus expected,uint
 	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
 	if ( expected == SPARK_STATUS_OK )
 		assert(deployment.max_sequence_positions == positions && deployment.max_shared_input_row_count == shared);
+	if ( expected == SPARK_STATUS_OK && strstr(member,"streamed_prefill") != 0 )
+		assert(deployment.streamed_prefill_min_tokens == 32768u);
+	if ( expected == SPARK_STATUS_OK && strstr(member,"streamed_prefill") == 0 )
+		assert(deployment.streamed_prefill_min_tokens == 0u);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	assert(unlink(path) == 0);
 }
@@ -129,14 +133,60 @@ static void TestRuntimeMember(const char *member,SparkStatus expected,uint32_t p
 	TestRuntimeMemberShared(member,expected,positions,0u);
 }
 
+static void TestOutputVocabularyVariant(const char *fixture,const char *needle,const char *replacement,SparkStatus expected,uint32_t vocabulary)
+{
+	SparkModelResidentDeployment deployment;
+	char buffer[16384],path[256];
+	const char *found;
+	FILE *file;
+	uint32_t count,before;
+	file = fopen(fixture,"rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer) - 1u,file);
+	assert(feof(file) != 0 && count > 1u);
+	assert(fclose(file) == 0);
+	buffer[count] = '\0';
+	found = strstr(buffer,needle);
+	assert(found != 0);
+	before = (uint32_t)(found - buffer);
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-vocabulary-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(buffer,1,before,file) == before);
+	assert(fputs(replacement,file) != EOF);
+	assert(fputs(found + strlen(needle),file) != EOF);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(&deployment);
+	assert(SparkModelResidentDeploymentLoad(path,&deployment) == expected);
+	if ( expected == SPARK_STATUS_OK )
+		assert(deployment.runtime_limits.output_vocabulary == vocabulary);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(unlink(path) == 0);
+}
+
+static void TestOutputVocabulary(void)
+{
+	const char *plain = "tests/fixtures/model_resident_deployment.json",*tokenized = "tests/fixtures/model_resident_deployment_tokenizer.json";
+	TestOutputVocabularyVariant(plain,"\"output_vocabulary\": 32000","\"output_vocabulary\": 32000",SPARK_STATUS_OK,32000u);
+	TestOutputVocabularyVariant(plain,",\n    \"output_vocabulary\": 32000","",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestOutputVocabularyVariant(plain,"\"output_vocabulary\": 32000","\"output_vocabulary\": 0",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestOutputVocabularyVariant(tokenized,"\"output_vocabulary\": 129280","\"output_vocabulary\": 129280",SPARK_STATUS_OK,129280u);
+	TestOutputVocabularyVariant(tokenized,"\"output_vocabulary\": 129280","\"output_vocabulary\": 129279",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestOutputVocabularyVariant(tokenized,"\"output_vocabulary\": 129280","\"output_vocabulary\": 129281",SPARK_STATUS_SCHEMA_ERROR,0u);
+	puts("test_model_resident_deployment: runtime_limits.output_vocabulary is required and nonzero, and a deployment with a tokenizer must name exactly the tokenizer's vocabulary");
+}
+
 static void TestSharedInputRows(void)
 {
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 2",SPARK_STATUS_OK,0u,2u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 4",SPARK_STATUS_OK,0u,4u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 5",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 0",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768",SPARK_STATUS_OK,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768, \"streamed_prefill_quantum\": 4096",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
+	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 1",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_row\": 2",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
-	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused");
+	puts("test_model_resident_deployment: a shared-wave row limit within max_input_rows loads; zero, larger or misspelled is refused; a streamed prefill threshold loads, one token or the retired quantum member is refused");
 }
 
 static void TestDraftServerMember(const char *member,SparkStatus expected,SparkModelResidentDeployment *deployment)
@@ -692,6 +742,7 @@ int main(int argc,char **argv)
 	TestPrefixReuseKey("\"prefix_reuse\":false,",SPARK_STATUS_SCHEMA_ERROR);
 	TestSequencePositions();
 	TestSharedInputRows();
+	TestOutputVocabulary();
 	TestDraftServer();
 	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);

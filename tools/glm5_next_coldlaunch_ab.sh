@@ -137,7 +137,7 @@ value["weightd"] = {"socket_path": "/tmp/spark_weightd.sock"}
 value["runtime_limits"] = {
     "max_inflight_submissions": 1, "max_active_sequences": 1, "max_input_rows": 1,
     "resident_sequence_capacity": 1, "kv_logical_page_capacity": 128,
-    "kv_physical_page_capacity": 128}
+    "kv_physical_page_capacity": 128, "output_vocabulary": 154856}
 for r, node in enumerate(value["nodes"]):
     if node["rank_index"] != r:
         fail("deployment ranks unordered")

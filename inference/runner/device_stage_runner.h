@@ -27,6 +27,7 @@ typedef struct SparkDeviceStageRunnerConfig
 	uint64_t state_budget_bytes;
 	uint32_t linear_weight_codec;
 	uint32_t verify_pack;
+	uint32_t output_vocabulary;
 	uint32_t tp_degree;
 	uint32_t tp_rank;
 	const SparkDeviceCollective *collective;

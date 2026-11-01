@@ -3,10 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe</title>
-<meta name="description" content="SparkPipe 플릿 전체를 시간 단위로 빌려 쓰십시오. 서울의 NVIDIA DGX Spark 16대에서 Kimi K3, GLM 5.3, DeepSeek V4.1 같은 오픈 프런티어 모델과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2를 실행합니다. 2026년 12월 1일 판매 시작.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
+<title>SparkPipe · 내 코드베이스를 위한 나만의 플릿</title>
+<meta name="description" content="한국에 있는 AI 플릿 전체가 고객만을 위해 일하고 코드베이스를 일주일 내내 캐시에 유지합니다. 캐시 만료도, 토큰당 요금도 없고, 밤사이 코드를 다루는 기능과 Kimi K3, GLM 5.3 옆에서 돌아가는 고객 자신의 모델까지. 1주 144 HC.">
+<meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
@@ -15,275 +14,297 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&family=Noto+Sans+KR:wght@100..900&display=swap">
-<link rel="stylesheet" href="site.css?v=dcbd7de8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&family=Noto+Sans+KR:wght@400..800&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 <style>
-h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
-.screen canvas { aspect-ratio: 16 / 7; }
-.cmp th[scope="row"] { font: 600 12px/1.5 var(--mono); font-variation-settings: 'wdth' 87.5; text-transform: uppercase; letter-spacing: .04em; color: var(--ink); width: 22%; }
-.cmp td { color: var(--steel); }
-.cmp thead th { font: 700 18px/1.2 var(--display); font-variation-settings: 'wdth' 112; text-transform: none; letter-spacing: 0; color: var(--ink); }
-.cmp td a + a::before { content: ' · '; color: var(--faint); }
-.models td:first-child b { display: block; font: 700 16px/1.25 var(--display); font-variation-settings: 'wdth' 112; color: var(--ink); }
-.models td:first-child span { font: 500 11.5px var(--mono); color: var(--faint); }
-.models td.figure { white-space: nowrap; }
+h1 { max-width: 14em; }
 .company div { grid-template-columns: 200px minmax(0, 1fr); }
 @media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
+<div class="strip">
+  <div class="wrap">
+    <span>플릿은 <b>한국</b>에</span>
+    <span>데모 시간 <b data-start="demo">2026년 12월 1일</b>부터</span>
+    <span>주 예약 <b data-start="weeks">2027년 1월 4일</b>부터</span>
+    <span>Kimi K3 · GLM 5.3 · 오픈 모델 18종 · <b>그리고 고객의 모델</b></span>
+  </div>
+</div>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index-ko.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿시간</span></a>
+    <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">나만의 플릿</span></a>
     <nav class="nav-links" aria-label="섹션">
-      <a href="#korea">한국</a>
-      <a href="#how">이용 방법</a>
+      <a href="#why">왜</a>
+      <a href="#fleet">내 플릿</a>
+      <a href="#functions">기능</a>
       <a href="#prices">가격</a>
-      <a href="#fleets">플릿과 모델</a>
-      <a href="#responsibility">책임</a>
-      <a href="#technology">기술</a>
-      <a href="#company">회사</a>
+      <a href="#setup">설정</a>
+      <a href="market.html" hreflang="en">내 계정</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="언어 / Language"><a href="index.html?lang=en" hreflang="en" lang="en">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
       <a class="btn small" href="terms-ko.html">약관</a>
-      <a class="btn small solid" href="buy.html" hreflang="en">시간 구매</a>
+      <a class="btn small solid" href="buy.html" hreflang="en">HC 구매</a>
     </div>
   </div>
 </header>
 
 <main>
 <section class="wrap hero">
-  <p class="label hero-kicker">서울의 플릿시간 · <span data-start>2026년 12월 1일</span> 판매 시작</p>
-  <h1>국내 전용 AI 플릿, 시간 단위로.</h1>
+  <p class="label hero-kicker">큰 코드베이스에서 일하는 엔지니어를 위해</p>
+  <h1>내 코드베이스가 일주일 내내 캐시에 남는 나만의 플릿.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">SparkPipe 플릿 하나를 통째로 빌리면, 그 시간 동안 플릿은 고객의 요청만 처리합니다. 대부분의 GPU 서버에는 담기지 않는 Kimi K3 등 1TB 이상의 오픈 모델을 100만 토큰 컨텍스트와 추측 디코딩으로 실행하며, LG의 K-EXAONE 2.0, SKT의 A.X K2, 업스테이지의 Solar Open 2 같은 국산 대형 모델도 실행합니다. 데이터는 국내에 머물고, 다른 고객의 요청 대기열이 없으며, 요금은 토큰이 아니라 시간 단위입니다.</p>
+      <p class="lead">토큰 단위 API는 몇 분이면 코드를 잊어버리고, 다시 읽는 데 또 요금을 매깁니다. SparkPipe 플릿은 <b>고객만을 위해</b> 일하며, 코드베이스에 대해 계산한 것을 턴에서 턴으로, 주에서 주로 그대로 유지하고, 지시하면 <b>밤사이 코드를 다룹니다</b>. 한 주 정액, 한국에서, 다른 어떤 AI 서비스로도 보내지 않습니다.</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 구매 (영문)</a>
-        <a class="btn" href="#prices">가격과 약관</a>
+        <a class="btn solid" href="buy.html" hreflang="en">HC 구매 후 데모 시간 예약</a>
+        <a class="btn" href="#why">API의 하루와 플릿의 하루</a>
       </div>
-      <p class="note">사업자 전용입니다. 약관은 <span data-start>2026년 12월 1일</span>부터 효력이 생기며, 플릿도 그날부터 고객에게 열립니다. 그 전에 구매한 시간은 그날부터 쓸 수 있습니다.</p>
+      <p class="note">하루에 프롬프트 몇 개만 보낸다면 월 $20 요금제가 더 맞습니다. SparkPipe는 코딩 에이전트와 하루 종일 일하는 엔지니어, 그리고 자체 모델을 가진 팀을 위한 서비스입니다. 가정용 소비자가 아니라 기업, 전문가와 독립 개발자를 위한 서비스입니다. 모든 단계를 돈 없이 <a href="market.html?sandbox" hreflang="en">샌드박스</a>에서 해 볼 수 있습니다.</p>
     </div>
-    <figure class="screen" role="img" aria-label="플릿 1 애니메이션: 스위치 하나와 노드 쌍 사이의 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드끼리 부분 결과를 주고받은 뒤 토큰 하나가 나옵니다.">
-      <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 서울</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
-      <canvas id="fleet" width="1600" height="700"></canvas>
+    <figure class="screen">
+      <div class="screen-bar"><span><b>하루의 작업</b> · 큰 코드베이스</span><span>API · 내 플릿</span></div>
+      <table class="day">
+        <thead><tr><th scope="col">순간</th><th scope="col">토큰 단위 API</th><th scope="col" class="you">내 플릿</th></tr></thead>
+        <tbody>
+          <tr><td>09:00 첫 턴</td><td data-l="토큰 단위 API"><span>콜드: 전체 컨텍스트를 다시 과금하고 다시 프리필</span></td><td class="you" data-l="내 플릿"><span>웜: 밤사이 기능이 갱신</span></td></tr>
+          <tr><td>10:45 회의 후</td><td data-l="토큰 단위 API"><span>5분 뒤 캐시 만료: 다시 과금</span></td><td class="you" data-l="내 플릿"><span>웜: 첫 토큰까지 0.3–5초</span></td></tr>
+          <tr><td>13:30 점심 후</td><td data-l="토큰 단위 API"><span>다시 콜드</span></td><td class="you" data-l="내 플릿"><span>여전히 웜</span></td></tr>
+          <tr><td>14:10 다른 브랜치</td><td data-l="토큰 단위 API"><span>새 프리픽스: 캐시 쓰기 한 번 더</span></td><td class="you" data-l="내 플릿"><span>미리 프리필됨</span></td></tr>
+          <tr><td>16:00 파일 재작성</td><td data-l="토큰 단위 API"><span>제공자의 속도, 출력 토큰당 과금</span></td><td class="you" data-l="내 플릿"><span>126 tok/s, 같은 출력</span></td></tr>
+          <tr><td>19:00 퇴근</td><td data-l="토큰 단위 API"><span>남는 것 없음</span></td><td class="you" data-l="내 플릿"><span>시작해 두면 리뷰, 테스트, 드래프트 모델 학습이 실행</span></td></tr>
+        </tbody>
+      </table>
       <div class="screen-read">
-        <div><small>플릿시간 1시간</small><strong>노드 16대 · 60분</strong></div>
-        <div><small>Kimi K3, 일반 디코드</small><strong>16.2 tok/s</strong></div>
+        <div><small>웜 턴, 137,700토큰</small><strong>0.3–5초</strong></div>
         <div><small>Kimi K3, 파일 재작성</small><strong>126 tok/s</strong></div>
+        <div><small>24시간 기준 시간당</small><strong data-week="effective">$12.86</strong></div>
       </div>
     </figure>
   </div>
   <div class="specs">
-    <div><strong data-krw="hourly">₩26,000</strong><span>플릿시간당, 부가세 별도. 선불이며 약정이 없습니다 (<span data-price="hourly">$20</span>)</span></div>
-    <div><strong data-krw="committed">₩20,000</strong><span>2년 계약 기간 중 월요일부터 토요일까지의 시간에 대해 플릿시간당, 부가세 별도 (<span data-price="committed">$15</span>)</span></div>
-    <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>시간제로 보유할 수 있는 시간. 사업자 확인 전과 후</span></div>
-    <div><strong>모델 18종</strong><span>K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3, GLM 5.3 등. 각 모델은 게시자의 오픈 라이선스를 따릅니다</span></div>
+    <div><strong data-week="usd">$2,160</strong><span>플릿 전체 1주: <span data-week="hc">144</span> HC, 6일 가격에 7일, 시간당 약 <span data-week="effective">$12.86</span>, 부가가치세 별도</span></div>
+    <div><strong>8 TB <em>캐시</em></strong><span>턴에서 턴으로, 주에서 주로 플릿에 남으며, 저장소와 모델을 위한 <span data-storage>4 TB</span> 저장공간이 함께 있습니다</span></div>
+    <div><strong>기능</strong><span>저장소를 가져오고, 캐시를 갱신하고, 고객의 코드로 드래프트 모델을 학습시키고, 그날의 변경을 리뷰하고 테스트합니다</span></div>
+    <div><strong>18 <em>+ 고객 모델</em></strong><span>Kimi K3, GLM 5.3과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2, 그리고 고객에게만 표시되는 고객 자신의 모델</span></div>
   </div>
 </section>
 
 <div class="wrap">
-<section id="korea" class="sec">
+<section id="why" class="sec">
   <div class="sec-rail">
-    <p class="label">한국</p>
-    <p class="label">데이터는 국내에</p>
+    <p class="label">01 왜</p>
+    <p class="label">토큰이 아니라 시간</p>
   </div>
   <div class="sec-body">
-    <h2>한국 기업을 위해 만들었습니다.</h2>
-    <div class="defs">
-      <div><p class="label">데이터는 국내에</p><p>플릿과 서버는 모두 서울에 있으며, 고객의 요청은 어떤 해외 AI 서비스로도 가지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다.</p></div>
-      <div><p class="label">한국 회사</p><p>계약 상대방은 한국 회사인 효르에이아이테크 유한회사이며, 한국법이 적용됩니다. 두 계약 모두 국문과 영문으로 되어 있고, 국문이 우선합니다.</p></div>
-      <div><p class="label">원화 결제</p><p>국내 사업자는 전자세금계산서를 받고 원화 계좌이체로 결제하며, 부가세 10%가 붙습니다. 해외 고객은 USDC, USDT 또는 USD 송금으로 결제합니다.</p></div>
-      <div><p class="label">국산 모델</p><p>LG의 K-EXAONE 2.0과 SKT의 A.X K2(모두 Apache 2.0), 업스테이지의 Solar Open 2가 플릿 1에서 Kimi K3, GLM 5.3 등 다른 오픈 모델과 함께 실행됩니다. 세 모델 모두 축소판이 아닌 원래 모델을 게시자의 정밀도 그대로 실행합니다. 다른 곳에서는 쓰기 어렵습니다. 2026년 10월 현재 <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a>와 Hugging Face 어디에도 세 모델의 공개 API 제공업체가 없습니다.</p></div>
-      <div><p class="label">공유가 아닌 전용</p><p>고객의 시간 동안 플릿 전체가 고객의 요청만 처리합니다. 다른 사람의 트래픽이 앞에서 기다리지 않으므로, 플릿이 비는 즉시 응답이 시작됩니다.</p></div>
-      <div><p class="label">시간 단위 요금</p><p>토큰이 아니라 플릿의 시간에 대해 지불합니다. 긴 프롬프트, 100만 토큰 컨텍스트, 대화 기록을 다시 읽는 에이전트에도 추가 비용이 없습니다.</p></div>
-    </div>
-  </div>
-</section>
-
-<section id="compare" class="sec">
-  <div class="sec-rail">
-    <p class="label">비교</p>
-    <p class="label">시간당 하드웨어</p>
-  </div>
-  <div class="sec-body">
-    <h2>비슷한 하드웨어를 한 시간 쓰는 비용.</h2>
-    <p class="prose">플릿시간은 장비를 빌리는 것이므로, 토큰 단위 API가 아니라 하드웨어 임대와 비교해야 합니다.</p>
+    <h2>토큰 단위 API는 같은 코드베이스에 몇 번이고 요금을 매깁니다.</h2>
+    <p class="prose">API 캐시는 짧은 세션을 위해 만들어졌습니다. Claude에서는 기본 5분 유지되며, 1시간 캐시는 쓰는 데 입력 가격의 2배, 5분 캐시는 1.25배가 듭니다. Kimi의 기본값도 5분입니다. 그래서 휴식, 회의, 브랜치 전환, 서브에이전트마다 전체 컨텍스트의 비용을 다시 내고, 프리필되는 동안 기다립니다. 에이전트 작업에서 $20–50 충전이 금방 바닥나고, 구독 한도가 점심 전에 차는 이유입니다.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>선택지</th><th>제공 내용</th><th>시간당</th></tr></thead>
+      <thead><tr><th scope="col">하루의 순간</th><th scope="col">토큰 단위 API</th><th scope="col" class="you">내 플릿</th></tr></thead>
       <tbody>
-        <tr><td class="model">SparkPipe 플릿시간</td><td>DGX Spark 16대를 한 대의 장비처럼 운영합니다. Kimi K3를 100만 토큰 컨텍스트와 추측 디코딩으로 올려 두고, 운영은 저희가 맡습니다</td><td class="figure"><b data-krw="hourly">₩26,000</b></td></tr>
-        <tr><td class="model">DGX Spark 16대 임대</td><td>같은 장비이지만, 16대 전체에서 모델 하나를 실행하는 엔진은 없습니다</td><td class="figure">약 ₩13,000–16,000</td></tr>
-        <tr><td class="model">8× B300 GPU 서버 1대</td><td>GPU 메모리 2.3TB: Kimi K3를 원래 정밀도로 담고 많은 요청을 동시에 처리합니다</td><td class="figure">약 ₩84,000–118,000</td></tr>
-        <tr><td class="model">8× H200 GPU 서버 1대</td><td>GPU 메모리 1.1TB: Kimi K3를 원래 정밀도로 담기에는 부족합니다</td><td class="figure">약 ₩50,000</td></tr>
+        <tr><td>몇 분 안의 다음 턴</td><td>캐시 읽기, 토큰당 과금</td><td class="you"><b>웜.</b> 137,700토큰에서 첫 토큰까지 0.3–5초(실측), 토큰당 요금 없음</td></tr>
+        <tr><td>휴식이나 회의 후</td><td>캐시 만료: 전체 컨텍스트를 다시 과금하고 다시 프리필</td><td class="you"><b>여전히 웜.</b> 플릿을 보유하는 동안 캐시가 남습니다</td></tr>
+        <tr><td>브랜치나 모듈 전환</td><td>새 프리픽스: 캐시 쓰기 한 번 더, 콜드 대기 한 번 더</td><td class="you"><b>미리 프리필.</b> 밤사이와 턴 사이에</td></tr>
+        <tr><td>아침 첫 턴</td><td>모두 콜드</td><td class="you"><b>웜.</b> 어제의 커밋에 맞춰 기능이 캐시를 갱신했습니다</td></tr>
+        <tr><td>파일 전체 재작성</td><td>제공자의 속도, 빠른 등급은 더 비쌈</td><td class="you"><b>126 tok/s.</b> 추측 디코딩을 쓴 Kimi K3, 같은 출력, 실측, 요금에 포함</td></tr>
+        <tr><td>가격</td><td>다시 읽고 다시 쓸 때마다, 또는 한도가 있는 구독</td><td class="you"><b>1주 <span data-week="hc">144</span> HC:</b> <span data-week="usd">$2,160</span>, 24시간 기준 시간당 약 <span data-week="effective">$12.86</span></td></tr>
       </tbody>
     </table></div>
-    <p class="caption">2026년 10월에 확인한 공개 임대 가격: 호스팅 DGX Spark 시간당 $0.60–0.75(<a href="https://www.spheron.network/blog/dgx-spark-vs-renting-a-cloud-gpu-the-real-break-even-hours-2/">Spheron</a>), B300 GPU 시간당 $8.00–11.19(<a href="https://computeprices.com/providers/latitude/gpus/hgx-b300">Latitude.sh</a>, <a href="https://computeprices.com/providers/digitalocean/gpus/hgx-b300">DigitalOcean</a>), H200 GPU 시간당 $4.80(Spheron). 1달러 1,310원으로 환산했습니다. 가격은 업체마다 다르고 자주 바뀝니다.</p>
+    <p class="prose">고객에게는 청구서가 더 작은 비용입니다. 1분 넘게 기다리면 다른 창으로 넘어가게 되고, 문제로 다시 돌아오는 데는 기다린 시간보다 더 많은 시간이 듭니다. 나만의 플릿에서는 컨텍스트를 한 번 계산하고, 그다음 턴은 모두 직전 턴이 멈춘 곳에서 시작합니다.</p>
+    <p class="caption">캐시 규칙: <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic</a>, <a href="https://platform.kimi.ai/docs/pricing/chat">Kimi</a>, 2026년 11월 1일 확인. 저희 수치는 플릿 1에서 측정했습니다. 플릿에서 한 저희의 몇 주간의 작업을 같은 작업의 토큰 단위 API 결과와 나란히 놓은 Customer Zero 보고서는 출시 때 공개합니다.</p>
   </div>
 </section>
 
-<section id="speed" class="sec">
+<section id="fleet" class="sec">
   <div class="sec-rail">
-    <p class="label">속도</p>
-    <p class="label">실측치와 추정치</p>
+    <p class="label">02 내 플릿</p>
+    <p class="label">남는 것</p>
   </div>
   <div class="sec-body">
-    <h2>에이전트에게 필요한 곳에서 빠릅니다.</h2>
-    <div class="facts">
-      <div><strong class="mono">126 tok/s</strong><p>Kimi K3가 추측 디코딩으로 파일 전체를 다시 쓸 때의 실측치입니다. 추측 디코딩 없이는 15 tok/s이며, 검색·치환 편집은 28 tok/s입니다.</p></div>
-      <div><strong class="mono">0.3–5초</strong><p>대화가 캐시된 후속 턴에서 첫 토큰까지 걸리는 시간으로, Kimi K3에서 최대 137,700토큰까지 실측했습니다.</p></div>
-      <div><strong class="mono">37초</strong><p><b>추정치</b>: 프리필 가속기 박스 4대로 128K 토큰 Kimi K3 프롬프트를 처음부터 처리하는 시간입니다. 박스 8대로는 18초입니다.</p></div>
+    <h2>고객만을 위해 일하고 고객의 코드를 기억하는 플릿.</h2>
+    <div class="defs">
+      <div><p class="label">고객에게 고정</p><p>플릿 전체가 고객의 요청만 처리합니다. 공유 대기열도, 공유 캐시도 없고, 플릿 자체의 속도 외에는 속도 제한도 없습니다. 다음 주를 계속 예약하는 동안 다른 누구도 그 시간을 예약할 수 없습니다. 일이 많으면 플릿을 더 보유하세요. 낮용, 밤용, 병렬 리뷰용으로.</p></div>
+      <div><p class="label">남는 작업 상태</p><p>플릿에 8 TB의 캐시, 노드당 1 TB를 짝 노드에 미러링합니다. 요청은 가장 긴 캐시된 프리픽스를 자동으로 재사용하므로 슬롯을 관리할 필요가 없습니다. 다른 고객의 그 플릿 예약이 시작되거나 고객의 마지막 시간 후 24시간이 지나면 삭제됩니다. 플릿 밖 사본도, 백업도 없습니다.</p></div>
+      <div><p class="label">고객 저장공간</p><p>모든 플릿에 저장소, 데이터셋, 어댑터와 모델을 위한 <span data-storage>4 TB</span>, 노드당 500 GB를 캐시처럼 미러링합니다. 보유한 어느 플릿으로든 내보내고 복원할 수 있습니다.</p></div>
+      <div><p class="label">고객의 도구</p><p>Claude Code, Codex, Cursor 또는 OpenAI 호환 도구에 엔드포인트와 키를 넣고, 계정에서 하는 모든 일은 <span class="mono">sparkpipe</span> CLI로 할 수 있습니다.</p></div>
+      <div><p class="label">오픈 모델 18종</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash와 국산 K-EXAONE 2.0, A.X K2, Solar Open 2 등을 각 게시자의 라이선스에 따라 제공합니다. 모델 전환은 20~80초입니다. <a href="fleets-ko.html">플릿 목록</a>에 모든 모델의 실측 속도가 있습니다.</p></div>
+      <div><p class="label">한국에서만</p><p>요청과 데이터는 저희가 한국에서 운영하는 장비에서만 처리되며, 다른 AI 서비스로 보내지 않습니다. 한국은 <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU 적정성 결정</a>과 영국의 적정성 결정을 받았으므로, 유럽의 개인정보는 별도의 이전 계약 없이 고객의 플릿으로 올 수 있습니다. 계약 상대방은 한국법을 따르는 한국 회사입니다.</p></div>
     </div>
-    <p class="prose"><b>추정치</b>: 플릿 2(M5 Ultra Mac Studio 8대)에서 Kimi K3는 단일 요청 기준으로 추측 디코딩 없이 23 tok/s, 에이전트 코딩 턴에서 추측 디코딩으로 약 35 tok/s입니다. SKT의 A.X K2는 33 tok/s와 약 49 tok/s로 추정됩니다. 추정치는 저희 실측치와 공개된 하드웨어 수치로 계산한 예측이며, 달성할 수 있다고 보는 값만 싣습니다. 각각의 계산 방법은 <a href="fleets-ko.html#estimates">플릿 목록</a>에 있습니다. 하드웨어가 가동되면 실측치로 바꿉니다.</p>
   </div>
 </section>
 
-<section id="roadmap" class="sec">
+<section id="functions" class="sec">
   <div class="sec-rail">
-    <p class="label">로드맵</p>
-    <p class="label">다음 단계</p>
+    <p class="label">03 기능</p>
+    <p class="label">코드에 대한 작업</p>
   </div>
   <div class="sec-body">
-    <h2>다음에 오는 것.</h2>
-    <div class="check-list">
-      <div><b>프리필 가속기</b><span>NVIDIA RTX 5080 4장을 담은 박스가 긴 프롬프트를 계산합니다. 먼저 4대, 다음에 8대입니다. 추정치: 128K 토큰 Kimi K3 프롬프트를 37초(박스 8대로 18초)에, 100만 토큰 프롬프트를 약 17분에 처리합니다.</span></div>
-      <div><b>플릿 2</b><span>플릿 1의 2.2배 메모리 대역폭을 가진 M5 Ultra Mac Studio 8대로 더 빠르게 디코딩합니다. Studio 한 대에서 실측: Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 20.1 tok/s로 디코딩하며, 이는 Studio의 메모리 대역폭이 허용하는 속도의 90%이고, 요청 64개를 동시에 처리하면 합계 442 tok/s입니다. 추정치: 추측 디코딩 없이 Kimi K3 23 tok/s.</span></div>
-      <div><b>더 나은 추측 디코딩</b><span>여러 드래프터의 초안을 한 번에 검증하는 트리 드래프트로, 단계마다 더 많은 초안 토큰이 채택됩니다.</span></div>
-      <div><b>분야별 검색</b><span>채팅에서 법률, 의료, 금융, 특허 등의 검색 도구를 체크하면, 어떤 모델이든 최신 1차 자료를 근거로 출처를 밝혀 답합니다.</span></div>
-      <div><b>더 많은 대형 모델</b><span>Nemotron 3 Ultra, Mistral Large 3.</span></div>
-      <div><b>플릿 3</b><span>DGX Spark 16대 추가. 플릿 1과 플릿 2를 합치면 4TB이므로, FP8 원래 정밀도의 Qwen 3.8 Max처럼 2TB가 넘는 모델을 두 플릿에 걸쳐 실행합니다.</span></div>
+    <h2>지시하면 플릿이 고객의 코드를 다룹니다.</h2>
+    <p class="prose">기능은 저희가 만들어 고객이 보유한 플릿에서 실행하는 소프트웨어입니다. 계정, API 또는 CLI에서 시작하거나 예약하세요. 설정은 기능이 스스로 합니다. 처음 실행하는 기능이 저장소를 가져옵니다. 결과는 고객 저장공간과 아침 보고서에 남고, 기능이 만든 것은 고객의 것입니다. 기능은 계속 늘어납니다.</p>
+    <div class="fns">
+      <div class="fn"><p class="label">고객의 상태</p><dl>
+        <dt>저장소 가져오기</dt><dd>저장소를 복제하거나 동기화하고, 푸시를 따라가며, 파일, 심볼, 이력을 지도로 만듭니다.</dd>
+        <dt>캐시 구축과 갱신</dt><dd>가장 적게 바뀌는 부분부터 프리필하고, 푸시마다 바뀐 부분만 다시 계산합니다.</dd>
+        <dt>미리 프리필</dt><dd>지정한 브랜치와 모듈을 웜 상태로 두고, 턴 사이에 다음에 쓸 만한 것을 프리필합니다.</dd>
+        <dt>세션 이어가기</dt><dd>어제의 에이전트 세션을 웜 상태로 두어, 멈춘 곳에서 이어갑니다.</dd>
+        <dt>내보내기와 복원</dt><dd>저장공간, 캐시 스냅숏, 드래프트 모델과 어댑터를 보유한 어느 플릿으로든 옮깁니다.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">문제 찾기</p><dl>
+        <dt>그날의 변경 리뷰</dt><dd>변경마다 diff만이 아니라 코드베이스 전체에 비추어 리뷰하고, 발견마다 테스트로 확인합니다.</dd>
+        <dt>다른 모델의 의견</dt><dd>같은 리뷰를 다른 모델로 실행하고 의견이 일치하는 곳을 표시합니다.</dd>
+        <dt>보안 감사</dt><dd>메모리 안전성, 동시성, 인젝션, 비밀정보, 의존성을 재현 방법과 함께 순위별로 보고합니다.</dd>
+        <dt>테스트와 퍼징</dt><dd>바뀐 코드의 단위 테스트와 퍼저를 작성해 실행하고, 크래시를 보고합니다.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">작업 처리</p><dl>
+        <dt>야간 에이전트</dt><dd>작업 목록을 처리하고, 작업마다 테스트 결과와 함께 브랜치를 남깁니다.</dd>
+        <dt>코드베이스 전체 변경</dt><dd>이름 변경, API 마이그레이션, 포팅을 파일 단위로, 빌드와 테스트를 마친 브랜치 하나로 만듭니다.</dd>
+        <dt>코드베이스 전체에 묻기</dt><dd>질문이나 지시 하나를 모든 파일이나 모듈에 실행하고 답을 모읍니다.</dd>
+        <dt>문서 최신 유지</dt><dd>아키텍처 노트, API 문서, 코드 지도를 푸시마다 갱신합니다.</dd>
+        <dt>아침 보고서</dt><dd>밤사이 만든 모든 것을 한 페이지에, API 호출 한 번으로.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">모델</p><dl>
+        <dt>드래프트 모델 학습</dt><dd>저장소와 세션으로 학습시켜, 고객의 새 코드에서 추측 디코딩이 모델의 토큰을 매주 더 많이 받아들이게 합니다.</dd>
+        <dt>고객의 코드로 모델 평가</dt><dd>고객의 테스트나 평가 세트를 모든 제공 모델과 고객 모델에 실행해, 작업마다 가장 좋은 모델을 고릅니다.</dd>
+        <dt>고객 모델 검증</dt><dd>고객의 모델과 드라이버를 고객의 참조 출력과 대조합니다.</dd>
+        <dt>어댑터 학습</dt><dd>제공 모델이나 고객 모델의 어댑터를 고객의 데이터로 학습시킵니다.</dd>
+        <dt>학습 데이터 생성</dt><dd>원본 모델의 라이선스가 허용하는 경우, 고객 모델을 위한 학습 데이터를 생성합니다.</dd>
+      </dl></div>
     </div>
+    <p class="caption">코드를 빌드하거나 실행하는 기능은 고객의 플릿 안 샌드박스에서, 고객이 허용하지 않는 한 네트워크 없이 실행됩니다. 플릿의 보유자가 바뀌면 저희 이미지로 복원하므로, 한 고객이 실행한 것이 다음 고객에게 닿지 않습니다.</p>
+  </div>
+</section>
+
+<section id="models" class="sec">
+  <div class="sec-rail">
+    <p class="label">04 고객의 모델</p>
+    <p class="label">비공개 모델 목록</p>
+  </div>
+  <div class="sec-body">
+    <h2>자체 모델을 학습시켰나요? 나만의 플릿에서 서비스하세요.</h2>
+    <ol class="steps">
+      <li><h3>업로드</h3><p>CLI나 API로 가중치를 고객 저장공간에 올립니다. 플릿의 메모리에 들어가는 모델이면 됩니다. Kimi K3의 1.56 TB도 들어갑니다.</p></li>
+      <li><h3>드라이버 추가</h3><p>모델 계열 인터페이스와 코딩 에이전트용 안내서를 공개하므로, 고객의 에이전트가 드라이버를 작성할 수 있습니다. 대부분의 새 모델은 이미 있는 계열 스케줄을 재사용합니다.</p></li>
+      <li><h3>검증</h3><p>기능이 고객의 플릿에서 모델을 고객의 참조 출력과 대조해 일치 여부를 보고합니다. 저희 모델이 통과하는 것과 같은 검증입니다.</p></li>
+      <li><h3>사용</h3><p>고객의 모델 목록에만, 제공 모델 옆에, 같은 엔드포인트 뒤에 나타나며 모든 기능과 함께 쓸 수 있습니다.</p></li>
+    </ol>
   </div>
 </section>
 
 <section id="how" class="sec">
   <div class="sec-rail">
-    <p class="label">이용 방법</p>
-    <p class="label">4단계</p>
+    <p class="label">05 이용 방법</p>
+    <p class="label">네 단계</p>
   </div>
   <div class="sec-body">
-    <h2>계정, 시간, 예약, 사용.</h2>
+    <h2>데모 시간, 그다음 나만의 플릿.</h2>
     <ol class="steps">
-      <li><h3>계정 개설</h3><p>회사의 법인명과 업무용 이메일을 입력하고, 이메일로 받은 6자리 코드로 이메일을 확인한 뒤 시간제 이용약관에 동의합니다. 이메일이 곧 계정이며, 비밀번호나 암호화폐 지갑은 필요 없습니다. 모든 사업자는 제재 대상 명단과 대조하여 심사합니다.</p></li>
-      <li><h3>시간 구매</h3><p>미리 결제합니다. 국내 사업자는 전자세금계산서를 받고 원화 계좌이체로, 해외 고객은 결제 대행사의 인보이스에 따라 USDC 또는 USDT로 결제합니다. 한국 부가세 10%가 붙습니다. 결제가 확인되면 시간이 발급됩니다.</p></li>
-      <li><h3>예약</h3><p>플릿과 모델, 플릿 일정표의 시간을 고르고 확정합니다. 시간제에서는 7일 앞까지 예약할 수 있습니다. 확정된 예약은 바꿀 수 없으며, 그 시간이 지나가면서 잔액에서 차감됩니다.</p></li>
-      <li><h3>사용</h3><p>고객의 시간 동안 플릿 전체가 OpenAI 채팅 형식을 따르는 SparkPipe API로 고객의 요청만 처리합니다. 액세스 토큰은 고객이 직접 발급하므로, 누가 시간을 쓸지 고객이 정합니다.</p></li>
+      <li><h3>계정 열기</h3><p>회사의 법인명 또는 본인 이름, 6자리 코드로 확인한 업무용 이메일, 고객 계약 동의. 비밀번호는 없습니다. 그다음 HC를 원하는 만큼 삽니다.</p></li>
+      <li><h3>데모 시간 예약</h3><p>데모 플릿 전체를 시간 단위로, 최대 <span data-demo="days">7</span>일 앞까지, 시간당 <span data-hour="hc">1</span> HC. 고객의 도구를 연결해 코드베이스로 시험해 보세요.</p></li>
+      <li><h3>플릿 고정</h3><p>비어 있는 플릿의 첫 주를 다음 월요일부터 예약합니다. 모든 플릿이 보유되어 있으면 최소 <span data-week="hc">144</span> HC를 잠가 대기 명단에 들어갑니다.</p></li>
+      <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 새 주는 더 저렴합니다.</p></li>
     </ol>
-    <p class="caption">원화 결제는 효르에이아이테크 유한회사의 국내 은행 계좌로 바로 입금됩니다. USDC와 USDT 결제는 결제 대행사를 거칩니다. 저희 시스템에는 계정 사이에 시간을 넘기는 기능이 없습니다.</p>
+    <p class="prose">대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서입니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
+    <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개.</p>
   </div>
 </section>
 
 <section id="prices" class="sec">
   <div class="sec-rail">
-    <p class="label">가격</p>
-    <p class="label">두 가지 구매 방식</p>
+    <p class="label">06 가격</p>
+    <p class="label">하나의 통화</p>
   </div>
   <div class="sec-body">
-    <h2>시간 단위로 써 보고, 약정하면 더 저렴하게.</h2>
-    <p class="prose">모든 사업자는 시간제로 시작합니다. 2년 동안 월요일부터 토요일까지의 모든 시간을 더 낮은 가격에 쓰려는 사업자는 사업자 확인을 거쳐 2년 계약서에 서명하며, 조항마다 협의할 수 있습니다.</p>
+    <h2>6일 가격에 7일.</h2>
+    <p class="prose">모든 것은 시간 크레딧(HC)으로 지불합니다. 원하는 만큼 사서 데모 시간과 나만의 플릿의 주에 씁니다. 토큰당 요금도, 기능에 대한 추가 요금도 없습니다.</p>
     <div class="table-wrap"><table class="cmp">
-      <thead><tr><th scope="col"></th><th scope="col">시간제</th><th scope="col">2년 계약</th></tr></thead>
+      <thead><tr><th scope="col">항목</th><th scope="col">가격</th></tr></thead>
       <tbody>
-        <tr><th scope="row">가격</th><td>플릿시간당 <span data-krw="hourly">₩26,000</span> 또는 <span data-price="hourly">$20</span>, 부가세 별도</td><td>플릿시간당 <span data-krw="committed">₩20,000</span> 또는 <span data-price="committed">$15</span>, 부가세 별도, 계약 기간 동안 고정</td></tr>
-        <tr><th scope="row">약정</th><td>없음</td><td>서명일부터 2년간 일요일을 제외한 모든 시간: 15,000~15,048시간. 일요일은 저희 점검일이며, 비어 있는 플릿이 있으면 일요일에도 시간을 쓸 수 있습니다</td></tr>
-        <tr><th scope="row">모델</th><td>플릿 목록에서 제공하는 모델 중 예약마다 선택</td><td>계약서에서 고른 모델은 계약 기간 내내 이용할 수 있고, 그 밖의 모델은 목록에 있는 동안 이용할 수 있습니다</td></tr>
-        <tr><th scope="row">사업자 확인</th><td>필요 없음</td><td>서명 전에 필요</td></tr>
-        <tr><th scope="row">보유 시간</th><td>한 번에 최대 <span data-cap="hourly">168</span>시간, 사업자 확인 후 <span data-cap="verified">720</span>시간. 각 시간은 12개월 동안 유효합니다</td><td>매월 결제한 시간을 그달 안에서 원하는 때에 예약합니다. 계약 기간 전체를 선불하기 전까지는 하루의 12시간 구간마다 12시간이 보장됩니다. 전액 선불 후에는 선택한 1일 시간이 계약 기간의 어느 날에든 보장되며, 비어 있는 플릿에서 30일 앞까지 더 쓸 수 있습니다</td></tr>
-        <tr><th scope="row">결제</th><td>사용 전: 국내 사업자는 전자세금계산서에 따른 원화 계좌이체, 또는 USDC·USDT 인보이스</td><td>전자세금계산서에 따른 원화 계좌이체, 해외 본인 계좌에서의 USD 송금(부가세 영세율), 또는 USDC·USDT 인보이스. 처음 30일 동안은 낼 금액이 없으며, 30일·60일·90일의 세 기한까지 원하는 금액을 결제합니다</td></tr>
-        <tr><th scope="row">예약</th><td>확정. 월요일부터 토요일까지는 2년 계약 고객이 보장된 1일 시간을 위해 시작 6시간 전까지 그 시간을 가져갈 수 있으며, 그 시간은 잔액으로 돌아옵니다. 일요일의 시간은 가져가지 않습니다</td><td>확정되며, 누구도 가져가지 않습니다</td></tr>
-        <tr><th scope="row">장애</th><td colspan="2">15분을 넘는 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 전부 돌려드립니다</td></tr>
-        <tr><th scope="row">환불</th><td>저희가 시간제 서비스를 중단하거나 고객의 귀책 없이 계정을 닫는 경우 외에는 없음</td><td>계약이 일찍 끝날 때 아직 쓰지 않은 결제 시간 외에는 없음(제11.3조). 30일째까지 결제가 없으면 아무 금액 없이 종료</td></tr>
-        <tr><th scope="row">약관</th><td><a href="hourly-terms-ko.html">시간제 이용약관</a><a href="hourly-terms.html" hreflang="en">Hourly Terms</a></td><td><a href="agreement-ko.html">2년 예약 계약서</a><a href="agreement.html" hreflang="en">Two-year agreement</a></td></tr>
+        <tr><th scope="row">시간 크레딧</th><td><span data-hc="bulk-from">144</span> HC 미만은 개당 <span data-hc="small-usd">$20</span>(<span data-hc="small-krw">₩26,000</span>), <span data-hc="bulk-from">144</span> HC부터는 개당 <span data-hc="bulk-usd">$15</span>(<span data-hc="bulk-krw">₩19,500</span>). 상한 없음. 각 구매분은 예약에 쓰지 않으면 <span data-hc="months">12</span>개월 후 소멸하며, 예약에 쓴 HC는 소멸하지 않습니다</td></tr>
+        <tr><th scope="row">데모 시간</th><td>데모 플릿 전체 1시간에 <span data-hour="hc">1</span> HC</td></tr>
+        <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
+        <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
+        <tr><th scope="row">예약 가능 기간</th><td>최대 <span data-ahead>52</span>주 앞까지</td></tr>
+        <tr><th scope="row">장애</th><td>15분 넘게 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 HC로 돌려드립니다. 점검은 플릿당 주 최대 3시간이며 같은 방식으로 적립됩니다</td></tr>
+        <tr><th scope="row">결제</th><td>토스페이먼츠를 통한 원화 결제(국내·해외 카드, 계좌이체, 가상계좌, 간편결제), CoinPayments를 통한 USDC 또는 USDT, 또는 대한민국 밖의 고객 명의 계좌에서 보내는 미국 달러 계좌이체(SWIFT). 한국 사업자는 카드 매출전표나 전자세금계산서를 받습니다</td></tr>
+        <tr><th scope="row">부가가치세</th><td>10%가 더해집니다. 대한민국에 사업장이 없는 고객의 미국 달러 계좌이체(SWIFT)는 0%입니다</td></tr>
+        <tr><th scope="row">환불</th><td>저희가 HC 서비스 제공을 중단하거나 고객의 귀책 없이 계정을 닫는 경우를 제외하고 없습니다. 대기 명단에 잠긴 HC가 기다리는 동안 소멸하게 되면 환불합니다</td></tr>
       </tbody>
     </table></div>
-    <p class="caption">부가세는 영세율 송금을 제외한 모든 결제에 10%가 붙습니다. 부가세로 받았으나 납부 의무가 없는 것으로 밝혀진 금액은 과오납이며, 돌려드립니다. 각 계약은 국문이 우선합니다.</p>
-    <div class="actions"><a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 구매 (영문)</a><a class="btn" href="two-year.html" hreflang="en">2년 계약 계획 (영문)</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=2%EB%85%84%20%ED%94%8C%EB%A6%BF%EC%8B%9C%EA%B0%84%20%EA%B2%AC%EC%A0%81">2년 견적 요청</a></div>
+    <p class="caption">가격은 이 웹사이트에서 정하며 바뀔 수 있습니다. 이미 산 HC와 예약한 주는 그 가격을 유지합니다. <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 적용되며 국문이 우선합니다. 판매자는 효르에이아이테크 유한회사입니다.</p>
+    <div class="actions"><a class="btn solid" href="buy.html" hreflang="en">HC 구매</a><a class="btn" href="market.html" hreflang="en">계정에서 예약</a></div>
   </div>
 </section>
 
-<section id="fleets" class="sec">
+<section id="setup" class="sec">
   <div class="sec-rail">
-    <p class="label">플릿과 모델</p>
-    <p class="label">플릿 목록</p>
+    <p class="label">07 설정</p>
+    <p class="label">고객의 도구</p>
   </div>
   <div class="sec-body">
-    <h2>잔액 하나로 모든 플릿을.</h2>
-    <p class="prose">고객의 시간은 저희가 운영하는 모든 플릿에서 쓸 수 있습니다. 플릿의 요율은 그 플릿을 1시간 쓸 때 잔액에서 빠지는 시간 수입니다. <a href="fleets-ko.html">플릿 목록</a>은 약관이 가리키는 목록으로, 플릿과 요율, 모델과 그 라이선스를 담고 있습니다.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>플릿</th><th>장비</th><th>상태</th><th>요율</th></tr></thead>
-      <tbody>
-        <tr><td class="model">플릿 1</td><td>NVIDIA DGX Spark 16대, 메모리 합계 2TB, 100 Gb/s RDMA</td><td><span class="state live">가동 중</span></td><td class="figure">1</td></tr>
-        <tr><td class="model">플릿 2</td><td>Apple Mac Studio, M5 Ultra</td><td><span class="state building">구축 중</span></td><td class="figure">1</td></tr>
-        <tr><td class="model">플릿 3</td><td>NVIDIA DGX Spark 16대</td><td><span class="state building">구축 중</span></td><td class="figure">1</td></tr>
-      </tbody>
-    </table></div>
-    <div class="table-wrap"><table class="models">
-      <thead><tr><th>플릿 1의 핵심 모델</th><th>라이선스</th><th>컨텍스트 창</th><th>단일 요청</th><th>요청 8개</th><th>프리필, 8K 프롬프트</th></tr></thead>
-      <tbody>
-        <tr><td><b>Kimi K3</b><span>Moonshot AI · kimi-k3</span></td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="figure">1M</td><td class="figure"><b>16.2</b>tok/s</td><td class="figure"><b>64</b>tok/s</td><td class="figure"><b>590</b>tok/s</td></tr>
-        <tr><td><b>GLM 5.3</b><span>Z.AI · glm-5.3</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="figure">1M</td><td class="figure"><b>28.9</b>tok/s</td><td class="figure"><b>74</b>tok/s</td><td class="figure"><b>1,162</b>tok/s</td></tr>
-        <tr><td><b>GLM 5.3 Flash</b><span>Z.AI · glm-5.3-flash</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="figure">128K</td><td class="figure"><b>55.0</b>tok/s</td><td class="figure"><b>176</b>tok/s</td><td class="figure"><b>876</b>tok/s</td></tr>
-        <tr><td><b>DeepSeek V4.1 Flash</b><span>DeepSeek · deepseek-v4.1-flash</span></td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="figure">1M</td><td class="figure"><b>42.5</b>tok/s ¹</td><td class="figure"><b>151</b>tok/s ¹</td><td class="figure"><b>1,290</b>tok/s ¹</td></tr>
-      </tbody>
-    </table></div>
-    <div class="table-wrap"><table class="models">
-      <thead><tr><th>플릿 1의 국산 모델</th><th>라이선스</th><th>컨텍스트 창</th><th>단일 요청</th><th>프리필, 7K 프롬프트</th><th>파일 재작성, 추측 디코딩</th></tr></thead>
-      <tbody>
-        <tr><td><b>K-EXAONE 2.0</b><span>LG AI연구원 · k-exaone-2.0</span></td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="figure">256K</td><td class="figure"><b>27.3</b>tok/s</td><td class="figure"><b>324</b>tok/s</td><td class="figure"><b>190.9</b>tok/s</td></tr>
-        <tr><td><b>A.X K2</b><span>SK텔레콤 · a.x-k2</span></td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="figure">256K</td><td class="figure"><b>23.8</b>tok/s</td><td class="figure"><b>1,274</b>tok/s</td><td class="figure"><b>298.0</b>tok/s</td></tr>
-        <tr><td><b>Solar Open 2</b><span>업스테이지 · solar-open-2</span></td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="figure">256K</td><td class="figure"><b>61.2</b>tok/s</td><td class="figure"><b>1,025</b>tok/s</td><td class="figure"><b>513.7</b>tok/s</td></tr>
-      </tbody>
-    </table></div>
-    <p class="caption">컨텍스트 창은 제공 기준입니다. 디코드는 추측 디코딩 없이 2026-10-18에 7~8K 토큰 프롬프트로 측정했습니다. ¹ DeepSeek V4.1 Flash는 2026-10-24에 약 100만 토큰 프롬프트 뒤에 측정했으며, 프리필 수치는 그 프롬프트의 평균입니다. 국산 모델은 2026-10-26에 6,850~7,396토큰 프롬프트로 측정했습니다. 파일 재작성: 약 3,800토큰 파일에서 함수 하나의 이름만 바꿔 전체를 다시 쓰는 요청으로, 추측 디코딩이 요청 자체의 텍스트에서 초안을 만듭니다. 출력은 추측 디코딩 없이 디코딩한 결과와 같으며, 속도에는 프롬프트 프리필이 포함됩니다(2026-10-26). 설치된 19개 모델 전체와 그 라이선스, 속도는 <a href="fleets-ko.html">플릿 목록</a>에 있으며, 각 모델의 라이선스를 지켜야 합니다.</p>
-  </div>
-</section>
+    <h2>코딩 에이전트를 플릿에 연결하세요.</h2>
+    <p class="prose">계정에서 API 키를 만들어 도구에 설정하세요. 요청은 그 순간 고객이 보유한 플릿으로 가며, 지정한 모델이 적재되어 있지 않으면 플릿이 그 모델을 적재합니다.</p>
+    <div class="code">
+      <div class="code-head"><span>보유 중인 플릿</span><span>shell</span></div>
+      <pre><span class="d"># Claude Code</span>
+<span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
+<span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">계정에서 받은 키</span>
+<span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
 
-<section id="responsibility" class="sec">
-  <div class="sec-rail">
-    <p class="label">책임</p>
-    <p class="label">누가 무엇을</p>
-  </div>
-  <div class="sec-body">
-    <h2>플릿은 저희가, 작업은 고객이 운영합니다.</h2>
-    <div class="defs">
-      <div><p class="label">용량만 제공</p><p>고객의 시간에 무엇을 실행할지는 고객만 정합니다. 저희는 고객의 작업, 데이터, 출력물을 감시·검토·통제하지 않으며, 그것이나 그 이용에 대해 책임지지 않습니다.</p></div>
-      <div><p class="label">고객의 사용자</p><p>고객이 관리하는 키와 액세스 토큰으로 고객의 사용자나 고객이 정한 누구에게든 시간을 쓰게 할 수 있습니다. 이는 저희 시스템 밖의 일이며, 시스템은 이를 기록하지도 관여하지도 않습니다. 고객의 시간을 쓰는 모든 사람에 대한 책임은 고객에게 있습니다.</p></div>
-      <div><p class="label">적법한 이용</p><p>모든 이용은 제재와 수출통제, 개인정보와 지식재산 관련 법령, 각 모델의 라이선스를 포함한 법을 따라야 합니다. 법령이나 당국이 중단을 요구하는 이용, 약관을 위반하는 이용, 플릿을 위협하는 이용은 정지할 수 있습니다.</p></div>
-      <div><p class="label">AI 기본법</p><p>고객이 자신의 사용자에게 생성형 AI를 제공하면, 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」상 그 제공자는 고객이며 고지와 표시 의무도 고객이 집니다.</p></div>
-      <div><p class="label">고객의 데이터</p><p>데이터와 출력물에 대한 모든 권리는 고객에게 있습니다. 저희는 그 백업을 두지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다. 플릿과 서버는 서울에 있습니다.</p></div>
-      <div><p class="label">사업자 전용</p><p>플릿시간은 사업자에게 그 사업을 위해서만 판매하며, 소비자에게는 판매하지 않습니다. 두 계약 모두 한국법이 적용되며, 분쟁은 대한상사중재원의 중재규칙에 따라 서울에서 중재로 해결합니다.</p></div>
+<span class="d"># Codex, Cursor 등 OpenAI 호환 도구</span>
+<span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
+<span class="k">export</span> OPENAI_API_KEY=<span class="d">계정에서 받은 키</span>
+
+curl $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "안녕하세요"}]}'</pre>
     </div>
+    <p class="caption">플릿을 여러 개 보유하고 있다면 <span class="mono">"sparkpipe": {"fleet": "F3"}</span>로 하나를 지정하세요. <span class="mono">sparkpipe</span> CLI는 터미널에서 예약, 업로드, 기능 시작과 아침 보고서 확인을 합니다.</p>
   </div>
 </section>
 
-<section id="technology" class="sec">
+<section id="speed" class="sec">
   <div class="sec-rail">
-    <p class="label">기술</p>
-    <p class="label">오픈 소스</p>
+    <p class="label">08 속도</p>
+    <p class="label">실측</p>
   </div>
   <div class="sec-body">
-    <h2>작은 장비 16대로 프런티어 모델 하나를.</h2>
-    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 노드 16대에 나눠, 각 노드가 자기 몫인 16분의 1만 읽게 한 뒤 100 Gb/s RDMA 메시로 16~38마이크로초 안에 부분 결과를 합칩니다. 엔진은 C와 CUDA로 처음부터 새로 작성했으며 Apache 2.0 라이선스로 공개되어 있습니다.</p>
+    <h2>캐시가 남는 플릿이 중요한 곳에서 빠릅니다.</h2>
     <div class="facts">
-      <div><strong class="mono">1/16</strong><p>모델과 모든 대화 캐시 가운데 각 노드가 맡는 몫입니다. Kimi K3의 가중치 1.56TB가 플릿 전체에 온전히 담깁니다.</p></div>
-      <div><strong class="mono">5초</strong><p>137,700토큰 대화의 다음 턴에 캐시로 답하는 시간입니다. 처음부터 처리하면 299초입니다.</p></div>
-      <div><strong class="mono">15 → 126</strong><p>Kimi K3가 추측 디코딩으로 파일 전체를 다시 쓸 때의 초당 토큰 수입니다. 새로 쓰는 글에서는 1.0~1.2배입니다.</p></div>
+      <div><strong>126 tok/s</strong><p>추측 디코딩으로 파일 전체를 다시 쓰는 Kimi K3. 없으면 15 tok/s. 출력은 모델 자신의 것입니다.</p></div>
+      <div><strong>0.3–5초</strong><p>대화가 캐시된 후속 턴의 첫 토큰까지, Kimi K3로 137,700토큰까지. 콜드 상태에서는 299초.</p></div>
+      <div><strong>15.6분</strong><p>플릿 하나에서 100만 토큰 Kimi K3 프롬프트를 처음부터 프리필하는 시간. 나만의 플릿에서는 쉴 때마다가 아니라 한 번만 치릅니다.</p></div>
     </div>
-    <div class="bars" role="img" aria-label="파일 전체 재작성에서의 디코드 속도: Kimi K3 일반 15.3 tok/s, 추측 디코딩 126.4. GLM 5.3 일반 27.6, 추측 디코딩 124.2.">
+    <div class="bars" role="img" aria-label="파일 전체 재작성에서 Kimi K3 디코드: 일반 초당 15.3토큰, 추측 디코딩 126.4. GLM 5.3: 일반 27.6, 추측 디코딩 124.2.">
       <div class="bar"><span>K3, 일반</span><i style="--w: 12.1%"></i><b>15.3</b></div>
       <div class="bar top"><span>K3, 추측</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bar"><span>GLM 5.3, 일반</span><i style="--w: 21.8%"></i><b>27.6</b></div>
       <div class="bar top"><span>GLM 5.3, 추측</span><i style="--w: 98.3%"></i><b>124.2</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, 단일 요청</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">추측 디코딩은 요청 자체의 컨텍스트와 별도 GPU의 드래프트 모델에서 토큰 초안을 만들고, 모델이 모든 초안을 검증하므로 출력은 모델 자신의 것입니다. 모든 수치는 2026-10-24까지 플릿 1에서 측정했으며, 방법과 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)에 있습니다. 소스: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>.</p>
+    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 플릿을 거기서 더 빠르게 만드는 방법입니다. 모든 수치는 플릿 1에서 측정했으며, 방법과 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)에 있습니다.</p>
+  </div>
+</section>
+
+<section id="technology" class="sec">
+  <div class="sec-rail">
+    <p class="label">09 기술</p>
+    <p class="label">오픈 소스</p>
+  </div>
+  <div class="sec-body">
+    <h2>작은 상자 16대, 프런티어 모델 하나.</h2>
+    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 플릿의 노드 16대에 나누어, 각 노드는 자기 몫인 16분의 1만 읽고, 부분 결과를 100 Gb/s RDMA 메시로 16~38마이크로초 만에 합칩니다. 엔진은 C와 CUDA로 처음부터 작성했으며 Apache 2.0 라이선스로 공개합니다.</p>
+    <figure class="screen" role="img" aria-label="플릿의 애니메이션 도해: 스위치 하나와 노드 쌍 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드들이 부분 결과를 주고받아 토큰 하나가 나옵니다.">
+      <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 한국</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
+      <canvas id="fleet-canvas" width="1600" height="700"></canvas>
+    </figure>
+    <p class="caption">소스: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>.</p>
   </div>
 </section>
 
 <section id="company" class="sec">
   <div class="sec-rail">
-    <p class="label">회사</p>
+    <p class="label">10 회사</p>
     <p class="label">문서</p>
   </div>
   <div class="sec-body">
@@ -292,9 +313,9 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
       <div><b>회사</b><span>효르에이아이테크 유한회사(HYOR AI Tech Ltd.), 한국 유한회사</span></div>
       <div><b>대표자</b><span>TURAN CEM</span></div>
       <div><b>등록</b><span>사업자등록번호 641-87-03809</span></div>
-      <div><b>소재지</b><span>대한민국 서울특별시 용산구. 상세 주소는 이메일로 요청하시면 알려 드립니다</span></div>
+      <div><b>소재지</b><span>서울특별시 용산구 한강대로 95, 비동 1522호(한강로2가, 래미안용산더센트럴)</span></div>
       <div><b>연락처</b><span><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></span></div>
-      <div><b>약관</b><span><a href="terms-ko.html">시간제 이용약관과 2년 계약서</a>. 국문과 영문으로 검토용 공개되어 있으며 <span data-start>2026년 12월 1일</span>부터 효력이 생깁니다</span></div>
+      <div><b>약관</b><span><a href="terms-ko.html">SparkPipe 고객 계약</a>. 국문과 영문으로 검토용 공개되어 있습니다</span></div>
       <div><b>개인정보</b><span><a href="privacy-ko.html">개인정보처리방침</a> · <a href="privacy.html" hreflang="en">Privacy policy</a></span></div>
       <div><b>기타 서비스</b><span><a href="https://sparkpipe.ai:8443">SparkPipe Chat</a>, 초대받은 사용자용. 답변에는 AI가 생성했다는 표시가 붙습니다.</span></div>
     </div>
@@ -302,35 +323,20 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
 </section>
 </div>
 </main>
-
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">플릿시간 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="market.html" hreflang="en">내 계정 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-
 <script src="pricing.js"></script>
-<script>
-(function () {
-  var P = window.SP_PRICING;
-  if (!P) return;
-  var usd = function (n) { return "$" + (Number.isInteger(n) ? n : n.toFixed(2)); };
-  var start = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
-  var parts = start.split("-");
-  var when = parts[0] + "년 " + Number(parts[1]) + "월 " + Number(parts[2]) + "일";
-  document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(el.dataset.price === "hourly" ? P.hourlyPrice : P.committedPrice); });
-  document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + (el.dataset.krw === "hourly" ? P.hourlyPriceKRW : P.committedPriceKRW).toLocaleString("ko-KR"); });
-  document.querySelectorAll("[data-cap]").forEach(function (el) { el.textContent = (el.dataset.cap === "hourly" ? P.hourlyMaxHours : P.verifiedMaxHours).toLocaleString("ko-KR"); });
-  document.querySelectorAll("[data-start]").forEach(function (el) { el.textContent = when; });
-})();
-</script>
+<script src="prices.js"></script>
 <script>
 (function () {
   var reduce = false;
   try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
-  var canvas = document.getElementById("fleet");
+  var canvas = document.getElementById("fleet-canvas");
   var ctx = canvas.getContext("2d");
   var W = canvas.width, H = canvas.height;
   var nodes = [];

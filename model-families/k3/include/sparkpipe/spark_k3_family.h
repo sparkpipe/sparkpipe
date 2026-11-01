@@ -8,6 +8,8 @@
 #define K3_COLLECTIVE_MLA_PARTIALS 5u
 #define K3_COLLECTIVE_MLA_DOWN 6u
 #define K3_COLLECTIVE_MLA_KEYS 7u
+#define K3_COLLECTIVE_MLA_MHA_QUERY 8u
+#define K3_COLLECTIVE_MLA_MHA_PARTIALS 9u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_COLLECTIVE_ROWS 0x400u
@@ -157,6 +159,28 @@ struct K3Schedule
 		return B::MlaOutput(c, K3_LANE_A, accumulate, K3_STREAM_MAIN);
 	}
 
+	static int32_t MlaMha(Context &c, uint32_t layer, uint32_t accumulate)
+	{
+		int32_t status = B::MlaDown(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status == B::kOk )
+			status = B::MhaUp(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status != B::kOk )
+			return status;
+		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_MHA_QUERY);
+		status = B::MlaGate(c, K3_LANE_A, K3_STREAM_MAIN);
+		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_MHA_QUERY | K3_COLLECTIVE_FINISH);
+		if ( status != B::kOk )
+			return status;
+		status = B::MhaPartials(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status != B::kOk )
+			return status;
+		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_MHA_PARTIALS);
+		status = B::MhaMerge(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status != B::kOk )
+			return status;
+		return B::MlaOutput(c, K3_LANE_A, accumulate, K3_STREAM_MAIN);
+	}
+
 	static int32_t Attention(Context &c, uint32_t layer, uint32_t accumulate)
 	{
 		if ( L::Kda(layer) )
@@ -164,8 +188,12 @@ struct K3Schedule
 		if ( L::Mla(layer) )
 		{
 			if constexpr ( B::kShardedMla )
+			{
+				if ( B::KvSharded(c, K3_LANE_A) && B::ShardMha(c, K3_LANE_A) != 0u )
+					return MlaMha(c, layer, accumulate);
 				if ( B::KvSharded(c, K3_LANE_A) )
 					return MlaShard(c, layer, accumulate);
+			}
 			return B::MlaLocal(c, K3_LANE_A, accumulate, K3_STREAM_MAIN);
 		}
 		return B::kShapeError;
@@ -186,7 +214,7 @@ struct K3Schedule
 		if ( status == B::kOk )
 			status = B::MoeSelect(c, K3_LANE_A, rows, packed, K3_STREAM_MAIN);
 		if ( status == B::kOk && B::HasLazy(c) )
-			status = B::Acquire(c, K3_LANE_A, layer);
+			status = B::Acquire(c, K3_LANE_A, layer, K3_STREAM_MAIN);
 		if ( status == B::kOk )
 			status = B::LatentMoe(c, K3_LANE_A, rows, packed, 1u, K3_STREAM_MAIN);
 		if ( status != B::kOk )
@@ -203,7 +231,7 @@ struct K3Schedule
 	{
 		int32_t status = B::MoeRoute(c, K3_LANE_A, K3_STREAM_MAIN);
 		if ( status == B::kOk )
-			status = B::Acquire(c, K3_LANE_A, layer);
+			status = B::Acquire(c, K3_LANE_A, layer, K3_STREAM_MAIN);
 		if ( status == B::kOk )
 			status = B::MoeWeighted(c, K3_LANE_A, 0u, K3_STREAM_MAIN);
 		if ( status == B::kOk && B::HasCollective(c) )
@@ -469,7 +497,7 @@ struct K3Schedule
 				}
 				K3_PAIR_DO(B::MoeSelect(c, K3_LANE_A, total, total * K3_TOP_K, K3_STREAM_A));
 				if ( status == B::kOk && B::HasLazy(c) )
-					status = B::Acquire(c, K3_LANE_A, layer);
+					status = B::Acquire(c, K3_LANE_A, layer, K3_STREAM_A);
 				K3_PAIR_DO(B::LatentMoe(c, K3_LANE_A, total, total * K3_TOP_K, 1u, K3_STREAM_A));
 				K3_PAIR_DO(B::PairRound(c, K3_LANE_A, K3_STREAM_A, K3_STREAM_A, layer, 3u, 1u));
 				K3_PAIR_DO(B::SharedDown(c, K3_LANE_B, K3_STREAM_B));

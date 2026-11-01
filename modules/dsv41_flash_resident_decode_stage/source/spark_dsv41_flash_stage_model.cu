@@ -2239,7 +2239,8 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41KeepRows,
 	D41TapPlan,
 	0,
-	D41Check
+	D41Check,
+	0
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

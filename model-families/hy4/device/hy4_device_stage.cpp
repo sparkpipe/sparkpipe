@@ -418,6 +418,7 @@ struct HyDevice
 			0,
 			0,
 			BindDevice,
+			0,
 			0
 		};
 		return &interface_table;

@@ -396,6 +396,11 @@ static SparkStatus RunnerOpenRank(SparkDeviceStageRunner **out, const SparkDevic
 		runner->geometry.embed_rows != runner->geometry.vocab / runner->tp_degree) )
 		status = RunnerFail(SPARK_STATUS_SCHEMA_ERROR,"each rank holds an equal slice of the vocabulary");
 	runner->vocab_slice = runner->geometry.vocab / runner->tp_degree;
+	if ( status == SPARK_STATUS_OK && config->output_vocabulary > runner->geometry.vocab )
+	{
+		fprintf(stderr,"device stage runner: output vocabulary %u exceeds the model vocabulary %u\n",config->output_vocabulary,runner->geometry.vocab);
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerBuffers(runner,&total);
 	if ( status != SPARK_STATUS_OK )
@@ -591,7 +596,7 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	if ( config == 0 || model == 0 || model->abi_version != SPARK_STAGE_RUNNER_MODEL_ABI_VERSION || model->open == 0 || model->bind_device == 0 ||
 		model->close == 0 || model->step == 0 || model->attach_kv == 0 || model->reset_slot == 0 || config->pack_path == 0 ||
 		config->max_rows == 0u || config->sequences == 0u || config->max_context == 0u || config->head_rows == 0u ||
-		config->head_rows > config->max_rows )
+		config->head_rows > config->max_rows || config->output_vocabulary == 0u )
 	{
 		fprintf(stderr,"device_stage_runner: needs a model with open, bind_device, close, step, attach_kv and reset_slot, a pack, and nonzero rows, "
 			"sequences, context and head rows\n");
@@ -730,7 +735,7 @@ static SparkStatus RunnerHead(SparkDeviceStageRunner *runner, const SparkDeviceS
 			g->logit_softcap,g->logit_scale);
 	memset(&logprob,0,sizeof(logprob));
 	logprob.rows = rows;
-	logprob.vocabulary = g->vocab;
+	logprob.vocabulary = runner->config.output_vocabulary;
 	logprob.logit_stride = g->vocab;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLogprob(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)rows * g->vocab * 4u),RunnerTable(runner,8u,rows),

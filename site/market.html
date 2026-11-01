@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Your account · SparkPipe</title>
+<meta name="description" content="Your SparkPipe account: book demo hours and weeks on a fleet pinned to you, keep it by booking the next week, join the waitlist, and manage API keys, live or in a sandbox with no money.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="checkout.css?v=3">
+<link rel="stylesheet" href="market.css?v=3">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="fleets.html">Fleet List</a>
+      <a href="index.html#prices">Prices</a>
+      <a href="account.html">Payments</a>
+      <a href="agreement.html">Agreement</a>
+    </nav>
+    <div class="nav-actions"><span class="pill sandbox-only">Sandbox</span><button class="btn small" id="signout" type="button" hidden>Sign out</button><a class="btn small solid live-only" href="buy.html">Buy HC</a></div>
+  </div>
+</header>
+
+<main class="wrap mk">
+<section class="co-head">
+  <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
+  <h1>Your fleets.</h1>
+  <p class="lead">Book the whole demo fleet by the hour, pin a fleet to yourself week by week, or join the waitlist when every fleet is taken. Keep a pinned fleet by booking the next week before 00:00 on the Sunday of your last booked week. A week is <span data-week="hc">144</span> HC, and each new week costs up to <span data-off="max">20%</span> less the more weeks you hold ahead. The <a href="agreement.html">SparkPipe Customer Agreement</a> applies.</p>
+  <div class="row">
+    <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
+    <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
+    <p class="muted sandbox-only">The same service with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and the API answers with a simulator instead of the fleets.</p>
+  </div>
+</section>
+
+<div class="sandbox-bar">
+  <span class="live-only muted">Times are Korea Standard Time. Demo hours from <span data-start="demo">1 December 2026</span>; weeks, Monday to Sunday, from <span data-start="weeks">4 January 2027</span>.</span>
+  <div><span class="muted">Service time</span> <span class="num" id="now">-</span></div>
+  <div class="row sandbox-only">
+    <button class="btn small" type="button" data-clock="1">+1 hour</button>
+    <button class="btn small" type="button" data-clock="24">+1 day</button>
+    <button class="btn small" type="button" data-clock="168">+1 week</button>
+    <button class="btn small" type="button" id="reset">Reset sandbox</button>
+  </div>
+  <p class="flash" id="m-clock" hidden></p>
+</div>
+
+<div class="mk-grid">
+  <section class="card" id="signin-card">
+    <h2>Account</h2>
+    <form class="form" id="signin" novalidate>
+      <label>Work email<input id="email" type="email" autocomplete="email" required></label>
+      <label>Company legal name, or your full name<input id="company" type="text" autocomplete="organization" placeholder="Needed for a new account"></label>
+      <details class="keyterms">
+        <summary>Key terms</summary>
+        <ul>
+          <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
+          <li>Prepaid HC, at the price shown for the quantity you buy: now <span data-hc="small-usd">$20</span> each below <span data-hc="bulk-from">144</span> HC and <span data-hc="bulk-usd">$15</span> each from <span data-hc="bulk-from">144</span> HC, plus VAT. Each purchase lapses 12 months after issue unless you book with it.</li>
+          <li>HC books whole-fleet hours on the demo fleet and weeks on a fleet pinned to you, up to 52 weeks ahead. A booking is final.</li>
+          <li>A pinned fleet stays yours while you book the next week before 00:00 on the Sunday of your last booked week; otherwise it goes to the waitlist, ordered by locked HC.</li>
+          <li>HC has no cash value and is not refunded, unless we stop offering service for HC, close your account other than for your breach, HC locked in the waitlist would lapse, or the law requires a refund.</li>
+          <li>Requests and data are processed only on machines we operate in Korea and go to no other AI service. Your cache and files are deleted when another customer's booking of your fleet starts or 24 hours after your last hour on it.</li>
+          <li>Our liability is capped at what you paid us for HC in the 6 months before the claim. Korean law; arbitration in Seoul.</li>
+        </ul>
+        <p>The Customer Agreement governs, and its Korean text prevails.</p>
+      </details>
+      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean text prevails.</span></label>
+      <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
+      <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as two customers.</p>
+      <button class="btn solid" type="submit" id="signin-go">Sign in</button>
+      <p class="flash" id="m-signin" hidden></p>
+    </form>
+    <div id="me" hidden>
+      <p class="muted"><span id="me-company"></span> · <span id="me-email"></span></p>
+      <div class="row"><div><span class="muted">Balance</span><div class="big-num"><span id="balance">0</span> <span class="muted">HC</span></div></div><div><span class="muted">Locked in the waitlist</span><div class="num" id="locked">0</div></div></div>
+      <div class="scroll"><table><thead><tr><th>Lot</th><th>HC left</th><th>Lapses unless booked</th></tr></thead><tbody id="lots"></tbody></table></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Buy hour-credits</h2>
+    <form class="form" id="buy" novalidate>
+      <label>Hour-credits<input id="buy-hc" type="number" min="1" step="1" value="144"></label>
+      <p class="num" id="buy-sum"></p>
+      <button class="btn solid" type="submit"><span class="live-only">Continue to payment</span><span class="sandbox-only">Buy, no money</span></button>
+      <p class="muted live-only">Paid by card or Korean bank transfer in won through Toss Payments, in a US-dollar stablecoin through CoinPayments, or by US dollar bank transfer (SWIFT) on the <a href="buy.html">Buy page</a>; the HC arrives once the payment completes.</p>
+      <p class="flash" id="m-buy" hidden></p>
+    </form>
+  </section>
+</div>
+
+<nav class="tabs" role="tablist" aria-label="Account" id="tabs">
+  <button type="button" role="tab" data-tab="fleets">Fleets</button>
+  <button type="button" role="tab" data-tab="demo">Demo hours</button>
+  <button type="button" role="tab" data-tab="waitlist">Waitlist</button>
+  <button type="button" role="tab" data-tab="api">API</button>
+  <button type="button" role="tab" data-tab="records">Records</button>
+</nav>
+
+<div class="tab-panel" role="tabpanel" data-panel="fleets">
+<section class="card">
+  <h2>Fleets</h2>
+  <p class="muted">A pinned fleet serves only its holder. A free fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday.</p>
+  <div class="scroll"><table><thead><tr><th>Fleet</th><th>Machines</th><th>Rate</th><th>Status</th><th>Yours</th></tr></thead><tbody id="fleets"></tbody></table></div>
+</section>
+<section class="card">
+  <h2>Book weeks</h2>
+  <p class="muted">Pin a free fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking.</p>
+  <form class="form" id="weeks" novalidate>
+    <div class="row">
+      <label>Fleet<select id="weeks-fleet"></select></label>
+      <label>Weeks<input id="weeks-count" type="number" min="1" max="52" step="1" value="1"></label>
+    </div>
+    <p class="num" id="weeks-quote"></p>
+    <button class="btn solid" type="submit" id="weeks-go">Book</button>
+    <p class="flash" id="m-weeks" hidden></p>
+  </form>
+  <div class="scroll"><table><thead><tr><th>Weeks held</th><th>Discount on new weeks</th></tr></thead><tbody id="discounts"></tbody></table></div>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="demo" hidden>
+<section class="card">
+  <h2>Book demo hours</h2>
+  <p class="muted">The demo fleet can be booked by the hour up to <span data-demo="days">7</span> days ahead, up to <span data-demo="hours">24</span> hours each week per account. A free fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate.</p>
+  <form class="form" id="hours-form" novalidate>
+    <div class="row">
+      <label>Fleet<select id="hours-fleet"></select></label>
+      <label>Start (KST)<input id="hours-start" type="datetime-local" step="3600"></label>
+      <label>Hours<input id="hours-count" type="number" min="1" step="1" value="1"></label>
+    </div>
+    <button class="btn solid" type="submit">Book</button>
+    <p class="flash" id="m-hours" hidden></p>
+  </form>
+</section>
+<section class="card">
+  <h2>Your bookings</h2>
+  <div class="scroll"><table><thead><tr><th>From (KST)</th><th>To (KST)</th><th>Fleet</th><th>Kind</th><th>HC</th></tr></thead><tbody id="bookings"></tbody></table></div>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="waitlist" hidden>
+<section class="card">
+  <h2>Waitlist</h2>
+  <p class="muted">Lock at least <span data-week="hc">144</span> HC to join. Every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and at equal locks to whoever joined first. The whole lock then books consecutive weeks on that fleet from the next Monday, at the discount for that many weeks, and any HC left over is unlocked. Locked HC cannot be spent; add to your lock or leave whenever you like. You see your own position and how many locks are waiting, nothing more. Locked HC that would lapse while you wait is refunded.</p>
+  <p class="num" id="waitlist-status">Not on the waitlist.</p>
+  <p class="num muted" id="waitlist-count"></p>
+  <form class="form" id="waitlist" novalidate>
+    <div class="row"><label>Add to your lock, HC<input id="lock-hc" type="number" min="1" step="1" value="144"></label></div>
+    <div class="row"><button class="btn solid" type="submit">Lock</button><button class="btn" type="button" id="leave">Leave and unlock</button></div>
+    <p class="flash" id="m-waitlist" hidden></p>
+  </form>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="api" hidden>
+<section class="card">
+  <h2>Use your fleet</h2>
+  <p class="muted">Your fleet speaks the OpenAI chat-completions API, for Codex, Cursor and other OpenAI-compatible tools, and the Anthropic Messages API for Claude Code. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
+  <div class="mk-grid">
+    <div class="form">
+      <h3>API keys</h3>
+      <div class="row"><label>Note<input id="key-note" type="text" placeholder="What the key is for"></label><button class="btn small" type="button" id="key-create">Create key</button></div>
+      <p class="key-once" id="key-once" hidden></p>
+      <div class="scroll"><table><thead><tr><th>Key</th><th>Note</th><th>Created</th><th></th></tr></thead><tbody id="keys"></tbody></table></div>
+    </div>
+    <form class="form" id="try" novalidate>
+      <h3>Try it</h3>
+      <label>Key<input id="try-key" type="text" autocomplete="off"></label>
+      <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
+      <label>Message<textarea id="try-prompt" rows="3">Summarize what a pinned fleet keeps from week to week.</textarea></label>
+      <button class="btn solid" type="submit">Send</button>
+      <div class="reply" id="try-reply"></div>
+      <p class="flash" id="m-try" hidden></p>
+    </form>
+  </div>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="records" hidden>
+<section class="card">
+  <h2>Your ledger lines</h2>
+  <p class="muted">Every payment, booking, lock and credit is a line in our append-only, hash-chained ledger. Download your own lines with their hashes.</p>
+  <div class="row"><button class="btn small" type="button" id="ledger-load">Load</button><span class="num" id="ledger-head"></span></div>
+  <div class="scroll"><table><thead><tr><th>#</th><th>When (KST)</th><th>Type</th><th>Data</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
+</section>
+</div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Payments</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="pricing.js"></script>
+<script src="prices.js"></script>
+<script src="market.js?v=4"></script>
+</body>
+</html>

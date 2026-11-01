@@ -32,6 +32,9 @@ struct K3LayerWeights
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_value_weight;
+	const void *mla_q_b_weight;
+	const void *mla_kv_b_key_full_weight;
+	const void *mla_kv_b_value_full_weight;
 	const void *mla_kv_b_scale;
 	const void *mla_gate_weight;
 	const void *mla_out_weight;
@@ -98,7 +101,7 @@ struct K3SliceState
 	void *load_fork;
 	void *load_join;
 	void *lazy_context;
-	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers);
+	int32_t (*lazy_acquire)(void *context, uint32_t layer, void *buffers, void *stream);
 	void (*lazy_release)(void *context, uint32_t layer);
 };
 
@@ -134,6 +137,9 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_kv_a_scale = weights->mla_kv_a_scale;
 	buffers->mla_kv_a_norm_weight = weights->mla_kv_a_norm_weight;
 	buffers->mla_kv_b_value_weight = weights->mla_kv_b_value_weight;
+	buffers->mla_q_b_weight = weights->mla_q_b_weight;
+	buffers->mla_kv_b_key_full_weight = weights->mla_kv_b_key_full_weight;
+	buffers->mla_kv_b_value_full_weight = weights->mla_kv_b_value_full_weight;
 	buffers->mla_kv_b_scale = weights->mla_kv_b_scale;
 	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
@@ -334,6 +340,7 @@ struct K3Cuda
 	static uint32_t TpSharded(const Context &c, uint32_t lane) { return Lane(c, lane)->tp_sharded; }
 	static bool KvSharded(const Context &c, uint32_t lane) { return Lane(c, lane)->kv_shard.degree > 1u; }
 	static uint32_t ShardGather(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather; }
+	static uint32_t ShardMha(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_mha; }
 	static uint32_t GatherWindows(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_windows; }
 	static uint32_t GatherExpanded(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_expanded; }
 	static uint32_t GatherHistory(const Context &c, uint32_t lane) { return Lane(c, lane)->shard_gather_history; }
@@ -495,6 +502,21 @@ struct K3Cuda
 		return K3LayerMlaShardMerge(Lane(c, lane), c.rows[lane], Stream(c, stream));
 	}
 
+	static int32_t MhaUp(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMhaUp<Format,Geometry>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MhaPartials(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMhaPartials<Geometry>(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MhaMerge(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMhaMerge(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
 	static int32_t Dense(Context &c, uint32_t lane, uint32_t stream)
 	{
 		return K3LayerDenseMlp<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
@@ -532,9 +554,9 @@ struct K3Cuda
 		return K3LayerMoeWeighted<Format>(Lane(c, lane), c.rows[lane], c.packed_rows, c.multiprocessors, Stream(c, stream), phase);
 	}
 
-	static int32_t Acquire(Context &c, uint32_t lane, uint32_t layer)
+	static int32_t Acquire(Context &c, uint32_t lane, uint32_t layer, uint32_t stream)
 	{
-		return c.state->lazy_acquire(c.state->lazy_context, layer, (void *)Lane(c, lane));
+		return c.state->lazy_acquire(c.state->lazy_context, layer, (void *)Lane(c, lane), (void *)Stream(c, stream));
 	}
 
 	static void Release(Context &c, uint32_t layer)
@@ -582,7 +604,7 @@ struct K3Cuda
 		const K3LayerBuffers *b = Lane(c, lane);
 		const uint32_t rows = c.rows[lane];
 		if ( state->tap_slab != 0 && state->tap_output[layer] >= 0 )
-			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0,
+			LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0,
 				Stream(c, stream), b->attnres_partial_bf16, state->tap_slab + (uint64_t)row_offset * state->tap_row_stride +
 				((uint64_t)state->tap_output[layer] * K3_HIDDEN), rows, K3_HIDDEN, state->tap_row_stride);
 	}
@@ -591,7 +613,7 @@ struct K3Cuda
 	{
 		const K3LayerBuffers *b = Lane(c, lane);
 		const uint32_t rows = c.rows[lane];
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0,
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0,
 			Stream(c, stream), b->attnres_partial_bf16, b->hidden_bf16, rows, K3_HIDDEN);
 	}
 };

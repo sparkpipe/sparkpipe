@@ -346,10 +346,10 @@ void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *_
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
+void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint64_t output_pitch, float beta, float linear_beta, uint32_t row_groups)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
-	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint64_t out_base = (uint64_t)(blockIdx.x / row_groups) * output_pitch + (uint64_t)(blockIdx.x % row_groups) * dimension;
 	uint32_t index;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
@@ -535,54 +535,63 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight, uint16_t *__restrict__ output_bf16, uint32_t tokens, uint32_t top_k, uint32_t dimension)
 {
-	uint32_t token = blockIdx.y;
+	uint32_t token;
 	uint32_t element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint32_t route;
-	float total = 0.0f;
 	LmDependentRelease();
-	if ( token >= tokens || element >= dimension )
+	if ( element >= dimension )
 		return;
-	for (route = 0u; route < top_k; ++route)
+	for (token = blockIdx.y; token < tokens; token += gridDim.y)
 	{
-		uint32_t packed_row = packed_row_of_token_route[(token * top_k) + route];
-		total += LmBf16ToFloat(packed_bf16[((uint64_t)packed_row * dimension) + element])
-			* route_weight[(token * top_k) + route];
+		float total = 0.0f;
+		for (route = 0u; route < top_k; ++route)
+		{
+			uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+			total += LmBf16ToFloat(packed_bf16[((uint64_t)packed_row * dimension) + element])
+				* route_weight[((uint64_t)token * top_k) + route];
+		}
+		output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
 	}
-	output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__restrict__ b_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t dimension)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
-	if ( row >= rows || element >= dimension )
+	if ( element >= dimension )
 		return;
-	index = ((uint64_t)row * dimension) + element;
-	out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		index = ((uint64_t)row * dimension) + element;
+		out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
+	}
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
-	if ( row >= rows || element >= dimension )
+	if ( element >= dimension )
 		return;
-	index = ((uint64_t)row * dimension) + element;
-	destination_bf16[index] = source_bf16[index];
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		index = ((uint64_t)row * dimension) + element;
+		destination_bf16[index] = source_bf16[index];
+	}
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRankMajorRowsKernel(const uint16_t *__restrict__ gathered_bf16, uint16_t *__restrict__ rows_bf16, uint32_t rows, uint32_t width, uint32_t ranks)
 {
-	const uint32_t row = blockIdx.y;
-	uint32_t index;
-	for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width * ranks; index += gridDim.x * THREADS)
-		rows_bf16[((uint64_t)row * width * ranks) + index] = gathered_bf16[((((uint64_t)(index / width) * rows) + row) * width) + (index % width)];
+	uint32_t row,index;
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+		for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width * ranks; index += gridDim.x * THREADS)
+			rows_bf16[((uint64_t)row * width * ranks) + index] = gathered_bf16[((((uint64_t)(index / width) * rows) + row) * width) + (index % width)];
 }
 
 template<uint32_t THREADS>
@@ -600,10 +609,11 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmCopyRowsStridedKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension,
 	uint64_t destination_stride)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
-	if ( row >= rows || element >= dimension )
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
+	if ( element >= dimension )
 		return;
-	destination_bf16[((uint64_t)row * destination_stride) + element] = source_bf16[((uint64_t)row * dimension) + element];
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+		destination_bf16[((uint64_t)row * destination_stride) + element] = source_bf16[((uint64_t)row * dimension) + element];
 }
 
 template<uint32_t THREADS>

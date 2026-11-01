@@ -334,31 +334,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 					is_request_stop = 1;
 					break;
 				}
-			if ( is_request_stop && (ev->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) == 0u )
-			{
-				pthread_mutex_lock(&r->mutex);
-				r->done = 1;
-				if ( r->served_counted == 0u )
-				{
-					r->served_counted = 1u;
-					S.served++;
-				}
-				pthread_cond_signal(&r->cond);
-				{
-					SparkModelBatchRequestHandle cancel_handle =
-						(r->submitted && r->handle != 0) ? r->handle : 0;
-					pthread_mutex_unlock(&r->mutex);
-					if ( cancel_handle != 0 )
-					{
-						r->inflight = 1;
-						pthread_mutex_unlock(&S.queue_mutex);
-						(void)SparkModelBatchEngineCancel(S.engine, cancel_handle);
-						pthread_mutex_lock(&S.queue_mutex);
-						r->inflight = 0;
-					}
-				}
-			}
-			else if (is_request_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
+			if (is_request_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(
@@ -523,6 +499,8 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
 	sub.drafts_disabled = r->drafts_disabled;
+	sub.stop_token_count = r->stop_token_count;
+	sub.stop_token_ids = r->stop_tokens;
 	sub.output_token_budget = r->max_tokens;
 	sub.prompt_token_ids = r->prompt_tokens;
 	sub.prompt_token_count = r->prompt_count;
@@ -1167,6 +1145,7 @@ static int api_resolve_seed(ApiOptions *options)
 }
 
 _Static_assert(SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS <= API_MAX_STOP_TOKENS, "a chat template's stop markers fit a request's stop list");
+_Static_assert(API_MAX_STOP_TOKENS <= SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT, "a request's stop list fits the engine's per-request stops");
 
 static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 {
