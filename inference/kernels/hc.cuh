@@ -30,3 +30,30 @@ __global__ void LmHcPostBf16Kernel(const uint16_t *out_bf16,const uint16_t *snap
 		}
 	}
 }
+
+__global__ void LmHcPostF32Kernel(const uint16_t *out_bf16,const uint16_t *snapshot_bf16,const float *post_f32,const float *comb_f32,uint16_t *streams_bf16,uint32_t rows,uint32_t hc,uint32_t width)
+{
+	__shared__ float post[4],comb[16];
+	uint32_t row = blockIdx.x,element,stream,source,index;
+	float residual[4],out,value;
+	if ( row >= rows || hc == 0u || hc > 4u )
+		return;
+	for (index=threadIdx.x; index<hc; index+=blockDim.x)
+		post[index] = post_f32[((uint64_t)row * hc) + index];
+	for (index=threadIdx.x; index<(hc * hc); index+=blockDim.x)
+		comb[index] = comb_f32[((uint64_t)row * hc * hc) + index];
+	__syncthreads();
+	for (element=(blockIdx.y * blockDim.x) + threadIdx.x; element<width; element+=blockDim.x * gridDim.y)
+	{
+		out = LmBf16ToFloat(out_bf16[((uint64_t)row * width) + element]);
+		for (source=0u; source<hc; source++)
+			residual[source] = LmBf16ToFloat(snapshot_bf16[((((uint64_t)row * hc) + source) * width) + element]);
+		for (stream=0u; stream<hc; stream++)
+		{
+			value = 0.0f;
+			for (source=0u; source<hc; source++)
+				value = fmaf(comb[(stream * hc) + source],residual[source],value);
+			streams_bf16[((((uint64_t)row * hc) + stream) * width) + element] = LmFloatToBf16(fmaf(post[stream],out,value));
+		}
+	}
+}
