@@ -262,9 +262,10 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
-  whole, 9,088 ms in two 512-row lanes). GLM 5.3 Flash's 2,048-row waves split
-  into two 1,024-row lanes. In a 108,324-token prefill (2026-11-01, CUPTI on
-  all 16 ranks) the GPU was busy 97% of the time, compute kernels 66% and
+  whole, 9,088 ms in two 512-row lanes). GLM 5.3 Flash's 4,096-row waves split
+  into two 2,048-row lanes. With two 1,024-row lanes, in a 108,324-token
+  prefill (2026-11-01, CUPTI on all 16 ranks), the GPU was busy 97% of the
+  time, compute kernels 66% and
   collective kernels 60%, overlapping only 29%: the second lane waited for the
   first lane's whole DSA attention before it started its own. Releasing it
   after the first lane's cache writes, with the first lane at a higher stream

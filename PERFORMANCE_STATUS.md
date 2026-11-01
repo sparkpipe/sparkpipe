@@ -116,6 +116,8 @@ The outputs do not change. On both models, the two wave sizes give the same gree
 
 GLM 5.3 Flash's second prefill lane now starts each DSA layer as soon as the first lane has written its cache rows (2026-11-01, 16 Sparks, interleaved A B A B on one hold): a 108,324-token prompt prefills in 82.7 and 82.8 s instead of 93.0 and 93.3 s (1,309 instead of 1,163 tok/s). The greedy tokens and top-5 logprobs are identical on the same six prompts and on the long prompt's answer. GLM 5.3 Full, whose lanes now also run the leader at the higher stream priority, prefills a 108,328-token prompt in 121.0 and 121.4 s against 124.1 s, also with identical outputs.
 
+GLM 5.3 Flash then prefills in 4,096-row waves, two 2,048-row lanes (2026-11-01, same method): the 108,324-token prompt takes 79.8 and 80.4 s instead of 82.7 and 82.9 s (1,353 tok/s), with identical tokens and logprobs. Each lane reads every expert weight once per wave, so twice the rows per wave halves those reads per token.
+
 ### Floors
 
 Two floors bound decode:
