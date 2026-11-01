@@ -144,13 +144,13 @@ h1 { max-width: 15ch; }
     <p class="prose">A Function is software we build and run on a fleet you hold. Start one, or schedule it, from your account, the API or the CLI. It does its own setup: the first one you run ingests your repository. Results land in your storage and your morning report, and what a Function produces is yours. We keep adding Functions.</p>
     <div class="fns">
       <div class="fn"><p class="label">Your state</p><dl>
-        <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your tokens are stored write-only and sent only to the host you name.</dd>
-        <dt>Ingest a repository</dt><dd>Clones or syncs your repo, follows your pushes, and maps files, symbols and history.</dd>
+        <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your token stays on your machine: it comes with each download, and the fleet holds it only while that download runs.</dd>
+        <dt>Ingest a repository</dt><dd>Takes your pushes as a git remote, with no token for your git host, and maps files, symbols and history.</dd>
         <dt>Build and refresh the cache</dt><dd>Prefills the parts that change least first; after each push it recomputes only what changed.</dd>
         <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm, and prefills the likely next ones between your turns.</dd>
         <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
         <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
-        <dt>Daily backup</dt><dd>Copies the storage paths you choose to your own bucket or server every day, changes only.</dd>
+        <dt>Daily backup</dt><dd>One scheduled command on your own machine pulls the day's changes to your disk or bucket, with your own credentials.</dd>
       </dl></div>
       <div class="fn"><p class="label">Find problems</p><dl>
         <dt>Review the day's changes</dt><dd>Reviews each change against the whole codebase, not just the diff, and confirms each finding with a test.</dd>

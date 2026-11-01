@@ -82,7 +82,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 6.6. **Rebuild credit.** If an event on a Fleet that Customer holds destroys every copy we keep of part of Customer's working state on that Fleet, so that its cached state has to be rebuilt, we credit Customer, once for each such event, HC equal to 24 hours of that Fleet at its Rate, within 24 hours after we find the loss, and we tell Customer what was lost. This credit, with any credit under clause 4.4 for the same event, is Customer's only remedy for the loss of working state, whatever its cause, subject to clause 8.5.
 
-6.7. **Credentials.** Customer may store with us credentials for its accounts at other services, such as a model repository or its own storage. We keep each one encrypted, never show it again, send it only to the hosts Customer names for it, use it only to carry out Customer's requests, and delete it when Customer deletes it, when it expires or when the Account closes. Customer chooses each credential's scope and is responsible for its use at that service.
+6.7. **Credentials.** A credential Customer sends with a request for another service, such as a token for a model repository, is used only to carry out that request and only with the hosts it is meant for. We hold it only while that request runs, and we never store, log or show it.
 
 ## 7. Models and Functions
 
