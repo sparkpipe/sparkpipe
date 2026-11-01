@@ -35,6 +35,7 @@ typedef struct SparkDeviceAllocation
 	SparkDeviceSpace space;
 	uint32_t access;
 	uint32_t registered;
+	uint64_t segment_stride;
 	void *backend;
 	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
 	char owner[SPARK_DEVICE_OWNER_BYTES];

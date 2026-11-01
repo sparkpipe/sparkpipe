@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Hy4 preview (official MXFP8 checkpoint) -> sixteen TP16 named stage packs.
+"""Hy4 preview (official MXFP8 checkpoint) -> TP named stage packs (sixteen by default).
 
-Output per rank: <out>/hy4.tp16.rank<NN>.pack (tools/spark_named_pack.py
+--tp-degree sets the rank count (16 for the Sparks; 1, 2, 4 or 8 for Metal
+ranks); the splits below are of 1/degree each, shown for 16. Output per rank:
+<out>/hy4.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts (experts are
 plain tensors). MXFP8 projections keep the official bytes: an "fp8" tensor
 (E4M3, [rows, K]) and its "<name>_scale" "u8" tensor (E8M0 per 32 columns,
@@ -115,10 +117,10 @@ class RankPacks:
         self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"hy4.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"hy4.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"hy4.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"hy4.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -247,8 +249,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
+    args.ranks = args.ranks or ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -257,14 +263,14 @@ def main():
     if quant.get("quant_algo") != "MXFP8" or config.get("n_group") != 1 or config.get("hc_mult") != 4 or config.get("gating_type") != "elementwise" or \
             config["num_attention_heads"] % TP or config["n_routed_experts"] % TP or config["vocab_size"] % TP or \
             config["intermediate_size"] % (TP * 64) or config["moe_intermediate_size"] * config["n_shared_experts"] % (TP * 64):
-        raise PackFailure("this packer handles the Hy4 preview MXFP8 layout on TP16")
+        raise PackFailure(f"this packer handles the Hy4 preview MXFP8 layout on TP{TP}")
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract = json.loads(args.contract.read_text())
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks, source_identity(args.checkpoint, "hy4_tp16_pack", files=(args.contract,)))
+    packs = RankPacks(args.output_dir, args.resume, ranks, source_identity(args.checkpoint, "hy4_tp16_pack" if TP == 16 else f"hy4_tp{TP}_pack", files=(args.contract,)))
     hidden, vocab_rows = config["hidden_size"], config["vocab_size"] // TP
     embed = checkpoint.bf16("model.embed_tokens.weight", (config["vocab_size"], hidden))
     head = checkpoint.bf16("lm_head.weight", (config["vocab_size"], hidden))

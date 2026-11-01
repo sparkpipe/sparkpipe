@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""K-EXAONE 2.0 BF16 checkpoint -> sixteen TP16 named stage packs for the Gemma-core stage runner.
+"""K-EXAONE 2.0 BF16 checkpoint -> TP named stage packs (sixteen by default) for the Gemma-core stage runner.
 
-Output per rank: <out>/kexaone2.tp16.rank<NN>.pack (tools/spark_named_pack.py
+--tp-degree sets the rank count (16 for the Sparks; 1, 2, 4 or 8 for Metal
+ranks); the splits below are of 1/degree each, shown for 16. Output per rank:
+<out>/kexaone2.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container), plus <pack>.sha256 and the empty-range <pack>.experts v2
 manifest (the rank's experts are plain resident tensors).
 
@@ -42,6 +44,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import gemma4_tp16_pack  # noqa: E402
 from gemma4_tp16_pack import EXPERTS_MAGIC, EXPERTS_VERSION, TP, Checkpoint, PackFailure, RankPacks, ffn_window  # noqa: E402
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble, source_identity  # noqa: E402
 
@@ -206,8 +209,12 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--contract", type=Path)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = gemma4_tp16_pack.TP = args.tp_degree
+    args.ranks = args.ranks or ",".join(str(rank) for rank in range(TP))
     if args.assemble is not None:
         plan = json.loads(args.assemble.read_text())
         directory = args.assemble.parent

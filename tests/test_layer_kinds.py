@@ -107,11 +107,11 @@ def entry_points(model):
     # A kind is also implemented if the model's slice dispatch names its layer
     # function: kimi_k3's per-kind INT7 exports were deleted when the recipe
     # made INT7 uninstantiable, and the real entry points are the K3LayerKda /
-    # K3LayerMla arms K3LaunchAttentionHalf selects between. An export table
+    # K3LayerMla arms the K3 schedule's attention selects between. An export table
     # that only reads unity.cu would force dead C wrappers back into existence
     # to satisfy a gate, which is the tail wagging the dog.
     for part in sorted(unity.parent.glob("slice.cuh")):
-        exports |= set(re.findall(r"return\((\w+)<", part.read_text()))
+        exports |= set(re.findall(r"return\(?\s*(\w+)<", part.read_text()))
     return exports
 
 

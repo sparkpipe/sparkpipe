@@ -32,54 +32,18 @@
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
+#include "sparkpipe/spark_qwen38_family.h"
 
-#define QH_KEY_DIM 128u
-#define QH_VALUE_DIM 128u
-#define QH_CONV 4u
-#define QH_EPSILON 1e-6f
 #define QH_THREADS 256u
 #define QH_SCALE_K 128u
-#define QH_PACK_ALIGNMENT 128u
-
-struct QwenHybridDefaults
-{
-	static constexpr uint32_t kStreams = 1u;
-	static constexpr uint32_t kHcLowRank = 0u;
-	static constexpr uint32_t kPleLayer = 0xffffffffu;
-	static constexpr uint32_t kPleOrders = 0u;
-	static constexpr uint32_t kPleHeadsPerOrder = 0u;
-	static constexpr uint32_t kPleHeadDim = 0u;
-	static constexpr uint32_t kPleConv = 1u;
-	static constexpr uint32_t kPleDilation = 1u;
-	static constexpr uint32_t kPleEos = 0u;
-	static constexpr uint32_t kIndexHeads = 0u;
-	static constexpr uint32_t kIndexDim = 0u;
-	static constexpr uint32_t kIndexBudget = 0u;
-	static constexpr uint32_t kIndexRatio = 1u;
-};
 
 #define QH_INDEX_CHUNK 64u
 
 template<class G>
-struct QwenHybridShape
+struct QwenHybridShape : QwenHybridLayout<G>
 {
-	static constexpr uint32_t kGdnLayers = G::kLayers - G::kLayers / G::kPeriod;
-	static constexpr uint32_t kAttnLayers = G::kLayers / G::kPeriod;
-	static constexpr uint32_t kQWidth = G::kHeads * G::kHeadDim;
-	static constexpr uint32_t kKvWidth = G::kKvHeads * G::kHeadDim;
-	static constexpr uint32_t kQkvWidth = 2u * kQWidth + 2u * kKvWidth;
-	static constexpr bool kHyper = G::kStreams > 1u;
-	static constexpr uint32_t kResidual = G::kStreams * G::kHidden;
-	static constexpr bool kPle = G::kPleLayer < G::kLayers;
-	static constexpr uint32_t kPleColumns = G::kPleOrders * G::kPleHeadsPerOrder;
-	static constexpr uint32_t kPleSpan = (G::kPleConv - 1u) * G::kPleDilation + 1u;
-	static constexpr uint32_t kPleHistory = 4u;
-	static constexpr bool kIndexer = G::kIndexHeads > 0u;
-	static constexpr uint32_t kIndexWidth = (G::kIndexHeads + 1u) * G::kIndexDim;
-	static constexpr uint32_t kIndexBlocks = G::kIndexBudget / G::kIndexRatio;
-	static constexpr uint32_t kIndexTail = G::kIndexRatio - 1u;
 	using Kv = LmKvHeads<16u, G::kKvHeads, G::kHeadDim, G::kPageSlots>;
-	using IndexKv = LmKvGeometry<kIndexer ? G::kIndexDim * 2u : 16u, G::kPageSlots / G::kIndexRatio, true>;
+	using IndexKv = LmKvGeometry<QwenHybridLayout<G>::kIndexer ? G::kIndexDim * 2u : 16u, G::kPageSlots / G::kIndexRatio, true>;
 };
 
 typedef struct QwenHybridLayer
@@ -372,7 +336,7 @@ __global__ static void QwenIndexBlockKeysKernel(const uint16_t *raw, const uint1
 		sum += LmBf16ToFloat(at >= first ? raw[(uint64_t)lane_rows[ordinal - (position - at)] * D + d] : carried[(uint64_t)(at - tail_base) * D + d]);
 	}
 	const float pooled = LmBf16ToFloat(LmFloatToBf16(sum / (float)R));
-	const float scale = rsqrtf(LmBlockSum<D>(pooled * pooled, reduction) / (float)D + QH_EPSILON);
+	const float scale = SparkMathRmsScale(LmBlockSum<D>(pooled * pooled, reduction), (float)D, QH_EPSILON);
 	normed[d] = LmBf16ToFloat(LmFloatToBf16(pooled * scale * norm[d]));
 	__syncthreads();
 	float out = normed[d];
@@ -498,6 +462,13 @@ struct QwenHybridModel
 {
 	using S = QwenHybridShape<G>;
 	using State = QwenHybridState<G>;
+	using Layer = QwenHybridLayer;
+
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+	};
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -556,8 +527,11 @@ struct QwenHybridModel
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
 
-	static SparkStatus Gdn(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Gdn(State *state, const Frame &frame, const QwenHybridLayer &entry)
 	{
+		const QwenHybridLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sequences = step->sequences, heads = state->gdn_heads;
 		const uint32_t sms = step->multiprocessors;
 		uint8_t *state_pool = state->gdn_state + (uint64_t)layer->recurrent_index * state->slots * state->gdn_state_bytes;
@@ -660,8 +634,11 @@ struct QwenHybridModel
 		return Launched();
 	}
 
-	static SparkStatus Attention(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Attention(State *state, const Frame &frame, const QwenHybridLayer &entry)
 	{
+		const QwenHybridLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, degree = state->tp_degree;
 		const uint64_t units = ((uint64_t)rows * LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, degree) * sizeof(float) +
 			G::kHidden * sizeof(uint16_t) - 1u) / (G::kHidden * sizeof(uint16_t));
@@ -782,8 +759,11 @@ struct QwenHybridModel
 		return Launched();
 	}
 
-	static SparkStatus Ffn(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Ffn(State *state, const Frame &frame, const QwenHybridLayer &entry)
 	{
+		const QwenHybridLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		if constexpr ( G::kMoe )
 			return Moe(state, layer, step, stream);
 		else
@@ -852,8 +832,10 @@ struct QwenHybridModel
 		return Launched();
 	}
 
-	static SparkStatus Ple(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Ple(State *state, const Frame &frame)
 	{
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors;
 		const uint64_t elements = (uint64_t)rows * S::kResidual;
 		SparkStatus status;
@@ -892,97 +874,111 @@ struct QwenHybridModel
 		return Launched();
 	}
 
-	static SparkStatus HyperStep(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static const QwenHybridLayer &LayerOf(State *state, uint32_t index)
 	{
-		const uint32_t rows = step->rows, sms = step->multiprocessors;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status;
-		LmHyperExpandKernel<QH_THREADS><<<dim3(Blocks(S::kResidual), rows), QH_THREADS, 0, stream>>>(hidden, state->residual, G::kStreams, G::kHidden);
-		if constexpr ( S::kPle || S::kIndexer )
-			LmRowLanesKernel<<<step->sequences, QH_THREADS, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
-				state->row_ordinal);
-		status = Launched();
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const QwenHybridLayer *layer = &state->layers[index];
-			if constexpr ( S::kPle )
-				if ( index == G::kPleLayer )
-					status = Ple(state, step, stream);
-			for ( uint32_t part = 0u; part < 2u && status == SPARK_STATUS_OK; ++part )
-			{
-				status = HcPre(state, layer->hc_norm[part], layer->hc_down[part], layer->hc_up[part], layer->hc_inject[part], state->normed, rows, sms, stream);
-				if ( status == SPARK_STATUS_OK )
-					status = part == 1u ? Ffn(state, layer, step, stream) :
-						index % G::kPeriod == G::kPhase ? Attention(state, layer, step, stream) : Gdn(state, layer, step, stream);
-				if ( status == SPARK_STATUS_OK )
-					status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-				if ( status == SPARK_STATUS_OK )
-					status = HcInject(state, rows, stream);
-			}
-			if ( status == SPARK_STATUS_OK && state->dump != 0 )
-				status = DumpLayer(state, index, step, state->residual, state->partial, stream);
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return HcPre(state, state->final_hc_norm, state->final_hc_down, state->final_hc_up, (const uint16_t *)0, hidden, rows, sms, stream);
+		return state->layers[index];
 	}
 
-	static SparkStatus PlainStep(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
 	{
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const QwenHybridLayer *layer = &state->layers[index];
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, index == 0u ? (const uint16_t *)0 : state->partial, layer->input_norm, index == 0u ? (uint16_t *)0 : hidden,
-				state->normed, G::kHidden, G::kHidden, QH_EPSILON);
-			status = index % G::kPeriod == G::kPhase ? Attention(state, layer, step, stream) : Gdn(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, state->partial, layer->post_norm, hidden, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
-			status = Ffn(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status == SPARK_STATUS_OK && state->dump != 0 )
-				status = DumpLayer(state, index, step, hidden, state->partial, stream);
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		QwenHybridAddRowsKernel<<<Blocks((uint64_t)rows * G::kHidden), QH_THREADS, 0, stream>>>(hidden, state->partial, (uint64_t)rows * G::kHidden);
-		return Launched();
-	}
-
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
-	{
-		State *state = (State *)model;
 		cudaStream_t stream = (cudaStream_t)stream_void;
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
 		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		frame->step = step;
+		frame->stream = stream;
 		if ( state->dump != 0 )
 		{
 			cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
 			if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess || capturing != cudaStreamCaptureStatusNone )
 				return SPARK_STATUS_UNSUPPORTED;
-			status = DumpLayer(state, 0xffffffffu, step, hidden, 0, stream);
+			status = DumpLayer(state, 0xffffffffu, step, step->hidden_bf16, 0, stream);
 		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if constexpr ( S::kHyper )
-			return HyperStep(state, step, stream);
-		else
-			return PlainStep(state, step, stream);
+		return status;
+	}
+
+	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
+	{
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AddRmsNorm(State *state, const Frame &frame, const float *weight)
+	{
+		uint16_t *hidden = frame.step->hidden_bf16;
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<QH_THREADS,float>), frame.step->rows, QH_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			hidden, state->partial, weight, hidden, state->normed, G::kHidden, G::kHidden, QH_EPSILON);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame)
+	{
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+	}
+
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		SparkStatus status = SPARK_STATUS_OK;
+		if ( state->dump != 0 )
+		{
+			const uint16_t *rows;
+			if constexpr ( S::kHyper )
+				rows = state->residual;
+			else
+				rows = frame.step->hidden_bf16;
+			status = DumpLayer(state, index, frame.step, rows, state->partial, frame.stream);
+		}
+		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
+			state->services->layer_done(state->services->context, index);
+		return status;
+	}
+
+	static SparkStatus AddRows(State *state, const Frame &frame)
+	{
+		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
+		QwenHybridAddRowsKernel<<<Blocks(width), QH_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, width);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Check(State *state, const Frame &frame)
+	{
+		(void)state;
+		(void)frame;
+		return Launched();
+	}
+
+	static SparkStatus HyperBegin(State *state, const Frame &frame)
+	{
+		const SparkStageRunnerStep *step = frame.step;
+		LmHyperExpandKernel<QH_THREADS><<<dim3(Blocks(S::kResidual), step->rows), QH_THREADS, 0, frame.stream>>>(step->hidden_bf16, state->residual,
+			G::kStreams, G::kHidden);
+		if constexpr ( S::kPle || S::kIndexer )
+			LmRowLanesKernel<<<step->sequences, QH_THREADS, 0, frame.stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
+				state->row_ordinal);
+		return Launched();
+	}
+
+	static SparkStatus HyperPre(State *state, const Frame &frame, const QwenHybridLayer &layer, uint32_t part)
+	{
+		return HcPre(state, layer.hc_norm[part], layer.hc_down[part], layer.hc_up[part], layer.hc_inject[part], state->normed, frame.step->rows,
+			frame.step->multiprocessors, frame.stream);
+	}
+
+	static SparkStatus HyperPost(State *state, const Frame &frame)
+	{
+		return HcInject(state, frame.step->rows, frame.stream);
+	}
+
+	static SparkStatus HyperEnd(State *state, const Frame &frame)
+	{
+		return HcPre(state, state->final_hc_norm, state->final_hc_down, state->final_hc_up, (const uint16_t *)0, frame.step->hidden_bf16,
+			frame.step->rows, frame.step->multiprocessors, frame.stream);
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return QwenHybridSchedule<G, QwenHybridModel>::Step((State *)model, step, stream);
 	}
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)

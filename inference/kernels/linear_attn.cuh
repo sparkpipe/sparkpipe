@@ -8,9 +8,7 @@
 
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
-	float scaled = __expf(head_log_scale) * (logit + bias);
-	float log_decay = minimum_log_decay * SparkMathSigmoidFast(scaled);
-	return(__expf(log_decay));
+	return(SparkMathBoundedDecay(logit,bias,head_log_scale,minimum_log_decay));
 }
 
 template<uint32_t THREADS, uint32_t KEY_DIM>
@@ -743,7 +741,7 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 		{
 			if ( sizeof(Weight) == sizeof(uint16_t) )
 				total = LmBf16ToFloat(LmFloatToBf16(total));
-			total = total * SparkMathSigmoidFast(total);
+			total = SparkMathSwishFast(total);
 		}
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 	}
@@ -830,7 +828,7 @@ static __device__ __forceinline__ void LmCausalConvTiledBody(uint16_t *__restric
 			{
 				if ( sizeof(Weight) == sizeof(uint16_t) )
 					total = LmBf16ToFloat(LmFloatToBf16(total));
-				total = total * SparkMathSigmoidFast(total);
+				total = SparkMathSwishFast(total);
 			}
 			output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 		}

@@ -28,6 +28,8 @@
 #define REF_HEADS 24u
 #define REF_KV_HEADS 4u
 #define REF_HEAD_DIM 256u
+#define REF_FP8_BLOCK 128u
+#define REF_MAX_SHARDS 128u
 #define REF_Q (REF_HEADS * REF_HEAD_DIM)
 #define REF_GATED_Q (2u * REF_Q)
 #define REF_KV (REF_KV_HEADS * REF_HEAD_DIM)
@@ -38,6 +40,8 @@
 #define REF_MAX_CONTEXT 4096u
 #define REF_SPLIT 1024u
 #define REF_PREFIX "model.language_model."
+#define REF_EXP_ERROR_MEAN 1.637e-7
+#define REF_EXP_ERROR_SPREAD 4.354e-7
 
 typedef struct RefShard
 {
@@ -52,7 +56,7 @@ typedef struct RefCheckpoint
 {
 	char root[1024];
 	SparkJsonDocument index;
-	RefShard shards[64];
+	RefShard shards[REF_MAX_SHARDS];
 	uint32_t shard_count;
 } RefCheckpoint;
 
@@ -91,6 +95,7 @@ static float Bf16(uint16_t bits)
 }
 
 static uint32_t ref_round_activations = 1u;
+static uint32_t ref_device_error;
 
 static float RoundBf16(float value)
 {
@@ -105,14 +110,33 @@ static float RoundBf16(float value)
 	return(value);
 }
 
+static double RefDeviceCentered(float value, uint32_t salt)
+{
+	uint32_t x;
+	memcpy(&x,&value,sizeof(x));
+	x ^= salt * 0x9E3779B9u;
+	x ^= x >> 16;
+	x *= 0x7FEB352Du;
+	x ^= x >> 15;
+	x *= 0x846CA68Bu;
+	x ^= x >> 16;
+	return(((double)(x >> 8) + 0.5) * (2.0 / 16777216.0) - 1.0);
+}
+
+static double RefExp(double x)
+{
+	const double exact = exp(x);
+	return(ref_device_error != 0u ? exact + exact * (REF_EXP_ERROR_MEAN + REF_EXP_ERROR_SPREAD * sqrt(3.0) * RefDeviceCentered((float)x,1u)) : exact);
+}
+
 static float Silu(float x)
 {
-	return((float)((double)x / (1.0 + exp(-(double)x))));
+	return((float)((double)x / (1.0 + RefExp(-(double)x))));
 }
 
 static float Sigmoid(float x)
 {
-	return((float)(1.0 / (1.0 + exp(-(double)x))));
+	return((float)(1.0 / (1.0 + RefExp(-(double)x))));
 }
 
 static double Seconds(void)
@@ -139,7 +163,7 @@ static RefShard *RefOpenShard(RefCheckpoint *checkpoint, const char *name)
 	for ( index = 0u; index < checkpoint->shard_count; index++ )
 		if ( strcmp(checkpoint->shards[index].name,name) == 0 )
 			return(&checkpoint->shards[index]);
-	if ( checkpoint->shard_count == 64u )
+	if ( checkpoint->shard_count == REF_MAX_SHARDS )
 		Die("too many shards",name);
 	shard = &checkpoint->shards[checkpoint->shard_count++];
 	snprintf(shard->name,sizeof(shard->name),"%s",name);
@@ -160,7 +184,7 @@ static RefShard *RefOpenShard(RefCheckpoint *checkpoint, const char *name)
 	return(shard);
 }
 
-static const uint8_t *RefTensor(RefCheckpoint *checkpoint, const char *name, const char *dtype, uint64_t elements)
+static const uint8_t *RefTensorAs(RefCheckpoint *checkpoint, const char *name, const char *dtype, uint64_t elements, uint32_t element_bytes)
 {
 	const int32_t map = SparkJsonFindObjectMember(&checkpoint->index,SparkJsonGetRootToken(&checkpoint->index),"weight_map");
 	const int32_t entry = map >= 0 ? SparkJsonFindObjectMember(&checkpoint->index,map,name) : -1;
@@ -188,9 +212,37 @@ static const uint8_t *RefTensor(RefCheckpoint *checkpoint, const char *name, con
 			Die("tensor shape is unreadable",name);
 		count *= value;
 	}
-	if ( count != elements || end - begin != elements * 2u || shard->data + end > shard->bytes )
+	if ( count != elements || end - begin != elements * element_bytes || shard->data + end > shard->bytes )
 		Die("tensor has the wrong size",name);
 	return(shard->base + shard->data + begin);
+}
+
+static const uint8_t *RefTensor(RefCheckpoint *checkpoint, const char *name, const char *dtype, uint64_t elements)
+{
+	return(RefTensorAs(checkpoint,name,dtype,elements,2u));
+}
+
+static uint32_t RefTensorIsFp8(RefCheckpoint *checkpoint, const char *name)
+{
+	const int32_t map = SparkJsonFindObjectMember(&checkpoint->index,SparkJsonGetRootToken(&checkpoint->index),"weight_map");
+	const int32_t entry = map >= 0 ? SparkJsonFindObjectMember(&checkpoint->index,map,name) : -1;
+	char *shard_name = 0;
+	RefShard *shard;
+	int32_t meta, kind;
+	if ( entry < 0 || SparkJsonCopyString(&checkpoint->index,entry,&shard_name) != SPARK_STATUS_OK )
+		Die("checkpoint has no tensor",name);
+	shard = RefOpenShard(checkpoint,shard_name);
+	free(shard_name);
+	meta = SparkJsonFindObjectMember(&shard->header,SparkJsonGetRootToken(&shard->header),name);
+	kind = meta >= 0 ? SparkJsonFindObjectMember(&shard->header,meta,"dtype") : -1;
+	return(kind >= 0 && SparkJsonStringEquals(&shard->header,kind,"F8_E4M3") ? 1u : 0u);
+}
+
+static float E4m3(uint8_t code)
+{
+	const uint32_t exponent = (code >> 3u) & 15u, mantissa = code & 7u;
+	const float magnitude = exponent == 0u ? ldexpf((float)mantissa,-9) : ldexpf(1.0f + (float)mantissa / 8.0f,(int)exponent - 7);
+	return((code & 0x80u) != 0u ? -magnitude : magnitude);
 }
 
 static float *RefLoad(RefCheckpoint *checkpoint, const char *name, uint64_t elements, float add)
@@ -215,6 +267,31 @@ static float *RefLayerLoad(RefCheckpoint *checkpoint, uint32_t layer, const char
 	return(RefLoad(checkpoint,key,elements,add));
 }
 
+static float *RefLayerLinear(RefCheckpoint *checkpoint, uint32_t layer, const char *name, uint32_t rows, uint32_t columns)
+{
+	char key[256], scale_key[288];
+	const uint8_t *raw;
+	const uint16_t *scale;
+	float *out;
+	const uint32_t scale_columns = (columns + REF_FP8_BLOCK - 1u) / REF_FP8_BLOCK;
+	snprintf(key,sizeof(key),REF_PREFIX "layers.%u.%s.weight",layer,name);
+	if ( RefTensorIsFp8(checkpoint,key) == 0u )
+		return(RefLoad(checkpoint,key,(uint64_t)rows * columns,0.0f));
+	snprintf(scale_key,sizeof(scale_key),"%s_scale_inv",key);
+	raw = RefTensorAs(checkpoint,key,"F8_E4M3",(uint64_t)rows * columns,1u);
+	scale = (const uint16_t *)RefTensor(checkpoint,scale_key,"BF16",(uint64_t)((rows + REF_FP8_BLOCK - 1u) / REF_FP8_BLOCK) * scale_columns);
+	out = (float *)malloc((size_t)rows * columns * sizeof(float));
+	if ( out == 0 )
+		Die("out of memory loading",key);
+	dispatch_apply((size_t)rows,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t row)
+	{
+		for ( uint32_t column = 0u; column < columns; column++ )
+			out[row * columns + column] = E4m3(raw[row * columns + column]) *
+				Bf16(scale[(row / REF_FP8_BLOCK) * scale_columns + column / REF_FP8_BLOCK]);
+	});
+	return(out);
+}
+
 static void RefLoadModel(RefCheckpoint *checkpoint, RefModel *model)
 {
 	uint32_t index;
@@ -224,29 +301,29 @@ static void RefLoadModel(RefCheckpoint *checkpoint, RefModel *model)
 		layer->attention = index % 4u == 3u;
 		layer->input_norm = RefLayerLoad(checkpoint,index,"input_layernorm.weight",REF_HIDDEN,1.0f);
 		layer->post_norm = RefLayerLoad(checkpoint,index,"post_attention_layernorm.weight",REF_HIDDEN,1.0f);
-		layer->gate = RefLayerLoad(checkpoint,index,"mlp.gate_proj.weight",(uint64_t)REF_FFN * REF_HIDDEN,0.0f);
-		layer->up = RefLayerLoad(checkpoint,index,"mlp.up_proj.weight",(uint64_t)REF_FFN * REF_HIDDEN,0.0f);
-		layer->down = RefLayerLoad(checkpoint,index,"mlp.down_proj.weight",(uint64_t)REF_HIDDEN * REF_FFN,0.0f);
+		layer->gate = RefLayerLinear(checkpoint,index,"mlp.gate_proj",REF_FFN,REF_HIDDEN);
+		layer->up = RefLayerLinear(checkpoint,index,"mlp.up_proj",REF_FFN,REF_HIDDEN);
+		layer->down = RefLayerLinear(checkpoint,index,"mlp.down_proj",REF_HIDDEN,REF_FFN);
 		if ( layer->attention != 0u )
 		{
-			layer->q = RefLayerLoad(checkpoint,index,"self_attn.q_proj.weight",(uint64_t)2u * REF_Q * REF_HIDDEN,0.0f);
-			layer->k = RefLayerLoad(checkpoint,index,"self_attn.k_proj.weight",(uint64_t)REF_KV * REF_HIDDEN,0.0f);
-			layer->v = RefLayerLoad(checkpoint,index,"self_attn.v_proj.weight",(uint64_t)REF_KV * REF_HIDDEN,0.0f);
-			layer->o = RefLayerLoad(checkpoint,index,"self_attn.o_proj.weight",(uint64_t)REF_HIDDEN * REF_Q,0.0f);
+			layer->q = RefLayerLinear(checkpoint,index,"self_attn.q_proj",2u * REF_Q,REF_HIDDEN);
+			layer->k = RefLayerLinear(checkpoint,index,"self_attn.k_proj",REF_KV,REF_HIDDEN);
+			layer->v = RefLayerLinear(checkpoint,index,"self_attn.v_proj",REF_KV,REF_HIDDEN);
+			layer->o = RefLayerLinear(checkpoint,index,"self_attn.o_proj",REF_HIDDEN,REF_Q);
 			layer->q_norm = RefLayerLoad(checkpoint,index,"self_attn.q_norm.weight",REF_HEAD_DIM,1.0f);
 			layer->k_norm = RefLayerLoad(checkpoint,index,"self_attn.k_norm.weight",REF_HEAD_DIM,1.0f);
 		}
 		else
 		{
-			layer->qkv = RefLayerLoad(checkpoint,index,"linear_attn.in_proj_qkv.weight",(uint64_t)REF_CHANNELS * REF_HIDDEN,0.0f);
-			layer->z = RefLayerLoad(checkpoint,index,"linear_attn.in_proj_z.weight",(uint64_t)REF_V * REF_HIDDEN,0.0f);
+			layer->qkv = RefLayerLinear(checkpoint,index,"linear_attn.in_proj_qkv",REF_CHANNELS,REF_HIDDEN);
+			layer->z = RefLayerLinear(checkpoint,index,"linear_attn.in_proj_z",REF_V,REF_HIDDEN);
 			layer->b = RefLayerLoad(checkpoint,index,"linear_attn.in_proj_b.weight",(uint64_t)REF_VALUE_HEADS * REF_HIDDEN,0.0f);
 			layer->a = RefLayerLoad(checkpoint,index,"linear_attn.in_proj_a.weight",(uint64_t)REF_VALUE_HEADS * REF_HIDDEN,0.0f);
 			layer->conv = RefLayerLoad(checkpoint,index,"linear_attn.conv1d.weight",(uint64_t)REF_CHANNELS * REF_CONV,0.0f);
 			layer->a_log = RefLayerLoad(checkpoint,index,"linear_attn.A_log",REF_VALUE_HEADS,0.0f);
 			layer->dt_bias = RefLayerLoad(checkpoint,index,"linear_attn.dt_bias",REF_VALUE_HEADS,0.0f);
 			layer->gdn_norm = RefLayerLoad(checkpoint,index,"linear_attn.norm.weight",REF_DIM,0.0f);
-			layer->gdn_out = RefLayerLoad(checkpoint,index,"linear_attn.out_proj.weight",(uint64_t)REF_HIDDEN * REF_V,0.0f);
+			layer->gdn_out = RefLayerLinear(checkpoint,index,"linear_attn.out_proj",REF_HIDDEN,REF_V);
 		}
 		if ( index % 8u == 7u )
 			fprintf(stderr,"loaded %u layers\n",index + 1u);
@@ -367,8 +444,8 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 		{
 			const float *kv = k + (uint64_t)row * REF_QK + key_head * REF_DIM, *qv = q + (uint64_t)row * REF_QK + key_head * REF_DIM;
 			const float shifted = a[(uint64_t)row * REF_VALUE_HEADS + head] + layer->dt_bias[head];
-			const double softplus = shifted > 20.0f ? (double)shifted : log1p(exp((double)shifted));
-			const float decay = (float)exp(-exp((double)layer->a_log[head]) * softplus);
+			const double softplus = shifted > 20.0f ? (double)shifted : log1p(RefExp((double)shifted));
+			const float decay = (float)RefExp(-RefExp((double)layer->a_log[head]) * softplus);
 			const float beta = Sigmoid(b[(uint64_t)row * REF_VALUE_HEADS + head]);
 			const float value = mix[(uint64_t)row * REF_CHANNELS + 2u * REF_QK + head * REF_DIM + column];
 			for ( uint32_t i = 0u; i < REF_DIM; i++ )
@@ -470,7 +547,7 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 			for ( uint32_t j = 0u; j < visible; j++ )
 				best = line[j] > best ? line[j] : best;
 			for ( uint32_t j = 0u; j < length; j++ )
-				line[j] = j < visible ? (float)exp((double)(line[j] - best)) : 0.0f;
+				line[j] = j < visible ? (float)RefExp((double)(line[j] - best)) : 0.0f;
 			const float total = RefSum(variant,line,visible,1u);
 			for ( uint32_t j = 0u; j < visible; j++ )
 				line[j] /= total;
@@ -590,26 +667,29 @@ static double RefLogprob(const float *logits, uint32_t token)
 static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPrompt *prompt, const char *out, uint32_t new_tokens, FILE *greedy, uint32_t first)
 {
 	float *logits = (float *)malloc((size_t)prompt->count * REF_VOCAB * sizeof(float));
-	uint32_t variant, *generated = (uint32_t *)calloc(new_tokens + 1u,sizeof(uint32_t));
+	static const uint32_t variants[2] = { 0u, 2u };
+	uint32_t pass, variant, *generated = (uint32_t *)calloc(new_tokens + 1u,sizeof(uint32_t));
 	char path[4096];
 	if ( logits == 0 || generated == 0 || prompt->count + new_tokens > REF_MAX_CONTEXT || prompt->count < 2u )
 		Die("a prompt does not fit the reference",prompt->name);
-	for ( variant = 0u; variant < 2u; variant++ )
+	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		const double start = Seconds();
 		FILE *file;
 		uint32_t index;
+		variant = variants[pass];
+		ref_device_error = variant == 2u ? 1u : 0u;
 		RefStateReset(state);
 		RefForward(variant,model,state,prompt->tokens,prompt->count,logits);
-		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,variant == 0u ? 'a' : 'b');
+		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,variant == 0u ? 'a' : 'h');
 		file = fopen(path,"wb");
 		if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
 			fclose(file) != 0 )
 			Die("cannot write",path);
 		generated[0] = RefArgmax(logits + (uint64_t)(prompt->count - 1u) * REF_VOCAB);
-		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,variant == 0u ? 'a' : 'b',prompt->count - 1u,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,variant == 0u ? 'a' : 'h',prompt->count - 1u,Seconds() - start);
 		fprintf(greedy,"%s{\"name\":\"%s\",\"variant\":\"%c\",\"prompt_tokens\":%u,\"generated\":[",first != 0u && variant == 0u ? "" : ",\n",prompt->name,
-			variant == 0u ? 'a' : 'b',prompt->count);
+			variant == 0u ? 'a' : 'h',prompt->count);
 		for ( index = 0u; index < new_tokens; index++ )
 		{
 			fprintf(greedy,"%s%u",index != 0u ? "," : "",generated[index]);
@@ -618,7 +698,7 @@ static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPr
 		}
 		fprintf(greedy,"],\"seconds\":%.1f}",Seconds() - start);
 		fflush(greedy);
-		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,variant == 0u ? 'a' : 'b',new_tokens,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,variant == 0u ? 'a' : 'h',new_tokens,Seconds() - start);
 		(void)RefLogprob;
 	}
 	free(logits);

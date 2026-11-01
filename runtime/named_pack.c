@@ -156,18 +156,28 @@ SparkStatus SparkNamedPackEntryLoad(const SparkNamedPack *pack, const char *name
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkNamedPackConfigU32(const SparkNamedPack *pack, const char *key, uint32_t *value)
+static SparkStatus SparkNamedPackRootU32(const SparkNamedPack *pack, const char *object, const char *key, uint32_t *value)
 {
 	const SparkJsonDocument *document;
-	int32_t config, token;
+	int32_t section, token;
 	if ( pack == 0 || pack->private_state == 0 || key == 0 || value == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	document = &pack->private_state->document;
-	config = SparkJsonFindObjectMember(document, SparkJsonGetRootToken(document), "config");
-	token = config < 0 ? -1 : SparkJsonFindObjectMember(document, config, key);
+	section = SparkJsonFindObjectMember(document, SparkJsonGetRootToken(document), object);
+	token = section < 0 ? -1 : SparkJsonFindObjectMember(document, section, key);
 	if ( token < 0 || SparkJsonGetUInt32(document, token, value) != SPARK_STATUS_OK )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNamedPackConfigU32(const SparkNamedPack *pack, const char *key, uint32_t *value)
+{
+	return(SparkNamedPackRootU32(pack, "config", key, value));
+}
+
+SparkStatus SparkNamedPackFormatU32(const SparkNamedPack *pack, const char *key, uint32_t *value)
+{
+	return(SparkNamedPackRootU32(pack, "format", key, value));
 }
 
 SparkStatus SparkNamedPackTensorFieldU32(const SparkNamedPack *pack, const char *name, const char *object,
