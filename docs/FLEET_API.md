@@ -13,7 +13,7 @@ An engineer working with a coding agent waits for three things: prefill of conte
 | No re-prefill after a break | Automatic prefix cache, kept while the account holds the fleet | Prefix cache exists: hash-chained 64-token blocks, LRU (`cache/prefix_cache.c`). Retention is 24 h from last use (`spark_kv_snapshot.h:27`) | Held-hours retention and the wipe at a change of user (#1691, #1692). Snapshot store proven at the full per-node budget; today only 8 GiB per rank is proven (`TECHDEBT.md:579-599`). Prefix index that survives a release and a restart (`FLEET_RELEASE_RUNBOOK.md:298` drops it today) | Gate A |
 | Every turn resumes where the last one ended | Assistant turns replayed token-exact, so the next request matches up to the end of the previous reply | The chat layer keeps reply text byte-exact for chat (`LITELLM_FRONTEND.md:33-37`). Kimi K3 resumes only at 16,384-token checkpoints or at the end of a reply (`CHAT_MEMORY.md:22-33`) | The same guarantee for Anthropic Messages and Responses, including tool calls and reasoning (§3.2) | Gate A |
 | Long agent sessions never fail | Bounded recurrent-state store | A K3 conversation fails after about 977 checkpointed requests (`PERFORMANCE_STATUS.md:450-452`) | Evict the oldest checkpoints instead of failing | Gate A |
-| No accidental cold fleet | One model per fleet, switched only on purpose | "The last requested model wins" (`LITELLM_FRONTEND.md:132`). A switch takes 16–46 s, at worst 79 s (`PERFORMANCE_STATUS.md:174-202`). The cache is saved and restored: 137,600 tokens back in 2.7 s | Alias table and explicit switches (§4.5), so a background "haiku" call never swaps the fleet | Gate A |
+| No accidental cold fleet | Several models resident at once when they fit; a model that does not fit replaces another only on purpose | One model at a time, and "the last requested model wins" (`LITELLM_FRONTEND.md:132`). A switch takes 16–46 s, at worst 79 s (`PERFORMANCE_STATUS.md:174-202`). The cache is saved and restored: 137,600 tokens back in 2.7 s | Resident sets with a per-node memory budget for weights and cache, per-model cache pools, the alias table, and explicit replacement (§4.5). A background "haiku" call is served by a small resident model or the main one, and never swaps the fleet | Gate A |
 | Big prompts paid for once | Long prefill publishes its cache | The fast streamed 1M prefill (16.2 min) publishes no cache blocks and stops decode meanwhile (`TECHDEBT.md:308-326`). A reusable 1M prefill takes about 76 min (`PERFORMANCE_STATUS.md:68`) | Streamed prefill that publishes its blocks to the prefix cache and snapshot store | Gate C |
 | The codebase is already in context | Context packs (§5): a repository snapshot placed first in every prompt, kept warm | None | Pack builder, versioned aliases, and refresh in idle time | Gate D |
 | A session starts warm | Prefill-only warm-up of an exact future prefix, and pins that protect it | `max_tokens` must be 1 or more (`node/model_api.c:1622-1631`); `max_tokens` 1 commits a prompt (`CHAT_MEMORY.md:38`). No pinning | `POST /v1/cache/warm` and pins (§4) | Gate B |
@@ -31,7 +31,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Area | Paths |
 | --- | --- |
 | Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello`, WebSocket `/v1/responses` |
-| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/model`, `GET/PUT /v1/model/aliases` |
+| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/models/resident`, `GET/PUT /v1/models/aliases` |
 | Usage records | `GET /v1/requests` |
 | Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, `POST /v1/repos/{name}/sync`, `POST /v1/repos/{name}/hook` |
@@ -59,7 +59,10 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - Otherwise it is the `X-SparkPipe-Fleet` header, or the existing body field `"sparkpipe": {"fleet": "F3"}` on chat completions.
   - Otherwise, if the account holds exactly one fleet, that one.
   - Holding several fleets and naming none answers 409 `fleet_required`.
-- **Which model.** `model` names an offered model (`kimi-k3`), a pack alias (`kimi-k3+core`, §5) or an alias from the fleet's alias table (§4.5). A request for a model that is not loaded, from a key without `allow_swap`, answers 409 `model_not_loaded` and names the loaded model. It never swaps the fleet by accident.
+- **Which model.** `model` names an offered model (`kimi-k3`), a pack alias (`kimi-k3+core`, §5) or an alias from the fleet's alias table (§4.5). A fleet keeps several models resident when they fit (§4.5).
+  - A request for a resident model is served at once.
+  - A request for a model that fits next to the resident ones loads it without unloading anything; the request waits 16–79 s.
+  - A request for a model that would need another one unloaded answers 409 `model_not_loaded`, naming the resident models, unless the key has `allow_swap`. A fleet never loses a model, or its cache, by accident.
 - **Size.** Request bodies up to 32 MiB. The gateway's cap rises from 8 MiB (`tools/sparkpipe_pay.py`), because a 1M-token conversation is about 4 MB of text before images.
 - **Busy.** When all sequences are in use, the request waits up to 60 s for one, then answers 429 with an integer `retry-after` and `x-should-retry: true`. During long prefills, streams send keep-alive events every 10 s: `ping` on Messages and an SSE comment line on the others. Clients with idle timeouts therefore stay connected.
 - **Path.** gateway (VPS) → SSH tunnel → the hub's chat layer (`tools/serving/chat_frontend.py`) → the model's `sparkpipe_model_api` → the 16 ranks. All three new API shapes are translated in the chat layer, because the tokenizer, chat templates and tool-call parsers live there (`chat_frontend.py:525`). The gateway passes the new paths through unchanged, with `X-SparkPipe-Account` and `X-SparkPipe-Fleet`.
@@ -98,7 +101,7 @@ Anthropic Messages, streaming and non-streaming. What Claude Code sends and how 
 - **Stream.** `message_start`, `content_block_start/delta/stop` (`text_delta`, `input_json_delta`, `thinking_delta`, `signature_delta`), `message_delta` with cumulative usage, `message_stop`, `ping`, and `error`. The stream never ends before `message_delta`.
 - **Errors.** Errors use Anthropic's body, `{"type":"error","error":{"type","message"}}`. 429 and 529 carry `retry-after`.
 
-`POST /v1/messages/count_tokens` returns the exact count, using the model's tokenizer and template. `HEAD /api/hello` answers 200. `GET /v1/models` lists the loaded model, the other offered models, the account's pack aliases and its custom models.
+`POST /v1/messages/count_tokens` returns the exact count, using the model's tokenizer and template. `HEAD /api/hello` answers 200. `GET /v1/models` lists the resident models, the other offered models, the account's pack aliases and its custom models.
 
 **Claude Code setup** (written by `sparkpipe setup claude-code`):
 
@@ -113,7 +116,7 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 CLAUDE_CODE_ATTRIBUTION_HEADER=0
 ```
 
-- **The Haiku alias points at the same model,** because Claude Code's background calls would otherwise ask for another model. The alias table catches any `claude-*` name as well.
+- **The Haiku alias points at a small resident model** when one fits next to the main model (GLM 5.3 Flash beside GLM 5.3, for example), and at the main model otherwise. Claude Code's background calls therefore never load a model that does not fit. The alias table catches any other `claude-*` name as well.
 - **The context limit is the model's served window.** Claude Code otherwise assumes 200K.
 - **The attribution header is turned off,** so the first system block stays the same from session to session.
 - **Every Claude Code release is tested** against this endpoint before we tell customers to upgrade, because Anthropic does not test Claude Code against other models ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)).
@@ -214,7 +217,7 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
   - slash commands: `/sparkpipe:status`, `/sparkpipe:report`, `/sparkpipe:stats`, `/sparkpipe:run` (tests on the sandbox host with the local diff) and `/sparkpipe:fn`;
   - a `SessionStart` hook that warms the session's pack after a resume, a compaction or a long pause (§4.2);
   - a skill that tells the agent when to use the fleet's `run`, `search_code` and `pack_info` instead of local tools.
-- **Status line.** `sparkpipe statusline` shows the fleet, the loaded model, the cached share of the last turn and the prefill avoided today.
+- **Status line.** `sparkpipe statusline` shows the fleet, the resident models, the cached share of the last turn and the prefill avoided today.
 
 **Codex** (OpenAI Responses, §3.4)
 - **Setup.** `sparkpipe setup codex` writes a `[profiles.sparkpipe]` profile and the provider of §3.4, with:
@@ -242,7 +245,7 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 ### 4.1 `GET /v1/state`
 
 Returns:
-- the loaded model and the alias table;
+- the resident models, their memory use and the alias table;
 - cache use against capacity: device pages, snapshot store and mirror state;
 - pins, packs and their warm status;
 - the active drafter;
@@ -273,13 +276,21 @@ Warm-ups are used:
 
 Deletes the account's working-state cache on that fleet now, as clause 6.2 of the Agreement allows ("earlier when Customer asks"). With `?storage=true`, the customer storage goes too.
 
-### 4.5 Model and aliases
+### 4.5 Resident models and aliases
 
-- **`GET /v1/model`** returns the loaded model.
-- **`PUT /v1/model {"model": "glm-5.3"}`** switches the fleet on purpose. The cache of the old model is saved to the snapshot store and comes back when that model does. This needs a key with `allow_swap`, or the account session.
+A fleet keeps as many models resident as fit in its memory. Kimi K3 (1.56 TB) fills most of a 16-Spark fleet on its own. Smaller models share it: for example GLM 5.3 with GLM 5.3 Flash, or several 27–31B models together.
+
+- **`GET /v1/models/resident`** returns:
+  - the resident models;
+  - each one's memory for weights and cache on the busiest node;
+  - the headroom left;
+  - which offered models would fit next to them.
+- **`PUT /v1/models/resident {"models": ["glm-5.3", "glm-5.3-flash"]}`** makes that set resident, if it fits. Models outside the set are unloaded, and their cache is saved to the snapshot store and comes back when they return. A set that does not fit answers 409 `does_not_fit`, with the numbers. This needs a key with `allow_swap`, or the account session.
+- **Cache per model.** Each resident model has its own cache pool within the per-node budget. A request for one model never evicts another model's cache.
+- **Sharing sequences.** Each resident model has its own sequences. Interactive requests come first across all of them (§3.7).
 - **Aliases.**
-  - `PUT /v1/model/aliases {"claude-*": "kimi-k3+core", "gpt-*": "kimi-k3+core"}` maps names that clients send by themselves.
-  - The default table maps `claude-*` and `gpt-*` to the loaded model.
+  - `PUT /v1/models/aliases {"claude-haiku-*": "glm-5.3-flash", "claude-*": "glm-5.3+core", "gpt-*": "glm-5.3+core"}` maps names that clients send by themselves.
+  - The default table maps `claude-*` and `gpt-*` to the first resident model.
 
 ## 5. Context packs
 
@@ -344,12 +355,12 @@ A Function is software we build and run for the account on a fleet it holds. It 
 | Daily backup | §6: push chosen paths to the customer's own destination every day | Storage |
 | Rebuild after a loss | When a node pair loses part of the cache (clause 6.6), re-warm packs and recent sessions at background priority, and report what was rebuilt | Warm, loss report |
 | Review the day's changes | For each change since the last run, review it against the pack and the files it touches, and report findings ranked by severity | Packs |
-| Second opinions | Run the same review on a second model at night, then switch back before the morning (§4.5) | Model switch |
+| Second opinions | Run the same review on a second model: one already resident, or one loaded for the night and unloaded before the morning (§4.5) | Resident models |
 | Ask the whole codebase | Run one question or instruction over every file or module, and collect the answers | Packs |
 | Keep docs current | Draft updates to architecture notes, API docs and a map of the code after each push, as a branch | Packs, repo push token |
 | Morning report | Everything the night produced, with the week's prefill avoided (§3.6) | Runner |
 | Benchmark your repository | For a demo hour or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, warm |
-| Scheduled model | Switch the fleet's model on a schedule, for example a second model for the night, with the cache of each saved and restored (§4.5) | Model switch |
+| Scheduled model | Change the fleet's resident models on a schedule, for example a second model for the night, with the cache of each saved and restored (§4.5) | Model switch |
 | Tests and fuzzing | Write and run tests and fuzzers for changed code, and report crashes with reproductions | Sandbox |
 | Confirmed findings | Re-run review findings as tests in the sandbox, and keep only those that reproduce | Sandbox |
 | Security audit | Memory safety, concurrency, injection, secrets and dependencies, with reproductions | Sandbox |
@@ -440,7 +451,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
 | `run.finished`, `run.failed`, `report.ready` | §7 |
 | `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
-| `model.switched` | Any model switch on the fleet |
+| `models.changed` | A model loaded or unloaded on the fleet |
 | `downtime.credited` | HC credited for downtime or maintenance |
 | `working_state.lost` | A node pair lost part of the working state: what was lost, the rebuild credit under clause 6.6 (24 hours of the fleet), and the rebuild run started |
 
@@ -461,7 +472,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16) |
 | `sparkpipe setup claude-code`, `setup codex`, `setup opencode` | Writes the client settings and installs the plugins of §3.8 |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
-| `sparkpipe model [name]`, `aliases` | §4.5 |
+| `sparkpipe models resident [names]`, `aliases` | §4.5 |
 | `sparkpipe repo add`, `repo sync`, `repo hook` | §6 |
 | `sparkpipe pack create`, `pack refresh`, `pack ls`, `pin` | §5, §4.3 |
 | `sparkpipe warm FILE` | §4.2 |
@@ -513,7 +524,7 @@ Owners are components, so the work splits into parallel sessions with no shared 
 | # | Component | Work | Depends on |
 | --- | --- | --- | --- |
 | 1 | Engine and working state | Merge #1691 and #1692. Prove the snapshot store at the full per-node budget. Keep the prefix index across a release and a restart. Bound K3's recurrent store. Commit-only requests. Pins. Streamed prefill that publishes its blocks | — |
-| 2 | Chat layer (hub) | Messages and Responses translation, token-exact replay (§3.2), alias table and explicit switches, telemetry fields, `count_tokens`, keep-alives | Engine: commit-only and pins for §4 |
+| 2 | Chat layer (hub) | Messages and Responses translation, token-exact replay (§3.2), alias table and residency rules, telemetry fields, `count_tokens`, keep-alives | Engine: commit-only and pins for §4 |
 | 3 | Gateway (VPS) | Pass the new paths through, `X-Api-Key`, 32 MiB bodies, key options, the usage-record store and `/v1/requests`, bearer sessions for the CLI | — |
 | 4 | Packs, repositories, storage | Repository ingest, the pack builder, versioned aliases with session affinity, refresh and warm, storage and fetch | 1, 2 |
 | 5 | Function runner | The runner, the Functions that only read code, the morning report | 2, 4 |

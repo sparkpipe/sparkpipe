@@ -23,6 +23,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | E13 | Speculation at batch 2 and more | Two concurrent whole-file rewrites both speculate; tok/s per stream recorded | L | |
 | E14 | Pair-loss report | When both nodes of a pair lose their working state, the hub reports which contexts and storage paths were lost, within a minute | M | E1 |
 | E15 | Bounded model switch with rollback | A switch finishes in under 90 s or rolls back to the previous model; no failed switch leaves the fleet without a model (`TECHDEBT.md:424-437`) | M | |
+| E18 | Several resident models per fleet | A per-node memory budget for each model's weights and cache. A set that fits loads side by side (GLM 5.3 with GLM 5.3 Flash), and each model serves at once with its own cache pool. A request for one never evicts the other's cache, and a set that does not fit is refused with the numbers | L | E15 |
 | E16 | Move working state between held fleets of the same build | `POST /v1/state/move` copies snapshots and storage, and the moved conversation's next turn is a hit on the new fleet | M | E2 |
 | E17 | Images on vision-capable models | An image block in each of the three API shapes is answered by a vision model, and refused with `image_not_supported` by others | M | C1, C2 |
 
@@ -35,7 +36,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | C3 | Token-exact replay store (§3.2) | In C1's and C2's sessions, every turn after the first matches the cache up to the end of the previous reply | M | C1, C2 |
 | C4 | Telemetry (§3.6) | Every response carries the `sparkpipe` object. `cold_prefill_ms_estimate` is within 10% of a measured cold prefill at 50K, 150K and 500K tokens | M | |
 | C5 | `count_tokens`, `tokenize`, `detokenize`, `HEAD /api/hello`, model listing with packs and custom models | Counts equal the engine's prompt token counts for 100 recorded requests | S | |
-| C6 | Alias table and explicit model switches | A `claude-haiku-*` request is served by the loaded model, and a request for an unloaded model from a key without `allow_swap` gets 409 `model_not_loaded` | S | |
+| C6 | Alias table and residency rules | A `claude-haiku-*` request goes to the small resident model, or to the main one. A request for a model that fits loads it without unloading anything. One that would need another model unloaded gets 409 `model_not_loaded` from a key without `allow_swap` | S | E18 |
 | C7 | Keep-alives and busy handling | A 10-minute prefill keeps a Claude Code and a Codex stream open. When all sequences are busy, requests wait up to 60 s, then get 429 with `retry-after` | S | |
 | C8 | Fair share between members | With two members flooding requests, neither gets more than three quarters of the sequences while the other waits | M | G5 |
 | C9 | Pack prefixing with version affinity (§5) | A session keeps its pack version through a refresh. New sessions get the new version only once it is warm | M | P4 |
