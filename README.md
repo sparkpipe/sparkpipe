@@ -234,6 +234,21 @@ second of steps after a stop token.
     those rows.
   - The output does not depend on the plan: a row's attention is computed
     the same way on whichever node runs it.
+- The pass engine is shared (`inference/runner/pass_prefill.cuh`).
+  - It owns the pass plan and the weight window and stream. It also owns the
+    streamer thread, the buffer rings, the checked collectives, the balancer,
+    the embedding and the per-layer health checks.
+  - A model supplies its buffers, weight binding, layer math and recurrent
+    states through hooks (Kimi K3's are in
+    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+  - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
+  - Storing a pass's keys into the decode shards and gathering older keys back
+    is in `inference/runner/pass_keys.cuh`.
+  - A model whose layers stream no expert blocks needs no partner pack. It
+    moves rows instead: a row region on a second weight stream all-gathers
+    each node's rows (`LmPassRowsAllGather`) and exchanges per-destination
+    blocks (`LmPassRowsExchange`). A fixed-order fp32 sum of the 16 landed
+    blocks (`LmPassSumBlocks`) turns an exchange into a reduce-scatter.
 
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with

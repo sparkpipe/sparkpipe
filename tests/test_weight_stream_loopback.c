@@ -15,6 +15,9 @@
 #define LOOP_ROUNDS 3u
 #define LOOP_SLOW_RANK (LOOP_RANKS - 1u)
 #define LOOP_SLOW_NS 150000000L
+#define LOOP_EXCHANGE ((uint64_t)5u * LOOP_CHUNK + 4096u)
+#define LOOP_PITCH (LOOP_EXCHANGE + 8192u)
+#define LOOP_EXCHANGES 4u
 
 typedef struct LoopShared
 {
@@ -82,14 +85,16 @@ static void *LoopRun(void *argument)
 	const uint64_t dense_area = (uint64_t)LOOP_RANKS * LOOP_DENSE;
 	const uint64_t own = 2u * dense_area,partner = own + LOOP_BLOCK,landing = partner + LOOP_BLOCK,region_bytes = landing + 2u * LOOP_BLOCK;
 	const uint64_t source_offset = region_bytes;
-	uint8_t *region = (uint8_t *)aligned_alloc(4096u,(size_t)(region_bytes + LOOP_DENSE + 4095u) & ~(size_t)4095u);
+	const uint64_t exchange_send = region_bytes + LOOP_DENSE,exchange_area = exchange_send + (uint64_t)LOOP_RANKS * LOOP_PITCH;
+	const uint64_t total_bytes = exchange_area + 2u * (uint64_t)LOOP_RANKS * LOOP_EXCHANGE;
+	uint8_t *region = (uint8_t *)aligned_alloc(4096u,(size_t)(total_bytes + 4095u) & ~(size_t)4095u);
 	SparkWeightStreamConfig config;
 	SparkWeightStream *stream = 0;
 	uint32_t call,step,source;
 	self->status = 1;
 	if ( region == 0 )
 		return 0;
-	memset(region,0,(size_t)(region_bytes + LOOP_DENSE));
+	memset(region,0,(size_t)total_bytes);
 	memset(&config,0,sizeof(config));
 	config.rank = self->rank;
 	config.ranks = LOOP_RANKS;
@@ -101,7 +106,7 @@ static void *LoopRun(void *argument)
 	config.fabric_device = self->shared->device;
 	config.pair_device = self->shared->device;
 	config.region = region;
-	config.region_bytes = region_bytes + LOOP_DENSE;
+	config.region_bytes = total_bytes;
 	config.gather = LoopGather;
 	config.gather_context = self;
 	if ( SparkWeightStreamOpen(&config,&stream) != SPARK_STATUS_OK )
@@ -170,6 +175,27 @@ static void *LoopRun(void *argument)
 			self->held_bad += LoopCheck(region + block.half_offset[1],LOOP_BLOCK / 2u,LOOP_BLOCK / 16u,7u,block.source);
 		}
 	}
+	for (call=0u; call<2u * LOOP_EXCHANGES; call++)
+	{
+		const uint64_t area = exchange_area + (call < LOOP_EXCHANGES ? (uint64_t)(call & 1u) : 0u) * (uint64_t)LOOP_RANKS * LOOP_EXCHANGE;
+		for (source=0u; source<LOOP_RANKS; source++)
+			LoopFill(region + exchange_send + (uint64_t)source * LOOP_PITCH,LOOP_EXCHANGE,300u + call,self->rank * LOOP_RANKS + source);
+		if ( SparkWeightStreamExchange(stream,exchange_send,LOOP_PITCH,LOOP_EXCHANGE,area,90u + call) != SPARK_STATUS_OK )
+		{
+			SparkWeightStreamClose(stream);
+			return 0;
+		}
+		for (source=0u; source<LOOP_RANKS; source++)
+			self->bad += LoopCheck(region + area + (uint64_t)source * LOOP_EXCHANGE,LOOP_EXCHANGE,0u,300u + call,source * LOOP_RANKS + self->rank);
+		if ( call < LOOP_EXCHANGES && (call & 1u) != 0u )
+			pthread_barrier_wait(&self->shared->barrier);
+		if ( call >= LOOP_EXCHANGES && self->rank == LOOP_SLOW_RANK )
+		{
+			LoopHold();
+			for (source=0u; source<LOOP_RANKS; source++)
+				self->held_bad += LoopCheck(region + area + (uint64_t)source * LOOP_EXCHANGE,LOOP_EXCHANGE,0u,300u + call,source * LOOP_RANKS + self->rank);
+		}
+	}
 	SparkWeightStreamClose(stream);
 	free(region);
 	self->status = 0;
@@ -214,8 +240,10 @@ int main(int argc, char **argv)
 			failed != 0 ? "a rank failed" : "every rank finished",(unsigned long long)bad,(unsigned long long)held_bad);
 		return 1;
 	}
-	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (pair relay, partial last chunk), %u rotation steps of %llu-byte blocks in halves, every byte checked; "
+	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (pair relay, partial last chunk), %u rotation steps of %llu-byte blocks in halves, "
+		"%u exchanges of a distinct %llu-byte block per destination from a %llu-byte pitch, every byte checked; "
 		"then one reused landing with no barriers while rank %u holds each landing %ld ms: nothing written before it entered the next call\n",
-		LOOP_RANKS,LOOP_BROADCASTS,(unsigned long long)LOOP_DENSE,LOOP_ROUNDS * LOOP_RANKS,(unsigned long long)LOOP_BLOCK,LOOP_SLOW_RANK,LOOP_SLOW_NS / 1000000L);
+		LOOP_RANKS,LOOP_BROADCASTS,(unsigned long long)LOOP_DENSE,LOOP_ROUNDS * LOOP_RANKS,(unsigned long long)LOOP_BLOCK,LOOP_EXCHANGES,(unsigned long long)LOOP_EXCHANGE,
+		(unsigned long long)LOOP_PITCH,LOOP_SLOW_RANK,LOOP_SLOW_NS / 1000000L);
 	return 0;
 }
