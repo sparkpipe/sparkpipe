@@ -22,6 +22,7 @@ extern "C" {
 #define SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX ".kvs-writing-"
 #define SPARK_KV_SNAPSHOT_LOCK_NAME ".kvs-lock"
 #define SPARK_KV_SNAPSHOT_SHARD_COUNT 256u
+#define SPARK_KV_SNAPSHOT_FAILED_KEY_CAPACITY 1024u
 #define SPARK_KV_SNAPSHOT_SCAN_THREADS 8u
 #define SPARK_KV_RETENTION_SECONDS UINT64_C(86400)
 #define SPARK_KV_EXPIRY_SWEEP_SECONDS 60u
@@ -151,6 +152,7 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 SparkStatus SparkKvSnapshotParent(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotKey *parent_out);
 uint32_t SparkKvSnapshotContains(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
 SparkStatus SparkKvSnapshotWriteCommit(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
+uint32_t SparkKvSnapshotTakeFailedWrites(SparkKvSnapshotStore *store,SparkKvSnapshotKey *keys,SparkStatus *statuses,uint32_t capacity,uint32_t *lost_out);
 void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
 SparkStatus SparkKvSnapshotFlush(SparkKvSnapshotStore *store);
 SparkStatus SparkKvSnapshotStat(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotFileHeader *header);

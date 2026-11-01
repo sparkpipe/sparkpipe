@@ -1236,6 +1236,49 @@ static void SnapTestFailedStoreRecovers(const char *directory)
 	printf("kv snapshot: a failed write refuses writes for the retry window, then a probe that succeeds clears the failure\n");
 }
 
+static void SnapTestFailedWriteResaves(const char *directory)
+{
+	static SnapFixture source,fresh;
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotSegment segment;
+	SparkModelDriverCacheIdentity identity;
+	SparkKvSnapshotKey root;
+	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES],payload[64];
+	char shard[1200];
+	uint32_t attempt;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1u << 24u,1u << 20u,SNAP_RESERVE) == SPARK_STATUS_OK);
+	store.failure_retry_ns = 0u;
+	CHECK(SnapFixtureOpen(&source,&store,0x44u) == 0);
+	SnapPrefill(&source,pages,states);
+	SnapIdentity(&identity,30u);
+	CHECK(SparkKvPageCacheSavePrefix(&source.cache,&identity,9u) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.file_count == 6u);
+	SnapLinkKey(&root,0x44u,10u,4u);
+	root.file_kind = SPARK_KV_SNAPSHOT_FILE_PAGES;
+	CHECK(SparkKvSnapshotRemove(&store,&root) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&root) == 0u);
+	memset(payload,0x5a,sizeof(payload));
+	segment = (SparkKvSnapshotSegment){.kind=1u,.bytes=sizeof(payload),.data=payload};
+	(void)snprintf(shard,sizeof(shard),"%s/%02x",directory,(unsigned)root.identity_sha256[0]);
+	CHECK(chmod(shard,0500) == 0);
+	CHECK(SparkKvSnapshotWrite(&store,&root,0,&segment,1u) == SPARK_STATUS_IO_ERROR && store.write_failure_count == 1u && SparkKvSnapshotContains(&store,&root) == 0u);
+	CHECK(chmod(shard,0700) == 0);
+	CHECK(SparkKvPageCacheSavePrefix(&source.cache,&identity,9u) == SPARK_STATUS_OK);
+	for (attempt=0u; attempt<50u && (SparkKvPageCacheSavePending(&source.cache) != 0u || SparkKvSnapshotContains(&store,&root) == 0u); attempt++)
+	{
+		CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+		(void)SparkKvPageCacheSaveDrain(&source.cache);
+	}
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	CHECK(source.snapshot.write_failed_count == 1u && source.snapshot.write_resaved_count == 1u && SparkKvSnapshotContains(&store,&root) != 0u && SparkKvPageCacheSavePending(&source.cache) == 0u);
+	SnapFixtureClose(&source);
+	CHECK(SnapFixtureOpen(&fresh,&store,0x44u) == 0);
+	CHECK(SparkKvPageCacheRestorePrefix(&fresh.cache,&identity,9u) == SPARK_STATUS_OK && fresh.snapshot.restore_page_count == 3u && SnapEntryCount(&fresh) == 3u);
+	if ( fresh.snapshot.restore_page_count == 3u )
+		SnapCheckRestoredChain(&fresh,pages,states);
+	SnapFixtureClose(&fresh);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a failed write of a page the cache holds as saved, under saved descendants, clears its saved mark and saves it again, so the chain restores whole\n");
+}
+
 static void SnapTestSyncWriteSeesQueuedWrite(const char *directory)
 {
 	SparkKvSnapshotStore store;
@@ -1480,6 +1523,10 @@ int main(void)
 		return(2);
 	SnapTestPageCacheRoundTrip(directory);
 	SnapTestReleaseSavesAndPrepareRestores(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestFailedWriteResaves(directory);
 	SnapRemoveAll(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

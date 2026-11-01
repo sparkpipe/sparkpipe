@@ -79,6 +79,10 @@ typedef struct SparkKvSnapshotRuntime
 	SparkKvSnapshotJob *jobs;
 	SparkKvSnapshotJob *spare_jobs;
 	uint64_t spare_bytes;
+	SparkKvSnapshotKey failed_keys[SPARK_KV_SNAPSHOT_FAILED_KEY_CAPACITY];
+	SparkStatus failed_key_status[SPARK_KV_SNAPSHOT_FAILED_KEY_CAPACITY];
+	uint32_t failed_key_count;
+	uint32_t failed_keys_lost;
 } SparkKvSnapshotRuntime;
 
 static uint64_t SparkKvSnapshotNowNs(void)
@@ -746,33 +750,66 @@ static SparkStatus SparkKvSnapshotBuildHeader(const SparkKvSnapshotKey *key,cons
 static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const char *path,const SparkKvSnapshotFileHeader *header,const SparkKvSnapshotSegment *segments,uint32_t segment_count)
 {
 	char temporary[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	const char *step = 0;
 	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t index;
-	int descriptor;
+	int descriptor,failure = 0;
 	if ( (size_t)snprintf(temporary,sizeof(temporary),"%s/%02x/%s%ld-%llu",store->directory,(unsigned)header->key.identity_sha256[0],SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX,(long)getpid(),
 		(unsigned long long)__atomic_add_fetch(&SparkKvSnapshotRuntimeOf(store)->sequence,1u,__ATOMIC_RELAXED)) >= sizeof(temporary) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	descriptor = open(temporary,O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,0600);
 	if ( descriptor < 0 )
-		SPARK_FAIL(errno == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR);
+	{
+		failure = errno;
+		fprintf(stderr,"KV-SNAPSHOT write %s failed at open errno=%d (%s)\n",temporary,failure,strerror(failure));
+		SPARK_FAIL(failure == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR);
+	}
 	for (index=0u; status == SPARK_STATUS_OK && index<segment_count; index++)
 		status = SparkKvSnapshotWriteExact(descriptor,segments[index].data,segments[index].bytes,header->segments[index].offset);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotWriteExact(descriptor,header,sizeof(*header),0u);
-	if ( status == SPARK_STATUS_OK && ftruncate(descriptor,(off_t)header->file_bytes) != 0 )
-		status = errno == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && fsync(descriptor) != 0 )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( close(descriptor) != 0 && status == SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && rename(temporary,path) != 0 )
-		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 	{
+		failure = errno;
+		step = "write";
+	}
+	if ( status == SPARK_STATUS_OK && ftruncate(descriptor,(off_t)header->file_bytes) != 0 )
+	{
+		failure = errno;
+		status = failure == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR;
+		step = "truncate";
+	}
+	if ( status == SPARK_STATUS_OK && fsync(descriptor) != 0 )
+	{
+		failure = errno;
+		status = SPARK_STATUS_IO_ERROR;
+		step = "fsync";
+	}
+	if ( close(descriptor) != 0 && status == SPARK_STATUS_OK )
+	{
+		failure = errno;
+		status = SPARK_STATUS_IO_ERROR;
+		step = "close";
+	}
+	if ( status == SPARK_STATUS_OK && rename(temporary,path) != 0 )
+	{
+		failure = errno;
+		status = SPARK_STATUS_IO_ERROR;
+		step = "rename";
+	}
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"KV-SNAPSHOT write %s failed at %s errno=%d (%s)\n",path,step,failure,strerror(failure));
 		(void)unlink(temporary);
 		SPARK_RETURN(status);
 	}
-	return(SparkKvSnapshotSyncDirectory(store,header->key.identity_sha256[0]));
+	status = SparkKvSnapshotSyncDirectory(store,header->key.identity_sha256[0]);
+	if ( status != SPARK_STATUS_OK )
+	{
+		failure = errno;
+		fprintf(stderr,"KV-SNAPSHOT write %s failed at directory sync errno=%d (%s)\n",path,failure,strerror(failure));
+	}
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
@@ -789,7 +826,7 @@ static void SparkKvSnapshotPinLocked(SparkKvSnapshotRuntime *runtime,const Spark
 		runtime->entries[index].pins += (uint32_t)delta;
 }
 
-static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const SparkKvSnapshotSegment *segments,uint32_t segment_count,uint64_t used_seconds)
+static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const SparkKvSnapshotSegment *segments,uint32_t segment_count,uint64_t used_seconds)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	SparkKvSnapshotFileHeader header;
@@ -850,6 +887,24 @@ static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const S
 				store->directory,(unsigned)status,(unsigned long long)(store->failure_retry_ns / 1000000u));
 		}
 	}
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkKvSnapshotCommitFile(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const SparkKvSnapshotSegment *segments,uint32_t segment_count,uint64_t used_seconds)
+{
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	SparkStatus status = SparkKvSnapshotStoreFile(store,key,parent,segments,segment_count,used_seconds);
+	if ( status == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&runtime->mutex);
+	if ( runtime->failed_key_count < SPARK_KV_SNAPSHOT_FAILED_KEY_CAPACITY )
+	{
+		runtime->failed_keys[runtime->failed_key_count] = *key;
+		runtime->failed_key_status[runtime->failed_key_count++] = status;
+	}
+	else
+		runtime->failed_keys_lost++;
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
 }
@@ -941,8 +996,9 @@ static void *SparkKvSnapshotWriterMain(void *context)
 		runtime->writing = 1u;
 		pthread_mutex_unlock(&runtime->mutex);
 		status = SparkKvSnapshotCommitFile(store,&job->key,&job->parent,job->segments,job->segment_count,job->used_seconds);
-		if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_CAPACITY_EXCEEDED )
-			fprintf(stderr,"KV-SNAPSHOT write status=%d tokens=%u bytes=%llu\n",(int)status,job->key.token_count,(unsigned long long)job->file_bytes);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"KV-SNAPSHOT write status=%d tokens=%u bytes=%llu; the file is not stored and its cache entry is saved again\n",(int)status,job->key.token_count,
+				(unsigned long long)job->file_bytes);
 		pthread_mutex_lock(&runtime->mutex);
 		SparkKvSnapshotUnlinkJob(store,job);
 		SparkKvSnapshotRecycleJob(store,job);
@@ -1646,6 +1702,34 @@ SparkStatus SparkKvSnapshotWriteCommit(SparkKvSnapshotStore *store,SparkKvSnapsh
 	pthread_mutex_unlock(&runtime->mutex);
 	memset(ticket,0,sizeof(*ticket));
 	return(SPARK_STATUS_OK);
+}
+
+uint32_t SparkKvSnapshotTakeFailedWrites(SparkKvSnapshotStore *store,SparkKvSnapshotKey *keys,SparkStatus *statuses,uint32_t capacity,uint32_t *lost_out)
+{
+	SparkKvSnapshotRuntime *runtime;
+	uint32_t count = 0u;
+	if ( lost_out != 0 )
+		*lost_out = 0u;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || keys == 0 || statuses == 0 || capacity == 0u )
+		return(0u);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	if ( SparkKvSnapshotFailureGateLocked(store) == SPARK_STATUS_OK )
+	{
+		count = runtime->failed_key_count < capacity ? runtime->failed_key_count : capacity;
+		memcpy(keys,runtime->failed_keys,(size_t)count * sizeof(*keys));
+		memcpy(statuses,runtime->failed_key_status,(size_t)count * sizeof(*statuses));
+		memmove(runtime->failed_keys,runtime->failed_keys + count,(size_t)(runtime->failed_key_count - count) * sizeof(*keys));
+		memmove(runtime->failed_key_status,runtime->failed_key_status + count,(size_t)(runtime->failed_key_count - count) * sizeof(*statuses));
+		runtime->failed_key_count -= count;
+		if ( lost_out != 0 && runtime->failed_key_count == 0u )
+		{
+			*lost_out = runtime->failed_keys_lost;
+			runtime->failed_keys_lost = 0u;
+		}
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	return(count);
 }
 
 void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket)

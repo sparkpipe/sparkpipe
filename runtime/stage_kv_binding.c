@@ -1541,9 +1541,10 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
 	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
-	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu reserve_evictions=%llu reserve_refusals=%llu status=%s\n",
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu write_failures=%llu resaved=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu reserve_evictions=%llu reserve_refusals=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
-		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.save_deferred_count,
+		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.write_failed_count,(unsigned long long)binding->snapshot.write_resaved_count,
+		(unsigned long long)binding->snapshot.save_deferred_count,
 		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,(unsigned long long)binding->snapshot.park_save_queued_count,
 		(unsigned long long)binding->snapshot_store.eviction_count,(unsigned long long)binding->snapshot_store.reserve_eviction_count,(unsigned long long)binding->snapshot_store.reserve_refusal_count,
 		SparkStatusToString(status));
@@ -1582,9 +1583,10 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 	{
-		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
 			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
 			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_spill_queued_count,
+			(unsigned long long)binding->page_cache.checkpoint_persist_count,
 			(unsigned long long)binding->page_cache.state_dropped_unsaved_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
 			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
 			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
@@ -2330,6 +2332,16 @@ static SparkStatus SparkStageKvBindingWriteStates(SparkStageKvBinding *binding,c
 	SPARK_RETURN(result);
 }
 
+static void SparkStageKvPersistCheckpoints(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t lane_count,SparkStatus status)
+{
+	uint32_t index;
+	if ( binding->recurrent.lane_bytes == 0u )
+		return;
+	for (index=0u; status==SPARK_STATUS_OK && index<lane_count; index++)
+		if ( slots[index] < binding->resident_sequence_capacity && (binding->lane_state_flags[slots[index]] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) != 0u )
+			SparkKvPageCachePersistCheckpoint(&binding->page_cache,slots[index]);
+}
+
 static SparkStatus SparkStageKvBindingCopyLanes(SparkStageKvBinding *binding,uint32_t direction,const uint32_t *slots,uint32_t count,void *stream)
 {
 	uint32_t index;
@@ -2545,6 +2557,8 @@ static SparkStatus SparkStageKvBindingPublishStates(SparkStageKvBinding *binding
 		status = SparkStageKvBindingWriteStates(binding,indices,lane_count,SPARK_STATUS_OK,SPARK_STAGE_KV_LOCK_SITE_PUBLISH,held,&raced);
 	}
 	result = raced == 0u ? SparkKvLaneTransactionsFinish(&binding->transactions,indices,lane_count,status,0u) : status;
+	if ( raced == 0u )
+		SparkStageKvPersistCheckpoints(binding,indices,lane_count,status != SPARK_STATUS_OK ? status : result);
 	SparkStageKvClearSlotStates(binding,indices,lane_count,SPARK_STAGE_KV_LANE_STATE_CAPTURED | SPARK_STAGE_KV_LANE_STATE_RESTORE_READY);
 	SPARK_RETURN(status != SPARK_STATUS_OK ? status : result);
 }
@@ -2704,7 +2718,10 @@ static void *SparkStageKvBindingCompletionMain(void *context)
 		{
 			result = SparkStageKvBindingWriteStates(binding,record->resident_slots,record->lane_count,record->status,SPARK_STAGE_KV_LOCK_SITE_FINISH,&held,&raced);
 			if ( raced == 0u )
+			{
 				result = SparkStageKvBindingApplyCompletion(binding,record->resident_slots,record->lane_count,result,record->extra_tokens,record->verify,record->bound,record->sequence_ids,record->next_positions);
+				SparkStageKvPersistCheckpoints(binding,record->resident_slots,record->lane_count,result);
+			}
 			SparkStageKvClearSlotStates(binding,record->resident_slots,record->lane_count,SPARK_STAGE_KV_LANE_STATE_CAPTURED | SPARK_STAGE_KV_LANE_STATE_RESTORE_READY);
 			SparkStageKvBindingWakeSaver(binding);
 			SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_FINISH,held);
