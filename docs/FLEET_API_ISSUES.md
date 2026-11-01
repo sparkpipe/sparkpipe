@@ -72,10 +72,10 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| F1 | Function runner (per fleet, on the hub) | Runs, schedules in the account's time zone, logs, results and the morning report, all at background priority | L | E8 |
+| F1 | Function runner (one per fleet) | Runs, schedules in the account's time zone, logs, results and the morning report, all at background priority | L | E8 |
 | F2 | Functions that read code and call the model | Review the day's changes, second opinions, ask the whole codebase, keep docs current, morning report, benchmark your repository, resume sessions, prefill ahead, scheduled model, rebuild after a loss: each runs on the Customer Zero repository (Gate E) | L | F1, P4 |
 | F3 | Sandbox host per fleet | Hardware chosen and installed per fleet. Firecracker microVMs with the repository copied in and no network by default, destroyed after each run, and the host wiped at a change of user | L | |
-| F4 | Agent loop | Our own open-source loop with read, search, edit and run tools against the sandbox, finishing a 20-task list on the Customer Zero repository | L | F3 |
+| F4 | Agent loop | Our own loop, published with the engine, with read, search, edit and run tools against the sandbox, finishing a 20-task list on the Customer Zero repository | L | F3 |
 | F5 | Functions that run code | Tests and fuzzing, confirmed findings, security audit, overnight agent, codebase-wide change, evaluate models: each runs on the Customer Zero repository (Gate E) | L | F3, F4 |
 | F6 | Batch jobs (§11) | A 10,000-request JSONL file runs overnight at background priority, ordered by shared prefix, with results in storage | M | F1 |
 
@@ -91,7 +91,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
 | D1 | Nightly drafter training from `drafter/nightly-retrain` | The Function swaps K3 out, trains, swaps back, and compares acceptance on the account's own recent requests; the better drafter stays active | L | F1, E15 |
-| D2 | Per-fleet drafter selection | `PUT /v1/drafters/active` loads an account's drafter on that fleet's hub GPU; the drafter is wiped at a change of user | M | E1 |
+| D2 | Per-fleet drafter selection | `PUT /v1/drafters/active` loads an account's drafter where that fleet's drafts run; the drafter is wiped at a change of user | M | E1 |
 
 ## Customer models
 
