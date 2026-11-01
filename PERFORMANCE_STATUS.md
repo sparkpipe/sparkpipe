@@ -105,6 +105,15 @@ window in which every stream decodes, both repeats:
 GLM 5.3 Full's 8K prefill takes 6.9 s against a network floor of about 2.9 s:
 42% of the floor that binds first at TP16.
 
+GLM 5.3 Flash and DSV4.1 prefill in 2,048-row waves (2026-11-01, main firmware 51f316949, 16 Sparks):
+
+| 131K-token needle | 1,024-row waves | 2,048-row waves |
+| --- | ---: | ---: |
+| GLM 5.3 Flash (126,448 tokens) | 134.7 s | 110.8 s (1,141 tok/s) |
+| DSV4.1 1017 (130,819 tokens) | 85.0 s | 81.8 s (1,599 tok/s) |
+
+The outputs do not change. On both models, the two wave sizes give the same greedy tokens and the same top-5 logprobs on six chat prompts, alone and behind a 40,000-character document that spans several waves.
+
 ### Floors
 
 Two floors bound decode:
