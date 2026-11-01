@@ -33,7 +33,7 @@ def store(path, document):
     os.replace(temporary, path)
 
 
-def create(path, days, note):
+def create(path, days, note, gateway=False):
     document = load(path)
     key = PREFIX + secrets.token_urlsafe(32)
     identifier = "k_" + secrets.token_hex(4)
@@ -41,7 +41,7 @@ def create(path, days, note):
         identifier = "k_" + secrets.token_hex(4)
     now = int(time.time())
     document["keys"].append({"id": identifier, "sha256": hashlib.sha256(key.encode()).hexdigest(), "created": now,
-                             "expires": now + days * 86400 if days else None, "revoked": False, "note": note})
+                             "expires": now + days * 86400 if days else None, "revoked": False, "note": note, "gateway": gateway})
     store(path, document)
     return identifier, key
 
@@ -63,12 +63,13 @@ def main():
     made = commands.add_parser("create", help="make a key and print it once")
     made.add_argument("--days", type=int, default=0, help="days until the key expires; 0 never expires")
     made.add_argument("--note", default="")
+    made.add_argument("--gateway", action="store_true", help="the market gateway's key: its requests name their account in X-SparkPipe-Account")
     gone = commands.add_parser("revoke", help="refuse a key from now on")
     gone.add_argument("id")
     commands.add_parser("list", help="show every key's id, dates and state, never the key")
     arguments = parser.parse_args()
     if arguments.command == "create":
-        identifier, key = create(arguments.file, arguments.days, arguments.note)
+        identifier, key = create(arguments.file, arguments.days, arguments.note, arguments.gateway)
         print(f"{identifier} {key}")
         print("The key is shown only now; the file keeps its SHA-256.", file=sys.stderr)
     elif arguments.command == "revoke":
@@ -79,7 +80,7 @@ def main():
         for entry in load(arguments.file)["keys"]:
             expires = time.strftime("%Y-%m-%d", time.gmtime(entry["expires"])) if entry.get("expires") else "never"
             print(entry["id"], time.strftime("%Y-%m-%d", time.gmtime(entry["created"])), "expires", expires,
-                  "revoked" if entry.get("revoked") else "active", entry.get("note", ""))
+                  "revoked" if entry.get("revoked") else "active", *(["gateway"] if entry.get("gateway") is True else []), entry.get("note", ""))
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ async def run(tmp):
     upstream.router.add_get("/status", status)
     upstream_runner, base = await serve(upstream)
 
-    control = {"status_url": base + "/status", "force_url": base + "/force", "admin_url": base + "/api/v1/auths/"}
+    control = {"status_url": base + "/status", "working_state_url": base + "/working-state", "force_url": base + "/force", "admin_url": base + "/api/v1/auths/"}
     frontend = chat_frontend.Frontend({"models": [], "controller_token_file": token_file.name, "control": control}, tmp)
     front_runner, front = await serve(chat_frontend.build(frontend))
     try:
@@ -87,10 +87,10 @@ async def run(tmp):
             assert forced == [], forced
             async with session.post(front + "/v1/sparkpipe/switch-now", headers={"Authorization": "Bearer admin-token"}) as response:
                 assert response.status == 202 and (await response.json())["force_requested"] is True, response.status
-            assert forced == [{}], forced
+            assert forced == [{"account": "sparkpipe"}], forced
             async with session.post(front + "/v1/sparkpipe/switch-now", headers={"Authorization": "Bearer admin-token"}, json={"model": "not-served"}) as response:
                 assert response.status == 404, response.status
-            assert forced == [{}], forced
+            assert forced == [{"account": "sparkpipe"}], forced
             assert checked == ["Bearer user-token", "Bearer stolen", "Bearer admin-token", "Bearer admin-token"], checked
             async with session.get(front + "/v1/sparkpipe/status") as response:
                 body = await response.json()
@@ -100,7 +100,7 @@ async def run(tmp):
             for headers in ({}, {"Authorization": "Bearer admin-token"}):
                 async with session.post(front + "/v1/sparkpipe/activate", headers=headers, json={"model": "m"}) as response:
                     assert response.status in (404, 405), response.status
-            assert forced == [{}], forced
+            assert forced == [{"account": "sparkpipe"}], forced
     finally:
         await front_runner.cleanup()
         await upstream_runner.cleanup()
@@ -108,6 +108,8 @@ async def run(tmp):
     assert refused({"models": [], "control": control}, tmp), "a control block without controller_token_file is refused"
     assert refused({"models": [], "controller_token_file": token_file.name, "control": dict(control, activate_url=base + "/activate")}, tmp), "a control activate_url is refused"
     assert refused({"models": [], "controller_token_file": token_file.name}, tmp), "a token file with nothing to control is refused"
+    without = {key: value for key, value in control.items() if key != "working_state_url"}
+    assert "working_state_url" in (refused({"models": [], "controller_token_file": token_file.name, "control": without}, tmp) or ""), "a control block without the working-state controller is refused"
     shared = tmp / "shared-token"
     shared.write_text(CONTROLLER_TOKEN)
     shared.chmod(0o644)

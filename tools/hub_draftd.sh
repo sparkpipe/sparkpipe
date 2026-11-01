@@ -20,7 +20,7 @@ start)
 		case "$path" in /srv/workspace/*|/home/*) ;; *) echo "hub_draftd: $path is not on the hub's local NVMe; inference never reads CephFS or cold storage" >&2; exit 1;; esac
 		case "$path" in */../*|*/..) echo "hub_draftd: $path climbs out of its directory" >&2; exit 1;; esac
 	done
-	test -f "$SOURCE/block_draftd.py" -a -f "$SOURCE/spec_offline/block_drafter.py" || { echo "hub_draftd: $SOURCE lacks block_draftd.py or spec_offline/" >&2; exit 1; }
+	test -f "$SOURCE/block_draftd.py" -a -f "$SOURCE/spec_offline/block_drafter.py" -a -f "$SOURCE/context_retention.py" -a -f "$SOURCE/serving/working_state.py" || { echo "hub_draftd: $SOURCE lacks block_draftd.py, context_retention.py, serving/working_state.py or spec_offline/" >&2; exit 1; }
 	if systemctl --user is-active -q "$UNIT"; then echo "hub_draftd: $UNIT is already active" >&2; exit 1; fi
 	if [ "$(listening)" != 0 ]; then echo "hub_draftd: port $TAP_PORT or $DRAFT_PORT is already in use" >&2; exit 1; fi
 	RECORD=""
@@ -32,7 +32,7 @@ start)
 	mkdir -p "$(dirname "$LOG")"
 	systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 	systemd-run --user --unit="$UNIT" -p Restart="$RESTART" -p RestartSec=10 --working-directory="$SOURCE" bash -c \
-		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' ${SHARD:+--target-shard '$SHARD'} --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window $WINDOW --context-bytes $CONTEXT_BYTES $RECORD >> '$LOG' 2>&1"
+		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' ${SHARD:+--target-shard '$SHARD'} --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window $WINDOW --context-bytes $CONTEXT_BYTES --directive '$HOME/sparkdata/working-state/directive' $RECORD >> '$LOG' 2>&1"
 	for _ in $(seq 1 180); do [ "$(listening)" = 2 ] && break; sleep 2; done
 	if [ "$(listening)" != 2 ]; then echo "hub_draftd: $UNIT did not open both ports; see $LOG" >&2; tail -5 "$LOG" >&2; exit 1; fi
 	grep -a 'DRAFTD-READY' "$LOG" | tail -1

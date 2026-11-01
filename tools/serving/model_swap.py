@@ -2,6 +2,7 @@
 import argparse
 import asyncio
 import hmac
+import importlib.util
 import json
 import os
 import sys
@@ -10,6 +11,10 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+
+LOADER = importlib.util.spec_from_file_location("sparkpipe_working_state", Path(__file__).with_name("working_state.py"))
+working_state = importlib.util.module_from_spec(LOADER)
+LOADER.loader.exec_module(working_state)
 
 
 class SwapError(Exception):
@@ -40,7 +45,7 @@ def require(spec, keys, where):
 
 class Swapper:
     def __init__(self, config):
-        require(config, ("nodes", "ssh", "drop_kv", "memory_probe", "memory_margin_bytes", "models"), "the config")
+        require(config, ("nodes", "ssh", "drop_kv", "memory_probe", "memory_margin_bytes", "models", "working_state"), "the config")
         self.nodes = list(config["nodes"])
         self.ssh = list(config["ssh"])
         self.drop_kv = config["drop_kv"]
@@ -71,6 +76,10 @@ class Swapper:
         self.force_requested = False
         self.forced = False
         self.draining = None
+        if not isinstance(config["working_state"], dict):
+            raise SystemExit("model_swap: working_state must be an object")
+        require(config["working_state"], working_state.REQUIRED, "working_state")
+        self.working = working_state.Controller(config["working_state"], self, read_token(config["working_state"]["holders_token_file"]))
 
     def status(self):
         now = time.time()
@@ -300,6 +309,9 @@ class Swapper:
                 body = await request.json()
             except json.JSONDecodeError:
                 return web.json_response({"error": "body must be JSON"}, status=400)
+        refused = self.working.refuse_swap(body)
+        if refused is not None:
+            return refused
         model_id = body.get("model") if isinstance(body, dict) else None
         if model_id is not None:
             if model_id not in self.models:
@@ -320,6 +332,9 @@ class Swapper:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response({"error": "body must be JSON with a model"}, status=400)
+        refused = self.working.refuse_swap(body)
+        if refused is not None:
+            return refused
         model_id = body.get("model") if isinstance(body, dict) else None
         if model_id not in self.models:
             return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
@@ -341,9 +356,11 @@ class Swapper:
             if await self.ready(model):
                 self.active = model["id"]
                 break
+        await self.working.startup()
         print(json.dumps({"event": "model_swap_ready", "active": self.active, "models": sorted(self.models)}), file=sys.stderr, flush=True)
 
     async def cleanup(self, app):
+        await self.working.cleanup()
         await self.session.close()
 
 
@@ -362,6 +379,8 @@ def build(swapper, token):
     app.router.add_get("/status", swapper.get_status)
     app.router.add_post("/activate", swapper.activate)
     app.router.add_post("/force", swapper.force)
+    app.router.add_get("/working-state", swapper.working.view_route)
+    app.router.add_post("/working-state/admit", swapper.working.admit_route)
     return app
 
 

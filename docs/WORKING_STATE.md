@@ -23,13 +23,14 @@ shared pool (owner, 2026-11-01).
 3. **Mirror.** Each node's working state is mirrored to its pair partner
    (`rank ^ 1`) over the direct pair link, so a lost or swapped node is
    rebuilt from its partner.
-4. **Exclusivity.** A held fleet (a reserved hour or a locked plan) serves
-   only its holder during held hours.
+4. **Exclusivity.** A held fleet (a weekly plan or an HC-booked hour)
+   serves only its holder during held hours.
 
 A held hour is an hour an account holds on that fleet: an hour of a weekly
 plan that pins the fleet, or an hour booked with HC on a fleet no plan pins.
-The Hour Market (release, resale, bids) is gone (owner, 2026-11-01). Our own use (SparkPipe
-Chat, the LAN door, operator tools) is one more account, `sparkpipe`, and
+The Hour Market (release, resale, bids) is gone (owner, 2026-11-01). Our
+own use (SparkPipe Chat, the LAN door, operator tools) is one more account,
+`sparkpipe`, and
 follows the same rules: it wipes a customer's state when it starts, and it
 never runs during a held hour. There is no encryption at rest (owner,
 2026-11-01): deletion is `unlink` and freeing pages, and a disk leaves the
@@ -171,25 +172,36 @@ It resets its prefix ledgers at a handover. The controller keeps the current
 user, `wiped` and `held_until` on the hub (mode 600), so a restart keeps
 them.
 
+Built on the hub (details in [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md),
+"Working state and held fleets"): the controller saves the state file
+before it writes the directive, so a restart in the middle of a handover
+resumes from what it wrote. `wiped` is the next whole second after the drain
+and always above the previous `wiped`, and the new user is admitted only
+once the wall clock has passed it, so no use by the old user is at or after
+`wiped` and none by the new one before it. A drain that does not reach zero
+live requests fails the handover closed and wipes nothing. The draft
+servers check the directive every second, as the engine API does, through
+`tools/context_retention.py`, which uses the function in
+`tools/serving/working_state.py`.
+
 ### Interfaces needed from the payment service and market
 
 These belong to `tools/sparkpipe_pay.py` and `tools/sparkpipe_market.py`,
 which are being rewritten elsewhere:
 
 1. **Account on forwarded requests.** The gateway sends
-   `X-SparkPipe-Account: <account id>` on every request it forwards to the
-   hub, and strips the header from what the customer sends. The hub honours
-   it only from a gateway key.
+   `X-SparkPipe-Account: <account id>` and `X-SparkPipe-Fleet: <fleet id>`
+   on every request it forwards to the hub, and strips both headers from
+   what the customer sends. The hub honours them only from a gateway key,
+   which must carry both; a fleet other than the controller's is refused
+   with 400 `wrong_fleet`.
 2. **Holder schedule.** `GET /market/fleets/<fleet>/holders?from=<slot>&to=<slot>`
    with a hub service token, answering
    `{"fleet": "...", "now": "...Z", "hours": [{"start": "2026-12-01T01:00Z", "account": "..."}]}`:
    every held hour of that fleet in the window, weekly-plan hours and
    HC-booked hours alike. The hub asks for the last 25 hours through the
    next 25.
-3. **Fleet on forwarded requests.** The gateway names the fleet it routes a
-   request to in `X-SparkPipe-Fleet`; the hub refuses a gateway request for
-   a fleet other than its own (400 `wrong_fleet`).
-4. **No shared pool.** The gateway forwards only an account's own held
+3. **No shared pool.** The gateway forwards only an account's own held
    hours.
 
 ### If a shared pool comes back

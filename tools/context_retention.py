@@ -1,12 +1,19 @@
-RETENTION_SECONDS = 86400
-EXPIRY_SWEEP_SECONDS = 60
+import importlib.util
+from pathlib import Path
+
+LOADER = importlib.util.spec_from_file_location("sparkpipe_working_state", Path(__file__).resolve().parent / "serving" / "working_state.py")
+working_state = importlib.util.module_from_spec(LOADER)
+LOADER.loader.exec_module(working_state)
+RETENTION_SECONDS = working_state.RETENTION_SECONDS
+EXPIRY_SWEEP_SECONDS = 1
 
 
-def expire_contexts(contexts, now):
-    stale = [key for key, context in contexts.items() if now - context.used >= RETENTION_SECONDS]
+def expire_contexts(contexts, now, directive):
+    wiped, held_until = working_state.read_directive(directive)
+    stale = [key for key, context in contexts.items() if working_state.expired(context.used, wiped, held_until, now)]
     for key in stale:
         del contexts[key]
-        print(f"CONTEXT-EXPIRED sequence {key} unused for {RETENTION_SECONDS} s", flush=True)
+        print(f"CONTEXT-EXPIRED sequence {key} under the working-state directive (wiped {wiped}, held_until {held_until})", flush=True)
     return len(stale)
 
 
