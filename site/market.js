@@ -18,8 +18,22 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'The service did not answer (' + response.status + ').');
+    if (!response.ok) {
+      const error = new Error(data.error || 'The service did not answer (' + response.status + ').');
+      error.reason = data.reason;
+      throw error;
+    }
     return data;
+  };
+
+  const spend = async (path, body) => {
+    try {
+      return await call('POST', path, body);
+    } catch (error) {
+      if (error.reason !== 'terms') throw error;
+      if (!confirm('The SparkPipe Customer Agreement has changed since you accepted it. Accept the current text (the Korean text prevails) and continue?')) throw error;
+      return call('POST', path, Object.assign({}, body, { accept: true }));
+    }
   };
 
   const say = (id, text, kind) => {
@@ -34,6 +48,7 @@
   const kstDay = (text) => (text ? new Date(parseUtc(text) + KST).toISOString().slice(0, 10) : '-');
   const slotFromLocal = (value) => (value ? new Date(Date.parse(value.slice(0, 13) + ':00:00Z') - KST).toISOString().slice(0, 13) + ':00Z' : '');
   const localFromMs = (ms) => new Date(ms + KST).toISOString().slice(0, 13) + ':00';
+  const lastDay = (text) => (text ? new Date(parseUtc(text) - 1 + KST).toISOString().slice(0, 10) : '-');
   const hc = (text) => {
     const n = Number(text);
     return Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 6 }) : '-';
@@ -96,9 +111,12 @@
     const mine = (id) => pinned.find((p) => p.fleet === id);
     fill('fleets', st.fleets.map((f) => {
       const own = mine(f.id);
-      return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : statusText[f.status] || f.status, own ? `Booked through ${kstDay(own.through)}; book the next week by ${kst(own.deadline)} KST` : '']);
+      const yours = own ? `Booked through ${lastDay(own.through)} (${own.weeks} week${own.weeks === 1 ? '' : 's'}); book the next week by ${kst(own.deadline)} KST` : '';
+      const open = !own && f.firstWeek ? `free from ${kstDay(f.firstWeek)}` : '';
+      const status = own ? 'Pinned to you' : [statusText[f.status] || f.status, open].filter(Boolean).join(', ');
+      return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : status, yours]);
     }), 'No fleet is listed yet.');
-    fillSelect('weeks-fleet', st.fleets.filter((f) => !f.demo && f.serving !== false && (f.status === 'free' || mine(f.id))).map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : ' (pin from Monday)')]));
+    fillSelect('weeks-fleet', st.fleets.filter((f) => (mine(f.id) && mine(f.id).canExtend) || (!mine(f.id) && f.firstWeek)).map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : ' (pin from ' + kstDay(f.firstWeek) + ')')]));
     fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.demo || f.status === 'free')).map((f) => [f.id, f.name + (f.demo ? ' (demo)' : ' (free this week)')]));
     fillSelect('try-model', (st.models || P.models).map((m) => [m.id, m.name]));
     fill('discounts', P.bookings.discounts.map((d) => row([`${d.weeks} or more`, pct(d.off)])), '');
@@ -132,14 +150,13 @@
     }
     $('me-company').textContent = me.company;
     $('me-email').textContent = me.email;
-    $('balance').textContent = hc(me.hc);
+    $('balance').textContent = hc(me.balance);
     $('locked').textContent = hc(me.locked || 0) + ' HC';
     fill('lots', (me.lots || []).map((l, i) => row([String(i + 1), hc(l.hc), kstDay(l.expires)])), 'No HC yet.');
-    fill('bookings', (me.bookings || []).map((b) => row([kst(b.start), kst(b.end), b.fleet, b.kind === 'week' ? 'Week' : 'Hours', hc(b.hc)])), 'No bookings yet.');
-    const wait = me.waitlist;
-    $('waitlist-status').textContent = wait ? `On the waitlist: ${hc(wait.locked)} HC locked, position ${wait.position}.` : 'Not on the waitlist.';
-    fill('keys', (me.keys || []).map((k) => row([k.prefix || k.id, k.note || '', kstDay(k.created), button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { key: k.id }), () => 'Key revoked.'))])), 'No keys yet.');
-    fill('charges', (me.charges || []).map((c) => row([kst(c.at), c.accelerator || '-', String(c.seconds), String(c.bid), hc(c.hc)])), 'No accelerator charges yet.');
+    fill('bookings', (me.bookings || []).map((b) => row([kst(b.start), kst(b.end), b.fleet, b.kind === 'week' ? `${b.weeks} week${b.weeks === 1 ? '' : 's'}` : `${b.hours} hour${b.hours === 1 ? '' : 's'}`, hc(b.hc)])), 'No bookings yet.');
+    $('waitlist-status').textContent = me.position ? `On the waitlist: ${hc(me.locked)} HC locked, position ${me.position}.` : 'Not on the waitlist.';
+    fill('keys', (me.keys || []).filter((k) => !k.revoked).map((k) => row(['…' + k.hint, k.note || '', kstDay(k.created), button('Revoke', () => act('m-try', () => call('POST', '/market/keys/revoke', { id: k.key }), () => 'Key revoked.'))])), 'No keys yet.');
+    fill('charges', (me.charges || []).map((c) => row([kst(c.now), c.accelerator || '-', String(c.seconds), String(c.bid), hc(c.amount)])), 'No accelerator charges yet.');
   }
 
   async function quote() {
@@ -151,7 +168,7 @@
     try {
       const q = await call('POST', '/market/quote-weeks', { fleet, weeks });
       if (S.quoteKey !== key) return;
-      $('weeks-quote').textContent = `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.from)} to ${kstDay(q.to)}: ${hc(q.hc)} HC${Number(q.discount) ? `, ${pct(q.discount)} off for ${q.held} weeks held` : ''}.`;
+      $('weeks-quote').textContent = `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.first)} to ${lastDay(q.end)}: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off with ${q.count} weeks held` : ''}.`;
     } catch (error) {
       if (S.quoteKey === key) $('weeks-quote').textContent = error.message;
     }
@@ -209,25 +226,25 @@
       location.href = 'buy.html?hc=' + encodeURIComponent(count);
       return;
     }
-    act('m-buy', () => call('POST', '/market/buy', { hc: String(count) }), (r) => `Added ${hc(r.hc)} HC.`);
+    act('m-buy', () => spend('/market/buy', { hc: String(count) }), (r) => `Added ${hc(r.hc)} HC.`);
   });
   $('weeks-fleet').addEventListener('change', quote);
   $('weeks-count').addEventListener('input', quote);
   $('weeks').addEventListener('submit', (e) => {
     e.preventDefault();
-    act('m-weeks', () => call('POST', '/market/book-weeks', { fleet: $('weeks-fleet').value, weeks: Math.floor(Number($('weeks-count').value)) }),
-      (r) => `Booked ${r.weeks} week${r.weeks === 1 ? '' : 's'} on ${r.fleet}, ${kstDay(r.from)} to ${kstDay(r.to)}, for ${hc(r.hc)} HC.`);
+    act('m-weeks', () => spend('/market/book-weeks', { fleet: $('weeks-fleet').value, weeks: Math.floor(Number($('weeks-count').value)) }),
+      (r) => `Booked ${r.weeks} week${r.weeks === 1 ? '' : 's'} on ${r.fleet}, ${kstDay(r.first)} to ${lastDay(r.end)}, for ${hc(r.price)} HC.`);
   });
   $('hours-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    act('m-hours', () => call('POST', '/market/book-hours', { fleet: $('hours-fleet').value, start: slotFromLocal($('hours-start').value), hours: Math.floor(Number($('hours-count').value)) }),
+    act('m-hours', () => spend('/market/book-hours', { fleet: $('hours-fleet').value, start: slotFromLocal($('hours-start').value), hours: Math.floor(Number($('hours-count').value)) }),
       (r) => `Booked ${r.hours} hour${r.hours === 1 ? '' : 's'} on ${r.fleet} from ${kst(r.start)} KST, for ${hc(r.hc)} HC.`);
   });
   $('waitlist').addEventListener('submit', (e) => {
     e.preventDefault();
-    act('m-waitlist', () => call('POST', '/market/waitlist', { lock: String(Math.floor(Number($('lock-hc').value) || 0)) }), (r) => `Locked ${hc(r.locked)} HC. Your position: ${r.position}.`);
+    act('m-waitlist', () => spend('/market/waitlist', { lock: String(Math.floor(Number($('lock-hc').value) || 0)) }), (r) => `${hc(r.locked)} HC locked. Your position: ${r.position}.`);
   });
-  $('leave').addEventListener('click', () => act('m-waitlist', () => call('POST', '/market/waitlist/leave', {}), (r) => `Left the waitlist; ${hc(r.unlocked)} HC unlocked.`));
+  $('leave').addEventListener('click', () => act('m-waitlist', () => call('POST', '/market/waitlist/leave', {}), () => 'You left the waitlist, and your HC is unlocked.'));
   document.querySelectorAll('[data-clock]').forEach((b) => b.addEventListener('click', () => act('m-clock', () => call('POST', '/market/sandbox/clock', { hours: Number(b.dataset.clock) }), (r) => `Service time is now ${kst(r.now)} KST.`)));
   $('reset').addEventListener('click', () => {
     if (!confirm('Reset the sandbox for everyone? All sandbox accounts, HC and bookings are cleared.')) return;
