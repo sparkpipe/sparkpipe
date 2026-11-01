@@ -111,6 +111,18 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | L3 | `sparkpipe proxy` | A tool that cannot set headers reaches the right fleet through `localhost`, with 429s retried | S | L1 |
 | L4 | Publishing | `pip install sparkpipe` installs the single-file CLI, built from this repository on each tagged release | S | L1 |
 
+## Harnesses
+
+| ID | Issue | Done when | Size | Needs |
+| --- | --- | --- | --- | --- |
+| H1 | `sparkpipe setup` for every harness in §3.8 | Each writes a configuration with which that harness finishes a scripted 20-turn session with tools on Fleet 1 | M | L1, C1, C2 |
+| H2 | Release checks for every harness in §3.8 | A new release of any of them runs its scripted session against staging within a day; results on the internal status page | M | H1, C10 |
+| H3 | Gemini API shape | Gemini CLI finishes a scripted session through `:streamGenerateContent`, with cache hits after the first turn | L | C3 |
+| H4 | Responses-shaped bodies on chat completions | Cursor's agent mode finishes a scripted session through `/v1/chat/completions` | S | C2 |
+| H5 | Codex model catalogue | `GET /v1/codex/models` gives Codex our models' context windows and reasoning settings without any manual setting | S | C2 |
+| H6 | Claude Code hint headers | With `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`, compaction and auxiliary requests run at background priority | S | C1, E8 |
+| H7 | models.dev entries | OpenCode and Kilo Code pick up our models' context windows from models.dev | S | |
+
 ## Site
 
 | ID | Issue | Done when | Size | Needs |

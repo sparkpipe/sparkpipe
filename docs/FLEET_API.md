@@ -30,7 +30,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 
 | Area | Paths |
 | --- | --- |
-| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `HEAD /api/hello` |
+| Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `POST /v1beta/models/{model}:generateContent` and `:streamGenerateContent`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello` |
 | Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/model`, `GET/PUT /v1/model/aliases` |
 | Usage records | `GET /v1/requests` |
 | Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
@@ -187,6 +187,41 @@ Every response carries what it cost in time:
 - **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
 - **Images** on models that take them, in all three API shapes.
 - **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
+
+### 3.8 Harnesses
+
+Senior engineers use Claude Code most, by the widest margin, then Codex, OpenCode, GitHub Copilot and Cursor. Pi, Kilo Code and Cline carry heavy traffic to third-party endpoints. Sources:
+- [Pragmatic Engineer, 2026](https://newsletter.pragmaticengineer.com/p/ai-tooling-2026): median 11–15 years of experience;
+- [Stack Overflow, 2026](https://survey.stackoverflow.co/2026/ai);
+- [JetBrains, 2026](https://blog.jetbrains.com/research/2026/08/ai-coding-agent-adoption-2026/);
+- [OpenRouter app rankings](https://openrouter.ai/apps), November 2026.
+
+Every harness below gets three things:
+- a `sparkpipe setup <harness>` that writes a working configuration (endpoint, key, model, context window, compaction threshold);
+- a release check that runs a scripted session against staging before customers are told to upgrade;
+- a line in the API reference.
+
+| Harness | Wire API it uses | What `sparkpipe setup` writes | For the cache and the fleet |
+| --- | --- | --- | --- |
+| Claude Code | Messages | The environment in §3.3, plus `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` | The hint headers mark compaction and auxiliary requests, which the chat layer runs at background priority. `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity and routing between fleets |
+| Codex CLI | Responses only | The `config.toml` provider in §3.4, with `model_context_window`, `model_auto_compact_token_limit` and `model_catalog_url` | Its session-derived `prompt_cache_key` drives affinity. `GET /v1/codex/models` serves a Codex-native catalogue of our models |
+| OpenCode | Chat completions by default; Responses or Messages per provider | `opencode.json`: provider, `baseURL`, `{env:SPARKPIPE_API_KEY}`, `limit.context` and `limit.output`, with `prune` off | Pruning rewrites history and misses the cache, so setup turns it off |
+| GitHub Copilot, CLI and VS Code | Chat completions, Responses or Messages | `~/.copilot/providers.json` with `maxPromptTokens`; VS Code `chatLanguageModels.json` with a `customendpoint` vendor | The CLI keeps the key in plain text, so setup creates a key scoped to `inference` only |
+| Cursor | Chat completions, though agent mode sends Responses-shaped bodies | Printed instructions for Settings > Models and the base-URL override | Requests come from Cursor's servers, so its key must not carry an IP allowlist, and prompts pass through Cursor. The chat-completions path accepts Responses-shaped bodies |
+| Pi | Chat completions, Responses, Messages or Gemini | `models.json`: provider, `api`, `contextWindow`, `maxTokens` | |
+| Kilo Code | Chat completions, Responses or Messages | `kilo.jsonc` (OpenCode's schema) | |
+| Cline | Chat completions | Printed values for its provider screen: base URL, key, model, context window | |
+| Zed | Chat completions, Responses or Messages | `settings.json`: `language_models.openai_compatible` or `anthropic_compatible` | |
+| Factory Droid | Messages, Responses or chat completions | `~/.factory/settings.json` `customModels`, with `maxContextLimit` | |
+| Amp | OpenAI- or Anthropic-compatible custom URL | Its model-provider configuration | Requests come from Amp's servers |
+| Gemini CLI | Gemini API | `GOOGLE_GEMINI_BASE_URL` and the key | Served by the Gemini endpoint below |
+| Aider | Chat completions, with text edit formats | `.aider.model.metadata.json` (`max_input_tokens`) and `--cache-prompts` | Its cache-prompts order (system, read-only files, repo map, then editable files) keeps the prefix stable |
+| Goose | OpenAI or Anthropic engine | A custom provider file in `~/.config/goose/custom_providers/` | |
+
+Also:
+- **The Gemini API shape.** `POST /v1beta/models/{model}:generateContent` and `:streamGenerateContent`, with `contents`, `systemInstruction`, function declarations and `usageMetadata.cachedContentTokenCount`. It is translated in the chat layer like the other three shapes, with token-exact replay (§3.2).
+- **Responses-shaped bodies on chat completions.** Recognised by their `input` field and answered in the shape the client asked for.
+- **Model catalogues.** SparkPipe's models, with their served context windows, are published to [models.dev](https://models.dev), which OpenCode and Kilo Code read. They are also served at `GET /v1/codex/models` for Codex.
 
 ## 4. Working state
 
