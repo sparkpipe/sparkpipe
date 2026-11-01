@@ -742,7 +742,7 @@ Start or restart the two units (hub, as spec):
 install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
 ( umask 077; [ -s /srv/workspace/sparkpipe/swap-controller/token ] || \
   openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
-test -s /srv/workspace/sparkpipe/swap-controller/holders-token  # the market's token for the holder schedule, 600
+test -s /srv/workspace/sparkpipe/swap-controller/holders-token  # the bearer token the holder schedule accepts (today the gateway's upstream key), 600
 systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
   /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
 systemd-run --user --unit=sparkpipe-chat -p WorkingDirectory=/home/spec/sparkpipe-chat \
@@ -771,7 +771,7 @@ The swap controller loads the working-state controller
 | --- | --- | --- |
 | `fleet` | `F1` | the fleet id the market and the gateway use |
 | `holders_url` | `https://sparkpipe.ai/market/fleets/F1/holders` | the market's holder schedule |
-| `holders_token_file` | `/srv/workspace/sparkpipe/swap-controller/holders-token` | the hub's market token, 600, at least 32 characters |
+| `holders_token_file` | `/srv/workspace/sparkpipe/swap-controller/holders-token` | the bearer token the market's holder schedule accepts, today the gateway's upstream key; 600, at least 32 characters |
 | `state_file` | `/srv/workspace/sparkpipe/swap-controller/working-state.json` | current user, `wiped`, `held_until`; 600, kept across restarts |
 | `hub_directive` | `/home/spec/sparkdata/working-state/directive` | the hub's directive, read by the engine API and the draft servers |
 | `drain_seconds`, `confirm_seconds` | 60, 30 | bounds on a handover's drain and on the engine's confirmation |
