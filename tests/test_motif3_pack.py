@@ -127,7 +127,7 @@ class MotifPackTest(unittest.TestCase):
             np.testing.assert_array_equal(packed["layers.1.attn_q_b"], np.concatenate([q_b[h] for h in heads]))
             gate = self.tensor(a + "wq_b_gate.weight").reshape(-1, G["value"], G["q_lora"])
             np.testing.assert_array_equal(packed["layers.1.attn_gate"], np.concatenate([gate[s] for s in signal]))
-            np.testing.assert_array_equal(packed["layers.1.attn_lambda"], self.tensor(a + "lambda_proj.weight")[list(signal)])
+            np.testing.assert_array_equal(packed["layers.1.attn_lambda"], self.tensor(a + "lambda_proj.weight"))
             out = self.tensor(a + "wo.weight").reshape(G["hidden"], -1, G["value"])
             np.testing.assert_array_equal(packed["layers.1.attn_out"], np.concatenate([out[:, s] for s in signal], axis=1))
             kv_b = self.tensor(a + "wkv_b.weight").reshape(G["kv"], G["nope"] + G["value"], -1)

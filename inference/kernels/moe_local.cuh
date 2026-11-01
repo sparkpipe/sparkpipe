@@ -90,6 +90,26 @@ __global__ static void LmRouterSoftmaxKernel(const uint16_t *logits, float *prob
 		probs[(uint64_t)row * WIDTH + index] = expf(LmBf16ToFloat(logits[(uint64_t)row * WIDTH + index]) - top) / sum;
 }
 
+static __global__ void LmMoeLocalWeightedFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output,
+	uint32_t top_k, uint32_t local_experts, uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
+	{
+		float total = 0.0f;
+		for ( uint32_t k = 0u; k < top_k; ++k )
+		{
+			const uint32_t route = row * top_k + k;
+			if ( route_expert[route] < local_experts )
+				total = fmaf(LmBf16ToFloat(packed[(uint64_t)route_packed_row[route] * width + element]), route_weight[route], total);
+		}
+		if ( shared != 0 )
+			total += LmBf16ToFloat(shared[(uint64_t)row * width + element]);
+		output[(uint64_t)row * width + element] = LmFloatToBf16(total);
+	}
+}
+
 static __global__ void LmMoeLocalFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
 	const uint32_t *__restrict__ route_expert, const uint16_t *__restrict__ shared, uint16_t *__restrict__ output, uint32_t top_k,
 	uint32_t local_experts, uint32_t width)

@@ -109,10 +109,10 @@ static int CheckPoly(bool routed, uint32_t rows, uint32_t width, uint32_t expert
 	return worst <= 1u && exact * 100ull >= (uint64_t)rows * width * 99ull ? 0 : 1;
 }
 
-static int CheckDifferential(uint32_t rows, uint32_t groups, uint32_t signal, uint32_t dim)
+static int CheckDifferential(uint32_t rows, uint32_t groups, uint32_t signal, uint32_t dim, uint32_t lambda_first, uint32_t lambda_stride)
 {
 	const uint32_t heads = groups * (signal + 1u), width = groups * signal * dim;
-	std::vector<uint16_t> head((size_t)rows * heads * dim), lambda((size_t)rows * groups * signal), gate((size_t)rows * width), out((size_t)rows * width);
+	std::vector<uint16_t> head((size_t)rows * heads * dim), lambda((size_t)rows * lambda_stride), gate((size_t)rows * width), out((size_t)rows * width);
 	uint32_t seed = 777u;
 	auto random = [&]() { seed = seed * 1664525u + 1013904223u; return ((seed >> 8) & 0xffffu) / 32768.0f - 1.0f; };
 	for ( uint16_t &value : head )
@@ -129,7 +129,7 @@ static int CheckDifferential(uint32_t rows, uint32_t groups, uint32_t signal, ui
 	cudaMemcpy(d_head, head.data(), head.size() * 2u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_lambda, lambda.data(), lambda.size() * 2u, cudaMemcpyHostToDevice);
 	cudaMemcpy(d_gate, gate.data(), gate.size() * 2u, cudaMemcpyHostToDevice);
-	if ( LmDifferentialGateLaunch(d_head, d_lambda, d_gate, d_out, rows, groups, signal, dim, 0) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
+	if ( LmDifferentialGateLaunch(d_head, d_lambda + lambda_first, lambda_stride, d_gate, d_out, rows, groups, signal, dim, 0) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
 	{
 		std::printf("FAIL differential launch\n");
 		return 1;
@@ -143,7 +143,7 @@ static int CheckDifferential(uint32_t rows, uint32_t groups, uint32_t signal, ui
 				{
 					const size_t base = ((size_t)row * heads + (size_t)g * (signal + 1u)) * dim;
 					const float sig = HostBf16ToFloat(head[base + (size_t)s * dim + d]), noise = HostBf16ToFloat(head[base + (size_t)signal * dim + d]);
-					const float lam = Round(Sigmoid(HostBf16ToFloat(lambda[(size_t)row * groups * signal + g * signal + s])));
+					const float lam = Round(Sigmoid(HostBf16ToFloat(lambda[(size_t)row * lambda_stride + lambda_first + g * signal + s])));
 					const float combined = Round(sig - Round(lam * noise));
 					const size_t index = (size_t)row * width + ((size_t)g * signal + s) * dim + d;
 					const uint16_t expected = HostFloatToBf16(combined * Round(Sigmoid(HostBf16ToFloat(gate[index]))));
@@ -164,8 +164,8 @@ int main()
 	int failed = 0;
 	failed |= CheckPoly(true, 37u, 1280u, 24u);
 	failed |= CheckPoly(false, 5u, 12288u, 1u);
-	failed |= CheckDifferential(19u, 1u, 4u, 128u);
-	failed |= CheckDifferential(3u, 16u, 4u, 128u);
+	failed |= CheckDifferential(19u, 1u, 4u, 128u, 12u, 64u);
+	failed |= CheckDifferential(3u, 16u, 4u, 128u, 0u, 64u);
 	std::printf(failed ? "FAIL poly_norm_diff_cuda\n" : "PASS poly_norm_diff_cuda\n");
 	return failed;
 }

@@ -19,9 +19,9 @@ Rank r of T holds, bf16 unless noted:
                       signal, one noise) and the same KV heads:
                       attn_q_a = wq_a and attn_q_norm (f32), attn_kv_a = wkv_a
                       and attn_kv_norm (f32) replicated; attn_q_b = wq_b rows of
-                      the rank's query heads; attn_gate = wq_b_gate rows,
-                      attn_lambda = lambda_proj rows and attn_out = wo columns
-                      of the rank's signal heads; per query head, from its KV
+                      the rank's query heads; attn_lambda = lambda_proj (all signal heads) replicated;
+                      attn_gate = wq_b_gate rows and attn_out = wo columns of
+                      the rank's signal heads; per query head, from its KV
                       head's wkv_b rows: attn_uk = the key block transposed
                       [512, 128] and attn_uv = the value block [128, 512]
   dense MLP (0, 1)    on rank layer % T only: ffn_gate_up = gate_proj|up_proj,
@@ -156,13 +156,13 @@ def pack_layer(checkpoint, packs, g, layer):
     lam = checkpoint.array(a + "lambda_proj.weight", (signal_total, hidden))
     out = checkpoint.array(a + "wo.weight", (hidden, signal_total * g["value_dim"]))
     kv_b = checkpoint.array(a + "wkv_b.weight", (g["kv_heads"] * (g["nope"] + g["value_dim"]), g["latent"]))
+    packs.replicated(name + "attn_lambda", lam, "bf16")
     groups = g["groups"] // TP
     for rank in packs.ranks:
         heads = slice(rank * groups * g["group"], (rank + 1) * groups * g["group"])
         signal = slice(rank * groups * g["signal"], (rank + 1) * groups * g["signal"])
         packs.add(rank, name + "attn_q_b", q_b.reshape(g["heads"], g["head_dim"], -1)[heads].reshape(-1, g["q_lora"]), "bf16")
         packs.add(rank, name + "attn_gate", gate.reshape(signal_total, g["value_dim"], -1)[signal].reshape(-1, g["q_lora"]), "bf16")
-        packs.add(rank, name + "attn_lambda", lam[signal], "bf16")
         packs.add(rank, name + "attn_out", out.reshape(hidden, signal_total, g["value_dim"])[:, signal].reshape(hidden, -1), "bf16")
         per_kv = kv_b.reshape(g["kv_heads"], g["nope"] + g["value_dim"], g["latent"])
         owners = [head // g["group"] for head in range(heads.start, heads.stop)]
