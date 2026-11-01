@@ -10,16 +10,16 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 1.1. In this Agreement:
 
-- **Fleet** means a group of computing machines that we operate as one unit and list on our **Fleet List**, published at sparkpipe.ai/fleets.html.
+- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet.
 - **Fleet-hour** or **hour** means the use of one entire Fleet for sixty minutes.
-- **Prefill accelerator** (or **accelerator**) means a group of computing machines that we operate as one unit and list on the Fleet List as a prefill accelerator, which computes the prompt (prefill) of a request served on any Fleet and hands the computed prompt back to that Fleet, which writes the reply. An accelerator is not a Fleet.
-- **Rate** means the number that the Fleet List gives each Fleet and each accelerator. A Fleet's Rate is 1 unless the Fleet List states otherwise, and is the HC that one hour of our capacity on that Fleet costs up to 7 days ahead (clause 14.1) and the Plan hours that one reserved hour on it consumes (clause 22.1). An accelerator's Rate is its computing capacity as a multiple of that of a Fleet of 16 NVIDIA DGX Spark computers: 3 for an accelerator of 48 DGX Sparks and 6 for one of 96.
+- **Prefill accelerator** (or **accelerator**) means a group of computing machines that we operate ourselves as one unit in Korea and list on the Fleet List as a prefill accelerator, which computes the prompt (prefill) of a request served on any Fleet and hands the computed prompt back to that Fleet, which writes the reply. An accelerator is not a Fleet.
+- **Rate** means the number that the Fleet List gives each Fleet and each accelerator, which we set and may change as clause 9.3 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise, and is the HC that one hour of our capacity on that Fleet costs (clause 14.1) and the Plan hours that one reserved hour on it consumes (clause 22.1). A prompt is charged at the Rate published for the accelerator that computes it when that accelerator starts computing it.
 - **Reservation** (or **dated hour**) means the right to use one named Fleet for the sixty minutes from a named start on the hour. To **reserve** is to obtain one.
 - To **release** a Reservation is to offer it for resale in the **Hour Market** under the Hour Market Rules.
 - **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for hours and for the shared pool under Part 2, and for accelerators under clause 4.10.
 - **Plan** means the reserved plan that a Plan Order creates under Part 3, and **Plan hours** means the hours it holds (clause 17.3).
 - **Hour Market Rules** means our SparkPipe Hour Market Rules, published at sparkpipe.ai/market-rules.html.
-- **KST** means Korea Standard Time (UTC+9). All times and days in this Agreement and in each Order are in KST.
+- **KST** means Korea Standard Time (UTC+9). All times and days in this Agreement and in each Order are in KST, except the office hours that a Plan Order names in its time zone and the days on which they start (clause 17).
 
 1.2. **Orders.** Customer buys under this Agreement by Orders. An **Order** is either (a) a purchase of HC made through our website under Part 2, or (b) a **Plan Order**: a one-page order form in the form set out at the end of this Agreement, stating the fields listed in clause 16.1, signed by both parties or accepted by both in the Account (clause 12.4).
 
@@ -37,19 +37,21 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 3. Prices, VAT and payment
 
-3.1. **Prices.** HC is priced at the HC Price (clause 13.1), and Plan hours at the Hour Price stated in the Plan Order (clause 16.4). Prices are exclusive of value-added tax (VAT).
+3.1. **Prices.** HC is priced at the HC Price (clause 13.1), and Plan hours at the Hour Price of their Plan (clause 16.4). We set our prices on our website and may change them at any time, as clause 9.3 provides. Prices are exclusive of value-added tax (VAT).
 
-3.2. **VAT.** We charge VAT at the statutory rate (10% today) on every payment and show it separately on our invoice, except a payment that is zero-rated under clause 3.3(b). Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Order states, Customer pays us that VAT, with any additional tax and penalty, on demand.
+3.2. **VAT.** We charge VAT at the statutory rate on every payment and show it separately, except on a payment that is zero-rated under clause 3.3(b). VAT is shown, for a payment under clause 3.3(a) made by card, including a card used through an easy-pay service, on the card slip, which is the VAT document for that payment; for any other payment under clause 3.3(a), on the electronic tax invoice (세금계산서) we issue where Customer gives its Korean business registration number; and for any other payment, on our invoice. Any amount charged as VAT that is not owed is an overpayment, and we refund it to Customer. If a payment made as zero-rated is held subject to VAT because Customer's information was incorrect or Customer did not pay in the way the Order states, Customer pays us that VAT, with any additional tax and penalty, on demand.
 
-3.3. **Methods.** Customer pays in advance: no HC and no Plan hour is issued before it is paid for. Customer pays in one of the following ways, as our website offers it for a purchase of HC or as the Plan Order states:
+3.3. **Methods.** Customer pays in advance: no HC and no Plan hour is issued before it is paid for. Our payment processors receive payments for us, and we remain the seller. Customer pays in one of the following ways, as our website offers it for a purchase of HC or as the Plan Order states:
 
-- (a) in Korean won, where Customer has a Korean business registration number, by bank transfer from Customer's account at a Korean bank to our won account named on the electronic tax invoice (세금계산서) we issue;
+- (a) in Korean won, through our payment processor Toss Payments (토스페이먼츠 주식회사), by a card issued in or outside the Republic of Korea, bank transfer, virtual account or easy-pay service, as its payment window offers them for the order;
 - (b) in US dollars, by bank transfer from Customer's own account outside the Republic of Korea to our US dollar account at a Korean foreign exchange bank, whose details both parties confirm before payment; such a payment is zero-rated where Customer has no place of business in the Republic of Korea and the law allows; or
 - (c) in a US dollar stablecoin, such as USDC or USDT, that our payment processor CoinPayments accepts, on any network it accepts for that coin, through the invoice it issues for us.
 
-3.4. Customer pays every amount in full, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer, network and currency conversion charges, so that the full amount invoiced is paid. We bear our payment processor's own fees.
+3.4. Customer pays every amount in full, without set-off, deduction or withholding. If a law requires Customer to withhold or deduct any tax from a payment, Customer pays an additional amount so that we receive what we would have received without the withholding or deduction. Customer bears its own and any intermediary bank, transfer, network and currency conversion charges, so that the full amount invoiced is paid. We bear our payment processors' own fees.
 
-3.5. **Cleared payment.** A payment counts once we have verified it: a bank transfer when it reaches our account, and a stablecoin payment when our payment processor reports it completed. If the processor completes a stablecoin payment for less than the invoice total, the payment counts for the amount received, as the processor values it in US dollars, and the HC or Plan hours it issues are reduced in proportion. A payment the processor does not complete, an amount above the invoice total, and a payment that arrives after the processor's payment window are returned through the processor's refund procedure.
+3.5. **Cleared payment.** A payment counts once we have verified it with its processor or bank: a payment under clause 3.3(a) when Toss Payments reports it approved or, for a virtual account, reports the deposit; a bank transfer under clause 3.3(b) when it reaches our account; and a stablecoin payment when CoinPayments reports it completed. A payment under clause 3.3(a) counts only for the exact amount of its order: a payment of any other amount is cancelled and returned through Toss Payments, and a virtual account that is not paid by the deadline Toss Payments shows lapses with its order. If CoinPayments completes a stablecoin payment for less than the invoice total, the payment counts for the amount received, as CoinPayments values it in US dollars, and the HC or Plan hours it issues are reduced in proportion. A stablecoin payment that CoinPayments does not complete, an amount above the invoice total, and a payment that arrives after CoinPayments' payment window are returned through CoinPayments' refund procedure.
+
+3.6. **Refunds.** A refund that this Agreement provides or the law requires is made by the method and through the processor of the payment it refunds, in the currency of that payment: for a payment under clause 3.3(a), through Toss Payments to the card or account it was paid from, or, for a virtual account, to an account at a Korean bank that Customer names; for a bank transfer under clause 3.3(b), to the account it came from; and for a stablecoin payment, through CoinPayments' refund procedure.
 
 ## 4. Fleets, Reservations, maintenance and prefill accelerators
 
@@ -63,17 +65,17 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.5. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and the hours open for Reservation. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer reserves.
 
-4.6. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish (3 hours in each calendar week, Monday to Sunday, today). We announce each maintenance period at least 7 days ahead, choose the times with the fewest Reservations, and rotate those times between the windows (clause 17.1). Hours under announced maintenance cannot be reserved. A Reservation that maintenance overlaps is credited under clause 4.7 as if its Fleet were unavailable throughout it.
+4.6. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance (clause 9.3) in each calendar week, Monday to Sunday. We announce each maintenance period at least 7 days ahead, choose the times with the fewest Reservations, and rotate those times across the hours of the day. Hours under announced maintenance cannot be reserved. A Reservation that maintenance overlaps is credited under clause 4.7 as if its Fleet were unavailable throughout it.
 
 4.7. **Automatic credit.** If a reserved hour is unavailable, or its Fleet is unreachable, for more than 15 consecutive minutes, every reserved hour in which any part of that period falls is credited back in full within 24 hours after the period ends, from our own records, to the account that holds the Reservation: as HC equal to the price it paid, for a Reservation paid in HC; and as Plan hours under clause 23.3, for a Reservation made with Plan hours. Where Customer's records show such a period and ours do not, Customer may send them within 7 days, and we credit the hours unless our records show the Fleet was available throughout.
 
 4.8. Credits are made in HC or Plan hours, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 8.5.
 
-4.9. **Prefill accelerators.** We may run accelerators of several kinds. The Fleet List shows each one's kind and size, Rate and speed, and whether it is serving. A request uses an accelerator only if it asks for one; otherwise its prompt is computed on its Fleet. Accelerator time is charged under clause 4.10 in every case, including in the shared pool, during an hour in which Customer holds a Reservation and under a Plan, and is not included in any Reservation, Plan hour, Hour Price or seat-second price. Accelerators have no guaranteed capacity or speed, and clauses 4.5 and 4.7 do not apply to them.
+4.9. **Prefill accelerators.** Each accelerator is made up of machines that we operate ourselves in Korea. We may add, remove, upgrade or replace accelerators and the machines in them at any time without amending this Agreement, and the Fleet List shows each one's current machines, Rate and speed, and whether it is serving. A request uses an accelerator only if it asks for one; otherwise its prompt is computed on its Fleet. Accelerator time is charged under clause 4.10 in every case, including in the shared pool, during an hour in which Customer holds a Reservation and under a Plan, and is not included in any Reservation, Plan hour, Hour Price or seat-second price. Accelerators have no guaranteed capacity or speed, and clauses 4.5 and 4.7 do not apply to them.
 
 4.10. **Price and payment.** Each prompt an accelerator computes is charged for its **accelerator-seconds**, the seconds from when the accelerator starts computing it until it hands it back to the Fleet: its price is the accelerator-seconds times the accelerator's Rate, times Customer's queue bid for that prompt (clause 4.11), divided by 3,600, rounded down to six decimal places. For example, 180 accelerator-seconds at Rate 6 with a queue bid of 1.5 cost 180 × 6 × 1.5 ÷ 3,600 = 0.45 HC. Customer pays in HC, from the lot that lapses first (clause 13.3), or, where the request says so, in the same number of Plan hours, which may be fractions of an hour, from paid Plan hours of a Tranche current when the prompt is computed that are neither consumed nor needed for the Reservations Customer holds (clause 22.1). When the prompt joins the queue, we hold its estimated price from Customer's HC, or from those Plan hours: the prompt's tokens as we estimate them, divided by the speed we publish for the accelerator, times its Rate and the queue bid, divided by 3,600, taking the highest such estimate where more than one accelerator may compute the prompt. HC is held from, and returns to, Customer's lots as clause 3.3 of the Hour Market Rules provides. A prompt whose estimated price Customer's HC, or those Plan hours, cannot cover is refused. When the accelerator hands the prompt back, we charge its price, never more than Customer's balance or those Plan hours, and the rest of the hold returns to them. A prompt the accelerator does not finish is not charged.
 
-4.11. **Queue and queue bids.** Waiting prompts are computed in order of queue bid, highest first, and at equal queue bids in the order they joined the queue. The **queue bid** is a multiplier that each request sets for its prompt, from 1 up to the highest we publish (10 today), in steps of 0.01, and is 1 where the request sets none. Each prompt's price uses its own queue bid, whatever the queue bids of others. A request waits up to the number of seconds it sets, which is the default we publish (300 today) where it sets none and at most the longest we publish (600 today). If no accelerator has started its prompt by then, or none is serving when the request is made, the prompt is computed on its Fleet without an accelerator and nothing is charged under clause 4.10, unless the request asks not to be computed without an accelerator, in which case it is refused. We publish the queue as clause 11 of the Hour Market Rules provides.
+4.11. **Queue and queue bids.** Waiting prompts are computed in order of queue bid, highest first, and at equal queue bids in the order they joined the queue. The **queue bid** is a multiplier that each request sets for its prompt, from 1 up to the highest we publish, in steps of 0.01, and is 1 where the request sets none. Each prompt's price uses its own queue bid, whatever the queue bids of others. A request waits up to the number of seconds it sets, which is the default we publish where it sets none and at most the longest we publish. If no accelerator has started its prompt by then, or none is serving when the request is made, the prompt is computed on its Fleet without an accelerator and nothing is charged under clause 4.10, unless the request asks not to be computed without an accelerator, in which case it is refused. We publish the queue as clause 11 of the Hour Market Rules provides.
 
 ## 5. Use and responsibility
 
@@ -85,13 +87,15 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 6. Customer data
 
-6.1. Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. The Fleets and our servers are in Seoul, Republic of Korea.
+6.1. Customer keeps all rights in its data and outputs. We access them only as needed to operate and secure the service, or where the law requires. Customer is responsible for the lawfulness of any personal data it processes and for keeping its own copies: we keep no backups of Customer data. The Fleets and our servers are in the Republic of Korea (clause 6.5).
 
 6.2. We hold no Customer data beyond transient caches, which we delete within 24 hours, and the model state and caches that clause 19.3 keeps on a locked Fleet. Nothing is therefore returned when an Order or this Agreement ends.
 
 6.3. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.
 
 6.4. A prompt sent to an accelerator is Customer data. It is held only while it waits and is computed, isolated from other customers' data, and nothing of it is kept after the reply except the record of its charge under clause 4.10, which holds none of its content. Once handed back, the computed prompt is held on the Fleet as clause 6.2 provides.
+
+6.5. **In Korea only.** We process requests and Customer data only on Fleets, accelerators and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad.
 
 ## 7. Models
 
@@ -123,7 +127,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 9.2. We change the Hour Market Rules in the same way, and each version applies as clause 13.1 of the Hour Market Rules provides.
 
-9.3. **Published settings.** We publish the following on our website as **published settings**: the HC Price, the advance multiplier, the release fee, the window times, the plan price list (the Terms, Hour Prices and payment schedules we offer for Plans, and the price of a Fleet lock) and the maintenance allowance. A change to a published setting applies only to Orders made after we publish it, never to an existing Order. HC, and each Reservation paid with it, keep the settings in force when that HC was bought; where a Reservation is paid with HC from more than one purchase, the settings of the HC spent first apply. A Plan Order keeps, for its whole Term, the settings in force when it was made, and states those that apply to it.
+9.3. **Published settings.** We publish the following on our website as **published settings**: the HC Price and the minimum and maximum per purchase; the plan price list (the Terms, Hour Prices and payment schedules we offer for Plans, and the price of a Fleet lock); the Rates on the Fleet List; the release fee and the seats and price limits of the shared pool under the Hour Market Rules; the highest queue bid and the default and longest waits under clause 4.11; and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Reservation already made, nor what a Plan Order states for its Term, except that the later Tranches of a Monthly Plan are priced as clause 16.6 provides.
 
 ## 10. Ending, refunds and survival
 
@@ -177,7 +181,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 14. Reserving with HC
 
-14.1. With HC, Customer may reserve (a) an hour of our capacity on a serving Fleet, from the first date we offer, up to 7 days ahead at its Rate in HC, and more than 7 and up to 31 days ahead at its Rate times the advance multiplier (1.25 today); or (b) an hour another customer has released, at the price the Hour Market Rules set, however far ahead it starts. Capacity kept for Plans is offered only as clauses 18.2 and 19.2 allow, capacity kept under clause 14.2 only as that clause allows, and hours under announced maintenance not at all (clause 4.6).
+14.1. With HC, Customer may reserve (a) an hour of our capacity on a serving Fleet, from the first date we offer and up to 31 days ahead, at its Rate in HC; or (b) an hour another customer has released, at the price the Hour Market Rules set, however far ahead it starts. Capacity kept for Plans is offered only as clauses 18.2 and 19.2 allow, capacity kept under clause 14.2 only as that clause allows, and hours under announced maintenance not at all (clause 4.6).
 
 14.2. **Earlier lapse first.** Where reserving an hour of our capacity with HC that lapses after a date would leave the free hours before that date short of the HC that lapses by it (clause 13.4), that hour can be reserved, until 6 hours before it starts, only with HC that lapses by that date; from then on, with any HC.
 
@@ -185,47 +189,49 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 15.1. The **shared pool** serves individual requests on Fleets that nobody holds in that hour and on released hours that reach their start unsold. Its meter is the **seat-second**, one second of one request slot on a pooled Fleet.
 
-15.2. Customer may send requests to the models we list for the shared pool, through our OpenAI-compatible endpoint at https://sparkpipe.ai/pay/api/pool/v1, with API keys it issues under its Account. API keys are access tokens for the purposes of clause 2, and Customer may revoke one at any time. Each request holds one seat and is charged in HC for its seat-seconds, from when we accept it until its reply ends and whether or not it succeeds, at the price per seat-second posted when it starts (clause 7.2 of the Hour Market Rules), rounded down to six decimal places and never more than Customer's balance. A request that uses an accelerator holds its seat only as clause 7.5 of the Hour Market Rules provides. We accept a request only while Customer holds at least 0.0001 HC. The shared pool has no guaranteed capacity: when no Fleet is in it, or its seats are taken, requests are refused. Requests made with Customer's API keys during an hour in which Customer holds a Reservation are charged no seat-seconds; their accelerator time is charged as clause 4.9 provides.
+15.2. Customer may send requests to any model offered on the Fleet List, through our OpenAI-compatible endpoint at https://sparkpipe.ai/pay/api/pool/v1, with API keys it issues under its Account. API keys are access tokens for the purposes of clause 2, and Customer may revoke one at any time. Each request holds one seat and is charged in HC for its seat-seconds, from when we accept it until its reply ends and whether or not it succeeds, at the price per seat-second posted when it starts (clause 7.2 of the Hour Market Rules), rounded down to six decimal places and never more than Customer's balance. A request that uses an accelerator, or asks for a model its Fleet has not loaded, holds its seat only as clause 7.5 of the Hour Market Rules provides. We accept a request only while Customer holds at least 0.0001 HC. The shared pool has no guaranteed capacity: when no Fleet is in it, or its seats are taken, requests are refused. Requests made with Customer's API keys during an hour in which Customer holds a Reservation are charged no seat-seconds; their accelerator time is charged as clause 4.9 provides.
 
 ## Part 3. Reserved Plans
 
 ## 16. Plan Orders and the Term
 
-16.1. **Fields.** A Plan Order states: its order number; Customer's legal details; the version of this Agreement under which it is made; the **Start Date**; the **Term**, in whole months; the **Windows** and the **Days** (clause 17); the number of **Fleets** (clause 18); whether the Plan has a **Fleet lock**, and which Fleets it locks (clause 19); the **Hour Price**; the **Payment schedule**, Upfront or Gated (clause 20); the Chosen Models (clause 7.2); the Performance Threshold (clause 23.2); the Account email; each party's notice address and email; Customer's VAT status; the payment currency and account; and the published settings that apply to it (clause 9.3). It also states the **Hours in the Term** and the **Price of the Term**, worked out from those fields under clauses 17.3 and 16.4. The fields are fixed for the Term.
+16.1. **Fields.** A Plan Order states: its order number; Customer's legal details; the version of this Agreement under which it is made; the **Start Date**; the **Term**, Monthly or in whole months (clause 16.3); the **time zone**, the **office hours** and the **Days** (clause 17); the number of **Fleets** (clause 18); whether the Plan has a **Fleet lock**, and which Fleets it locks (clause 19); the **Hour Price**; the **Payment schedule**, Monthly, Upfront or Gated (clause 20); the Chosen Models (clause 7.2); the Performance Threshold (clause 23.2); the Account email; each party's notice address and email; Customer's VAT status; the payment currency and account; and the maintenance allowance (clause 4.6). A Plan Order with a Term in months also states the **Hours in the Term** and the **Price of the Term**, and a Monthly Plan Order the Plan hours and price of Tranche 1, worked out from those fields under clauses 17.3 and 16.4. The fields are fixed for the Term, except that the later Tranches of a Monthly Plan are priced as clause 16.6 provides.
 
-16.2. **Making a Plan Order.** We make a Plan Order only where we can keep the capacity it needs under clauses 18 and 19 alongside every Plan Order made before it. A Plan Order is made on the date of the last signature or acceptance under clause 12.4, and its Start Date is on or after that date.
+16.2. **Making a Plan Order.** We make a Plan Order only where we can keep the capacity it needs under clauses 18 and 19 alongside every Plan Order made before it, counting each Monthly Plan that has not ended as continuing in every later month. A Plan Order is made on the date of the last signature or acceptance under clause 12.4, and its Start Date is on or after that date.
 
-16.3. **Term.** The Term starts at 00:00:00 on the Start Date and ends at 23:59:59 on the day before the same date in the month that falls the Term's number of months after the Start Date; where that month has no such date, the Term ends at 23:59:59 on the last day of that month. **Day N** means the Nth calendar day counting the Start Date as Day 1.
+16.3. **Term.** A Term in months starts at 00:00:00 on the Start Date and ends at 23:59:59 on the day before the same date in the month that falls the Term's number of months after the Start Date; where that month has no such date, the Term ends at 23:59:59 on the last day of that month. A **Monthly** Term starts at 00:00:00 on the Start Date and has no fixed end: it runs until the Plan ends under clause 10.2, 20.11 or 20.12. **Day N** means the Nth calendar day counting the Start Date as Day 1.
 
-16.4. **Price.** Each Plan hour is priced at the Hour Price, fixed for the Term; under a Fleet lock, the Hour Price includes the lock. The Hour Price is a single all-in price: it covers the Fleets and the interconnect that joins the machines of each Fleet, the models in clause 7, and operation and support, and no other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns and the price of prefill accelerator time that Customer asks for under clause 4.9. The Price of the Term is the Hour Price multiplied by the Hours in the Term. All balances, refunds and claims under a Plan Order are counted in Plan hours, valued at the Hour Price. A Plan Order sets no price for any other capacity Customer buys.
+16.4. **Price.** Each Plan hour is priced at the Hour Price, which is fixed for the Term or, for a Monthly Plan, for each Tranche as clause 16.6 provides; under a Fleet lock, the Hour Price includes the lock. The Hour Price is a single all-in price: it covers the Fleets and the interconnect that joins the machines of each Fleet, the models in clause 7, and operation and support, and no other fee, surcharge or charge applies during the Term, apart from the release fee that the Hour Market Rules deduct from what a released hour earns and the price of prefill accelerator time that Customer asks for under clause 4.9. The Price of the Term is the Hour Price multiplied by the Hours in the Term. A Monthly Plan has no Price of the Term: the price of each of its Tranches is the Hour Price of that Tranche multiplied by its Plan hours. All balances, refunds and claims under a Plan Order are counted in Plan hours, valued at the Hour Price of the Tranche they belong to. A Plan Order sets no price for any other capacity Customer buys.
 
-16.5. The Rate of each Fleet on the Fleet List when a Plan Order is made is fixed for its Term.
+16.5. The Rate of each Fleet on the Fleet List when a Plan Order is made is fixed for its Term; for a Monthly Plan, the Rates when each Tranche is priced under clause 16.6 apply to that Tranche.
 
-## 17. Windows, Days and Plan hours
+16.6. **Monthly Plan.** A Monthly Plan continues from month to month for as long as Customer pays each Tranche under clause 20.10. Tranche 1 is priced at the Hour Price that the Plan Order states. Each later Tranche is priced at the Hour Price that our plan price list shows for a Monthly Plan, including the price of any Fleet lock the Plan has, when Customer orders its payment, and the price that the payment order states holds for the whole Tranche. Customer sees that price before it pays, and may instead stop the Plan under clause 20.12. The Plan's other fields do not change while it runs, and we end it only under clause 10.2.
 
-17.1. **Windows.** Each day has three **windows**, whose times we publish. They are today the **Americas Window**, 00:00–08:00 KST, which falls on the previous calendar day in the Americas; the **Asia Window**, 08:00–16:00 KST; and the **Europe Window**, 16:00–24:00 KST. The windows are periods of the day, not separate pools of capacity or separate machines. A Plan Order elects one or more windows; all three together are a **Full day**.
+## 17. Office hours, Days and Plan hours
 
-17.2. **Days.** A Plan Order elects **Every day** or **Weekdays**. Under Every day, each elected window counts on every day of the Term. Under Weekdays, it counts only on Monday to Friday in its own region: the Americas Window on each day from Tuesday to Saturday, and the Asia and Europe Windows on each day from Monday to Friday.
+17.1. **Time zone and office hours.** A Plan Order names a **time zone** of the IANA time zone database, such as Asia/Seoul, Europe/Berlin or America/New_York, and **office hours**: a start and an end on whole hours of that zone's local clock, at least 8 hours apart. Office hours whose end is at or before their start end on the next day, and office hours of 24 hours are a **Full day**. Office hours follow the zone's local clock, including its daylight-saving changes, so the KST hours they cover move when that clock changes; on a day the clock changes, the office hours are the hours that actually elapse between their local start and end. Where the local clock shows a start or an end twice, it is the first time it shows it; where the clock skips it, it is the moment the clock skips. A Plan Order names one time zone and one set of office hours; Customer may make another Plan Order for another office.
 
-17.3. **Plan hours and Tranches.** For every day of the Term, each elected window that counts on that day holds the window's hours times the Fleets; these are the **Plan hours**. Each calendar month within the Term is one **Tranche**, holding the Plan hours of its days within the Term. Tranche 1 runs from the Start Date to the end of that month, and the final Tranche from the first day of its month to the end of the Term; there are as many Tranches as the Term has months where the Start Date is the first day of a month, and one more otherwise. The Hours in the Term are the Plan hours of all Tranches.
+17.2. **Days.** A Plan Order elects **Every day** or **Weekdays**. Under Every day, the office hours count on every day. Under Weekdays, they count only where they start on a Monday to Friday, public holidays included, by the date in the Plan Order's time zone, and then until they end, even after midnight.
+
+17.3. **Plan hours and Tranches.** The **Plan hours** are the Fleets times each hour of the Term, starting on the hour, that starts within office hours that count under clause 17.2. Where the time zone's offset from KST is not a whole number of hours, the Plan hours therefore start and end that part of an hour after the office hours. Each calendar month within the Term is one **Tranche**, holding the Plan hours that start in it. Tranche 1 runs from the Start Date to the end of that month. Under a Term in months, the final Tranche runs from the first day of its month to the end of the Term, there are as many Tranches as the Term has months where the Start Date is the first day of a month, and one more otherwise, and the Hours in the Term are the Plan hours of all Tranches. A Monthly Plan has one Tranche for each calendar month in which it runs.
 
 17.4. A Plan hour expires at 23:59:59 on the last day of its Tranche unless consumed. Expired hours do not carry forward, convert, accumulate or have any cash value.
 
-17.5. Example: a Plan Order with a Start Date of 15 December 2026, a Term of 24 months, the Asia Window, Every day, 1 Fleet, no Fleet lock and the Gated schedule:
+17.5. Example: a Plan Order with a Start Date of 15 December 2026, a Term of 24 months, the time zone Asia/Seoul, office hours 09:00–18:00, Every day, 1 Fleet, no Fleet lock and the Gated schedule:
 
 | Tranche | Period | Plan hours |
 | --- | --- | --: |
-| 1 | 15–31 Dec 2026 | 136 |
-| 2 | Jan 2027 | 248 |
-| 15 | Feb 2028 (leap) | 232 |
-| 25 | 1–14 Dec 2028 | 112 |
-| **All** | **15 Dec 2026 – 14 Dec 2028** | **5,848** |
+| 1 | 15–31 Dec 2026 | 153 |
+| 2 | Jan 2027 | 279 |
+| 15 | Feb 2028 (leap) | 261 |
+| 25 | 1–14 Dec 2028 | 126 |
+| **All** | **15 Dec 2026 – 14 Dec 2028** | **6,579** |
 
-The same Plan Order on Weekdays holds 4,184 Plan hours.
+The same Plan Order on Weekdays holds 4,707 Plan hours. With the time zone Europe/Berlin and the same office hours, its Plan hours are 17:00–02:00 KST while Berlin keeps standard time (UTC+1) and 16:00–01:00 KST while it keeps summer time (UTC+2). With the time zone America/New_York, office hours 09:00–17:00 and Weekdays, they start at 23:00 KST on each Monday to Friday (22:00 KST in New York's summer time) and end eight hours later.
 
 ## 18. Guaranteed Limit and set-aside
 
-18.1. A Plan's **Guaranteed Limit** is its Fleets at once, in every hour of its elected windows that counts under clause 17.2.
+18.1. A Plan's **Guaranteed Limit** is its Fleets at once, in every hour that holds Plan hours (clause 17.3).
 
 18.2. **Set-aside.** We keep the capacity of the Guaranteed Limit, on Fleets that serve the Chosen Models, off sale to anyone else until 6 hours before each hour starts. From then on, capacity Customer has not reserved may be reserved by others. Except under a Fleet lock, the guarantee is for capacity, not for a particular Fleet: where one Fleet is fully reserved, Customer reserves on another. Customer may make Reservations within its Guaranteed Limit for any time in the Term, subject to clauses 20 and 22.1. With Plan hours, Customer may reserve more Fleets at once, or other hours, only as Extra Hours after Full Prepayment (clause 21.2).
 
@@ -235,9 +241,11 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 18.5. **Priority over hourly use.** Customer's priority over hourly use comes from the capacity kept for it under this clause and clause 19, which nobody else can reserve until 6 hours before each hour starts or, on a locked Fleet, at all. Customer never takes, and never needs to take, an hour that anyone else holds, and no confirmed Reservation is ever displaced to make room for another (clause 4.4).
 
+18.6. **Monthly Plans.** For a Monthly Plan, clause 18.2 keeps the capacity of the current Tranche and of the next calendar month while the Plan runs, and of each later month once it becomes the next one. When the Plan ends, or Customer stops it under clause 20.12, the capacity of every month after its last Tranche paid in full is freed.
+
 ## 19. Fleet lock
 
-19.1. A Plan whose Windows are a Full day and whose Days are Every day may have a **Fleet lock**. Its Plan Order then names as many Fleets as its Fleets (the **locked Fleets**).
+19.1. A Plan whose office hours are a Full day and whose Days are Every day may have a **Fleet lock**. Its Plan Order then names as many Fleets as its Fleets (the **locked Fleets**).
 
 19.2. Each locked Fleet is held for Customer in every hour of the Term and is Customer's alone: it is never offered to anyone else, not even 6 hours before an hour starts, is not counted in the free hours under clause 13.4, and does not serve the shared pool. Reservations within the Guaranteed Limit are made and delivered on the locked Fleets. Another customer uses a locked Fleet only in an hour that Customer itself has released in the Hour Market and that is sold or joins the shared pool.
 
@@ -247,7 +255,7 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 ## 20. Payment schedule
 
-20.1. No Plan hour is issued or served until it is paid for. Each payment that counts under clause 3.5 issues Plan hours equal to the amount paid, net of VAT, divided by the Hour Price and rounded down to four decimal places, to the earliest Tranches not yet fully paid. Plan hours that occur before they are paid for are counted as consumed: the Price of the Term does not change.
+20.1. No Plan hour is issued or served until it is paid for. Each payment that counts under clause 3.5 issues Plan hours equal to the amount paid, net of VAT, divided by the Hour Price (for a Monthly Plan, of the Tranche it pays for) and rounded down to four decimal places, to the earliest Tranches not yet fully paid. Plan hours that occur before they are paid for are counted as consumed: the Price of the Term, and the price of a Tranche, does not change.
 
 20.2. **Upfront.** Under the Upfront schedule, Customer pays the Price of the Term before the Start Date, and reaches Full Prepayment when it is paid. If the Price of the Term is not paid in full by the end of the Start Date, the Plan ends then, with nothing further owed by either party, except that we refund any amount paid under it as clause 24.3(b) and (c) provide.
 
@@ -277,10 +285,18 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 | Gate | Deadline | Hours paid in total | Hours due at the gate |
 | --- | --- | --: | --: |
-| 1 | 13 Jan 2027 | 1,344 | 1,344 |
-| 2 | 12 Feb 2027 | 2,808 | 1,464 |
-| 3 | 14 Mar 2027 | 5,848 | 3,040 |
-| **Total** |  |  | **5,848** |
+| 1 | 13 Jan 2027 | 1,512 | 1,512 |
+| 2 | 12 Feb 2027 | 3,159 | 1,647 |
+| 3 | 14 Mar 2027 | 6,579 | 3,420 |
+| **Total** |  |  | **6,579** |
+
+20.10. **Monthly.** Under the Monthly schedule, Customer pays each Tranche in full before it starts, and Tranche 1 before the Start Date. Customer may pay a Tranche at any time once every earlier Tranche is paid. The Plan hours of a Tranche are issued when it is paid in full, instead of as clause 20.1 provides. An unpaid Tranche is never overdue: there is no interest, acceleration, suspension or default for it.
+
+20.11. **Ending by not paying.** If a Tranche is not paid in full by the end of its first day, the Plan ends as of the end of the last Tranche paid in full, or of the Start Date where none is, with nothing further owed by either party, except that we refund any amount paid toward a Tranche that was not paid in full by then, as clause 24.3(b) and (c) provide.
+
+20.12. **Stopping.** Customer may also end a Monthly Plan at any time, by stopping it in its Account or by notice. The Plan then ends at the end of the last Tranche paid in full, or at once where none is; we accept no further payment under it, and clause 18.6 frees the capacity after that Tranche at once.
+
+20.13. Example: a Monthly Plan Order with a Start Date of 15 December 2026, the time zone Asia/Seoul, office hours 09:00–18:00, Weekdays and 1 Fleet. Tranche 1, from 15 to 31 December 2026, holds 117 Plan hours and is paid before 15 December 2026; Tranche 2, January 2027, holds 189 Plan hours and is paid before 1 January 2027; and so on for each month, each priced as clause 16.6 provides. If January 2027 is not paid in full by the end of 1 January 2027, the Plan ends as of the end of 31 December 2026, with nothing owed.
 
 ## 21. Full Prepayment
 
@@ -288,8 +304,10 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 21.2. From Full Prepayment, for all Plan hours remaining in the Term:
 
-- **Extra Hours.** Customer may reserve Plan hours beyond its Guaranteed Limit: on more Fleets at the same time than its Fleets, or outside its elected windows or the days on which they count (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and never take an hour that anyone holds or capacity kept for another Plan (clause 18.5).
+- **Extra Hours.** Customer may reserve Plan hours beyond its Guaranteed Limit: on more Fleets at the same time than its Fleets, or outside its office hours or the days on which they count (the **Extra Hours**). Extra Hours are subject to availability, may be reserved at most 30 days before they start, and never take an hour that anyone holds or capacity kept for another Plan (clause 18.5).
 - **Spending ahead.** Customer may reserve more Plan hours in a period than its current Tranche holds. As each reserved hour occurs it is drawn from the unexpired Tranche nearest to expiry, so the excess comes from future Tranches. Plan hours of a future Tranche consumed early do not reappear in their own month.
+
+21.3. A Monthly Plan has no Price of the Term. Each of its Tranches reaches Full Prepayment when it is paid in full, and clause 21.2 then applies to that Tranche's Plan hours, except spending ahead.
 
 ## 22. Using Plan hours
 
@@ -311,14 +329,14 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 
 ## 24. Renewal and ending of a Plan
 
-24.1. **Renewal.** A Plan ends at the end of its Term and does not renew automatically. Customer may continue by a new Plan Order, which may start on the day after the Term ends and may state different fields.
+24.1. **Renewal.** A Plan with a Term in months ends at the end of its Term and does not renew automatically. Customer may continue by a new Plan Order, which may start on the day after the Term ends and may state different fields. A Monthly Plan continues as clause 16.6 provides.
 
-24.2. Customer has no right to end a Plan Order, for convenience or for any other reason, except the withdrawal right in clause 20.4. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours under the Plan for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 24.3.
+24.2. Customer has no right to end a Plan Order, for convenience or for any other reason, except the withdrawal right in clause 20.4 and, for a Monthly Plan, clauses 20.11 and 20.12. If a court or tribunal holds that Customer has a termination right that cannot lawfully be excluded, Customer may exercise it only if we fail to deliver reserved hours under the Plan for 60 consecutive days after Customer's written notice identifying the failure, and Customer's only financial remedy is the refund in clause 24.3.
 
 24.3. Where a Plan ends under clause 10.2 or 24.2:
 
 - (a) we waive every unpaid amount, do not pursue the remainder of the Term, and cancel Reservations under the Plan for hours that have not yet occurred, which count as unconsumed;
-- (b) the refund basis is Plan hours paid for minus Plan hours consumed, at the Hour Price; and
+- (b) the refund basis is Plan hours paid for minus Plan hours consumed, valued as clause 16.4 provides; and
 - (c) we pay that refund within 60 days, without interest, net of any amount Customer owes us, except where a law prohibits the payment.
 
 24.4. At the end of the Term, all unconsumed Plan hours lapse without refund.
@@ -331,15 +349,17 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 | Customer | \[legal name\], a company organised under the laws of \[jurisdiction\], registration number \[ \], registered address \[ \] / \[full name\], an individual, of \[address\] |
 | Customer Agreement (clause 9.1) | Version of \[date\]; SHA-256 of the Korean text \[ \] and of the English text \[ \]; Hour Market Rules, SHA-256 of the Korean text \[ \] and of the English text \[ \] |
 | Start Date (clause 16.3) | \[ \] |
-| Term (clause 16.3) | \[ \] months, ending on \[ \] |
-| Windows (clause 17.1) | \[Americas Window (00:00–08:00 KST) / Asia Window (08:00–16:00 KST) / Europe Window (16:00–24:00 KST) / Full day\] |
+| Term (clause 16.3) | \[\[ \] months, ending on \[ \] / Monthly, with no fixed end\] |
+| Time zone (clause 17.1) | \[an IANA time zone, such as Asia/Seoul\] |
+| Office hours (clause 17.1) | \[\[ \]:00 to \[ \]:00, local time in the time zone, at least 8 hours / Full day\] |
 | Days (clause 17.2) | \[Every day / Weekdays\] |
 | Fleets (clause 18.1) | \[1\] |
-| Fleet lock (clause 19) | \[None / Fleets \[ \], one for each of the Fleets; only with Windows of a Full day and Days of Every day\] |
-| Hour Price (clause 16.4) | KRW \[ \] or USD \[ \] per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term |
-| Hours in the Term (clause 17.3) | \[ \] |
-| Price of the Term (clause 16.4) | KRW \[ \] or USD \[ \], exclusive of VAT |
-| Payment schedule (clause 20) | \[Upfront: the Price of the Term before the Start Date / Gated: Gate 1 by \[date\], Gate 2 by \[date\], Gate 3 by \[date\]\] |
+| Fleet lock (clause 19) | \[None / Fleets \[ \], one for each of the Fleets; only with office hours of a Full day and Days of Every day\] |
+| Hour Price (clause 16.4) | KRW \[ \] or USD \[ \] per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, \[fixed for the Term / for Tranche 1, with later Tranches priced under clause 16.6\] |
+| Hours in the Term (clause 17.3) | \[ \], for a Term in months |
+| Price of the Term (clause 16.4) | KRW \[ \] or USD \[ \], exclusive of VAT, for a Term in months |
+| Tranche 1 (clause 17.3) | \[dates\]: \[ \] Plan hours, KRW \[ \] or USD \[ \], exclusive of VAT, for a Monthly Term |
+| Payment schedule (clause 20) | \[Monthly: each Tranche before it starts, Tranche 1 before the Start Date / Upfront: the Price of the Term before the Start Date / Gated: Gate 1 by \[date\], Gate 2 by \[date\], Gate 3 by \[date\]\] |
 | Chosen Models (clause 7.2) | \[models from the Fleet List\] |
 | Performance Threshold (clause 23.2) | \[80\]% of the Baseline |
 | Account email (clause 2.2) | \[ \] |
@@ -347,7 +367,7 @@ The same Plan Order on Weekdays holds 4,184 Plan hours.
 | Customer notice address and email (clause 11.7) | \[ \] |
 | Customer VAT status (clause 3.2) | \[No place of business in the Republic of Korea / Korean business registration number \[ \]\] |
 | Payment currency and account (clause 3.3) | \[KRW, clause 3.3(a) / USD, clause 3.3(b): \[bank, account holder, account number, SWIFT\] / US dollar stablecoin, clause 3.3(c)\] |
-| Published settings (clause 9.3) | As published when this Plan Order is made: release fee \[10\]%; maintenance allowance \[3\] hours a week per Fleet; window times as stated under Windows |
+| Maintenance allowance (clause 4.6) | As published when this Plan Order is made: \[3\] hours a week per Fleet |
 | Fleet Rates (clause 16.5) | As published on the Fleet List when this Plan Order is made: \[Fleet 1: 1.00; Fleet 2: 1.00; Fleet 3: 1.00\] |
 
 ## Signatures

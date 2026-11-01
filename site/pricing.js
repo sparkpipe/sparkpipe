@@ -9,39 +9,41 @@ window.SP_PRICING = {
   ],
   "accelerators": [],
   "windows": [
-    { "id": "americas", "name": "Americas", "from": 0, "to": 8, "localDay": -1 },
-    { "id": "asia", "name": "Asia", "from": 8, "to": 16, "localDay": 0 },
-    { "id": "europe", "name": "Europe", "from": 16, "to": 24, "localDay": 0 }
+    { "id": "w00", "from": 0, "to": 8 },
+    { "id": "w08", "from": 8, "to": 16 },
+    { "id": "w16", "from": 16, "to": 24 }
   ],
   "models": [
-    { "id": "kimi-k3", "name": "Kimi K3" },
-    { "id": "glm-5.3", "name": "GLM 5.3" },
-    { "id": "glm-5.3-flash", "name": "GLM 5.3 Flash" },
-    { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash" },
-    { "id": "k-exaone-2.0", "name": "K-EXAONE 2.0" },
-    { "id": "a.x-k2", "name": "A.X K2" },
-    { "id": "solar-open-2", "name": "Solar Open 2" },
-    { "id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro" },
-    { "id": "mimo-v2.6-flash", "name": "MiMo V2.6 Flash" },
-    { "id": "gemma-4-31b", "name": "Gemma 4 31B" },
-    { "id": "gemma-4-26b-a4b", "name": "Gemma 4 26B A4B" },
-    { "id": "ling-3.0-flash", "name": "Ling 3.0 Flash" },
-    { "id": "ling-3.0-flash-fin", "name": "Ling 3.0 Flash Finance" },
-    { "id": "laguna-s-2.1", "name": "Laguna S 2.1" },
-    { "id": "muse-glimmer-30b", "name": "Muse Glimmer 30B" },
-    { "id": "hy4-preview", "name": "Hunyuan Hy4 Preview" },
-    { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B" },
-    { "id": "qwen3.8-max", "name": "Qwen 3.8 Max" }
+    { "id": "kimi-k3", "name": "Kimi K3", "decode": 16.2, "prefill": 590 },
+    { "id": "glm-5.3", "name": "GLM 5.3", "decode": 28.9, "prefill": 1162 },
+    { "id": "glm-5.3-flash", "name": "GLM 5.3 Flash", "decode": 55.0, "prefill": 876 },
+    { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "decode": 42.5, "prefill": 1290 },
+    { "id": "k-exaone-2.0", "name": "K-EXAONE 2.0", "decode": 27.3, "prefill": 324 },
+    { "id": "a.x-k2", "name": "A.X K2", "decode": 23.8, "prefill": 1274 },
+    { "id": "solar-open-2", "name": "Solar Open 2", "decode": 61.2, "prefill": 1025 },
+    { "id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "decode": 19.0, "prefill": 55 },
+    { "id": "mimo-v2.6-flash", "name": "MiMo V2.6 Flash", "decode": 40.9, "prefill": 157 },
+    { "id": "gemma-4-31b", "name": "Gemma 4 31B", "decode": 34.4, "prefill": 834 },
+    { "id": "gemma-4-26b-a4b", "name": "Gemma 4 26B A4B", "decode": 89.5, "prefill": 1848 },
+    { "id": "ling-3.0-flash", "name": "Ling 3.0 Flash", "decode": 80.4, "prefill": 1514 },
+    { "id": "ling-3.0-flash-fin", "name": "Ling 3.0 Flash Finance", "decode": 79.2, "prefill": 1550 },
+    { "id": "laguna-s-2.1", "name": "Laguna S 2.1", "decode": 51.0, "prefill": 773 },
+    { "id": "muse-glimmer-30b", "name": "Muse Glimmer 30B", "decode": 37.9, "prefill": 1186 },
+    { "id": "hy4-preview", "name": "Hunyuan Hy4 Preview", "decode": 14.2, "prefill": 53 },
+    { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B", "decode": 57.4, "prefill": 1852 },
+    { "id": "qwen3.8-max", "name": "Qwen 3.8 Max", "decode": 10.4, "prefill": 35 }
   ],
   "plans": {
     "earliestStart": "2026-12-01",
     "startWithinDays": 60,
     "terms": [
-      { "months": 3, "hourPrice": 17.5, "hourPriceKRW": 23000, "payment": "upfront" },
-      { "months": 12, "hourPrice": 16.5, "hourPriceKRW": 22000, "payment": "gates" },
-      { "months": 24, "hourPrice": 15, "hourPriceKRW": 20000, "payment": "gates" },
-      { "months": 36, "hourPrice": 14, "hourPriceKRW": 18500, "payment": "gates" }
+      { "id": "monthly", "months": null, "hourPrice": 17.5, "hourPriceKRW": 23000, "payment": "monthly" },
+      { "id": "1y", "months": 12, "hourPrice": 16.5, "hourPriceKRW": 22000, "payment": "gates" },
+      { "id": "2y", "months": 24, "hourPrice": 15, "hourPriceKRW": 20000, "payment": "gates" },
+      { "id": "3y", "months": 36, "hourPrice": 14, "hourPriceKRW": 18500, "payment": "gates" }
     ],
+    "office": { "zone": "Asia/Seoul", "from": 9, "to": 18, "days": "weekdays", "minHours": 8 },
+    "zones": ["Asia/Seoul", "Asia/Tokyo", "Asia/Singapore", "Asia/Kolkata", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "UTC"],
     "lockPremium": 1,
     "lockPremiumKRW": 1300,
     "maxFleets": 3,
@@ -53,9 +55,7 @@ window.SP_PRICING = {
     "minPurchase": 10,
     "validityMonths": 12,
     "releaseFee": 0.10,
-    "horizonDays": 7,
     "advanceDays": 31,
-    "advanceMultiplier": 1.25,
     "lastCallHours": 6,
     "maxBidDays": 31,
     "trancheDemoHours": 40,
@@ -67,11 +67,7 @@ window.SP_PRICING = {
     "pool": {
       "seats": 8,
       "minMultiplier": 0.5,
-      "maxMultiplier": 3,
-      "models": [
-        { "id": "kimi-k3", "name": "Kimi K3" },
-        { "id": "glm-5.3", "name": "GLM 5.3" }
-      ]
+      "maxMultiplier": 3
     }
   },
   "gates": [

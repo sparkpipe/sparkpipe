@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe</title>
-<meta name="description" content="SparkPipe 플릿 전체를 위한 시간 크레딧입니다. 서울의 NVIDIA DGX Spark 16대에서 Kimi K3, GLM 5.3, DeepSeek V4.1 같은 오픈 프런티어 모델과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2를 실행합니다. 지금은 공유 풀에서 요청 단위로, 2026년 12월 1일부터는 전용 플릿시간에 쓸 수 있습니다.">
+<meta name="description" content="SparkPipe 플릿 전체를 위한 시간 크레딧입니다. 서울의 NVIDIA DGX Spark 16대에서 Kimi K3, GLM 5.3, DeepSeek V4.1 같은 오픈 프런티어 모델과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2를 실행합니다. API로 제공되는 모든 모델에 요청 단위로 쓰거나, 2026년 12월 1일부터 플릿 전체를 시간 단위로 예약할 수 있습니다.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
@@ -43,7 +43,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
       <a href="#responsibility">책임</a>
       <a href="#technology">기술</a>
       <a href="#company">회사</a>
-      <a href="market.html" hreflang="en">시간 마켓</a>
+      <a href="market.html" hreflang="en">내 계정</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="언어 / Language"><a href="index.html?lang=en" hreflang="en" lang="en">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
@@ -61,10 +61,10 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     <div class="hero-copy">
       <p class="lead">SparkPipe 플릿 하나를 통째로 빌리면, 그 시간 동안 플릿은 고객의 요청만 처리합니다. 대부분의 GPU 서버에는 담기지 않는 Kimi K3 등 1TB 이상의 오픈 모델을 100만 토큰 컨텍스트와 추측 디코딩으로 실행하며, LG의 K-EXAONE 2.0, SKT의 A.X K2, 업스테이지의 Solar Open 2 같은 국산 대형 모델도 실행합니다. 데이터는 국내에 머물고, 다른 고객의 요청 대기열이 없으며, 요금은 토큰이 아니라 시간 단위입니다.</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 크레딧 구매 (영문)</a>
+        <a class="btn solid" href="buy.html" hreflang="en">카드·계좌이체·USDC·USDT로 시간 크레딧 구매 (영문)</a>
         <a class="btn" href="#prices">가격과 약관</a>
       </div>
-      <p class="note">회사, 전문직 종사자와 독립 개발자를 위한 서비스이며, 가정용 소비자에게는 판매하지 않습니다. 시간 크레딧(HC) 1개로 요율이 1인 플릿을 1시간 쓸 수 있습니다. 지금 구매한 HC는 공유 풀에서 바로 쓸 수 있고, <span data-start>2026년 12월 1일</span>부터는 전용 플릿시간 예약에도 쓸 수 있습니다. 누구나 <a href="market-test.html" hreflang="en">시간 마켓 샌드박스(영문)</a>에서 결제 없이 모든 기능을 시험해 볼 수 있습니다.</p>
+      <p class="note">회사, 전문직 종사자와 독립 개발자를 위한 서비스이며, 가정용 소비자에게는 판매하지 않습니다. 시간 크레딧(HC) 1개로 플릿 하나를 1시간 씁니다. HC는 API에서 제공되는 모든 모델에 바로 쓸 수 있고, <span data-start>2026년 12월 1일</span>부터는 플릿 전체를 예약하는 데에도 쓸 수 있습니다. 누구나 <a href="market.html?sandbox" hreflang="en">샌드박스(영문)</a>에서 결제 없이 모든 기능을 시험해 볼 수 있습니다.</p>
     </div>
     <figure class="screen" role="img" aria-label="플릿 1 애니메이션: 스위치 하나와 노드 쌍 사이의 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드끼리 부분 결과를 주고받은 뒤 토큰 하나가 나옵니다.">
       <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 서울</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
@@ -77,8 +77,8 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     </figure>
   </div>
   <div class="specs">
-    <div><strong data-krw="hc">₩26,000</strong><span>HC 1개당, 부가세 별도. 요율이 1인 플릿의 1시간이며, <span data-market="min">$10</span>부터 금액 단위로 구매하고 약정이 없습니다 (<span data-price="hc">$20</span>)</span></div>
-    <div><strong data-plan-krw="36">₩18,500</strong><span>3년 예약 플랜의 플릿시간당 가격, 부가세 별도. 3개월부터 고를 수 있는 네 가지 기간 중 가장 낮습니다 (<span data-plan-usd="36">$14</span>)</span></div>
+    <div><strong data-krw="hc">₩26,000</strong><span>HC 1개당, 부가세 별도. 플릿 하나의 1시간이며, <span data-market="min">$10</span>부터 금액 단위로 구매하고 약정이 없습니다 (<span data-price="hc">$20</span>)</span></div>
+    <div><strong data-plan-krw="36">₩18,500</strong><span>3년 예약 플랜의 플릿시간당 가격, 부가세 별도. 월간, 1년, 2년, 3년 네 가지 기간 중 가장 낮습니다 (<span data-plan-usd="36">$14</span>)</span></div>
     <div><strong><span data-market="months">12</span>개월</strong><span>구매일부터 각 HC를 쓸 수 있는 기간. 보유 한도는 없습니다</span></div>
     <div><strong>모델 18종</strong><span>K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3, GLM 5.3 등. 각 모델은 게시자의 오픈 라이선스를 따릅니다</span></div>
   </div>
@@ -93,10 +93,10 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   <div class="sec-body">
     <h2>한국 기업을 위해 만들었습니다.</h2>
     <div class="defs">
-      <div><p class="label">데이터는 국내에</p><p>플릿과 서버는 모두 서울에 있으며, 고객의 요청은 어떤 해외 AI 서비스로도 가지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다.</p></div>
+      <div><p class="label">데이터는 국내에</p><p>고객의 요청, 프롬프트, 출력물과 그 밖의 데이터는 저희가 서울에서 직접 운영하는 플릿과 프리필 가속기, 그리고 국내에 있는 저희 서버에서만 처리되며, 국내외의 다른 어떤 컴퓨팅 또는 AI 서비스로도 가지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다.</p></div>
       <div><p class="label">한국 회사</p><p>계약 상대방은 한국 회사인 효르에이아이테크 유한회사이며, 한국법이 적용됩니다. SparkPipe 고객 계약과 시간 마켓 규칙은 국문과 영문으로 되어 있으며, 국문이 우선합니다.</p></div>
-      <div><p class="label">원화 결제</p><p>국내 사업자는 전자세금계산서를 받고 원화 계좌이체로 결제하며, 부가세 10%가 붙습니다. 해외 고객은 USDC, USDT 또는 USD 송금으로 결제합니다.</p></div>
-      <div><p class="label">국산 모델</p><p>LG의 K-EXAONE 2.0과 SKT의 A.X K2(모두 Apache 2.0), 업스테이지의 Solar Open 2가 플릿 1에서 Kimi K3, GLM 5.3 등 다른 오픈 모델과 함께 실행됩니다. 세 모델 모두 축소판이 아닌 원래 모델을 게시자의 정밀도 그대로 실행합니다. 다른 곳에서는 쓰기 어렵습니다. 2026년 10월 현재 <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a>와 Hugging Face 어디에도 세 모델의 공개 API 제공업체가 없습니다.</p></div>
+      <div><p class="label">카드·원화 결제</p><p>토스페이먼츠를 통해 국내·해외 카드, 계좌이체, 가상계좌 또는 간편결제로 결제하며, 부가세 10%가 붙습니다. 계좌이체·가상계좌 결제에는 국내 사업자에게 전자세금계산서를 발행합니다. 해외 고객은 카드(원화), USDC·USDT 또는 플랜의 경우 USD 송금으로 결제합니다.</p></div>
+      <div><p class="label">국산 모델</p><p>LG의 K-EXAONE 2.0과 SKT의 A.X K2(모두 Apache 2.0), 업스테이지의 Solar Open 2가 플릿 1에서 Kimi K3, GLM 5.3 등 다른 오픈 모델과 함께 실행됩니다. 세 모델 모두 축소판이 아닌 원래 모델을 게시자의 정밀도 그대로 실행합니다. 다른 곳에서는 쓰기 어렵습니다. 2026년 10월 현재 <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a>와 Hugging Face 어디에도 세 모델의 공개 API 제공업체가 없습니다. 저희 API는 세 모델 모두 요청 단위로 제공합니다.</p></div>
       <div><p class="label">공유가 아닌 전용</p><p>고객의 시간 동안 플릿 전체가 고객의 요청만 처리합니다. 다른 사람의 트래픽이 앞에서 기다리지 않으므로, 플릿이 비는 즉시 응답이 시작됩니다.</p></div>
       <div><p class="label">시간 단위 요금</p><p>토큰이 아니라 플릿의 시간에 대해 지불합니다. 고객의 플릿시간에서는 프롬프트를 프리필 가속기로 보내지 않는 한 긴 프롬프트, 100만 토큰 컨텍스트, 대화 기록을 다시 읽는 에이전트에도 추가 비용이 없습니다. 공유 풀에서는 요청이 좌석을 차지한 초만큼 지불하므로, 캐시된 대화를 다시 읽는 비용은 적습니다.</p></div>
     </div>
@@ -135,7 +135,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
       <div><strong class="mono">126 tok/s</strong><p>Kimi K3가 추측 디코딩으로 파일 전체를 다시 쓸 때의 실측치입니다. 추측 디코딩 없이는 15 tok/s이며, 검색·치환 편집은 28 tok/s입니다.</p></div>
       <div><strong class="mono">0.3–5초</strong><p>대화가 캐시된 후속 턴에서 첫 토큰까지 걸리는 시간으로, Kimi K3에서 최대 137,700토큰까지 실측했습니다.</p></div>
       <div><strong class="mono">15.6분</strong><p>플릿 하나, 플릿 1만으로 100만 토큰 Kimi K3 프롬프트를 처음부터 프리필하는 시간입니다. 최근 측정치이며, 점심시간이 아니라 커피 한 잔 시간입니다. 258K 토큰 프롬프트는 150초입니다.</p></div>
-      <div><strong class="mono">3~6분</strong><p><b>추정치</b>: 같은 100만 토큰 프롬프트를 모든 플릿이 함께 쓰는 프리필 가속기로 처리하는 시간이며, 대기열에 따라 달라집니다. 가속기 이용 시간은 규모에 비례해 플릿시간처럼 가격이 매겨지고 초 단위로 부과되며, 입찰 배수를 높여 대기열에서 앞 순서를 얻을 수 있습니다.</p></div>
+      <div><strong class="mono">3~6분</strong><p><b>추정치</b>: 같은 100만 토큰 프롬프트를 모든 플릿이 함께 쓰는 프리필 가속기로 처리하는 시간이며, 대기열에 따라 달라집니다. 우선순위를 높이면 대기열에서 앞 순서를 얻습니다.</p></div>
     </div>
     <p class="prose"><b>추정치</b>: 플릿 2(M5 Ultra Mac Studio 8대)에서 Kimi K3는 단일 요청 기준으로 추측 디코딩 없이 23 tok/s, 에이전트 코딩 턴에서 추측 디코딩으로 약 35 tok/s입니다. SKT의 A.X K2는 33 tok/s와 약 49 tok/s로 추정됩니다. 추정치는 저희 실측치와 공개된 하드웨어 수치로 계산한 예측이며, 달성할 수 있다고 보는 값만 싣습니다. 각각의 계산 방법은 <a href="fleets-ko.html#estimates">플릿 목록</a>에 있습니다. 하드웨어가 가동되면 실측치로 바꿉니다.</p>
   </div>
@@ -149,7 +149,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   <div class="sec-body">
     <h2>다음에 오는 것.</h2>
     <div class="check-list">
-      <div><b>프리필 가속기</b><span>모든 플릿이 함께 쓰는 전용 하드웨어가 긴 프롬프트를 계산해 그 플릿에 돌려주면, 플릿이 응답을 씁니다. 추정치: 100만 토큰 Kimi K3 프롬프트를 대기열에 따라 3~6분에 처리합니다. 플릿 1만으로도 이미 15.6분에 프리필합니다(측정치). 요청이 원할 때만 가속기를 씁니다. 가속기 이용 시간은 규모에 비례해 플릿시간처럼 가격이 매겨집니다. DGX Spark 48대는 요율 1인 플릿의 3배, 96대는 6배이며, 초 단위로 부과됩니다. 입찰 배수를 최대 10까지 높여 대기열에서 앞 순서를 얻을 수 있습니다. 대금은 먼저 소멸하는 HC부터 쓰거나 플랜 시간으로 냅니다. 원칙은 이렇습니다: 입찰 배수 1이면 고객의 플릿에서와 거의 같은 Spark 시간에 대해 내고, 더 빨리 끝납니다.</span></div>
+      <div><b>프리필 가속기</b><span>저희가 서울에서 직접 운영하며 모든 플릿이 함께 쓰는 DGX Spark의 집합이 긴 프롬프트를 계산해 그 플릿에 돌려주면, 플릿이 응답을 씁니다. 추정치: 100만 토큰 Kimi K3 프롬프트를 대기열에 따라 3~6분에 처리합니다. 요청이 원할 때만 가속기를 씁니다. 프롬프트의 가격은 가속기초 × 가속기의 요율 × 그 프롬프트의 우선순위이며, 초 단위로 부과됩니다. 플릿 목록은 각 가속기의 요율을 요율 1인 플릿에 대한 그 연산 능력에 따라 정하며, DGX Spark 48대로 이루어진 가속기는 요율 3입니다. 계정 페이지(영문)에서는 Standard ×1, Priority ×2, Rush ×5를 고를 수 있고, API로는 1부터 10까지 어떤 우선순위든 정할 수 있으며, 가장 높은 것부터 처리합니다. 대금은 먼저 소멸하는 HC부터 쓰거나 플랜 시간으로 냅니다. Standard에서는 고객의 플릿에서와 거의 같은 Spark 시간에 대해 내고, 더 빨리 끝납니다.</span></div>
       <div><b>플릿 2</b><span>플릿 1의 2.2배 메모리 대역폭을 가진 M5 Ultra Mac Studio 8대로 더 빠르게 디코딩합니다. Studio 한 대에서 실측: Qwen 3.8 27B를 원래 BF16 정밀도로 단일 요청 20.1 tok/s로 디코딩하며, 이는 Studio의 메모리 대역폭이 허용하는 속도의 90%이고, 요청 64개를 동시에 처리하면 합계 442 tok/s입니다. 추정치: 추측 디코딩 없이 Kimi K3 23 tok/s.</span></div>
       <div><b>더 나은 추측 디코딩</b><span>여러 드래프터의 초안을 한 번에 검증하는 트리 드래프트로, 단계마다 더 많은 초안 토큰이 채택됩니다.</span></div>
       <div><b>분야별 검색</b><span>채팅에서 법률, 의료, 금융, 특허 등의 검색 도구를 체크하면, 어떤 모델이든 최신 1차 자료를 근거로 출처를 밝혀 답합니다.</span></div>
@@ -165,14 +165,14 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
     <p class="label">4단계</p>
   </div>
   <div class="sec-body">
-    <h2>계정, 시간 크레딧, 사용, 반납.</h2>
+    <h2>계정, 시간 크레딧, 사용, 되팔기.</h2>
     <ol class="steps">
       <li><h3>계정 개설</h3><p>회사의 법인명 또는 본인 성명과 업무용 이메일을 입력하고, 이메일로 받은 6자리 코드로 이메일을 확인한 뒤 SparkPipe 고객 계약과 시간 마켓 규칙에 동의합니다. 이메일이 곧 계정이며, 비밀번호나 암호화폐 지갑은 필요 없습니다. 모든 사업자는 제재 대상 명단과 대조하여 심사합니다.</p></li>
-      <li><h3>시간 크레딧 구매</h3><p><span data-market="min">$10</span> 이상 원하는 금액을 미리 결제합니다. 국내 사업자는 전자세금계산서를 받고 원화 계좌이체로, 해외 고객은 결제 대행사의 인보이스에 따라 USDC 또는 USDT로 결제합니다. 한국 부가세 10%가 붙습니다. 결제가 확인되면 1개당 <span data-price="hc">$20</span>로 계산해 소수점 여섯째 자리까지 HC가 발급됩니다. 각 HC는 구매일부터 <span data-market="months">12</span>개월 동안 쓸 수 있으며, 오래된 것부터 먼저 씁니다.</p></li>
-      <li><h3>세 가지 사용 방법</h3><p>공유 풀은 지금 열려 있습니다. OpenAI 형식 API로 보낸 각 요청은 아무도 예약하지 않은 플릿에서 처리되며, 좌석을 차지한 초만큼 게시된 가격으로 지불합니다. 전용 플릿시간에는 플릿 전체를 씁니다. <span data-start>2026년 12월 1일</span>부터 시간 마켓 일정표에서 예약하며, 저희 용량은 <span data-market="days">7</span>일 앞까지 시간당 그 플릿의 요율만큼 HC로, <span data-market="ahead">31</span>일 앞까지는 어느 요일이든 그 <span data-market="advance">1.25</span>배로 예약하고, 누군가 반납한 시간은 더 먼 날짜도 예약할 수 있습니다. 어떤 예약도 다른 예약에 밀려나지 않습니다. 정기 매수 주문은 평일 09:00~18:00 같은 반복 구간을 매주 고객이 정한 가격 이하로 채웁니다. API 키는 고객이 직접 만들므로, 누가 쓸지 고객이 정합니다.</p></li>
-      <li><h3>쓰지 않을 시간 반납</h3><p>예약하면 HC가 바로 차감되고 예약은 확정되지만, 시작 전이라면 그 시간을 요율이나 그보다 낮은 최저 가격으로 반납할 수 있습니다. 누군가 그 시간을 예약하거나 시작될 때 공유 풀이 그 시간을 쓰면, 그 시간이 번 만큼의 HC를 반납 수수료 <span data-market="fee">10%</span>를 뺀 뒤 받으며, 받은 HC는 <span data-market="months">12</span>개월 동안 쓸 수 있습니다. 저희는 반납된 시간을 사들이지 않으므로, 그 시간은 구매자와 공유 풀이 지불한 만큼만 법니다.</p></li>
+      <li><h3>시간 크레딧 구매</h3><p><span data-market="min">$10</span>(₩13,000) 이상 원하는 금액을 미리 결제합니다. 토스페이먼츠를 통해 카드, 계좌이체, 가상계좌 또는 간편결제로 원화로 결제하거나, CoinPayments 인보이스에 따라 USDC 또는 USDT로 결제합니다. 한국 부가세 10%가 붙습니다. 결제가 확인되면 1개당 <span data-krw="hc">₩26,000</span>(또는 <span data-price="hc">$20</span>)로 계산해 소수점 여섯째 자리까지 HC가 발급됩니다. 각 HC는 구매일부터 <span data-market="months">12</span>개월 동안 쓸 수 있으며, 오래된 것부터 먼저 씁니다.</p></li>
+      <li><h3>세 가지 사용 방법</h3><p>저희 OpenAI 형식 API, 즉 공유 풀은 제공되는 모든 모델을 처리하며, 각 요청은 아무도 예약하지 않은 플릿에서 좌석을 차지한 초만큼 게시된 가격으로 지불합니다. 플릿은 한 번에 하나의 모델을 적재하므로, 다른 모델에 대한 요청은 플릿이 그 모델로 전환하는 동안(보통 20~80초) 기다리며, 기다리는 동안에는 비용을 내지 않습니다. 계정 페이지(영문)는 모델마다 단일 요청 실측 속도로 계산한 프롬프트·출력 100만 토큰당 달러 가격(추정치)을 보여 줍니다. 좌석 가격이 시간당 $1.25일 때 Kimi K3는 약 $0.59와 $21입니다. 전용 플릿시간에는 플릿 전체를 씁니다. <span data-start>2026년 12월 1일</span>부터 <a href="market.html" hreflang="en">계정 페이지(영문)</a>에서 <span data-market="ahead">31</span>일 앞까지 그 플릿의 가격(현재 모든 플릿 시간당 1 HC)으로 예약하며, 다른 고객이 되판 시간은 그 개시 시각이 얼마나 앞인지와 관계없이 예약할 수 있습니다. 어떤 예약도 다른 예약에 밀려나지 않습니다. 주간 시간대 요청은 평일 09:00~18:00 같은 반복 시간대의 시간을 매주 고객이 정한 가격 이하로 예약합니다. API 키는 고객이 직접 만들므로, 누가 쓸지 고객이 정합니다.</p></li>
+      <li><h3>쓰지 않을 시간 되팔기</h3><p>예약하면 HC가 바로 차감되고 예약은 확정되지만, 시작 전이라면 그 시간을 그 플릿의 가격이나 고객이 정한 최저 가격으로 되팔 수 있습니다(반납). 다른 고객이 그 시간을 예약하거나 시작될 때 공유 풀이 그 시간을 쓰면, 그 시간이 번 만큼의 HC를 수수료 <span data-market="fee">10%</span>를 뺀 뒤 받으며, 받은 HC는 <span data-market="months">12</span>개월 동안 쓸 수 있습니다. 저희는 되판 시간을 사들이지 않으므로, 그 시간은 구매자와 공유 풀이 지불한 만큼만 법니다.</p></li>
     </ol>
-    <p class="caption">원화 결제는 효르에이아이테크 유한회사의 국내 은행 계좌로 바로 입금됩니다. USDC와 USDT 결제는 결제 대행사를 거칩니다. HC는 다른 계정으로 보내거나 현금으로 받을 수 없으며, 반납된 시간은 계정끼리 직접 넘어가지 않고 저희를 거쳐 그 시간을 예약한 고객에게 갑니다. 모든 단계를 <a href="market-test.html" hreflang="en">샌드박스(영문)</a>에서 테스트 시계로 결제 없이 시험해 볼 수 있습니다.</p>
+    <p class="caption">원화 결제는 토스페이먼츠를, USDC와 USDT 결제는 CoinPayments를 거치며, 두 결제대행사 모두 판매자인 효르에이아이테크 유한회사를 위해 대금을 받습니다. HC는 다른 계정으로 보내거나 현금으로 받을 수 없으며, 되판 시간은 계정끼리 직접 넘어가지 않고 저희를 거쳐 그 시간을 예약한 고객에게 갑니다. 모든 단계를 <a href="market.html?sandbox" hreflang="en">샌드박스(영문)</a>에서 테스트 시계로 결제 없이 시험해 볼 수 있습니다.</p>
   </div>
 </section>
 
@@ -183,25 +183,25 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   </div>
   <div class="sec-body">
     <h2>시간 크레딧으로 시작하고, 예약하면 더 저렴하게.</h2>
-    <p class="prose">모든 고객은 약정 없이 시간 크레딧으로 시작할 수 있으며, 시간 크레딧으로 플릿을 시험해 볼 수도 있습니다. 일주일 동안 매일 고객의 8시간 구간을 예약하면 <span data-market="week">56</span> HC, 부가세 별도 약 <span data-market="trial">$1,120</span>입니다. 고객의 시간을 확보해 두고 계약 기간 동안 고정된 더 낮은 가격으로 쓰려는 사업자는 다섯 가지 선택으로 예약 플랜을 만들고, 사업자 확인을 거쳐 플랜 주문서에 서명합니다. 시간 크레딧과 플랜은 하나의 계약, SparkPipe 고객 계약을 따릅니다.</p>
+    <p class="prose">모든 고객은 약정 없이 시간 크레딧으로 시작할 수 있으며, 시간 크레딧으로 플릿을 시험해 볼 수도 있습니다. 일주일 동안 매일 고객의 8시간 업무 시간을 예약하면 <span data-market="week">56</span> HC, 부가세 별도 약 <span data-market="trial">$1,120</span>입니다. 매주 고객의 시간을 확보해 두고, 고객의 업무 시간에 맞춰 월간 가격으로 월 단위로, 또는 플랜 기간 내내 고정되는 더 낮은 가격으로 1~3년 동안 쓰려는 사업자는 예약 플랜을 만들고, 사업자 확인을 거쳐 플랜 주문서에 서명합니다. 시간 크레딧과 플랜은 하나의 계약, SparkPipe 고객 계약을 따릅니다.</p>
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col"></th><th scope="col">시간 크레딧</th><th scope="col">예약 플랜</th></tr></thead>
       <tbody>
-        <tr><th scope="row">가격</th><td>HC 1개당 <span data-krw="hc">₩26,000</span> 또는 <span data-price="hc">$20</span>, 부가세 별도. <span data-market="min">$10</span>부터 금액 단위로 구매합니다. HC 1개로 요율이 1인 플릿을 1시간 씁니다</td><td>플릿시간당 가격, 부가세 별도, 계약 기간 동안 고정: 3개월 <span data-plan-krw="3">₩23,000</span> 또는 <span data-plan-usd="3">$17.50</span>, 1년 <span data-plan-krw="12">₩22,000</span> 또는 <span data-plan-usd="12">$16.50</span>, 2년 <span data-plan-krw="24">₩20,000</span> 또는 <span data-plan-usd="24">$15</span>, 3년 <span data-plan-krw="36">₩18,500</span> 또는 <span data-plan-usd="36">$14</span>. 플릿 고정은 시간당 <span data-plan-krw="lock">₩1,300</span> 또는 <span data-plan-usd="lock">$1</span>이 추가됩니다</td></tr>
-        <tr><th scope="row">약정</th><td>없음</td><td>다섯 가지 선택으로 정한 시간에 대한 플랜 주문서: 기간은 3개월, 1년, 2년 또는 3년; 구간은 미주 00:00~08:00, 아시아 08:00~16:00, 유럽 16:00~24:00(KST)의 8시간 구간 중 하나 이상이며, 세 구간 모두는 종일; 요일은 주 7일인 매일, 또는 각 구간 지역 기준 월요일부터 금요일까지인 평일; 동시에 쓰는 플릿 1~<span data-plan="fleets">3</span>개, 요청하면 그 이상; 그리고 종일·매일 플랜에서는 플릿 고정</td></tr>
-        <tr><th scope="row">모델</th><td>플릿 목록에서 제공하는 모델 중 예약마다 선택. 공유 풀은 게시된 모델 메뉴를 제공합니다</td><td>플랜 주문서에서 지정한 모델은 계약 기간 내내 이용할 수 있고, 그 밖의 모델은 목록에 있는 동안 이용할 수 있습니다</td></tr>
+        <tr><th scope="row">가격</th><td>HC 1개당 <span data-krw="hc">₩26,000</span> 또는 <span data-price="hc">$20</span>, 부가세 별도. <span data-market="min">$10</span>부터 금액 단위로 구매합니다. HC 1개로 플릿 하나를 1시간 씁니다</td><td>플릿시간당 가격, 부가세 별도: 월간 <span data-plan-krw="monthly">₩23,000</span> 또는 <span data-plan-usd="monthly">$17.50</span>(매월 결제할 때의 월간 가격), 플랜 기간 내내 고정되는 1년 <span data-plan-krw="12">₩22,000</span> 또는 <span data-plan-usd="12">$16.50</span>, 2년 <span data-plan-krw="24">₩20,000</span> 또는 <span data-plan-usd="24">$15</span>, 3년 <span data-plan-krw="36">₩18,500</span> 또는 <span data-plan-usd="36">$14</span>. 플릿 고정은 시간당 <span data-plan-krw="lock">₩1,300</span> 또는 <span data-plan-usd="lock">$1</span>이 추가됩니다</td></tr>
+        <tr><th scope="row">약정</th><td>없음</td><td>업무 시간에 대한 플랜 주문서: 종료일 없는 월간 또는 1년, 2년, 3년의 기간; 고객의 표준시간대 기준 8시간 이상의 업무 시간(예: 서울, 베를린 또는 뉴욕의 09:00~18:00, 그 지역의 서머타임을 따름) 또는 종일; 매일, 또는 고객 현지 기준 월요일부터 금요일까지인 평일; 동시에 쓰는 플릿 1~<span data-plan="fleets">3</span>개, 요청하면 그 이상; 종일·매일 플랜에서는 플릿 고정. 월간 플랜은 결제를 멈추거나 계정에서 중지하면 끝납니다</td></tr>
+        <tr><th scope="row">모델</th><td>플릿 목록에서 제공하는 모든 모델 중 예약마다, 그리고 API 요청마다 선택</td><td>플랜 주문서에서 지정한 모델은 플랜이 계속되는 동안 이용할 수 있고, 그 밖의 모델은 목록에 있는 동안 이용할 수 있습니다</td></tr>
         <tr><th scope="row">신원 확인</th><td>필요 없음</td><td>플랜 주문서 전에 필요</td></tr>
-        <tr><th scope="row">보유</th><td>한도 없음. 각 HC는 구매일부터 <span data-market="months">12</span>개월 동안 쓸 수 있으며, 오래된 것부터 먼저 씁니다</td><td>구간, 요일, 플릿 수에 필요한 용량은 각 시간 시작 <span data-plan="lastcall">6</span>시간 전까지 판매하지 않고 남겨 두며, 매월 결제한 시간(트랜치)으로 시간 마켓 일정표에서 예약합니다. 동시에 더 많은 플릿을 쓰거나 구간 밖의 시간을 쓰는 것은 여유가 있을 때 가능합니다. 고정된 플릿은 계약 기간 내내 같은 이름의 플릿이며 고객만 쓰므로, 모델 상태와 캐시가 그 플릿에 그대로 남습니다</td></tr>
-        <tr><th scope="row">반납</th><td colspan="2">쓰지 않을 예약 시간은 트랜치 시간을 포함해 시작 전에 반납할 수 있습니다. 누군가 그 시간을 예약하거나 공유 풀이 그 시간을 쓰면, 그 시간이 번 만큼의 HC를 반납 수수료 <span data-market="fee">10%</span>를 뺀 뒤 받으며, 받은 HC는 <span data-market="months">12</span>개월 동안 쓸 수 있습니다</td></tr>
-        <tr><th scope="row">결제</th><td>사용 전: 국내 사업자는 전자세금계산서에 따른 원화 계좌이체, 또는 USDC·USDT 인보이스</td><td>전자세금계산서에 따른 원화 계좌이체, 해외 본인 계좌에서의 USD 송금(부가세 영세율), 또는 USDC·USDT 인보이스. 3개월 플랜은 시작 전에 전액 결제합니다. 그보다 긴 플랜은 처음 30일(A단계) 동안 낼 금액이 없고, 결제하지 않는 것으로 철회할 수 있습니다. 30일·60일·90일의 세 기한까지 각각 6개월분 시간, 12개월분 시간, 계약 기간 전체를 결제해야 합니다. 시간은 결제된 뒤에만 생깁니다</td></tr>
-        <tr><th scope="row">예약</th><td>저희 용량은 <span data-start>2026년 12월 1일</span>부터 <span data-market="days">7</span>일 앞까지 그 플릿의 요율로, <span data-market="ahead">31</span>일 앞까지는 어느 요일이든 요율의 <span data-market="advance">1.25</span>배로, 반납된 시간은 날짜 제한 없이 예약합니다. 반납 외에는 확정되며, 누구도 가져가지 않습니다. 플랜 보유 고객의 용량은 각 시간 시작 <span data-plan="lastcall">6</span>시간 전까지 판매하지 않고 남겨 둡니다</td><td>반납 외에는 확정되며, 누구도 가져가지 않습니다. 저희는 점검을 위해 각 플릿을 주당 최대 <span data-plan="maintenance">3</span>시간 쉬게 할 수 있으며, 7일 전에 알리고, 그 점검에 걸린 예약 시간은 돌려드립니다</td></tr>
+        <tr><th scope="row">보유</th><td>한도 없음. 각 HC는 구매일부터 <span data-market="months">12</span>개월 동안 쓸 수 있으며, 오래된 것부터 먼저 씁니다</td><td>업무 시간, 요일, 플릿 수에 필요한 용량은 각 시간 시작 <span data-plan="lastcall">6</span>시간 전까지 판매하지 않고 남겨 두며(월간 플랜은 이번 달과 다음 달), 매월 결제한 시간(트랜치)으로 <a href="market.html" hreflang="en">계정 페이지(영문)</a>의 일정표에서 예약합니다. 동시에 더 많은 플릿을 쓰거나 업무 시간 밖의 시간을 쓰는 것은 여유가 있을 때 가능합니다. 고정된 플릿은 플랜이 계속되는 동안 같은 이름의 플릿이며 고객만 쓰므로, 모델 상태와 캐시가 그 플릿에 그대로 남습니다</td></tr>
+        <tr><th scope="row">되팔기</th><td colspan="2">쓰지 않을 예약 시간은 트랜치 시간을 포함해 시작 전에 되팔 수 있습니다. 다른 고객이 그 시간을 예약하거나 공유 풀이 그 시간을 쓰면, 그 시간이 번 만큼의 HC를 수수료 <span data-market="fee">10%</span>를 뺀 뒤 받으며, 받은 HC는 <span data-market="months">12</span>개월 동안 쓸 수 있습니다</td></tr>
+        <tr><th scope="row">결제</th><td>사용 전: 토스페이먼츠를 통한 원화 카드·계좌이체·가상계좌·간편결제(카드 매출전표, 국내 사업자의 계좌이체에는 전자세금계산서), 또는 USDC·USDT 인보이스</td><td>토스페이먼츠를 통한 원화 결제, 해외 본인 계좌에서의 USD 송금(부가세 영세율), 또는 USDC·USDT 인보이스. 월간 플랜은 매월 그 달이 시작되기 전에 결제하며, 그 달 첫날까지 결제하지 않으면 마지막으로 결제한 달 뒤에 아무 금액 없이 끝납니다. 1~3년 플랜은 처음 30일(A단계) 동안 낼 금액이 없고, 결제하지 않는 것으로 철회할 수 있습니다. 30일·60일·90일의 세 기한까지 각각 6개월분 시간, 12개월분 시간, 플랜 기간 전체를 결제해야 합니다. 시간은 결제된 뒤에만 생깁니다</td></tr>
+        <tr><th scope="row">예약</th><td>저희 용량은 <span data-start>2026년 12월 1일</span>부터 <span data-market="ahead">31</span>일 앞까지 그 플릿의 가격으로, 다른 고객이 되판 시간은 그 개시 시각이 얼마나 앞인지와 관계없이 예약합니다. 되팔기 외에는 확정되며, 누구도 가져가지 않습니다. 플랜 보유 고객의 용량은 각 시간 시작 <span data-plan="lastcall">6</span>시간 전까지 판매하지 않고 남겨 둡니다</td><td>되팔기 외에는 확정되며, 누구도 가져가지 않습니다. 저희는 점검을 위해 각 플릿을 주당 최대 <span data-plan="maintenance">3</span>시간 쉬게 할 수 있으며, 7일 전에 알리고, 그 점검에 걸린 예약 시간은 돌려드립니다</td></tr>
         <tr><th scope="row">장애</th><td colspan="2">15분을 넘는 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 전부 돌려드립니다</td></tr>
-        <tr><th scope="row">환불</th><td>저희가 시간제 서비스를 중단하거나 고객의 귀책 없이 계정을 닫는 경우 외에는 없음. 반납으로 받은 HC는 환불하지 않습니다</td><td>플랜이 일찍 끝날 때 아직 쓰지 않은 결제 시간 외에는 없음. A단계가 있는 플랜은 그 기간에 결제가 없으면 아무 금액 없이 종료</td></tr>
+        <tr><th scope="row">환불</th><td>저희가 HC에 의한 서비스 제공을 중단하거나 고객의 귀책 없이 계정을 닫는 경우 외에는 없음. 시간을 되팔아 받은 HC는 환불하지 않습니다</td><td>플랜이 일찍 끝날 때 아직 쓰지 않은 결제 시간 외에는 없음. A단계가 있는 플랜은 그 기간에 결제가 없으면 아무 금액 없이 종료; 월간 플랜은 결제하지 않은 달이 생기면 아무 금액 없이 종료</td></tr>
         <tr><th scope="row">약관</th><td colspan="2"><a href="agreement-ko.html">SparkPipe 고객 계약</a><a href="agreement.html" hreflang="en">SparkPipe Customer Agreement</a><a href="market-rules-ko.html">시간 마켓 규칙</a><a href="market-rules.html" hreflang="en">Hour Market Rules</a></td></tr>
       </tbody>
     </table></div>
     <p class="caption">부가세는 영세율 송금을 제외한 모든 결제에 10%가 붙습니다. 부가세로 받았으나 납부 의무가 없는 것으로 밝혀진 금액은 과오납이며, 돌려드립니다. 국문이 우선합니다.</p>
-    <div class="actions"><a class="btn solid" href="buy.html" hreflang="en">USDC·USDT로 시간 크레딧 구매 (영문)</a><a class="btn" href="plans.html" hreflang="en">예약 플랜 만들기 (영문)</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=%EC%98%88%EC%95%BD%20%ED%94%8C%EB%9E%9C%20%EA%B2%AC%EC%A0%81">예약 플랜 견적 요청</a></div>
+    <div class="actions"><a class="btn solid" href="buy.html" hreflang="en">카드·계좌이체·USDC·USDT로 시간 크레딧 구매 (영문)</a><a class="btn" href="plans.html" hreflang="en">예약 플랜 만들기 (영문)</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=%EC%98%88%EC%95%BD%20%ED%94%8C%EB%9E%9C%20%EA%B2%AC%EC%A0%81">예약 플랜 견적 요청</a></div>
   </div>
 </section>
 
@@ -212,9 +212,9 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   </div>
   <div class="sec-body">
     <h2>잔액 하나로 모든 플릿을.</h2>
-    <p class="prose">고객의 HC는 저희가 운영하는 모든 플릿과 공유 풀에서 쓸 수 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 HC 수입니다. <a href="fleets-ko.html">플릿 목록</a>은 약관이 가리키는 목록으로, 플릿, 프리필 가속기와 요율, 모델과 그 라이선스를 담고 있습니다.</p>
+    <p class="prose">고객의 HC는 저희가 운영하는 모든 플릿에서, 그리고 API로 제공되는 모든 모델에서 쓸 수 있습니다. <a href="fleets-ko.html">플릿 목록</a>은 약관이 가리키는 목록으로, 플릿과 그 가격, 프리필 가속기, 모델과 그 라이선스를 담고 있습니다.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>플릿</th><th>장비</th><th>상태</th><th>요율</th></tr></thead>
+      <thead><tr><th>플릿</th><th>장비</th><th>상태</th><th>시간당 HC</th></tr></thead>
       <tbody>
         <tr><td class="model">플릿 1</td><td>NVIDIA DGX Spark 16대, 메모리 합계 2TB, 100 Gb/s RDMA</td><td><span class="state live">가동 중</span></td><td class="figure">1</td></tr>
         <tr><td class="model">플릿 2</td><td>Apple Mac Studio, M5 Ultra</td><td><span class="state building">구축 중</span></td><td class="figure">1</td></tr>
@@ -254,7 +254,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
       <div><p class="label">고객의 사용자</p><p>고객이 관리하는 API 키로 고객의 사용자나 고객이 정한 누구에게든 HC와 시간을 쓰게 할 수 있습니다. 이는 저희 시스템 밖의 일이며, 시스템은 이를 기록하지도 관여하지도 않습니다. 고객의 키를 쓰는 모든 사람에 대한 책임은 고객에게 있습니다.</p></div>
       <div><p class="label">적법한 이용</p><p>모든 이용은 제재와 수출통제, 개인정보와 지식재산 관련 법령, 각 모델의 라이선스를 포함한 법을 따라야 합니다. 법령이나 당국이 중단을 요구하는 이용, 약관을 위반하는 이용, 플릿을 위협하는 이용은 정지할 수 있습니다.</p></div>
       <div><p class="label">AI 기본법</p><p>고객이 자신의 사용자에게 생성형 AI를 제공하면, 「인공지능 발전과 신뢰 기반 조성 등에 관한 기본법」상 그 제공자는 고객이며 고지와 표시 의무도 고객이 집니다.</p></div>
-      <div><p class="label">고객의 데이터</p><p>데이터와 출력물에 대한 모든 권리는 고객에게 있습니다. 저희는 그 백업을 두지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다. 플릿과 서버는 서울에 있습니다.</p></div>
+      <div><p class="label">고객의 데이터</p><p>데이터와 출력물에 대한 모든 권리는 고객에게 있습니다. 저희는 그 백업을 두지 않습니다. 캐시된 요청 상태는 마지막 사용 후 24시간 이내에 삭제됩니다.</p></div>
       <div><p class="label">전문적 이용</p><p>HC는 사업, 전문직, 상업 또는 독립적인 연구개발 용도로만 판매하며, 가정용 소비자에게는 판매하지 않습니다. SparkPipe 고객 계약에는 한국법이 적용되며, 분쟁은 대한상사중재원의 중재규칙에 따라 서울에서 중재로 해결합니다.</p></div>
     </div>
   </div>
@@ -309,7 +309,7 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">시간 크레딧 구매 (영문)</a><a href="plans.html" hreflang="en">예약 플랜 (영문)</a><a href="market.html" hreflang="en">시간 마켓 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">시간 크레딧 구매 (영문)</a><a href="plans.html" hreflang="en">예약 플랜 (영문)</a><a href="market.html" hreflang="en">내 계정 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
 
@@ -322,9 +322,9 @@ h1 { font-size: clamp(36px, 5.6vw, 76px); max-width: 12em; }
   var start = P.plans.earliestStart < P.hourlyEarliestStart ? P.plans.earliestStart : P.hourlyEarliestStart;
   var parts = start.split("-");
   var when = parts[0] + "년 " + Number(parts[1]) + "월 " + Number(parts[2]) + "일";
-  var M = P.market, L = P.plans, week = 7 * (P.windows[0].to - P.windows[0].from);
-  var term = function (key) { return key === "lock" ? { usd: L.lockPremium, krw: L.lockPremiumKRW } : L.terms.filter(function (t) { return String(t.months) === key; }).map(function (t) { return { usd: t.hourPrice, krw: t.hourPriceKRW }; })[0]; };
-  var market = { min: usd(M.minPurchase), months: String(M.validityMonths), days: String(M.horizonDays), ahead: String(M.advanceDays), advance: String(M.advanceMultiplier), fee: Math.round(M.releaseFee * 100) + "%", week: String(week), trial: "$" + (week * M.hcPrice).toLocaleString("en-US") };
+  var M = P.market, L = P.plans, week = 7 * L.office.minHours;
+  var term = function (key) { return key === "lock" ? { usd: L.lockPremium, krw: L.lockPremiumKRW } : L.terms.filter(function (t) { return t.id === key || String(t.months) === key; }).map(function (t) { return { usd: t.hourPrice, krw: t.hourPriceKRW }; })[0]; };
+  var market = { min: usd(M.minPurchase), months: String(M.validityMonths), ahead: String(M.advanceDays), fee: Math.round(M.releaseFee * 100) + "%", week: String(week), trial: "$" + (week * M.hcPrice).toLocaleString("en-US") };
   var plan = { fleets: String(L.maxFleets), maintenance: String(L.maintenanceHoursPerWeek), lastcall: String(M.lastCallHours) };
   document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(M.hcPrice); });
   document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + M.hcPriceKRW.toLocaleString("ko-KR"); });

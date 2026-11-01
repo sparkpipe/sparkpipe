@@ -1,6 +1,13 @@
 # Payments
 
-Fleet-hours are paid in US-dollar stablecoins through CoinPayments. The
+Fleet-hours are paid in Korean won through Toss Payments (토스페이먼츠), or in
+US-dollar stablecoins through CoinPayments. HYOR AI Tech Ltd. stays the
+seller: both are payment processors that receive the money for us (clause
+3.3 of the Customer Agreement). Toss Payments takes Korean and overseas
+cards (Visa, Mastercard, JCB), bank transfer, virtual accounts and Korean
+easy pay, all in won at the won prices in `site/pricing.js`
+(`market.hcPriceKRW`, `plans.terms[].hourPriceKRW`, `plans.lockPremiumKRW`)
+plus 10% VAT; it is described under Toss Payments below. The stablecoin
 checkout offers USDC on Base, Solana, Arbitrum, Polygon, BNB Chain or
 Ethereum, and USDT on Tron, Solana, BNB Chain, Arbitrum, Polygon or
 Ethereum. CoinPayments' own currency menu also takes any other stablecoin
@@ -8,9 +15,9 @@ enabled in Payment Settings (DAI and TUSD today). Only stablecoins are
 enabled, so an invoice priced in dollars is paid in dollars and neither side
 carries crypto price risk. Hours follow the US-dollar value CoinPayments
 reports for a payment (`nativeActualAmount`), whatever coin it came in, and
-the receipt names the coin that was paid (`paymentCurrencySymbol`). Won bank transfers against a tax
-invoice and USD wires under a Plan Order are still arranged by hand, and
-those Plan Orders are recorded with `sparkpipe_pay.py plan` (below).
+the receipt names the coin that was paid (`paymentCurrencySymbol`). USD
+wires under a Plan Order are still arranged by hand, and those Plan Orders
+are recorded with `sparkpipe_pay.py plan` (below).
 
 ## How a customer buys
 
@@ -18,7 +25,10 @@ those Plan Orders are recorded with `sparkpipe_pay.py plan` (below).
    how much HC (10, 100, 400 or 3,200 USD before VAT, or any amount from
    `market.minPurchase`; `?amount=` presets it); the company's legal name
    and a work email, with a box accepting the Customer Agreement and the
-   Hour Market Rules; and the coin and network the customer pays with. The order
+   Hour Market Rules; and how the customer pays: "Card or Korean bank
+   transfer" (Toss Payments, in won) or "USDC or USDT" (the coin and
+   network). The amount can be a preset or any amount in US dollars or in
+   won; won amounts are the same HC count at the won price. The order
    total, with VAT, stays in view. HC is the only hourly product; the market
    that spends it is described in docs/HOUR_MARKET.md.
 2. `POST /pay/api/code` emails a 6-digit code. `POST /pay/api/verify`
@@ -26,7 +36,8 @@ those Plan Orders are recorded with `sparkpipe_pay.py plan` (below).
    acceptance of the Customer Agreement and the Hour Market Rules and sets the session cookie. The email is
    the account: there is no password and no wallet.
 3. `POST /pay/api/order` prices the order from `site/pricing.js` (never
-   from the browser), records the order and
+   from the browser) and records it. A card or won order goes on as under
+   Toss Payments below. A stablecoin order
    creates a CoinPayments invoice in USD (currency `5057`) with the price,
    VAT at 10% as tax, a per-invoice webhook, and `payment.paymentCurrency`
    set to the chosen coin on the chosen network, so the checkout opens
@@ -53,8 +64,10 @@ Every customer is under one contract, the Customer Agreement
 (`site/terms/agreement-*.md`). A reserved plan is a Plan Order under it,
 which the customer orders on `plans.html`:
 
-1. The page builds the plan from the published choices (term, windows, days,
-   fleets, fleet lock, Start Date) and, once the customer is signed in (the
+1. The page builds the plan from the published choices (term: Monthly, 1, 2
+   or 3 years; office hours in a time zone; days; fleets; fleet lock; Start
+   Date), leading with Monthly, 09:00–18:00 Asia/Seoul, Weekdays and one
+   fleet, and works out its hours per KST hour as the service does. Then, once the customer is signed in (the
    same email-code sign-in, which opens an account with the company's legal
    name or the person's own name and the acceptance box), asks what the
    Order Form needs: company or individual; for a company, where it is
@@ -63,7 +76,8 @@ which the customer orders on `plans.html`:
    `models` in `site/pricing.js`, which `tests/test_site.py` keeps equal to the
    models the Fleet List offers.
 2. `POST /pay/api/plans/quote` prices it from `plans.terms` (plus
-   `lockPremium` for a lock), works out the hours, Tranches and gates,
+   `lockPremium` for a lock), works out the hours, Tranches and gates (for a
+   Monthly plan, Tranche 1 and its price),
    checks that we can keep its capacity (below), picks the locked fleets,
    and returns the whole Plan Order: one text, Korean first, then English,
    following the Customer Agreement's Plan Order form, with its SHA-256.
@@ -79,14 +93,25 @@ which the customer orders on `plans.html`:
    it, ready to print, with a download of the exact text.
 
 The account page lists each plan with what is paid, what is left and the
-next payment, links its Plan Order, and takes prepayments in USDC or USDT.
+next payment, links its Plan Order, and takes payments through the payment
+order flow (`POST /pay/api/order` with `product: "plan"`): by card or
+Korean bank transfer in won (when the Plan Order states a won Hour Price)
+or in USDC or USDT. A plan's standing is counted in Plan hours: each
+payment counts its amount before VAT divided by the Hour Price in its own
+currency, exactly, so payments in won and in dollars add up, and the
+amounts due are shown in both currencies, rounded up to the cent or the
+won (`remaining`, `remainingKRW`, `nextGate`, `nextGateKRW`).
 Each payment issues its hours to the earliest Tranches not yet paid as
 Tranche hours the customer reserves in the Hour Market (`tranche_grant`
 lines). Plan hours that occurred before they were paid for count as
 consumed (clause 20.1), so a payment first covers the hours of its Tranche
 that have already passed and issues the rest. An upfront plan's Tranche
-hours are issued once it is paid in full. For more than `plans.maxFleets`
-fleets, or a plan paid by bank transfer, `plans.html` still sends a quote
+hours are issued once it is paid in full, and a Monthly plan's Tranche
+once that Tranche is paid in full (clause 20.10). For a Monthly plan the
+account shows the next month's amount at its Hour Price and the day it is
+due, with a pay button for exactly that amount, and a "Stop after this month" button
+(`POST /pay/api/plans/stop`, clause 20.12). For more than `plans.maxFleets`
+fleets, or a plan paid by USD wire, `plans.html` still sends a quote
 request to `POST /pay/api/lead`.
 
 ## Endpoints
@@ -97,11 +122,16 @@ request to `POST /pay/api/lead`.
 | `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
 | `POST /pay/api/signout` | Clears the cookie |
 | `GET /pay/api/account` | The signed-in account: HC balance, orders, plans and whether it accepted the current Customer Agreement and Hour Market Rules |
-| `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT and `coin` (and `accept: true` when the terms changed since the account accepted them); or `product: "plan"` with `plan`, `amount` before VAT and `coin`: returns the checkout link. `coin` is one of the twelve CoinPayments symbols in `COINS`, such as `USDC.BASE` or `USDT.TRC20` |
+| `POST /pay/api/order` | Signed in. `product: "credits"` with `amount` before VAT (and `accept: true` when the terms changed since the account accepted them), or `product: "plan"` with `plan` and `amount` before VAT; then either `coin`, one of the twelve CoinPayments symbols in `COINS` such as `USDC.BASE` or `USDT.TRC20`, with `amount` in US dollars, which returns the checkout link; or `processor: "toss"` with `amount` in whole won and an optional `brn`, which returns the order and the Toss Payments request for the page (`toss`: client key, `orderId`, `orderName`, `amount` with VAT, `customerEmail`, `customerName`, `successUrl`, `failUrl`). 503 `cards_closed` without Toss Payments keys |
+| `GET /pay/api/toss/config` | Whether cards are offered (`enabled`), the client key, the payment UI's `variantKey` and whether it is test mode |
+| `GET /pay/api/toss/success/<order>` | Toss Payments' success redirect: checks the amount, confirms the payment and sends the browser to `account.html?order=…` |
+| `GET /pay/api/toss/fail/<order>` | Toss Payments' fail redirect: closes the unpaid order and sends the browser to `account.html?order=…` |
+| `POST /pay/api/toss/webhook` | Toss Payments webhooks (`PAYMENT_STATUS_CHANGED`, `DEPOSIT_CALLBACK`) |
 | `GET /pay/api/order/<order>` | The order's state, amounts and hours; the checkout link while unpaid. The order number is 80 random bits |
 | `POST /pay/api/lead` | A plan quote request: `company`, `email`, `name`, `fleets`, `start`, `message` |
-| `POST /pay/api/plans/quote` | Signed in. `start`, `months`, `windows` (ids), `days`, `fleets`, `lock`, `models` (ids) and `customer` (`kind` `company` or `individual`, `address`, optional `notice` and `brn`; a company also `jurisdiction` and `registration`): returns the Plan Order's number, text, rows, SHA-256, hours, prices and schedule, or 409 `capacity` |
+| `POST /pay/api/plans/quote` | Signed in. `start`, `term` (an id from `plans.terms`: `monthly`, `1y`, `2y` or `3y`), `office` (`zone`, an IANA time zone, and `from` and `to`, whole hours 0 to 23 of its local clock, at least 8 hours apart; `to` at or before `from` runs past midnight, equal is a Full day), `days` (`weekdays` or `every`), `fleets`, `lock`, `models` (ids) and `customer` (`kind` `company` or `individual`, `address`, optional `notice` and `brn`; a company also `jurisdiction` and `registration`): returns the Plan Order's number, text, rows, SHA-256, hours, prices and schedule, or 409 `capacity` |
 | `POST /pay/api/plans/order` | Signed in. The same fields with the quoted `plan` and `hash` and `agree: true` (and `accept: true` when the Customer Agreement changed since the account accepted it): records and signs the Plan Order. 409 `changed` when the text no longer matches, `unpaid` while another of the account's Plan Orders has no payment |
+| `POST /pay/api/plans/stop` | Signed in. `plan`: stops the account's own Monthly plan after its last Tranche paid in full (at once if none is), records `plan_stop`, frees the capacity after that Tranche and takes no further payment. 409 for a plan with a fixed term (`fixed`) or one already ended or stopped |
 | `GET /pay/api/plan/<plan>` | Signed in, the account's own: the plan's standing, its Plan Order rows and text, the acceptance time, our signature and its Tranches |
 | `GET /pay/api/plans/key` | Our Ed25519 public key for Plan Orders |
 | `POST /pay/api/coinpayments` | CoinPayments webhooks |
@@ -131,39 +161,84 @@ orders an hour, and each email for 5 codes an hour.
   and `SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN` hold our full notice address,
   which every Plan Order states, and never in the sandbox. Its Start Date
   is from `plans.earliestStart` (or today) to `plans.startWithinDays` (60)
-  days ahead, its fleets at most `plans.maxFleets`, and a fleet lock only on
-  a full day every day. The published window times, release fee,
-  maintenance allowance and fleet Rates are copied into it and kept for its
-  term.
+  days ahead, its fleets at most `plans.maxFleets`, its term one of
+  `plans.terms` (Monthly, 1, 2 or 3 years; there is no 3-month term), its
+  office hours whole hours of an IANA time zone, at least
+  `MIN_OFFICE_HOURS` (8) long, and a fleet lock only on a full day every
+  day. The published maintenance allowance and fleet Rates are copied into
+  it and kept for its term. A fixed term keeps its Hour Price for the whole
+  term. A Monthly plan's Hour Price is stated for Tranche 1; each later
+  Tranche is priced at the Monthly price in `plans.terms` (plus
+  `plans.lockPremium` for a locked plan) when its payment is ordered, and
+  the first payment order for that Tranche that is paid or still open fixes
+  it for the whole Tranche (clause 16.6). Monthly payment orders record
+  `tranche` (its first day), `hourPrice` and `hourPriceKRW`.
+- Plan hours are worked out per KST hour with `zoneinfo`: each hour of the
+  term that starts within the office hours of a counted local day (every
+  day, or Monday to Friday by the local date the hours start), times the
+  fleets. The office hours follow the zone's clock, so on a daylight-saving
+  change they are the hours that elapse between the local start and end;
+  a start the clock skips is the moment it skips, one it shows twice the
+  first. In a zone half an hour off KST the plan holds the KST hours that
+  start within the office hours. Each KST calendar month is a Tranche.
 - Clause 16.2: a Plan Order is made only if its set-aside fits on serving
   fleets in every hour of its term with every earlier plan and every
   reservation (`Cover.clash`), and only if the HC already sold, and the HC
-  in unpaid orders, stays covered with it (docs/HOUR_MARKET.md). A fleet
-  lock takes the first serving fleets that pass both checks.
+  in unpaid orders, stays covered with it (docs/HOUR_MARKET.md). A running
+  Monthly plan counts as continuing in every later month: in these checks,
+  and in the HC cover, it keeps its hours to the end of the month in which
+  a plan of the longest offered term, started as late as
+  `plans.startWithinDays` allows, would end (`monthly_horizon`). A new
+  Monthly plan must fit to that month too. A fleet lock takes the first
+  serving fleets that pass both checks.
 - An account may hold one Plan Order with no payment at a time. An unpaid
   Plan Order keeps its capacity until it lapses: a gated plan at the end of
-  Phase A, an upfront plan at the end of its Start Date. After a missed
-  gate, a plan keeps capacity only to the end of its last paid Tranche.
+  Phase A, an upfront plan and a Monthly plan at the end of its Start Date.
+  After a missed gate, a plan keeps capacity only to the end of its last
+  paid Tranche.
+- A Monthly plan's set-aside covers the current Tranche and the next month
+  (`heldUntil`): Tranches 1 and 2 before anything is paid, and the month
+  after the last Tranche paid in full after that. A Tranche counts as paid
+  only if it was paid in full by the end of its first day (KST). If it was
+  not, the plan ended at the end of the last Tranche paid in full and frees
+  every later month; a stopped plan frees them at once and ends at the end
+  of its last paid Tranche. A payment that arrives after that buys no
+  Tranche and mails `SPARKPIPE_PAY_NOTIFY` a refund note (clause 20.11);
+  a Tranche left part-paid when the plan ends is refunded by hand the same
+  way. We end a plan only with `end-plan` (clause 10.2).
 - A plan prepayment is at least 1.00 USD and at most what is left of the
-  term's price, counting unpaid orders. A gated plan's prepayment is
-  refused after Phase A with nothing paid, after a missed gate, and after
-  the term ends; an upfront plan's after its Start Date unless it is paid
-  in full. Each payment issues the amount before VAT divided by the hour
-  price, to four decimals.
-- VAT is charged on every stablecoin payment.
-  CoinPayments' own fee is ours; the customer pays the network fee.
+  term's price, counting unpaid orders; a Monthly plan's is at most what is
+  left of its next Tranche, so it is paid one Tranche at a time. A gated
+  plan's prepayment is refused after Phase A with nothing paid, after a
+  missed gate, and after the term ends; an upfront plan's after its Start
+  Date unless it is paid in full; a Monthly plan's once it has ended or is
+  stopped. Each payment issues the amount before VAT divided by the hour
+  price (for a Monthly plan, of the Tranche it pays for), to four decimals.
+- VAT is charged on every payment for HC or a plan. A card payment's card
+  slip is its VAT document; a bank transfer, a virtual account payment or
+  an easy-pay payment from a bank account or balance gets an electronic tax
+  invoice (세금계산서) to the business registration number given (below).
+  CoinPayments' and Toss Payments' own fees are ours; the customer pays the
+  network fee, and a card issued abroad pays its own conversion fees.
+- A won HC order is from `market.minPurchase` × `hcPriceKRW` / `hcPrice`
+  (13,000 KRW) to 100,000 USD's worth (130,000,000 KRW), in whole won; its
+  HC is the amount before VAT divided by `hcPriceKRW`, to six decimals. A
+  won plan prepayment is at least 1,000 KRW and at most what is left in won.
 
 ## Data on the VPS
 
 `/var/lib/sparkpipe-pay`, owned by the service user:
 
 - `ledger.jsonl`: one JSON line per event (`account`, `acceptance`,
-  `order`, `invoice`, `invoice_failed`, `invoice_state`, `payment`,
-  `hours_issued`, `plan_order`, `plan_end`, and the Hour Market's lines),
+  `order`, `invoice`, `invoice_failed`, `invoice_state`, `toss_payment`,
+  `toss_state`, `payment`, `hours_issued`, `refund`, `tax_invoice`,
+  `plan_order`, `plan_end`, `plan_stop`, and the Hour Market's lines),
   each with the SHA-256 of the line before it. The service
   refuses to start if the chain is broken. An account or order line keeps
   the IP address and the browser, as the privacy policy's acceptance
-  records say; a payment line keeps the coin CoinPayments reports.
+  records say; a payment line keeps the coin CoinPayments reports, or, for
+  Toss Payments, the payment key, the method, the card-slip link and
+  `taxInvoice` (`needed`, `brn`, `supply`, `vat`).
 - `session_key`: 32 random bytes that sign the session cookies. Deleting
   it signs everyone out.
 - `signing_key`: the 32-byte Ed25519 private key that signs Plan Orders,
@@ -173,16 +248,20 @@ orders an hour, and each email for 5 codes an hour.
 - `leads.jsonl`: the plan quote requests.
 
 A Plan Order line (`plan_order`) holds its number (`plan`), `account`,
-`email`, `company`, `start`, `months`, `windows` (with their KST hours as
-published when it was made), `days`, `fleets`, `lock` (fleet ids, one per
+`email`, `company`, `start`, `months` (null for a Monthly plan), `office`
+(`zone`, `from`, `to`), `days`, `fleets`, `lock` (fleet ids, one per
 fleet, only on a full day every day), `hourPrice` (lock premium included),
-`payment` (`upfront` or `gates`), `releaseFee` and
-`maintenanceHoursPerWeek` as published then, and, for one made in the
+`hourPriceKRW` (the won Hour Price, lock premium included; optional on a
+signed Plan Order, which without it is paid in US dollars only),
+`payment` (`monthly`, `upfront` or `gates`), `maintenanceHoursPerWeek` as
+published then, and, for one made in the
 account, `customer`, `models`, `threshold`, `currency`, `rates`, `hours`,
-`total`, `schedule`, `agreement` (the hashes and version of the texts it
-is made under), `supplier`, `text`, `hash`, `accepted` (IP address and
-browser) and `signature`. A plan's hours are each elected window's hours
-times `fleets` on every plan day, by calendar-month Tranche.
+`total` and `totalKRW` (a term in months) or `first` (a Monthly plan's
+Tranche 1: `from`, `to`, `hours`, `total`, `totalKRW`),
+`schedule`, `agreement` (the hashes and version of the texts it is made
+under), `supplier`, `text`, `hash`, `accepted` (IP address and browser)
+and `signature`. A `plan_stop` line records a customer's Stop after this
+month.
 
 A Plan Order signed on paper is recorded with
 `sparkpipe_pay.py plan FILE.json`, a JSON object or list with `id`, the
@@ -190,7 +269,8 @@ account's `email` and the fields above from `start` to
 `maintenanceHoursPerWeek`:
 
 ```json
-[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "windows": [{"id": "asia", "from": 8, "to": 16, "localDay": 0}], "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "releaseFee": "0.10", "maintenanceHoursPerWeek": 3}]
+[{"id": "SP-PLAN-7K3QD9", "email": "billing@acme.example", "start": "2026-12-15", "months": 24, "office": {"zone": "Asia/Seoul", "from": 9, "to": 18}, "days": "every", "fleets": 1, "hourPrice": "15.00", "payment": "gates", "maintenanceHoursPerWeek": 3},
+ {"id": "SP-PLAN-M4WQ2B", "email": "ops@berlin.example", "start": "2027-01-01", "months": null, "office": {"zone": "Europe/Berlin", "from": 9, "to": 18}, "days": "weekdays", "fleets": 1, "hourPrice": "17.50", "payment": "monthly", "maintenanceHoursPerWeek": 3}]
 ```
 
 It refuses an unknown email, a number already used and a plan whose
@@ -220,6 +300,113 @@ TXT record `s202608._domainkey.sparkpipe.ai` at the domain's DNS host
 payment service's is; mailbox users are signed when they authenticate.
 With SPF naming the VPS and DMARC at `p=quarantine`, receivers see SPF,
 DKIM and DMARC pass.
+
+## Toss Payments
+
+The checkout uses Toss Payments' checkout-page payment (주문서형 결제,
+formerly the Payment Widget, SDK v2, `https://js.tosspayments.com/v2/standard`).
+Only `buy.html` and `account.html` load the SDK, and only those two pages
+get a Content-Security-Policy that admits `*.tosspayments.com` and
+`*.toss.im` (`deployment/vps/sparkpipe-ai-ssl.conf`; `tests/test_site.py`
+holds both to the payment pages).
+
+1. The page asks `GET /pay/api/toss/config`. Without keys (`enabled:
+   false`) it hides "Card or Korean bank transfer" and offers only USDC or
+   USDT. Otherwise it renders Toss Payments' payment methods and terms with
+   the won total, VAT included.
+2. On Pay, `POST /pay/api/order` with `processor: "toss"` prices the order
+   in won on the server, records it with `processor`, `currency: "KRW"`,
+   `brn` and an expiry 45 minutes ahead (Toss Payments' 30-minute payment
+   window and its 10 minutes to confirm), and returns the request. The
+   page sets that amount and calls `requestPayment`.
+3. Toss Payments redirects to `/pay/api/toss/success/<order>?paymentKey&orderId&amount`.
+   The service refuses an `amount` other than the order's (state `failed`,
+   reason `amount`, nothing confirmed), records the payment key
+   (`toss_payment`), and calls `POST /v1/payments/confirm` with the order's
+   own amount and `Idempotency-Key: confirm-<order>`. A refused confirm is
+   followed by `GET /v1/payments/{paymentKey}` before anything is
+   recorded.
+4. Every Toss Payments answer goes through one check: the payment must name
+   this order and the stored payment key. `DONE` with the order's amount in
+   KRW issues the hours once (`payment`, `hours_issued`); `DONE` or
+   `WAITING_FOR_DEPOSIT` for another amount or currency is cancelled
+   through the cancel API (state `cancelled`, reason `amount`, or
+   `mismatch` if the cancel fails, with a note to `SPARKPIPE_PAY_NOTIFY`);
+   `WAITING_FOR_DEPOSIT` records the virtual account (bank, number,
+   deadline) as state `waiting` and emails it to the customer;
+   `ABORTED`, `EXPIRED` and `CANCELED` close the order.
+5. `POST /pay/api/toss/webhook` acknowledges every event and only queues a
+   check of the order it names: the service fetches the payment from Toss
+   Payments with the payment key it stored and applies that answer, never
+   the webhook body. The reconciliation every five minutes checks every
+   open Toss Payments order the same way, so a lost webhook only delays
+   the hours.
+6. A card order not completed within 45 minutes expires (`timedout`). A
+   virtual account expires at the earlier of Toss Payments' deposit
+   deadline and 24 hours after the order: the reconciliation cancels it at
+   Toss Payments first, and issues the hours instead if the deposit
+   arrived. An open order holds its HC out of the HC on sale, and its plan
+   amount out of what is left to pay, until it expires.
+
+The receipt names the method; for a card it links the card slip, which is
+the VAT document. A payment made by bank transfer, into a virtual account
+or by easy pay from a bank account or balance is recorded with
+`taxInvoice.needed`, with the business registration number the checkout
+took (`brn`; for a plan, the Plan Order's when none is given). Issuing the
+electronic tax invoice stays a manual step:
+
+- `sparkpipe_pay.py tax-invoices` lists every such payment without an
+  invoice recorded: order, date (KST), company, email, registration number
+  (or "missing: ask the customer"), supply amount, VAT, total, method, and
+  any refund that needs an amended invoice.
+- `sparkpipe_pay.py tax-invoice ORDER NUMBER` records the National Tax
+  Service approval number of the invoice issued (`tax_invoice`), which takes
+  the payment off the list.
+
+Refunds happen only where the Customer Agreement allows them (clauses 3.2,
+3.5, 10.4, 20.2, 24.3 or where the law requires), and go back by the method
+of the payment (clause 3.6):
+
+```sh
+sparkpipe_pay.py refund ORDER CLAUSE KRW|all REASON [BANK ACCOUNT HOLDER]
+```
+
+It fetches the payment, refuses a clause outside that list, an amount above
+what is left at Toss Payments, and, for an HC order, an amount whose HC
+(the same share of the order's HC) is no longer unspent in the order's
+lot (a refund of VAT not owed, clause 3.2, leaves the HC). It calls
+`POST /v1/payments/{paymentKey}/cancel` with `cancelAmount` for part of the
+balance, `refundableAmount` as a guard and `Idempotency-Key:
+refund-<order>-<balance>`; a virtual account payment needs the bank code,
+account number and holder for `refundReceiveAccount`. It checks the
+balance Toss Payments reports, then writes a `refund` line (clause, reason,
+amount, balance left, HC debited) and an `hc_debit` from the order's own
+lot, and emails the customer. A plan refund changes no Plan hours: end the
+plan with `end-plan` as its clause requires.
+
+### Setup in the Toss Payments console
+
+1. Sign the electronic payment contract and add the methods: domestic
+   cards, overseas cards in KRW (a separate contract and card-company review
+   of about two weeks), bank transfer, virtual accounts and the easy-pay
+   wallets. In the payment admin (결제 어드민), build the payment UI; keep
+   its `variantKey` `DEFAULT` or put it in `TOSS_VARIANT_KEY`.
+2. In the virtual account settings, set the deposit period to one day or
+   less and turn on the refund-account form. Settle with the accountant
+   whether to turn off automatic cash receipts (현금영수증) for bank
+   transfers and virtual accounts: a payment that gets an electronic tax
+   invoice must not also get a cash receipt.
+3. Register the webhook `https://sparkpipe.ai/pay/api/toss/webhook` for
+   `PAYMENT_STATUS_CHANGED` and `DEPOSIT_CALLBACK` on the live MID, and,
+   once the merchant's own test keys replace the documentation keys in the
+   sandbox, `https://sparkpipe.ai/pay/sandbox/api/toss/webhook` in the test
+   environment.
+4. Copy the live checkout-page keys (`live_gck_…`, `live_gsk_…`) into
+   `/etc/sparkpipe-pay/env` as `TOSS_CLIENT_KEY` and `TOSS_SECRET_KEY`,
+   by editing the file, never on a command line, and restart the service.
+   The live service refuses test keys and the sandbox refuses live keys; a
+   key without the other stops the service. Under API key access policy,
+   allow only the VPS's address.
 
 ## CoinPayments setup
 
@@ -348,5 +535,11 @@ codes, sign-in, terms acceptance and re-acceptance, cross-site refusal,
 refusal of coins that are not USDC or USDT, invoice bodies on the chosen
 coin and network, signed and tampered webhooks,
 receipts, part payments, reconciliation, gates, mismatched totals,
-
-failed invoices, quote requests and the ledger chain with two writers.
+failed invoices, quote requests and the ledger chain with two writers. A
+fake Toss Payments server checks the secret key and records each call:
+key gating on the live service and in the sandbox, won amounts fixed on
+the server, a confirm sent once with its idempotency key, other amounts
+refused or cancelled, declined and cancelled payments, webhooks that only
+trigger a check (a forged `DONE` issues nothing), virtual account deposits
+and expiry, plan payments in won, the refund command and the tax invoice
+list.

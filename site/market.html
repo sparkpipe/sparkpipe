@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Hour Market · SparkPipe</title>
-<meta name="description" content="Buy hour-credits, reserve and release whole AI fleets by the hour, bid for windows and call the shared pool, live or in a sandbox with no money.">
+<title>Your account · SparkPipe</title>
+<meta name="description" content="Your SparkPipe account: use the API, book and sell back whole AI fleets by the hour, bid for hours and hold a reserved plan, live or in a sandbox with no money.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -13,13 +13,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=1">
-<link rel="stylesheet" href="market.css?v=1">
+<link rel="stylesheet" href="checkout.css?v=2">
+<link rel="stylesheet" href="market.css?v=2">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">hour market</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="fleets.html">Fleets</a>
       <a href="plans.html">Plans</a>
@@ -32,18 +32,18 @@
 
 <main class="wrap mk">
 <section class="co-head">
-  <p class="label">Hour Market · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
-  <h1>Hour-credits for whole AI fleets.</h1>
-  <p class="lead">One hour-credit (HC) buys one hour of a Rate-1 fleet and lasts 12 months. Spend it per request in the shared pool, reserve a whole fleet by the hour, or bid for the windows you need. Release a reserved hour you won't use, and get HC back for what it earns, less a 10% fee. The <a href="market-rules.html">Hour Market Rules</a> and the <a href="agreement.html">SparkPipe Customer Agreement</a> apply.</p>
+  <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
+  <h1>Use, book and sell back fleet-hours.</h1>
+  <p class="lead">One hour-credit (HC) costs <span data-krw>₩26,000</span> or <span data-usd>$20</span> plus VAT and buys one hour of a Rate-1 fleet; it lasts 12 months. Use it per request through the API or to book whole fleets by the hour, and keep your office hours every week with a <a href="plans.html">reserved plan</a>. Sell back an hour you won't use and get HC for what it earns, less the release fee, now <span data-fee>10%</span>. The <a href="agreement.html">SparkPipe Customer Agreement</a> and the <a href="market-rules.html">Hour Market Rules</a> apply.</p>
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
-    <p class="muted sandbox-only">The same market with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and the pool answers with a simulator instead of the fleets.</p>
+    <p class="muted sandbox-only">The same service with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and the API answers with a simulator instead of the fleets.</p>
   </div>
 </section>
 
 <div class="sandbox-bar">
-  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be reserved from <span data-start>1 December 2026</span>: at Rate up to 7 days ahead, and up to 31 days ahead at 1.25× on any day. A reservation is never bumped.</span>
+  <span class="live-only muted">Times are Korea Standard Time. Our own fleet-hours can be booked from <span data-start>1 December 2026</span>, up to 31 days ahead, at the fleet's price. A booking is never taken from you.</span>
   <div><span class="muted">Market time</span> <span class="num" id="now">-</span></div>
   <div class="row sandbox-only">
     <button class="btn small" type="button" data-clock="1">+1 hour</button>
@@ -60,6 +60,22 @@
     <form class="form" id="signin" novalidate>
       <label>Work email<input id="email" type="email" autocomplete="email" required></label>
       <label>Company legal name, or your full name<input id="company" type="text" autocomplete="organization" placeholder="Needed for a new account"></label>
+      <details class="keyterms">
+        <summary>Key terms</summary>
+        <ul>
+          <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
+          <li>Prepaid, at the HC Price shown when you buy: now <span data-krw>₩26,000</span> per HC when paid in won, otherwise <span data-usd>$20</span>, plus VAT. One HC buys one hour of a Rate-1 fleet or seat-seconds through the API, and is issued once the payment completes.</li>
+          <li>We set prices, Rates and fees on this website and may change them at any time. A change never alters the price of HC you have bought or of an hour you have booked.</li>
+          <li>Each purchase lasts 12 months from issue, and the HC that lapses first is spent first.</li>
+          <li>HC has no cash value, cannot be moved to another account and is not refunded, unless we stop offering service for HC, close your account other than for your breach, or the law requires a refund.</li>
+          <li>A booking is final and never taken from you. You can sell an hour back before it starts and get HC for what it earns, less the release fee published when you sell it back (now <span data-fee>10%</span>).</li>
+          <li>A booked hour that is down for more than 15 consecutive minutes is credited back in full, automatically.</li>
+          <li>Requests and data are processed only on fleets, accelerators and servers we operate in Korea, and go to no other computing or AI service. Transient caches are deleted within 24 hours.</li>
+          <li>Our liability for claims about HC is capped at what you paid us for HC in the 6 months before the event giving rise to the claim.</li>
+          <li>Korean law; disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</li>
+        </ul>
+        <p>The Customer Agreement and the Hour Market Rules govern, and the Korean text prevails.</p>
+      </details>
       <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and the <a href="market-rules.html" target="_blank" rel="noopener">Hour Market Rules</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts prevail.</span></label>
       <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
       <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as buyer and seller.</p>
@@ -68,9 +84,7 @@
     </form>
     <div id="me" hidden>
       <p class="muted"><span id="me-company"></span> · <span id="me-email"></span></p>
-      <div class="row"><div><span class="muted">Balance</span><div class="big-num"><span id="balance">0</span> <span class="muted">HC</span></div></div><div><span class="muted">Held by bids</span><div class="num" id="held">0</div></div></div>
-      <h3>Lots</h3>
-      <div class="scroll"><table><thead><tr><th>HC left</th><th>Of</th><th>Source</th><th>Lapses</th></tr></thead><tbody id="lots"></tbody></table></div>
+      <div class="row"><div><span class="muted">Balance</span><div class="big-num"><span id="balance">0</span> <span class="muted">HC</span></div><div class="muted num" id="balance-usd"></div></div><div><span class="muted">Set aside for bookings and prompts</span><div class="num" id="held">0</div></div></div>
     </div>
   </section>
 
@@ -81,96 +95,28 @@
       <p class="num" id="buy-sum"></p>
       <p class="muted" id="on-sale"></p>
       <button class="btn solid" type="submit"><span class="live-only">Continue to payment</span><span class="sandbox-only">Buy, no money</span></button>
-      <p class="muted live-only">Paid in a US-dollar stablecoin through CoinPayments; the HC arrives once the payment completes.</p>
+      <p class="muted live-only">Paid by card or Korean bank transfer in won through Toss Payments, or in a US-dollar stablecoin through CoinPayments; the HC arrives once the payment completes.</p>
       <p class="flash" id="m-buy" hidden></p>
     </form>
-    <div id="tranche-box">
-    <h3>Plan Tranche hours</h3>
-    <p class="muted">A plan holder gets the paid hours of each month of the plan as Tranche hours. Reserve them from the calendar with “Tranche hours”, and release any you won't use. See <a href="plans.html">reserved plans</a>.</p>
-    <div class="row sandbox-only"><button class="btn small" type="button" id="tranche">Get demo Tranche hours</button></div>
-    <div class="scroll"><table><thead><tr><th>Month</th><th>Granted</th><th>Used</th><th>Left</th></tr></thead><tbody id="tranches"></tbody></table></div>
-    <p class="flash" id="m-tranche" hidden></p>
-    </div>
   </section>
 </div>
 
+<nav class="tabs" role="tablist" aria-label="Account" id="tabs">
+  <button type="button" role="tab" data-tab="use">Use</button>
+  <button type="button" role="tab" data-tab="book">Book</button>
+  <button type="button" role="tab" data-tab="plan">Plan</button>
+  <button type="button" role="tab" data-tab="sell">Sell back</button>
+  <button type="button" role="tab" data-tab="advanced">Advanced</button>
+</nav>
+
+<div class="tab-panel" role="tabpanel" data-panel="use">
 <section class="card">
-  <h2>Calendar</h2>
-  <div class="row">
-    <label>Show<select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></label>
-    <div class="legend"><span><i class="cell hyor"></i>Our hour at its price</span><span><i class="cell release" style="--depth:.7"></i>Released hour, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, released</span><span><i class="cell taken"></i>Taken</span><span><i class="cell maintenance"></i>Maintenance, announced 7 days ahead</span><span><i class="cell closed"></i>Not for sale</span></div>
-  </div>
-  <p class="muted">Times in KST. Our own hours sell at Rate up to 7 days ahead, and up to 31 days ahead at 1.25×; released hours sell at any distance. Capacity kept for plan holders opens 6 hours before it starts, and a fleet locked to a plan sells only the hours its holder releases. Once reserved, an hour is yours: nobody can take it.</p>
-  <div id="calendar"></div>
-  <div class="card" id="pick" hidden>
-    <h3 id="pick-title"></h3>
-    <p class="muted" id="pick-note"></p>
-    <div class="row">
-      <label>Model<select id="pick-model"></select></label>
-      <label>Pay with<select id="pick-pay"><option value="hc">HC</option><option value="tranche">Tranche hours</option></select></label>
-      <button class="btn solid" type="button" id="reserve">Reserve</button>
-    </div>
-    <p class="flash" id="m-pick" hidden></p>
-  </div>
-</section>
-
-<section class="card">
-  <h2>Your hours</h2>
-  <p class="muted">Release an hour you won't use: it sells before our own hours at your price, and if it is still unsold when it starts, the shared pool uses it. Either way you get back HC for what it earned, less the 10% fee.</p>
-  <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Model</th><th>Paid</th><th>State</th><th></th></tr></thead><tbody id="hours"></tbody></table></div>
-  <p class="flash" id="m-hours" hidden></p>
-</section>
-
-<div class="mk-grid">
-  <section class="card">
-    <h2>Bid for a window</h2>
-    <form class="form" id="bid" novalidate>
-      <div class="row">
-        <label>Fleet<select id="bid-fleet"><option value="">Any fleet</option></select></label>
-        <label>Model<select id="bid-model"></select></label>
-      </div>
-      <div class="row">
-        <label>From (KST)<input id="bid-from" type="datetime-local" step="3600"></label>
-        <label>To (KST)<input id="bid-to" type="datetime-local" step="3600"></label>
-      </div>
-      <div class="row">
-        <label>Hours<input id="bid-hours" type="number" min="1" step="1" value="4"></label>
-        <label>At most, HC per hour<input id="bid-max" type="number" min="0.000001" step="0.01" value="1"></label>
-      </div>
-      <label class="check"><input id="bid-consecutive" type="checkbox"><span>Consecutive hours on one fleet</span></label>
-      <label class="check"><input id="bid-standing" type="checkbox"><span>Standing: repeat every week</span></label>
-      <div class="row">
-        <button class="btn solid" type="submit">Place bid</button>
-        <button class="btn small" type="button" id="preset-saturday">Next Saturday 10:00–18:00</button>
-        <button class="btn small" type="button" id="preset-weekdays">Weekdays 09:00–18:00, standing</button>
-      </div>
-      <p class="flash" id="m-bid" hidden></p>
-    </form>
-    <h3>Your bids</h3>
-    <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Filled</th><th>Max</th><th>Held</th><th>State</th><th></th></tr></thead><tbody id="bids"></tbody></table></div>
-  </section>
-
-  <section class="card">
-    <h2>Hour Market</h2>
-    <h3>Released hours for sale</h3>
-    <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Ask</th></tr></thead><tbody id="asks"></tbody></table></div>
-    <h3>Open bids</h3>
-    <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Hours left</th><th>Max</th></tr></thead><tbody id="openbids"></tbody></table></div>
-    <h3>Recent trades</h3>
-    <div class="scroll"><table><thead><tr><th>Hour (KST)</th><th>Fleet</th><th>Price</th><th>From</th></tr></thead><tbody id="trades"></tbody></table></div>
-    <p class="muted">Feeds: <a id="feed-market" href="#">market.txt</a> · <a id="feed-pool" href="#">pool.txt</a></p>
-  </section>
-</div>
-
-<section class="card">
-  <h2>Shared pool</h2>
-  <p class="muted">Per-request access on fleets nobody has reserved this hour, billed per seat-second in HC. An account that holds the current hour on a fleet pays no seat-seconds on it; prefill accelerator time is charged either way. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
-  <p class="muted">OpenAI-format endpoint: <span class="endpoint" id="pool-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
+  <h2>Use the API</h2>
+  <p class="muted">Send requests to our OpenAI-format API with your own keys. A request pays for the seconds it holds a seat on a fleet nobody has booked this hour; during an hour you booked, requests on your fleet pay nothing for seats. Prefill accelerator time is charged either way. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Endpoint: <span class="endpoint" id="pool-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="row num" id="pool-status"></div>
-  <h3>Prefill accelerators</h3>
-  <p class="muted">Shared prefill hardware that computes long prompts for any fleet and hands them back for the reply. Ask for it per request with <code>"sparkpipe": {"accelerator": {"bid": 1.5}}</code>. Each prompt is charged its accelerator-seconds × the accelerator's Rate × your bid. The Rate is the accelerator's size against a 16-Spark fleet: 48 Sparks is 3, 96 Sparks is 6. You pay in HC, from the lot that lapses first, or with this month's Plan hours (<code>"pay": "plan"</code>), during your own reserved hour too. The highest bid is computed first, from 1 up to <span id="accel-max-bid"></span>; equal bids go in arrival order. A prompt that no accelerator starts within <code>maxWait</code> seconds (default <span id="accel-wait"></span>, at most <span id="accel-max-wait"></span>) runs on its fleet without one and pays nothing for an accelerator, unless you send <code>"fallback": false</code>.</p>
-  <div class="scroll"><table><thead><tr><th>Accelerator</th><th>Size</th><th>Rate</th><th>HC per minute at bid 1</th><th>Speed</th><th>State</th></tr></thead><tbody id="accelerators"></tbody></table></div>
-  <p class="muted num" id="accel-queue"></p>
+  <div class="scroll"><table><thead><tr><th>Model</th><th>Prompt, $ per million tokens</th><th>Output, $ per million tokens</th></tr></thead><tbody id="pool-models"></tbody></table></div>
+  <p class="muted">ESTIMATED from each model's measured speed with one request at a time, at the current seat price; when the fleet is busy a request runs slower and costs more per token. Every model on the <a href="fleets.html">Fleet List</a> is served. A fleet holds one model at a time: a request for another model waits while the fleet switches, usually 20 to 80 seconds, and pays nothing for the wait.</p>
   <div class="mk-grid">
     <div class="form">
       <h3>API keys</h3>
@@ -183,33 +129,135 @@
       <label>Key<input id="try-key" type="text" placeholder="sk-hc-..." autocomplete="off"></label>
       <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
       <label>Message<textarea id="try-prompt" rows="3">Summarize what a fleet-hour buys.</textarea></label>
-      <div class="row"><label class="check"><input id="try-accel" type="checkbox"><span>Prefill accelerator</span></label><label>Bid<input id="try-bid" type="number" min="1" max="10" step="0.01" value="1"></label><label>Pay with<select id="try-pay"><option value="hc">HC</option><option value="plan">Plan hours</option></select></label></div>
+      <div class="row"><label class="check"><input id="try-accel" type="checkbox"><span>Prefill accelerator</span></label><label>Pay with<select id="try-pay"><option value="hc">HC</option><option value="plan">Plan hours</option></select></label></div>
+      <div class="priority" role="radiogroup" aria-label="Accelerator priority" id="try-priority"></div>
       <button class="btn solid" type="submit">Send</button>
       <div class="reply" id="try-reply"></div>
       <p class="flash" id="m-try" hidden></p>
     </form>
   </div>
-  <h3>Recent pool and accelerator charges</h3>
+  <h3>Recent API and accelerator charges</h3>
   <div class="scroll"><table><thead><tr><th>When (KST)</th><th>Model</th><th>For</th><th>Seconds</th><th>Tokens in / out</th><th>Charge</th></tr></thead><tbody id="charges"></tbody></table></div>
 </section>
 
 <section class="card">
+  <h2>Prefill accelerators</h2>
+  <p class="muted">Our own DGX Spark machines in Seoul, shared by every fleet, that compute a long prompt and hand it back to its fleet to write the reply. Ask for one per request with <code>"sparkpipe": {"accelerator": {"bid": 1}}</code>. A prompt costs its accelerator-seconds times the accelerator's Rate times its priority. Each Rate follows the accelerator's computing capacity against a Rate-1 fleet, Rate 3 for one of 48 DGX Sparks, so at Standard you pay for about the same Spark-time as on your own fleet, finished sooner. Priority buys a better place in the queue: Standard ×1, Priority ×2, Rush ×5; the API takes any bid from 1 to <span id="accel-max-bid"></span>, and the highest goes first. You pay in HC, from the HC that lapses first, or with this month's plan hours (<code>"pay": "plan"</code>), during your own booked hour too. A prompt that no accelerator starts within <code>maxWait</code> seconds (default <span id="accel-wait"></span>, at most <span id="accel-max-wait"></span>) runs on its fleet without one and pays nothing for an accelerator, unless you send <code>"fallback": false</code>.</p>
+  <div class="scroll"><table><thead><tr><th>Accelerator</th><th>Machines</th><th>× fleet-hour (Rate)</th><th>HC per 100K prompt tokens, Standard</th><th>Speed</th><th>State</th></tr></thead><tbody id="accelerators"></tbody></table></div>
+  <p class="muted num" id="accel-queue"></p>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="book" hidden>
+<section class="card">
+  <h2>Book a fleet</h2>
+  <div class="row">
+    <label>Show<select id="days"><option value="7">7 days</option><option value="14">14 days</option><option value="31">31 days</option></select></label>
+    <div class="legend"><span><i class="cell hyor"></i>Our hour at its price</span><span><i class="cell release" style="--depth:.7"></i>Sold back by another customer, darker is cheaper</span><span><i class="cell mine"></i>Yours</span><span><i class="cell mine-release"></i>Yours, offered for sale</span><span><i class="cell taken"></i>Taken</span><span><i class="cell maintenance"></i>Maintenance, announced 7 days ahead</span><span><i class="cell closed"></i>Not for sale</span></div>
+  </div>
+  <p class="muted">Times in KST. Our own hours sell at the fleet's price up to 31 days ahead; hours sold back by other customers at any distance. Capacity kept for plan holders opens 6 hours before it starts, and a fleet locked to a plan sells only the hours its holder sells back. Once booked, an hour is yours: nobody can take it.</p>
+  <div id="calendar"></div>
+  <div class="card" id="pick" hidden>
+    <h3 id="pick-title"></h3>
+    <p class="muted" id="pick-note"></p>
+    <div class="row">
+      <label>Model<select id="pick-model"></select></label>
+      <label>Pay with<select id="pick-pay"><option value="hc">HC</option><option value="tranche">Plan hours</option></select></label>
+      <button class="btn solid" type="button" id="reserve">Book</button>
+    </div>
+    <p class="flash" id="m-pick" hidden></p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Your hours</h2>
+  <p class="muted">Can't use an hour? Sell it back before it starts: it sells before our own hours at your price, and if it is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less the release fee, now <span data-fee>10%</span>.</p>
+  <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Model</th><th>Paid</th><th>State</th><th></th></tr></thead><tbody id="hours"></tbody></table></div>
+  <p class="flash" id="m-hours" hidden></p>
+</section>
+
+<section class="card">
+  <h2>Book a window, once or every week</h2>
+  <p class="muted">Ask for a number of hours inside a window, such as weekdays 09:00 to 18:00, at no more than your price per hour. Hours are booked as they open, and a weekly request repeats every week.</p>
+  <form class="form" id="bid" novalidate>
+    <div class="row">
+      <label>Fleet<select id="bid-fleet"><option value="">Any fleet</option></select></label>
+      <label>Model<select id="bid-model"></select></label>
+    </div>
+    <div class="row">
+      <label>From (KST)<input id="bid-from" type="datetime-local" step="3600"></label>
+      <label>To (KST)<input id="bid-to" type="datetime-local" step="3600"></label>
+    </div>
+    <div class="row">
+      <label>Hours<input id="bid-hours" type="number" min="1" step="1" value="4"></label>
+      <label>At most, HC per hour<input id="bid-max" type="number" min="0.000001" step="0.01" value="1"></label>
+    </div>
+    <label class="check"><input id="bid-consecutive" type="checkbox"><span>Consecutive hours on one fleet</span></label>
+    <label class="check"><input id="bid-standing" type="checkbox"><span>Repeat every week</span></label>
+    <div class="row">
+      <button class="btn solid" type="submit">Book window</button>
+      <button class="btn small" type="button" id="preset-saturday">Next Saturday 10:00–18:00</button>
+      <button class="btn small" type="button" id="preset-weekdays">Weekdays 09:00–18:00, every week</button>
+    </div>
+    <p class="flash" id="m-bid" hidden></p>
+  </form>
+  <h3>Your window requests</h3>
+  <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Booked</th><th>Max</th><th>Set aside</th><th>State</th><th></th></tr></thead><tbody id="bids"></tbody></table></div>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="plan" hidden>
+<section class="card" id="tranche-box">
+  <h2>Your plan's monthly hours</h2>
+  <p class="muted">Each paid month of a plan gives you its hours. Book them on the Book tab with “Plan hours”, and sell back any you won't use. Plan hours also pay for prefill accelerator time. See <a href="plans.html">plans</a>, and pay for the next month in <a href="account.html">Payments and plans</a>.</p>
+  <div class="row sandbox-only"><button class="btn small" type="button" id="tranche">Get demo plan hours</button></div>
+  <div class="scroll"><table><thead><tr><th>Month</th><th>Hours</th><th>Used</th><th>Left</th></tr></thead><tbody id="tranches"></tbody></table></div>
+  <p class="flash" id="m-tranche" hidden></p>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="sell" hidden>
+<section class="card">
+  <h2>Sell back</h2>
+  <p class="muted">Sell back any booked hour you won't use, plan hours included, from Your hours on the Book tab, at its price or a minimum you set. Hours sold back are offered before our own hours. If one is still unsold when it starts, the API pool uses it. Either way you get HC for what it earned, less the release fee, now <span data-fee>10%</span>, usable for 12 months. We never buy a sold-back hour ourselves.</p>
+  <h3>Hours for sale now</h3>
+  <div class="scroll"><table><thead><tr><th>Start (KST)</th><th>Fleet</th><th>Ask</th></tr></thead><tbody id="asks"></tbody></table></div>
+</section>
+</div>
+
+<div class="tab-panel" role="tabpanel" data-panel="advanced" hidden>
+<section class="card">
+  <h2>Hour Market</h2>
+  <h3>Open window requests</h3>
+  <div class="scroll"><table><thead><tr><th>Window (KST)</th><th>Fleet</th><th>Hours left</th><th>Max</th></tr></thead><tbody id="openbids"></tbody></table></div>
+  <h3>Recent trades</h3>
+  <div class="scroll"><table><thead><tr><th>Hour (KST)</th><th>Fleet</th><th>Price</th><th>From</th></tr></thead><tbody id="trades"></tbody></table></div>
+  <p class="muted">Feeds: <a id="feed-market" href="#">market.txt</a> · <a id="feed-pool" href="#">pool.txt</a></p>
+</section>
+
+<section class="card">
+  <h2>HC lots</h2>
+  <div class="scroll"><table><thead><tr><th>HC left</th><th>Of</th><th>Source</th><th>Lapses</th></tr></thead><tbody id="lots"></tbody></table></div>
+</section>
+
+<section class="card">
   <h2>Your ledger lines</h2>
-  <p class="muted">Every purchase, reservation, release, bid, pool charge, accelerator charge and credit is a line in the hash-chained ledger.</p>
+  <p class="muted">Every purchase, booking, sale, window request, API charge, accelerator charge and credit is a line in the hash-chained ledger.</p>
   <div class="row"><button class="btn small" type="button" id="ledger-load">Load my lines</button><span class="num" id="ledger-head"></span></div>
   <div class="scroll"><table><thead><tr><th>#</th><th>Written (KST)</th><th>Type</th><th>Detail</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
 </section>
+</div>
 </main>
 
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Account</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Payments and plans</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
     <span class="sandbox-only">The sandbox takes no payment and uses no fleet.</span>
   </div>
 </footer>
 
 <script src="pricing.js"></script>
-<script src="market.js?v=1"></script>
+<script src="market.js?v=2"></script>
 </body>
 </html>

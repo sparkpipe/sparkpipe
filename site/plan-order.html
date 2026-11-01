@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=1">
+<link rel="stylesheet" href="checkout.css?v=2">
 <style>
 .order-form th { width: 34%; text-align: left; vertical-align: top; font: 500 12px/1.45 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--steel); }
 .order-form td { overflow-wrap: anywhere; }
@@ -42,7 +42,7 @@
       <a href="#record">Acceptance</a>
     </nav>
     <div class="nav-actions">
-      <a class="btn small solid" href="account.html">Account</a>
+      <a class="btn small solid" href="account.html">Payments and plans</a>
     </div>
   </div>
 </header>
@@ -51,8 +51,8 @@
 <section class="co-head">
   <p class="label">Plan Order</p>
   <h1 id="title">Your Plan Order.</h1>
-  <p class="lead" id="lead">Sign in to your <a href="account.html">account</a> to see it.</p>
-  <div class="actions" id="actions" hidden><button class="btn solid" type="button" id="print">Print or save as PDF</button><a class="btn" id="download" download>Download the exact text</a><a class="btn" href="account.html">Pay from your account</a></div>
+  <p class="lead" id="lead">Sign in to <a href="account.html">Payments and plans</a> to see it.</p>
+  <div class="actions" id="actions" hidden><button class="btn solid" type="button" id="print">Print or save as PDF</button><a class="btn" id="download" download>Download the exact text</a><a class="btn" href="account.html">Pay in Payments and plans</a></div>
 </section>
 
 <div class="stack" id="body" hidden>
@@ -86,12 +86,12 @@
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="plans.html">Reserved plans</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>Stablecoin payments are processed by CoinPayments.</span>
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
 
 <script src="pricing.js"></script>
-<script src="checkout.js?v=1"></script>
+<script src="checkout.js?v=2"></script>
 <script>
 (() => {
   const SP = window.SP;
@@ -104,7 +104,7 @@
   const line = (label, value) => { const p = document.createElement('p'); const b = document.createElement('b'); b.textContent = label + ' '; p.append(b, document.createTextNode(value)); return p; };
   const show = (plan) => {
     $('title').textContent = 'Plan Order ' + plan.plan + '.';
-    $('lead').textContent = plan.company + ' · ' + plan.line + ', ' + nice(plan.start) + ' to ' + nice(plan.end) + '.';
+    $('lead').textContent = plan.company + ' · ' + plan.line + ', ' + (plan.end ? nice(plan.start) + ' to ' + nice(plan.end) : 'from ' + nice(plan.start)) + '.';
     $('body').hidden = false;
     $('actions').hidden = false;
     $('rows-ko').replaceChildren(...plan.rows.ko.map(([item, entry]) => row([cell('th', item), cell('td', entry)])));
@@ -120,12 +120,12 @@
     $('download').download = 'plan-order-' + plan.plan + '.md';
   };
   $('print').addEventListener('click', () => window.print());
-  if (!ident || !PLAN.test(ident)) { $('lead').textContent = 'Open a Plan Order from your account.'; return; }
+  if (!ident || !PLAN.test(ident)) { $('lead').textContent = 'Open a Plan Order from Payments and plans.'; return; }
   SP.call('/plan/' + ident).then((plan) => {
     if (!plan.rows) { $('title').textContent = 'Plan Order ' + plan.plan + '.'; $('lead').textContent = 'This Plan Order was signed on paper. Write to hyor@sparkpipe.ai for a copy.'; return; }
     show(plan);
   }).catch((error) => {
-    $('lead').textContent = error.status === 401 ? 'Sign in to your account to see this Plan Order.' : error.message;
+    $('lead').textContent = error.status === 401 ? 'Sign in to Payments and plans to see this Plan Order.' : error.message;
   });
 })();
 </script>

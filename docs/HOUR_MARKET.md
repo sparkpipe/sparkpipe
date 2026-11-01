@@ -11,18 +11,19 @@ describes what is built, how it runs and how to test it.
 ## Units and rules
 
 - **HC.** One HC buys one hour of a Rate-1 fleet. It is bought by amount
-  (`market.hcPrice` in `site/pricing.js`, $20, plus VAT), from
-  `market.minPurchase` ($10), to 6 decimal places. Each purchase or credit is
+  (`market.hcPrice` in `site/pricing.js`, $20, plus VAT, or
+  `market.hcPriceKRW`, ₩26,000, plus VAT, when paid in won through Toss
+  Payments), from `market.minPurchase` ($10, or ₩13,000 in won), to 6
+  decimal places. Each purchase or credit is
   a lot that lapses 12 months after it is issued, or later when the cover
   below needs it; spending takes the lot that lapses first. HC never moves
   between accounts and is never paid out.
 - **Dated hour.** A reservation of one fleet for one hour, starting on the
   hour (UTC slots such as `2026-12-01T01:00Z`; the page shows KST). It is
   consumed when it occurs.
-- **Our capacity.** Every unreserved fleet-hour within `market.horizonDays`
-  (7) is for sale at the fleet's Rate, and up to `market.advanceDays` (31)
-  ahead at Rate × `market.advanceMultiplier` (1.25), on any day: the premium
-  buys lead time. Live, only fleets whose `state` is
+- **Our capacity.** Every unreserved fleet-hour up to `market.advanceDays`
+  (31) ahead is for sale at the fleet's Rate, on any day. Live, only fleets
+  whose `state` is
   `serving` sell, and not before `hourlyEarliestStart`. Capacity kept for
   plans and for earlier-lapsing HC (below) is not offered.
 - **Release.** The holder of a reservation that has not started may release
@@ -39,7 +40,8 @@ describes what is built, how it runs and how to test it.
   capacity is at Rate; a trade with a release is at whichever order was
   resting first (the ledger sequence decides).
 - **Settlement.** The buyer's HC is debited and the seller is credited the
-  price less `market.releaseFee` (10%) as a new 12-month lot.
+  price less the release fee on its ask (`market.releaseFee` when the hour
+  was released) as a new 12-month lot.
 - **Shared pool.** In each hour, every serving fleet that nobody holds, and
   every released hour that reached its start unsold, serves per-request
   traffic. A request holds one seat; the price per seat-second is
@@ -49,10 +51,23 @@ describes what is built, how it runs and how to test it.
   up to a fleet's seat-seconds; after the hour each released hour's seller is
   credited what it earned less the fee. An account that holds the current
   hour on a fleet pays no seat-seconds there.
+- **Every model.** The pool, reservations and bids take any model in
+  `pricing.js` `models` (the offered models of the Fleet List). Each entry
+  carries its measured one-request `decode` and 8K `prefill` speeds, from
+  which `/market/state` and `pool.txt` give ESTIMATED dollars per million
+  output and prompt tokens at the current seat price. A fleet holds one model
+  at a time. Before forwarding, the gateway reads the hub's
+  `/v1/sparkpipe/status` through the API door; a request for a model that is
+  not loaded, or while a swap runs, takes no seat (and pays nothing) until
+  the status shows that model serving or its reply starts. The reply's
+  `sparkpipe.switch` gives the seconds waited, or null. The sandbox
+  simulates a switch of `SPARKPIPE_PAY_SANDBOX_SWITCH_SECONDS` (20).
 - **Prefill accelerators.** Shared prefill hardware listed under
   `accelerators` in `pricing.js` (name, kind, state, `rate`,
-  `tokensPerSecond`). An accelerator's Rate is its size against a 16-Spark
-  fleet (48 Sparks: 3, 96 Sparks: 6). A pool request opts in with
+  `tokensPerSecond`). Every accelerator is a group of our own DGX Sparks in
+  Seoul; its Rate is its Sparks divided by 16 (48 Sparks: 3, 96 Sparks: 6).
+  The account page offers the bids as priorities: Standard 1, Priority 2,
+  Rush 5. A pool request opts in with
   `"sparkpipe": {"accelerator": {"bid", "maxWait", "pay", "fallback"}}`, or
   `true` for the defaults, and is charged `seconds × rate × bid / 3600`,
   rounded down to six places, whoever sends it: from the pool, in the
@@ -82,11 +97,12 @@ describes what is built, how it runs and how to test it.
     accelerator, its Rate, its speed and whether it is busy, and the queue
     (bid and estimated seconds per waiting prompt, no accounts).
 - **Tranche hours.** A plan holder's monthly hours reserve any free
-  hour of their month, beyond the 7-day horizon, at no HC; released, they
+  hour of their month, at no HC; released, they
   earn HC like any hour. Each plan payment issues them to the earliest
   Tranches not yet paid, less the plan hours of those Tranches that had
-  already passed (docs/PAYMENTS.md); `sparkpipe_pay.py tranche EMAIL
-  YYYY-MM HOURS` grants hours by hand.
+  already passed; a Monthly plan's Tranche is issued once it is paid in
+  full (docs/PAYMENTS.md). `sparkpipe_pay.py tranche EMAIL YYYY-MM HOURS`
+  grants hours by hand.
 
 ## No overselling, no bumping
 
@@ -97,12 +113,21 @@ from its holder, and HC is sold only while it can be spent. Four rules in
 
 - **Set-aside instead of bumping.** A reserved plan is a Plan Order in
   the ledger (docs/PAYMENTS.md), ordered in the account or recorded from a
-  signed one: windows (Americas 00-08, Asia 08-16,
-  Europe 16-24 KST, `windows` in `site/pricing.js`; all three is a full
-  day), days (every day, or weekdays in each window's own region), fleets,
-  term and an optional fleet lock. Every active plan keeps its fleets off
-  sale in every hour of its windows on its days for its whole term, so
-  three customers in three regions share one fleet around the clock. The
+  signed one: office hours in the customer's own IANA time zone (whole
+  hours of its local clock, at least 8 hours, across midnight when the end
+  is at or before the start, 24 hours a full day), days (every day, or
+  Monday to Friday by the local date the hours start), fleets, term
+  (Monthly, 1, 2 or 3 years) and an optional fleet lock. The set-aside is
+  computed per KST hour with `zoneinfo`: each KST hour that starts within
+  the office hours of a counted local day, so it moves with the customer's
+  daylight-saving changes. Every active plan keeps its fleets off sale in
+  each of those hours for its whole term, so customers in Seoul, Berlin and
+  New York share one fleet around the clock. A Monthly plan keeps the
+  current month and the next one; for the HC cover and for admitting other
+  Plan Orders it counts as continuing in every later month until it ends
+  (`monthly_horizon`, docs/PAYMENTS.md), and when a month goes unpaid on
+  its first day, or the customer stops it, every month after its last paid
+  one is freed. The
   holder's own Tranche reservations use up its set-aside, and its Tranche
   bookings elsewhere never take another plan's. Capacity still unreserved
   `market.lastCallHours` (6) before an hour starts opens to HC, the point
@@ -124,23 +149,21 @@ from its holder, and HC is sold only while it can be spent. Four rules in
   and `market.txt` publish it. Sales and pool credits for released hours
   never weaken the cover, as the buyer's HC spent is more than the seller's
   credit and the hour was already taken.
-- **Settings locked to what was bought.** Each HC lot carries the
-  published settings in force when it was ordered (`terms`: the advance
-  multiplier and the release fee); a sale or pool credit carries those in
-  force when it is credited. A reservation paid with HC keeps the settings
-  of the lot it spent first (the one that lapses first, or the first part of
-  a bid's hold): its advance price uses that lot's multiplier, and its
-  release that lot's fee. A Tranche reservation keeps its Plan Order's
-  release fee. A change in `site/pricing.js` therefore reaches only HC and
-  Plan Orders made after it, as the Customer Agreement's published settings
-  clause promises.
+- **Published settings apply when used.** Prices, Rates and fees in
+  `site/pricing.js` apply from when they are published (Customer Agreement
+  9.3). HC keeps the price it was bought at and a reservation the price it
+  was made at, but neither carries any other setting. A release, whether of
+  an hour reserved with HC or with Plan hours, records on its `ask` line the
+  release fee published at that moment, and its sale or pool credit is
+  charged that fee (Hour Market Rules 9).
 - **Maintenance.** `sparkpipe_pay.py maintenance FLEET YYYY-MM-DD [HOURS]`
   schedules maintenance in the week starting on that KST date, which must
   begin at least 7 days ahead. It takes at most the weekly allowance (the
   published `plans.maintenanceHoursPerWeek`, or the lowest allowance of any
   Plan Order active that week), picks the run with the fewest reservations,
-  and between equal runs the window least recently maintained on that
-  fleet. Every reservation in the run is credited back (HC at the price paid,
+  and between equal runs the 8-hour part of the KST day (`windows` in
+  `site/pricing.js`) least recently maintained on that fleet, which rotates
+  maintenance across the hours of the day as clause 4.6 requires. Every reservation in the run is credited back (HC at the price paid,
   with its settings, or the Tranche hour, which no longer counts as used);
   a locked plan on that fleet, and the newest plans whose set-aside the
   remaining fleets cannot keep, are credited one plan hour for each hour.
@@ -200,13 +223,13 @@ same balances.
 | `GET /market/book` | anyone | Open releases and bids, without identities, and recent trades |
 | `GET /market/market.txt`, `/market/pool.txt` | anyone | The same as plain-text feeds |
 | `GET /market/ledger` | signed in | The account's own ledger lines with their hashes |
-| `POST /market/buy` | signed in | `amount` in USD before VAT; live also `coin`, and returns the CoinPayments checkout |
+| `POST /market/buy` | signed in | `amount` in USD before VAT; live also `coin`, and returns the CoinPayments checkout; or `processor: "toss"` with `amount` in won, live and sandbox, which returns the Toss Payments request (docs/PAYMENTS.md) |
 | `POST /market/reserve` | signed in | `fleet`, `start`, `model`, optional `max`, `pay`: `hc` or `tranche` |
 | `POST /market/release` | signed in | `reservation`, optional `min` |
 | `POST /market/cancel` | signed in | `ask` or `bid` |
 | `POST /market/bid` | signed in | `fleet` (or none), `model`, `from`, `to`, `hours`, `max`, `consecutive`, `standing` |
 | `POST /market/keys`, `/market/keys/revoke` | signed in | Create a pool key (shown once) or revoke one |
-| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format, plus the optional `sparkpipe.accelerator` request field; replies carry `sparkpipe: {hc, seconds, dedicated, accelerator}`, where `accelerator` is null, `{used: false, reason}` or `{used: true, charge, accelerator, rate, bid, seconds, waited, pay, amount}` |
+| `POST /pool/v1/chat/completions`, `GET /pool/v1/models` | pool key | OpenAI format, plus the optional `sparkpipe.accelerator` request field; replies carry `sparkpipe: {hc, seconds, dedicated, accelerator, switch}`, where `accelerator` is null, `{used: false, reason}` or `{used: true, charge, accelerator, rate, bid, seconds, waited, pay, amount}` |
 | `POST /market/sandbox/clock`, `/tranche`, `/reset` | sandbox, signed in | Move the shared clock, take demo Tranche hours, clear the sandbox |
 
 ## The page, live and sandbox
@@ -219,7 +242,25 @@ a second instance of the service in sandbox mode, served at
 `/pay/sandbox/api/`, with its own accounts and ledger; `market-test.html`
 redirects there. In the sandbox:
 
-- purchases settle at once and no CoinPayments call is made;
+- purchases from the market page settle at once and no CoinPayments call is
+  made;
+- card purchases through `buy.html?sandbox` (which, like
+  `account.html?sandbox`, talks to `/pay/sandbox/api/`) go through Toss
+  Payments' test mode, so the whole card checkout can be tried and no card
+  is charged. The sandbox refuses live Toss Payments keys. Its
+  `/etc/sparkpipe-pay/sandbox.env` holds Toss Payments' published
+  documentation test keys for the checkout-page payment (주문서형 결제) as
+  `TOSS_CLIENT_KEY` (`test_gck_docs_…`) and `TOSS_SECRET_KEY`
+  (`test_gsk_docs_…`): copy them from the guide "주문서형 결제 연동하기"
+  (https://docs.tosspayments.com/guides/v2/payment-widget/integration) or
+  from Toss Payments' sample repository
+  (https://github.com/tosspayments/tosspayments-sample). Those keys belong
+  to Toss Payments' documentation shop: cards, transfers and most easy-pay
+  wallets work, virtual accounts and webhooks do not, so the reconciliation
+  confirms payments instead. Once the contract gives us our own test keys,
+  put those there instead and register the sandbox webhook
+  (docs/PAYMENTS.md); test virtual accounts are then paid from the test
+  payment log in the Toss Payments developer centre;
 - `/code` returns the sign-in code instead of mailing it, and no mail is sent;
 - a shared test clock moves forward, so hours start, released hours reach
   the pool and the pool settles;
@@ -242,6 +283,7 @@ First install on the VPS, beside the live service:
 ```sh
 sudo install -d -o sparkpipe-pay -g sparkpipe-pay -m 700 /var/lib/sparkpipe-pay-sandbox
 sudo install -m 640 -g sparkpipe-pay deployment/vps/sparkpipe-pay-sandbox.env.example /etc/sparkpipe-pay/sandbox.env
+sudoedit /etc/sparkpipe-pay/sandbox.env
 sudo install -m 644 deployment/vps/sparkpipe-pay-sandbox.service /etc/systemd/system/
 sudo install -m 644 deployment/vps/sparkpipe-pay.conf /etc/apache2/sparkpipe/
 sudo systemctl daemon-reload
@@ -270,14 +312,17 @@ Hour Market live pool", created 2026-10-31, expires 2036-10-28); revoke it
 there with `api_keys.py revoke k_dbfba343`. The door allows four concurrent
 requests per key, which caps the live pool at four requests at once until
 the hub gives the pool its own limit. A public request for a model the
-fleet has not loaded starts a swap, as any public request does, so a pool
-request for the other pool model moves the whole fleet.
+fleet has not loaded starts a swap, as any public request does: the swap
+controller drains the current model's live requests first (up to
+`drain_seconds`), and the waiting pool request pays nothing until the new
+model serves. Minimum residency and the fair queue (docs/LITELLM_FRONTEND.md)
+are still to build on the hub.
 
 
 Dedicated hours are recorded, billed and released here; keeping a fleet
 exclusive to its holder during the hour is work for the fleet controller.
-The set-aside keeps the plan's fleets in its windows whatever fleet the
-holder later picks, except on a locked plan; more fleets at once, or hours
+The set-aside keeps the plan's fleets in its office hours whatever fleet
+the holder later picks, except on a locked plan; more fleets at once, or hours
 outside the plan, are subject to availability.
 
 ## Live accelerators

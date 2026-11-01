@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Your Account · SparkPipe</title>
-<meta name="description" content="Your SparkPipe account: hour-credits, orders, payments and reserved plans.">
+<title>Payments and plans · SparkPipe</title>
+<meta name="description" content="Your SparkPipe payments and plans: purchases of hour-credits, receipts and reserved plan payments.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
@@ -15,12 +15,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
 <link rel="stylesheet" href="site.css?v=dcbd7de8">
-<link rel="stylesheet" href="checkout.css?v=1">
+<link rel="stylesheet" href="checkout.css?v=2">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><source srcset="hyor-ai-logo-reversed.svg" media="(prefers-color-scheme: dark)"><img src="hyor-ai-logo.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">payments</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="index.html#fleets">Fleets</a>
       <a href="index.html#prices">Prices</a>
@@ -36,7 +36,7 @@
 <main class="wrap">
 <section class="co-head">
   <p class="label">Account</p>
-  <h1 id="title">Your account.</h1>
+  <h1 id="title">Payments and plans.</h1>
 </section>
 
 <div class="stack">
@@ -54,7 +54,7 @@
       <label>Email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
       <p class="flash" id="m-email" hidden></p>
       <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
-      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">Hour Market sandbox</a> first.</p>
+      <p class="hint">No password. New here? <a href="buy.html">Buy HC</a> or <a href="plans.html">order a plan</a> to open an account, or try the <a href="market.html?sandbox">sandbox</a> first.</p>
     </form>
     <form class="form" id="f-code" hidden novalidate>
       <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
@@ -75,15 +75,15 @@
         <div><span>Hour-credits</span><strong id="s-hc">0</strong></div>
         <div><span>Awaiting payment</span><strong id="s-open">0</strong></div>
       </div>
-      <div class="actions"><a class="btn solid" href="market.html">Open the Hour Market</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
+      <div class="actions"><a class="btn solid" href="market.html">Open your account</a><a class="btn" href="buy.html">Buy HC</a><a class="btn" href="plans.html">Reserved plans</a></div>
     </section>
 
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. The <a href="market.html">Hour Market</a> shows every lot.</span></li>
-        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in the Hour Market, or reserve whole fleet-hours from <span data-start>1 December 2026</span>, up to 7 days ahead at the fleet's Rate, or up to 31 days ahead at 1.25× on any day. No reservation is ever bumped.</span></li>
-        <li><span>Receipts go to <b class="email-here"></b>. For a won tax invoice or anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
+        <li><span>Each purchase of HC lasts 12 months from the day it is issued, and the oldest is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
+        <li><span>Spend HC in the shared pool at once, through an OpenAI-format API with keys you create in <a href="market.html">your account</a>, or book whole fleet-hours from <span data-start>1 December 2026</span>, up to 31 days ahead at the fleet's Rate. No booking is ever bumped.</span></li>
+        <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
       </ul>
     </section>
 
@@ -110,39 +110,42 @@
     <div class="calc">
       <div class="readout">
         <div><span>Term</span><strong data-k="term"></strong></div>
-        <div><span>Hours in the term</span><strong data-k="hours"></strong></div>
+        <div><span data-k="hours-label">Hours in the term</span><strong data-k="hours"></strong></div>
         <div><span>Hour Price</span><strong data-k="price"></strong></div>
         <div><span>Paid, before VAT</span><strong data-k="paid"></strong></div>
-        <div><span>Left to pay, before VAT</span><strong data-k="left"></strong></div>
+        <div><span data-k="left-label">Left to pay, before VAT</span><strong data-k="left"></strong></div>
         <div class="you"><span data-k="gate-name">Next gate</span><strong data-k="gate"></strong></div>
       </div>
       <form class="form" novalidate>
-        <label>Amount, before VAT (USD)<input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
+        <div data-k="pay"></div>
+        <label data-k="amount-line"><span data-k="unit">Amount, before VAT (USD)</span><input name="amount" type="number" inputmode="decimal" min="1" step="0.01"></label>
         <p class="hint" data-k="issues"></p>
-        <div data-k="coins"></div>
         <p class="flash" hidden></p>
         <button class="btn solid big" type="submit">Pay</button>
-        <p class="hint">Each payment issues hours equal to the amount before VAT divided by your Hour Price, to the earliest Tranches not yet paid. For a USD wire or a won transfer, write to us.</p>
+        <p class="hint" data-k="rule">Each payment issues hours equal to the amount before VAT divided by your Hour Price in that currency, to the earliest Tranches not yet paid. Pay by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT. For a USD wire, write to us.</p>
       </form>
     </div>
+    <div class="actions" data-k="stop-line" hidden><button class="btn small" type="button" data-k="stop">Stop after this month</button></div>
+    <p class="flash" data-k="stop-note" hidden></p>
   </section>
 </template>
 
 <footer class="foot">
   <div class="wrap">
     <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Hour Market</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
-    <span>Stablecoin payments are processed by CoinPayments.</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="market-rules.html">Hour Market Rules</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments.</span>
   </div>
 </footer>
 
+<script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js"></script>
-<script src="checkout.js?v=1"></script>
+<script src="checkout.js?v=2"></script>
 <script>
 (() => {
   const P = window.SP_PRICING, SP = window.SP;
   const $ = (id) => document.getElementById(id);
-  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid']);
+  const OPEN = new Set(['created', 'unpaid', 'pending', 'paid', 'waiting']);
   const STEPS = { created: 0, unpaid: 1, pending: 2, paid: 3, completed: 4 };
   const ORDER = /^SP[A-Z2-7]{16}$/;
   const nice = (day) => (day ? new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '-');
@@ -154,10 +157,7 @@
     const amount = o.issued && +o.issuedHours < +o.hours ? hc(o.issuedHours) + ' of ' + hc(o.hours) : hc(o.hours);
     return o.product === 'credits' ? amount + ' HC' : 'Plan ' + o.plan + ': ' + amount + ' hours';
   };
-  const DAYS = { every: 'Every day', weekdays: 'Weekdays' };
-  const windowName = (id) => (P.windows.find((w) => w.id === id) || { name: id }).name;
-  const summary = (a) => [a.months + ' months', a.windows.length === P.windows.length ? 'Full day' : a.windows.map(windowName).join(' + '), DAYS[a.days] || a.days, a.fleets + (a.fleets === 1 ? ' fleet' : ' fleets')]
-    .concat([].concat(a.lock || []).length ? ['locked ' + [].concat(a.lock).join(', ')] : []).join(' · ');
+  const monthOf = (day) => new Date(day.slice(0, 10) + 'T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const unit = (o) => (o.product === 'credits' ? ' HC' : ' fleet-hours');
   let me = null, watching = new URLSearchParams(window.location.search).get('order'), timer = null;
 
@@ -169,10 +169,15 @@
     const actions = [];
     let title, text, kind;
     const part = o.received && +o.received > 0 && +o.received < +o.total;
-    if (o.state === 'completed' && o.issued) {
+    const toss = o.processor === 'toss' ? SP.tossStatus(o) : null;
+    if (toss) {
+      ({ title, text, kind } = toss);
+      [...$('st-line').children].forEach((li, i) => { li.className = i < toss.step ? 'done' : i === toss.step && OPEN.has(o.state) ? 'now' : ''; });
+      if (toss.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
+    } else if (o.state === 'completed' && o.issued) {
       title = +o.issuedHours < +o.hours ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
       text = hc(o.issuedHours) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', usable for 12 months' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
-      if (o.product === 'credits') actions.push(link('market.html', 'Open the Hour Market', 'btn solid'));
+      if (o.product === 'credits') actions.push(link('market.html', 'Open your account', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
       text = 'We received ' + SP.usd(o.received) + ' of ' + SP.usd(o.total) + ' in ' + SP.coinName(o.coin) + '. While the payment page is open you can send the remaining ' + SP.usd(+o.total - +o.received) + ' to the same address. Otherwise, if CoinPayments completes the payment with what arrived, it buys ' + hc(Math.floor(+o.received / +o.total * +o.hours * 1e6) / 1e6) + unit(o) + ', in proportion; if it does not, CoinPayments refunds it when the payment page closes and emails you a link to claim it.';
@@ -222,52 +227,52 @@
   const renderPlan = (a) => {
     const node = $('plan-card').content.firstElementChild.cloneNode(true);
     const k = (name) => node.querySelector('[data-k="' + name + '"]');
+    const monthly = a.payment === 'monthly';
     k('plan').textContent = a.plan;
-    k('summary').textContent = summary(a);
+    k('summary').textContent = a.line;
     k('form-line').hidden = !a.form;
     k('form').href = 'plan-order.html?plan=' + encodeURIComponent(a.plan);
-    k('term').textContent = nice(a.start) + ' – ' + nice(a.end);
+    k('term').textContent = monthly ? (a.end ? nice(a.start) + ' – ' + nice(a.end) : 'Monthly, from ' + nice(a.start)) : nice(a.start) + ' – ' + nice(a.end);
+    k('hours-label').textContent = monthly ? (a.tranche ? 'Plan hours in ' + monthOf(a.tranche.from) : 'Plan hours this month') : 'Hours in the term';
     k('hours').textContent = SP.whole(a.hours);
     k('price').textContent = SP.usd(a.price);
     k('paid').textContent = SP.usd(a.paid) + (+a.pending ? ' (+' + SP.usd(a.pending) + ' unpaid)' : '');
-    k('left').textContent = SP.usd(a.remaining);
-    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
-    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + ' by ' + nice(a.nextGate.due) : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
-    const form = node.querySelector('form'), amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button');
-    SP.coinPicker(k('coins'), 'coin-' + a.plan, 'USDC.ERC20', () => update());
-    if (a.nextGate) amount.value = a.nextGate.amount;
-    const update = () => {
-      const net = Math.round((+amount.value || 0) * 100) / 100, vat = Math.round(net * P.vatRate * 100) / 100, coin = SP.coinOf(SP.chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
-      k('issues').textContent = net >= 1 ? 'Issues ' + SP.whole(Math.floor(net / +a.price * 10000) / 10000) + ' hours. Total with VAT: ' + SP.usd(net + vat) + ' in ' + coin + '.' : '';
-      button.textContent = net >= 1 ? 'Pay ' + SP.usd(net + vat) + ' in ' + coin : 'Pay in ' + coin;
-      button.disabled = Boolean(a.ended) || net < 1 || net > +a.remaining;
-    };
-    amount.addEventListener('input', update);
-    update();
-    if (a.ended) { form.hidden = true; const p = document.createElement('p'); p.className = 'flash'; p.textContent = a.ended; node.querySelector('.calc').append(p); }
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      SP.say(note, '');
-      try {
-        const placed = await SP.call('/order', { product: 'plan', plan: a.plan, amount: (+amount.value).toFixed(2), coin: SP.chosen(form, 'coin-' + a.plan) });
-        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
-        window.location.assign(placed.checkout);
-      } catch (error) { SP.say(note, error.message, 'error'); update(); }
-    });
+    k('left-label').textContent = monthly ? 'Paid through' : 'Left to pay, before VAT';
+    k('left').textContent = monthly ? (a.paidThrough ? nice(a.paidThrough) : 'Nothing yet') : SP.usd(a.remaining);
+    k('gate-name').textContent = a.nextGate && !a.ended ? 'Next: ' + a.nextGate.name + ', before VAT' : monthly ? 'Next month' : a.payment === 'upfront' ? 'Payment' : 'Next gate';
+    k('gate').textContent = a.ended ? 'Closed' : a.nextGate ? SP.usd(a.nextGate.amount) + (monthly ? ' before ' : ' by ') + nice(a.nextGate.due) : monthly ? (a.stopped ? 'Stopped' : 'Awaiting payment') : a.payment === 'upfront' ? 'Paid in full' : 'All gates met';
+    const form = node.querySelector('form');
+    if (monthly) {
+      k('amount-line').hidden = true;
+      k('rule').textContent = 'Each month is paid in full before it starts, and its hours are issued once it is paid. If a month is not paid by its first day, the plan ends after the last paid month, with nothing owed. Pay by card or Korean bank transfer in won through Toss Payments, or in USDC or USDT. For a USD wire, write to us.';
+      if (a.stopped && !a.ended) { k('stop-note').hidden = false; SP.say(k('stop-note'), 'Stopped: the plan ends on ' + nice(a.end) + ', after its last paid month, with nothing owed.'); }
+      k('stop-line').hidden = Boolean(a.ended || a.stopped);
+      k('stop').addEventListener('click', async () => {
+        const ask = a.paidThrough ? 'Stop plan ' + a.plan + ' after ' + monthOf(a.paidThrough) + '? It ends on ' + nice(a.paidThrough) + ' with nothing owed, takes no further payment, and its capacity after that is released. This cannot be undone.' : 'Stop plan ' + a.plan + ' now? Nothing is paid under it yet, so it ends at once with nothing owed. This cannot be undone.';
+        if (!window.confirm(ask)) return;
+        k('stop').disabled = true;
+        try { await SP.call('/plans/stop', { plan: a.plan }); load(); } catch (error) { k('stop-note').hidden = false; SP.say(k('stop-note'), error.message, 'error'); k('stop').disabled = false; }
+      });
+    }
+    SP.planPay(form, a, P);
+    if (a.ended || (monthly && !a.nextGate)) {
+      form.hidden = true;
+      const text = a.ended || (a.stopped ? '' : +a.pending ? 'The next month is awaiting payment.' : '');
+      if (text) { const p = document.createElement('p'); p.className = 'flash'; p.textContent = text; node.querySelector('.calc').append(p); }
+    }
     return node;
   };
 
   const renderHome = () => {
     $('signin').hidden = true;
     $('home').hidden = false;
-    $('title').textContent = 'Your account.';
+    $('title').textContent = 'Payments and plans.';
     $('company').textContent = me.company;
     $('who-email').textContent = me.email;
     document.querySelectorAll('.email-here').forEach((el) => { el.textContent = me.email; });
     $('since').textContent = nice(me.since);
     $('s-hc').textContent = hc(me.hc);
-    $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid').length;
+    $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid' || o.state === 'waiting').length;
     $('plans').hidden = me.plans.length === 0;
     $('plans').replaceChildren(...me.plans.map(renderPlan));
     $('no-orders').hidden = me.orders.length > 0;
@@ -278,15 +283,15 @@
       const state = document.createElement('span');
       state.className = 'state' + (o.state === 'completed' ? ' live' : OPEN.has(o.state) ? ' building' : '');
       const part = o.received && +o.received > 0 && +o.received < +o.total;
-      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.STATES[o.state] || o.state;
-      return row([cell(o.order), cell(what(o)), cell(SP.usd(o.total), 'figure'), cell(SP.coinName(o.coin)), cell(state), cell(action)]);
+      state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.stateOf(o);
+      return row([cell(o.order), cell(what(o)), cell(SP.priced(o.total, o.currency), 'figure'), cell(SP.paidWith(o)), cell(state), cell(action)]);
     }));
   };
 
   const load = async () => {
     me = await SP.me();
     if (me) renderHome();
-    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to your account.'; }
+    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments and plans.'; }
   };
 
   const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });

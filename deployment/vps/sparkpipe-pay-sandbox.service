@@ -1,5 +1,5 @@
 [Unit]
-Description=SparkPipe Hour Market sandbox: the payment service in sandbox mode for the test page
+Description=SparkPipe Hour Market sandbox: the payment service in sandbox mode, with Toss Payments in test mode
 After=network-online.target
 Wants=network-online.target
 
