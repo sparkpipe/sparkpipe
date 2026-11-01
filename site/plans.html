@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Reserved plans · SparkPipe</title>
-<meta name="description" content="Reserve whole SparkPipe fleets in Seoul for 3 months to 3 years at a fixed Hour Price: choose your windows, days, fleets and a fleet lock, see every hour and payment, and order it online.">
+<meta name="description" content="Reserve whole SparkPipe fleets in Seoul in your own office hours, month by month or for 1 to 3 years, at an Hour Price that holds while the plan runs: choose your time zone, hours, days, fleets and a fleet lock, see every hour and payment, and order it online.">
 <meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#111522" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -26,6 +26,12 @@
 .tiles .tile:has(input:disabled) { opacity: .45; cursor: not-allowed; border-color: var(--rule); }
 .card .calc .readout strong { font-size: clamp(18px, 2vw, 24px); }
 #r-plan { font-size: clamp(20px, 2.4vw, 28px); }
+.month { margin: 0 0 18px; }
+.month strong { display: block; font: 800 clamp(30px, 4.4vw, 48px)/1.05 var(--display); font-variation-settings: 'wdth' 112; font-variant-numeric: tabular-nums; }
+.month span { font: 500 12px/1.5 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--steel); }
+.hours { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: end; }
+.hours label { margin: 0; }
+@media (max-width: 560px) { .hours { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .hours label:first-child { grid-column: 1 / -1; } }
 .order-form th { width: 34%; text-align: left; vertical-align: top; font: 500 12px/1.45 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--steel); }
 .order-form td { overflow-wrap: anywhere; }
 .hash { font: 500 12px/1.5 var(--mono); overflow-wrap: anywhere; color: var(--steel); }
@@ -61,33 +67,38 @@ details.ask[open] summary { margin-bottom: 14px; }
 <main class="wrap">
 <section class="co-head">
   <p class="label">Reserved plans</p>
-  <h1 id="title">Your fleets in your hours, from $14 an hour.</h1>
-  <p class="lead">Choose a term, your windows, the days, how many fleets and whether to lock them. The Hour Price is fixed for the term, the capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
-  <div class="trust"><span>Price fixed for the term</span><span>Capacity kept for you</span><span>Never bumped</span><span>Unused hours released for HC</span><span>One contract</span></div>
+  <h1 id="title">Your fleets in your office hours, from $14 an hour.</h1>
+  <p class="lead">Choose your office hours in your own time zone, the days, how many fleets and whether to lock them, and pay month by month or for a term of 1 to 3 years. The Hour Price holds for as long as the plan runs, the capacity is kept for you until <span data-plan="lastcall">6</span> hours before each hour, and nobody is ever bumped. A plan is a Plan Order under the same contract as hour-credits, the SparkPipe Customer Agreement.</p>
+  <div class="trust"><span>Your hours, your time zone</span><span>Monthly or 1 to 3 years</span><span>Price holds while it runs</span><span>Capacity kept for you</span><span>Never bumped</span><span>One contract</span></div>
 </section>
 
 <div class="co">
   <div class="stack">
     <section class="card" id="plan">
       <p class="label">Build a plan</p>
-      <h2>Five choices and a start date.</h2>
+      <h2>Your office hours, your terms.</h2>
       <form class="form" id="plan-form" novalidate>
         <label>Start Date<input id="r-start" type="date"></label>
-        <p class="hint" id="start-hint">The term starts on that day and ends the day before the same date at the end of the term.</p>
+        <p class="hint" id="start-hint">The plan starts on that day.</p>
         <fieldset class="choice">
           <legend>Term</legend>
           <div class="tiles" id="c-term" role="radiogroup" aria-label="Term"></div>
-          <p class="hint">The longer the term, the lower its Hour Price, fixed for the whole term.</p>
+          <p class="hint" id="term-hint"></p>
         </fieldset>
         <fieldset class="choice">
-          <legend>Windows</legend>
-          <div class="tiles" id="c-windows" role="group" aria-label="Windows"></div>
-          <p class="hint">Each window is 8 hours of the Korean day, the working day of its region; choose any one or more, and all three is a Full day. <button class="linkish" type="button" id="full-day">Choose a Full day</button></p>
+          <legend>Office hours</legend>
+          <div class="hours">
+            <label>Time zone<select id="o-zone"></select></label>
+            <label>From<select id="o-from"></select></label>
+            <label>To<select id="o-to"></select></label>
+          </div>
+          <p class="hint" id="office-hint"></p>
+          <p class="hint">Whole hours of your local clock, at least <span data-plan="minhours">8</span> hours, following your clock's daylight-saving changes; an end at or before the start runs past midnight. <button class="linkish" type="button" id="full-day">Choose a Full day</button> <button class="linkish" type="button" id="office-day">Choose 09:00–18:00</button></p>
         </fieldset>
         <fieldset class="choice">
           <legend>Days</legend>
           <div class="tiles" id="c-days" role="radiogroup" aria-label="Days"></div>
-          <p class="hint">Every day runs seven days a week, for long-running work; Weekdays runs Monday to Friday in each window's own region, so the Americas Window runs on KST Tuesday to Saturday.</p>
+          <p class="hint" id="days-hint">Weekdays are Monday to Friday by the date where you are, on which your office hours start, public holidays included; Every day runs seven days a week, for long-running work.</p>
         </fieldset>
         <fieldset class="choice">
           <legend>Fleets</legend>
@@ -106,17 +117,18 @@ details.ask[open] summary { margin-bottom: 14px; }
     <section class="card" id="summary">
       <p class="label">Your plan</p>
       <h2 id="r-plan">-</h2>
+      <p class="month" id="r-month-box"><strong id="r-month">-</strong><span id="r-month-note"></span></p>
       <div class="calc">
         <div class="readout">
           <div><span>Starts</span><strong id="r-starts">-</strong></div>
           <div><span>Ends</span><strong id="r-ends">-</strong></div>
-          <div><span>Hours per day</span><strong id="r-day">-</strong></div>
+          <div><span>Hours per office day</span><strong id="r-day">-</strong></div>
           <div><span>Hours per week</span><strong id="r-week">-</strong></div>
-          <div><span>Hours in the term</span><strong id="r-hours">-</strong></div>
+          <div><span id="r-hours-label">Hours in the term</span><strong id="r-hours">-</strong></div>
         </div>
         <div class="readout">
           <div><span id="r-price-label">Hour Price</span><strong id="r-price">-</strong></div>
-          <div><span>Price of the term</span><strong id="r-net">-</strong></div>
+          <div><span id="r-net-label">Price of the term</span><strong id="r-net">-</strong></div>
           <div><span id="r-vat-label">Korean VAT, 10%</span><strong id="r-vat">-</strong></div>
           <div class="you"><span>Total with VAT</span><strong id="r-total">-</strong></div>
         </div>
@@ -154,16 +166,16 @@ details.ask[open] summary { margin-bottom: 14px; }
       <p class="label">Payment</p>
       <p class="prose" id="pay-note"></p>
       <div class="table-wrap"><table>
-        <thead><tr><th>Payment</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
+        <thead><tr><th>Payment</th><th>Due</th><th id="g-hours">Hours paid by then</th><th id="g-paid">Paid by then, with VAT</th></tr></thead>
         <tbody id="r-gates"></tbody>
       </table></div>
     </section>
 
     <section class="card" id="tranches">
       <p class="label">Tranches</p>
-      <p class="prose">Each calendar month of the term is a Tranche: the hours of your windows and days in it. A payment buys hours in the earliest Tranches not yet paid, and you reserve them from the Hour Market calendar.</p>
+      <p class="prose" id="tranche-note">Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it. You reserve them from the Hour Market calendar.</p>
       <div class="table-wrap scroll"><table class="short">
-        <thead><tr><th>Tranche</th><th>Period</th><th>Hours</th></tr></thead>
+        <thead><tr><th>Tranche</th><th>Period</th><th>Hours</th><th>Price before VAT</th></tr></thead>
         <tbody id="r-tranches"></tbody>
       </table></div>
     </section>
@@ -207,11 +219,11 @@ details.ask[open] summary { margin-bottom: 14px; }
       <details class="ask">
         <summary>Chosen Models: <span id="o-models-sum">every offered model</span></summary>
         <div class="model-list" id="o-models" role="group" aria-label="Chosen Models"></div>
-        <p class="hint">Each Chosen Model stays available to you for the whole term. They are the models the <a href="fleets.html">Fleet List</a> offers.</p>
+        <p class="hint">Each Chosen Model stays available to you for as long as the plan runs. They are the models the <a href="fleets.html">Fleet List</a> offers.</p>
       </details>
       <p class="flash" id="o-msg" hidden></p>
       <button class="btn solid big" type="submit" id="o-review">Review the Plan Order</button>
-      <p class="hint">You pay from your account in USDC or USDT through CoinPayments, by the dates the Plan Order states. <a href="account.html">Account</a></p>
+      <p class="hint">You pay from your account, by the dates the Plan Order states. <a href="account.html">Account</a></p>
     </form>
     <details class="ask" id="quote">
       <summary>More than <span data-plan="maxfleets">3</span> fleets, or paying by bank transfer in won or US dollars? Ask us.</summary>
@@ -225,7 +237,7 @@ details.ask[open] summary { margin-bottom: 14px; }
           <label>Fleets<select id="l-fleets"><option>1</option><option>2</option><option>3</option><option value="4+">4 or more</option></select></label>
           <label>Start<input id="l-start" type="month"></label>
         </div>
-        <label>What you will run<textarea id="l-message" maxlength="3600" placeholder="Term, windows, Every day or Weekdays, fleets, fleet lock, how you will pay; the models and context lengths you will run; anything you want to ask."></textarea></label>
+        <label>What you will run<textarea id="l-message" maxlength="3600" placeholder="Term, office hours and time zone, Every day or Weekdays, fleets, fleet lock, how you will pay; the models and context lengths you will run; anything you want to ask."></textarea></label>
         <p class="hint">Sent with your request: <b id="l-plan">-</b></p>
         <p class="flash" id="l-msg" hidden></p>
         <button class="btn solid big" type="submit" id="l-send">Send</button>
@@ -251,47 +263,86 @@ details.ask[open] summary { margin-bottom: 14px; }
 (() => {
   const P = window.SP_PRICING, SP = window.SP, L = P.plans;
   const $ = (id) => document.getElementById(id);
-  const DAY = 86400000;
+  const H = 3600000, DAY = 86400000;
   const parse = (text) => { const [y, m, d] = text.split('-').map(Number); return Date.UTC(y, m - 1, d); };
   const ymd = (t) => new Date(t).toISOString().slice(0, 10);
   const nice = (day) => new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
-  const today = () => ymd(Date.now() + 9 * 3600000);
+  const monthName = (key) => new Date(key + '-01T00:00:00Z').toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const today = () => ymd(Date.now() + 9 * H);
   const minStart = () => (today() > L.earliestStart ? today() : L.earliestStart);
   const maxStart = () => ymd(Math.max(parse(minStart()), parse(today()) + L.startWithinDays * DAY));
   const round = (n) => Math.round(n * 100) / 100;
   const withVat = (net) => round(round(net) + round(net * P.vatRate));
   const short = (n) => SP.usd(n).replace('.00', '');
+  const won = (n) => '₩' + Math.round(n).toLocaleString('en-US');
   const clock = (h) => String(h).padStart(2, '0') + ':00';
-  const termName = (months) => (months % 12 ? months + ' months' : months === 12 ? '1 year' : months / 12 + ' years');
+  const kstClock = (t) => new Date(t + 9 * H).toISOString().slice(11, 16);
+  const termName = (t) => (t.months === null ? 'Monthly' : t.months === 12 ? '1 year' : t.months % 12 ? t.months + ' months' : t.months / 12 + ' years');
   const termEnd = (start, months) => {
     const [y, m, d] = start.split('-').map(Number), total = m - 1 + months;
     const year = y + Math.floor(total / 12), month = total % 12, last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
     return d <= last ? Date.UTC(year, month, d) - DAY : Date.UTC(year, month, last);
   };
-  const weekend = (t) => { const day = new Date(t).getUTCDay(); return day === 0 || day === 6; };
+  const monthEnd = (t) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0); };
+  const formats = {}, instants = new Map();
+  const wall = (zone, t) => {
+    const f = formats[zone] || (formats[zone] = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
+    const v = {};
+    f.formatToParts(new Date(t)).forEach((part) => { v[part.type] = part.value; });
+    return Date.UTC(+v.year, +v.month - 1, +v.day, +v.hour % 24, +v.minute, +v.second);
+  };
+  const offset = (zone, t) => wall(zone, t) - t;
+  const instant = (zone, w) => {
+    const key = zone + '|' + w;
+    if (instants.has(key)) return instants.get(key);
+    const before = offset(zone, w - DAY), after = offset(zone, w + DAY), first = w - before, second = w - after;
+    const found = before === after || offset(zone, first) === before ? first : offset(zone, second) === after ? second : first;
+    instants.set(key, found);
+    return found;
+  };
+  const length = (o) => (o.to - o.from + 24) % 24 || 24;
+  const spanOf = (o) => (o.to <= o.from ? DAY : 0);
+  const kstStart = (text) => parse(text) - 9 * H;
+  const counted = (o, days, from, to) => {
+    const low = kstStart(from), high = kstStart(to) + DAY, found = {};
+    for (let day = Math.floor(wall(o.zone, low) / DAY) * DAY - DAY; day <= Math.floor(wall(o.zone, high) / DAY) * DAY; day += DAY) {
+      const weekday = new Date(day).getUTCDay();
+      if (days === 'weekdays' && (weekday === 0 || weekday === 6)) continue;
+      const opens = Math.max(instant(o.zone, day + o.from * H), low), shuts = Math.min(instant(o.zone, day + spanOf(o) + o.to * H), high);
+      for (let h = Math.ceil(opens / H); h < Math.ceil(shuts / H); h += 1) {
+        const key = new Date(h * H + 9 * H).toISOString().slice(0, 7);
+        found[key] = (found[key] || 0) + 1;
+      }
+    }
+    return found;
+  };
+  const kstHours = (o, day) => {
+    const opens = instant(o.zone, parse(day) + o.from * H), shuts = instant(o.zone, parse(day) + spanOf(o) + o.to * H);
+    return kstClock(Math.ceil(opens / H) * H) + '–' + kstClock(Math.ceil(shuts / H) * H);
+  };
+  const officeName = (o, days) => (length(o) === 24 ? 'Full day' + (days === 'weekdays' ? ' ' + o.zone : '') : clock(o.from) + '–' + clock(o.to) + ' ' + o.zone);
   const plan = (c) => {
-    const term = L.terms.find((t) => t.months === c.months), end = termEnd(c.start, c.months), tranches = [];
-    const daily = (t) => c.windows.reduce((a, w) => a + (c.days === 'weekdays' && weekend(t + w.localDay * DAY) ? 0 : (w.to - w.from) * c.fleets), 0);
-    let cursor = parse(c.start);
-    while (cursor <= end) {
-      const d = new Date(cursor), to = Math.min(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), end);
-      let hours = 0;
-      for (let t = cursor; t <= to; t += DAY) hours += daily(t);
-      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), hours });
+    const term = L.terms.find((t) => t.id === c.term), monthly = term.payment === 'monthly';
+    const end = monthly ? monthEnd(Date.UTC(+c.start.slice(0, 4), +c.start.slice(5, 7) - 1 + 11, 1)) : termEnd(c.start, term.months);
+    const counts = counted(c.office, c.days, c.start, ymd(end)), tranches = [];
+    const hourPrice = round(term.hourPrice + (c.lock ? L.lockPremium : 0)), hourPriceKRW = term.hourPriceKRW + (c.lock ? L.lockPremiumKRW : 0);
+    for (let cursor = parse(c.start); cursor <= end;) {
+      const to = Math.min(monthEnd(cursor), end), key = ymd(cursor).slice(0, 7), hours = (counts[key] || 0) * c.fleets;
+      tranches.push({ key, from: ymd(cursor), to: ymd(to), hours, net: round(hours * hourPrice), krw: hours * hourPriceKRW });
       cursor = to + DAY;
     }
-    const perDay = c.windows.reduce((a, w) => a + (w.to - w.from) * c.fleets, 0), hours = tranches.reduce((a, t) => a + t.hours, 0);
-    const hourPrice = term.hourPrice + (c.lock ? L.lockPremium : 0);
-    return Object.assign({}, c, { term, end: ymd(end), tranches, hours, perDay, perWeek: perDay * (c.days === 'weekdays' ? 5 : 7), hourPrice, net: round(hours * hourPrice) });
+    const perDay = length(c.office) * c.fleets, hours = tranches.reduce((a, t) => a + t.hours, 0);
+    return Object.assign({}, c, { term, monthly, end: monthly ? null : ymd(end), tranches, hours, perDay, perWeek: perDay * (c.days === 'weekdays' ? 5 : 7), hourPrice, hourPriceKRW, net: round(hours * hourPrice) });
   };
-  const schedule = (p) => (p.term.payment === 'upfront'
-    ? [{ name: 'Payment, upfront', due: p.start, note: 'the Start Date', hours: p.hours }]
-    : P.gates.map((g) => {
-      const n = g.tranches === null ? p.tranches.length : Math.min(g.tranches, p.tranches.length);
-      return { name: g.name, due: ymd(parse(p.start) + (g.dueDay - 1) * DAY), note: 'day ' + g.dueDay, hours: p.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
-    }));
-  const windowsName = (ws) => (ws.length === P.windows.length ? 'Full day' : ws.map((w) => w.name).join(' + '));
-  const line = (p) => [p.months + ' months', windowsName(p.windows), p.days === 'weekdays' ? 'Weekdays' : 'Every day', p.fleets + (p.fleets === 1 ? ' fleet' : ' fleets')].concat(p.lock ? ['locked'] : []).join(' · ');
+  const schedule = (p) => (p.monthly
+    ? p.tranches.slice(0, 3).map((t, i) => ({ name: i ? monthName(t.key) : 'Tranche 1, ' + nice(t.from) + ' – ' + nice(t.to), due: t.from, note: i ? 'before it starts' : 'before the Start Date', hours: t.hours, amount: withVat(t.net) }))
+    : p.term.payment === 'upfront'
+      ? [{ name: 'Payment, upfront', due: p.start, note: 'the Start Date', hours: p.hours, amount: withVat(p.net) }]
+      : P.gates.map((g) => {
+        const n = g.tranches === null ? p.tranches.length : Math.min(g.tranches, p.tranches.length), hours = p.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0);
+        return { name: g.name, due: ymd(parse(p.start) + (g.dueDay - 1) * DAY), note: 'day ' + g.dueDay, hours, amount: withVat(hours * p.hourPrice) };
+      }));
+  const line = (p) => [termName(p.term), officeName(p.office, p.days), p.days === 'weekdays' ? 'Weekdays' : 'Every day', p.fleets + (p.fleets === 1 ? ' fleet' : ' fleets')].concat(p.lock ? ['locked'] : []).join(' · ');
   const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
   const row = (cells) => { const tr = document.createElement('tr'); tr.append(...cells); return tr; };
   const tile = (box, type, name, value, title, note, word) => {
@@ -306,52 +357,80 @@ details.ask[open] summary { margin-bottom: 14px; }
     box.append(label);
     return input;
   };
+  const option = (select, value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; select.append(o); };
 
-  const terms = L.terms.map((t) => tile($('c-term'), 'radio', 'term', String(t.months), termName(t.months), short(t.hourPrice) + ' an hour · ' + (t.payment === 'upfront' ? 'paid upfront' : 'paid by gates'), true));
-  const windows = P.windows.map((w) => tile($('c-windows'), 'checkbox', 'window', w.id, w.name, clock(w.from) + '–' + clock(w.to) + ' KST', true));
-  const days = [['every', 'Every day', 'Seven days a week'], ['weekdays', 'Weekdays', 'Monday to Friday']].map(([id, title, note]) => tile($('c-days'), 'radio', 'days', id, title, note, true));
+  const terms = L.terms.map((t) => tile($('c-term'), 'radio', 'term', t.id, termName(t), short(t.hourPrice) + ' an hour · ' + (t.payment === 'monthly' ? 'paid month by month' : t.payment === 'upfront' ? 'paid upfront' : 'paid by gates'), true));
+  L.zones.forEach((zone) => option($('o-zone'), zone, zone.replace(/_/g, ' ')));
+  for (let h = 0; h < 24; h += 1) { option($('o-from'), String(h), clock(h)); option($('o-to'), String(h), clock(h)); }
+  const days = [['weekdays', 'Weekdays', 'Monday to Friday where you are'], ['every', 'Every day', 'Seven days a week']].map(([id, title, note]) => tile($('c-days'), 'radio', 'days', id, title, note, true));
   const fleets = Array.from({ length: L.maxFleets }, (_, i) => tile($('c-fleets'), 'radio', 'fleets', String(i + 1), String(i + 1), i ? 'fleets at once' : 'fleet at once'));
   const lock = tile($('c-lock'), 'checkbox', 'lock', 'lock', 'Locked', '+' + short(L.lockPremium) + ' an hour · the same fleet, yours alone', true);
-  (terms.find((i) => i.value === '24') || terms[0]).checked = true;
-  (windows.find((i) => i.value === 'asia') || windows[0]).checked = true;
-  days[0].checked = true;
+  (terms.find((i) => i.value === 'monthly') || terms[0]).checked = true;
+  (days.find((i) => i.value === L.office.days) || days[0]).checked = true;
   fleets[0].checked = true;
+  const setOffice = (o) => { $('o-zone').value = o.zone; $('o-from').value = String(o.from); $('o-to').value = String(o.to); };
+  setOffice(L.office);
 
   const choice = () => {
     const typed = $('r-start').value;
     return {
       start: /^\d{4}-\d{2}-\d{2}$/.test(typed) && typed >= minStart() && typed <= maxStart() ? typed : minStart(),
-      months: +terms.find((i) => i.checked).value,
-      windows: P.windows.filter((w, i) => windows[i].checked),
+      term: terms.find((i) => i.checked).value,
+      office: { zone: $('o-zone').value, from: +$('o-from').value, to: +$('o-to').value },
       days: days.find((i) => i.checked).value,
       fleets: +fleets.find((i) => i.checked).value,
       lock: lock.checked,
     };
   };
+  const officeHint = (p) => {
+    const o = p.office, n = length(o), year = p.start.slice(0, 4);
+    if (n === 24) return 'A Full day: every hour' + (p.days === 'weekdays' ? ' from Monday 00:00 to Saturday 00:00 in ' + o.zone : '') + '.';
+    const winter = kstHours(o, year + '-01-15'), summer = kstHours(o, year + '-07-15'), first = kstHours(o, p.start);
+    const local = clock(o.from) + '–' + clock(o.to) + (o.to <= o.from ? ' (next day)' : '');
+    const shown = first === clock(o.from) + '–' + clock(o.to) ? 'the same hours in KST' : first + ' KST on ' + nice(p.start);
+    const moves = winter !== summer ? '; the KST hours move by an hour when ' + o.zone + ' changes its clock (' + winter + ' KST in January, ' + summer + ' KST in July)' : '';
+    return local + ' in ' + o.zone + ', ' + n + ' hours: ' + shown + moves + '.';
+  };
   let current = null;
   const render = () => {
-    const c = choice(), lockable = c.windows.length === P.windows.length && c.days === 'every';
+    const c = choice(), lockable = length(c.office) === 24 && c.days === 'every';
     lock.disabled = !lockable;
     if (!lockable) { lock.checked = false; c.lock = false; }
     $('lock-why').textContent = lockable ? '' : 'Fleet lock comes only with a Full day on Every day: a locked fleet is yours 24 hours a day, 7 days a week.';
-    const p = plan(c), vat = round(p.net * P.vatRate);
+    const p = plan(c);
     current = p;
+    const first = p.tranches[0], full = p.tranches.find((t) => t.from.slice(8) === '01') || first;
     $('r-plan').textContent = line(p);
+    $('office-hint').textContent = officeHint(p);
+    $('term-hint').textContent = p.monthly
+      ? 'Monthly has no fixed end: each calendar month is paid before it starts, at an Hour Price that holds for as long as the plan runs, and you stop by not paying the next month or from your account. A longer term lowers the Hour Price.'
+      : 'The term ends on ' + nice(p.end) + '. The longer the term, the lower its Hour Price, fixed for the whole term.';
+    $('r-month-box').hidden = !p.monthly;
+    $('r-month').textContent = won(full.krw) + ' a month + VAT';
+    $('r-month-note').textContent = monthName(full.key) + ': ' + SP.whole(full.hours) + ' hours at ' + won(p.hourPriceKRW) + ' an hour, or ' + SP.usd(full.net) + ' + VAT in US dollars. Each month is priced by its own hours.';
     $('r-starts').textContent = nice(p.start);
-    $('r-ends').textContent = nice(p.end);
+    $('r-ends').textContent = p.monthly ? 'When you stop' : nice(p.end);
     $('r-day').textContent = SP.whole(p.perDay) + (p.days === 'weekdays' ? ' on weekdays' : '');
     $('r-week').textContent = SP.whole(p.perWeek);
-    $('r-hours').textContent = SP.whole(p.hours);
+    $('r-hours-label').textContent = p.monthly ? 'Hours in Tranche 1' : 'Hours in the term';
+    $('r-hours').textContent = SP.whole(p.monthly ? first.hours : p.hours);
     $('r-price-label').textContent = p.lock ? 'Hour Price, ' + short(p.term.hourPrice) + ' + ' + short(L.lockPremium) + ' lock' : 'Hour Price';
     $('r-price').textContent = SP.usd(p.hourPrice);
-    $('r-net').textContent = SP.usd(p.net);
+    const net = p.monthly ? first.net : p.net, vat = round(net * P.vatRate);
+    $('r-net-label').textContent = p.monthly ? 'Tranche 1, ' + nice(first.from) + ' – ' + nice(first.to) : 'Price of the term';
+    $('r-net').textContent = SP.usd(net);
     $('r-vat').textContent = SP.usd(vat);
-    $('r-total').textContent = SP.usd(p.net + vat);
-    $('pay-note').textContent = p.term.payment === 'upfront'
-      ? 'A ' + p.months + '-month plan is paid in full, upfront, by its Start Date, ' + nice(p.start) + '. Hours exist only once paid.'
+    $('r-total').textContent = SP.usd(net + vat);
+    $('pay-note').textContent = p.monthly
+      ? 'Each calendar month is paid before it starts, the first before the Start Date, ' + nice(p.start) + '. Hours exist only once paid. We keep your capacity for the current month and the next one; if a month is not paid by its first day, the plan ends after the last paid month with nothing owed, and you can also stop it from your account at any time.'
       : 'Phase A is the first ' + P.phaseADays + ' days, to ' + nice(ymd(parse(p.start) + (P.phaseADays - 1) * DAY)) + ': nothing is due, and you withdraw by not paying, with nothing owed. You pay any amounts, at any time, up to the whole term; three gates set how much must be paid by when.';
-    $('r-gates').replaceChildren(...schedule(p).map((s) => row([cell(s.name), cell(nice(s.due) + ', ' + s.note), cell(SP.whole(s.hours), 'figure'), cell(SP.usd(withVat(s.hours * p.hourPrice)), 'figure')])));
-    $('r-tranches').replaceChildren(...p.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(nice(t.from) + ' – ' + nice(t.to)), cell(SP.whole(t.hours), 'figure')])));
+    $('g-hours').textContent = p.monthly ? 'Hours' : 'Hours paid by then';
+    $('g-paid').textContent = p.monthly ? 'Price with VAT' : 'Paid by then, with VAT';
+    $('r-gates').replaceChildren(...schedule(p).map((s) => row([cell(s.name), cell(nice(s.due) + ', ' + s.note), cell(SP.whole(s.hours), 'figure'), cell(SP.usd(s.amount), 'figure')])));
+    $('tranche-note').textContent = p.monthly
+      ? 'Each calendar month in KST is a Tranche: the hours of your office hours and days that start in it, paid before it starts. The first twelve are below; you reserve them from the Hour Market calendar.'
+      : 'Each calendar month of the term, in KST, is a Tranche: the hours of your office hours and days that start in it. A payment buys hours in the earliest Tranches not yet paid, and you reserve them from the Hour Market calendar.';
+    $('r-tranches').replaceChildren(...p.tranches.map((t, i) => row([cell((i + 1) + ' · ' + t.key), cell(nice(t.from) + ' – ' + nice(t.to)), cell(SP.whole(t.hours), 'figure'), cell(SP.usd(t.net), 'figure')])));
     $('l-fleets').value = String(p.fleets);
     $('l-start').value = p.start.slice(0, 7);
     $('l-plan').textContent = line(p) + ', from ' + nice(p.start);
@@ -359,11 +438,11 @@ details.ask[open] summary { margin-bottom: 14px; }
     stale();
   };
 
-  const fill = { lastcall: String(P.market.lastCallHours), maintenance: String(L.maintenanceHoursPerWeek), fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths), maxfleets: String(L.maxFleets) };
+  const fill = { lastcall: String(P.market.lastCallHours), maintenance: String(L.maintenanceHoursPerWeek), fee: Math.round(P.market.releaseFee * 100) + '%', months: String(P.market.validityMonths), maxfleets: String(L.maxFleets), minhours: String(L.office.minHours) };
   document.querySelectorAll('[data-plan]').forEach((el) => { el.textContent = fill[el.dataset.plan]; });
-  $('title').textContent = 'Your fleets in your hours, from ' + short(Math.min(...L.terms.map((t) => t.hourPrice))) + ' an hour.';
+  $('title').textContent = 'Your fleets in your office hours, from ' + short(Math.min(...L.terms.map((t) => t.hourPrice))) + ' an hour.';
   $('r-vat-label').textContent = 'Korean VAT, ' + Math.round(P.vatRate * 100) + '%';
-  $('start-hint').textContent = 'The term starts on that day, from ' + nice(minStart()) + ' to ' + nice(maxStart()) + ', and ends the day before the same date at the end of the term.';
+  $('start-hint').textContent = 'The plan starts on that day, from ' + nice(minStart()) + ' to ' + nice(maxStart()) + '. Dates and months are in KST; your office hours are in your time zone.';
   $('r-start').min = minStart();
   $('r-start').max = maxStart();
   $('r-start').value = minStart();
@@ -397,7 +476,7 @@ details.ask[open] summary { margin-bottom: 14px; }
     const customer = { kind: kind(), address: $('o-addr').value.trim(), notice: $('o-notice').value.trim(), brn: $('o-brn').value.trim() };
     if (customer.kind === 'company') Object.assign(customer, { jurisdiction: $('o-jurisdiction').value.trim(), registration: $('o-registration').value.trim() });
     return {
-      start: current.start, months: current.months, windows: current.windows.map((w) => w.id), days: current.days, fleets: current.fleets, lock: current.lock,
+      start: current.start, term: current.term.id, office: current.office, days: current.days, fleets: current.fleets, lock: current.lock,
       models: P.models.filter((m, i) => models[i].checked).map((m) => m.id), customer,
     };
   };
@@ -408,12 +487,12 @@ details.ask[open] summary { margin-bottom: 14px; }
   };
   const th = (text) => { const el = document.createElement('th'); el.scope = 'row'; el.textContent = text; return el; };
   const drawReview = () => {
-    const q = O.quote;
+    const q = O.quote, monthly = q.payment === 'monthly';
     $('v-plan').textContent = q.plan;
     $('v-rows').replaceChildren(...q.rows[O.lang].map(([item, entry]) => row([th(item), cell(entry)])));
     document.querySelectorAll('.switch button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.lang === O.lang)));
     $('v-hash').textContent = q.hash;
-    $('v-agree-text').textContent = 'For ' + O.me.company + ', I accept Plan Order ' + q.plan + ', whose text above has the SHA-256 ' + q.hash + ', under the SparkPipe Customer Agreement and the Hour Market Rules; the Korean text prevails. ' + q.line + ', ' + SP.whole(q.hours) + ' hours, ' + SP.usd(q.total) + ' before VAT, ' + SP.usd(q.withVat) + ' with VAT.';
+    $('v-agree-text').textContent = 'For ' + O.me.company + ', I accept Plan Order ' + q.plan + ', whose text above has the SHA-256 ' + q.hash + ', under the SparkPipe Customer Agreement and the Hour Market Rules; the Korean text prevails. ' + q.line + ', ' + (monthly ? 'Tranche 1: ' : '') + SP.whole(q.hours) + ' hours, ' + SP.usd(q.total) + ' before VAT, ' + SP.usd(q.withVat) + ' with VAT' + (monthly ? ', then each month before it starts.' : '.');
     $('v-reaccept').hidden = O.me.termsCurrent;
   };
   const flow = SP.codeFlow({ codeForm: $('o-code-form'), code: $('o-code'), sentTo: $('o-sent-to'), autoSubmit: true });
@@ -435,7 +514,7 @@ details.ask[open] summary { margin-bottom: 14px; }
       $('o-email').hidden = false;
       signedIn();
     } catch (error) {
-      const text = error.reason === 'new' ? 'No account uses this email yet. Add the company\u2019s legal name, or your full name, accept the Customer Agreement, and ask for a new code.' : error.message;
+      const text = error.reason === 'new' ? 'No account uses this email yet. Add the company’s legal name, or your full name, accept the Customer Agreement, and ask for a new code.' : error.message;
       $('o-code-form').hidden = error.reason === 'new' || error.reason === 'terms';
       $('o-email').hidden = !$('o-code-form').hidden;
       SP.say($('o-email').hidden ? $('o-msg2') : $('o-msg1'), text, 'error');
@@ -481,9 +560,11 @@ details.ask[open] summary { margin-bottom: 14px; }
       $('review').hidden = true;
       $('placed').hidden = false;
       $('p-title').textContent = 'Plan Order ' + placed.plan + ' is placed.';
-      $('p-text').textContent = placed.payment === 'upfront'
-        ? 'Pay the Price of the Term, ' + SP.usd(placed.total) + ' before VAT, from your account by ' + nice(placed.start) + '. Its hours are issued to your Tranches once it is paid in full. The Plan Order is in your email and your account.'
-        : 'Nothing is due in Phase A. Pay any amount from your account: each payment issues its hours to your earliest Tranches. ' + (placed.nextGate ? placed.nextGate.name + ' is ' + SP.usd(placed.nextGate.amount) + ' before VAT by ' + nice(placed.nextGate.due) + '. ' : '') + 'The Plan Order is in your email and your account.';
+      $('p-text').textContent = placed.payment === 'monthly'
+        ? 'Pay ' + (placed.nextGate ? placed.nextGate.name + ', ' + SP.usd(placed.nextGate.amount) + ' before VAT,' : 'Tranche 1') + ' from your account before ' + nice(placed.start) + '. Its hours are issued once it is paid in full, and each later month is paid the same way, before it starts. The Plan Order is in your email and your account.'
+        : placed.payment === 'upfront'
+          ? 'Pay the Price of the Term, ' + SP.usd(placed.total) + ' before VAT, from your account by ' + nice(placed.start) + '. Its hours are issued to your Tranches once it is paid in full. The Plan Order is in your email and your account.'
+          : 'Nothing is due in Phase A. Pay any amount from your account: each payment issues its hours to your earliest Tranches. ' + (placed.nextGate ? placed.nextGate.name + ' is ' + SP.usd(placed.nextGate.amount) + ' before VAT by ' + nice(placed.nextGate.due) + '. ' : '') + 'The Plan Order is in your email and your account.';
       $('p-form').href = 'plan-order.html?plan=' + encodeURIComponent(placed.plan);
       $('placed').scrollIntoView({ behavior: 'smooth', block: 'start' });
       O.quote = null;
@@ -498,11 +579,16 @@ details.ask[open] summary { margin-bottom: 14px; }
   SP.me().then((me) => { O.me = me; signedIn(); }).catch(() => signedIn());
 
   $('plan-form').addEventListener('change', (event) => {
-    if (event.target.name === 'window' && !windows.some((i) => i.checked)) event.target.checked = true;
+    const o = { zone: $('o-zone').value, from: +$('o-from').value, to: +$('o-to').value };
+    if (length(o) < L.office.minHours) {
+      if (event.target.id === 'o-to') $('o-from').value = String((o.to - L.office.minHours + 24) % 24);
+      else $('o-to').value = String((o.from + L.office.minHours) % 24);
+    }
     render();
   });
   $('r-start').addEventListener('input', render);
-  $('full-day').addEventListener('click', () => { windows.forEach((i) => { i.checked = true; }); render(); });
+  $('full-day').addEventListener('click', () => { setOffice({ zone: $('o-zone').value, from: 0, to: 0 }); render(); });
+  $('office-day').addEventListener('click', () => { setOffice({ zone: $('o-zone').value, from: L.office.from, to: L.office.to }); render(); });
   render();
 
   $('lead').addEventListener('submit', async (event) => {

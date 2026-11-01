@@ -3,6 +3,7 @@ import base64
 import calendar
 import collections
 import fcntl
+import functools
 import hashlib
 import hmac
 import http.server
@@ -19,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zoneinfo
 from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
 from fractions import Fraction
@@ -40,7 +42,8 @@ HOUR_STEP = Decimal("0.0001")
 LEDGER_IDS = ("order", "invoice", "reservation", "ask", "bid", "lot", "key", "ref", "plan")
 TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "rules_ko": "market-rules-ko.md", "rules_en": "market-rules-en.md"}
 DAYS = ("every", "weekdays")
-PAYMENTS = ("upfront", "gates")
+PAYMENTS = ("monthly", "upfront", "gates")
+MIN_OFFICE_HOURS = 8
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
@@ -77,7 +80,6 @@ PLAN_ID = re.compile(r"^PO[A-Z2-7]{16}$")
 BRN = re.compile(r"^\d{3}-\d{2}-\d{5}$")
 THRESHOLD = 80
 PARTIES = ("company", "individual")
-WINDOW_KO = {"americas": "미주", "asia": "아시아", "europe": "유럽"}
 COOKIE = "sp_session"
 SESSION_SECONDS = 30 * 86400
 CODE_SECONDS = 600
@@ -151,66 +153,106 @@ def term_end(start, months):
     return moved - timedelta(days=1) if exists else moved
 
 
-def plan_fields(pricing, plan):
-    fleets, months, lock, chosen = plan.get("fleets", 1), plan.get("months"), plan.get("lock") or [], plan.get("windows")
-    named = {"F" + f["name"].split()[-1] for f in pricing["fleets"]}
-    whole = lambda n: isinstance(n, int) and not isinstance(n, bool) and n >= 1
-    good = isinstance(chosen, list) and bool(chosen) and all(
-        isinstance(w, dict) and isinstance(w.get("id"), str) and whole(w.get("to")) and isinstance(w.get("from"), int) and not isinstance(w.get("from"), bool)
-        and 0 <= w["from"] < w["to"] <= 24 and w.get("localDay") in (-1, 0, 1) for w in chosen)
-    hours = [h for w in chosen for h in range(w["from"], w["to"])] if good else []
-    try:
-        fee, allowance = Decimal(str(plan.get("releaseFee"))), plan.get("maintenanceHoursPerWeek")
-    except InvalidOperation:
-        fee, allowance = None, None
-    if (not good or len(set(hours)) != len(hours) or len({w["id"] for w in chosen}) != len(chosen)
-            or plan.get("days") not in DAYS or not whole(fleets) or not whole(months) or plan.get("payment") not in PAYMENTS
-            or fee is None or not fee.is_finite() or not 0 <= fee < 1 or not isinstance(allowance, int) or isinstance(allowance, bool) or not 0 <= allowance <= 24
-            or not isinstance(lock, list) or (lock and (len(lock) != fleets or len(set(lock)) != len(lock) or any(f not in named for f in lock)
-                                                       or len(hours) != 24 or plan.get("days") != "every"))):
-        raise ValueError(f"plan {plan.get('id')}: windows as non-overlapping {{id, from, to, localDay}} of the Order, days {' or '.join(DAYS)}, fleets and months whole numbers from 1, payment {' or '.join(PAYMENTS)}, releaseFee from 0 to below 1, maintenanceHoursPerWeek from 0 to 24, and lock none, or one named fleet per fleet on a plan of the whole day every day")
-    return chosen, fleets
-
-
-def day_hours(windows, days, fleets, day):
-    return sum((w["to"] - w["from"]) * fleets for w in windows if days == "every" or (day + timedelta(days=w["localDay"])).weekday() < 5)
-
-
-def plan_pattern(pricing, plan):
-    windows, fleets = plan_fields(pricing, plan)
-    monday = date(2026, 11, 2)
-    return tuple(sum(fleets for w in windows if w["from"] <= hour < w["to"] and (plan["days"] == "every" or (monday + timedelta(days=weekday + w["localDay"])).weekday() < 5)) for weekday in range(7) for hour in range(24))
-
-
-def tranche_spans(pricing, plan):
-    windows, fleets = plan_fields(pricing, plan)
-    start = date.fromisoformat(plan["start"])
-    end = term_end(start, plan["months"])
-    found, cursor = [], start
-    while cursor <= end:
-        last = min(date(cursor.year, cursor.month, calendar.monthrange(cursor.year, cursor.month)[1]), end)
-        found.append((cursor, last, sum(day_hours(windows, plan["days"], fleets, cursor + timedelta(days=n)) for n in range((last - cursor).days + 1))))
-        cursor = last + timedelta(days=1)
-    return found
-
-
-def tranches(pricing, plan):
-    return [hours for _, _, hours in tranche_spans(pricing, plan)]
-
-
-def hours_before(pricing, plan, first, last, moment):
-    windows, fleets = plan_fields(pricing, plan)
-    local = moment.astimezone(KST)
-    day, whole = local.date(), min(last, local.date() - timedelta(days=1))
-    total = sum(day_hours(windows, plan["days"], fleets, first + timedelta(days=n)) for n in range((whole - first).days + 1)) if whole >= first else 0
-    if first <= day <= last:
-        upto = local.hour + (1 if (local.minute, local.second, local.microsecond) != (0, 0, 0) else 0)
-        total += sum(max(0, min(w["to"], upto) - w["from"]) * fleets for w in windows if plan["days"] == "every" or (day + timedelta(days=w["localDay"])).weekday() < 5)
-    return total
+def month_last(day):
+    return date(day.year, day.month, calendar.monthrange(day.year, day.month)[1])
 
 
 def kst_start(day):
     return datetime(day.year, day.month, day.day, tzinfo=KST).astimezone(timezone.utc)
+
+
+@functools.lru_cache(maxsize=1)
+def zones():
+    return frozenset(zoneinfo.available_timezones())
+
+
+def office_length(begin, end):
+    return (end - begin) % 24 or 24
+
+
+def office_valid(office):
+    hour = lambda n: isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= 23
+    return (isinstance(office, dict) and set(office) == {"zone", "from", "to"} and isinstance(office["zone"], str) and office["zone"] in zones()
+            and hour(office["from"]) and hour(office["to"]) and office_length(office["from"], office["to"]) >= MIN_OFFICE_HOURS)
+
+
+def monthly(plan):
+    return plan.get("payment") == "monthly"
+
+
+def plan_fields(pricing, plan):
+    fleets, months, lock, office = plan.get("fleets", 1), plan.get("months"), plan.get("lock") or [], plan.get("office")
+    named = {"F" + f["name"].split()[-1] for f in pricing["fleets"]}
+    whole = lambda n: isinstance(n, int) and not isinstance(n, bool) and n >= 1
+    good = office_valid(office)
+    try:
+        fee, allowance = Decimal(str(plan.get("releaseFee"))), plan.get("maintenanceHoursPerWeek")
+    except InvalidOperation:
+        fee, allowance = None, None
+    term = months is None if monthly(plan) else whole(months)
+    if (not good or plan.get("days") not in DAYS or not whole(fleets) or plan.get("payment") not in PAYMENTS or not term
+            or fee is None or not fee.is_finite() or not 0 <= fee < 1 or not isinstance(allowance, int) or isinstance(allowance, bool) or not 0 <= allowance <= 24
+            or not isinstance(lock, list) or (lock and (len(lock) != fleets or len(set(lock)) != len(lock) or any(f not in named for f in lock)
+                                                       or office_length(office["from"], office["to"]) != 24 or plan.get("days") != "every"))):
+        raise ValueError(f"plan {plan.get('id')}: office as {{zone, from, to}} with an IANA zone and whole hours at least {MIN_OFFICE_HOURS} hours apart, days {' or '.join(DAYS)}, fleets a whole number from 1, payment {' or '.join(PAYMENTS)} with months null for monthly and a whole number from 1 otherwise, releaseFee from 0 to below 1, maintenanceHoursPerWeek from 0 to 24, and lock none, or one named fleet per fleet on a plan of a full day every day")
+    return office, fleets
+
+
+@functools.lru_cache(maxsize=4096)
+def office_slots(zone, begin, end, days, first, last):
+    place = zoneinfo.ZoneInfo(zone)
+    low, high = kst_start(first), kst_start(last + timedelta(days=1))
+    span = timedelta(days=1 if end <= begin else 0)
+    found, day = set(), low.astimezone(place).date() - timedelta(days=1)
+    while day <= high.astimezone(place).date():
+        if days == "every" or day.weekday() < 5:
+            close = day + span
+            opens = max(datetime(day.year, day.month, day.day, begin, tzinfo=place), low)
+            shuts = min(datetime(close.year, close.month, close.day, end, tzinfo=place), high)
+            found.update(range(-(-int(opens.timestamp()) // 3600), -(-int(shuts.timestamp()) // 3600)))
+        day += timedelta(days=1)
+    return frozenset(found)
+
+
+def plan_slots(plan, first, last):
+    office = plan["office"]
+    return office_slots(office["zone"], office["from"], office["to"], plan["days"], first, last)
+
+
+def fixed_end(plan):
+    return None if monthly(plan) else term_end(date.fromisoformat(plan["start"]), plan["months"])
+
+
+def tranche_spans(pricing, plan, until=None):
+    office, fleets = plan_fields(pricing, plan)
+    start = date.fromisoformat(plan["start"])
+    end = fixed_end(plan) or until or month_last(start)
+    found, cursor = [], start
+    while cursor <= end:
+        last = min(month_last(cursor), end)
+        found.append((cursor, last, len(plan_slots(plan, cursor, last)) * fleets))
+        cursor = last + timedelta(days=1)
+    return found
+
+
+def tranches(pricing, plan, until=None):
+    return [hours for _, _, hours in tranche_spans(pricing, plan, until)]
+
+
+def hours_before(pricing, plan, first, last, moment):
+    office, fleets = plan_fields(pricing, plan)
+    cut = moment.timestamp()
+    return sum(1 for key in plan_slots(plan, first, last) if key * 3600 < cut) * fleets
+
+
+def monthly_horizon(pricing, today):
+    offer = pricing["plans"]
+    longest = max([t["months"] for t in offer["terms"] if t["months"]] + [1])
+    return month_last(term_end(today + timedelta(days=offer["startWithinDays"]), longest))
+
+
+def day_end(day):
+    return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=KST)
 
 
 def digest(body):
@@ -476,9 +518,11 @@ class Book:
         elif kind == "hours_issued":
             self.orders[data["order"]].update(issued=True, issued_hours=data["hours"], paid_net=data["net"])
         elif kind == "plan_order":
-            self.plans[data["plan"]] = dict(data, id=data["plan"], created=line["at"], ended=None)
+            self.plans[data["plan"]] = dict(data, id=data["plan"], created=line["at"], ended=None, stopped=None)
         elif kind == "plan_end":
             self.plans[data["plan"]]["ended"] = {"day": data["day"], "reason": data["reason"]}
+        elif kind == "plan_stop":
+            self.plans[data["plan"]]["stopped"] = line["at"]
         elif kind in market.KINDS:
             self.market.apply(line)
 
@@ -488,8 +532,8 @@ class Book:
     def waiting(self, order, now):
         return order["state"] not in CLOSED and order["state"] != "completed" and not order["issued"] and now < self.expiry(order)
 
-    def prepaid(self, plan):
-        return sorted((stamp_time(order["paid"]), order_hours(order, order["paid_net"])) for order in self.orders.values() if order.get("plan") == plan and order["issued"])
+    def prepaid(self, plan, without=None):
+        return sorted((stamp_time(order["paid"]), order_hours(order, order["paid_net"])) for order in self.orders.values() if order.get("plan") == plan and order["issued"] and order["order"] != without)
 
     def pending(self, plan, now):
         return sum((order_hours(order) for order in self.orders.values() if order.get("plan") == plan and self.waiting(order, now)), Fraction(0))
@@ -499,7 +543,15 @@ class Book:
 
 
 def standing(pricing, book, plan, now):
-    windows, fleets = plan_fields(pricing, plan)
+    office, fleets = plan_fields(pricing, plan)
+    found = monthly_standing(pricing, book, plan, now) if monthly(plan) else term_standing(pricing, book, plan, now)
+    found.update(plan=plan["id"], start=plan["start"], months=plan.get("months"), office=dict(office), days=plan["days"], fleets=fleets,
+                 lock=list(plan.get("lock") or []), payment=plan["payment"], price=text_money(money(plan["hourPrice"])),
+                 priceKRW=text_won(won(plan["hourPriceKRW"])) if plan.get("hourPriceKRW") else None)
+    return found
+
+
+def term_standing(pricing, book, plan, now):
     start = date.fromisoformat(plan["start"])
     price = money(plan["hourPrice"])
     price_won = won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
@@ -527,8 +579,7 @@ def standing(pricing, book, plan, now):
     for gate in gates:
         due = start + timedelta(days=gate["dueDay"] - 1)
         need = sum(hours if gate["tranches"] is None else hours[:gate["tranches"]])
-        cutoff = datetime(due.year, due.month, due.day, 23, 59, 59, tzinfo=KST)
-        have = sum((count for moment, count in paid if moment <= cutoff), Fraction(0))
+        have = sum((count for moment, count in paid if moment <= day_end(due)), Fraction(0))
         if today > due:
             if plan["payment"] == "gates" and paid and have < need and not ended:
                 ended, missed = f"{gate['name']} was missed on {due.isoformat()}, so no further prepayment can be made.", True
@@ -545,18 +596,9 @@ def standing(pricing, book, plan, now):
         held = held if held >= today else None
     if held and stop:
         held = min(held, date.fromisoformat(stop["day"]) - timedelta(days=1))
+    held = held.isoformat() if held and held >= start else None
     return {
-        "plan": plan["id"],
-        "start": start.isoformat(),
         "end": end.isoformat(),
-        "months": plan["months"],
-        "windows": [w["id"] for w in windows],
-        "days": plan["days"],
-        "fleets": fleets,
-        "lock": list(plan.get("lock") or []),
-        "payment": plan["payment"],
-        "price": text_money(price),
-        "priceKRW": None if price_won is None else text_won(price_won),
         "hours": sum(hours),
         "total": text_money(total),
         "paid": value_text(price, paid_hours, "USD"),
@@ -566,7 +608,102 @@ def standing(pricing, book, plan, now):
         "nextGate": None if ended else next_gate,
         "nextGateKRW": None if ended else next_won,
         "ended": ended,
-        "heldUntil": held.isoformat() if held and held >= start else None,
+        "stopped": None,
+        "paidThrough": None,
+        "tranche": None,
+        "heldUntil": held,
+        "keepUntil": held,
+    }
+
+
+def month_name(day):
+    return f"{calendar.month_name[day.month]} {day.year}"
+
+
+def monthly_tranches(pricing, plan):
+    start, cursor, total = date.fromisoformat(plan["start"]), None, 0
+    price = money(plan["hourPrice"])
+    while True:
+        first = start if cursor is None else cursor
+        last = month_last(first)
+        hours = tranche_spans(pricing, dict(plan, start=first.isoformat()), last)[0][2]
+        total += hours
+        yield {"first": first, "last": last, "hours": hours, "amount": price * hours, "through": total}
+        cursor = last + timedelta(days=1)
+
+
+def paid_by(paid, moment):
+    return sum((count for at, count in paid if at <= moment), Fraction(0))
+
+
+def monthly_standing(pricing, book, plan, now):
+    today = local_day(now)
+    stopped = stamp_time(plan["stopped"]) if plan.get("stopped") else None
+    price, price_won = money(plan["hourPrice"]), won(plan["hourPriceKRW"]) if plan.get("hourPriceKRW") else None
+    paid = [(at, count) for at, count in book.prepaid(plan["id"]) if not stopped or at <= stopped]
+    paid_hours = sum((count for _, count in paid), Fraction(0))
+    pending = Fraction(0) if stopped else book.pending(plan["id"], now)
+    done, current, due, lapsed = [], None, None, None
+    for tranche in monthly_tranches(pricing, plan):
+        if tranche["first"] <= today <= tranche["last"]:
+            current = tranche
+        if paid_by(paid, day_end(tranche["first"])) >= tranche["through"]:
+            done.append(tranche)
+        elif today > tranche["first"] or stopped:
+            lapsed = tranche
+            break
+        else:
+            due = tranche
+            break
+    if current is None:
+        current = done[-1] if done and done[-1]["last"] >= today else (due or lapsed)
+    through = done[-1]["last"] if done else None
+    stop, ended = plan.get("ended"), None
+    end = through
+    if stop and today >= date.fromisoformat(stop["day"]):
+        ended, end = f"The plan ended on {stop['day']}: {stop['reason']}", date.fromisoformat(stop["day"]) - timedelta(days=1)
+    elif stopped and (not through or today > through):
+        ended = f"The plan was stopped and ended on {through.isoformat()}, after its last paid Tranche." if through else "The plan was stopped before any Tranche was paid, so it ended with nothing owed."
+    elif lapsed and not stopped:
+        ended = (f"{month_name(lapsed['first'])} was not paid by its first day, so the plan ended on {through.isoformat()} with nothing owed." if through
+                 else "Tranche 1 was not paid by the end of the Start Date, so the plan ended with nothing owed.")
+    if ended:
+        held = through if through and through >= today else None
+    elif stopped:
+        held = through
+    else:
+        upto = [t for t in itertools.islice(monthly_tranches(pricing, plan), max(len(done), 1) + 1)]
+        held = upto[-1]["last"]
+    if held and stop:
+        held = min(held, date.fromisoformat(stop["day"]) - timedelta(days=1))
+    held = held if held and held >= date.fromisoformat(plan["start"]) else None
+    keep = held
+    if held and not ended and not stopped:
+        keep = max(held, monthly_horizon(pricing, today))
+        if stop:
+            keep = min(keep, date.fromisoformat(stop["day"]) - timedelta(days=1))
+    next_gate, next_won = None, None
+    if due and not ended and not stopped:
+        owed = due["through"] - paid_hours - pending
+        if owed > 0:
+            next_gate = {"name": month_name(due["first"]), "due": due["first"].isoformat(), "amount": value_text(price, owed, "USD", up=True), "hours": due["hours"], "from": due["first"].isoformat(), "to": due["last"].isoformat()}
+            next_won = value_text(price_won, owed, KRW, up=True) if price_won else None
+    return {
+        "end": end.isoformat() if end and (ended or stopped) else None,
+        "hours": current["hours"] if current else 0,
+        "total": None,
+        "paid": value_text(price, paid_hours, "USD"),
+        "pending": value_text(price, pending, "USD"),
+        "remaining": next_gate["amount"] if next_gate else "0.00",
+        "remainingKRW": next_won if next_won else (None if price_won is None else "0"),
+        "nextGate": next_gate,
+        "nextGateKRW": next_won,
+        "ended": ended,
+        "stopped": plan.get("stopped"),
+        "paidThrough": through.isoformat() if through else None,
+        "tranche": {"from": current["first"].isoformat(), "to": current["last"].isoformat(), "hours": current["hours"], "amount": text_money(current["amount"])} if current else None,
+        "heldUntil": held.isoformat() if held else None,
+        "keepUntil": keep.isoformat() if keep else None,
     }
 
 
@@ -637,17 +774,48 @@ def fleet_name(fleet, lang):
     return ("플릿 " if lang == "ko" else "Fleet ") + fleet[1:]
 
 
-def window_names(windows, lang):
-    ko = lang == "ko"
-    named = [(f"{WINDOW_KO.get(w['id'], w['name'])} 시간창" if ko else f"{w['name']} Window ") + f"({w['from']:02d}:00–{w['to']:02d}:00 KST)" for w in windows]
-    full = sum(w["to"] - w["from"] for w in windows) == 24
-    return ("종일: " if ko else "Full day: ") * full + ", ".join(named)
+def term_name(plan, lang="en"):
+    if monthly(plan):
+        return "월간" if lang == "ko" else "Monthly"
+    months = plan["months"]
+    if lang == "ko":
+        return f"{months // 12}년" if months % 12 == 0 else f"{months}개월"
+    return "1 year" if months == 12 else f"{months // 12} years" if months % 12 == 0 else f"{months} months"
+
+
+def office_kst(office, day):
+    place = zoneinfo.ZoneInfo(office["zone"])
+    close = day + timedelta(days=1 if office["to"] <= office["from"] else 0)
+    opens = datetime(day.year, day.month, day.day, office["from"], tzinfo=place)
+    shuts = datetime(close.year, close.month, close.day, office["to"], tzinfo=place)
+    return tuple(datetime.fromtimestamp(-(-int(moment.timestamp()) // 3600) * 3600, KST).strftime("%H:%M") for moment in (opens, shuts))
+
+
+def office_text(office, start, lang):
+    begin, end, zone = office["from"], office["to"], office["zone"]
+    length = office_length(begin, end)
+    midnight = length == 24 and begin == 0
+    later = end <= begin and not midnight
+    stop = "24:00" if midnight else f"{end:02d}:00"
+    kst = office_kst(office, date.fromisoformat(start))
+    shown = length < 24 and kst != (f"{begin:02d}:00", "24:00" if midnight else f"{end:02d}:00")
+    if lang == "ko":
+        text = f"{'종일: ' if length == 24 else ''}{zone} 현지 시각 {begin:02d}:00부터 {'다음 날 ' if later else ''}{stop}까지({length}시간)"
+        return text + (f". 개시일의 플랜 시간은 KST {kst[0]}–{kst[1]}" if shown else "")
+    text = f"{'Full day: ' if length == 24 else ''}{begin:02d}:00 to {stop}{' the next day' if later else ''}, local time in {zone}, {length} hours"
+    return text + (f"; on the Start Date, the Plan hours are {kst[0]}–{kst[1]} KST" if shown else "")
+
+
+def office_name(plan):
+    office = plan["office"]
+    if office_length(office["from"], office["to"]) == 24:
+        return "Full day" + (f" {office['zone']}" if plan["days"] == "weekdays" else "")
+    return f"{office['from']:02d}:00–{office['to']:02d}:00 {office['zone']}"
 
 
 def plan_line(plan):
-    windows = "Full day" if sum(w["to"] - w["from"] for w in plan["windows"]) == 24 else " + ".join(w.get("name", w["id"]) for w in plan["windows"])
     lock = [f"locked {', '.join(plan['lock'])}"] if plan.get("lock") else []
-    return " · ".join([f"{plan['months']} months", windows, "Every day" if plan["days"] == "every" else "Weekdays", f"{plan['fleets']} fleet" + "s" * (plan["fleets"] > 1)] + lock)
+    return " · ".join([term_name(plan), office_name(plan), "Every day" if plan["days"] == "every" else "Weekdays", f"{plan['fleets']} fleet" + "s" * (plan["fleets"] > 1)] + lock)
 
 
 def order_rows(record, lang):
@@ -659,25 +827,33 @@ def order_rows(record, lang):
         customer = f"{c['name']}. {c['jurisdiction']}의 법률에 따라 설립된 회사로서, 등록번호 {c['registration']}, 소재지 {c['address']}" if ko else f"{c['name']}, a company organised under the laws of {c['jurisdiction']}, registration number {c['registration']}, registered address {c['address']}"
     else:
         customer = f"{c['name']}. 개인, 주소 {c['address']}" if ko else f"{c['name']}, an individual, of {c['address']}"
-    gates = record["schedule"]
+    gates, first = record["schedule"], record.get("first")
     fee, allowance = format((Decimal(record["releaseFee"]) * 100).normalize(), "f"), record["maintenanceHoursPerWeek"]
     rates = ("; ", ", ")[ko].join(f"{fleet_name(fleet, lang)}: {rate}" for fleet, rate in record["rates"])
     models = ", ".join(m["name"] for m in record["models"])
+    office = office_text(record["office"], record["start"], lang)
     if ko:
-        payment = "일시 선납: 개시일 전까지 플랜 기간의 대금" if record["payment"] == "upfront" else "게이트 선납: " + ", ".join(f"게이트 {g['name'].split()[-1]} {long_date(g['due'], lang)}" for g in gates) + "까지"
+        if monthly(record):
+            payment = "월별 선납: 각 트랜치를 그 개시 전까지, 트랜치 1은 개시일 전까지"
+            term = [("플랜 기간(제16.3조)", "월간, 종료일 없음")]
+            priced = [("트랜치 1(제17.3조)", f"{long_date(first['from'], lang)}부터 {long_date(first['to'], lang)}까지: 플랜 시간 {first['hours']:,}시간, {krw(first['totalKRW'])}원(KRW) 또는 미화 {usd(first['total'])}달러(USD), 부가가치세 별도. 이후 각 트랜치는 하나의 역월이며, 그 대금은 그 플랜 시간에 시간당 가격을 곱한 금액으로 한다")]
+        else:
+            payment = "일시 선납: 개시일 전까지 플랜 기간의 대금" if record["payment"] == "upfront" else "게이트 선납: " + ", ".join(f"게이트 {g['name'].split()[-1]} {long_date(g['due'], lang)}" for g in gates) + "까지"
+            term = [("플랜 기간(제16.3조)", f"{record['months']}개월, {long_date(record['end'], lang)} 종료")]
+            priced = [("플랜 기간의 시간(제17.3조)", f"{record['hours']:,}시간"), ("플랜 기간의 대금(제16.4조)", f"{krw(record['totalKRW'])}원(KRW) 또는 미화 {usd(record['total'])}달러(USD), 부가가치세 별도")]
         return [
             ("주문번호", record["plan"]),
             ("고객", customer),
             ("고객 계약(제9.1조)", f"{a['version']['ko']}. 국문 SHA-256 {a['ko']}, 영문 SHA-256 {a['en']}. 시간 마켓 규칙 국문 SHA-256 {a['rules_ko']}, 영문 SHA-256 {a['rules_en']}"),
             ("개시일(제16.3조)", long_date(record["start"], lang)),
-            ("플랜 기간(제16.3조)", f"{record['months']}개월, {long_date(record['end'], lang)} 종료"),
-            ("시간창(제17.1조)", window_names(record["windows"], lang)),
+        ] + term + [
+            ("표준시간대(제17.1조)", record["office"]["zone"]),
+            ("업무 시간(제17.1조)", office),
             ("이용 요일(제17.2조)", "매일" if record["days"] == "every" else "평일"),
             ("플릿 수(제18.1조)", str(record["fleets"])),
             ("플릿 고정(제19조)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "없음"),
-            ("시간당 가격(제16.4조)", f"아래 지급 통화에 따라 플릿시간당 {krw(record['hourPriceKRW'])}원(KRW) 또는 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, 플랜 기간 동안 고정"),
-            ("플랜 기간의 시간(제17.3조)", f"{record['hours']:,}시간"),
-            ("플랜 기간의 대금(제16.4조)", f"{krw(record['totalKRW'])}원(KRW) 또는 미화 {usd(record['total'])}달러(USD), 부가가치세 별도"),
+            ("시간당 가격(제16.4조)", f"아래 지급 통화에 따라 플릿시간당 {krw(record['hourPriceKRW'])}원(KRW) 또는 미화 {usd(record['hourPrice'])}달러(USD), 부가가치세 별도, 플릿 고정 포함, " + ("플랜이 계속되는 동안 고정" if monthly(record) else "플랜 기간 동안 고정")),
+        ] + priced + [
             ("납부 방식(제20조)", payment),
             ("선택 모델(제7.2조)", models),
             ("성능 기준(제23.2조)", f"기준치의 {record['threshold']}%"),
@@ -686,23 +862,30 @@ def order_rows(record, lang):
             ("고객 통지 주소 및 이메일(제11.7조)", f"{c['address']}, {c['notice']}"),
             ("고객의 부가가치세 지위(제3.2조)", f"대한민국 사업자등록번호 {c['brn']}" if c["brn"] else "대한민국 내 사업장 없음"),
             ("지급 통화 및 계좌(제3.3조)", "원화(KRW), 제3.3조 (가)목: 토스페이먼츠 / 미국 달러 스테이블코인, 제3.3조 (다)목"),
-            ("공개 설정(제9.3조)", f"플랜 주문서 성립 시 공개된 설정: 반납 수수료 {fee}%, 점검 허용 시간 플릿당 매주 {allowance}시간, 시간창 시각은 위 시간창란에 기재된 바에 따름"),
+            ("공개 설정(제9.3조)", f"플랜 주문서 성립 시 공개된 설정: 반납 수수료 {fee}%, 점검 허용 시간 플릿당 매주 {allowance}시간"),
             ("플릿 요율(제16.5조)", f"플랜 주문서 성립 시 플릿 목록에 공개된 요율: {rates}"),
         ]
-    payment = "Upfront: the Price of the Term before the Start Date" if record["payment"] == "upfront" else "Gated: " + ", ".join(f"{g['name']} by {long_date(g['due'], lang)}" for g in gates)
+    if monthly(record):
+        payment = "Monthly: each Tranche before it starts, Tranche 1 before the Start Date"
+        term = [("Term (clause 16.3)", "Monthly, with no fixed end")]
+        priced = [("Tranche 1 (clause 17.3)", f"{long_date(first['from'], lang)} to {long_date(first['to'], lang)}: {first['hours']:,} Plan hours, KRW {krw(first['totalKRW'])} or USD {usd(first['total'])}, exclusive of VAT; each later Tranche is one calendar month, priced at the Hour Price times its Plan hours")]
+    else:
+        payment = "Upfront: the Price of the Term before the Start Date" if record["payment"] == "upfront" else "Gated: " + ", ".join(f"{g['name']} by {long_date(g['due'], lang)}" for g in gates)
+        term = [("Term (clause 16.3)", f"{record['months']} months, ending on {long_date(record['end'], lang)}")]
+        priced = [("Hours in the Term (clause 17.3)", f"{record['hours']:,}"), ("Price of the Term (clause 16.4)", f"KRW {krw(record['totalKRW'])} or USD {usd(record['total'])}, exclusive of VAT")]
     return [
         ("Order number", record["plan"]),
         ("Customer", customer),
         ("Customer Agreement (clause 9.1)", f"{a['version']['en']}; SHA-256 of the Korean text {a['ko']} and of the English text {a['en']}; Hour Market Rules, SHA-256 of the Korean text {a['rules_ko']} and of the English text {a['rules_en']}"),
         ("Start Date (clause 16.3)", long_date(record["start"], lang)),
-        ("Term (clause 16.3)", f"{record['months']} months, ending on {long_date(record['end'], lang)}"),
-        ("Windows (clause 17.1)", window_names(record["windows"], lang)),
+    ] + term + [
+        ("Time zone (clause 17.1)", record["office"]["zone"]),
+        ("Office hours (clause 17.1)", office),
         ("Days (clause 17.2)", "Every day" if record["days"] == "every" else "Weekdays"),
         ("Fleets (clause 18.1)", str(record["fleets"])),
         ("Fleet lock (clause 19)", ", ".join(fleet_name(f, lang) for f in record["lock"]) or "None"),
-        ("Hour Price (clause 16.4)", f"KRW {krw(record['hourPriceKRW'])} or USD {usd(record['hourPrice'])} per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, fixed for the Term"),
-        ("Hours in the Term (clause 17.3)", f"{record['hours']:,}"),
-        ("Price of the Term (clause 16.4)", f"KRW {krw(record['totalKRW'])} or USD {usd(record['total'])}, exclusive of VAT"),
+        ("Hour Price (clause 16.4)", f"KRW {krw(record['hourPriceKRW'])} or USD {usd(record['hourPrice'])} per fleet-hour, in the payment currency below, exclusive of VAT, including any Fleet lock, " + ("fixed for as long as the Plan runs" if monthly(record) else "fixed for the Term")),
+    ] + priced + [
         ("Payment schedule (clause 20)", payment),
         ("Chosen Models (clause 7.2)", models),
         ("Performance Threshold (clause 23.2)", f"{record['threshold']}% of the Baseline"),
@@ -711,7 +894,7 @@ def order_rows(record, lang):
         ("Customer notice address and email (clause 11.7)", f"{c['address']}; {c['notice']}"),
         ("Customer VAT status (clause 3.2)", f"Korean business registration number {c['brn']}" if c["brn"] else "No place of business in the Republic of Korea"),
         ("Payment currency and account (clause 3.3)", "KRW, clause 3.3(a): Toss Payments / US dollar stablecoin, clause 3.3(c)"),
-        ("Published settings (clause 9.3)", f"As published when this Plan Order is made: release fee {fee}%; maintenance allowance {allowance} hours a week per Fleet; window times as stated under Windows"),
+        ("Published settings (clause 9.3)", f"As published when this Plan Order is made: release fee {fee}%; maintenance allowance {allowance} hours a week per Fleet"),
         ("Fleet Rates (clause 16.5)", f"As published on the Fleet List when this Plan Order is made: {rates}"),
     ]
 
@@ -740,12 +923,22 @@ def shortfall(cover, life, pending):
 
 
 def plan_mail(cfg, record, pricing):
-    dates = ", ".join(f"{g['name']} by {long_date(g['due'], 'en')}" for g in record["schedule"])
+    if monthly(record):
+        first = record["first"]
+        terms = [
+            f"{plan_line(record)}, from {long_date(record['start'], 'en')}, at {record['hourPrice']} USD an hour for as long as the plan runs.",
+            f"Each calendar month is a Tranche, paid before it starts. Tranche 1, {long_date(first['from'], 'en')} to {long_date(first['to'], 'en')}: {first['hours']:,} hours, {first['total']} USD before VAT, due before the Start Date. If a Tranche is not paid by its first day, the plan ends after the last paid one, with nothing owed; you may also stop it from your account.",
+        ]
+    else:
+        dates = ", ".join(f"{g['name']} by {long_date(g['due'], 'en')}" for g in record["schedule"])
+        terms = [
+            f"{plan_line(record)}: {record['hours']:,} hours from {long_date(record['start'], 'en')} to {long_date(record['end'], 'en')}, at {record['hourPrice']} USD an hour.",
+            f"Price of the Term: {record['total']} USD before VAT, paid " + ("in full by the Start Date." if record["payment"] == "upfront" else f"by gates: {dates}. Phase A runs to day {pricing['phaseADays']}: nothing is due, and you withdraw by not paying."),
+        ]
     return "\n".join([
         f"{record['company']} placed Plan Order {record['plan']} under the SparkPipe Customer Agreement.",
         "",
-        f"{plan_line(record)}: {record['hours']:,} hours from {long_date(record['start'], 'en')} to {long_date(record['end'], 'en')}, at {record['hourPrice']} USD an hour.",
-        f"Price of the Term: {record['total']} USD before VAT, paid " + ("in full by the Start Date." if record["payment"] == "upfront" else f"by gates: {dates}. Phase A runs to day {pricing['phaseADays']}: nothing is due, and you withdraw by not paying."),
+    ] + terms + [
         f"Pay toward it from your account: {cfg.public}/account.html",
         f"The Plan Order, ready to print: {cfg.public}/plan-order.html?plan={record['plan']}",
         "",
@@ -1008,8 +1201,7 @@ class App:
         pricing, day = self.cfg.pricing(), local_day(start)
         for plan in self.plans(account):
             plan_fields(pricing, plan)
-            begins = date.fromisoformat(plan["start"])
-            if begins <= day <= term_end(begins, plan["months"]):
+            if date.fromisoformat(plan["start"]) <= day <= (fixed_end(plan) or day):
                 return {"releaseFee": format(Decimal(str(plan["releaseFee"])), "f")}
         return None
 
@@ -1017,11 +1209,14 @@ class App:
         return [p for p in self.book.plans.values() if p["account"] == account]
 
     def commitment(self, pricing, plan, until):
-        return (
+        office, fleets = plan_fields(pricing, plan)
+        start = date.fromisoformat(plan["start"])
+        return market.Commitment(
             plan.get("account") or self.book.emails.get(str(plan.get("email", "")).lower()),
-            kst_start(date.fromisoformat(plan["start"])),
+            kst_start(start),
             kst_start(until + timedelta(days=1)),
-            plan_pattern(pricing, plan),
+            plan_slots(plan, start, until),
+            fleets,
             tuple(plan.get("lock") or ()),
             plan["maintenanceHoursPerWeek"],
             plan["id"],
@@ -1033,7 +1228,7 @@ class App:
             return self.committed[1]
         pricing, found = self.cfg.pricing(), []
         for plan in list(self.book.plans.values()) + list(extra or []):
-            until = standing(pricing, self.book, plan, now)["heldUntil"]
+            until = standing(pricing, self.book, plan, now)["keepUntil"]
             if until:
                 found.append(self.commitment(pricing, plan, date.fromisoformat(until)))
         found = tuple(found)
@@ -1061,10 +1256,9 @@ class App:
 
     def plan_choice(self, pricing, body, account, now, ident):
         offer, record = pricing["plans"], self.book.accounts[account]
-        months = body.get("months")
-        term = next((t for t in offer["terms"] if not isinstance(months, bool) and t["months"] == months), None)
+        term = next((t for t in offer["terms"] if isinstance(body.get("term"), str) and t["id"] == body["term"]), None)
         if not term:
-            raise Refusal("Choose one of the terms we offer.")
+            raise Refusal("Choose one of the terms we offer: " + ", ".join(t["id"] for t in offer["terms"]) + ".")
         try:
             start = date.fromisoformat(body["start"])
         except (KeyError, TypeError, ValueError):
@@ -1074,16 +1268,19 @@ class App:
         last = max(first, today + timedelta(days=offer["startWithinDays"]))
         if not first <= start <= last:
             raise Refusal(f"Choose a Start Date from {long_date(first, 'en')} to {long_date(last, 'en')}.")
-        published, chosen = {w["id"]: w for w in pricing["windows"]}, body.get("windows")
-        if not isinstance(chosen, list) or not chosen or not all(isinstance(w, str) and w in published for w in chosen) or len(set(chosen)) != len(chosen):
-            raise Refusal("Choose one or more of the windows.")
+        office = body.get("office")
+        if not isinstance(office, dict) or not isinstance(office.get("zone"), str) or office["zone"] not in zones():
+            raise Refusal("Choose the time zone of your office hours, such as Asia/Seoul or Europe/Berlin.")
+        office = {key: office.get(key) for key in ("zone", "from", "to")}
+        if not office_valid(office):
+            raise Refusal(f"Choose office hours that start and end on whole hours, at least {MIN_OFFICE_HOURS} hours apart.")
         fleets = body.get("fleets")
         if isinstance(fleets, bool) or not isinstance(fleets, int) or not 1 <= fleets <= offer["maxFleets"]:
             raise Refusal(f"Choose 1 to {offer['maxFleets']} fleets. For more, ask us for a quote.")
         if body.get("days") not in DAYS:
             raise Refusal("Choose Every day or Weekdays.")
         lock = body.get("lock") is True
-        if lock and (len(chosen) != len(published) or body["days"] != "every"):
+        if lock and (office_length(office["from"], office["to"]) != 24 or body["days"] != "every"):
             raise Refusal("A fleet lock comes only with a Full day on Every day.")
         listed, models = {m["id"]: m for m in pricing["models"]}, body.get("models")
         if not isinstance(models, list) or not models or not all(isinstance(m, str) and m in listed for m in models) or len(set(models)) != len(models):
@@ -1092,7 +1289,7 @@ class App:
         price_won = won(Decimal(str(term["hourPriceKRW"])) + (Decimal(str(offer["lockPremiumKRW"])) if lock else 0))
         plan = {
             "id": ident, "plan": ident, "account": account, "email": record["email"], "company": record["company"],
-            "start": start.isoformat(), "months": months, "windows": [{key: w[key] for key in ("id", "name", "from", "to", "localDay")} for w in pricing["windows"] if w["id"] in chosen],
+            "start": start.isoformat(), "months": term["months"], "office": office,
             "days": body["days"], "fleets": fleets, "lock": [], "hourPrice": text_money(price), "hourPriceKRW": text_won(price_won), "payment": term["payment"],
             "releaseFee": format(Decimal(str(pricing["market"]["releaseFee"])), "f"), "maintenanceHoursPerWeek": offer["maintenanceHoursPerWeek"],
         }
@@ -1102,18 +1299,19 @@ class App:
         }
         return plan, details, lock
 
+    def plan_until(self, pricing, plan, now):
+        return fixed_end(plan) or monthly_horizon(pricing, local_day(now))
+
     def plan_room(self, pricing, plan, now, current):
-        added = self.commitment(pricing, plan, term_end(date.fromisoformat(plan["start"]), plan["months"]))
+        added = self.commitment(pricing, plan, self.plan_until(pricing, plan, now))
         before, after = self.market.cover(now, pricing, current), self.market.cover(now, pricing, current + (added,))
-        moment, pattern = max(added[1], after.first), added[3]
-        while moment < added[2]:
-            local = moment.astimezone(KST)
-            if pattern[local.weekday() * 24 + local.hour] and after.clash(moment) and not before.clash(moment):
-                return Refusal(f"We cannot keep the capacity this plan needs at {market.kst_text(moment)}: it is already reserved or kept for another plan, or the fleets are not serving yet. Choose a later Start Date, other windows or fewer fleets.", 409, "capacity")
-            moment += market.HOUR
+        for key in sorted(added.hours):
+            moment = datetime.fromtimestamp(key * 3600, timezone.utc)
+            if moment >= after.first and after.clash(moment) and not before.clash(moment):
+                return Refusal(f"We cannot keep the capacity this plan needs at {market.kst_text(moment)}: it is already reserved or kept for another plan, or the fleets are not serving yet. Choose a later Start Date, other office hours or fewer fleets.", 409, "capacity")
         life, pending = market.year_later(now), self.market.pending()
         if shortfall(after, life, pending) > shortfall(before, life, pending):
-            return Refusal("Hour-credits already sold need the free fleet-hours this plan would keep. Choose a later Start Date, other windows or fewer fleets.", 409, "capacity")
+            return Refusal("Hour-credits already sold need the free fleet-hours this plan would keep. Choose a later Start Date, other office hours or fewer fleets.", 409, "capacity")
         return None
 
     def placed(self, pricing, plan, lock, now):
@@ -1134,11 +1332,16 @@ class App:
 
     def plan_record(self, pricing, plan, details):
         spans, start = tranche_spans(pricing, plan), date.fromisoformat(plan["start"])
-        hours = sum(count for _, _, count in spans)
-        schedule = [{"name": "Payment", "due": plan["start"]}] if plan["payment"] == "upfront" else [{"name": g["name"], "due": (start + timedelta(days=g["dueDay"] - 1)).isoformat()} for g in pricing["gates"]]
         record = dict({key: value for key, value in plan.items() if key != "id"}, **details)
+        if monthly(plan):
+            first, last, hours = spans[0]
+            record.update(end=None, first={"from": first.isoformat(), "to": last.isoformat(), "hours": hours, "total": text_money(money(plan["hourPrice"]) * hours),
+                                                   "totalKRW": text_won(won(plan["hourPriceKRW"]) * hours)}, schedule=[{"name": "Tranche 1", "due": plan["start"]}])
+        else:
+            hours = sum(count for _, _, count in spans)
+            schedule = [{"name": "Payment", "due": plan["start"]}] if plan["payment"] == "upfront" else [{"name": g["name"], "due": (start + timedelta(days=g["dueDay"] - 1)).isoformat()} for g in pricing["gates"]]
+            record.update(end=term_end(start, plan["months"]).isoformat(), hours=hours, total=text_money(money(plan["hourPrice"]) * hours), totalKRW=text_won(won(plan["hourPriceKRW"]) * hours), schedule=schedule)
         record.update(
-            end=term_end(start, plan["months"]).isoformat(), hours=hours, total=text_money(money(plan["hourPrice"]) * hours), totalKRW=text_won(won(plan["hourPriceKRW"]) * hours), schedule=schedule,
             agreement=dict(self.current_terms(), version={"ko": self.cfg.version("ko"), "en": self.cfg.version("en")}),
             supplier={"ko": self.cfg.supplier["ko"], "en": self.cfg.supplier["en"], "email": self.cfg.notify},
         )
@@ -1151,14 +1354,16 @@ class App:
         return self.plan_record(pricing, self.placed(pricing, plan, lock, now), details)
 
     def preview(self, pricing, record):
-        net = Decimal(record["total"])
+        priced = record["first"] if monthly(record) else record
+        net = Decimal(priced["total"])
         vat = money(net * Decimal(str(pricing["vatRate"])))
         return {
             "plan": record["plan"], "hash": record["hash"], "text": record["text"], "rows": text_rows(record["text"]), "line": plan_line(record),
-            "start": record["start"], "end": record["end"], "hours": record["hours"], "price": record["hourPrice"], "total": record["total"],
+            "start": record["start"], "end": record["end"], "hours": priced["hours"], "price": record["hourPrice"], "total": priced["total"],
             "vat": text_money(vat), "withVat": text_money(net + vat), "lock": record["lock"], "payment": record["payment"], "schedule": record["schedule"],
-            "priceKRW": record["hourPriceKRW"], "totalKRW": record["totalKRW"], "vatKRW": text_won(Decimal(record["totalKRW"]) * Decimal(str(pricing["vatRate"]))),
-            "withVatKRW": text_won(Decimal(record["totalKRW"]) + won(Decimal(record["totalKRW"]) * Decimal(str(pricing["vatRate"])))),
+            "priceKRW": record["hourPriceKRW"], "totalKRW": priced["totalKRW"], "vatKRW": text_won(Decimal(priced["totalKRW"]) * Decimal(str(pricing["vatRate"]))),
+            "withVatKRW": text_won(Decimal(priced["totalKRW"]) + won(Decimal(priced["totalKRW"]) * Decimal(str(pricing["vatRate"])))),
+            "office": record["office"], "days": record["days"], "first": record.get("first"),
         }
 
     def quote_plan(self, body, account, ip):
@@ -1195,7 +1400,8 @@ class App:
                 "algorithm": "Ed25519", "key": key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex(), "value": key.sign(bytes.fromhex(record["hash"])).hex()})
             self.book.append("plan_order", record)
         self.mail(record["email"], f"Plan Order {ident}: your SparkPipe plan", plan_mail(self.cfg, record, pricing))
-        self.mail(self.cfg.notify, f"New Plan Order: {record['company']}, {plan_line(record)}", f"{record['company']} <{record['email']}> placed Plan Order {ident}: {plan_line(record)}, from {record['start']}, {record['hours']:,} hours at {record['hourPrice']} USD, {record['total']} USD before VAT, {record['payment']}.")
+        priced = record["first"] if monthly(record) else record
+        self.mail(self.cfg.notify, f"New Plan Order: {record['company']}, {plan_line(record)}", f"{record['company']} <{record['email']}> placed Plan Order {ident}: {plan_line(record)}, from {record['start']}, {priced['hours']:,} hours at {record['hourPrice']} USD, {priced['total']} USD before VAT{' for Tranche 1' if monthly(record) else ''}, {record['payment']}.")
         log(f"plan order {ident} for {account}")
         return self.plan_view(account, ident)
 
@@ -1209,11 +1415,12 @@ class App:
             if not plan or plan["account"] != account:
                 raise Refusal("No such plan on this account.", 404)
             view = standing(pricing, self.book, plan, now)
+            until = None if not monthly(plan) else date.fromisoformat(max(filter(None, [view["heldUntil"], view["paidThrough"], view["end"], month_last(date.fromisoformat(plan["start"])).isoformat()])))
             view.update(
                 line=plan_line(plan), company=plan["company"], created=plan["created"], source=plan.get("source"), hash=plan.get("hash"),
                 rows=text_rows(plan["text"]) if plan.get("text") else None, text=plan.get("text"), signature=plan.get("signature"),
                 accepted=plan["created"] if plan.get("source") == "account" else None, schedule=plan.get("schedule"),
-                tranches=[{"from": first.isoformat(), "to": last.isoformat(), "hours": count} for first, last, count in tranche_spans(pricing, plan)],
+                tranches=[{"from": first.isoformat(), "to": last.isoformat(), "hours": count} for first, last, count in tranche_spans(pricing, plan, until)],
             )
             return view
 
@@ -1222,7 +1429,7 @@ class App:
         ident = plan.get("id")
         if not account or not isinstance(ident, str) or not ident or ident in self.book.plans:
             raise Refusal("A signed Plan Order needs an unused id and the email of an existing account.")
-        record = {key: plan[key] for key in ("start", "months", "windows", "days", "fleets", "hourPrice", "payment", "releaseFee", "maintenanceHoursPerWeek")}
+        record = {key: plan.get(key) for key in ("start", "months", "office", "days", "fleets", "hourPrice", "payment", "releaseFee", "maintenanceHoursPerWeek")}
         if plan.get("hourPriceKRW"):
             record["hourPriceKRW"] = text_won(Decimal(str(plan["hourPriceKRW"])))
         record.update(id=ident, plan=ident, account=account, email=self.book.accounts[account]["email"], company=self.book.accounts[account]["company"], lock=list(plan.get("lock") or []), source="signed")
@@ -1233,6 +1440,27 @@ class App:
                 raise refusal
             self.book.append("plan_order", {key: value for key, value in record.items() if key != "id"})
         return record
+
+    def stop_plan(self, body, account, ip):
+        self.throttle("plan", ip)
+        pricing, now = self.cfg.pricing(), clock()
+        with self.book.lock:
+            plan = self.book.plans.get(body.get("plan")) if isinstance(body.get("plan"), str) else None
+            if not plan or plan["account"] != account:
+                raise Refusal("No such plan on this account.", 404)
+            if not monthly(plan):
+                raise Refusal("Only a Monthly plan can be stopped. A plan with a fixed term runs to its end.", 409, "fixed")
+            state = standing(pricing, self.book, plan, now)
+            if state["ended"] or state["stopped"]:
+                raise Refusal(state["ended"] or "This plan is already stopped.", 409)
+            self.book.append("plan_stop", {"plan": plan["id"], "account": account})
+            state = standing(pricing, self.book, plan, now)
+        last = state["paidThrough"]
+        text = f"Plan {plan['id']} ends on {long_date(last, 'en')}, after its last paid Tranche, with nothing owed." if last and not state["ended"] else f"Plan {plan['id']} has ended with nothing owed."
+        self.mail(plan["email"], f"Plan {plan['id']} is stopped", text + " Its capacity after that is released. You may order a new plan at any time.")
+        self.mail(self.cfg.notify, f"Plan stopped: {plan['company']}, {plan['id']}", text)
+        log(f"plan {plan['id']} stopped by {account}")
+        return self.plan_view(account, plan["id"])
 
     def end_plan(self, ident, day, reason):
         plan = self.book.plans.get(ident)
@@ -1245,6 +1473,8 @@ class App:
         if not plan:
             return
         pricing = self.cfg.pricing()
+        if monthly(plan):
+            return self.grant_month(pricing, plan, order_id, now)
         spans = tranche_spans(pricing, plan)
         before, after = int(self.book.paid_hours(ident, order_id)), int(self.book.paid_hours(ident))
         if plan["payment"] == "upfront":
@@ -1258,6 +1488,23 @@ class App:
             gone = max(0, min(new, hours_before(pricing, plan, first, last, now)) - old)
             if new - old - gone > 0:
                 self.book.append("tranche_grant", {"account": plan["account"], "month": first.strftime("%Y-%m"), "hours": new - old - gone, "plan": ident, "source": "payment", "order": order_id})
+
+    def grant_month(self, pricing, plan, order_id, now):
+        stopped = stamp_time(plan["stopped"]) if plan.get("stopped") else None
+        paid, without = self.book.prepaid(plan["id"]), self.book.prepaid(plan["id"], order_id)
+        granted = False
+        for tranche in monthly_tranches(pricing, plan):
+            cut = min(day_end(tranche["first"]), stopped) if stopped else day_end(tranche["first"])
+            if paid_by(paid, cut) < tranche["through"]:
+                break
+            if paid_by(without, cut) < tranche["through"]:
+                hours = tranche["hours"] - hours_before(pricing, plan, tranche["first"], tranche["last"], now)
+                granted = True
+                if hours > 0:
+                    self.book.append("tranche_grant", {"account": plan["account"], "month": tranche["first"].strftime("%Y-%m"), "hours": hours, "plan": plan["id"], "source": "payment", "order": order_id})
+        state = standing(pricing, self.book, plan, now)
+        if not granted and (state["ended"] or state["stopped"]):
+            self.mail(self.cfg.notify, f"Refund due: {plan['company']}, plan {plan['id']}", f"Order {order_id} for Monthly plan {plan['id']} was paid after the plan ended or was stopped, so it bought no Tranche. Refund it under clause 20.11.")
 
     def summary(self, account):
         pricing = self.cfg.pricing()
@@ -1290,8 +1537,12 @@ class App:
         state = standing(pricing, self.book, found, now)
         if state["ended"]:
             raise Refusal(state["ended"], 409)
+        if state["stopped"]:
+            raise Refusal(f"This plan is stopped and ends on {state['paidThrough']}: it takes no further payment.", 409, "stopped")
         left = Decimal(state["remainingKRW"] if currency == KRW else state["remaining"])
         if net > left:
+            if monthly(found):
+                raise Refusal(f"A Monthly plan is paid one Tranche at a time: {state['nextGate']['name']} is {amount_text(left, currency)} before VAT, counting unpaid orders." if state["nextGate"] else "The next Tranche is already paid or awaiting payment.", 409)
             raise Refusal(f"At most {amount_text(left, currency)} remains to prepay, counting unpaid orders.", 409)
         price = won(found["hourPriceKRW"]) if currency == KRW else money(found["hourPrice"])
         vat = (net * Decimal(str(pricing["vatRate"]))).quantize(unit_of(currency), rounding=ROUND_HALF_UP)
@@ -1912,6 +2163,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, app.quote_plan(body, app.need(self.headers), self.client_ip()))
             if path == "/plans/order":
                 return self.reply(200, app.place_plan(body, app.need(self.headers), self.client_ip(), self.agent()))
+            if path == "/plans/stop":
+                return self.reply(200, app.stop_plan(body, app.need(self.headers), self.client_ip()))
             if path == "/market/buy":
                 return self.reply(200, app.buy(body, app.need(self.headers), self.client_ip(), self.agent()))
             if path.startswith("/market/"):

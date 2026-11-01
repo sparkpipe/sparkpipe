@@ -562,9 +562,9 @@ def forwarded_flows(failures, work):
         mailbox.shutdown()
 
 
-def plan(number, email, windows, fleets=1, days="every", lock=None, fee="0.10"):
-    found = {"id": f"SP-COVER-{number}", "email": email, "company": "Plan Co", "start": "2026-11-02", "months": 24, "windows": [tp.WINDOWS[w] for w in windows], "days": days, "fleets": fleets,
-             "hourPrice": "15.00", "payment": "gates", "releaseFee": fee, "maintenanceHoursPerWeek": 3}
+def plan(number, email, office, fleets=1, days="every", lock=None, fee="0.10", payment="gates"):
+    found = {"id": f"SP-COVER-{number}", "email": email, "company": "Plan Co", "start": "2026-11-02", "months": None if payment == "monthly" else 24, "office": dict(tp.OFFICES[office]), "days": days, "fleets": fleets,
+             "hourPrice": "15.00", "payment": payment, "releaseFee": fee, "maintenanceHoursPerWeek": 3}
     if lock:
         found["lock"] = lock
     return found
@@ -581,40 +581,57 @@ def cover_flows(failures, work):
         sandbox_in(early, "early@example.com", "Early Co")
         sandbox_in(late, "late@example.com", "Late Co")
         asia, europe, friday, saturday, sunday = 22, 30, 94, 118, 132
-        three = [plan(1, "holder@example.com", ["asia"], 3), plan(2, "b@example.com", ["europe"], 3), plan(3, "c@example.com", ["americas"], 3)]
+        three = [plan(1, "holder@example.com", "asia", 3), plan(2, "b@example.com", "europe", 3), plan(3, "c@example.com", "americas", 3)]
         tp.set_plans(app, three)
         cells = [f["cells"] for f in late("GET", "/market/calendar?days=14")[1]["fleets"]]
         if any(c[4] != ["hyor", "1.000000"] or c[5] != ["closed", None] or c[asia - 1] != ["closed", None] or c[sunday - 1] != ["closed", None] for c in cells):
             failures.append(f"three-fleet plans in every window keep every fleet off sale every day until 6 hours before: {[c[4:6] + [c[asia - 1], c[sunday - 1]] for c in cells]}")
-        if late("POST", "/plans/quote", {"start": "2026-12-15", "months": 3})[0] != 404:
+        if late("POST", "/plans/quote", {"start": "2026-12-15", "term": "monthly"})[0] != 404:
             failures.append("the sandbox takes Plan Orders")
         status, refused = late("POST", "/market/buy", {"amount": "100"})
         if status != 409 or refused.get("reason") != "cover" or late("GET", "/market/state")[1]["onSale"] != "0.000000":
             failures.append(f"HC is sold although every hour is kept for plans: {status} {refused}")
         holder("POST", "/market/sandbox/tranche", {})
         if holder("POST", "/market/reserve", {"fleet": "F1", "start": at(asia), "model": "kimi-k3", "pay": "tranche"})[0] != 200:
-            failures.append("a plan holder cannot reserve its kept capacity in its window with Tranche hours")
+            failures.append("a plan holder cannot reserve its kept capacity in its office hours with Tranche hours")
         if holder("POST", "/market/reserve", {"fleet": "F1", "start": at(europe), "model": "kimi-k3", "pay": "tranche"})[0] != 409:
-            failures.append("a plan holder takes capacity kept for another customer's window")
-        if app.market.report(app.commitments(app.market.now(), [plan(4, "d@example.com", ["asia"])]))["clashes"] == 0 or app.market.report()["clashes"] != 0:
+            failures.append("a plan holder takes capacity kept for another customer's office hours")
+        if app.market.report(app.commitments(app.market.now(), [plan(4, "d@example.com", "asia")]))["clashes"] == 0 or app.market.report()["clashes"] != 0:
             failures.append("the cover report misses a plan that the fleets cannot keep, or flags one they can")
 
-        tp.set_plans(app, [plan(1, "holder@example.com", ["asia"], 3)])
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3)])
         before = [f["cells"] for f in late("GET", "/market/calendar?days=3")[1]["fleets"]]
         if [c[asia + 23] for c in before] != [["closed", None]] * 3 or [c[europe + 23] for c in before] != [["hyor", "1.000000"]] * 3:
-            failures.append(f"an Asia plan for three fleets does not keep exactly the Asia Window: {[c[asia + 23] for c in before]} {[c[europe + 23] for c in before]}")
-        tp.set_plans(app, [plan(1, "holder@example.com", ["asia"], 3, "weekdays")])
+            failures.append(f"a plan for three fleets with office hours from 08:00 to 16:00 in Seoul does not keep exactly those hours: {[c[asia + 23] for c in before]} {[c[europe + 23] for c in before]}")
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3, "weekdays")])
         week = [f["cells"] for f in late("GET", "/market/calendar?days=7")[1]["fleets"]]
         if [c[friday - 1] for c in week] != [["closed", None]] * 3 or [c[saturday - 1] for c in week] != [["hyor", "1.000000"]] * 3:
-            failures.append(f"a weekday Asia plan keeps Saturday or frees Friday: {[c[friday - 1] for c in week]} {[c[saturday - 1] for c in week]}")
-        tp.set_plans(app, [plan(1, "holder@example.com", ["asia"])])
+            failures.append(f"a Weekdays plan in Seoul keeps Saturday or frees Friday: {[c[friday - 1] for c in week]} {[c[saturday - 1] for c in week]}")
+        tp.set_plans(app, [plan(1, "holder@example.com", "newyork", 3, "weekdays")])
+        cells = [f["cells"] for f in late("GET", "/market/calendar?days=7")[1]["fleets"]]
+        hour = lambda kst: int((datetime.fromisoformat(kst).replace(tzinfo=market.KST) - START).total_seconds() // 3600) - 1
+        shown = {kst: [c[hour(kst)][0] for c in cells] for kst in ("2026-11-02T22:00", "2026-11-02T23:00", "2026-11-03T06:00", "2026-11-03T07:00", "2026-11-07T06:00", "2026-11-08T06:00", "2026-11-09T06:00")}
+        if shown != {"2026-11-02T22:00": ["hyor"] * 3, "2026-11-02T23:00": ["closed"] * 3, "2026-11-03T06:00": ["closed"] * 3, "2026-11-03T07:00": ["hyor"] * 3,
+                     "2026-11-07T06:00": ["closed"] * 3, "2026-11-08T06:00": ["hyor"] * 3, "2026-11-09T06:00": ["hyor"] * 3}:
+            failures.append(f"New York office hours from 09:00 to 17:00 on Weekdays do not keep KST 23:00 to 07:00 after each New York weekday, and nothing after its weekend: {shown}")
+        cover = app.market.cover(app.market.now(), cfg.pricing())
+        kst = lambda text: datetime.fromisoformat(text).replace(tzinfo=market.KST)
+        asides = [cover.aside(kst(text)) for text in ("2027-03-12T23:00", "2027-03-13T06:00", "2027-03-15T22:00", "2027-03-15T23:00", "2027-03-16T06:00", "2027-03-16T07:00")]
+        if asides != [3, 3, 3, 3, 0, 0]:
+            failures.append(f"the set-aside does not move an hour earlier in KST when New York starts summer time: {asides}")
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 3, payment="monthly")])
+        cells = [f["cells"] for f in late("GET", "/market/calendar?days=3")[1]["fleets"]]
+        cover = app.market.cover(app.market.now(), cfg.pricing())
+        if [c[asia + 23] for c in cells] != [["closed", None]] * 3 or cover.aside(kst("2026-12-31T10:00")) != 3 or cover.aside(kst("2027-06-15T10:00")) != 3 or cover.aside(kst("2026-12-31T17:00")) != 0:
+            failures.append(f"a running Monthly plan does not keep its office hours this month, next month and in the later months it counts on: {[c[asia + 23] for c in cells]}")
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia")])
         late("POST", "/market/buy", {"amount": "100"})
         for fleet in ("F1", "F2"):
             late("POST", "/market/reserve", {"fleet": fleet, "start": at(asia + 24), "model": "kimi-k3", "max": "1"})
         if late("POST", "/market/reserve", {"fleet": "F3", "start": at(asia + 24), "model": "kimi-k3", "max": "1"})[0] != 409:
             failures.append("the last fleet of an hour that a plan still needs is sold to HC")
 
-        tp.set_plans(app, [plan(1, "holder@example.com", ["americas", "asia", "europe"], lock=["F2"])])
+        tp.set_plans(app, [plan(1, "holder@example.com", "full", lock=["F2"])])
         locked = [f["cells"] for f in late("GET", "/market/calendar?days=2")[1]["fleets"]]
         pool = late("GET", "/market/state")[1]["pool"]["fleets"]
         if locked[1][0] != ["closed", None] or locked[1][40] != ["closed", None] or locked[0][0] != ["hyor", "1.000000"] or "F2" in pool or "F1" not in pool:
@@ -624,7 +641,7 @@ def cover_flows(failures, work):
         if holder("POST", "/market/reserve", {"fleet": "F2", "start": at(40), "model": "kimi-k3", "pay": "tranche"})[0] != 200:
             failures.append("the holder cannot reserve its own locked fleet")
 
-        tp.set_plans(app, [plan(1, "holder@example.com", ["asia"], 2), plan(2, "b@example.com", ["europe"], 2), plan(3, "c@example.com", ["americas"], 2)])
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia", 2), plan(2, "b@example.com", "europe", 2), plan(3, "c@example.com", "americas", 2)])
         pricing = cfg.pricing()
         sale = Decimal(late("GET", "/market/state")[1]["onSale"])
         if not 8000 < sale < 8700:
@@ -687,7 +704,7 @@ def locked_terms(failures, work):
             if bought[0] != 200 or balance(client) != before + credit:
                 failures.append(f"a release is not charged the fee in force when the hour's HC was bought: {bought} {before} {balance(client)}")
         prices.write_text(text)
-        tp.set_plans(app, [plan(1, "holder@example.com", ["asia"], fee="0.2")])
+        tp.set_plans(app, [plan(1, "holder@example.com", "asia", fee="0.2")])
         holder("POST", "/market/sandbox/tranche", {})
         held = holder("POST", "/market/reserve", {"fleet": "F2", "start": at(22), "model": "kimi-k3", "pay": "tranche"})[1]
         holder("POST", "/market/release", {"reservation": held.get("reservation"), "min": "1"})
@@ -734,7 +751,7 @@ def maintenance_flows(failures, work):
         later = app.market.schedule_maintenance("F1", "2026-11-16", 3)
         if market.window_of(market.slot_time(later["start"]), cfg.pricing()["windows"]) == market.window_of(start, cfg.pricing()["windows"]):
             failures.append(f"maintenance does not rotate between windows: {done['start']} then {later['start']}")
-        tp.set_plans(app, [plan(1, "holder@example.com", ["americas", "asia", "europe"], lock=["F2"])])
+        tp.set_plans(app, [plan(1, "holder@example.com", "full", lock=["F2"])])
         locked = app.market.schedule_maintenance("F2", "2026-11-09", 3)
         granted = holder("GET", "/market/state")[1]["account"]["tranche"]
         if locked["credited"] != ["SP-COVER-1"] * 3 or not granted or granted[0]["granted"] != 3:
@@ -832,7 +849,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC bought by amount and lapsing after 12 months, sold only while free hours after plans and maintenance cover it, later lapse dates instead of overselling, plan set-asides by window, day choice and fleet lock that open 6 hours before except locked fleets, earlier-lapsing HC first, advance hours at 1.25 up to 31 days, settings locked per HC lot, reservation and Plan Order, maintenance with 7 days' notice inside the weekly allowance, rotated between windows and credited back, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, prefill accelerators charged by the second at Rate times bid from HC or Plan hours, queued by bid then arrival, with estimates set aside, fallback after the wait and the gateway's forwarding, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
+    print("market: HC bought by amount and lapsing after 12 months, sold only while free hours after plans and maintenance cover it, later lapse dates instead of overselling, plan set-asides per KST hour from office hours in their own time zone, across daylight-saving changes, Weekdays by the local date, Monthly plans and fleet locks, that open 6 hours before except locked fleets, earlier-lapsing HC first, advance hours at 1.25 up to 31 days, settings locked per HC lot, reservation and Plan Order, maintenance with 7 days' notice inside the weekly allowance, rotated between the maintenance windows and credited back, reservations at Rate, releases sold before our hours and credited less the fee, one-off, resting, standing and consecutive bids, Tranche hours, the shared pool's metering and its hourly settlement to released hours, prefill accelerators charged by the second at Rate times bid from HC or Plan hours, queued by bid then arrival, with estimates set aside, fallback after the wait and the gateway's forwarding, API keys, the ledger export, feeds, the sandbox clock and reset, and live HC invoices behave")
     return 0
 
 

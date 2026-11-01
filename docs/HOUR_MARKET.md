@@ -99,8 +99,9 @@ describes what is built, how it runs and how to test it.
   hour of their month, at no HC; released, they
   earn HC like any hour. Each plan payment issues them to the earliest
   Tranches not yet paid, less the plan hours of those Tranches that had
-  already passed (docs/PAYMENTS.md); `sparkpipe_pay.py tranche EMAIL
-  YYYY-MM HOURS` grants hours by hand.
+  already passed; a Monthly plan's Tranche is issued once it is paid in
+  full (docs/PAYMENTS.md). `sparkpipe_pay.py tranche EMAIL YYYY-MM HOURS`
+  grants hours by hand.
 
 ## No overselling, no bumping
 
@@ -111,12 +112,21 @@ from its holder, and HC is sold only while it can be spent. Four rules in
 
 - **Set-aside instead of bumping.** A reserved plan is a Plan Order in
   the ledger (docs/PAYMENTS.md), ordered in the account or recorded from a
-  signed one: windows (Americas 00-08, Asia 08-16,
-  Europe 16-24 KST, `windows` in `site/pricing.js`; all three is a full
-  day), days (every day, or weekdays in each window's own region), fleets,
-  term and an optional fleet lock. Every active plan keeps its fleets off
-  sale in every hour of its windows on its days for its whole term, so
-  three customers in three regions share one fleet around the clock. The
+  signed one: office hours in the customer's own IANA time zone (whole
+  hours of its local clock, at least 8 hours, across midnight when the end
+  is at or before the start, 24 hours a full day), days (every day, or
+  Monday to Friday by the local date the hours start), fleets, term
+  (Monthly, 1, 2 or 3 years) and an optional fleet lock. The set-aside is
+  computed per KST hour with `zoneinfo`: each KST hour that starts within
+  the office hours of a counted local day, so it moves with the customer's
+  daylight-saving changes. Every active plan keeps its fleets off sale in
+  each of those hours for its whole term, so customers in Seoul, Berlin and
+  New York share one fleet around the clock. A Monthly plan keeps the
+  current month and the next one; for the HC cover and for admitting other
+  Plan Orders it counts as continuing in every later month until it ends
+  (`monthly_horizon`, docs/PAYMENTS.md), and when a month goes unpaid on
+  its first day, or the customer stops it, every month after its last paid
+  one is freed. The
   holder's own Tranche reservations use up its set-aside, and its Tranche
   bookings elsewhere never take another plan's. Capacity still unreserved
   `market.lastCallHours` (6) before an hour starts opens to HC, the point
@@ -153,8 +163,9 @@ from its holder, and HC is sold only while it can be spent. Four rules in
   begin at least 7 days ahead. It takes at most the weekly allowance (the
   published `plans.maintenanceHoursPerWeek`, or the lowest allowance of any
   Plan Order active that week), picks the run with the fewest reservations,
-  and between equal runs the window least recently maintained on that
-  fleet. Every reservation in the run is credited back (HC at the price paid,
+  and between equal runs the maintenance window (the three 8-hour parts
+  of the KST day, `windows` in `site/pricing.js`, clause 4.6) least
+  recently maintained on that fleet. Every reservation in the run is credited back (HC at the price paid,
   with its settings, or the Tranche hour, which no longer counts as used);
   a locked plan on that fleet, and the newest plans whose set-aside the
   remaining fleets cannot keep, are credited one plan hour for each hour.
@@ -312,8 +323,8 @@ are still to build on the hub.
 
 Dedicated hours are recorded, billed and released here; keeping a fleet
 exclusive to its holder during the hour is work for the fleet controller.
-The set-aside keeps the plan's fleets in its windows whatever fleet the
-holder later picks, except on a locked plan; more fleets at once, or hours
+The set-aside keeps the plan's fleets in its office hours whatever fleet
+the holder later picks, except on a locked plan; more fleets at once, or hours
 outside the plan, are subject to availability.
 
 ## Live accelerators
