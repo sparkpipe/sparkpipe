@@ -124,7 +124,7 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>A fleet that serves only you and remembers your code.</h2>
     <div class="defs">
-      <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review.</p></div>
+      <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review. And when a job needs a burst, book idle fleets by the hour with the same HC.</p></div>
       <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups. Treat it as working space, not an archive: if a failure ever takes both copies, we credit 24 hours of the fleet while the cache rebuilds.</p></div>
       <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Export it and restore it to any fleet you hold, and back up daily anything you want to keep.</p></div>
       <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does.</p></div>
@@ -205,7 +205,7 @@ h1 { max-width: 15ch; }
       <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
       <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
-    <p class="prose">The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
+    <p class="prose">Need more than one fleet for a while? Any fleet nobody holds can be booked by the hour with the same HC, up to the end of the current week, and your requests go to it like to your own. The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
     <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
   </div>
 </section>
@@ -223,6 +223,7 @@ h1 { max-width: 15ch; }
       <tbody>
         <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩26,000</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩19,500</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
         <tr><th scope="row">Demo hour</th><td><span data-hour="hc">1</span> HC for the whole demo fleet for an hour</td></tr>
+        <tr><th scope="row">Idle fleets</th><td>Any fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
         <tr><th scope="row">Week</th><td><span data-week="hc">144</span> HC for seven days on a fleet pinned to you: <span data-week="usd">$2,160</span> at the <span data-hc="bulk-usd">$15</span> HC price, about <span data-week="effective">$12.86</span> an hour</td></tr>
         <tr><th scope="row">Weeks ahead</th><td data-off="table">5% off each new week when you hold 4 or more weeks, 10% from 13, 15% from 26 and 20% at 52, counting the current week and the weeks you are booking</td></tr>
         <tr><th scope="row">How far ahead</th><td>Up to <span data-ahead>52</span> weeks</td></tr>
