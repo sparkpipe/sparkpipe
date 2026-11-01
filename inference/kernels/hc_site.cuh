@@ -235,3 +235,29 @@ static cudaError_t LmHcSite(const uint16_t *streams, const float *fn, const floa
 	return (rows >= LM_HC_SITE_ROWS ? LmHcSiteLaunch<HIDDEN, P, LM_HC_SITE_ROWS> : LmHcSiteLaunch<HIDDEN, P, 1u>)(streams, fn, scale, base, mixes, pre, post,
 		comb, collapsed, snapshot, rows, stream);
 }
+
+template<uint32_t HIDDEN>
+__global__ void LmHcExpandStreamsKernel(const uint16_t *__restrict__ hidden, uint16_t *__restrict__ streams, uint32_t rows)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows || element >= HIDDEN )
+		return;
+	const uint16_t value = hidden[(uint64_t)row * HIDDEN + element];
+	for ( uint32_t stream = 0u; stream < LM_HC_SITE_STREAMS; ++stream )
+		streams[((uint64_t)row * LM_HC_SITE_STREAMS + stream) * HIDDEN + element] = value;
+}
+
+template<uint32_t HIDDEN>
+__global__ void LmHcStreamsMeanKernel(const uint16_t *__restrict__ streams_bf16, uint16_t *__restrict__ reduced_bf16, uint32_t row_count)
+{
+	const uint32_t row = blockIdx.x;
+	if ( row >= row_count )
+		return;
+	for ( uint32_t element = threadIdx.x; element < HIDDEN; element += blockDim.x )
+	{
+		float value = 0.0f;
+		for ( uint32_t stream = 0u; stream < LM_HC_SITE_STREAMS; ++stream )
+			value += LmBf16ToFloat(streams_bf16[((uint64_t)row * LM_HC_SITE_STREAMS + stream) * HIDDEN + element]);
+		reduced_bf16[(uint64_t)row * HIDDEN + element] = LmFloatToBf16(value / (float)LM_HC_SITE_STREAMS);
+	}
+}

@@ -572,30 +572,6 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitQkvbKernel(const uint
 		beta_bf16[(uint64_t)row * heads + index] = qkvb_bf16[fused + 2u * qk_dim + v_dim + index];
 }
 
-__global__ static void Glm5NextExpandStreamsKernel(const uint16_t *__restrict__ hidden, uint16_t *__restrict__ streams, uint32_t rows)
-{
-	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( row >= rows || element >= G5N_HIDDEN )
-		return;
-	const uint16_t value = hidden[(uint64_t)row * G5N_HIDDEN + element];
-	for ( uint32_t stream = 0u; stream < G5N_HC; ++stream )
-		streams[((uint64_t)row * G5N_HC + stream) * G5N_HIDDEN + element] = value;
-}
-
-__global__ static void Glm5NextStreamsMeanKernel(const uint16_t *__restrict__ streams_bf16, uint16_t *__restrict__ reduced_bf16, uint32_t row_count)
-{
-	const uint32_t row = blockIdx.x;
-	if ( row >= row_count )
-		return;
-	for ( uint32_t element = threadIdx.x; element < G5N_HIDDEN; element += blockDim.x )
-	{
-		float value = 0.0f;
-		for ( uint32_t stream = 0u; stream < G5N_HC; ++stream )
-			value += LmBf16ToFloat(streams_bf16[((uint64_t)row * G5N_HC + stream) * G5N_HIDDEN + element]);
-		reduced_bf16[(uint64_t)row * G5N_HIDDEN + element] = LmFloatToBf16(value / (float)G5N_HC);
-	}
-}
-
 __global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
 {
 	if ( threadIdx.x == 0u )
