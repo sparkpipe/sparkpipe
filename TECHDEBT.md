@@ -326,6 +326,12 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
   2.0 s of a 3.6 s wave.
+- DSV4.1's landing path attends 4 heads per block on tensor cores, padded to
+  32 query slots, so 7 of every 8 slots repeat work: 1.3x the scalar kernel
+  where 64 heads get 7.5-9.4x (docs/KERNEL_PLAYBOOK.md, Latent shard
+  attention). A kernel that unions a block's rows' selected keys, the way GLM
+  5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
+  paths must move together because they agree bit for bit.
 
 ## Placement beyond TP16
 

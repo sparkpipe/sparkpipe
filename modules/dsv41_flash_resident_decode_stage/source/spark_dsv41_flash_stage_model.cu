@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/cell_mma.cuh"
 #include "inference/kernels/cell_pack.cuh"
 #include "inference/kernels/index_score.cuh"
@@ -730,7 +731,7 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 		if ( LmKvShardGatherViewInitialize<Geometry>(&view, state->latent_views[cache].pages, shard,
 				state->landing + (uint64_t)source * state->landing_stride[landing], state->gather_plan + state->slots, state->gather_plan + 2u * state->slots) != 0 ||
 			LmKvShardGatherViewWindow(&view, 0u, state->landing_keys[landing]) != 0 ||
-			LmLatentShardPartialHeadsLaunch<Geometry,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
+			LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
 				(uint64_t)rows * D41_LOCAL_HEADS * D41_HEAD_DIM, D41_LOCAL_HEADS, D41_LOCAL_HEADS, step->sequence_of_row, length, bound, state->selected,
 				D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_received + (uint64_t)source * stride, stride,
 				D41_LOCAL_HEADS, 1u, rows, stream, state->split_selected, state->split_offsets, 1u) != cudaSuccess )
@@ -744,7 +745,7 @@ static SparkStatus D41Partials(D41ModelState *state, uint32_t index, const Spark
 	const uint32_t *length, uint64_t query_rank_stride, uint32_t record_heads, uint32_t record_copies, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index);
-	if ( LmLatentShardPartialHeadsLaunch<Geometry,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_gathered,
+	if ( LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_gathered,
 		query_rank_stride, D41_LOCAL_HEADS, D41_HEADS, step->sequence_of_row, length, bound, state->selected,
 		D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_send, D41DestinationStride(rows, record_heads), record_heads,
 		record_copies, rows, stream) != cudaSuccess )
