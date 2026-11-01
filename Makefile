@@ -555,6 +555,7 @@ PYTHON_TESTS := \
 	tests/test_expert_tail_reference.py \
 	tests/test_tp_mesh_hardware_probe.py \
 	tests/test_head_certified_cuda.py \
+	tests/test_kv_snapshot_cuda.py \
 	tests/test_latent_gather_prefill_cuda.py \
 	tests/test_expanded_gather_prefill_cuda.py \
 	tests/test_latent_shard_decode_cuda.py \

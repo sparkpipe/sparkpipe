@@ -557,21 +557,32 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- A K3 conversation prefilled by the streamed (pass) prefill cannot be
-  restored from the snapshot store after its engine restarts or its pages
-  leave the device. The pass computes the whole prompt in one pass and keeps
-  only the final KDA state in the lane's slot; it records no checkpoint at
-  the 16,384-token stride (`cache_checkpoint_token_count`), so the API finds
-  no resume point and recomputes the prompt from token 0. On 2026-11-01 ten
-  134K-token conversations were saved to the store (1.03 GB in 8,735 files on
-  rank 0, 12,900 page files and one 12-token state file), and after a swap
-  away and back both the oldest and the newest resent with
-  `cached_tokens` 0 and took 132 s and 129 s, the same as their first
-  prefill; within one engine's lifetime follow-ups still hit the device
-  pages. Close it by having the pass capture the KDA state at the last stride
-  multiple inside each pass and at the pass's end, staging both as recurrent
-  checkpoints for the binding to save, proven by the same resend restoring
-  with `cached_tokens` at the checkpoint and tokens equal to the first run.
+- An identical resend, or a regenerate, of a K3 prompt prefilled by the
+  streamed (pass) prefill recomputes it from token 0 once its pages have
+  left the device (after a restart, a swap or an eviction). The pass computes
+  the whole prompt in one pass and leaves only the final KDA state in the
+  lane's slot, so no state lands on the 16,384-token stride
+  (`cache_checkpoint_token_count`) below the prompt's end, and the API finds
+  no resume point. A follow-up turn is not affected: the release saves the
+  sequence's newest state with its pages, and the follow-up resumes there.
+  On 2026-11-01, before that release save, ten 134K-token conversations left
+  12,900 page files and no state, and both the oldest and the newest resent
+  after a swap with `cached_tokens` 0 in 132 s and 129 s, the same as their
+  first prefill. The pass already holds a usable checkpoint: when
+  `K3StreamedKdaNode` composes the gathered node summaries in order, every
+  rank has its own head shard's state at each node boundary, and the
+  gathered convolution tails give the windows there, so the start of the last
+  node's rows (126,720 for a 133,656-token prompt, a whole number of pages)
+  costs one copy per KDA layer. Two parts are missing: the stage runner has no
+  way to hand that state to the binding as the checkpoint of its page (the
+  binding stages only the lane's current state), and the API marks a deferred
+  block stateless when it sends it and learns no resume point afterwards. Close
+  it by capturing that state in the pass, staging it through the binding,
+  reporting the checkpoint in the completion of the wave after the deferred
+  tokens so the API marks the block resumable, and proving it with the same
+  resend restoring with `cached_tokens` at the boundary and tokens equal to the
+  first run. Splitting the deferral at a stride multiple instead would run up
+  to 16,383 tail tokens as waves at long context on every long prompt.
 - The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
   The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
   it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
@@ -593,14 +604,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   in under 15 s; a store at its budget that keeps the newest conversations
   whole while older ones go tip-first; and the first open that removes the
   previous layout's flat files.
-- `tests/test_kv_snapshot_cuda.c`, the only GPU test that saves a prompt's
-  pages, restores them into a fresh engine and compares logits bit for bit,
-  fails on main with five failed checks: not all 16 prompt pages reach the
-  store, so the restore misses, and the page store answers `BUSY` from its
-  write queue (`cache/kv_page_store.c:863`) during the run. It wires its own
-  engine instead of the common binding, and no gate runs it
-  (`make test-kv-snapshot-cuda`). Close it by driving the test through
-  `SparkStageKvBinding` and adding it to the CUDA gate.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
