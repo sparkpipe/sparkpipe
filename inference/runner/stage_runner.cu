@@ -265,6 +265,8 @@ typedef struct SparkStageRunnerState
 	uint32_t *head_screened_count;
 	uint32_t vocab;
 	uint32_t vocab_slice_rows;
+	uint32_t output_vocab;
+	uint32_t head_output_rows;
 	uint64_t *head_maxloc;
 	uint32_t head_last_rows;
 	uint32_t *verify_kept;
@@ -1049,6 +1051,19 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 				state->geometry.embed_alias_count, state->geometry.embed_alias_first, state->geometry.embed_alias_row, state->vocab);
 			status = SPARK_STATUS_PARSE_ERROR;
 		}
+		else if ( configuration->output_vocabulary == 0u || configuration->output_vocabulary > state->vocab ||
+			(runner->owns_final_head != 0u && configuration->output_vocabulary <= state->tp_rank * state->vocab_slice_rows) )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: output vocabulary %u must be nonzero, within the model vocabulary %u and reach rank %u's head rows from %u\n",
+				configuration->output_vocabulary, state->vocab, state->tp_rank, state->tp_rank * state->vocab_slice_rows);
+			status = SPARK_STATUS_INVALID_ARGUMENT;
+		}
+		else
+		{
+			state->output_vocab = configuration->output_vocabulary;
+			state->head_output_rows = state->output_vocab - state->tp_rank * state->vocab_slice_rows < state->vocab_slice_rows ?
+				state->output_vocab - state->tp_rank * state->vocab_slice_rows : state->vocab_slice_rows;
+		}
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateCollective(state, configuration);
@@ -1158,7 +1173,7 @@ static SparkStatus StageRunnerSampleDistribution(SparkStageRunnerState *state,
 	vocab.shard_stride = shard_stride;
 	vocab.row_stride = row_stride;
 	vocab.shard_tokens = shard_tokens;
-	vocab.vocabulary = state->vocab;
+	vocab.vocabulary = state->output_vocab;
 	sample.rules = state->distribution_rules + first;
 	sample.positions = state->distribution_positions + first;
 	sample.source_rows = state->distribution_rows + first;
@@ -1390,7 +1405,7 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	head.epsilon = state->geometry.rms_epsilon;
 	head.norm_f32 = state->geometry.head_norm_f32;
 	head.prenormed = state->geometry.head_prenormed;
-	head.vocab_slice_rows = state->vocab_slice_rows;
+	head.vocab_slice_rows = state->head_output_rows;
 	head.rank_offset = state->tp_rank * state->vocab_slice_rows;
 	head.candidate_score = state->head_candidate_score;
 	head.candidate_token = state->head_candidate_token;
@@ -2296,6 +2311,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		return exchange_status;
 	if ( state->deferred_active != 0u )
 	{
+		state->logical_sequence_count = dispatch->active_sequence_count;
 		exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerRunDeferred(state, dispatch);

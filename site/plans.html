@@ -545,7 +545,6 @@ details.ask[open] summary { margin-bottom: 14px; }
       $('review').scrollIntoView({ behavior: 'smooth', block: 'start' });
     } catch (error) {
       if (error.status === 401) { O.me = null; signedIn(); }
-      if (error.reason === 'plans_closed') $('quote').open = true;
       SP.say($('o-msg'), error.message, 'error');
     }
     $('o-review').disabled = false;

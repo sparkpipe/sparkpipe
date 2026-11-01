@@ -409,9 +409,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   has its tier: each deployment node names its `kv_partition`, residentd
   refuses KV directories off it, and `kv_backing_maximum_bytes` and
   `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). The active model shard tier (1 TB)
-  has no named directory, byte budget or startup check, and nothing reserves
-  the 0.5 TB of system and runtime space against KV and shard growth.
+  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
+  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
+  evicts its oldest files before a write that would take the partition below
+  it. The active model shard tier (1 TB) has no named directory, byte budget or
+  startup check, so a shard copy can still take the partition below the
+  reserve; the KV stores give the space back only on their next write, and an
+  idle model's store keeps its files until the 24-hour expiry.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -553,12 +557,53 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- The format-2 KV snapshot tier (page files naming their parent, separate
-  state files, leaf-first eviction, ordered writes) is host-tested only.
-  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
-  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
-  conversations whole while older ones go tip-first, and an open that removes
-  the format-1 files of the previous release once.
+- An identical resend, or a regenerate, of a K3 prompt prefilled by the
+  streamed (pass) prefill recomputes it from token 0 once its pages have
+  left the device (after a restart, a swap or an eviction). The pass computes
+  the whole prompt in one pass and leaves only the final KDA state in the
+  lane's slot, so no state lands on the 16,384-token stride
+  (`cache_checkpoint_token_count`) below the prompt's end, and the API finds
+  no resume point. A follow-up turn is not affected: the release saves the
+  sequence's newest state with its pages, and the follow-up resumes there.
+  On 2026-11-01, before that release save, ten 134K-token conversations left
+  12,900 page files and no state, and both the oldest and the newest resent
+  after a swap with `cached_tokens` 0 in 132 s and 129 s, the same as their
+  first prefill. The pass already holds a usable checkpoint: when
+  `K3StreamedKdaNode` composes the gathered node summaries in order, every
+  rank has its own head shard's state at each node boundary, and the
+  gathered convolution tails give the windows there, so the start of the last
+  node's rows (126,720 for a 133,656-token prompt, a whole number of pages)
+  costs one copy per KDA layer. Two parts are missing: the stage runner has no
+  way to hand that state to the binding as the checkpoint of its page (the
+  binding stages only the lane's current state), and the API marks a deferred
+  block stateless when it sends it and learns no resume point afterwards. Close
+  it by capturing that state in the pass, staging it through the binding,
+  reporting the checkpoint in the completion of the wave after the deferred
+  tokens so the API marks the block resumable, and proving it with the same
+  resend restoring with `cached_tokens` at the boundary and tokens equal to the
+  first run. Splitting the deferral at a stride multiple instead would run up
+  to 16,383 tail tokens as waves at long context on every long prompt.
+- The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
+  The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
+  it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
+  in 7.2 s and 13,257 pages in 2.2 s, GLM-5.3 Full made 620 restores and
+  DeepSeek V4.1 Flash restored 4,212 pages. K3 had filled its 8 GiB per rank
+  (about ten 500K-token conversations, at roughly 1.9 KB per token per rank).
+  The store now spreads its files over 256 identity shards, because one ext4
+  directory without `large_dir` refuses new names near 1.8 million entries
+  (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
+  to its parent and its orphans through one hash chain instead of a scan of
+  the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
+  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
+  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
+  per rank for the four core models and 64 GiB for the others. Not yet proven
+  on the fleet: a K3 store past 8 GiB that restores an older 500K
+  conversation with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
+  in under 15 s; a store at its budget that keeps the newest conversations
+  whole while older ones go tip-first; and the first open that removes the
+  previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens

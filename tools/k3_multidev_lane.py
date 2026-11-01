@@ -159,6 +159,8 @@ def kv_backing_minimum(topology: str, physical_pages: int, logical_pages: int) -
 def state_memory_minimum(topology: str, sequences: int) -> int:
     return (2 * sequences + 2) * recurrent_page_bytes(topology)
 DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
+K3_OUTPUT_VOCABULARY = 163840
+KV_PARTITION_RESERVE_BYTES = 512 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 MAX_ROWS = 2048
 
@@ -303,6 +305,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
             "kv_snapshot_maximum_bytes": kv_snapshot_bytes,
+            "kv_partition_reserve_bytes": KV_PARTITION_RESERVE_BYTES,
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
@@ -346,6 +349,7 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "resident_sequence_capacity": sequences,
             "kv_logical_page_capacity": logical_pages if logical_pages is not None else sequences * kv_pages,
             "kv_physical_page_capacity": physical_pages if physical_pages is not None else sequences * kv_pages,
+            "output_vocabulary": K3_OUTPUT_VOCABULARY,
         },
         "chat_template": chat_template(),
         **({"tokenizer": {"path": TOKENIZER_ASSET, "sha256": tokenizer_sha256,

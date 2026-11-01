@@ -157,9 +157,10 @@ orders an hour, and each email for 5 codes an hour.
   lot lasts `market.validityMonths` (12) months from issue; there is no
   holding limit.
 
-- A Plan Order is taken online only when `SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO`
-  and `SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN` hold our full notice address,
-  which every Plan Order states, and never in the sandbox. Its Start Date
+- A Plan Order is taken online on the live service, never in the sandbox,
+  and states as our notice address `SUPPLIER` in `tools/sparkpipe_pay.py`,
+  the registered address the Customer Agreement and the Hour Market Rules
+  publish (`test_pay` checks they match). Its Start Date
   is from `plans.earliestStart` (or today) to `plans.startWithinDays` (60)
   days ahead, its fleets at most `plans.maxFleets`, its term one of
   `plans.terms` (Monthly, 1, 2 or 3 years; there is no 3-month term), its
@@ -453,10 +454,7 @@ sudo install -m 644 deployment/vps/rspamd-dkim_signing.conf /etc/rspamd/local.d/
 
 Fill `COINPAYMENTS_CLIENT_ID` in `/etc/sparkpipe-pay/env` and put the
 client secret into `/etc/sparkpipe-pay/client_secret` by copying a file,
-never on a command line. Put our full registered address, in Korean and in
-English, in `SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO` and
-`SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN`: every Plan Order states it as our
-notice address, and online Plan Orders stay closed until both are set. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
+never on a command line. `sparkpipe-ai-ssl.conf` is sparkpipe.ai's port-443
 virtual host and includes `sparkpipe-pay.conf` beside the other
 `deployment/vps` includes; `mod_proxy_http` must be on. Copy `site/` to `/var/www/html` as usual, including
 `site/terms/`: the acceptance names `https://sparkpipe.ai/terms/agreement-ko.md`,

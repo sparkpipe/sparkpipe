@@ -842,6 +842,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 	kv.snapshot_directory = configuration->kv_snapshot_directory;
 	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
+	kv.partition_reserve_bytes = configuration->kv_partition_reserve_bytes;
 	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1033,6 +1034,7 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->runner_config.max_active_sequence_count : model->descriptor->max_verify_row_count;
 	if ( state->runner_config.head_row_capacity > state->max_rows )
 		state->runner_config.head_row_capacity = state->max_rows;
+	state->runner_config.output_vocabulary = configuration->runtime_limits.output_vocabulary;
 	fprintf(stderr, "%s adapter: rows=%u shared_rows=%u head_rows=%u\n", model->module_tag, state->max_rows,
 		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;

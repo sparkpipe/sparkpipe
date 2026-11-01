@@ -87,6 +87,7 @@ CODE_TRIES = 5
 PENDING_SECONDS = 86400
 RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
+SUPPLIER = {"ko": "서울특별시 용산구 한강대로 95, 비동 1522호(한강로2가, 래미안용산더센트럴)", "en": "Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea"}
 LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "lead": (5, 3600), "plan": (60, 3600), "read": (240, 600), "market": (240, 600), "pool": (600, 600)}
 
 
@@ -342,7 +343,7 @@ class Config:
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
         self.notify = env.get("SPARKPIPE_PAY_NOTIFY", "hyor@sparkpipe.ai")
-        self.supplier = {"ko": env.get("SPARKPIPE_PAY_SUPPLIER_ADDRESS_KO", "").strip(), "en": env.get("SPARKPIPE_PAY_SUPPLIER_ADDRESS_EN", "").strip()}
+        self.supplier = dict(SUPPLIER)
 
     def path(self, name):
         return os.path.join(self.data, name)
@@ -1265,8 +1266,6 @@ class App:
     def plans_open(self):
         if self.cfg.sandbox:
             raise Refusal("Plan Orders are placed on the live service, not in the sandbox.", 404)
-        if not (self.cfg.supplier["ko"] and self.cfg.supplier["en"]):
-            raise Refusal("Online Plan Orders are not open yet. Ask us for a quote, or write to hyor@sparkpipe.ai.", 503, "plans_closed")
 
     def customer_field(self, value, record):
         value = value if isinstance(value, dict) else {}

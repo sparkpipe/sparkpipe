@@ -305,6 +305,27 @@ snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
 DRAM tier ([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
 
+The snapshot store spreads its files over 256 subdirectories by prefix
+identity, so one store holds tens of millions of page files; a single ext4
+directory without `large_dir` stops near 1.8 million. Linking a page to its
+parent and its orphans costs one hash chain, not a scan of the index, and the
+startup scan reads the shards on eight threads. Each store has a byte budget
+(`kv_snapshot_bytes` in [`deployment/lanes.json`](deployment/lanes.json):
+256 GiB per rank for K3, GLM-5.3 Full, GLM-5.3 Flash and DeepSeek V4.1 Flash,
+64 GiB for the other models). Every store also keeps the node's
+`kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
+write it evicts its oldest files until the partition holds the reserve plus
+the new file, and refuses the write when nothing is left to evict, so KV never
+fills the system drive.
+
+For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
+attention), a resume point is a page with its state saved beside it: one
+state on every checkpoint stride (`cache_checkpoint_token_count`, 16,384
+tokens for K3, 4,096 for GLM-5.3 Flash) and the newest state of every
+released sequence. The release saves that newest state with the pages, so a
+follow-up turn resumes at the end of the previous one after a restart or a
+model swap.
+
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
 - Attention heads and recurrent state are split by head.
@@ -398,6 +419,15 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+Greedy, sampled and logprob tokens come only from ids the tokenizer can
+decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
+and Flash by 24 ids, Ling 3.0 by 31, Qwen 3.8 by 243, MiMo V2.6 by 901. Every
+deployment names `runtime_limits.output_vocabulary`, and the lane tool sets
+it to the tokenizer's vocabulary. Each rank's final head scores only its
+rows below that limit, and the top-p/top-k sampler ranks only tokens below
+it. The engines report the limit in their hello, and the API refuses a
+deployment whose limit differs from its tokenizer's vocabulary.
 
 **Evidence domains.** Each of these is separate:
 

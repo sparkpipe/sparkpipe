@@ -2,7 +2,7 @@
 
 ## Parties
 
-These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request ("**we**"), and each company, professional or independent developer whose account takes part in the Hour Market ("**Customer**").
+These Rules are made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809, of Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea ("**we**"), and each company, professional or independent developer whose account takes part in the Hour Market ("**Customer**").
 
 ## 1. Scope
 

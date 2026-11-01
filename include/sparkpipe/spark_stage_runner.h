@@ -96,6 +96,7 @@ typedef struct SparkStageRunnerConfiguration
 	uint32_t linear_weight_codec;
 	uint32_t max_shared_row_count;
 	uint32_t head_row_capacity;
+	uint32_t output_vocabulary;
 	SparkStageRunnerStreamedPrefillConfig streamed_prefill;
 } SparkStageRunnerConfiguration;
 

@@ -2,7 +2,7 @@
 
 ## Parties
 
-This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, of Yongsan-gu, Seoul, Republic of Korea, whose full address we give on request and in each Plan Order ("**we**"), and the company, professional or independent developer identified in the account that accepts it ("**Customer**"). A Plan Order identifies Customer by its legal name and address, and a company also by its jurisdiction of incorporation and registration number.
+This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, of Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea ("**we**"), and the company, professional or independent developer identified in the account that accepts it ("**Customer**"). A Plan Order identifies Customer by its legal name and address, and a company also by its jurisdiction of incorporation and registration number.
 
 ## Part 1. General
 
