@@ -68,14 +68,14 @@
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
-    <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither.</p>
-    <p>Our system publishes live capacity, with each fleet's state, whether it is the demo fleet, pinned or free, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither. If both nodes of a pair fail together, their part of the cache has to be rebuilt, and the Customer Agreement credits 24 hours of the fleet for each such event (clause 6.6). Customer storage is working space: back up daily anything you want to keep.</p>
+    <p>Our system publishes live capacity, with each fleet's state, whether it is the demo fleet, pinned or available, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
 
   <section id="models">
     <h2>Models on Fleet 1</h2>
-    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet holds one model at a time: a request for a model the fleet has not loaded waits while the fleet switches, usually 20 to 80 seconds. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
+    <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet keeps as many models loaded at once as fit in its memory. A request for a model that is not loaded waits while it loads, usually 20 to 80 seconds. Loading it unloads another model only if they do not all fit, and the unloaded model's cache is kept for when it comes back. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
     <div class="scroll">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 8K prompt</th><th>Track</th><th>Availability</th></tr>

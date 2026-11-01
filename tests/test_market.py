@@ -332,7 +332,7 @@ def holders_and_maintenance(failures, app, m, port, state):
     if [h["start"] for h in found["hours"]] != [slot(kst(2027, 1, 17, h)) for h in (21, 22, 23)] + [slot(kst(2027, 1, 18, h)) for h in (3, 4)]:
         failures.append(f"the holder feed lists maintenance hours as held: {found}")
     status, kind, raw = call(port, "GET", "/availability.txt")
-    if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving demo\nF3 serving pinned\nF4 serving free\nF5 serving free\nwaitlist locks 3\n"):
+    if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving demo\nF3 serving pinned\nF4 serving available\nF5 serving available\nwaitlist locks 3\n"):
         failures.append(f"availability.txt: {status} {kind} {raw[-120:]!r}")
     if client(app, port, C)("POST", "/market/sandbox/clock", {"hours": 1})[0] != 404:
         failures.append("the live service moves its clock")
