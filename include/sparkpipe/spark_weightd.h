@@ -348,6 +348,9 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #define SPARK_WEIGHTD_KV_POOL_KEY_BYTES 32u
 #define SPARK_WEIGHTD_KV_POOL_LABEL_BYTES 64u
 #define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
+#define SPARK_WEIGHTD_MEMINFO_PATH "/proc/meminfo"
+#define SPARK_WEIGHTD_KV_EARLYOOM_PERCENT 2u
+#define SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES (4ull << 30)
 
 typedef struct SparkWeightdIdentity
 {
@@ -1043,6 +1046,7 @@ typedef struct SparkWeightdServerConfig
     uint64_t kv_reserve_bytes;
     uint64_t load_pace_bytes_per_second;
     uint64_t kv_shared_window_bytes;
+    const char *meminfo_path;
 } SparkWeightdServerConfig;
 
 typedef struct SparkWeightdServer SparkWeightdServer;
@@ -1386,6 +1390,9 @@ SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,
     const SparkWeightdKvSharedRequest *request,SparkWeightdKvSharedGrant *grant,
     uint64_t timeout_nanoseconds);
 uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
+SparkStatus SparkWeightdMemInfoRead(const char *path,uint64_t *total_bytes,uint64_t *available_bytes);
+uint64_t SparkWeightdKvMemoryMargin(uint64_t total_bytes);
+uint64_t SparkWeightdServerKvMarginBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns);
 

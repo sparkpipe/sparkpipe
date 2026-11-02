@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tests/test_weightd_kv_server.h"
+#include "tests/test_stderr_capture.h"
 
 #define TEST_BLOCK 4u
 #define TEST_POSITIONS 8u
@@ -261,14 +262,29 @@ static uint64_t CommittedChunks(void)
 static void TestLayoutAndAttach(void)
 {
 	TestPoolView a;
+	TestStderrCapture capture;
+	uint32_t round;
+	char *text;
+	TestStderrCaptureBegin(&capture);
 	assert(SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration) == SPARK_STATUS_OK);
+	text = TestStderrCaptureEnd(&capture);
+	assert(strstr(text,"kvpoola kv capacity pages=2/16 tokens=64 margin_bytes=") != 0 && strstr(text," event=attach resident_tokens=8 chunks=4/17") != 0);
+	free(text);
 	assert(ENGINE_A.binding.kv_pool.chunk_bytes == TEST_CHUNK_BYTES && ENGINE_A.binding.kv_pool.chunk_capacity == TEST_POOL_CHUNKS);
 	assert(ENGINE_A.binding.kv_pool_minimum_chunks == TEST_MINIMUM_CHUNKS);
 	assert(ENGINE_A.binding.kv_pool_chunk_need[0] == 0u && ENGINE_A.binding.kv_pool_chunk_need[TEST_MINIMUM_CHUNKS - 1u] <= ENGINE_A.binding.pages_per_sequence);
 	assert(ENGINE_A.binding.kv_pool_chunk_need[TEST_MINIMUM_CHUNKS] > ENGINE_A.binding.pages_per_sequence);
 	a = EngineView(&ENGINE_A);
-	assert(a.chunks == TEST_POOL_CHUNKS && a.pages == TEST_PHYSICAL && CommittedChunks() == TEST_POOL_CHUNKS);
-	printf("pool layout: the page table maps first, region chunks map in page order so any granted prefix of chunks serves a page prefix, the minimum is one full sequence, an uncontended pool takes its whole size\n");
+	assert(a.chunks == TEST_MINIMUM_CHUNKS && CommittedChunks() == TEST_MINIMUM_CHUNKS && a.grows == 0u);
+	assert(a.pages >= ENGINE_A.binding.pages_per_sequence && a.pages < TEST_PHYSICAL);
+	for (round=0u; round<TEST_WAIT_MS / 10u && a.chunks < TEST_POOL_CHUNKS; round++)
+	{
+		EnginePublish(&ENGINE_A,(uint8_t)(0x40u + round));
+		SleepMs(10u);
+		a = EngineView(&ENGINE_A);
+	}
+	assert(a.chunks == TEST_POOL_CHUNKS && a.pages == TEST_PHYSICAL && CommittedChunks() == TEST_POOL_CHUNKS && a.grows >= 1u);
+	printf("pool layout: the page table maps first, region chunks map in page order so any granted prefix of chunks serves a page prefix, the minimum is one full sequence, a pool attaches with its minimum and grows on demand to its whole size\n");
 }
 
 static void TestSecondEngineReclaimsMinimum(void)

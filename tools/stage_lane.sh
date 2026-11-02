@@ -77,7 +77,7 @@ render() {
   fi
   python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" \
     --sequences "${STAGE_SEQUENCES:-8}" --rows "${STAGE_ROWS:-1024}" --kv-pages "${STAGE_KV_PAGES:-64}" \
-    ${STAGE_KV_PHYSICAL_PAGES:+--kv-physical-pages "$STAGE_KV_PHYSICAL_PAGES"} \
+    ${STAGE_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$STAGE_KV_PHYSICAL_PAGES_CAP"} \
     ${STAGE_KV_LOGICAL_PAGES:+--kv-logical-pages "$STAGE_KV_LOGICAL_PAGES"} \
     ${STAGE_KV_BACKING_BYTES:+--kv-backing-bytes "$STAGE_KV_BACKING_BYTES"} \
     ${STAGE_STATE_BUDGET_BYTES:+--state-budget-bytes "$STAGE_STATE_BUDGET_BYTES"} \

@@ -4250,6 +4250,7 @@ SparkStatus SparkModelBatchEngineGetView(
 	view->kv_logical_page_capacity = engine->kv_logical_page_capacity;
 	view->failed_status = engine->failed_status;
 	view->context_limit = engine->context_tokens;
+	view->cache_block_token_count = engine->cache_block_token_count;
 	view->submitted_request_count = engine->submitted_request_count;
 	view->completed_request_count = engine->completed_request_count;
 	view->cancelled_request_count = engine->cancelled_request_count;

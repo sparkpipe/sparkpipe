@@ -49,6 +49,7 @@ static void *SparkTestServerThreadMain(void *raw_context)
 }
 
 static uint64_t spark_test_kv_shared_window_bytes;
+static const char *spark_test_meminfo_path;
 
 static void SparkTestStartServerReserve(SparkTestServerThread *thread_context,
     pthread_t *thread_handle,
@@ -62,6 +63,7 @@ static void SparkTestStartServerReserve(SparkTestServerThread *thread_context,
     config.device_bytes_max = ceiling_bytes;
     config.kv_reserve_bytes = kv_reserve_bytes;
     config.kv_shared_window_bytes = spark_test_kv_shared_window_bytes;
+    config.meminfo_path = spark_test_meminfo_path;
     assert(SparkWeightdServerCreate(&config, &thread_context->server) ==
         SPARK_STATUS_OK);
     thread_context->stop = 0;
@@ -1224,7 +1226,7 @@ static void SparkTestKvPools(void)
     SparkTestAttach(holder,&request,&attach);
     assert(attach.status == SPARK_STATUS_OK);
     SparkTestConnect(&first,socket_path,0ull);
-    assert(SparkTestKvAttach(first,0x31,SPARK_TEST_KV_CHUNK_BYTES + 1u,SPARK_TEST_KV_CHUNK_BYTES,4096u,&grant) == SPARK_STATUS_OK);
+    assert(SparkTestKvAttach(first,0x31,SPARK_TEST_KV_CHUNK_BYTES + 1u,SPARK_TEST_KV_CHUNK_BYTES + 1u,4096u,&grant) == SPARK_STATUS_OK);
     assert(grant.reattached == 0u && grant.pool_generation != 0u && grant.chunk_capacity == 2u && grant.chunk_count == 2u && grant.chunk_bytes == SPARK_TEST_KV_CHUNK_BYTES);
     assert(grant.device_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES && grant.metadata_bytes == 4096u && grant.metadata_fd >= 0);
     assert(grant.kv_reserve_bytes == 3u * SPARK_TEST_KV_CHUNK_BYTES && grant.kv_committed_bytes == 2u * SPARK_TEST_KV_CHUNK_BYTES);
@@ -1450,10 +1452,10 @@ static void SparkTestKvLending(void)
     SparkTestDetachCold(weights,attach.arena_generation);
     SparkTestAttach(small_holder,&small,&attach);
     assert(attach.status == SPARK_STATUS_OK && attach.arena_count == 2u && attach.resident_bytes == 5u * chunk);
-    text = SparkTestCaptureKvAttach(lender,0x61,6u * chunk,4u * chunk,SPARK_STATUS_OK,&lent);
+    text = SparkTestCaptureKvAttach(lender,0x61,6u * chunk,6u * chunk,SPARK_STATUS_OK,&lent);
     assert(lent.chunk_count == 6u && lent.chunk_capacity == 6u && SparkWeightdServerKvCommittedBytes(context.server) == 6u * chunk);
     assert(SparkWeightdServerArenaCount(context.server) == 1u && SparkWeightdServerResidentBytes(context.server) == chunk);
-    (void)snprintf(expected,sizeof(expected),"kv_committed=%llu kv_reserve=%llu kv_limit=%llu\n",(unsigned long long)(6u * chunk),(unsigned long long)(3u * chunk),
+    (void)snprintf(expected,sizeof(expected),"kv_committed=%llu kv_reserve=%llu kv_limit=%llu margin_bytes=",(unsigned long long)(6u * chunk),(unsigned long long)(3u * chunk),
         (unsigned long long)(7u * chunk));
     assert(strstr(text,"weightd kv pool attached label=kvpool-test") != 0 && strstr(text,expected) != 0);
     free(text);
@@ -1566,6 +1568,94 @@ static void SparkTestKvLendingFullArenaTable(void)
         (void)unlink(pack_paths[index]);
     (void)unlink(socket_path);
     printf("weightd kv lending with a full arena table: a KV grow frees just the coldest idle arenas it needs and the attached arena moved by the frees still detaches and hits, a refilled table frees the coldest idle arena for a new pack, and the regrow reclaims the next coldest\n");
+}
+
+static void SparkTestWriteMeminfo(const char *path,uint64_t total,uint64_t available)
+{
+    FILE *file = fopen(path,"w");
+    assert(file != 0);
+    fprintf(file,"MemTotal:       %llu kB\nMemFree:        4 kB\nMemAvailable:   %llu kB\n",(unsigned long long)(total / 1024u),(unsigned long long)(available / 1024u));
+    assert(fclose(file) == 0);
+}
+
+static char *SparkTestCaptureKvResize(SparkWeightdClient *client,uint64_t generation,uint32_t target,SparkWeightdKvPoolState *state)
+{
+    TestStderrCapture capture;
+    TestStderrCaptureBegin(&capture);
+    assert(SparkWeightdClientKvPoolResize(client,generation,target,state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    return(TestStderrCaptureEnd(&capture));
+}
+
+static void SparkTestKvMemoryMargin(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_kv_margin.sock";
+    const char *meminfo = "/tmp/spark_weightd_test_kv_margin.meminfo";
+    const char *pack_path = "/tmp/spark_weightd_test_kv_margin.spack";
+    const uint64_t chunk = SPARK_TEST_KV_CHUNK_BYTES,total = 100ull << 30;
+    const uint64_t margin = total / 100u * SPARK_WEIGHTD_KV_EARLYOOM_PERCENT + SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES;
+    SparkWeightdAttachRequest small;
+    SparkWeightdAttachResult attach;
+    SparkWeightdKvPoolGrant grant,starved;
+    SparkWeightdKvPoolState state;
+    SparkWeightdClient *weights = 0,*kv = 0,*late = 0;
+    SparkTestServerThread context;
+    pthread_t thread;
+    char expected[192];
+    char *text;
+
+    assert(SPARK_WEIGHTD_KV_EARLYOOM_PERCENT == 2u && SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES == 4ull << 30);
+    SparkTestWriteMeminfo(meminfo,total,margin + 3u * chunk);
+    spark_test_meminfo_path = meminfo;
+    SparkTestPackRequest(pack_path,71u,chunk,"kv-margin",&small);
+    (void)unlink(socket_path);
+    SparkTestStartServerReserve(&context,&thread,socket_path,16u * chunk,2u * chunk);
+    assert(SparkWeightdServerKvMarginBytes(context.server) == margin);
+    SparkTestConnect(&weights,socket_path,0ull);
+    SparkTestConnect(&kv,socket_path,0ull);
+    SparkTestConnect(&late,socket_path,0ull);
+    SparkTestAttach(weights,&small,&attach);
+    assert(attach.status == SPARK_STATUS_OK);
+
+    assert(SparkTestKvAttach(kv,0x81,16u * chunk,chunk,0u,&grant) == SPARK_STATUS_OK);
+    assert(grant.chunk_capacity == 16u && grant.chunk_count == 1u && SparkWeightdServerKvCommittedBytes(context.server) == chunk);
+    text = SparkTestCaptureKvResize(kv,grant.pool_generation,16u,&state);
+    assert(state.chunk_count == 4u && state.wanted_chunks == 12u);
+    (void)snprintf(expected,sizeof(expected),"chunks=1->4 of 16 wanted=12 reason=memory_margin");
+    assert(strstr(text,"weightd kv capacity refused label=kvpool-test") != 0 && strstr(text,expected) != 0);
+    (void)snprintf(expected,sizeof(expected),"mem_available=%llu margin_bytes=%llu\n",(unsigned long long)(margin + 3u * chunk),(unsigned long long)margin);
+    assert(strstr(text,expected) != 0);
+    free(text);
+    text = SparkTestCaptureKvResize(kv,grant.pool_generation,16u,&state);
+    assert(state.chunk_count == 7u && strstr(text,"chunks=4->7 of 16 wanted=9 reason=memory_margin") != 0);
+    free(text);
+
+    SparkTestWriteMeminfo(meminfo,total,margin + 64u * chunk);
+    text = SparkTestCaptureKvResize(kv,grant.pool_generation,16u,&state);
+    assert(state.chunk_count == 15u && state.wanted_chunks == 1u && SparkWeightdServerKvCommittedBytes(context.server) == 15u * chunk);
+    assert(strstr(text,"chunks=7->15 of 16 wanted=1 reason=kv_limit") != 0);
+    free(text);
+
+    assert(SparkWeightdClientKvPoolResize(kv,grant.pool_generation,8u,&state,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && state.chunk_count == 8u);
+    SparkTestWriteMeminfo(meminfo,total,margin - 1u);
+    text = SparkTestCaptureKvAttach(late,0x82,2u * chunk,chunk,SPARK_STATUS_OK,&starved);
+    assert(starved.chunk_count == 0u && SparkWeightdServerKvCommittedBytes(context.server) == 8u * chunk);
+    assert(strstr(text,"chunks=0->0 of 2 wanted=1 reason=memory_margin") != 0);
+    free(text);
+    text = SparkTestCaptureKvResize(kv,grant.pool_generation,16u,&state);
+    assert(state.chunk_count == 8u && strstr(text,"chunks=8->8 of 16 wanted=8 reason=memory_margin") != 0);
+    free(text);
+
+    SparkTestKvGrantClose(&grant);
+    SparkTestKvGrantClose(&starved);
+    SparkWeightdClientClose(weights);
+    SparkWeightdClientClose(kv);
+    SparkWeightdClientClose(late);
+    SparkTestStopServer(&context,thread);
+    spark_test_meminfo_path = 0;
+    (void)unlink(socket_path);
+    (void)unlink(meminfo);
+    (void)unlink(pack_path);
+    printf("weightd kv memory margin: the margin is earlyoom's 2%% of MemTotal plus 4 GiB, a pool attaches with its minimum, a grow stops where MemAvailable would cross the margin and at the KV limit, each refusal logs its reason, and a pool below the margin waits for its minimum\n");
 }
 
 static uint64_t SparkTestMonotonicNs(void)
@@ -1864,6 +1954,7 @@ int main(void)
     SparkTestKvPools();
     SparkTestKvLending();
     SparkTestKvLendingFullArenaTable();
+    SparkTestKvMemoryMargin();
     SparkTestKvDetachedRetention();
     SparkTestKvSharedPools();
     SparkTestKvAttachRollsBackOnFdFailure();

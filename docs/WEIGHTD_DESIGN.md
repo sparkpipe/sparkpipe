@@ -1505,11 +1505,33 @@ one budget, `device_bytes_max`, under these rules
   sequence fits where the reserve alone could not. A model whose budget
   leaves less than the reserve keeps the reserve.
   Without a reserve the limit is 0 and every pool is refused.
-- **What a grow gets** (`SparkWeightdKvFreeBytes`). The smaller of the
-  limit less the committed KV and the device bytes that neither weights nor
-  KV hold. A pool attaches with up to its full size and at least asks for its
-  minimum; chunks it cannot get are recorded as `wanted_chunks`, which other
-  pools see as `reclaim_wanted_bytes` and give back by shrinking.
+- **What a grow gets** (`SparkWeightdKvFreeBytes`). The smallest of the
+  limit less the committed KV, the device bytes that neither weights nor KV
+  hold, and the node's `MemAvailable` less the memory margin. A pool
+  attaches with its minimum (one full-length sequence for an engine) and
+  grows on demand, chunk by chunk, as its engine asks (`KV_POOL_RESIZE`); it
+  never fills the node at attach, so a model swap or a second engine finds
+  the room an idle pool would otherwise hold. Chunks a grow cannot get are
+  recorded as `wanted_chunks`, which other pools see as
+  `reclaim_wanted_bytes` and give back by shrinking.
+- **Memory margin** (`SparkWeightdKvMemoryMargin`). The Sparks share one
+  unified memory between the CPU and the GPU, so every KV chunk lowers
+  `MemAvailable`. A grow stops where `MemAvailable` would fall below the
+  margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (2) percent of `MemTotal` plus
+  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB), both compile-time
+  constants. The 2 % is the fleet's earlyoom line (`earlyoom -m 2`, set by the
+  owner on all 16 nodes on 2026-11-02; [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)
+  records it from PR #1719): earlyoom sends SIGTERM below 2 % and SIGKILL
+  below 1 %, so KV growth must
+  never reach it. The 4 GiB is headroom for what grows after a KV grant
+  without asking weightd: the KV snapshot writer's staging, page cache
+  writeback and API request bursts. It is chosen, not measured; the fleet
+  gate records the minimum `MemAvailable` under full KV. weightd reads
+  `MemTotal` from `/proc/meminfo` at start (`weightd kv memory
+  margin_bytes=` in its log; 6,864,027,484 bytes on a 119.6 GiB Spark) and
+  `MemAvailable` at every grow. When the file gives neither, every grow is
+  refused. Tests point `SparkWeightdServerConfig.meminfo_path` at a
+  fabricated file; the daemon itself always reads `/proc/meminfo`.
 - **Making room for KV** (`SparkWeightdKvMakeRoom`). A grow first releases
   detached pools, oldest first (`reason=evicted_detached`), never the pool
   that grows. If the room is still short and the grow passes the reserve, it
@@ -1524,7 +1546,14 @@ one budget, `device_bytes_max`, under these rules
   and the swap controller's `KV_POOL_DROP` of the stopped model frees it at a
   switch.
 - **Logs**. `kv pool attached`, `kv pool resized` and `kv shared pool
-  attached` carry `kv_committed`, `kv_reserve` and `kv_limit`. A refused
+  attached` carry `kv_committed`, `kv_reserve` and `kv_limit`, and the
+  attach also `margin_bytes`. Every grow logs `weightd kv capacity` with the
+  chunks before and after, `mem_available` and `margin_bytes`; a grow short
+  of its target logs `weightd kv capacity refused` with
+  `reason=kv_limit|ceiling|memory_margin|allocation_failed`, once per pool
+  until the reason or the chunk count changes. The engine logs
+  `kv capacity pages=<now>/<max> tokens=<max tokens> margin_bytes=<m>
+  event=attach|grew|refused` from its binding. A refused
   pool prints its minimum, the limit, the reserve and the attached arenas'
   budget against the ceiling; a refused weight attach prints the bytes it
   needs, the resident bytes, the arena ceiling, the arena table and
