@@ -134,3 +134,38 @@ static void Kept(uint32_t rows, std::vector<uint32_t> *kept)
 	kept->push_back(rows);
 }
 
+static uint8_t E4m3(float value)
+{
+	static float decoded[0x7fu];
+	static uint32_t ready = 0u;
+	const float magnitude = fabsf(value);
+	uint32_t low = 0u, high = 0x7eu;
+	if ( ready == 0u )
+	{
+		for ( uint32_t code = 0u; code < 0x7fu; ++code )
+			decoded[code] = (code >> 3u) == 0u ? ldexpf((float)(code & 7u) / 8.0f, -6) : ldexpf(1.0f + (float)(code & 7u) / 8.0f, (int)(code >> 3u) - 7);
+		ready = 1u;
+	}
+	while ( low < high )
+	{
+		const uint32_t middle = (low + high) / 2u;
+		if ( decoded[middle] < magnitude )
+			low = middle + 1u;
+		else
+			high = middle;
+	}
+	if ( low > 0u && magnitude - decoded[low - 1u] <= decoded[low] - magnitude )
+		low--;
+	return (uint8_t)(low | (value < 0.0f ? 0x80u : 0u));
+}
+
+static uint8_t *Device(const void *host, uint64_t bytes)
+{
+	void *device = 0;
+	if ( cudaMalloc(&device, bytes) != cudaSuccess || cudaMemcpy(device, host, bytes, cudaMemcpyHostToDevice) != cudaSuccess )
+	{
+		printf("FAIL weight allocation of %llu bytes\n", (unsigned long long)bytes);
+		exit(1);
+	}
+	return (uint8_t *)device;
+}

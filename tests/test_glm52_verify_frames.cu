@@ -53,35 +53,6 @@ struct SmallAxk2 : Axk2Geometry
 	static const char *Tag(void) { return "a.x-k2"; }
 };
 
-static uint8_t E4m3(float value)
-{
-	const float magnitude = fabsf(value);
-	uint8_t best = 0u;
-	float error = INFINITY;
-	for ( uint32_t code = 0u; code < 0x7fu; ++code )
-	{
-		const uint32_t exponent = code >> 3u, mantissa = code & 7u;
-		const float decoded = exponent == 0u ? ldexpf((float)mantissa / 8.0f, -6) : ldexpf(1.0f + (float)mantissa / 8.0f, (int)exponent - 7);
-		if ( fabsf(decoded - magnitude) < error )
-		{
-			error = fabsf(decoded - magnitude);
-			best = (uint8_t)code;
-		}
-	}
-	return (uint8_t)(best | (value < 0.0f ? 0x80u : 0u));
-}
-
-static uint8_t *Device(const void *host, uint64_t bytes)
-{
-	void *device = 0;
-	if ( cudaMalloc(&device, bytes) != cudaSuccess || cudaMemcpy(device, host, bytes, cudaMemcpyHostToDevice) != cudaSuccess )
-	{
-		printf("FAIL weight allocation of %llu bytes\n", (unsigned long long)bytes);
-		exit(1);
-	}
-	return (uint8_t *)device;
-}
-
 static const uint8_t *Fp8Block(uint64_t groups, uint64_t rows, uint64_t columns, uint64_t *payload_bytes)
 {
 	const uint64_t blocks = (columns + 127u) / 128u, payload = groups * rows * columns;
