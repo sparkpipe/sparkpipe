@@ -526,9 +526,14 @@ static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 		counts[lane]++;
 	}
 	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( counts[lane] == 0u || submission->lanes[lane].context_token_count != submission->lanes[lane].sequence_position + counts[lane] ||
-			(submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
+		if ( counts[lane] == 0u || submission->lanes[lane].context_token_count != submission->lanes[lane].sequence_position + counts[lane] )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkModelServingVerifyPublishLane(submission) != UINT32_MAX )
+	{
+		fprintf(stderr,"serving adapter: verify submission %llu refused: lane %u publishes cache blocks, and a verify frame's rows past the accepted ones are not part of the sequence\n",
+			(unsigned long long)submission->submission_id,SparkModelServingVerifyPublishLane(submission));
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	return(SPARK_STATUS_OK);
 }
 

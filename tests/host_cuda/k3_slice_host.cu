@@ -70,7 +70,7 @@ static float retention[ROWS * K3_KDA_HEADS * K3_KDA_KEY_DIM];
 static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
 static float layer_router_bias[SLICE_LAYERS][K3_EXPERTS];
 static float route_weight[ROUTES];
-static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES];
+static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES], route_fault;
 static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
 static uint32_t group_tiles_down[K3_EXPERTS + 1u];
 static uint32_t dense_offsets[2], dense_tiles[2];
@@ -206,7 +206,7 @@ int main(void)
 	b.kda_beta_logit = beta_logit; b.kda_write_gate_out = write_gate;
 	b.kda_retention = retention;
 	b.router_logits = router_logits; b.router_bias = router_bias;
-	b.route_expert = route_expert; b.route_weight = route_weight;
+	b.route_expert = route_expert; b.route_weight = route_weight; b.route_fault = &route_fault;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
 	b.group_row_offset = group_offsets; b.group_tile_prefix_w1 = group_tiles;
 	b.group_tile_prefix_w2 = group_tiles_down;

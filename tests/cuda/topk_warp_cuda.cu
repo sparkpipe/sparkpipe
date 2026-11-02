@@ -84,7 +84,7 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t ties,uint32_t with_bias)
 	std::vector<float> logits((uint64_t)rows * n),bias(n),values[2];
 	std::vector<uint32_t> indices[2];
 	float *device_logits,*device_bias,*device_values;
-	uint32_t *device_indices,index,kernel,state = 12345u + rows * 31u + n + ties;
+	uint32_t *device_indices,*device_fault,index,kernel,state = 12345u + rows * 31u + n + ties;
 	int failed = probe_failures;
 	char label[96];
 	snprintf(label,sizeof(label),"rows%u n%u ties%u bias%u",rows,n,ties,with_bias);
@@ -100,6 +100,8 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t ties,uint32_t with_bias)
 	}
 	PROBE_CUDA(cudaMalloc((void **)&device_logits,logits.size() * 4u));
 	PROBE_CUDA(cudaMalloc((void **)&device_bias,n * 4u));
+	PROBE_CUDA(cudaMalloc((void **)&device_fault,4u));
+	PROBE_CUDA(cudaMemset(device_fault,0,4u));
 	PROBE_CUDA(cudaMalloc((void **)&device_values,(uint64_t)rows * 8u * 4u));
 	PROBE_CUDA(cudaMalloc((void **)&device_indices,(uint64_t)rows * 8u * 4u));
 	PROBE_CUDA(cudaMemcpy(device_logits,logits.data(),logits.size() * 4u,cudaMemcpyHostToDevice));
@@ -114,7 +116,7 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t ties,uint32_t with_bias)
 			if ( kernel == 0u )
 				ProbeReferenceWarpKernel<8u,true,LM_TOPK_SCORE_SIGMOID><<<rows,LM_WARP_LANES>>>(device_logits,n,device_indices,device_values,with_bias != 0u ? device_bias : 0,0,2.5f);
 			else
-				PROBE_CUDA((LmTopkRouteLaunch<256u,8u,true,LM_TOPK_SCORE_SIGMOID>(rows,device_logits,n,device_indices,device_values,with_bias != 0u ? device_bias : 0,0,2.5f,0)));
+				PROBE_CUDA((LmTopkRouteLaunch<256u,8u,true,LM_TOPK_SCORE_SIGMOID>(rows,device_logits,n,device_indices,device_values,with_bias != 0u ? device_bias : 0,0,2.5f,device_fault,0)));
 		}
 		PROBE_CUDA(cudaDeviceSynchronize());
 		PROBE_CUDA(cudaMemcpy(indices[kernel].data(),device_indices,(uint64_t)rows * 8u * 4u,cudaMemcpyDeviceToHost));
@@ -126,7 +128,7 @@ static void ProbeCase(uint32_t rows,uint32_t n,uint32_t ties,uint32_t with_bias)
 		probe_failures++;
 	}
 	printf("%s %s: warp top-8 indices and weights bitwise equal to the shuffle-reduction warp kernel\n",failed == probe_failures ? "PASS" : "FAIL",label);
-	cudaFree(device_logits); cudaFree(device_bias); cudaFree(device_values); cudaFree(device_indices);
+	cudaFree(device_logits); cudaFree(device_bias); cudaFree(device_values); cudaFree(device_indices); cudaFree(device_fault);
 }
 
 int main(void)

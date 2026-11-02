@@ -1523,6 +1523,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	status = StageServingValidateSubmission(state, submission);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( SparkModelServingVerifyPublishLane(submission) != UINT32_MAX )
+	{
+		fprintf(stderr, "%s adapter: submit refused: lane %u of a verify frame publishes cache blocks, and its recurrent state would be captured before keep_rows\n",
+			state->model->module_tag, SparkModelServingVerifyPublishLane(submission));
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 		return StageServingSubmitNonRow(state, submission);
 	stream = state->runner_config.execution_stream;

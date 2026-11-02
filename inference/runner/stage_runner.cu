@@ -271,6 +271,8 @@ typedef struct SparkStageRunnerState
 	uint64_t *head_maxloc;
 	uint32_t head_last_rows;
 	uint32_t *verify_kept;
+	uint32_t *route_fault_host;
+	uint32_t *route_fault;
 	uint32_t verify_kept_capacity;
 	uint32_t verify_pending;
 	SparkStageRunnerStep verify_step;
@@ -374,6 +376,11 @@ static SparkStatus StageRunnerPrepareOutputs(SparkStageRunnerState *state,
 	const SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration)
 {
 	SparkStatus status = StageRunnerSeedIndices(state, configuration);
+	if ( status == SPARK_STATUS_OK && (cudaHostAlloc((void **)&state->route_fault_host, sizeof(uint32_t), cudaHostAllocMapped) != cudaSuccess ||
+		cudaHostGetDevicePointer((void **)&state->route_fault, state->route_fault_host, 0u) != cudaSuccess) )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK )
+		*(volatile uint32_t *)state->route_fault_host = 0u;
 	return status != SPARK_STATUS_OK ? status : StageRunnerAllocateDistribution(state, runner, configuration);
 }
 
@@ -2248,6 +2255,7 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.sequence_slot = state->deferred_slot;
 	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
+	request.route_fault = state->route_fault;
 	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
@@ -2391,6 +2399,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	in.sequence_row_begin = dispatch->sequence_row_begin;
 	in.sequence_row_indices = dispatch->sequence_row_indices;
 	in.recurrent_index = dispatch->recurrent_index;
+	in.route_fault = state->route_fault;
 	in.gather_context = (dispatch->flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) != 0u && dispatch->active_sequence_count == 1u
 		? dispatch->gather_context : 0u;
 	in.gather_sequence = in.gather_context != 0u ? dispatch->gather_sequence : 0u;
@@ -2728,6 +2737,12 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->route_fault_host != 0 && *(volatile uint32_t *)state->route_fault_host != 0u )
+	{
+		*(volatile uint32_t *)state->route_fault_host = 0u;
+		fprintf(stderr, "sparkpipe_stage_runner: step failed: a router row held fewer finite scores than the experts it routes to\n");
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	return state->model_interface->check != 0 ? state->model_interface->check(state->model) : SPARK_STATUS_OK;
 }
 
@@ -2827,6 +2842,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	cudaFree(state->distribution_logits);
 	cudaFree(state->distribution_gathered);
 	cudaFree(state->verify_kept);
+	cudaFreeHost(state->route_fault_host);
 	delete[] state->output_token_host;
 	delete[] state->output_score_host;
 	cudaFree(state->head_certified_fp8_payload);

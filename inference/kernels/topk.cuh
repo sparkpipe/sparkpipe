@@ -30,6 +30,17 @@ static __device__ __forceinline__ uint32_t LmTopkKey(float value)
 	return(bits ^ ((bits >> 31u) ? 0xffffffffu : 0x80000000u));
 }
 
+static __device__ __forceinline__ uint32_t LmTopkRouteKey(float value)
+{
+	return((__float_as_uint(value) & 0x7f800000u) != 0x7f800000u ? LmTopkKey(value) : 0u);
+}
+
+static __device__ __forceinline__ void LmTopkRouteFault(uint32_t *fault, uint32_t kth_key)
+{
+	if ( kth_key == 0u )
+		*(volatile uint32_t *)fault = 1u;
+}
+
 static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 {
 	uint32_t bits = key ^ ((key >> 31u) ? 0x80000000u : 0xffffffffu);
@@ -42,7 +53,7 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, uint32_t SCORE_TRANSFORM = LM_TOPK_SCORE_IDENTITY>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale)
+void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
 {
 	extern __shared__ uint32_t lm_topk_shared[];
 	uint32_t *keys = lm_topk_shared;
@@ -53,7 +64,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		width <<= 1u;
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
-		keys[index] = index < n ? LmTopkKey(LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16,
+		keys[index] = index < n ? LmTopkRouteKey(LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16,
 			base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
@@ -71,7 +82,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 				if ( value > best ) { second = best; best = value; }
 				else if ( value > second ) second = value;
 			}
-			group_key[group] = LmTopkKey(LmTopkValue(best) + LmTopkValue(second));
+			group_key[group] = LmTopkRouteKey(LmTopkValue(best) + LmTopkValue(second));
 		}
 		__syncthreads();
 		for (group = threadIdx.x; group < GROUPS; group += THREADS)
@@ -114,6 +125,8 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 			}
 			__syncthreads();
 		}
+	if ( threadIdx.x == 0u )
+		LmTopkRouteFault(fault, keys[K - 1u]);
 	for (index = threadIdx.x; index < K; index += THREADS)
 	{
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
