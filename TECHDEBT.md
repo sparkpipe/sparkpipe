@@ -932,14 +932,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
 - Speculation serves on Kimi K3, GLM 5.3 Full, DeepSeek V4.1 Flash, A.X K2,
-  K-EXAONE 2.0, Solar Open 2, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1 and Muse
-  Glimmer 30B, whose adapters declare
+  K-EXAONE 2.0, Solar Open 2, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1, Muse
+  Glimmer 30B and Qwen 3.8 Max, 27B and Flash, whose adapters declare
   `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash, MiMo V2.6 Pro and Flash, HY4, Ling 3.0
-    Flash and Flash Fin, and Qwen 3.8 Max, 27B and Flash, with recurrent and
-    linear-attention state restored to the accepted row through the binding's
-    recurrent-state hook;
+  - verify frames for GLM 5.3 Flash, MiMo V2.6 Pro and Flash, HY4, and Ling 3.0
+    Flash and Flash Fin, with recurrent and linear-attention state restored to
+    the accepted row through the binding's recurrent-state hook;
   - verify frames on the glm52 stage run the decode regime (unordered waves of
     up to 256 rows through the scatter attention path, projections as skinny
     16-row chunks, routed experts through the per-route skinny kernel in 8-row
@@ -956,7 +955,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - show that plain prompts with no matches lose no speed beyond noise on
     every model that speculates; every verify-capable stage now reproduces
     one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
-    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`, and
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_qwen38_verify_frames.cu`, and
     the K3 and DeepSeek V4.1 Flash tests), so speculative output is judged
     EXACT against output without speculation.
 
