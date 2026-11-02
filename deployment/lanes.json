@@ -57,12 +57,11 @@
    "rows": 2048,
    "shared_rows": 1024,
    "context_tokens": 1048576,
-   "kv_physical_pages": 16384,
+   "kv_physical_pages": 20480,
    "kv_logical_pages": 131072,
    "kv_backing_bytes": 40000000000,
    "kv_snapshot_bytes": 274877906944,
    "state_budget_bytes": 5368709120,
-   "state_memory_bytes": 511266816,
    "taps": {
     "entries": "o19,o37,o66,o78,o90",
     "rank": 15,

@@ -370,21 +370,17 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Model residency and storage
 
-- Kimi K3 sits at the node's memory edge. A cold start (weightd freshly
-  started) commits about 121.7 GB of a 130.7 GB node: the 99.6 GB expert
-  pool and the 9.85 GB private spine (together exactly weightd's arena
-  ceiling), about 2.3 GB more at weight attach that no log line accounts
-  for, about 4.1 GB at model bind (1.56 GB rank state, of which 1.33 GB is
-  2,048-row scratch) and 3.6 GB at KV attach. On 2026-11-02, spark1/6/8/9
-  then ended with 1.3-1.8 GB available, under earlyoom's 3% floor, and
-  earlyoom killed weightd or the engine. The K3 record now keeps 18
-  recurrent state slots (the binding's floor, 511 MB instead of 1,022 MB)
-  and 16,384 physical KV pages (one full 1M-token sequence, 0.45 GB less),
-  and the node baseline puts earlyoom at 2%. That leaves less than 1 GB of
-  margin on the tightest node. Find the unaccounted 2.3 GB at weight attach,
-  and bound the KV snapshot write queue (64 page files, up to 1.8 GB of host
-  memory under write load) against the same margin.
-
+- Lazy expert pools are hand-set per lane record instead of sized from the
+  pack. Measured 2026-11-02 against each pack's expert manifest (2 MiB
+  chunks, identical on all 16 ranks): Kimi K3's experts occupy 43,200
+  chunks (90.60 GB) against a 99.57 GB pool, A.X K2 20,852 (43.73 GB)
+  against 55.83 GB, GLM 5.3 Full 22,383 (46.94 GB) against 55.83 GB, and
+  GLM 5.3 Flash 9,399 (19.71 GB) against 34.36 GB: 9-15 GB per node that
+  holds nothing, and 256 MB pools on models whose experts are resident.
+  On 2026-11-02 K3's cold start then ended with 1.3-1.8 GB available on
+  four nodes and earlyoom killed weightd or the engine. Size every pool
+  from its manifest's expert chunks, and keep a record value only as an
+  explicit cap for a lane that streams experts on purpose.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
