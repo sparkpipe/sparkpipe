@@ -1431,16 +1431,19 @@ oldest created, not the least recently used). An arena is cold when its
 `refcount` is 0 and it holds no leases. When no cold arena is left it
 returns without a status, and the caller applies its own checks.
 
-- After reclaim, both attaches refuse a full arena table. The eager attach
+- After the byte reclaim, a full arena table frees its coldest cold arena
+  (`SparkWeightdServerReclaimArenaSlot`: least recently attached, then the
+  oldest generation), so a daemon that has served 16 models still loads a
+  17th. Both attaches refuse a table whose 16 arenas all hold an attach
+  reference or a lease, and print the reason. The eager attach
   also requires `resident_bytes + arena_bytes` to fit under
   `device_bytes_max`. The lazy attach is charged later, as
   `SparkWeightdPremapPool` or `SparkWeightdArenaChunkEnsure` commits memory,
   and each of those fails with `CAPACITY_EXCEEDED` when the budget is
   exceeded.
-- Reclaim is driven by bytes only. When the new arena's bytes fit, reclaim
-  frees nothing, so with `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas resident
-  a new arena fails with `CAPACITY_EXCEEDED` even when some of them are cold.
-  `RECLAIM` or `RECLAIM_PACK` frees those.
+- The byte reclaim frees nothing when the new arena's bytes fit; the slot
+  reclaim then frees one cold arena when the table is full. `RECLAIM` or
+  `RECLAIM_PACK` frees every cold arena, or one pack's.
 - An arena with an attach reference or a lease is never reclaimed. This is
   how the daemon holds the NO-2x constraint from the perf notes: it never
   frees a serving process's arena to make room. If a model update's new
@@ -2011,8 +2014,8 @@ Daemon limits that apply:
 - `SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX` (8): the ninth attach on the
   connection fails with `CAPACITY_EXCEEDED`.
 - A new arena fails with `CAPACITY_EXCEEDED` when the daemon already holds
-  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas, counting other clients' and
-  cold ones.
+  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas that all hold an attach
+  reference or a lease; a cold arena gives up its slot first.
 - The same pack listed under two model names loads two arenas, and the same
   pack and model listed twice fails with `DUPLICATE`.
 - `ENSURE` returns `UNSUPPORTED` (see `weightd_smoke`), so a run exits 1 at

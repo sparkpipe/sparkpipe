@@ -1237,6 +1237,31 @@ static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
     }
 }
 
+static void SparkWeightdServerReclaimArenaSlot(SparkWeightdServer *server)
+{
+    uint32_t coldest_slot = server->arena_count;
+    uint32_t index;
+    if (server->arena_count < SPARK_WEIGHTD_ARENA_COUNT_MAX)
+    {
+        return;
+    }
+    for (index = 0u; index < server->arena_count; index++)
+    {
+        if (server->arenas[index].refcount == 0u && SparkWeightdArenaHasLeases(&server->arenas[index]) == 0u &&
+            (coldest_slot == server->arena_count ||
+                server->arenas[index].last_use_ns < server->arenas[coldest_slot].last_use_ns ||
+                (server->arenas[index].last_use_ns == server->arenas[coldest_slot].last_use_ns &&
+                    server->arenas[index].generation < server->arenas[coldest_slot].generation)))
+        {
+            coldest_slot = index;
+        }
+    }
+    if (coldest_slot != server->arena_count)
+    {
+        SparkWeightdServerFreeArenaSlot(server, coldest_slot);
+    }
+}
+
 static SparkStatus SparkWeightdServerAttachRegister(SparkWeightdServer *server,
     SparkWeightdConnection *connection,
     uint32_t arena_slot)
@@ -1507,10 +1532,14 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
     }
 
     SparkWeightdServerReclaimCold(server, identity.arena_bytes);
+    SparkWeightdServerReclaimArenaSlot(server);
     if (server->resident_bytes + identity.arena_bytes >
             SparkWeightdArenaCeiling(server) ||
         server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
+        fprintf(stderr,"weightd attach refused: model=%s needs %llu bytes beside %llu resident under the ceiling %llu, %u of %u arenas held by attached or leased packs\n",
+            identity.model,(unsigned long long)identity.arena_bytes,(unsigned long long)server->resident_bytes,
+            (unsigned long long)SparkWeightdArenaCeiling(server),server->arena_count,SPARK_WEIGHTD_ARENA_COUNT_MAX);
         (void)close(pack_fd);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         result->resident_bytes = server->resident_bytes;
@@ -1964,8 +1993,11 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     }
 
     SparkWeightdServerReclaimCold(server, request->expert_pool_bytes);
+    SparkWeightdServerReclaimArenaSlot(server);
     if (server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
+        fprintf(stderr,"weightd lazy attach refused: model=%s finds all %u arenas held by attached or leased packs\n",
+            identity.model,SPARK_WEIGHTD_ARENA_COUNT_MAX);
         (void)close(pack_fd);
         free(entries);
         SparkWeightdManifestDestroy(&manifest);
