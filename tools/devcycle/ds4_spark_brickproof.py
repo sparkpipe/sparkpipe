@@ -144,7 +144,7 @@ MemoryHigh=100G
 MemoryMax=108G
 MemorySwapMax=0
 """
-EARLYOOM_ARGS = "-m 3 -s 100 -r 5 --avoid sshd|systemd|init"
+EARLYOOM_ARGS = "-m 2 -s 100 -r 5 --avoid sshd|systemd|init"
 EARLYOOM_DEFAULT = f'EARLYOOM_ARGS="{EARLYOOM_ARGS}"\n'
 NO_THRASH_SYSCTL = "vm.swappiness=10\n"
 RECOVERY_SYSCTL = """kernel.panic=60

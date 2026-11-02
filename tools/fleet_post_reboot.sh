@@ -73,8 +73,8 @@ for host in "${REBOOTED[@]}"; do
 
   earlyoom=$($SSH "$host" 'ps -o args= -C earlyoom | head -1')
   case "$earlyoom" in
-    *"-m 3 -s 100 -r 5 --avoid sshd|systemd|init") pass "$host" earlyoom "$earlyoom" ;;
-    *) fail "$host" earlyoom "'$earlyoom' (want -m 3 -s 100 -r 5)" ;;
+    *"-m 2 -s 100 -r 5 --avoid sshd|systemd|init") pass "$host" earlyoom "$earlyoom" ;;
+    *) fail "$host" earlyoom "'$earlyoom' (want -m 2 -s 100 -r 5)" ;;
   esac
 
   linger=$($SSH "$host" 'loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null')

@@ -150,7 +150,7 @@ The policy repairs and verifies:
   timer and marker are removed
 - weekly filesystem trim has an unmasked service and an enabled timer
 - logrotate configuration is parsed during every fleet audit
-- earlyoom `-m 3 -s 100 -r 5`, no-swap model cgroups, and a 108 GiB user/model ceiling
+- earlyoom `-m 2 -s 100 -r 5`, no-swap model cgroups, and a 108 GiB user/model ceiling
 - network recovery sysctls and required qdisc modules
 
 ### Ceph policy

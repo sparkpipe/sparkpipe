@@ -38,7 +38,7 @@ class Node:
         self.commands = {
             "sysctl -n vm.swappiness":"10","sysctl -n kernel.panic":"60","sysctl -n kernel.softlockup_panic":"1",
             "sysctl -n kernel.hung_task_panic":"1","sysctl -n net.core.default_qdisc":"fq_codel",
-            "pgrep -af earlyoom":"812 /usr/bin/earlyoom -m 3 -s 100 -r 5 --avoid sshd|systemd|init",
+            "pgrep -af earlyoom":"812 /usr/bin/earlyoom -m 2 -s 100 -r 5 --avoid sshd|systemd|init",
             "modinfo -F filename sch_fq_codel":"/lib/modules/x/sch_fq_codel.ko","readlink -f /boot/initrd.img":"/boot/initrd.img-x",
             "efibootmgr -v":EFI,"ss -ltn":"LISTEN 0 128 0.0.0.0:2222 0.0.0.0:*","findmnt -n -o OPTIONS /":"rw,relatime",
             "hostname -s":node,"uname -r":"6.17.0-1026-nvidia","systemctl is-system-running":"running",
