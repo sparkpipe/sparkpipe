@@ -22,6 +22,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LANE_TOOL=k3_lane
 LANE_RANKS=16
 . "$HERE/lane_run_log.sh"
+. "$HERE/lane_weights.sh"
 CHECKOUT="$(cd "$HERE/.." && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
@@ -90,7 +91,7 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "test -f $pack -a -f $pack.experts -a -f $pack.sha256 && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/libk3_serving_adapter.so"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
@@ -99,7 +100,7 @@ setup() {
       fi
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
-      $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"
+      $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"
       echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
     ) &
     PIDS[$rank]=$!
@@ -131,7 +132,7 @@ status() {
   local rank host
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
-    printf '%s %s\n' "$host" "$($SSH "$host" "systemctl --user show $UNIT -p ActiveState --value; awk '/MemAvailable/{printf \"avail=%dG \", \$2/1048576}' /proc/meminfo; tail -1 $(root_of "$host")/residentd.log 2>/dev/null | cut -c1-160" | tr '\n' ' ')"
+    printf '%s %s\n' "$host" "$($SSH "$host" "systemctl --user show $UNIT -p ActiveState --value; awk '/MemAvailable/{printf \"avail=%dG \", \$2/1048576}' /proc/meminfo; tail -1 $(lane_latest_log "$(root_of "$host")") 2>/dev/null | cut -c1-160" | tr '\n' ' ')"
   done
 }
 

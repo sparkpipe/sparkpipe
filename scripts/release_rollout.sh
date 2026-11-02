@@ -2,6 +2,7 @@
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
 . "$KIT/rollover_lib.sh"
+. "$KIT/../tools/lane_run_log.sh"
 RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
 RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
 activate() {
@@ -135,13 +136,11 @@ case "$step" in
       fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm ~/rp-release-$SHA/weightd_spine_budget.py bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' '" | awk '{$1=""; print}' | sort | uniq -c | one_variant "$id" || { echo "INSTALL-FAILED $id"; exit 1; }
       hub "cd ~/$(field $id api) && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')" || { echo "INSTALL-FAILED hub $id"; exit 1; }
     done
-    stamp "glm-5.3 lane switches to the official FP8 linear packs (glm53full.fp8lin.tp16)"
-    fan "cd \$HOME/stage-lanes/glm53_full/lane6/root && n=glm53full.fp8lin.tp16-rank\$(python3 -c 'import json;print(json.load(open(\"config/adapter.json\"))[\"tp_rank\"])').glm52sp && d=\$HOME/sparkdata/glm53full.fp8lin.tp16/packs && test -s \$d/\$n.experts && rm -f packs/glm53full.fp8.tp16-rank*.glm52sp packs/glm53full.fp8.tp16-rank*.glm52sp.experts && ln -sfn \$d/\$n packs/\$n && ln -sfn \$d/\$n.experts packs/\$n.experts && printf '%s' \$(cut -c1-64 \$d/\$n.sha256) > packs/pack.sha256 && sed -i 's#glm53full\\.fp8\\.tp16#glm53full.fp8lin.tp16#g' config/adapter.json && grep -c fp8lin config/adapter.json" | awk '{print $2}' | sort | uniq -c | sed 's/^/glm fp8lin adapter.json lines: /'
     fan "cp ~/rp-release-$SHA/weightd_warm \$HOME/sparkdata/swap/weightd_warm && sha256sum < \$HOME/sparkdata/swap/weightd_warm | cut -c1-16" | awk '{print $2}' | sort | uniq -c | one_variant "shared weightd_warm" || { echo "INSTALL-FAILED shared weightd_warm"; exit 1; } ;;
   qualify)
     for id in ${ONLY:-$MODELS}; do
       stamp "qualify $id"
-      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' \$HOME/$(field $id lane)/root/residentd.log | tail -2" | head -8; continue; fi
+      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' $(lane_latest_log "\$HOME/$(field $id lane)/root") | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
       hub "cd ~/rollover/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
@@ -150,7 +149,7 @@ case "$step" in
         hub "cd ~/rollover/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi
       hub "cd $RD/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
-      fan "grep -a -c -i -E 'error|fail|fault|abort' \$HOME/$(field $id lane)/root/residentd.log" | awk '{s+=$2} END {print "rank log error lines:", s}'
+      fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
   rollback)
