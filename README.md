@@ -546,32 +546,36 @@ A request names its model; if that model is not loaded, the request waits
 while the swap controller (`tools/serving/model_swap.py`) loads it, and the
 model's cached prefixes come back from the KV snapshot store.
 
-| Served name | Model | Family | Context |
-| --- | --- | --- | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M |
-| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K |
-| `kimi-k3` | Kimi K3 | `k3` | 1M |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K |
-| `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K |
-| `a.x-k2` | A.X K2 | `axk2` | 256K |
-| `solar-open-2` | Solar Open 2 | `solar_open2` | 256K |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K |
-| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K |
-| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K |
+| Served name | Model | Family | Context | Speculation |
+| --- | --- | --- | ---: | --- |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | yes |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
+| `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | yes |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | no |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | no |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | no |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | no |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | no |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | no |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | no |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | no |
+| `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K | yes |
+| `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
+| `solar-open-2` | Solar Open 2 | `solar_open2` | 256K | yes |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | no |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | no |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | no |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | no |
 
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`), from the lane records in
   `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
   to them.
+- **Speculation** says whether the model's serving adapter verifies drafted
+  tokens (`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`), so that
+  lookup drafts and drafter models reach it; the other models decode one token
+  per step.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
