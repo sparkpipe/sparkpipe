@@ -940,15 +940,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     Flash and Flash Fin, and Qwen 3.8 Max, 27B and Flash, with recurrent and
     linear-attention state restored to the accepted row through the binding's
     recurrent-state hook;
-  - verify frames on the glm52 stage run the decode regime (unordered waves of
-    up to 256 rows through the scatter attention path, projections as skinny
-    16-row chunks, routed experts through the per-route skinny kernel in 8-row
-    chunks), so they read each touched weight once per chunk. Measure GLM 5.3
-    Full and A.X K2 long-frame speculation against the earlier ordered-wave
-    numbers; if frames above about 64 rows lose throughput, the fix is a
-    grouped expert kernel whose per-route sums match the per-route kernel bit
-    for bit (the grouped skinny kernel's wide variant does not today), not a
-    return to the prefill path;
+  - verify frames run every dense projection as 16-row skinny chunks, so a
+    frame of n rows reads each projection's weights n / 16 times (routed
+    experts already read each touched expert once per batch of up to 16 of
+    its routes through the exact grouped launch,
+    `tests/test_exact_grouped_experts.cu`). A skinny variant
+    that keeps the per-row arithmetic for more than 16 rows per weight load
+    would cut that too; measure GLM 5.3 Full and A.X K2 long frames first;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),

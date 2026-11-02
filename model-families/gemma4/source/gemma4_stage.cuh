@@ -110,8 +110,6 @@ struct GemmaShape
 	static_assert(kFullRopeWidth % 2u == 0u && kFullRopeWidth <= G::kFullDim, "the full-layer rope rotates an even prefix of the head");
 	static_assert(G::kYarnFactor <= 1.0f || (G::kYarnOriginal > 0.0f && G::kYarnBetaFast > 0.0f && G::kYarnBetaSlow > 0.0f),
 		"a geometry that turns YaRN on chooses its betas and original positions");
-	static_assert(!G::kMoe || LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G::kLocalExperts,
-		"a 16-row verify chunk keeps its routes within the grouped skinny expert kernel");
 	using SlidingKvGeometry = LmKvHeads<16u, G::kSlidingKvHeads, G::kSlidingDim, G::kPageSlots>;
 	using FullKvGeometry = LmKvHeads<16u, G::kFullKvHeads, G::kFullDim, G::kPageSlots>;
 };
@@ -533,11 +531,11 @@ struct GemmaModel
 		routes->multiprocessors = step->multiprocessors;
 	}
 
-	static SparkStatus Moe(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus Moe(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		const uint32_t routes = rows * G::kTopK;
-		const uint16_t *hidden = step->hidden_bf16 + (uint64_t)first * G::kHidden;
-		uint16_t *output = state->partial + ((uint64_t)step->rows + first) * G::kHidden;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK;
+		const uint16_t *hidden = step->hidden_bf16;
+		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
 		GemmaRouterInputKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, layer->router_scale, state->moe_normed, G::kHidden, G::kNormEpsilon,
 			(float)(1.0 / sqrt((double)G::kHidden)));
@@ -573,11 +571,11 @@ struct GemmaModel
 		return Launched();
 	}
 
-	static SparkStatus MoeSigmoid(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus MoeSigmoid(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		const uint32_t routes = rows * G::kTopK;
-		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
-		uint16_t *output = state->partial + ((uint64_t)step->rows + first) * G::kHidden;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK;
+		const uint16_t *normed = state->normed;
+		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
 		if constexpr ( G::kRouterFloat )
 		{
@@ -613,24 +611,8 @@ struct GemmaModel
 			Experts(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-			state->route_expert, state->partial + (uint64_t)first * G::kHidden, output, G::kTopK, G::kLocalExperts, G::kHidden);
+			state->route_expert, state->partial, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
-	}
-
-	template<bool SIGMOID>
-	static SparkStatus MoeRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
-	{
-		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-		{
-			const uint32_t rows = step->rows - first < chunk ? step->rows - first : chunk;
-			if constexpr ( SIGMOID )
-				status = MoeSigmoid(state, layer, step, first, rows, stream);
-			else
-				status = Moe(state, layer, step, first, rows, stream);
-		}
-		return status;
 	}
 
 	static SparkStatus PreNormLayers(State *state, const SparkStageRunnerStep *step, cudaStream_t stream)
@@ -656,7 +638,7 @@ struct GemmaModel
 			status = Mlp(state, layer, step, stream);
 			if constexpr ( G::kMoe && G::kSigmoidRouter )
 				if ( status == SPARK_STATUS_OK && moe )
-					status = MoeRows<true>(state, layer, step, stream);
+					status = MoeSigmoid(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, ffn, ffn);
 			if ( status != SPARK_STATUS_OK )
@@ -706,7 +688,7 @@ struct GemmaModel
 			status = Mlp(state, layer, step, stream);
 			if constexpr ( G::kMoe )
 				if ( status == SPARK_STATUS_OK )
-					status = MoeRows<false>(state, layer, step, stream);
+					status = Moe(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, G::kMoe ? 2u * rows : rows, 0u, state->partial,
 					state->partial);
