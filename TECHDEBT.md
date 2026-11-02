@@ -942,12 +942,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
-  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
-  Still to do:
-  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
-    Flash's recurrent state restored to the accepted row through the
-    binding's recurrent-state hook;
+- Speculation serves on Kimi K3, GLM 5.3 Full, GLM 5.3 Flash, DeepSeek V4.1
+  Flash, K-EXAONE 2.0, A.X K2 and Solar Open 2, whose adapters declare
+  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`. Still to do:
+  - verify frames for the twelve other models in the README model table, and
+    for Motif 3 once it serves;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),

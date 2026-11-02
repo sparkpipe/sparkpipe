@@ -84,7 +84,7 @@ window in which every stream decodes, both repeats:
 - Arms:
   - "No speculation" sends `"speculation": false`. Batches of two or more
     never speculate.
-  - GLM 5.3 Flash does not speculate, so its two B1 rows are one arm.
+  - GLM 5.3 Flash did not speculate when this ran, so its two B1 rows are one arm.
   - GLM 5.3 Full streams 221 token events for each 256-token answer.
 - Overlap: one owner request (a 32K-token turn) reached DeepSeek V4.1 Flash
   near the end of its second B8 arm. The first DeepSeek V4.1 Flash run

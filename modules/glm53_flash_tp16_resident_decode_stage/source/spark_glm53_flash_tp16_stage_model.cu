@@ -5,6 +5,7 @@ struct Glm53FlashGeometry
 {
 	static constexpr uint32_t kTpDegree = SPARK_GLM53_FLASH_TP16_STAGE_TP_DEGREE;
 	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static constexpr uint32_t kVerifyRows = SPARK_GLM53_FLASH_TP16_VERIFY_ROWS;
 	static const char *Tag(void) { return "sparkpipe_glm53_flash"; }
 	static const char *WeightdModel(void) { return "glm5_next_stage"; }
 	static const char *WeightdRevision(void) { return "84c6a6aa9497188e15a635ba793b0f95a79b1033"; }
