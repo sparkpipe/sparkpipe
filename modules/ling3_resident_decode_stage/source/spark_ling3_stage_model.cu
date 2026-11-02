@@ -27,6 +27,7 @@ struct Ling3Geometry : LingDefaults
 	static constexpr uint32_t kTopkGroups = 4u;
 	static constexpr uint32_t kMoeInter = 768u;
 	static constexpr uint32_t kSharedRows = 64u;
+	static constexpr uint32_t kVerifyRows = SPARK_LING3_STAGE_VERIFY_ROWS;
 	static constexpr float kRouteScale = 2.5f;
 	static constexpr uint32_t kPageSlots = SPARK_LING3_STAGE_PAGE_SLOTS;
 	static float RoutedLimit(uint32_t layer) { return layer >= 35u ? 4.0f : 0.0f; }

@@ -564,8 +564,8 @@ model's cached prefixes come back from the KV snapshot store.
 | `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | no |
 | `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | yes |
 | `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | yes |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | no |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | no |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | yes |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | yes |
 | `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | yes |
 | `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K | yes |
 | `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
