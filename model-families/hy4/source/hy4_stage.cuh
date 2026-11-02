@@ -58,8 +58,6 @@ struct HyShape
 	static_assert(G::kHeads % G::kTpDegree == 0u && G::kExperts % G::kTpDegree == 0u, "heads and experts split evenly over the ranks");
 	static_assert(kRankHeads * kSlot <= G::kHidden, "a rank's packed queries fit one collective row");
 	static_assert(G::kIndexTopk % kCandidateSplit == 0u, "the candidate rows split evenly into collective rows");
-	static_assert(LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G::kLocalExperts,
-		"a 16-row verify chunk keeps its routes within the grouped skinny expert kernel");
 };
 
 typedef struct HyScaled
@@ -626,10 +624,10 @@ struct HyModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Moe(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus Moe(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		const uint32_t routes = rows * G::kTopK, exact = step->commit == 0u ? 1u : 0u;
-		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK, exact = step->commit == 0u ? 1u : 0u;
+		const uint16_t *normed = state->normed;
 		LmLocalExpertRoutes expert_routes;
 		if ( Dense16(layer->router, normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK ||
 			LmTopkGroupLimitedLaunch<HY_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
@@ -670,17 +668,8 @@ struct HyModel
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, state->shared_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-			state->route_expert, state->shared_out, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
+			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
-	}
-
-	static SparkStatus MoeRows(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
-	{
-		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-			status = Moe(state, layer, step, first, step->rows - first < chunk ? step->rows - first : chunk, stream);
-		return status;
 	}
 
 	template<uint32_t MIXES>
@@ -730,7 +719,7 @@ struct HyModel
 				G::kEpsilon);
 			status = Launched();
 			if ( status == SPARK_STATUS_OK )
-				status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : MoeRows(state, layer, step, stream);
+				status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : Moe(state, layer, step, stream);
 			if ( status == SPARK_STATUS_OK )
 				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
 			if ( status != SPARK_STATUS_OK )
