@@ -59,6 +59,7 @@ int main(int argc, char **argv)
     SparkWeightdDetachResult detach;
     SparkWeightdHelloResult hello;
     SparkWeightdClient *client = 0;
+    SparkWeightdPoolPlan pool;
     uint64_t pool_bytes;
     uint64_t pool_mib;
     uint64_t touches;
@@ -71,7 +72,7 @@ int main(int argc, char **argv)
 
     if (argc != 6)
     {
-        fprintf(stderr, "usage: weightd_smoke pack model revision pool-mib touches\n");
+        fprintf(stderr, "usage: weightd_smoke pack model revision cap-mib touches (cap-mib 0 sizes the pool from the pack)\n");
         return 2;
     }
     socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
@@ -82,7 +83,8 @@ int main(int argc, char **argv)
     }
     pool_mib = strtoull(argv[4], 0, 10);
     touches = strtoull(argv[5], 0, 10);
-    if (pool_mib == 0ull || touches == 0ull)
+    if (touches == 0ull || argv[4][0] == '\0' ||
+        argv[4][strspn(argv[4], "0123456789")] != '\0' || pool_mib >= (1ull << 44))
     {
         return 2;
     }
@@ -114,14 +116,16 @@ int main(int argc, char **argv)
     request.identity.geometry_fingerprint = 0x504F4355ull;
     request.identity.arena_bytes = file_bytes(argv[1]);
     memcpy(request.identity.pack_sha256, sha_hex, strlen(sha_hex) + 1u);
-    request.expert_pool_bytes = pool_bytes;
     if (request.identity.arena_bytes == 0ull ||
-        SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK)
+        SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK ||
+        SparkWeightdPackPoolPlan(argv[1], request.identity.arena_bytes,
+            pool_bytes, &pool) != SPARK_STATUS_OK)
     {
-        fprintf(stderr, "weightd_smoke: identity invalid\n");
+        fprintf(stderr, "weightd_smoke: identity or pool invalid\n");
         SparkWeightdClientClose(client);
         return 1;
     }
+    request.expert_pool_bytes = pool.request_bytes;
     memset(&attach, 0, sizeof(attach));
     if (SparkWeightdClientAttachLazy(client, &request, &attach,
             timeout_ns) != SPARK_STATUS_OK ||

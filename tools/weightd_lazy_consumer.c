@@ -108,9 +108,8 @@ static int32_t consume(const char *socket,const char *path,uint32_t first)
 	request.identity.arena_bytes = PACK_BYTES;
 	memcpy(request.identity.model,"lazy-consumer-probe",20u);
 	memcpy(request.pack_path,path,strlen(path) + 1u);
-	request.expert_pool_bytes = (3u * CHUNK);
 	if ( SparkSha256File(path,request.identity.pack_sha256) != SPARK_STATUS_OK ) return(-21);
-	if ( SparkWeightdLazyPackCreate(socket,&request,PACK_BYTES + 255u,TIMEOUT,&pack) != SPARK_STATUS_OK ) return(-22);
+	if ( SparkWeightdLazyPackCreate(socket,&request,3u * CHUNK,PACK_BYTES + 255u,TIMEOUT,&pack) != SPARK_STATUS_OK ) return(-22);
 	if ( pack->attached.chunk_bytes != CHUNK ) return(-23);
 	err = first == 3u ? reject_pinned(pack) : read_leased(pack,first);
 	if ( err != 0 ) return(err);

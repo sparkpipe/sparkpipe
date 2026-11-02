@@ -74,7 +74,7 @@ nodes:
 | `AGENT_MEMORY_MAX` | residentd cgroup limit, `20G` |
 | `AGENT_MEMORY_NEED_GIB` | residentd plus the arena if this arm is the first to map it in its slot (F1 50, F1AA 12, F2 33, F3 24, F0 12) |
 | `SPARK_WEIGHTD_LANE` | the arm's own mesh lane |
-| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | per arm; arms that share an arena must use the same pool, or weightd refuses the attach |
+| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | only for an arm with `pool_cap_bytes`, its explicit cap; otherwise unset and weightd sizes the pool from the pack. Arms that share an arena must carry the same cap or none, or weightd refuses the attach; a spec that still names `pool_bytes` is refused |
 | `SPARK_WEIGHTD_ATTACH`, `SPARK_WEIGHTD_SOCKET`, `SPARK_TP_MESH_RANKS`, `SPARK_TP_WAIT_MODE`, pin and graph switches | from the spec's `common_env`, equal to production's execution mode |
 
 The window scripts start the arm residentds as lane-owned transient units

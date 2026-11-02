@@ -799,10 +799,9 @@ static SparkStatus StageRunnerAttachWeights(SparkStageRunnerState *state, const 
 	memset(&request, 0, sizeof(request));
 	if ( strlen(configuration->weights.pack_sha256) != SPARK_STAGE_RUNNER_DIGEST_HEX ||
 		strlen(configuration->rank_pack_path) >= sizeof(request.pack_path) ||
-		configuration->weights.socket_path == 0 || configuration->weights.expert_pool_bytes == 0u ||
-		configuration->weights.spine_budget_bytes == 0u )
+		configuration->weights.socket_path == 0 || configuration->weights.spine_budget_bytes == 0u )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: weightd attach needs the pack digest, socket, expert pool and spine budget\n");
+		fprintf(stderr, "sparkpipe_stage_runner: weightd attach needs the pack digest, socket and spine budget\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	memcpy(request.identity.pack_sha256, configuration->weights.pack_sha256, SPARK_STAGE_RUNNER_DIGEST_HEX);
@@ -812,9 +811,8 @@ static SparkStatus StageRunnerAttachWeights(SparkStageRunnerState *state, const 
 	request.identity.arena_bytes = state->geometry.pack_bytes;
 	request.identity.topology = configuration->tp_degree;
 	memcpy(request.pack_path, configuration->rank_pack_path, strlen(configuration->rank_pack_path) + 1u);
-	request.expert_pool_bytes = configuration->weights.expert_pool_bytes;
 	status = SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request,
-		configuration->weights.spine_budget_bytes, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,
+		configuration->weights.expert_pool_cap_bytes, configuration->weights.spine_budget_bytes, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS,
 		StageRunnerManifestCheck, state, &state->lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "sparkpipe_stage_runner: lazy startup failed status=%d (fail-closed, no eager fallback)\n", (int)status);

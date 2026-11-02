@@ -195,7 +195,7 @@ class SmokePreparation(unittest.TestCase):
         self.reference_path = self.source / "reference.json"
         self.spec = dict(hosts=["spark0"], port_base=30000, port_map={"19000": 30002}, environment={},
                          deployment=str(self.deployment_path), batch=str(self.batch_path), reference=str(self.reference_path),
-                         budgets=dict(weightd_device_bytes=8192, model_device_bytes=1024, expert_pool_bytes=2048, spine_bytes=2048, kv_reserve_bytes=4096))
+                         budgets=dict(weightd_device_bytes=8192, model_device_bytes=1024, spine_bytes=2048, kv_reserve_bytes=4096))
         self.environment = dict(SPARK_QUEUE_ATTEMPT=self.attempt, SPARK_QUEUE_RUNTIME_ROOT=str(self.root),
                                 SPARK_QUEUE_RANK="0", SPARK_QUEUE_SIZE="1", SPARK_QUEUE_PORTS="30000:30010",
                                 SPARK_QUEUE_DEVICE_MEMORY_MIB="1")
@@ -249,7 +249,7 @@ class SmokePreparation(unittest.TestCase):
         del self.spec["budgets"]["kv_reserve_bytes"]
         with self.assertRaises((KeyError, ValueError)):
             self.prepare()
-        self.spec["budgets"]["kv_reserve_bytes"] = 4097
+        self.spec["budgets"]["kv_reserve_bytes"] = 8192 - 2048 - len(b"fixture pack") + 1
         with self.assertRaisesRegex(ValueError, "KV reserve exceed ceiling"):
             self.prepare()
 
@@ -352,6 +352,7 @@ class SharedSmokePreparation(SmokePreparation):
             self.assertEqual(smoke.run(self.spec), 0)
         self.assertEqual([call[0][0] for call in calls], ["build/sparkpipe_weightd", "build/sparkpipe_model_residentd", "build/sparkpipe_model_residentd"])
         self.assertEqual([call[1]["SPARK_WEIGHTD_LANE"] for call in calls[1:]], ["0", "1"])
+        self.assertFalse([call for call in calls if "SPARK_WEIGHTD_EXPERT_POOL_BYTES" in call[1]])
         self.assertEqual(len(warm_calls), 1)
         self.assertEqual(warm_calls[0][6], "--wset")
         self.assertEqual(warm_calls[0][7], str(self.root / "runtime/packs/model.pack.wset"))
@@ -391,10 +392,20 @@ class SharedSmokePreparation(SmokePreparation):
         self.set_execution_mode(0)
         with self.assertRaisesRegex(ValueError, "must not premap full pack"):
             self.prepare()
+        self.spec["budgets"]["expert_pool_cap_bytes"] = 2 << 20
+        self.spec["budgets"]["weightd_device_bytes"] = 8 << 20
+        self.environment["SPARK_QUEUE_DEVICE_MEMORY_MIB"] = "16"
+        self.prepare()
         self.spec["working_set"]["mode"] = "full"
         self.set_execution_mode(1)
-        self.spec["budgets"]["expert_pool_bytes"] = 1
         with self.assertRaisesRegex(ValueError, "full pack budget"):
+            self.prepare()
+        self.spec["budgets"]["expert_pool_cap_bytes"] = 4096
+        with self.assertRaisesRegex(ValueError, "whole number of 2 MiB"):
+            self.prepare()
+        del self.spec["budgets"]["expert_pool_cap_bytes"]
+        self.spec["budgets"]["expert_pool_bytes"] = 1 << 34
+        with self.assertRaisesRegex(ValueError, "expert_pool_bytes is gone"):
             self.prepare()
 
     def test_b1_cap_and_complete_pinned_working_set_are_required(self):

@@ -23,7 +23,7 @@ class WeightdSupervision(unittest.TestCase):
 #include <string.h>
 static int mode(const char *name) { const char *m=getenv("WARM_FAILURE"); return m && strcmp(m,name)==0; }
 SparkStatus SparkWeightdClientConnect(const char *p,SparkWeightdClient **c,SparkWeightdHelloResult *h) { (void)p;(void)h;if(mode("connect_rpc"))return SPARK_STATUS_IO_ERROR;*c=(SparkWeightdClient *)1;return SPARK_STATUS_OK; }
-SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->arena_generation=9;if(mode("attach_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("attach_status"))r->status=SPARK_STATUS_IO_ERROR;return q->expert_pool_bytes==4096 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT; }
+SparkStatus SparkWeightdClientAttachLazy(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->arena_generation=9;if(mode("attach_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("attach_status"))r->status=SPARK_STATUS_IO_ERROR;return q->expert_pool_bytes==UINT64_C(2097216) || q->expert_pool_bytes==UINT64_C(2097152) ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT; }
 SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *c,const SparkWeightdLazyAttachRequest *q,SparkWeightdLazyAttachResult *r,uint64_t t) { return SparkWeightdClientAttachLazy(c,q,r,t); }
 SparkStatus SparkWeightdClientKvPoolDrop(SparkWeightdClient *c,const char *label,SparkWeightdKvPoolDropResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));printf("KV_POOL_DROP %s\n",label);return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientAcquire(SparkWeightdClient *c,uint64_t g,const SparkWeightdExpertKey *k,uint32_t n,SparkWeightdWorkingSetResult *r,uint64_t t) { (void)c;(void)t;memset(r,0,sizeof(*r));r->lease_identifier=17;printf("ACQUIRE %u %u\n",k[0].layer,n);if(g!=9 || k[0].layer<3)return SPARK_STATUS_INVALID_ARGUMENT;if(mode("acquire_rpc"))return SPARK_STATUS_IO_ERROR;if(mode("acquire_status"))r->status=SPARK_STATUS_IO_ERROR;return SPARK_STATUS_OK; }
@@ -94,7 +94,7 @@ int main(void) {
         for name in ("mesh-0.rec", "mesh-15.rec", ".ready", ".shipped_sha", "mesh.log"):
             (self.mesh / name).write_text(name)
 
-    def warm(self, mode="", budget="4096", extra=()):
+    def warm(self, mode="", budget=None, extra=()):
         env = dict(os.environ, WARM_FAILURE=mode)
         env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
         if budget is not None:
@@ -117,8 +117,20 @@ int main(void) {
                 self.assertEqual(result.stdout.count("CLOSED"), 1)
                 self.assertEqual(result.stdout.count("ACQUIRE"), 1)
 
+    def test_pool_is_sized_from_the_manifest_and_a_cap_is_explicit(self):
+        self.assertEqual(self.warm().returncode, 0)
+        self.assertEqual(self.warm(budget="2097152").returncode, 0)
+        refused = self.warm(budget="4194304")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("weightd pool refused: cap=4194304 is larger than exact=2097152", refused.stderr)
+        self.assertNotIn("ACQUIRE", refused.stdout)
+        ragged = self.warm(budget="4096")
+        self.assertEqual(ragged.returncode, 1)
+        self.assertIn("weightd pool refused: cap=4096 is not a whole number of 2097152-byte chunks", ragged.stderr)
+        self.assertIn("weightd pool exact=2097152 cap=none used=2097152 mode=whole-arena", self.warm().stderr)
+
     def test_budget_and_geometry_cannot_silently_change(self):
-        for budget in (None, "", "0", "-1", "18446744073709551615", "4096oops"):
+        for budget in ("", "0", "-1", "18446744073709551615", "4096oops"):
             with self.subTest(budget=budget):
                 self.assertEqual(self.warm(budget=budget).returncode, 2)
         self.assertNotEqual(self.warm(extra=("3", "288")).returncode, 0)
@@ -172,7 +184,7 @@ int main(void) {
 
     def test_wset_requires_finite_budget_and_valid_timeout(self):
         extra = self.wset(struct.pack("<2I", 3, 2))
-        for budget in (None, "", "0", "-1", "18446744073709551615", "4096oops"):
+        for budget in ("", "0", "-1", "18446744073709551615", "4096oops"):
             with self.subTest(budget=budget):
                 self.assertEqual(self.warm(budget=budget, extra=extra).returncode, 2)
         for timeout in ("0", "-1", "oops", "18446744074"):

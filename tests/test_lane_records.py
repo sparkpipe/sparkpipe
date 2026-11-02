@@ -50,6 +50,11 @@ def main():
                 lane_config.draftd_environment(record_id)
             except SystemExit as error:
                 failures.append(f"{record_id}: draft server does not render: {error}")
+        if "expert_pool_bytes" in record:
+            failures.append(f"{record_id}: expert_pool_bytes is gone; weightd sizes the expert pool from the pack's expert manifest")
+        cap = record.get("expert_pool_cap_bytes")
+        if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0 or cap % (2 << 20)):
+            failures.append(f"{record_id}: expert_pool_cap_bytes {cap!r} must be a positive whole number of 2 MiB weightd chunks")
         if record["launcher"] not in ("stage_lane", "k3_lane"):
             failures.append(f"{record_id}: launcher {record['launcher']!r} is neither stage_lane nor k3_lane")
         if record["launcher"] == "stage_lane" and record["runtime_root"] != f"/home/{{host}}/stage-lanes/{record['model']}/lane{record['lane']}/root":

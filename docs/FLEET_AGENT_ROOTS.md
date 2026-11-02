@@ -52,7 +52,7 @@ start with `AGENT_` control the agent and are not exported:
 
 Every other key is exported to the residentd, together with
 `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` and `LD_LIBRARY_PATH=<root>/lib`. Layout
-roots get nothing else: no `G5_*` knobs and no expert pool default, so the
+roots get nothing else: no `G5_*` knobs and no expert pool cap, so the
 weightd lane, socket, pack sha, TP mesh ranks and model switches must all be
 in the env files.
 

@@ -133,8 +133,11 @@ arenas:
   process and re-attaches in milliseconds, with the weights untouched.
 - It loads routed experts lazily. The arena reserves the full expert address
   space; experts are acquired on demand under leases and reclaimed within a
-  declared budget. A missing or corrupt expert manifest is an error, never a
-  reason to load the whole pack eagerly.
+  pool every client sizes from the pack's expert manifest, so no lane sets a
+  number by hand. Without a cap the pool holds every expert chunk; a lane
+  that streams experts on purpose names an explicit cap below that, and a cap
+  above it is refused. A missing or corrupt expert manifest is an error, never
+  a reason to load the whole pack eagerly.
 - Captured decode graphs work with lazy residency. A graph records which
   kernel arguments are expert pointers and has them patched when leases
   move, so a graph never forces the whole expert set to stay resident.

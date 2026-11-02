@@ -43,9 +43,11 @@ transport 64048-64063; every number below stays inside those blocks):
 
 The k3 stage runner is fail-closed lazy: it requires the weightd socket,
 SPARK_WEIGHTD_PACK_SHA256 (set by model_residentd from the single
-packs/*.sha256 sidecar), SPARK_WEIGHTD_EXPERT_POOL_BYTES and
-SPARK_WEIGHTD_SPINE_BUDGET_BYTES. The wrapper refuses to run without the
-two budget envs; tools/devcycle/lane_budget_calc.py is the sizing record.
+packs/*.sha256 sidecar) and SPARK_WEIGHTD_SPINE_BUDGET_BYTES; weightd sizes
+the expert pool from the pack. A dev root streams experts on purpose, so the
+wrapper refuses to run without K3_EXPERT_POOL_CAP_BYTES (its explicit cap,
+passed as SPARK_WEIGHTD_EXPERT_POOL_BYTES) and K3_SPINE_BUDGET_BYTES;
+tools/devcycle/lane_budget_calc.py is the sizing record.
 """
 
 from __future__ import annotations

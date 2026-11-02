@@ -51,7 +51,6 @@ int main(int argc, char **argv)
 	request.identity.arena_bytes = (uint64_t)info.st_size;
 	request.identity.topology = 16u;
 	memcpy(request.pack_path, argv[1], strlen(argv[1]) + 1u);
-	request.expert_pool_bytes = 8589934592ull;
 	spine_budget = 17179869184ull;
 	socket = getenv("SPARK_WEIGHTD_SOCKET");
 	if ( socket == 0 )
@@ -59,7 +58,7 @@ int main(int argc, char **argv)
 	fprintf(stderr, "attach: path=%s arena=%llu experts=%llu socket=%s sha=%s\n",
 		argv[1], (unsigned long long)request.identity.arena_bytes,
 		(unsigned long long)experts.st_size, socket, digest);
-	status = SparkWeightdLazyPackCreateChecked(socket, &request, spine_budget,
+	status = SparkWeightdLazyPackCreateChecked(socket, &request, 0u, spine_budget,
 		120000000000ull, 0, 0, &pack);
 	fprintf(stderr, "attach: CreateChecked status=%d (%s)\n", (int)status,
 		SparkStatusToString(status));

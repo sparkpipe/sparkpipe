@@ -45,7 +45,7 @@ def run_stop(home, stuck_hosts, failing_lane_hosts):
             lane.unlink()
     environment = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", FAKE_HOME=str(home),
                        STAGE_MODEL="glm53_full", STAGE_LANE="3", STAGE_FIRMWARE="/unused", STAGE_WEIGHTD_SOCKET="/unused",
-                       STAGE_EXPERT_POOL_BYTES="1", STAGE_MEMORY_MAX="1G")
+                       STAGE_MEMORY_MAX="1G")
     result = subprocess.run(["bash", str(ROOT / "tools" / "stage_lane.sh"), "stop"], env=environment,
                             capture_output=True, text=True, timeout=120)
     return result.returncode, result.stderr

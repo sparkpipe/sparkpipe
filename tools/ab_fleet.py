@@ -108,13 +108,16 @@ def check_spec(spec):
             errors.append(f"free lane {lane} is not a weightd mesh lane 0..{MESH_LANES - 1}")
     if production["arena"] not in spec["arenas"]:
         errors.append(f"production arena {production['arena']} is not declared")
+    for name, a in (("production", production), *spec["arms"].items()):
+        if "pool_bytes" in a:
+            errors.append(f"{name}: pool_bytes is gone; weightd sizes the expert pool from the pack, and pool_cap_bytes is the optional explicit cap")
     lanes = {}
     roots = {}
     for arm, a in spec["arms"].items():
-        for key in ("root", "lane", "pool_bytes", "arena", "residentd_gib", "memory_max", "pack_root", "port_group"):
+        for key in ("root", "lane", "arena", "residentd_gib", "memory_max", "pack_root", "port_group"):
             if key not in a:
                 errors.append(f"arm {arm}: missing {key}")
-        if any(key not in a for key in ("root", "lane", "pool_bytes", "arena", "memory_max")):
+        if any(key not in a for key in ("root", "lane", "arena", "memory_max")):
             continue
         if not ROOT_NAME.match(a["root"]):
             errors.append(f"arm {arm}: root name {a['root']!r} is not a fleet root name")
@@ -132,15 +135,15 @@ def check_spec(spec):
             errors.append(f"arm {arm}: arena {a['arena']} is not declared")
         if not MEMORY_MAX.match(str(a["memory_max"])):
             errors.append(f"arm {arm}: memory_max {a['memory_max']!r} is not a systemd size")
-        if a["arena"] == production["arena"] and a["pool_bytes"] != production["pool_bytes"]:
-            errors.append(f"arm {arm}: shares production's arena but its pool {a['pool_bytes']} differs from production's {production['pool_bytes']}; weightd refuses the attach")
+        if a["arena"] == production["arena"] and a.get("pool_cap_bytes") != production.get("pool_cap_bytes"):
+            errors.append(f"arm {arm}: shares production's arena but its pool cap {a.get('pool_cap_bytes')} differs from production's {production.get('pool_cap_bytes')}; weightd refuses the attach")
     pools = {}
     for arm, a in spec["arms"].items():
-        if "arena" not in a or "pool_bytes" not in a:
+        if "arena" not in a:
             continue
-        other = pools.setdefault(a["arena"], (arm, a["pool_bytes"]))
-        if other[1] != a["pool_bytes"]:
-            errors.append(f"arms {other[0]} and {arm} share arena {a['arena']} with different pools {other[1]} and {a['pool_bytes']}; weightd refuses the second attach")
+        other = pools.setdefault(a["arena"], (arm, a.get("pool_cap_bytes")))
+        if other[1] != a.get("pool_cap_bytes"):
+            errors.append(f"arms {other[0]} and {arm} share arena {a['arena']} with different pool caps {other[1]} and {a.get('pool_cap_bytes')}; weightd refuses the second attach")
     for key in spec["common_env"]:
         if not ENV_KEY.match(key) or key.startswith("AGENT_"):
             errors.append(f"common_env key {key!r} is not an exported env key")
@@ -182,8 +185,9 @@ def render_env(spec, arm):
         f"AGENT_MEMORY_MAX={a['memory_max']}",
         f"AGENT_MEMORY_NEED_GIB={agent_need_gib(spec, arm)}",
         f"SPARK_WEIGHTD_LANE={a['lane']}",
-        f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={a['pool_bytes']}",
     ]
+    if "pool_cap_bytes" in a:
+        lines.append(f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={a['pool_cap_bytes']}")
     for key, value in spec["common_env"].items():
         lines.append(f"{key}={value}")
     for key, value in a.get("env", {}).items():

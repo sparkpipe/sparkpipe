@@ -22,7 +22,6 @@
  "production": {
   "root": "glm53flash.fp8.tp16",
   "lane": 0,
-  "pool_bytes": 34359738368,
   "arena": "production"
  },
  "free_lanes": [
@@ -86,7 +85,6 @@
    "root": "qab-f1",
    "pack_root": "glm53flash.s1-bf16.tp16",
    "lane": 1,
-   "pool_bytes": 42949672960,
    "arena": "f1",
    "arena_owner": true,
    "residentd_gib": 12,
@@ -97,7 +95,6 @@
    "root": "qab-f11",
    "pack_root": "glm53flash.s1-exl3dq-f11.tp16",
    "lane": 2,
-   "pool_bytes": 42949672960,
    "arena": "f11",
    "arena_owner": true,
    "residentd_gib": 12,
@@ -108,7 +105,6 @@
    "root": "qab-f9",
    "pack_root": "glm53flash.s1-exl3dq-f9.tp16",
    "lane": 13,
-   "pool_bytes": 42949672960,
    "arena": "f9",
    "arena_owner": true,
    "residentd_gib": 12,
@@ -119,7 +115,6 @@
    "root": "qab-f10",
    "pack_root": "glm53flash.s1-exl3dq-f10.tp16",
    "lane": 15,
-   "pool_bytes": 42949672960,
    "arena": "f10",
    "arena_owner": true,
    "residentd_gib": 12,

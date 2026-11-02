@@ -1917,8 +1917,7 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 	if ( strlen(state->engram_path) >= sizeof(request.pack_path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.pack_path, state->engram_path, strlen(state->engram_path) + 1u);
-	request.expert_pool_bytes = configuration->weights.expert_pool_bytes;
-	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, state->engram_bytes + 255u,
+	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, 0u, state->engram_bytes + 255u,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
 }
 
