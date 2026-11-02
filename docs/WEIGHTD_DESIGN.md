@@ -855,9 +855,12 @@ daemon does not size pools; it keeps validating what it is sent.
   much because chunks holding both spine and expert bytes are counted twice,
   and it would give up the fixed pool the common runner needs before it
   captures decode graphs (`StageRunnerCheckResident`, `STAGE-RESIDENT`). On
-  2026-11-02 Kimi K3's rank pack spanned 47,478 chunks (99.57 GB): 43,200 of
-  them hold expert bytes (90.60 GB) and the shared spine is 9.16 GB, so the
-  exact slot pool plus a private spine would have been 0.19 GB larger.
+  2026-11-02 every Kimi K3 rank pack was 100,255,758,720 bytes (47,806
+  chunks, 100.26 GB): 43,200 chunks hold expert bytes (90.60 GB) and the
+  spine is 9.85 GB, so the exact slot pool plus a private spine would be
+  0.19 GB larger than the whole arena. The hand-set 99,568,941,440-byte pool
+  it replaced sat below the pack: 47,478 slots plus the private spine, 109.4
+  GB, about 9.16 GB more than the whole arena.
 - Without a cap, a pack without expert ranges requests one chunk: a one-slot
   pool, with the spine as the engine's private copy.
 - An explicit cap, for a lane that streams experts on purpose, is the request:
