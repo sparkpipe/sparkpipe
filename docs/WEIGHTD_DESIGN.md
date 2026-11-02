@@ -1517,16 +1517,18 @@ one budget, `device_bytes_max`, under these rules
 - **Memory margin** (`SparkWeightdKvMemoryMargin`). The Sparks share one
   unified memory between the CPU and the GPU, so every KV chunk lowers
   `MemAvailable`. A grow stops where `MemAvailable` would fall below the
-  margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (3) percent of `MemTotal` plus
-  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB). The 3 % is the fleet
-  baseline's earlyoom line (`earlyoom -m 3`, [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)):
-  earlyoom sends SIGTERM below 3 % and SIGKILL below 1.5 %, so KV growth must
+  margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (2) percent of `MemTotal` plus
+  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB), both compile-time
+  constants. The 2 % is the fleet's earlyoom line (`earlyoom -m 2`, set by the
+  owner on all 16 nodes on 2026-11-02; [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)
+  records it from PR #1719): earlyoom sends SIGTERM below 2 % and SIGKILL
+  below 1 %, so KV growth must
   never reach it. The 4 GiB is headroom for what grows after a KV grant
   without asking weightd: the KV snapshot writer's staging, page cache
   writeback and API request bursts. It is chosen, not measured; the fleet
   gate records the minimum `MemAvailable` under full KV. weightd reads
   `MemTotal` from `/proc/meminfo` at start (`weightd kv memory
-  margin_bytes=` in its log; 8,148,557,578 bytes on a 119.6 GiB Spark) and
+  margin_bytes=` in its log; 6,864,027,484 bytes on a 119.6 GiB Spark) and
   `MemAvailable` at every grow. When the file gives neither, every grow is
   refused. Tests point `SparkWeightdServerConfig.meminfo_path` at a
   fabricated file; the daemon itself always reads `/proc/meminfo`.

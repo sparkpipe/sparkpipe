@@ -1603,7 +1603,7 @@ static void SparkTestKvMemoryMargin(void)
     char expected[192];
     char *text;
 
-    assert(SPARK_WEIGHTD_KV_EARLYOOM_PERCENT == 3u && SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES == 4ull << 30);
+    assert(SPARK_WEIGHTD_KV_EARLYOOM_PERCENT == 2u && SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES == 4ull << 30);
     SparkTestWriteMeminfo(meminfo,total,margin + 3u * chunk);
     spark_test_meminfo_path = meminfo;
     SparkTestPackRequest(pack_path,71u,chunk,"kv-margin",&small);
@@ -1655,7 +1655,7 @@ static void SparkTestKvMemoryMargin(void)
     (void)unlink(socket_path);
     (void)unlink(meminfo);
     (void)unlink(pack_path);
-    printf("weightd kv memory margin: the margin is earlyoom's 3%% of MemTotal plus 4 GiB, a pool attaches with its minimum, a grow stops where MemAvailable would cross the margin and at the KV limit, each refusal logs its reason, and a pool below the margin waits for its minimum\n");
+    printf("weightd kv memory margin: the margin is earlyoom's 2%% of MemTotal plus 4 GiB, a pool attaches with its minimum, a grow stops where MemAvailable would cross the margin and at the KV limit, each refusal logs its reason, and a pool below the margin waits for its minimum\n");
 }
 
 static uint64_t SparkTestMonotonicNs(void)
