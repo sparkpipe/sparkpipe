@@ -3,19 +3,10 @@
 #include <stdint.h>
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
 
 #define LM_POLY_NORM_PARAMS 4u
-
-static __device__ __forceinline__ float LmPolyNormClamp(float value, float limit)
-{
-	return fminf(fmaxf(value, -limit), limit);
-}
-
-static __device__ __forceinline__ float LmPolyNormSigmoid(float value)
-{
-	return 1.0f / (1.0f + expf(-value));
-}
 
 template<uint32_t THREADS, bool ROUTED>
 __global__ __launch_bounds__(THREADS) void LmPolyNormMulKernel(const uint16_t *__restrict__ gate_up_bf16, const float *__restrict__ params_f32,
@@ -31,7 +22,7 @@ __global__ __launch_bounds__(THREADS) void LmPolyNormMulKernel(const uint16_t *_
 	float square = 0.0f, fourth = 0.0f, sixth = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
-		const float g = LmPolyNormClamp(LmBf16ToFloat(gate[index]), clamp), g2 = g * g, g3 = g2 * g;
+		const float g = SparkMathClamp(LmBf16ToFloat(gate[index]), clamp), g2 = g * g, g3 = g2 * g;
 		square += g * g;
 		fourth += g2 * g2;
 		sixth += g3 * g3;
@@ -41,14 +32,14 @@ __global__ __launch_bounds__(THREADS) void LmPolyNormMulKernel(const uint16_t *_
 	sixth = LmBlockSum<THREADS>(sixth, reduction);
 	const float count = (float)width;
 	const float d1 = sqrtf(square / count + epsilon), d2 = sqrtf(fourth / count + epsilon), d3 = sqrtf(sixth / count + epsilon);
-	const float w0 = LmPolyNormSigmoid(params[0]), w1 = LmPolyNormSigmoid(params[1]), w2 = LmPolyNormSigmoid(params[2]);
-	const float bias = ROUTED ? LmPolyNormClamp(params[3], bias_clamp) : params[3];
+	const float w0 = SparkMathSigmoid(params[0]), w1 = SparkMathSigmoid(params[1]), w2 = SparkMathSigmoid(params[2]);
+	const float bias = ROUTED ? SparkMathClamp(params[3], bias_clamp) : params[3];
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
-		const float g = LmPolyNormClamp(LmBf16ToFloat(gate[index]), clamp), u = LmPolyNormClamp(LmBf16ToFloat(up[index]), clamp);
-		const float poly = w0 * (g * g * g / d3) + w1 * (g * g / d2) + w2 * (g / d1) + bias;
+		const float g = SparkMathClamp(LmBf16ToFloat(gate[index]), clamp), u = SparkMathClamp(LmBf16ToFloat(up[index]), clamp);
+		const float poly = SparkMathPolyNorm(g, d1, d2, d3, w0, w1, w2, bias);
 		const float value = poly * u;
-		out_bf16[(uint64_t)row * width + index] = ROUTED ? LmFloatToBf16(LmPolyNormClamp(value, clamp) * out_scale)
+		out_bf16[(uint64_t)row * width + index] = ROUTED ? LmFloatToBf16(SparkMathClamp(value, clamp) * out_scale)
 			: LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(value)) * out_scale);
 	}
 }

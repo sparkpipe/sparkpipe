@@ -379,10 +379,14 @@ SPARK_MATH_FN float SparkMathPolyNorm(float gate, float d1, float d2, float d3, 
 	return(w0 * (gate * gate * gate / d3) + w1 * (gate * gate / d2) + w2 * (gate / d1) + bias);
 }
 
+SPARK_MATH_FN float SparkMathDifferentialCombine(float signal, float noise, float lambda)
+{
+	return(SparkMathRoundBf16(signal - SparkMathRoundBf16(SparkMathRoundBf16(SparkMathSigmoid(lambda)) * noise)));
+}
+
 SPARK_MATH_FN float SparkMathDifferentialGate(float signal, float noise, float lambda, float gate)
 {
-	const float scaled = SparkMathRoundBf16(SparkMathRoundBf16(SparkMathSigmoid(lambda)) * noise);
-	return(SparkMathRoundBf16(signal - scaled) * SparkMathRoundBf16(SparkMathSigmoid(gate)));
+	return(SparkMathDifferentialCombine(signal, noise, lambda) * SparkMathRoundBf16(SparkMathSigmoid(gate)));
 }
 
 #endif
