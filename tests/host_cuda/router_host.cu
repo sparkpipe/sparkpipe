@@ -36,6 +36,7 @@ int main(void)
 	static float scores[ROWS * EXPERTS];
 	static float bias[EXPERTS];
 	static uint32_t chosen[ROWS * TOP_K];
+	static uint32_t fault;
 	static float weights[ROWS * TOP_K];
 	uint32_t seed = 987654321u, row, expert;
 
@@ -56,7 +57,7 @@ int main(void)
 	(void)scores;
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmTopkSmallKernel<THREADS, TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(
-			0, EXPERTS, chosen, weights, bias, logits, 1.0f)));
+			0, EXPERTS, chosen, weights, bias, logits, 1.0f, &fault)));
 
 	for (row = 0u; row < ROWS; ++row)
 		for (expert = 0u; expert < TOP_K; ++expert)

@@ -263,6 +263,7 @@ typedef struct GlmBuffers
 	float *selection_scores;
 	float *gate_bottleneck;
 	uint32_t *route_expert;
+	uint32_t *route_fault;
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
@@ -875,16 +876,18 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 			0u, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK || GlmLaunched() != LM_LAUNCH_OK )
 		return status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH;
+	if ( b->route_fault == 0 )
+		return LM_LAUNCH_ERR_SHAPE;
 	if constexpr ( S::kExpertGroups > 1u )
 	{
 		LM_LAUNCH((LmTopkSmallKernel<GLM_THREADS,S::kTopK,true,S::kExpertGroups,S::kTopGroups,LM_TOPK_SCORE_SIGMOID>), rows, GLM_THREADS,
 			2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream, b->router_logits, S::kExperts, b->route_expert, b->route_weight, b->weights->router_bias,
-			(const uint16_t *)0, S::kRoutedScale);
+			(const uint16_t *)0, S::kRoutedScale, b->route_fault);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			return LM_LAUNCH_ERR_LAUNCH;
 	}
 	else if ( LmTopkRouteLaunch<GLM_THREADS,S::kTopK,true,LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, S::kExperts, b->route_expert, b->route_weight,
-			b->weights->router_bias, 0, S::kRoutedScale, stream) != cudaSuccess )
+			b->weights->router_bias, 0, S::kRoutedScale, b->route_fault, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	status = LmRouteBuild<GLM_THREADS,S::kExperts>(b->route_expert, rows, packed_rows, S::kTopK, b->group_row_offset, b->route_packed_row,
 		b->route_source_token, b->expert_w1_rows, S::kHidden, GLM_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
@@ -1076,6 +1079,7 @@ struct GlmModel
 		float *topk_values;
 		uint32_t *topk_positions;
 		uint32_t *route_expert;
+		uint32_t *route_fault;
 		float *route_weight;
 		uint32_t *route_source;
 		uint32_t *route_packed;
@@ -1891,6 +1895,7 @@ struct GlmModel
 		b->selection_scores = state->selection_scores;
 		b->gate_bottleneck = state->gate_bottleneck;
 		b->route_expert = state->route_expert;
+		b->route_fault = state->route_fault;
 		b->route_weight = state->route_weight;
 		b->route_source_token = state->route_source;
 		b->route_packed_row = state->route_packed;
@@ -2252,6 +2257,7 @@ struct GlmModel
 		State *state = (State *)model;
 		cudaStream_t stream = (cudaStream_t)stream_void;
 		const uint32_t rows = step->rows;
+		state->route_fault = step->route_fault;
 		const uint32_t ordered = step->last_rows_only != 0u || (rows != step->sequences && (FrameShape(step) == 0u || step->graph_key != 2u)) ? 1u : 0u;
 		GlmRegime regime;
 		GlmWave wave;

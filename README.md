@@ -419,6 +419,11 @@ speculative run emits the same tokens as a B1 run without speculation.
 Every built speculation path can be selected individually, and none can be
 compiled out.
 
+**Rejected rows.** A verify frame never publishes cache blocks: the
+validator and the stage adapter refuse a verify submission whose lanes
+publish, because rows past the accepted ones are not part of the sequence
+and the stage captures recurrent state before `keep_rows` rolls it back.
+
 ## Determinism and evidence
 
 **Determinism.** Greedy decoding is bitwise reproducible from run to run:
@@ -434,6 +439,12 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+**Routing.** Every routing top-k kernel ranks a NaN or infinite router
+score below every finite one and never returns an out-of-range or repeated
+expert. A row with fewer finite scores than the experts it routes to raises
+the runner's route-fault word, and the runner fails that step with an
+error instead of serving its output.
 
 Greedy, sampled and logprob tokens come only from ids the tokenizer can
 decode. Several models pad their logits past their tokenizer: GLM-5.3 Full

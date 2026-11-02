@@ -124,6 +124,7 @@ static void SlBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_inde
 	b->latent_full_bf16 = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_ROUTED_EXPERT_HIDDEN);
 	b->router_logits = SlAlloc<float>((uint64_t)SL_ROWS * K3_EXPERTS);
 	b->route_expert = SlAlloc<uint32_t>(SL_PACKED);
+	b->route_fault = SlAlloc<uint32_t>(1u);
 	b->route_weight = SlAlloc<float>(SL_PACKED);
 	b->route_packed_row = SlAlloc<uint32_t>(SL_PACKED);
 	b->route_source_token = SlAlloc<uint32_t>(SL_PACKED);

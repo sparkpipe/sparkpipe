@@ -68,7 +68,7 @@ template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_L
 template __global__ void LmAttentionDecodeRangeKernel<K3GlobalKv, K3_ATTN_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float, const uint32_t *, uint32_t, uint32_t, float *, float *, float *);
 template __global__ void LmAttentionRangeMergeKernel<K3_ATTN_THREADS, K3_KV_LORA_RANK>(const float *, const float *, const float *, uint32_t, uint16_t *, uint32_t);
 template __global__ void LmSpecVerifyKernel<32u, 7u>(const uint32_t *, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *);
-template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
+template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float, uint32_t *);
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 

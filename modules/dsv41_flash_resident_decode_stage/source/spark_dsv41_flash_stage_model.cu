@@ -899,7 +899,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	SparkStatus status;
 	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, stream) != cudaSuccess )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 &&
 		(cudaStreamSynchronize(stream) != cudaSuccess ||

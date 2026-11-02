@@ -338,7 +338,7 @@ struct MimoModel
 		LmLocalExpertRoutes expert_routes;
 		if ( Bf16(layer->router, state->normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, sms, stream) != LM_LAUNCH_OK ||
 			LmTopkGroupLimitedLaunch<MM_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
-				state->route_weight, 1.0f, stream) != cudaSuccess )
+				state->route_weight, 1.0f, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);

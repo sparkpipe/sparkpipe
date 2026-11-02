@@ -1037,6 +1037,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 		in.gather_first = first;
 	}
 	in.route_expert = state->route_expert;
+	in.route_fault = step->route_fault;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;
 	in.route_weight = state->route_weight;

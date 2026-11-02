@@ -263,6 +263,18 @@ typedef struct SparkModelServingSubmission
 	SparkModelDriverResidencyToken residency;
 } SparkModelServingSubmission;
 
+static inline uint32_t SparkModelServingVerifyPublishLane(const SparkModelServingSubmission *submission)
+{
+	uint32_t lane;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u || submission->lanes == 0 )
+		return(UINT32_MAX);
+	for (lane=0u; lane<submission->lane_count; lane++)
+		if ( (submission->lanes[lane].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS |
+			SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED)) != 0u )
+			return(lane);
+	return(UINT32_MAX);
+}
+
 static inline uint32_t SparkModelServingSubmissionFrameFlags(const SparkModelServingSubmission *submission)
 {
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )

@@ -61,6 +61,7 @@ typedef struct SparkStageRunnerStep
 	uint32_t graph_key;
 	const uint32_t *route_override;
 	uint32_t route_override_width;
+	uint32_t *route_fault;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -125,6 +126,7 @@ typedef struct SparkStageRunnerStreamedPrefill
 	uint32_t state_target;
 	uint32_t multiprocessors;
 	uint32_t reserved0;
+	uint32_t *route_fault;
 } SparkStageRunnerStreamedPrefill;
 
 struct SparkStageRunnerModelInterface

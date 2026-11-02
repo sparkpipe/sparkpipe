@@ -479,6 +479,7 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 	b->route_weight = state->route_weight;
 	b->route_source_token = state->route_source_token;
 	b->route_packed_row = state->route_packed_row;
+	b->route_fault = step->route_fault;
 	b->group_row_offset = state->group_row_offset;
 	b->group_tile_prefix_w1 = state->group_tile_prefix_w1;
 	b->group_tile_prefix_w2 = state->group_tile_prefix_w2;
