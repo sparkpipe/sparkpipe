@@ -419,15 +419,16 @@ def spec_prompts(args):
                                           "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "generation")):
+def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "generation"), encode=None, tokenizer_file="tokenizer.json"):
     import hashlib
     import html
     import re
-    from tokenizers import Tokenizer
     root = Path(__file__).resolve().parents[1]
     template = json.loads(Path(args.template).read_text())
-    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
-    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    if encode is None:
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / tokenizer_file))
+        encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
     head = encode("".join(template[key] for key in head_keys))
     tail = encode("".join(template[key] for key in tail_keys))
     prompts = []
@@ -446,7 +447,7 @@ def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "
         prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
         print(f"{name}: {len(tokens)} tokens from {source}", flush=True)
-    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / tokenizer_file).read_bytes()).hexdigest(),
                                           "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
 
 

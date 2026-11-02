@@ -924,6 +924,83 @@ FP32 `teacher` modes:
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh solar-open-2 PACKS/solar_open2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+### K-EXAONE 2.0 on eight ranks
+
+K-EXAONE 2.0 (78 layers of 6,144, BF16) is the Gemma family schedule's
+pre-norm layout, and `GemmaDevice` places it as `Kexaone2Device`
+(`SparkKexaone2DeviceStageModelAt`, TP 1, 2, 4 or 8). Its geometry has a
+layer table (`kLayerTable`): layer 0 attends globally, layer 1 through a
+4,096-key window, every fourth layer from layer 5 globally and the rest
+through the 128-key window, so the backend takes each layer's window from
+`L::Window` rather than from the full or sliding shape; and its last 16
+layers limit the SwiGLU at 7 (`L::SwigluLimit`), so those layers' dense and
+expert activations are `spark_silu_gate_limit_mul(_routed)`. The router
+logits stay FP32 (`kRouterFloat`, no BF16 rounding before the sigmoid), and
+every rank holds all 256 experts split by intermediate width
+(`tensor_parallel`). The checkpoint is 1.4 TB, so it runs as eight ranks
+paged from the SSD (`tools/kexaone2_tp16_pack.py --tp-degree 8`);
+`tools/kexaone2_reference.py` gains `gate-prompts` (the full chat turn) and
+`teacher` (FP32 products; variant b adds the routed experts in descending
+order):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh k-exaone-2.0 PACKS/kexaone2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+### MiMo V2.6 Pro on eight ranks
+
+`MimoDevice` places either MiMo geometry at TP 1, 2, 4 or 8
+(`SparkMimo26FlashDeviceStageModelAt`, `SparkMimo26ProDeviceStageModelAt`):
+each rank projects its rows of the fused FP8 QKV, which the shared attention
+gathers before its heads run (the SWA layers' sinks sliced to them), holds
+its slice of the dense layer and the vocabulary and `E / TP` whole experts,
+maps the routes to its experts (`spark_route_local`, the others skipped) and
+all-reduces the attention and FFN outputs. Pro is Flash's schedule with 70
+layers of 6,144, 128 heads, 8 KV heads in both attention kinds, 384 experts,
+a value scale of 0.612 and an epsilon of 1e-5. Its checkpoint is 566 GB, so
+it runs as eight ranks paged from the SSD (`tools/mimo26_tp16_pack.py
+--model pro --tp-degree 8`), against the MiMo gate prompts (the same
+tokenizer and chat template):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh mimo-v2.6-pro PACKS/mimo26_pro.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+Pro's single-layer controls corrupt layer 7, a full-attention layer, where
+Flash's corrupt layer 11. On the gate prompts every head of Pro's SWA layers
+1 and 11 puts its softmax mass on the sink: the keys carry a constant
+component the query is anti-aligned with (scores of -60 to -90 against sinks
+near 0.6), so those layers' `attn_out` reaches the residual only as values far
+below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
+byte-identical. Shifting the layer's query rows by one breaks that alignment
+and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
+them by a mean KL of 0.56.
+
+### HY4 on eight ranks
+
+HY4 (Hy4 preview, 78 layers of 6,144, MXFP8 weights) runs on its family
+schedule through `HyDevice` (`model-families/hy4/device/`): the embedding
+expanded into four hyper-connection streams (`spark_hyper_expand`); before
+each branch `spark_hc_mix8` mixes the streams with the layer's pre and post
+weights and `spark_rmsnorm_bf16` norms the branch input; the branch is
+`SparkDeviceLatentAttention` with HY4's switches (query LoRA 2,048, nope 192
+plus rope 64 at theta 1e7, value 256, scale `1/16`, elementwise gate, sinks)
+or the dense layer 0 or the experts: the BF16 router in FP32, sigmoid top 8
+times 2.827 over the bias-corrected scores (`spark_route_sigmoid_topk`),
+`SparkDeviceRoutedFfn` on the MXFP8 experts with the gate-limited SwiGLU at
+10 and the route weight before the down projection, and the shared expert
+joined in route order (`spark_route_combine_shared`); `spark_hc_post` adds
+the branch to each stream with its post weight, and `spark_hc_mix4` collapses
+the streams before the head norm and the head. The sparse-attention indexer is
+not built: a row that sees more than the indexer's 2,048 keys is refused,
+and below that the indexer keeps every key, so attention is exactly dense. The
+FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
+(`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
+`gate-prompts` and `teacher` modes (variant b sums every product in
+1,024-wide chunks last first, reverses the norms' and softmax sums and adds
+the experts in descending order):
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
 ### GLM 5.3 Flash on eight ranks
 
 GLM 5.3 Flash (45 layers of 4,096: 34 KDA layers and every fourth layer
@@ -955,83 +1032,6 @@ the Ling reference's FP32 variants):
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh glm-5.3-flash PACKS/glm53flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
-
-### K-EXAONE 2.0 on eight ranks
-
-K-EXAONE 2.0 (78 layers of 6,144, BF16) is the Gemma family schedule's
-pre-norm layout, and `GemmaDevice` places it as `Kexaone2Device`
-(`SparkKexaone2DeviceStageModelAt`, TP 1, 2, 4 or 8). Its geometry has a
-layer table (`kLayerTable`): layer 0 attends globally, layer 1 through a
-4,096-key window, every fourth layer from layer 5 globally and the rest
-through the 128-key window, so the backend takes each layer's window from
-`L::Window` rather than from the full or sliding shape; and its last 16
-layers limit the SwiGLU at 7 (`L::SwigluLimit`), so those layers' dense and
-expert activations are `spark_silu_gate_limit_mul(_routed)`. The router
-logits stay FP32 (`kRouterFloat`, no BF16 rounding before the sigmoid), and
-every rank holds all 256 experts split by intermediate width
-(`tensor_parallel`). The checkpoint is 1.4 TB, so it runs as eight ranks
-paged from the SSD (`tools/kexaone2_tp16_pack.py --tp-degree 8`);
-`tools/kexaone2_reference.py` gains `gate-prompts` (the full chat turn) and
-`teacher` (FP32 products; variant b adds the routed experts in descending
-order):
-
-    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
-        sh tools/metal_gates.sh k-exaone-2.0 PACKS/kexaone2.tp8.rank00.pack REFERENCE_DIR OUT REVISION
-
-### HY4 on eight ranks
-
-HY4 (Hy4 preview, 78 layers of 6,144, MXFP8 weights) runs on its family
-schedule through `HyDevice` (`model-families/hy4/device/`): the embedding
-expanded into four hyper-connection streams (`spark_hyper_expand`); before
-each branch `spark_hc_mix8` mixes the streams with the layer's pre and post
-weights and `spark_rmsnorm_bf16` norms the branch input; the branch is
-`SparkDeviceLatentAttention` with HY4's switches (query LoRA 2,048, nope 192
-plus rope 64 at theta 1e7, value 256, scale `1/16`, elementwise gate, sinks)
-or the dense layer 0 or the experts: the BF16 router in FP32, sigmoid top 8
-times 2.827 over the bias-corrected scores (`spark_route_sigmoid_topk`),
-`SparkDeviceRoutedFfn` on the MXFP8 experts with the gate-limited SwiGLU at
-10 and the route weight before the down projection, and the shared expert
-joined in route order (`spark_route_combine_shared`); `spark_hc_post` adds
-the branch to each stream with its post weight, and `spark_hc_mix4` collapses
-the streams before the head norm and the head. The sparse-attention indexer is
-not built: a row that sees more than the indexer's 2,048 keys is refused,
-and below that the indexer keeps every key, so attention is exactly dense. The
-FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
-(`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
-`gate-prompts` and `teacher` modes (variant b sums every product in
-1,024-wide chunks last first, reverses the norms' and softmax sums and adds
-the experts in descending order):
-
-    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
-        sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
-
-### MiMo V2.6 Pro on eight ranks
-
-`MimoDevice` places either MiMo geometry at TP 1, 2, 4 or 8
-(`SparkMimo26FlashDeviceStageModelAt`, `SparkMimo26ProDeviceStageModelAt`):
-each rank projects its rows of the fused FP8 QKV, which the shared attention
-gathers before its heads run (the SWA layers' sinks sliced to them), holds
-its slice of the dense layer and the vocabulary and `E / TP` whole experts,
-maps the routes to its experts (`spark_route_local`, the others skipped) and
-all-reduces the attention and FFN outputs. Pro is Flash's schedule with 70
-layers of 6,144, 128 heads, 8 KV heads in both attention kinds, 384 experts,
-a value scale of 0.612 and an epsilon of 1e-5. Its checkpoint is 566 GB, so
-it runs as eight ranks paged from the SSD (`tools/mimo26_tp16_pack.py
---model pro --tp-degree 8`), against the MiMo gate prompts (the same
-tokenizer and chat template):
-
-    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
-        sh tools/metal_gates.sh mimo-v2.6-pro PACKS/mimo26_pro.tp8.rank00.pack REFERENCE_DIR OUT REVISION
-
-Pro's single-layer controls corrupt layer 7, a full-attention layer, where
-Flash's corrupt layer 11. On the gate prompts every head of Pro's SWA layers
-1 and 11 puts its softmax mass on the sink: the keys carry a constant
-component the query is anti-aligned with (scores of -60 to -90 against sinks
-near 0.6), so those layers' `attn_out` reaches the residual only as values far
-below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
-byte-identical. Shifting the layer's query rows by one breaks that alignment
-and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
-them by a mean KL of 0.56.
 
 ### GLM 5.3 on eight ranks
 
@@ -1156,3 +1156,29 @@ at 2.53 and 2.35 times and +20.7 and +23.6 sigma. The same swap in layer
 11 alone stays at +2.4 and +1.1 sigma, and in every layer's `o_b`, which
 moves two of the 5,120 hidden channels, it stayed within 1.2 times the a
 and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
+
+### Kimi K3 on eight ranks
+
+Kimi K3 (93 layers of 7,168: 69 KDA layers, 24 rope-free latent attention
+layers, 896 MXFP4 experts) runs on `K3Schedule` through `K3Device`
+(`model-families/k3/device/`), geometry from `inference/llms/kimi_k3/config.h`.
+The schedule's CUDA-only paths (context-sharded attention, expert cells, lazy
+experts) sit behind `kShardedMla`, `kExpertCells` and `kLazyExperts`, which the
+CUDA backend sets and the Metal one does not. The residual stream is AttnRes:
+`spark_attnres_score` and `spark_attnres_mix` retrieve over the bank of block
+sums and the running partial at each site; the TP rounds sit in the schedule's
+`MlpPrefetchRound` and `AttentionPrefetchRound` (all-reduce the branch, then set
+or add the partial). The KDA layers are `SparkDeviceChannelDelta` with K3's
+switches (FP32 conv weights, two-stage L2, full-rank gate, the gated norm
+rounded before the gate); the latent layers are `SparkDeviceLatentAttention`
+with `rope_unrotated` and `gate_unrounded`; layer 0 and the shared experts use
+SiTU (`spark_situ_mul`, `SparkMathSitu` shared with `LmSituMulKernel`); the
+experts run in the 3,584-wide latent (`SparkDeviceRoutedFfnShape.width`), each
+rank's routed_down slice gathered and the expert sum all-reduced at that width.
+The 1.56 TB checkpoint packs at TP8 (`tools/k3_tp16_pack.py --tp-degree 8`,
+the checkpoint's MXFP4 planes, q_b and kv_b's key rows kept apart);
+`tools/k3_reference.py` gives the gate prompts through the frontend's
+tiktoken vocabulary and the FP32 teacher:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh kimi-k3 PACKS/k3.tp8.rank00.pack REFERENCE_DIR OUT REVISION

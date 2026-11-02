@@ -1496,6 +1496,16 @@ Metal backend and the single-Studio stage are in
   (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
   which the CUDA `Axk2Geometry` also takes its values from; its indexer
   (64 heads, ReLU scores, half-split rope) is not built either.
+- Kimi K3 on the Studio (`K3Device`): the latent attention layers run `q_b`,
+  round, then multiply each head by `mla_uk` (kv_b's key rows) and round
+  again, as the teacher does, where CUDA's pack folds the key rows into the
+  query weight and rounds once; the latent slot stores the 512-wide latent
+  as key and value (1,088 elements where CUDA keeps 576). With
+  `kExpertCells` false the schedule's `ResidentMoe` phases carry the
+  expert-cells meaning (gather the latent slices, then all-reduce the
+  3,584-wide expert sum, CUDA's production arithmetic), not CUDA's own
+  `ResidentMoe` split by latent input, and every rank scores all 896
+  experts where CUDA scores 112 per rank and gathers them.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is
