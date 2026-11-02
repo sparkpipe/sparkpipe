@@ -58,7 +58,7 @@ template __global__ void LmCausalConvKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_C
 template __global__ void LmL2NormalisePerHeadKernel<K3_THREADS, K3_KDA_KEY_DIM>(uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmBoundedDecayKernel<K3_THREADS, K3_KDA_KEY_DIM>(const uint16_t *, const float *, const float *, float *, uint32_t, float, uint32_t);
 template __global__ void LmOutputGateKernel<K3_THREADS>(uint16_t *, const uint16_t *, uint32_t);
-template __global__ void LmSituMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, float, float);
+template __global__ void LmSituMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint64_t, float, float, uint32_t);
 template __global__ void LmKvStoreKernel<K3GlobalKv, K3_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<K3_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);

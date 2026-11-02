@@ -5,6 +5,8 @@
 #include "sparkpipe/spark_model_resident_endpoint.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 
+#define TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY 163840u
+
 typedef struct TestModelResidentDeploymentFixture
 {
 	const char *adapter_shared_object_path;

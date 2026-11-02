@@ -568,6 +568,7 @@ struct Glm5NextStage
 		SparkStatus status;
 		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 				SparkGlm5NextIndexCpGatherSequences(rows, Glm5NextLocalStride(state, context)), b->index_local_scores, (void *)b->index_gathered_scores);
@@ -578,7 +579,6 @@ struct Glm5NextStage
 				b->query_latent_bf16, b->shard_query_gathered_bf16);
 		if ( status == SPARK_STATUS_OK )
 			status = Launch(Glm5NextAttentionPartial(b, rows, stream), "attention partial", layer);
-		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, SparkGlm5NextKvShardPartialSequences(rows, D, UINT32_MAX),
 				b->shard_partials_f32, b->shard_partials_received_f32);
@@ -593,7 +593,11 @@ struct Glm5NextStage
 		const void *w1 = 0, *w2 = 0;
 		SparkStatus status;
 		if ( layer < G5N_FIRST_ROUTED )
-			return Launch(Glm5NextDenseMlp(b, rows, sms, stream), "dense mlp", layer);
+		{
+			status = Launch(Glm5NextDenseMlp(b, rows, sms, stream), "dense mlp", layer);
+			state->services->layer_done(state->services->context, layer);
+			return status;
+		}
 		status = Launch(Glm5NextMoeRoute(b, rows, sms, stream), "moe route", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = state->services->expert_weights(state->services->context, layer, b->group_row_offset, rows * G5N_TOP_K, &w1, &w2);

@@ -105,6 +105,19 @@ window in which every stream decodes, both repeats:
 GLM 5.3 Full's 8K prefill takes 6.9 s against a network floor of about 2.9 s:
 42% of the floor that binds first at TP16.
 
+GLM 5.3 Flash and DSV4.1 prefill in 2,048-row waves (2026-11-01, main firmware 51f316949, 16 Sparks):
+
+| 131K-token needle | 1,024-row waves | 2,048-row waves |
+| --- | ---: | ---: |
+| GLM 5.3 Flash (126,448 tokens) | 134.7 s | 110.8 s (1,141 tok/s) |
+| DSV4.1 1017 (130,819 tokens) | 85.0 s | 81.8 s (1,599 tok/s) |
+
+The outputs do not change. On both models, the two wave sizes give the same greedy tokens and the same top-5 logprobs on six chat prompts, alone and behind a 40,000-character document that spans several waves.
+
+GLM 5.3 Flash's second prefill lane now starts each DSA layer as soon as the first lane has written its cache rows (2026-11-01, 16 Sparks, interleaved A B A B on one hold): a 108,324-token prompt prefills in 82.7 and 82.8 s instead of 93.0 and 93.3 s (1,309 instead of 1,163 tok/s). The greedy tokens and top-5 logprobs are identical on the same six prompts and on the long prompt's answer. GLM 5.3 Full, whose lanes now also run the leader at the higher stream priority, prefills a 108,328-token prompt in 121.0 and 121.4 s against 124.1 s, also with identical outputs.
+
+GLM 5.3 Flash then prefills in 4,096-row waves, two 2,048-row lanes (2026-11-01, same method): the 108,324-token prompt takes 79.8 and 80.4 s instead of 82.7 and 82.9 s (1,353 tok/s), with identical tokens and logprobs. Each lane reads every expert weight once per wave, so twice the rows per wave halves those reads per token.
+
 ### Floors
 
 Two floors bound decode:
@@ -432,6 +445,7 @@ corrupted run hides in it; pinned, the floor is 0.063:
 | --- | --- |
 | Sharding | each node holds 1/16 of a sequence's MLA latent, split by context |
 | Windows | K3 and GLM 5.3 Full 1,048,576 tokens on pools of 20,480 pages of 64 tokens per node (2.1 and 7.3 GiB); a needle at 998K (K3) and 1.01M (GLM 5.3 Full) is found after a cold prefill of 66 and 55 minutes |
+| K3 1M prompt, prefill-only fleet | 990,881 tokens with a needle at the middle: streamed prefill of every prompt token but the last 16.2 minutes (971.6 s, two passes of 30,976 rows a node; MLA attention 694 s, KDA 137 s, MLP and experts 139 s on the GPU; faster nodes attend some of the slower nodes' rows), then the last token as a one-row wave; first token after 975.7 s, answer found 16.3 minutes (979.1 s) after the request; 258,339 tokens: one 144.8 s pass, first token after 147.3 s, answer after 150.0 s; the 16 nodes serve no decode meanwhile |
 | Pages | lanes share one physical page pool; pages beyond it park on NVMe |
 | K3 follow-up turn, cached prefix | 4.7-5.1 s at 137.7K (299-316 s cold); 8.0 s for 1,872 new tokens at 337K (982 s cold) |
 | Prefix restored after a model swap | 137,600 tokens in 2.7 s |

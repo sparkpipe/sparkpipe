@@ -60,6 +60,7 @@ typedef struct SparkModelResidentDeploymentNode
 	char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	char *kv_snapshot_directory;
+	uint64_t kv_partition_reserve_bytes;
 	uint64_t kv_snapshot_maximum_bytes;
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
@@ -82,6 +83,7 @@ typedef struct SparkModelResidentDeployment
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
 	uint32_t max_shared_input_row_count;
+	uint32_t streamed_prefill_min_tokens;
 	SparkModelServingRuntimeLimits runtime_limits;
 	char *adapter_shared_object_path;
 	char *driver_shared_object_path;

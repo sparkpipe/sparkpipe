@@ -41,7 +41,21 @@ def table(lines):
     return "\n".join(out)
 
 
-def body(md):
+PART = re.compile(r"^(?:Part (\d+)\.|제(\d+)부)\s")
+NUMBERED = re.compile(r"^(?:제)?(\d+)[.조]")
+
+
+def heading_id(head, n):
+    part = PART.match(head)
+    if part:
+        return f"part{part.group(1) or part.group(2)}"
+    m = NUMBERED.match(head)
+    if m:
+        return f"s{m.group(1)}"
+    return re.sub(r"[^a-z0-9]+", "-", head.lower()).strip("-") or f"h{n}"
+
+
+def body(md, ids=None):
     lines = md.splitlines()
     title = lines[0][2:].strip()
     lines = lines[1:]
@@ -53,17 +67,26 @@ def body(md):
                 cur = []
         else:
             cur.append(line)
-    out, open_section, n = [], False, 0
+    out, open_section, found, parts = [], False, [], False
     for b in blocks:
         first = b[0]
         if first.startswith("## "):
             if open_section:
                 out.append("</section>")
             head = first[3:].strip()
-            m = re.match(r"^(?:제)?(\d+)[.조]", head)
-            n += 1
-            sid = f"s{m.group(1)}" if m else re.sub(r"[^a-z0-9]+", "-", head.lower()).strip("-") or f"part{n}"
-            out.append(f'<section id="{sid}">\n<h2>{inline(head)}</h2>')
+            own = heading_id(head, len(found) + 1)
+            if ids is None:
+                sid = own
+            elif len(found) >= len(ids) or ((PART.match(head) or NUMBERED.match(head)) and own != ids[len(found)]):
+                raise ValueError(f"heading {head!r} has no twin with the same number")
+            else:
+                sid = ids[len(found)]
+            found.append(sid)
+            part = PART.match(head)
+            parts = parts or bool(part)
+            level = 3 if parts and not part else 2
+            kind = ' class="part"' if part else ""
+            out.append(f'<section id="{sid}"{kind}>\n<h{level}>{inline(head)}</h{level}>')
             open_section = True
             rest = b[1:]
             if rest:
@@ -88,13 +111,17 @@ def body(md):
             out.append(f"<p{pid}>{inline(text)}</p>")
     if open_section:
         out.append("</section>")
-    return title, "\n".join(out)
+    if ids is not None and len(found) != len(ids):
+        raise ValueError(f"{len(found)} headings, but the twin has {len(ids)}")
+    return title, "\n".join(out), found
 
 
 STYLE = """<style>
 .policy { padding-block: 48px 64px; display: grid; gap: 28px; }
 .policy h1 { font-size: clamp(32px, 5vw, 56px); }
 .policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy .part h2 { font-size: clamp(28px, 3.6vw, 42px); margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.policy h3 { font-size: clamp(20px, 2.2vw, 26px); margin-top: 8px; }
 .policy section { display: grid; gap: 12px; max-width: 76ch; }
 .policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
 .policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
@@ -112,41 +139,30 @@ STYLE = """<style>
 
 PAGES = [
     {
-        "src": "hourly-en.md", "out": "hourly-terms.html", "lang": "en", "tag": "terms",
-        "title": "SparkPipe Hourly Terms", "other": "hourly-terms-ko.html",
-        "desc": "Draft Hourly Terms for prepaid SparkPipe fleet-hours, published for review.",
-        "lead": "These Terms are accepted online: Customer signs their exact text with its Key at sign-up. The Korean text prevails (clause 12.3).",
-    },
-    {
-        "src": "hourly-ko.md", "out": "hourly-terms-ko.html", "lang": "ko", "tag": "약관",
-        "title": "SparkPipe 시간제 이용약관", "other": "hourly-terms.html",
-        "desc": "선불 SparkPipe 플릿시간 시간제 이용약관 검토용 공개 문안.",
-        "lead": "본 약관은 온라인으로 체결되며, 고객은 가입 시 자신의 키로 본 약관의 정확한 문안에 서명한다. 국문본이 우선한다(제12.3조).",
-    },
-    {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",
-        "title": "SparkPipe 2-Year Reserved Fleet Service Agreement", "other": "agreement-ko.html",
-        "desc": "Draft 2-Year Reserved Fleet Service Agreement for SparkPipe fleet-hours, published for review.",
-        "lead": "Signed individually after business verification; each clause may be negotiated. The Korean text prevails (clause 14.3).",
+        "title": "SparkPipe Customer Agreement", "other": "agreement-ko.html",
+        "desc": "Draft SparkPipe Customer Agreement for hour-credits, demo hours, weeks on a pinned fleet and the waitlist, published for review.",
+        "lead": "This Agreement is accepted online while signed in to the account, and we record the hashes of its exact texts. The Korean text prevails (clause 12.3).",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
-        "title": "SparkPipe 2년 예약 플릿 서비스 계약서", "other": "agreement.html",
-        "desc": "SparkPipe 플릿시간 2년 예약 플릿 서비스 계약서 검토용 공개 문안.",
-        "lead": "사업자 확인 후 개별적으로 체결하며, 각 조항은 협의할 수 있다. 국문본이 우선한다(제14.3조).",
+        "title": "SparkPipe 고객 계약", "other": "agreement.html",
+        "desc": "SparkPipe 시간 크레딧, 데모 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
+        "lead": "본 계약은 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
     },
 ]
 
 NOTICE = {
-    "en": "<b>Published for review. Not in force.</b> Fleet-hours go on sale on 1 December 2026, and nobody can buy or pay before then. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
-    "ko": "<b>검토용 공개 문안이며 아직 효력이 없습니다.</b> 플릿시간 판매는 2026년 12월 1일에 시작되며, 그 전에는 누구도 구매하거나 결제할 수 없습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    "en": "<b>Published for review.</b> Demo hours can be booked from 1 December 2026 and weeks on a pinned fleet from 4 January 2027. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+    "ko": "<b>검토용으로 공개한 문안입니다.</b> 데모 시간은 2026년 12월 1일부터, 고정 플릿의 주는 2027년 1월 4일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
 }
-VERSION = {"en": "Version of 25 October 2026", "ko": "2026년 10월 25일 판"}
+VERSION = {"en": "Version of 2 November 2026", "ko": "2026년 11월 2일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
 }
 HOME = {"en": "index.html", "ko": "index-ko.html"}
+COMPANY = {"en": "https://hyor.io/", "ko": "https://hyor.io/index-ko.html"}
 GROUP = {"en": "Language / 언어", "ko": "언어 / Language"}
 
 
@@ -166,9 +182,19 @@ def alternates(p):
             f'<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/{en}">')
 
 
+def twin_ids(p):
+    if p["lang"] == "en":
+        return None
+    twin = next(q for q in PAGES if q["out"] == p["other"])
+    return body((SRC / twin["src"]).read_text(encoding="utf-8"))[2]
+
+
 def page(p):
     md = (SRC / p["src"]).read_text(encoding="utf-8")
-    title, content = body(md)
+    try:
+        title, content, _ = body(md, twin_ids(p))
+    except ValueError as error:
+        raise ValueError(f"{p['src']}: {error}") from None
     nav = "".join(NAV[p["lang"]])
     return f"""<!doctype html>
 <html lang="{p['lang']}">
@@ -177,17 +203,18 @@ def page(p):
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>{html.escape(p['title'])}</title>
 <meta name="description" content="{html.escape(p['desc'])}">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#0a0c10">
 {alternates(p)}
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 {STYLE}
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="{HOME[p['lang']]}">SparkPipe<span class="tag">{p['tag']}</span></a>
+    <a class="brand" href="{HOME[p['lang']]}"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">{p['tag']}</span></a>
     <nav class="nav-links" aria-label="Sections">
       {nav}
     </nav>
@@ -209,7 +236,7 @@ def page(p):
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
+    <a class="maker" href="{COMPANY[p['lang']]}"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
     <nav aria-label="Footer">{nav}<a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>

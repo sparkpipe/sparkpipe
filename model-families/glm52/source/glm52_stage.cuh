@@ -1112,7 +1112,8 @@ struct GlmModel
 		uint32_t *host_positions;
 		uint32_t *host_slots;
 		uint32_t *host_staging;
-		LmKvAccessError *host_error;
+		LmKvAccessError *error_words;
+		LmKvAccessError *error_device;
 		uint8_t *kv_pool;
 		uint64_t kv_layer_stride;
 		uint8_t *index_pool;
@@ -1246,7 +1247,6 @@ struct GlmModel
 			{ (void **)&state->rows_zero, rows * sizeof(uint32_t) },
 			{ (void **)&state->plan, ((uint64_t)GLM_PLAN_ARRAYS * state->slots + GLM_PLAN_WORDS) * sizeof(uint32_t) },
 			{ (void **)&state->digest, GLM_DIGEST_WORDS * sizeof(unsigned long long) },
-			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
 		};
 		uint64_t cursor = 0u;
 		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
@@ -1454,6 +1454,8 @@ struct GlmModel
 			(void)cudaFree(state->lane_arena);
 		if ( state->lane_host_staging != 0 )
 			(void)cudaFreeHost(state->lane_host_staging);
+		if ( state->error_words != 0 )
+			(void)cudaFreeHost(state->error_words);
 		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
 			free(state->lane_states[lane]);
 		free(state);
@@ -1702,13 +1704,22 @@ struct GlmModel
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena) != SPARK_STATUS_OK ||
-			cudaHostAlloc((void **)&state->host_staging, 3u * (uint64_t)state->max_rows * sizeof(uint32_t) + sizeof(LmKvAccessError) + 64u,
+			cudaHostAlloc((void **)&state->host_staging, 3u * (uint64_t)state->max_rows * sizeof(uint32_t) + 64u,
 				cudaHostAllocPortable) != cudaSuccess )
 		{
 			state->host_staging = 0;
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 		Staging(state, state->host_staging);
+		if ( cudaHostAlloc((void **)&state->error_words, SPARK_STAGE_RUNNER_LANES * sizeof(LmKvAccessError), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+		{
+			state->error_words = 0;
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		memset(state->error_words, 0, SPARK_STAGE_RUNNER_LANES * sizeof(LmKvAccessError));
+		if ( cudaHostGetDevicePointer((void **)&state->error_device, state->error_words, 0u) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		state->kv_error = state->error_device;
 		if ( cudaMalloc(&state->lane_arena, state->arena_bytes) != cudaSuccess )
 		{
 			state->lane_arena = 0;
@@ -1716,7 +1727,7 @@ struct GlmModel
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		if ( cudaMemset(state->lane_arena, 0, state->arena_bytes) != cudaSuccess ||
-			cudaHostAlloc((void **)&state->lane_host_staging, 3u * (uint64_t)state->max_rows * sizeof(uint32_t) + sizeof(LmKvAccessError) + 64u,
+			cudaHostAlloc((void **)&state->lane_host_staging, 3u * (uint64_t)state->max_rows * sizeof(uint32_t) + 64u,
 				cudaHostAllocPortable) != cudaSuccess )
 		{
 			state->lane_host_staging = 0;
@@ -1749,7 +1760,6 @@ struct GlmModel
 		state->host_order = staging;
 		state->host_positions = state->host_order + state->max_rows;
 		state->host_slots = state->host_positions + state->max_rows;
-		state->host_error = (LmKvAccessError *)(void *)(state->host_slots + state->max_rows);
 	}
 
 	static void LaneFold(State *state)
@@ -1793,6 +1803,7 @@ struct GlmModel
 			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena) != SPARK_STATUS_OK || bytes != state->arena_bytes )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			Staging(copy, state->lane_host_staging);
+			copy->kv_error = state->error_device + lane;
 		}
 		state->lane_bound[lane] = 1u;
 		state->lane_base[lane][0] = copy->steps;
@@ -2218,21 +2229,22 @@ struct GlmModel
 		return SPARK_STATUS_OK;
 	}
 
-	static uint32_t KvErrorReport(const State *state)
+	static SparkStatus Check(void *model)
 	{
-		const LmKvAccessError *error = state->host_error;
-		if ( error->error_code == 0u )
-			return 0u;
-		fprintf(stderr, "%s: KV access error code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", G::Tag(), error->error_code,
-			error->access_kind, error->row, error->sequence, error->position, error->page);
-		return 1u;
-	}
-
-	static void CUDART_CB KvErrorCheck(void *user)
-	{
-		const State *state = (const State *)user;
-		if ( KvErrorReport(state) != 0u )
-			state->services->fail(state->services->context, SPARK_STATUS_INTERNAL_ERROR);
+		const State *state = (const State *)model;
+		SparkStatus status = SPARK_STATUS_OK;
+		for ( uint32_t lane = 0u; state->error_words != 0 && lane < SPARK_STAGE_RUNNER_LANES; ++lane )
+		{
+			const volatile LmKvAccessError *error = state->error_words + lane;
+			if ( error->error_code == 0u )
+				continue;
+			fprintf(stderr, "%s: KV access error lane=%u code=%u kind=%u row=%u sequence=%u position=%u page=%u\n", G::Tag(), lane, error->error_code,
+				error->access_kind, error->row, error->sequence, error->position, error->page);
+			status = SPARK_STATUS_INTERNAL_ERROR;
+		}
+		if ( status != SPARK_STATUS_OK )
+			SPARK_FAIL(status);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
@@ -2251,8 +2263,6 @@ struct GlmModel
 				ordered, step->host_positions != 0 && step->host_sequence_of_row != 0 ? "yes" : "missing");
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		if ( cudaMemsetAsync(state->kv_error, 0, sizeof(LmKvAccessError), stream) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( ordered != 0u )
 		{
 			if ( SparkRowLayoutLaneMajorOrder(rows, step->host_sequence_of_row, state->host_order) != SPARK_STATUS_OK )
@@ -2289,19 +2299,9 @@ struct GlmModel
 		}
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( cudaMemcpyAsync(state->host_error, state->kv_error, sizeof(LmKvAccessError), cudaMemcpyDeviceToHost, stream) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		state->steps++;
-		if ( ordered == 0u )
-		{
-			if ( cudaLaunchHostFunc(stream, KvErrorCheck, state) != cudaSuccess )
-				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-			return SPARK_STATUS_OK;
-		}
-		if ( cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( ordered != 0u && cudaStreamSynchronize(stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		if ( KvErrorReport(state) != 0u )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
 	}
 
@@ -2369,7 +2369,11 @@ struct GlmModel
 			ProbeBuffers,
 			Report,
 			GraphKey,
-			Lane
+			Lane,
+			0,
+			0,
+			0,
+			Check
 		};
 		return &interface_table;
 	}

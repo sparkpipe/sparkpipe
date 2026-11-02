@@ -59,15 +59,17 @@ static uint64_t NowNs(void)
 typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 
 static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel };
+static const uint32_t run_output_vocabularies[] = { 248077u, 262144u };
 
-static const SparkStageRunnerModelInterface *RunModel(const char *name)
+static const SparkStageRunnerModelInterface *RunModel(const char *name,uint32_t *output_vocabulary)
 {
 	uint32_t index;
-	if ( name == 0 )
-		return(run_models[0]());
 	for ( index = 0u; index < sizeof(run_models) / sizeof(run_models[0]); index++ )
-		if ( strcmp(name,run_models[index]()->weightd_model) == 0 )
+		if ( name == 0 ? index == 0u : strcmp(name,run_models[index]()->weightd_model) == 0 )
+		{
+			*output_vocabulary = run_output_vocabularies[index];
 			return(run_models[index]());
+		}
 	return(0);
 }
 
@@ -1057,7 +1059,7 @@ int main(int argc, char **argv)
 	int failed = 0;
 	setvbuf(stdout,0,_IOLBF,0);
 	memset(&config,0,sizeof(config));
-	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model)) == 0 )
+	if ( ParseOptions(argc,argv,&options) != 0 || (config.model = RunModel(options.model,&config.output_vocabulary)) == 0 )
 		return(Usage(argv[0]));
 	if ( SparkTokenPromptsLoad(options.prompts,&prompts) != SPARK_STATUS_OK )
 		return(1);

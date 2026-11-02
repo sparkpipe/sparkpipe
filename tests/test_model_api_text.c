@@ -1028,11 +1028,11 @@ static void TestApiEngineStopCompletes(void)
 	log_data = TestApiReadFile(stack.api_stderr_path);
 	assert(log_data != 0);
 	last = TestApiLastMeasurements(log_data);
-	assert(last != 0 && strstr(last,"\"engine_completed\":0") != 0);
+	assert(last != 0 && strstr(last,"\"engine_completed\":1") != 0);
 	free(log_data);
 	TestApiStopStack(&stack);
 	TestApiEosToken = 0u;
-	printf("test_model_api_text: requested stop tokens OK (one the engine also stops on completes in the engine, so the reply can be resumed; one it does not still ends the reply at once)\n");
+	printf("test_model_api_text: requested stop tokens OK (the engine stops on a request's own stop tokens as on its end-of-sequence tokens, so the reply completes in the engine and can be resumed)\n");
 }
 
 static void TestApiChatDeclaredStops(TestApiStack *stack)

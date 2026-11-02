@@ -3,499 +3,395 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe Fleet-Hours</title>
-<meta name="description" content="Buy SparkPipe fleet-hours: prepaid by the hour, or every hour of a two-year term at a lower price. Mock checkout: nothing is charged.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<title>Buy Hour-Credits · SparkPipe</title>
+<meta name="description" content="Buy hour-credits for SparkPipe fleets in Seoul: demo hours and weeks on a fleet pinned to you. $20 each below 144 HC, $15 each from 144 HC. Pay by card, Korean bank transfer or easy pay in won through Toss Payments, in USDC or USDT, or by USD bank transfer (SWIFT) at 0% VAT.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
-<style>
-.mock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; border: 1px dashed var(--signal); border-radius: 2px; font: 500 12px/1.5 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--signal); }
-.panel { display: grid; gap: 18px; padding: 20px; border: 1px solid var(--rule); border-radius: 2px; background: var(--sheet); }
-[hidden] { display: none !important; }
-.locked { opacity: .5; pointer-events: none; }
-.progress { position: relative; height: 18px; border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--paper); overflow: hidden; }
-.progress i { position: absolute; inset: 0 auto 0 0; width: var(--w, 0%); background: var(--signal); }
-.progress b { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ink); }
-.ok { color: var(--live); }
-.out { margin: 0; padding: 14px; border-radius: 3px; background: var(--screen); color: var(--screen-ink); font: 400 11.5px/1.65 var(--mono); font-variation-settings: 'wdth' 87.5; overflow-x: auto; white-space: pre; max-height: 420px; }
-.out:empty { display: none; }
-.split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: clamp(24px, 4vw, 48px); }
-.split .form { display: grid; gap: 14px; align-content: start; }
-.table-wrap.scroll { max-height: 440px; overflow-y: auto; }
-.table-wrap.scroll thead th { position: sticky; top: 0; background: var(--paper); }
-.note-line { font: 400 12px/1.6 var(--mono); font-variation-settings: 'wdth' 87.5; color: var(--faint); }
-@media (max-width: 960px) { .split { grid-template-columns: minmax(0, 1fr); } }
-</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="checkout.css?v=3">
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
-
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">fleet-hours</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">hour-credits</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="#fleets">Fleets</a>
-      <a href="#hourly">Hourly</a>
-      <a href="#reserved">Two-year</a>
-      <a href="#prepayment">Prepayment</a>
-      <a href="#hours">Your hours</a>
-      <a href="#ledger">Ledger</a>
+      <a href="index.html#how">How it works</a>
+      <a href="index.html#prices">Prices</a>
+      <a href="fleets.html">Fleet List</a>
+      <a href="#faq">Questions</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="buy.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small" href="fleets.html">Fleet List</a>
-      <a class="btn small solid" href="#hourly">Buy hours</a>
+      <a class="btn small" id="nav-account" href="account.html">Sign in</a>
     </div>
   </div>
 </header>
 
-<main>
-<section class="wrap hero">
-  <p class="label hero-kicker">Fleet-hours · mock checkout</p>
-  <h1>A whole fleet, by the hour.</h1>
-  <div class="hero-grid">
-    <div class="hero-copy">
-      <p class="lead">One fleet-hour is an entire SparkPipe fleet for sixty minutes. Try it prepaid by the hour, or take every hour of a two-year term at the lower price. Your hours start on the date you choose.</p>
-      <p class="mock" role="note">Mock checkout. Nothing is charged and nothing leaves this page: orders, payments and hours are simulated and kept in this browser only. <button class="link" id="reset" type="button">Reset the demo</button></p>
-      <p class="note-line">The <a href="terms.html">Hourly Terms and the two-year agreement</a> are published for review and come into force when sales open on 1 December 2026. How we handle customer data: <a href="privacy.html#data">privacy</a>.</p>
-    </div>
-    <div class="specs plate">
-      <div><strong id="p-hourly">$20</strong><span>per fleet-hour, prepaid, no commitment: up to <b id="p-hourly-max">168</b> hours held, or <b id="p-verified-max">720</b> after a business check</span></div>
-      <div><strong id="p-committed">$15</strong><span>per fleet-hour for every hour of a two-year term, after a business check</span></div>
-      <div><strong id="p-vat">10%</strong><span>VAT added to won and USDC payments; a USD wire from abroad is zero-rated</span></div>
-      <div><strong id="p-start">2026-12-01</strong><span>earliest start for hourly hours and two-year agreements</span></div>
-    </div>
-  </div>
+<main class="wrap">
+<section class="co-head">
+  <p class="label">Buy hour-credits · <span class="signal">Card · Won transfer · USDC · USDT · USD bank transfer (SWIFT)</span></p>
+  <h1>Hour-credits for your own AI fleet.</h1>
+  <p class="lead">One hour-credit (HC) is one hour of a whole fleet: sixteen DGX Sparks in Seoul serving only you. Spend HC on demo hours on our demo fleet, and on weeks of a fleet pinned to you: <span data-week="hc">144</span> HC for seven days. The more you buy at once, the less each HC costs. Choose how many, confirm your email, then pay by card or Korean bank transfer in won, in USDC or USDT, or by USD bank transfer (SWIFT).</p>
+  <div class="trust"><span><span data-hc="small-usd">$20</span> each below <span data-hc="bulk-from">144</span> HC</span><span><span data-hc="bulk-usd">$15</span> each from <span data-hc="bulk-from">144</span> HC</span><span>Lasts <span data-hc="months">12</span> months unless you book with it</span><span>Data stays in Korea</span></div>
 </section>
 
-<div class="wrap">
-<section id="fleets" class="sec">
-  <div class="sec-rail">
-    <p class="label">Fleets</p>
-    <p class="label">Rates</p>
-  </div>
-  <div class="sec-body">
-    <h2>One balance, every fleet.</h2>
-    <p class="prose">Your hours work on every fleet. A fleet's rate is how many hours an hour on it takes from your balance, so its price per hour is the rate times the hour price.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Fleet</th><th>State</th><th>Rate</th><th>Hourly price</th><th>Two-year price</th></tr></thead>
-      <tbody id="f-rows"></tbody>
-    </table></div>
-  </div>
-</section>
-
-<section id="hourly" class="sec">
-  <div class="sec-rail">
-    <p class="label">Hourly</p>
-    <p class="label">No commitment</p>
-  </div>
-  <div class="sec-body">
-    <h2>Try it by the hour.</h2>
-    <p class="prose">Prepaid hours for any business, with no business check: hold up to <b id="p-hourly-max-2">168</b> hours at a time, or <b id="p-verified-max-2">720</b> (30 days) once we have approved your business. A two-year customer may take an hourly reservation until <b id="p-displace">6</b> hours before it begins, and the hour comes back to you.</p>
-    <div class="split">
-      <form class="form" id="hourly-form" novalidate>
-        <label>Company<input id="h-company" autocomplete="organization" placeholder="Legal name"></label>
-        <label>Email<input id="h-email" type="email" autocomplete="email" placeholder="billing@example.com"></label>
-        <label>Hours<input id="h-hours" type="number" inputmode="numeric" min="1" max="24" step="1" value="4"></label>
-        <label>Start date<input id="h-start" type="date"></label>
-        <label class="check"><input id="h-korea" type="checkbox">We have a place of business in Korea</label>
-        <p class="hint">Korean businesses pay in won by bank transfer against our electronic tax invoice (세금계산서); others pay in USDC through an invoice. VAT is added; any VAT that turns out not to be owed is an overpayment, and we refund it. This preview shows dollar prices.</p>
-        <button class="btn solid" id="h-buy" type="submit">Create invoice and pay (mock)</button>
-        <p class="note-line" id="h-msg" role="status"></p>
-      </form>
-      <div class="readout">
-        <div><span>Hours</span><strong id="h-r-hours">4</strong></div>
-        <div><span>Price per hour</span><strong id="h-r-price">$20.00</strong></div>
-        <div><span>Subtotal</span><strong id="h-r-net">$80.00</strong></div>
-        <div><span>VAT</span><strong id="h-r-vat">$8.00</strong></div>
-        <div class="you"><span>Total</span><strong id="h-r-total">$88.00</strong></div>
-        <div><span>Usable</span><strong id="h-r-valid">-</strong></div>
-        <div><span>Hours held now</span><strong id="h-r-held">0</strong></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section id="reserved" class="sec">
-  <div class="sec-rail">
-    <p class="label">Two-year</p>
-    <p class="label">Every hour of the term</p>
-  </div>
-  <div class="sec-body">
-    <h2 id="r-title">Every hour of two years, at the lower price.</h2>
-    <p class="prose">For businesses we approve. The two-year term starts the day you sign and covers every hour of it on one fleet's capacity: 17,520 hours, or 17,544 when it includes 29 February. After signing you can pay any amount at any time, up to the whole term, and meet each deadline at your own pace. Hours exist only once paid, and you choose when to use them; hours that pass before they are paid for are lost. Nothing is due in the first 30 days (Phase A), and if you pay nothing by then the agreement ends with nothing owed. Once the last gate is paid, every tranche is released: either window within your election, and spending ahead. The models you name in the agreement stay available for the whole term.</p>
-    <div class="panel" id="kyb-panel">
-      <p><b>Business check:</b> <span id="kyb-state" class="state">not approved</span></p>
-      <p class="hint">In the live service this is a manual review of company documents, owners and sanctions screening. Approval raises your hourly cap to 30 days of hours and opens the two-year agreement.</p>
-      <div class="actions"><button class="btn small" id="kyb" type="button">Simulate approval (mock)</button></div>
-    </div>
-    <div class="split" id="reserved-body">
-      <form class="form" id="reserved-form" novalidate>
-        <label>Signing date (the term starts that day)<input id="r-start" type="date"></label>
-        <label>Window election<select id="r-election"><option value="split">50/50 East and West</option><option value="east">100% East</option><option value="west">100% West</option></select></label>
-        <label>Payment method<select id="r-method"><option value="wire">USD wire from your account abroad</option><option value="usdc">USDC invoice</option></select></label>
-        <label class="check"><input id="r-korea" type="checkbox">We have a place of business in Korea</label>
-        <button class="btn solid" id="r-sign" type="submit">Sign the agreement (mock)</button>
-        <p class="note-line" id="r-msg" role="status"></p>
-      </form>
-      <div class="readout">
-        <div><span>Term</span><strong id="r-r-term">-</strong></div>
-        <div><span>Hours</span><strong id="r-r-hours">-</strong></div>
-        <div><span>Price per hour</span><strong id="r-r-price">-</strong></div>
-        <div><span>Subtotal</span><strong id="r-r-net">-</strong></div>
-        <div><span>VAT</span><strong id="r-r-vat">-</strong></div>
-        <div class="you"><span>Total</span><strong id="r-r-total">-</strong></div>
-        <div><span>Phase A</span><strong id="r-r-phase">-</strong></div>
-      </div>
-    </div>
-    <p class="note-line" id="r-phase-note"></p>
-    <h3>Prepayment gates</h3>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Gate</th><th>Due</th><th>Hours paid by then</th><th>Paid by then, with VAT</th></tr></thead>
-      <tbody id="r-gates"></tbody>
-    </table></div>
-    <h3>Monthly tranches</h3>
-    <div class="table-wrap scroll"><table>
-      <thead><tr><th>Tranche</th><th>Period</th><th>Days</th><th>East hours</th><th>West hours</th></tr></thead>
-      <tbody id="r-tranches"></tbody>
-    </table></div>
-  </div>
-</section>
-
-<section id="prepayment" class="sec">
-  <div class="sec-rail">
-    <p class="label">Prepayment</p>
-    <p class="label">Tracked per payment</p>
-  </div>
-  <div class="sec-body">
-    <h2>Prepayment tracker.</h2>
-    <p class="prose" id="pp-empty">Sign a two-year agreement above to track its payments here.</p>
-    <div class="panel" id="pp-panel" hidden>
-      <div class="progress" id="pp-bar"><i></i></div>
-      <div class="readout">
-        <div><span>Paid, with VAT</span><strong id="pp-paid">-</strong></div>
-        <div><span>Hours paid for</span><strong id="pp-hours">-</strong></div>
-        <div><span>Still to pay</span><strong id="pp-left">-</strong></div>
-        <div class="you"><span>Status</span><strong id="pp-state">-</strong></div>
-      </div>
-      <form class="form pair" id="pp-form" novalidate>
-        <label>Amount received (USD)<input id="pp-amount" type="number" inputmode="decimal" min="0.01" step="0.01"></label>
-        <label>Date received<input id="pp-date" type="date"></label>
-        <div class="actions">
-          <button class="btn solid" id="pp-add" type="submit">Record payment (mock)</button>
-          <button class="btn" id="pp-lapse" type="button">Pay nothing in Phase A (mock)</button>
+<div class="co">
+  <div>
+    <section class="step active" id="step-1" aria-labelledby="t-1">
+      <div class="step-head"><span class="step-num">1</span><span class="step-title" id="t-1">How many HC?</span><span class="step-sum" id="sum-1"></span></div>
+      <form class="step-body form" id="f-1" novalidate>
+        <div class="tiles" id="presets" role="radiogroup" aria-label="Quantity"></div>
+        <div class="custom" id="custom-row" hidden>
+          <label>Hour-credits<input id="custom" type="number" inputmode="numeric" min="1" step="1"></label>
         </div>
+        <p class="hint" id="start-hint"></p>
+        <p class="flash" id="m-1" hidden></p>
+        <button class="btn solid big" type="submit" id="next-1">Continue</button>
       </form>
-      <p class="note-line" id="pp-msg" role="status"></p>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Date</th><th>Amount</th><th>VAT</th><th>Hours paid for</th><th>Lost (already passed)</th><th>Running total</th></tr></thead>
-        <tbody id="pp-rows"></tbody>
-      </table></div>
+    </section>
+
+    <section class="step waiting" id="step-2" aria-labelledby="t-2">
+      <div class="step-head"><span class="step-num">2</span><span class="step-title" id="t-2">Your company</span><span class="step-sum" id="sum-2"></span></div>
+      <div class="step-body">
+        <div id="known" hidden class="form">
+          <p>Signed in as <b id="known-email"></b> for <b id="known-company"></b>. <button class="linkish" type="button" id="switch">Use another email</button></p>
+          <button class="btn solid big" type="button" id="known-go">Continue</button>
+        </div>
+        <form class="form" id="f-2" novalidate>
+          <label>Company legal name, or your full name<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd. or Jane Kim"></label>
+          <label>Work email<input id="email" type="email" autocomplete="email" maxlength="254" placeholder="you@company.com"></label>
+          <div class="keyterms" role="note" aria-labelledby="key-terms">
+            <p class="label" id="key-terms">Key terms</p>
+            <ul>
+              <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
+              <li>Prepaid, at the HC Price shown for the quantity you buy: now <span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩26,000</span>) each below <span data-hc="bulk-from">144</span> HC and <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩19,500</span>) each from <span data-hc="bulk-from">144</span> HC, plus 10% VAT, or 0% VAT on a USD bank transfer (SWIFT) from a company with no place of business in Korea. HC is issued once the payment completes.</li>
+              <li>HC books whole-fleet hours on the demo fleet, and weeks, Monday to Sunday KST, on a fleet pinned to you. A booking is final.</li>
+              <li>Each purchase lapses 12 months after issue unless you book with it; HC spent on a booking never lapses, and you can book up to 52 weeks ahead.</li>
+              <li>A pinned fleet stays yours while you book the next week before 00:00 on the Sunday of your last booked week. Otherwise it goes to the waitlist, which is ordered by locked HC, largest first.</li>
+              <li>We set prices on this website and may change them at any time. A change never alters the price of HC you have bought or of a booking you have made.</li>
+              <li>HC has no cash value, cannot be moved to another account and is not refunded, unless we stop offering service for HC, close your account other than for your breach, HC locked in the waitlist would lapse, or the law requires a refund.</li>
+              <li>A booked hour that is down for more than 15 consecutive minutes comes back as HC, automatically.</li>
+              <li>Requests and data are processed only on fleets and servers we operate in Korea, and go to no other computing or AI service. Your cache and files stay on your fleet from one booking to the next, and are deleted when another customer's booking of that fleet starts or 24 hours after your last hour on it.</li>
+              <li>Our liability is capped at what you paid us for HC in the 6 months before the event giving rise to the claim. Korean law; arbitration in Seoul.</li>
+            </ul>
+            <p>The Customer Agreement governs, and its Korean text prevails.</p>
+          </div>
+          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The <a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">Korean text</a> prevails.</span></label>
+          <p class="flash" id="m-2" hidden></p>
+          <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
+          <p class="hint">The code confirms your email. It becomes your account: receipts, your hours and sign-in all use it. Already have an account? Use the same email.</p>
+        </form>
+        <form class="form" id="f-code" hidden novalidate>
+          <p>We sent a code to <b id="sent-to"></b>. It expires in 10 minutes.</p>
+          <label>Code<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="······"></label>
+          <p class="flash" id="m-code" hidden></p>
+          <button class="btn solid big" type="submit">Confirm</button>
+          <p class="hint"><button class="linkish" type="button" id="resend">Send a new code</button> · <button class="linkish" type="button" id="change">Change the email</button> · Check your spam folder if it has not arrived in a minute.</p>
+        </form>
+      </div>
+    </section>
+
+    <section class="step waiting" id="step-3" aria-labelledby="t-3">
+      <div class="step-head"><span class="step-num">3</span><span class="step-title" id="t-3">Pay</span><span class="step-sum"></span></div>
+      <form class="step-body form" id="f-3" novalidate>
+        <div id="pay-box">
+          <div class="toss-box" id="toss-box" hidden>
+            <div id="toss-methods"></div>
+            <div id="toss-agreement"></div>
+            <label>Korean business registration number, for an electronic tax invoice (세금계산서) on a bank transfer or virtual account; optional<input id="brn" inputmode="numeric" maxlength="12" autocomplete="off" placeholder="123-45-67890"></label>
+          </div>
+          <div id="coin-box"><p>What will you pay with?</p><div id="coins"></div></div>
+          <div id="swift-box" hidden>
+            <p>We email you an invoice with our US dollar account at a Korean foreign exchange bank and a payment reference for this order. VAT is 0% on a USD bank transfer (SWIFT).</p>
+            <label class="check"><input type="checkbox" id="declare"><span>My company has no place of business in the Republic of Korea and pays this order by bank transfer in US dollars from its own account outside the Republic of Korea (<a href="agreement.html" target="_blank" rel="noopener">Customer Agreement</a>, clause 3.3(b)).</span></label>
+          </div>
+        </div>
+        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement changed since you accepted it. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> (the Korean text prevails) on behalf of my company.</span></label>
+        <p class="flash" id="m-3" hidden></p>
+        <button class="btn solid big" type="submit" id="pay">Pay</button>
+        <p class="hint" id="hint-toss" hidden>Pay in won with a card issued in Korea or abroad (Visa, Mastercard, JCB), by bank transfer, into a virtual account, or with a Korean easy-pay wallet, all through Toss Payments. A card, transfer or wallet payment issues your HC as soon as Toss Payments confirms it; a virtual account issues it when your deposit arrives, and expires with the order if nothing arrives by its deadline. For a card, the card slip is your VAT document; for a bank transfer or virtual account we issue an electronic tax invoice to the business registration number above.</p>
+        <p class="hint" id="hint-swift" hidden>Send the invoice total in US dollars by SWIFT from your company's own account outside Korea, with the payment reference in the payment details. Choose charges OUR, so that the whole amount arrives: your bank's and any intermediary bank's charges are yours. Your HC is issued once the whole amount reaches our account, usually one to five business days after you send it; a transfer that arrives short issues nothing until the rest arrives. VAT is 0%: a USD bank transfer (SWIFT) from a company with no place of business in Korea is zero-rated. Your account shows the order, its reference and our bank details until the transfer arrives.</p>
+        <p class="hint" id="hint-coin">Next you see CoinPayments' checkout with the exact amount, an address and a QR code. Send only the coin you picked, on the network you picked, within the hour. Any wallet or exchange works: Coinbase, Binance, OKX, Kraken, MetaMask, Phantom. We pay CoinPayments' fee; you pay only your network's fee. Your HC appears in your account as soon as the network confirms the payment, usually within minutes.</p>
+      </form>
+    </section>
+  </div>
+
+  <aside class="summary" aria-label="Your order">
+    <p class="label">Your order</p>
+    <div class="lines">
+      <div><span id="o-hours">5 HC × $20.00</span><span id="o-net">$100.00</span></div>
+      <div><span id="o-vat-label">Korean VAT, 10%</span><span id="o-vat">$10.00</span></div>
+      <div><span>Usable</span><span id="o-valid">12 months from payment</span></div>
+      <div class="grand"><span id="o-total-label">Total in USDC</span><strong id="o-total">$110.00</strong></div>
+    </div>
+    <ul class="perks">
+      <li><span>1 HC books one hour of the whole demo fleet: 16 DGX Sparks in Seoul serving only you, up to <span data-demo="days">7</span> days ahead.</span></li>
+      <li><span><span data-week="hc">144</span> HC books a week, Monday to Sunday, on a fleet pinned to you: seven days for the price of six. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</span></li>
+      <li><span>Your cache and files stay on your fleet from week to week, with <span data-storage>4 TB</span> of storage for your repository and models.</span></li>
+      <li><span>Kimi K3, GLM 5.3 and Korea's own K-EXAONE 2.0, A.X K2 and Solar Open 2, through an OpenAI-compatible API with your own keys.</span></li>
+    </ul>
+    <p class="hint">Every fleet taken? Lock at least <span data-week="hc">144</span> HC in the waitlist in <a href="market.html">your account</a>: the biggest lock goes first, every Sunday.</p>
+  </aside>
+</div>
+
+<section id="faq" class="sec">
+  <div class="sec-rail"><p class="label">Questions</p><p class="label">Before you pay</p></div>
+  <div class="sec-body">
+    <h2>Good to know.</h2>
+    <div class="faq">
+      <details><summary>Do I need a crypto wallet?</summary><p>No. Your account is your email. Pay by card, bank transfer, virtual account or Korean easy pay in won through Toss Payments, or by USD bank transfer (SWIFT) from your company's account outside Korea, with no wallet at all. If you pay in USDC or USDT instead, you pay on CoinPayments' checkout page from any wallet or exchange account that can send them: copy the address, or scan the QR code with your phone.</p></details>
+      <details><summary>Which cards and accounts work?</summary><p>Cards issued in Korea, and Visa, Mastercard and JCB cards issued abroad; bank transfer and virtual accounts at Korean banks; and the Korean easy-pay wallets shown at checkout. All are charged in won, at the won HC Price for the quantity you buy. A card issued abroad is converted to your own currency by your card issuer, and its conversion and foreign-transaction fees are yours (<a href="agreement.html">Customer Agreement</a>). Toss Payments is the payment gateway; HYOR AI Tech Ltd. is the seller.</p></details>
+      <details><summary>Which coin and network should I choose?</summary><p>The ones you hold. Each tile shows the name exchanges use on their withdrawal screens: ERC20, TRC20, BEP20, Base, SOL, Arbitrum One or Polygon PoS. Network fees are usually cents on all of them. Send only the coin you chose, only on the network you chose: the checkout page shows the exact amount and address for it. If your exchange takes a withdrawal fee from the amount, add it on top so the whole amount arrives.</p></details>
+      <details><summary>Why won, dollar stablecoins or SWIFT?</summary><p>The HC Price is set in both currencies: in won when you pay in won, in dollars otherwise. A company outside Korea can pay dollars by USD bank transfer (SWIFT) straight to our US dollar account at a Korean foreign exchange bank, at 0% VAT. Other dollar payments are in stablecoins because they keep their value between the invoice and the payment, so neither of us carries the price swings of other crypto. We list USDC and USDT, which carry almost all stablecoin payments; CoinPayments' checkout page also takes the other dollar stablecoins it offers.</p></details>
+      <details><summary>What can I do with HC?</summary><p>Book the whole demo fleet by the hour from <span data-start="demo">1 December 2026</span>, up to <span data-demo="days">7</span> days ahead, and weeks on a fleet pinned to you from <span data-start="weeks">4 January 2027</span>, in <a href="market.html">your account</a>. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and you can book up to <span data-ahead>52</span> weeks ahead, so a large purchase can carry you well beyond a year. Once confirmed, a booking is yours: no one can bump it.</p></details>
+      <details><summary>How do weeks and the waitlist work?</summary><p>A week runs Monday 00:00 to Sunday 24:00 KST and pins the fleet to you: nobody else can book it. Book the next week before 00:00 on the Sunday of your last booked week and it stays yours. When every fleet is taken, lock at least <span data-week="hc">144</span> HC in the waitlist: every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and the whole lock books your weeks from the next Monday. You can add to your lock or leave at any time, and you see only your own position.</p></details>
+      <details><summary>Can I try it first?</summary><p>Yes. Book a demo hour for 1 HC. Or use the <a href="market.html?sandbox">sandbox</a> with no money: buy HC, book hours and weeks, join the waitlist and call the API against a simulator, on a test clock. The <a href="buy.html?sandbox">sandbox checkout</a> takes card payments in Toss Payments' test mode, where no card is charged.</p></details>
+      <details><summary>Why is VAT added?</summary><p>We are a Korean company, and Korean VAT of 10% applies to every payment for HC, in won or in stablecoins (<a href="agreement.html">Customer Agreement</a>). The one exception is a USD bank transfer (SWIFT) from a company with no place of business in Korea, paying from its own account outside Korea: it is zero-rated, so its VAT is 0%. For a card payment, the card slip Toss Payments issues is the VAT document; for a bank transfer or virtual account in won, we issue an electronic tax invoice; a stablecoin invoice, and the invoice we email for a SWIFT transfer, show the VAT separately.</p></details>
+      <details><summary>Can we get an electronic tax invoice?</summary><p>Yes, for a bank transfer or a virtual account: enter your Korean business registration number at checkout, and we issue an electronic tax invoice (세금계산서) for the payment. For a card payment, the card slip is the VAT document instead, as Korean VAT law provides.</p></details>
+      <details><summary>What if a payment falls short, or comes too late?</summary><p>In USDC or USDT: if less arrives than the invoice, the HC it covers appears in your account at once, in proportion to what arrived, to six decimals; buy more whenever you like. Anything sent above the invoice, or after the payment page has closed, CoinPayments refunds with an email link to claim it. With a virtual account, deposit the exact amount by the deadline shown: an account not paid in time expires with its order, and nothing is owed. By USD bank transfer (SWIFT), the whole invoice total must arrive: choose charges OUR, and if bank charges take part of it on the way, send the rest with the same reference; your HC is issued once the whole amount is in, and anything above the total goes back to the account it came from.</p></details>
+      <details><summary>Can a payment be refunded?</summary><p>Payments are final, except where the <a href="agreement.html">Customer Agreement</a> provides a refund, for example if we stop offering HC. A refund goes back the way you paid: to your card, to your bank account, by SWIFT to the account a USD bank transfer came from, or through CoinPayments' refund procedure.</p></details>
     </div>
   </div>
 </section>
-
-<section id="hours" class="sec">
-  <div class="sec-rail">
-    <p class="label">Your hours</p>
-    <p class="label">One account</p>
-  </div>
-  <div class="sec-body">
-    <h2>Your hours.</h2>
-    <p class="prose">Your hours are used through your account: your key, your access tokens and the signers you add. Our system has no transfer feature. If you resell or pass hours on, for example by sharing access, that is between you and the other party and out of our control.</p>
-    <div class="table-wrap scroll"><table>
-      <thead><tr><th>Hours</th><th>Usable hours</th><th>Period</th><th>State</th></tr></thead>
-      <tbody id="c-rows"></tbody>
-    </table></div>
-  </div>
-</section>
-
-<section id="ledger" class="sec">
-  <div class="sec-rail">
-    <p class="label">Ledger</p>
-    <p class="label">Append-only</p>
-  </div>
-  <div class="sec-body">
-    <h2>Every change is one line.</h2>
-    <p class="prose">Each order, payment, issue of hours and reservation is appended to a hash-chained ledger: every line carries the hash of the one before it, so no line can change unnoticed. This is the demo's own copy.</p>
-    <pre class="out" id="l-out" aria-label="Ledger"></pre>
-  </div>
-</section>
-</div>
 </main>
 
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd · SparkPipe is open source, all C and CUDA</span>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="https://github.com/sparkpipe/sparkpipe" target="_blank" rel="noopener">GitHub</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></nav>
-    <span>Mock checkout: prices and terms shown here are not an offer.</span>
+    <span><a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a> · Seoul</span>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="account.html">Payments</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+
+    <span>Card and won payments are processed by Toss Payments; stablecoin payments by CoinPayments. USD bank transfers (SWIFT) go straight to our US dollar account in Korea.</span>
   </div>
 </footer>
 
+<script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js"></script>
+<script src="prices.js"></script>
+<script src="checkout.js?v=4"></script>
 <script>
 (() => {
-  const P = window.SP_PRICING;
+  const P = window.SP_PRICING, SP = window.SP, H = P.hc, B = P.bookings;
   const $ = (id) => document.getElementById(id);
-  const KEY = 'sparkpipe-buy-demo-2';
-  const fresh = () => ({ account: '0x' + Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, '0')).join(''), hourly: [], kyb: false, contract: null, payments: [], ledger: [] });
-  const load = () => { try { const doc = JSON.parse(localStorage.getItem(KEY) || 'null'); return doc && doc.account ? doc : fresh(); } catch (_) { return fresh(); } };
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (_) {} };
-  let S = load();
-
-  const DAY = 86400000;
-  const parse = (text) => { const [y, m, d] = text.split('-').map(Number); return Date.UTC(y, m - 1, d); };
-  const ymd = (t) => new Date(t).toISOString().slice(0, 10);
-  const today = () => ymd(Date.now());
-  const monthsLater = (text, months) => {
-    const [y, m, d] = text.split('-').map(Number);
-    const total = (m - 1) + months, year = y + Math.floor(total / 12), month = total % 12;
-    const last = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-    return { time: Date.UTC(year, month, Math.min(d, last)), exists: d <= last };
+  const PRESETS = [
+    { hc: 1, note: 'A demo hour', tag: 'Start here' },
+    { hc: 8, note: 'A demo day' },
+    { hc: B.weekHC, note: 'A week of your own fleet' },
+    { hc: B.weekHC * 4, note: 'Four weeks' },
+  ];
+  const saved = SP.store.get('sparkpipe-cart') || {};
+  const asked = Math.floor(Number(new URLSearchParams(location.search).get('hc')));
+  const S = { hc: asked >= H.min ? asked : saved.hc || B.weekHC, coin: saved.coin || 'USDC.ERC20', method: saved.method || 'toss', cards: false, swift: false, me: null, step: 1 };
+  const nice = (day) => new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  const tier = (count) => H.prices.filter((t) => count >= t.from).pop() || H.prices[0];
+  const currency = () => (S.method === 'toss' && S.cards ? 'KRW' : 'USD');
+  const swift = () => S.method === 'swift' && S.swift;
+  const rate = () => (swift() ? P.swiftVatRate : P.vatRate);
+  const price = (cur, count) => (cur === 'KRW' ? tier(count).krw : tier(count).usd);
+  const money = (cur, vatRate = rate()) => {
+    const n = cur === 'KRW' ? S.hc * price(cur, S.hc) : Math.round(S.hc * price(cur, S.hc) * 100) / 100;
+    const vat = SP.vatOf(n, cur, vatRate);
+    return { net: n, vat, total: cur === 'KRW' ? n + vat : Math.round((n + vat) * 100) / 100 };
   };
-  const termEnd = (start, months) => { const next = monthsLater(start, months); return next.exists ? next.time - DAY : next.time; };
-  const dayN = (from, n) => ymd(parse(from) + (n - 1) * DAY);
-  const usd = (n) => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const short = (n) => usd(n).replace('.00', '');
-  const whole = (n) => Math.round(n).toLocaleString('en-US');
-  const hrs = (n) => (Math.round(n * 10) / 10).toLocaleString('en-US');
-  const cell = (text, cls) => { const td = document.createElement('td'); td.textContent = text; if (cls) td.className = cls; return td; };
-  const row = (cells) => { const tr = document.createElement('tr'); cells.forEach((c) => tr.appendChild(c)); return tr; };
-  const fill = (id, rows) => { $(id).replaceChildren(...rows); };
+  const keep = () => SP.store.set('sparkpipe-cart', { hc: S.hc, coin: S.coin, method: S.method });
+  const way = () => (currency() === 'KRW' ? 'by card or bank transfer' : swift() ? 'by SWIFT' : 'in ' + SP.coinOf(S.coin));
+  const percent = (n) => Math.round(n * 1000) / 10 + '%';
+  const count = (n) => n.toLocaleString('en-US') + ' HC';
 
-  const sha256 = async (text) => {
-    if (!(window.crypto && crypto.subtle)) return 'unavailable';
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
-  };
-  let chain = Promise.resolve();
-  const append = (type, data) => {
-    chain = chain.then(async () => {
-      const prev = S.ledger.length ? S.ledger[S.ledger.length - 1].hash : '0'.repeat(64);
-      const body = { seq: S.ledger.length + 1, at: new Date().toISOString(), type, account: S.account, data, prev };
-      S.ledger.push(Object.assign({}, body, { hash: await sha256(JSON.stringify(body)) }));
-      save();
-      renderLedger();
+  const renderPresets = () => {
+    const tiles = PRESETS.map((p) => {
+      const label = document.createElement('label');
+      label.className = 'tile';
+      label.innerHTML = '<input type="radio" name="preset"><b></b><span></span>';
+      const input = label.querySelector('input');
+      input.value = String(p.hc);
+      input.checked = S.hc === p.hc;
+      label.querySelector('b').textContent = count(p.hc);
+      label.querySelector('span').textContent = p.note + ' · ' + SP.usd(p.hc * price('USD', p.hc)).replace('.00', '') + ' or ' + SP.krw(p.hc * price('KRW', p.hc)) + ' + VAT';
+      if (p.tag) { const em = document.createElement('em'); em.textContent = p.tag; label.append(em); }
+      return label;
     });
-    return chain;
+    const other = document.createElement('label');
+    other.className = 'tile';
+    other.innerHTML = '<input type="radio" name="preset" value="custom"><b>Other</b><span></span>';
+    other.querySelector('span').textContent = 'Any number from ' + H.min + ' HC, with no maximum';
+    other.querySelector('input').checked = !PRESETS.some((p) => p.hc === S.hc);
+    $('presets').replaceChildren(...tiles, other);
+    $('custom-row').hidden = !other.querySelector('input').checked;
+    if (!$('custom-row').hidden) $('custom').value = S.hc;
   };
 
-  const vatApplies = (korea, method) => korea || method === 'usdc';
-  const plan = (start, election) => {
-    const end = termEnd(start, P.termMonths), tranches = [];
-    let cursor = parse(start);
-    while (cursor <= end) {
-      const d = new Date(cursor), monthEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0), to = Math.min(monthEnd, end);
-      const days = Math.round((to - cursor) / DAY) + 1, hours = 24 * days;
-      const east = election === 'east' ? hours : election === 'west' ? 0 : hours / 2;
-      tranches.push({ key: ymd(cursor).slice(0, 7), from: ymd(cursor), to: ymd(to), days, hours, east, west: hours - east });
-      cursor = to + DAY;
+  const renderSummary = () => {
+    const cur = currency(), m = money(cur), say = (n) => SP.priced(n, cur);
+    $('o-hours').textContent = count(S.hc) + ' × ' + say(price(cur, S.hc));
+    $('o-net').textContent = say(m.net);
+    $('o-vat-label').textContent = swift() ? 'VAT, ' + percent(P.swiftVatRate) + ' on a USD bank transfer (SWIFT)' : 'Korean VAT, ' + percent(P.vatRate);
+    $('o-vat').textContent = say(m.vat);
+    $('o-total').textContent = say(m.total);
+    $('o-total-label').textContent = cur === 'KRW' ? 'Total in won' : swift() ? 'Total by SWIFT, in US dollars' : 'Total in ' + SP.coinOf(S.coin);
+    $('pay').textContent = swift() ? 'Get the invoice for ' + say(m.total) + ' by SWIFT' : 'Pay ' + say(m.total) + ' ' + way();
+    $('next-1').textContent = 'Continue · ' + say(m.total) + (swift() ? ', VAT ' + percent(P.swiftVatRate) : ' with VAT');
+    $('sum-1').textContent = S.step > 1 ? count(S.hc) : '';
+    $('sum-2').textContent = S.step > 2 && S.me ? S.me.company + ' · ' + S.me.email : '';
+    const next = H.prices.find((t) => t.from > S.hc);
+    $('start-hint').textContent = next ? 'Buy ' + count(next.from) + ' or more and each costs ' + SP.usd(next.usd).replace('.00', '') + ' or ' + SP.krw(next.krw) + '.' : 'You get the lowest HC price.';
+    if (S.picker) {
+      const won = money('KRW'), usd = money('USD');
+      S.picker.note('toss', 'Toss Payments · ' + SP.krw(won.total) + ' with VAT');
+      S.picker.note('coin', 'CoinPayments · ' + SP.usd(usd.total) + ' with VAT');
+      S.picker.note('swift', 'In US dollars · ' + SP.usd(money('USD', P.swiftVatRate).total) + ', VAT ' + percent(P.swiftVatRate));
     }
-    return { start, end: ymd(end), hours: tranches.reduce((a, t) => a + t.hours, 0), tranches };
-  };
-  const gates = (c) => P.gates.map((g) => {
-    const n = g.tranches === null ? c.tranches.length : Math.min(g.tranches, c.tranches.length);
-    return { name: g.name, day: g.dueDay, due: dayN(c.signedOn, g.dueDay), hours: c.tranches.slice(0, n).reduce((a, t) => a + t.hours, 0) };
-  });
-
-  const minStart = () => (today() > P.hourlyEarliestStart ? today() : P.hourlyEarliestStart);
-  const minSign = () => (today() > P.committedEarliestStart ? today() : P.committedEarliestStart);
-  const cap = () => (S.kyb ? P.verifiedMaxHours : P.hourlyMaxHours);
-  const heldHourly = () => S.hourly.reduce((a, h) => a + h.hours, 0);
-
-  const renderPrices = () => {
-    $('p-hourly').textContent = short(P.hourlyPrice);
-    $('p-committed').textContent = short(P.committedPrice);
-    $('p-vat').textContent = Math.round(P.vatRate * 100) + '%';
-    $('p-start').textContent = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
-    ['p-hourly-max', 'p-hourly-max-2'].forEach((id) => { $(id).textContent = whole(P.hourlyMaxHours); });
-    ['p-verified-max', 'p-verified-max-2'].forEach((id) => { $(id).textContent = whole(P.verifiedMaxHours); });
-    $('p-displace').textContent = P.displaceNoticeHours;
-    $('r-title').textContent = 'Every hour of two years, at ' + short(P.committedPrice) + ' an hour.';
-    $('h-start').min = minStart(); if (!$('h-start').value || $('h-start').value < minStart()) $('h-start').value = minStart();
-    if (!S.contract) { $('r-start').min = minSign(); if (!$('r-start').value || $('r-start').value < minSign()) $('r-start').value = minSign(); }
+    if (cur === 'KRW' && S.step === 3) SP.tossAmount(m.total);
   };
 
-  const renderFleets = () => {
-    const rate = (n) => (Math.round(n * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
-    fill('f-rows', P.fleets.map((f) => {
-      const state = cell(''), tag = document.createElement('span');
-      tag.className = 'state ' + (f.state === 'serving' ? 'live' : 'building');
-      tag.textContent = f.state === 'serving' ? 'Serving' : 'Under construction';
-      state.appendChild(tag);
-      return row([cell(f.name + ' · ' + f.kind, 'model'), state, cell(rate(f.rate), 'figure'), cell(usd(f.rate * P.hourlyPrice), 'figure'), cell(usd(f.rate * P.committedPrice), 'figure')]);
-    }));
+  const renderMethod = () => {
+    const toss = currency() === 'KRW', bank = swift();
+    $('t-3').textContent = S.cards || S.swift ? 'Pay' : 'Pay in USDC or USDT';
+    $('toss-box').hidden = !toss;
+    $('coin-box').hidden = toss || bank;
+    $('swift-box').hidden = !bank;
+    $('hint-toss').hidden = !toss;
+    $('hint-coin').hidden = toss || bank;
+    $('hint-swift').hidden = !bank;
+    renderSummary();
+    if (toss && S.step === 3) SP.tossMount($('toss-methods'), $('toss-agreement'), money('KRW').total).catch((error) => SP.say($('m-3'), error.message, 'error'));
   };
 
-  const renderHourly = () => {
-    const room = Math.max(0, cap() - heldHourly()), input = $('h-hours');
-    input.max = Math.max(1, room);
-    if (+input.value > room) input.value = Math.max(1, room);
-    const hours = room ? Math.max(0, Math.round(+input.value)) : 0, start = $('h-start').value || minStart();
-    const net = hours * P.hourlyPrice, vat = net * P.vatRate;
-    $('h-r-hours').textContent = whole(hours);
-    $('h-r-price').textContent = usd(P.hourlyPrice);
-    $('h-r-net').textContent = usd(net);
-    $('h-r-vat').textContent = usd(vat);
-    $('h-r-total').textContent = usd(net + vat);
-    $('h-r-valid').textContent = start + ' to ' + ymd(termEnd(start, P.hourlyValidityMonths));
-    $('h-r-held').textContent = whole(heldHourly()) + ' of ' + whole(cap());
-    $('h-buy').disabled = room === 0;
-    if (room === 0) $('h-msg').textContent = S.kyb ? 'You hold the maximum of ' + whole(cap()) + ' hours. Use some, or take the two-year agreement.' : 'You hold the maximum of ' + whole(cap()) + ' hours. A business check raises the cap to ' + whole(P.verifiedMaxHours) + '.';
-  };
-
-  const draft = () => { const sign = $('r-start').value || minSign(); return Object.assign(plan(sign, $('r-election').value), { election: $('r-election').value, method: $('r-method').value, korea: $('r-korea').checked, price: P.committedPrice, vatRate: vatApplies($('r-korea').checked, $('r-method').value) ? P.vatRate : 0, signedOn: sign }); };
-  const phaseEnd = (c) => dayN(c.signedOn, P.phaseADays);
-  const phaseNote = (c) => 'Phase A runs ' + c.signedOn + ' to ' + phaseEnd(c) + '. Nothing is due until then, but hours exist only once paid: pay early to use the first weeks, since hours that pass unpaid are lost.';
-  const renderReserved = () => {
-    $('kyb-state').textContent = S.kyb ? 'approved' : 'not approved';
-    $('kyb-state').className = 'state' + (S.kyb ? ' live' : '');
-    $('kyb').hidden = S.kyb;
-    const signed = Boolean(S.contract), c = signed ? S.contract : draft();
-    ['r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => { $(id).disabled = signed; });
-    if (signed) { $('r-start').value = c.start; $('r-election').value = c.election; $('r-method').value = c.method; $('r-korea').checked = c.korea; }
-    $('reserved-body').classList.toggle('locked', !S.kyb);
-    const late = !signed && c.start < minSign();
-    $('r-sign').disabled = signed || !S.kyb || late;
-    $('r-msg').textContent = signed ? (c.endedOn ? 'Ended on ' + c.endedOn + ' with nothing owed: Gate 1 was not paid.' : 'Signed on ' + c.signedOn + '. Payments are tracked below.') : (S.kyb ? (late ? 'Two-year agreements start no earlier than ' + minSign() + '.' : '') : 'Approval is needed before signing.');
-    const net = c.hours * c.price, vat = net * c.vatRate;
-    $('r-r-term').textContent = c.start + ' to ' + c.end;
-    $('r-r-hours').textContent = whole(c.hours);
-    $('r-r-price').textContent = usd(c.price);
-    $('r-r-net').textContent = usd(net);
-    $('r-r-vat').textContent = c.vatRate ? usd(vat) : '$0.00 (zero-rated)';
-    $('r-r-total').textContent = usd(net + vat);
-    $('r-r-phase').textContent = 'to ' + phaseEnd(c);
-    $('r-phase-note').textContent = phaseNote(c);
-    fill('r-gates', gates(c).map((g) => row([cell(g.name), cell(g.due + ', end of day ' + g.day + ' after signing'), cell(whole(g.hours), 'figure'), cell(usd(g.hours * c.price * (1 + c.vatRate)), 'figure')])));
-    fill('r-tranches', c.tranches.map((t, i) => row([cell(String(i + 1) + ' · ' + t.key), cell(t.from + ' to ' + t.to), cell(String(t.days), 'figure'), cell(whole(t.east), 'figure'), cell(whole(t.west), 'figure')])));
-  };
-
-  const paidNet = () => S.payments.reduce((a, p) => a + p.net, 0);
-  const coverage = (c) => {
-    const start = parse(c.signedOn);
-    let cursor = 0;
-    return S.payments.map((p) => {
-      const a = cursor, b = Math.min(c.hours, cursor + p.net / c.price), cut = Math.round((parse(p.date) - start) / DAY) * 24;
-      cursor = b;
-      return { p, a, b, usableFrom: Math.max(a, Math.min(b, cut)) };
+  const go = (step) => {
+    S.step = step;
+    [1, 2, 3].forEach((n) => {
+      const el = $('step-' + n);
+      el.classList.toggle('active', n === step);
+      el.classList.toggle('done', n < step);
+      el.classList.toggle('waiting', n > step);
     });
-  };
-  const overlap = (a, b, x, y) => Math.max(0, Math.min(b, y) - Math.max(a, x));
-  const contractNet = () => S.contract.hours * S.contract.price;
-  const complete = () => Boolean(S.contract && S.contract.completedOn);
-  const ended = () => Boolean(S.contract && S.contract.endedOn);
-  const renderPrepayment = () => {
-    const c = S.contract;
-    $('pp-empty').hidden = Boolean(c);
-    $('pp-panel').hidden = !c;
-    if (!c) return;
-    const total = contractNet() * (1 + c.vatRate), paid = S.payments.reduce((a, p) => a + p.amount, 0);
-    const hoursPaid = Math.min(c.hours, paidNet() / c.price), left = ended() ? 0 : Math.max(0, total - paid);
-    const bar = $('pp-bar');
-    bar.querySelectorAll('b').forEach((b) => b.remove());
-    bar.style.setProperty('--w', (100 * hoursPaid / c.hours).toFixed(2) + '%');
-    gates(c).forEach((g) => { const mark = document.createElement('b'); mark.style.left = (100 * g.hours / c.hours).toFixed(2) + '%'; mark.title = g.name; bar.appendChild(mark); });
-    $('pp-paid').textContent = usd(paid);
-    $('pp-hours').textContent = hrs(hoursPaid) + ' of ' + whole(c.hours);
-    $('pp-left').textContent = usd(left);
-    const next = gates(c).find((g) => hoursPaid + 1e-6 < g.hours);
-    $('pp-state').textContent = ended() ? 'Ended' : complete() ? 'Complete' : (next ? next.name + ' by ' + next.due : 'Complete');
-    $('pp-state').className = complete() ? 'ok' : '';
-    $('pp-add').disabled = complete() || ended();
-    $('pp-lapse').hidden = S.payments.length > 0 || ended();
-    if (!$('pp-amount').value && next && !ended()) $('pp-amount').value = Math.max(0.01, (next.hours * c.price - paidNet()) * (1 + c.vatRate)).toFixed(2);
-    if (!$('pp-date').value) $('pp-date').value = today() > c.signedOn ? today() : c.signedOn;
-    let running = 0;
-    fill('pp-rows', coverage(c).map((k) => { running += k.p.amount; return row([cell(k.p.date), cell(usd(k.p.amount), 'figure'), cell(usd(k.p.amount - k.p.net), 'figure'), cell(hrs(k.b - k.a), 'figure'), cell(hrs(k.usableFrom - k.a), 'figure'), cell(usd(running), 'figure')]); }));
-    $('pp-msg').textContent = ended() ? 'Phase A ended on ' + c.endedOn + ' without Gate 1, so the agreement ended with nothing owed by either side.' : complete() ? 'Prepayment completed on ' + c.completedOn + '. All ' + c.tranches.length + ' tranches are released: use them in either window within your election, and spend ahead.' : 'Paid hours are yours to reserve when you choose, within their month and 12 East plus 12 West hours a day, until prepayment completes.';
-  };
-
-  const renderHours = () => {
-    const rows = S.hourly.map((h) => row([cell('Hourly, bought ' + h.bought), cell(whole(h.hours), 'figure'), cell(h.start + ' to ' + h.expires), cell('Ready')]));
-    const c = S.contract;
-    if (c && !ended()) {
-      const cover = coverage(c);
-      let begin = 0;
-      c.tranches.forEach((t) => {
-        const end = begin + t.hours;
-        const paid = cover.reduce((a, k) => a + overlap(k.a, k.b, begin, end), 0);
-        const usable = cover.reduce((a, k) => a + overlap(k.usableFrom, k.b, begin, end), 0);
-        const state = complete() ? 'Released' : paid >= t.hours - 1e-6 ? 'Paid' : paid > 0 ? 'Partly paid' : 'Not yet paid';
-        rows.push(row([cell('Two-year tranche ' + t.key), cell(hrs(usable) + ' of ' + whole(t.hours) + (paid - usable > 1e-6 ? ' (' + hrs(paid - usable) + ' lost)' : ''), 'figure'), cell(t.from + ' to ' + t.to), cell(state, complete() ? 'ok' : '')]));
-        begin = end;
-      });
+    renderSummary();
+    if (step === 2) {
+      $('known').hidden = !S.me;
+      $('f-2').hidden = Boolean(S.me) || !$('f-code').hidden;
+      if (S.me) { $('known-email').textContent = S.me.email; $('known-company').textContent = S.me.company; }
     }
-    fill('c-rows', rows.length ? rows : [row([cell('No hours yet'), cell(''), cell(''), cell('')])]);
+    if (step === 3) { $('reaccept').hidden = !S.me || S.me.termsCurrent; renderMethod(); }
+    const head = $('step-' + step);
+    if (head.getBoundingClientRect().top < 64) head.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
-  const renderLedger = () => { $('l-out').textContent = S.ledger.map((l) => JSON.stringify(l)).join('\n'); };
-  const render = () => { renderPrices(); renderFleets(); renderHourly(); renderReserved(); renderPrepayment(); renderHours(); renderLedger(); };
+  [1, 2].forEach((n) => $('step-' + n).querySelector('.step-head').addEventListener('click', () => { if (S.step > n) go(n); }));
 
-  $('h-hours').addEventListener('input', renderHourly);
-  $('h-start').addEventListener('change', renderHourly);
-  $('hourly-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const company = $('h-company').value.trim(), email = $('h-email').value.trim(), start = $('h-start').value;
-    const room = cap() - heldHourly(), hours = Math.round(+$('h-hours').value);
-    if (!company || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { $('h-msg').textContent = 'Enter the company name and a valid email.'; return; }
-    if (!start || start < minStart()) { $('h-msg').textContent = 'Hours cannot start before ' + minStart() + '.'; return; }
-    if (!(hours >= 1 && hours <= room)) { $('h-msg').textContent = 'You can buy at most ' + whole(room) + ' more hours.'; return; }
-    const net = hours * P.hourlyPrice, vat = net * P.vatRate, order = 'ord-' + (S.ledger.length + 1);
-    const purchase = { hours, start, bought: today(), expires: ymd(termEnd(start, P.hourlyValidityMonths)) };
-    S.hourly.push(purchase);
-    await append('order', { order, tier: 'hourly', hours, unit_price: P.hourlyPrice, subtotal: net, vat, total: net + vat, currency: 'USD', pay_with: 'USDC' });
-    await append('payment_confirmed', { order, amount: net + vat, currency: 'USDC', mock: true });
-    await append('hours_issued', { order, hours, starts: start, expires: purchase.expires });
-    $('h-msg').textContent = whole(hours) + ' hours added, usable from ' + start + '.';
-    render();
-  });
+  const busy = async (button, note, task) => {
+    button.disabled = true;
+    SP.say(note, '');
+    try { await task(); } catch (error) { SP.say(note, error.message || String(error), 'error'); }
+    finally { button.disabled = false; }
+  };
 
-  $('kyb').addEventListener('click', async () => { S.kyb = true; await append('kyb_decided', { decision: 'approved', hourly_cap: P.verifiedMaxHours, mock: true }); $('h-msg').textContent = ''; render(); });
-  ['r-start', 'r-election', 'r-method', 'r-korea'].forEach((id) => $(id).addEventListener('change', renderReserved));
-  $('reserved-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    if (!S.kyb || S.contract) return;
-    const c = draft();
-    if (c.start < minSign()) { $('r-msg').textContent = 'Two-year agreements start no earlier than ' + minSign() + '.'; return; }
-    S.contract = c;
-    await append('agreement_signed', { hours: c.hours, unit_price: c.price, signed: c.signedOn, phase_a_ends: phaseEnd(c), term_end: c.end, election: c.election, method: c.method, vat_rate: c.vatRate, tranches: c.tranches.length, agreement_sha256: await sha256(JSON.stringify(c)) });
-    render();
-  });
-
-  $('pp-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const c = S.contract;
-    if (!c || complete() || ended()) return;
-    const amount = Math.round(+$('pp-amount').value * 100) / 100, date = $('pp-date').value || today();
-    if (!(amount > 0)) { $('pp-msg').textContent = 'Enter the amount received.'; return; }
-    if (date < c.signedOn || date > c.end || (S.payments.length && date < S.payments[S.payments.length - 1].date)) { $('pp-msg').textContent = 'The date must fall in the term, on or after the last payment.'; return; }
-    const net = amount / (1 + c.vatRate), remaining = contractNet() - paidNet();
-    if (net > remaining + 0.005) { $('pp-msg').textContent = 'That is more than the ' + usd(remaining * (1 + c.vatRate)) + ' still owed.'; return; }
-    S.payments.push({ amount, net, date });
-    const k = coverage(c).slice(-1)[0];
-    await append('payment_confirmed', { tier: 'two_year', amount, vat: amount - net, hours_paid_for: Math.round((k.b - k.a) * 10) / 10, hours_issued: Math.round((k.b - k.usableFrom) * 10) / 10, hours_already_passed: Math.round((k.usableFrom - k.a) * 10) / 10, method: c.method, received: date, mock: true });
-    if (paidNet() + 0.005 >= contractNet()) {
-      c.completedOn = date;
-      await append('prepayment_complete', { completed: date, paid_total: S.payments.reduce((a, p) => a + p.amount, 0), hours: c.hours });
-      await append('hours_released', { tranches: c.tranches.length, hours: c.hours });
+  $('f-1').addEventListener('change', (event) => {
+    if (event.target.name === 'preset') {
+      const isCustom = event.target.value === 'custom';
+      $('custom-row').hidden = !isCustom;
+      if (isCustom) { $('custom').value = S.hc; $('custom').focus(); } else S.hc = +event.target.value;
     }
-    $('pp-amount').value = '';
-    render();
+    keep();
+    renderSummary();
   });
-  $('pp-lapse').addEventListener('click', async () => {
-    const c = S.contract;
-    if (!c || S.payments.length || ended()) return;
-    c.endedOn = phaseEnd(c);
-    await append('agreement_ended', { reason: 'gate_1_not_paid_by_end_of_phase_a', ended: c.endedOn, owed: 0 });
-    render();
+  $('custom').addEventListener('input', () => { S.hc = Math.max(0, Math.floor(+$('custom').value || 0)); keep(); renderSummary(); });
+  $('f-1').addEventListener('submit', (event) => {
+    event.preventDefault();
+    SP.say($('m-1'), '');
+    if (!(S.hc >= H.min)) return SP.say($('m-1'), 'Buy at least ' + count(H.min) + '.', 'error');
+    go(S.me ? 3 : 2);
   });
 
-  $('reset').addEventListener('click', () => { S = fresh(); save(); ['pp-amount', 'pp-date'].forEach((id) => { $(id).value = ''; }); $('h-msg').textContent = ''; render(); });
-  render();
+  const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });
+  $('f-2').addEventListener('submit', (event) => {
+    event.preventDefault();
+    busy($('send'), $('m-2'), async () => {
+      if (!$('company').value.trim()) throw new Error('Enter your company’s legal name, or your full name.');
+      if (!$('accept').checked) throw new Error('Accept the Customer Agreement to continue.');
+      await flow.send($('email').value.trim());
+      $('f-2').hidden = true;
+    });
+  });
+  $('f-code').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const button = $('f-code').querySelector('button[type=submit]');
+    busy(button, $('m-code'), async () => {
+      if ($('code').value.length !== 6) throw new Error('Enter the 6 digits from the email.');
+      S.me = await SP.call('/verify', { email: flow.email(), code: $('code').value, company: $('company').value.trim(), accept: $('accept').checked });
+      $('f-code').hidden = true;
+      $('nav-account').textContent = 'Payments';
+      go(3);
+    });
+  });
+  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); }));
+  $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-2').hidden = false; $('email').focus(); });
+  $('switch').addEventListener('click', async () => {
+    await SP.call('/signout', {}).catch(() => {});
+    S.me = null;
+    $('nav-account').textContent = 'Sign in';
+    go(2);
+  });
+  $('known-go').addEventListener('click', () => go(3));
+
+  $('f-3').addEventListener('submit', (event) => {
+    event.preventDefault();
+    busy($('pay'), $('m-3'), async () => {
+      const toss = currency() === 'KRW', bank = swift();
+      const coin = SP.chosen($('f-3'), 'coin');
+      if (!toss && !bank && !coin) throw new Error('Choose USDC or USDT and its network.');
+      if (bank && !$('declare').checked) throw new Error('A USD bank transfer (SWIFT) is for a company with no place of business in Korea, paying from its own account outside Korea. Confirm both, or choose another way to pay.');
+      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement to continue.');
+      const brn = $('brn').value.trim();
+      if (toss && brn && !/^\d{3}-\d{2}-\d{5}$/.test(brn)) throw new Error('Give the Korean business registration number as 123-45-67890, or leave it empty.');
+      if (toss) SP.tossReady();
+      $('pay').textContent = toss ? 'Opening the payment…' : 'Creating your invoice…';
+      const accept = $('accept-again').checked || undefined;
+      const body = toss ? { product: 'credits', hc: String(S.hc), processor: 'toss', brn: brn || undefined, accept }
+        : bank ? { product: 'credits', hc: String(S.hc), processor: 'swift', declare: true, accept } : { product: 'credits', hc: String(S.hc), coin, accept };
+      let placed;
+      try {
+        placed = await SP.call('/order', body);
+      } catch (error) {
+        renderSummary();
+        if (error.status === 401) { S.me = null; go(2); }
+        if (error.reason === 'terms') { S.me.termsCurrent = false; $('reaccept').hidden = false; }
+        if (error.reason === 'cards_closed') { S.cards = false; S.picker.offer('toss', false); S.picker.choose('coin'); }
+        if (error.reason === 'swift_closed') { S.swift = false; S.picker.offer('swift', false); S.picker.choose(S.cards ? 'toss' : 'coin'); }
+        throw error;
+      }
+      SP.store.set('sparkpipe-cart', null);
+      if (bank) {
+        window.location.assign('account.html?' + (SP.sandbox ? 'sandbox&' : '') + 'order=' + encodeURIComponent(placed.order));
+        return;
+      }
+      if (toss) {
+        try { await SP.tossPay(placed.toss); } catch (error) { renderSummary(); throw new Error((error && error.message) || 'Toss Payments did not open. Your order ' + placed.order + ' is in your account.'); }
+        return;
+      }
+      if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order ' + placed.order + ' is in your account.');
+      window.location.assign(placed.checkout);
+    });
+  });
+
+  S.picker = SP.methodPicker($('pay-box'), 'method', (value) => { S.method = value; keep(); renderMethod(); });
+  SP.coinPicker($('coins'), 'coin', S.coin, (id) => { S.coin = id; keep(); renderSummary(); });
+  Promise.all([SP.tossConfig(), SP.swiftConfig()]).then(([toss, bank]) => {
+    const wanted = S.method;
+    S.cards = Boolean(toss.enabled);
+    S.swift = Boolean(bank.enabled);
+    S.picker.offer('toss', S.cards);
+    S.picker.offer('swift', S.swift);
+    S.picker.choose(wanted === 'swift' && S.swift ? 'swift' : wanted === 'toss' && S.cards ? 'toss' : 'coin');
+  });
+  renderPresets();
+  renderSummary();
+  SP.me().then((me) => {
+    S.me = me;
+    if (me) $('nav-account').textContent = 'Payments';
+  }).catch(() => {});
 })();
 </script>
 </body>

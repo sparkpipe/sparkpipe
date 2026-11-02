@@ -47,7 +47,7 @@
   `tools/sparkpipe_github_pat.sh`. The wrapper reads `GITHUB_PAT` from
   `$SPARKPIPE_PAT_FILE` or, when that is unset, from the first readable
   `sparkpipe/.env` in its candidate list; on this workstation that is
-  `/Users/mac/sparkpipe/.env`.
+  `/Users/cem/sparkpipe/.env`.
 - The wrapper deliberately clears Git credential helpers. This is mandatory:
   the workstation credential helper may otherwise replace the SparkPipe PAT
   with the cached `experiencenow-ai` credential before askpass runs.

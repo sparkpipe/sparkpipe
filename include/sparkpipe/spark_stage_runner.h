@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 2u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 4u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -21,7 +21,9 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL 0x00000001u
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY 0x00000002u
-#define SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)
+#define SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER 0x00000004u
+#define SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY | \
+	SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER)
 #define SPARK_STAGE_RUNNER_DIGEST_HEX 64u
 #define SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT 1u
 #define SPARK_STAGE_RUNNER_TAP_FORM_FINAL 3u
@@ -55,6 +57,19 @@ typedef struct SparkStageRunnerWeights
 	uint64_t spine_budget_bytes;
 } SparkStageRunnerWeights;
 
+typedef struct SparkStageRunnerStreamedPrefillConfig
+{
+	uint32_t node_rows;
+	uint32_t gid_index;
+	uint32_t pair_gid_index;
+	uint32_t traffic_class;
+	uint32_t dense_buffers;
+	uint32_t expert_slots;
+	const char *partner_pack_path;
+	const char *fabric_device;
+	const char *pair_device;
+} SparkStageRunnerStreamedPrefillConfig;
+
 typedef struct SparkStageRunnerConfiguration
 {
 	uint32_t abi_version;
@@ -81,6 +96,8 @@ typedef struct SparkStageRunnerConfiguration
 	uint32_t linear_weight_codec;
 	uint32_t max_shared_row_count;
 	uint32_t head_row_capacity;
+	uint32_t output_vocabulary;
+	SparkStageRunnerStreamedPrefillConfig streamed_prefill;
 } SparkStageRunnerConfiguration;
 
 typedef struct SparkStageRunnerDispatch

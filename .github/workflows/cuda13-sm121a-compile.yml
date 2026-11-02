@@ -5,13 +5,77 @@ on:
   push:
     branches:
       - main
+  schedule:
+    - cron: "0 18 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  lanes:
+    runs-on: ubuntu-24.04
+    outputs:
+      engine: ${{ steps.lanes.outputs.engine }}
+      build: ${{ steps.lanes.outputs.build }}
+      tests: ${{ steps.lanes.outputs.tests }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Choose the lanes from the changed files
+        id: lanes
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ] || [ "$EVENT" = schedule ]; then
+            python3 tools/ci_lanes.py full >> "$GITHUB_OUTPUT"
+          else
+            python3 tools/ci_lanes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
+  light-tests:
+    needs: lanes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential git python3 python3-cryptography python3-numpy python3-pip libibverbs-dev
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install the chat layer's and chat tools' Python packages from the hash lock
+        run: |
+          python3 -m pip install --user --break-system-packages --no-deps --require-hashes --only-binary :all: \
+            -r tools/ci/host-tests-requirements.txt
+      - name: Build every host target for the Markdown readers
+        if: needs.lanes.outputs.build == 'true'
+        run: make -j"$(nproc)" all
+      - name: Run the site, repository-wide and Markdown tests the change can reach
+        env:
+          TESTS: ${{ needs.lanes.outputs.tests }}
+        run: |
+          for test in $TESTS; do
+            echo "RUN $test"
+            case "$test" in
+              *.sh) bash "$test" ;;
+              *) python3 "$test" ;;
+            esac
+          done
+
   compile-sm121a:
+    needs: lanes
+    if: needs.lanes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
     container:
       image: nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:4ff859525f99de5782aa73607ce24219b07dddd48d12b97c1c301d7e1cfb0a87
@@ -42,6 +106,8 @@ jobs:
           if-no-files-found: warn
 
   host-tests:
+    needs: lanes
+    if: needs.lanes.outputs.engine == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -49,7 +115,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential git python3 python3-numpy python3-pip libibverbs-dev
+            build-essential git python3 python3-cryptography python3-numpy python3-pip libibverbs-dev
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false

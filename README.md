@@ -191,7 +191,9 @@ full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
 **Overlap.** Two micro-batches alternate, so one computes while the other
-communicates. A GB10 SM cannot ring the CX-7 doorbell, and work requests
+communicates. The leading micro-batch runs at a higher stream priority, and
+each layer releases the trailing one as soon as the cache rows it reads are
+written, so the trailing micro-batch gathers while the leader attends. A GB10 SM cannot ring the CX-7 doorbell, and work requests
 built on the GPU gain nothing over the CPU posting them, so the CPU rings
 the NIC. Both rails carry traffic at once: the switch for all-to-all reach,
 the direct pair link for the first reduction level.
@@ -208,7 +210,50 @@ running as a separate one-row chain.
 the resident stages. Each step's tokens feed the next step on the device, and
 cache blocks completed inside the chain are published from it, so the host
 protocol between submissions is paid once per chain rather than once per
-token.
+token. The engine shortens a chain to the steps that fit in one second of the
+decode step time it has measured at that context. A lane whose steps are slow
+(one that leases experts every step, for example) then wastes at most that
+second of steps after a stop token.
+
+**Streamed prefill for long prompts.** On a lane whose stage config names
+`streamed_prefill` (Kimi K3 today), a prompt of at least
+`streamed_prefill_min_tokens` tokens takes a different path:
+- Every token but the last runs through the streamed prefill. The last token
+  then runs as a one-row wave that samples. On a model with recurrent state
+  the streamed prefill stops one token earlier: the token before the last
+  runs as a one-row wave whose state is the prompt's checkpoint, then the last
+  token samples.
+- Each node takes a contiguous slice of every pass's tokens. The streamer
+  brings every layer's weights through a window, so a pass can hold
+  16,384–32,768 rows a node. The deferred tokens are split evenly over the
+  passes.
+- The last pass's padding rows change neither the recurrent state nor the
+  cache: they leave the KDA state unchanged, attend no key and write no KV.
+- A pass waits at every attention layer for the slowest node; a GPU that
+  runs hot is the usual cause. To shorten that wait, each node times its own
+  attention, and every six attention layers the nodes all-gather those times
+  and plan from them.
+  - The plan sends work from slower nodes to faster ones. A faster node
+    attends the last rows of its own token slice for a slower node's head
+    groups, so the values it computes are already on the node that owns
+    those rows.
+  - The output does not depend on the plan: a row's attention is computed
+    the same way on whichever node runs it.
+- The pass engine is shared (`inference/runner/pass_prefill.cuh`).
+  - It owns the pass plan and the weight window and stream. It also owns the
+    streamer thread, the buffer rings, the checked collectives, the balancer,
+    the embedding and the per-layer health checks.
+  - A model supplies its buffers, weight binding, layer math and recurrent
+    states through hooks (Kimi K3's are in
+    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+  - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
+  - Storing a pass's keys into the decode shards and gathering older keys back
+    is in `inference/runner/pass_keys.cuh`.
+  - A model whose layers stream no expert blocks needs no partner pack. It
+    moves rows instead: a row region on a second weight stream all-gathers
+    each node's rows (`LmPassRowsAllGather`) and exchanges per-destination
+    blocks (`LmPassRowsExchange`). A fixed-order fp32 sum of the 16 landed
+    blocks (`LmPassSumBlocks`) turns an exchange into a reduce-scatter.
 
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
@@ -264,6 +309,37 @@ spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
 DRAM tier ([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
+
+The snapshot store spreads its files over 256 subdirectories by prefix
+identity, so one store holds tens of millions of page files; a single ext4
+directory without `large_dir` stops near 1.8 million. Linking a page to its
+parent and its orphans costs one hash chain, not a scan of the index, and the
+startup scan reads the shards on eight threads. Each store has a byte budget
+(`kv_snapshot_bytes` in [`deployment/lanes.json`](deployment/lanes.json):
+256 GiB per rank for K3, GLM-5.3 Full, GLM-5.3 Flash and DeepSeek V4.1 Flash,
+64 GiB for the other models). Every store also keeps the node's
+`kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
+write it evicts its oldest files until the partition holds the reserve plus
+the new file, and refuses the write when nothing is left to evict, so KV never
+fills the system drive. A write the store cannot complete is logged with the step
+that failed and its errno. The cache then drops that entry's saved mark and,
+after an I/O error, saves the entry again, so one failed write never leaves a
+chain that cannot restore.
+
+For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
+attention), a resume point is a page with its state saved beside it:
+- one state on every checkpoint stride (`cache_checkpoint_token_count`,
+  16,384 tokens for K3, 4,096 for GLM-5.3 Flash);
+- the prompt checkpoint, one token before each prompt's end, which the store
+  writes as soon as its wave publishes it;
+- the newest state of a sequence whose reply ends on a stop token or its
+  token budget, which the release saves with the pages. The stop tokens are
+  the model's end-of-sequence tokens and the request's own, which for a chat
+  request are its template's stop markers.
+
+After a restart or a model swap, a repeated prompt resumes one token before
+its end, and a follow-up turn resumes at the newest of these points on its
+path.
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
@@ -358,6 +434,15 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+Greedy, sampled and logprob tokens come only from ids the tokenizer can
+decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
+and Flash by 24 ids, Ling 3.0 by 31, Qwen 3.8 by 243, MiMo V2.6 by 901. Every
+deployment names `runtime_limits.output_vocabulary`, and the lane tool sets
+it to the tokenizer's vocabulary. Each rank's final head scores only its
+rows below that limit, and the top-p/top-k sampler ranks only tokens below
+it. The engines report the limit in their hello, and the API refuses a
+deployment whose limit differs from its tokenizer's vocabulary.
 
 **Evidence domains.** Each of these is separate:
 
@@ -539,8 +624,8 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 - **Two ways to buy:**
   - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
   - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
-- **Self-serve:** an account is an Ethereum address. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account by messages signed with that key. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
-- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); customers abroad pay in USDC through a payment processor, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
+- **Self-serve:** an account is a verified email address, signed in to with one-time codes. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account while signed in, or through the API with its access tokens. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
+- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); any customer may pay in USDC or USDT through our payment processor, CoinPayments, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
 - **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
 - **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
 - **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
@@ -568,7 +653,7 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy and checkout preview |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the USDC and USDT checkout (`buy.html`), the customer account (`account.html`) and the two-year planner (`two-year.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those
@@ -618,12 +703,43 @@ Hardware qualification requires CUDA, transport, numerical and service
 receipts from an exact committed revision. Host or simulator results cannot
 stand in for them.
 
+GitHub CI picks its lanes from the files a pull request or a push to `main`
+changes (`tools/ci_lanes.py`):
+
+- `light-tests` always runs, in about two minutes: the website and payment
+  tests, plus every test that scans the whole tree, from code size and
+  source comments to the source package gate. When Markdown outside the site
+  or anything under `docs/` changes, it also builds the host targets and runs
+  every test that can read Markdown: tests that name a `.md` file, `docs/`,
+  README or TECHDEBT, and tests that import a tool that does, directly or
+  through other tools (about three minutes more).
+- The engine lane (`compile-sm121a` and `host-tests`, over an hour) runs
+  only when a changed file is an engine path in `ENGINE_PATHS`: the source
+  directories, `tools/`, `tests/`, `deployment/`, `Makefile`, `*.mk` and the
+  workflow. It does not run for the site (`SITE_PATHS`), Markdown and `docs/`,
+  or repository files (`LIGHT_PATHS`: `LICENSE*`, `NOTICE`, git and GitHub
+  metadata, and the lane script and its test). A file outside every list runs
+  the engine lane to be safe.
+- `tests/test_ci_lanes.py` fails when a tracked file has no lane, when an
+  engine test or build rule starts to read a site or repository file, when a
+  Makefile rule uses Markdown, or when a whole-tree test is missing from
+  `light-tests`.
+- A new push to a pull request cancels its older run. `workflow_dispatch`
+  and a nightly run on `main` (18:00 UTC) run every lane, so anything the
+  lane rules miss still shows up within a day.
+
 ## License
 
-SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
-Copyright 2026 HYOR AI Tech Ltd. Third-party files kept in the tree and their
-licenses are listed in [`NOTICE`](NOTICE).
+SparkPipe is licensed under the [Functional Source License, Version 1.1, ALv2 Future License](LICENSE) (FSL-1.1-ALv2). Copyright 2026 HYOR AI Tech Ltd.
+- **Allowed:** use, change, redistribute and sell it for any purpose, commercial included, under the license and the [additional permission](LICENSE-PERMISSION.md).
+- **The one exception is a Fleet Rental Service:** a commercial product or service whose purpose is to give others the use of hardware that runs SparkPipe and that you operate, or general-purpose access to models it serves on that hardware, however it is priced.
+- **Still allowed, commercially:**
+  - running SparkPipe on your own hardware for your own work and products;
+  - building it into products you sell, including hardware your customers operate;
+  - professional services to a licensee.
+- **Two years later:** each version becomes available under the [Apache License, Version 2.0](LICENSE-APACHE-2.0) two years after we make it available.
+- **Earlier versions:** every version made available before the switch to the FSL stays under the Apache License, Version 2.0.
 
-Model weights, tokenizers and the stage packs built from them are not covered
-by the Apache License. They keep their publishers' licenses, some of which
-add conditions for large commercial deployments.
+Third-party files kept in the tree and their licenses are listed in [`NOTICE`](NOTICE). Contributions are welcome under the [Contributor License Agreement](CLA.md); see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Model weights, tokenizers and the stage packs built from them are not covered by either license. They keep their publishers' licenses, some of which add conditions for large commercial deployments.

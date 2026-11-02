@@ -3,272 +3,303 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe</title>
-<meta name="description" content="Rent a whole SparkPipe fleet by the hour: open frontier models such as Kimi K3, GLM 5.3 and DeepSeek V4.1, and Korea's K-EXAONE 2.0, A.X K2 and Solar Open 2, on sixteen NVIDIA DGX Sparks in Seoul. Sales open 1 December 2026.">
-<meta name="theme-color" content="#f2f1ed" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
+<title>SparkPipe · a fleet of your own for your codebase</title>
+<meta name="description" content="A whole AI fleet in Korea that serves only you and keeps your codebase warm all week: no cache expiry, no per-token bill, Functions that work on your code overnight, and your own model beside Kimi K3 and GLM 5.3. 144 HC a week.">
+<meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=Martian+Mono:wdth,wght@75..112.5,100..800&display=swap">
-<link rel="stylesheet" href="site.css?v=2ebd53ca">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 <style>
-h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
-.screen canvas { aspect-ratio: 16 / 7; }
-.cmp th[scope="row"] { font: 600 12px/1.5 var(--mono); font-variation-settings: 'wdth' 87.5; text-transform: uppercase; letter-spacing: .04em; color: var(--ink); width: 22%; }
-.cmp td { color: var(--steel); }
-.cmp thead th { font: 700 18px/1.2 var(--display); font-variation-settings: 'wdth' 112; text-transform: none; letter-spacing: 0; color: var(--ink); }
-.cmp td a + a::before { content: ' · '; color: var(--faint); }
-.models td:first-child b { display: block; font: 700 16px/1.25 var(--display); font-variation-settings: 'wdth' 112; color: var(--ink); }
-.models td:first-child span { font: 500 11.5px var(--mono); color: var(--faint); }
-.models td.figure { white-space: nowrap; }
+h1 { max-width: 15ch; }
 .company div { grid-template-columns: 200px minmax(0, 1fr); }
 @media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><mask id="logo-bore" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#fff" stroke-width="5.6"/><path d="M21.5 3.5 11 16.5H21L10.5 28.5" stroke="#000" stroke-width="1.5"/></g></mask></defs><symbol id="logo" viewBox="0 0 32 32"><rect width="32" height="32" fill="currentColor" mask="url(#logo-bore)"/></symbol></svg>
-
+<div class="strip">
+  <div class="wrap">
+    <span>Fleets in <b>Korea</b></span>
+    <span>Demo hours from <b data-start="demo">1 December 2026</b></span>
+    <span>Weeks from <b data-start="weeks">4 January 2027</b></span>
+    <span>Kimi K3 · GLM 5.3 · 19 open models · <b>and yours</b></span>
+  </div>
+</div>
 <header class="nav">
   <div class="wrap">
-    <a class="brand" href="index.html"><svg width="26" height="26"><use href="#logo"/></svg>SparkPipe<span class="tag">fleet-hours</span></a>
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">your own fleet</span></a>
     <nav class="nav-links" aria-label="Sections">
-      <a href="#korea">Korea</a>
-      <a href="#how">How it works</a>
+      <a href="#why">Why</a>
+      <a href="#fleet">Your fleet</a>
+      <a href="#functions">Functions</a>
       <a href="#prices">Prices</a>
-      <a href="#fleets">Fleets and models</a>
-      <a href="#responsibility">Responsibility</a>
-      <a href="#technology">Technology</a>
-      <a href="#company">Company</a>
+      <a href="#setup">Setup</a>
+      <a href="market.html">Your account</a>
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="index.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
       <a class="btn small" href="terms.html">Terms</a>
-      <a class="btn small solid" href="buy.html">Buy hours</a>
+      <a class="btn small solid" href="buy.html">Buy HC</a>
     </div>
   </div>
 </header>
 
 <main>
 <section class="wrap hero">
-  <p class="label hero-kicker">Fleet-hours in Seoul · sales open <span data-start>1 December 2026</span></p>
-  <h1>Your own AI fleet in Korea, by the hour.</h1>
+  <p class="label hero-kicker">For engineers who live in a large codebase</p>
+  <h1>Your codebase, warm all week, on a fleet of your own.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
-      <p class="lead">Rent a whole SparkPipe fleet and, for those hours, it serves only you. It runs Kimi K3 and other open models over a terabyte, too large for most GPU servers, with million-token context and speculation, and Korea's own large models: LG's K-EXAONE 2.0, SKT's A.X K2 and Upstage's Solar Open 2. Your data stays in Korea, there is no queue of other customers' requests, and the price is per hour, not per token.</p>
+      <p class="lead">Per-token APIs forget your code after a few minutes and bill you to read it again. A SparkPipe fleet serves <b>only you</b>, keeps what it computed about your codebase from turn to turn and week to week, and <b>works on it overnight</b> when you tell it to. One flat price a week, in Korea, with nothing sent to any other AI service.</p>
       <div class="actions">
-        <a class="btn solid" href="#prices">Prices and how to buy</a>
-        <a class="btn" href="terms.html">Read the terms</a>
+        <a class="btn solid" href="buy.html">Buy HC and book a demo hour</a>
+        <a class="btn" href="#why">An API day against a fleet day</a>
       </div>
-      <p class="note">For businesses only. The terms are published for review and come into force on <span data-start>1 December 2026</span>; nothing can be bought or paid before then.</p>
+      <p class="note">Sending a few prompts a day? A $20 plan serves you better. SparkPipe is for engineers who work all day with coding agents, and for teams with their own model. For companies, professionals and independent developers, not household consumers. Try every step without money in the <a href="market.html?sandbox">sandbox</a>.</p>
     </div>
-    <figure class="screen" role="img" aria-label="Animated diagram of Fleet 1: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
-      <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Seoul</span><span id="phase">each node reads its 1/16 of the weights</span></div>
-      <canvas id="fleet" width="1600" height="700"></canvas>
+    <figure class="screen">
+      <div class="screen-bar"><span><b>One working day</b> · large codebase</span><span>API · your fleet</span></div>
+      <table class="day">
+        <thead><tr><th scope="col">Moment</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
+        <tbody>
+          <tr><td>09:00 first turn</td><td data-l="Per-token API"><span>Cold: the whole context billed and prefilled again</span></td><td class="you" data-l="Your fleet"><span>Warm: your Functions refreshed it overnight</span></td></tr>
+          <tr><td>10:45 after a meeting</td><td data-l="Per-token API"><span>Cache expired after 5 minutes: billed again</span></td><td class="you" data-l="Your fleet"><span>Warm: first token in 0.3–5 s</span></td></tr>
+          <tr><td>13:30 after lunch</td><td data-l="Per-token API"><span>Cold again</span></td><td class="you" data-l="Your fleet"><span>Still warm</span></td></tr>
+          <tr><td>14:10 other branch</td><td data-l="Per-token API"><span>A new prefix: another cache write</span></td><td class="you" data-l="Your fleet"><span>Prefilled ahead</span></td></tr>
+          <tr><td>16:00 rewrite a file</td><td data-l="Per-token API"><span>The provider's speed, per output token</span></td><td class="you" data-l="Your fleet"><span>126 tok/s, identical output</span></td></tr>
+          <tr><td>19:00 go home</td><td data-l="Per-token API"><span>Nothing kept</span></td><td class="you" data-l="Your fleet"><span>Review, tests and a draft model run, if you start them</span></td></tr>
+        </tbody>
+      </table>
       <div class="screen-read">
-        <div><small>One fleet-hour</small><strong>16 nodes · 60 min</strong></div>
-        <div><small>Kimi K3, plain decode</small><strong>16.2 tok/s</strong></div>
+        <div><small>Warm turn, 137,700 tokens</small><strong>0.3–5 s</strong></div>
         <div><small>Kimi K3, file rewrites</small><strong>126 tok/s</strong></div>
+        <div><small>Around the clock</small><strong data-week="effective">$12.86</strong></div>
       </div>
     </figure>
   </div>
   <div class="specs">
-    <div><strong data-krw="hourly">₩26,000</strong><span><span data-price="hourly">$20</span> per fleet-hour plus VAT, prepaid, no commitment</span></div>
-    <div><strong data-krw="committed">₩20,000</strong><span><span data-price="committed">$15</span> per fleet-hour plus VAT, for every hour of a two-year term</span></div>
-    <div><strong><span data-cap="hourly">168</span> / <span data-cap="verified">720</span></strong><span>hours you may hold on hourly terms, before and after a business check</span></div>
-    <div><strong>18 models</strong><span>offered, among them K-EXAONE 2.0, A.X K2, Solar Open 2, Kimi K3 and GLM 5.3, each under its publisher's open license</span></div>
+    <div><strong data-week="usd">$2,160</strong><span>a week for a whole fleet: <span data-week="hc">144</span> HC, seven days for the price of six, about <span data-week="effective">$12.86</span> an hour, plus VAT</span></div>
+    <div><strong>8 TB <em>cache</em></strong><span>kept on your fleet from turn to turn and week to week, beside <span data-storage>4 TB</span> of storage for your repo and models</span></div>
+    <div><strong>Functions</strong><span>that ingest your repo, refresh the cache, train a draft model on your code, and review and test the day's changes</span></div>
+    <div><strong>19 <em>+ yours</em></strong><span>Kimi K3, GLM 5.3 and Korea's K-EXAONE 2.0, A.X K2, Solar Open 2 and Motif 3, and your own model, listed only for you</span></div>
   </div>
 </section>
 
 <div class="wrap">
-<section id="korea" class="sec">
+<section id="why" class="sec">
   <div class="sec-rail">
-    <p class="label">Korea</p>
-    <p class="label">Data stays here</p>
+    <p class="label">01 Why</p>
+    <p class="label">Your time, not tokens</p>
   </div>
   <div class="sec-body">
-    <h2>Built for Korean companies.</h2>
-    <div class="defs">
-      <div><p class="label">Data stays in Korea</p><p>The fleets and our servers are in Seoul, and your requests go to no foreign AI service. Cached request state is deleted within 24 hours of its last use.</p></div>
-      <div><p class="label">A Korean company</p><p>You contract with HYOR AI Tech Ltd., a Korean company, under Korean law. Both contracts are in Korean and English, and the Korean text prevails.</p></div>
-      <div><p class="label">Pay in won</p><p>Korean businesses pay by bank transfer against our electronic tax invoice (세금계산서), with 10% VAT. Customers abroad pay in USDC or by USD wire.</p></div>
-      <div><p class="label">Korean models</p><p>LG's K-EXAONE 2.0 and SKT's A.X K2, both under Apache 2.0, and Upstage's Solar Open 2 serve on Fleet 1, each the whole model at its publisher's precision, beside Kimi K3, GLM 5.3 and the other open models. They are hard to get elsewhere: in October 2026 neither <a href="https://artificialanalysis.ai/models/solar-open2-250b/providers">Artificial Analysis</a> nor Hugging Face lists a public API provider for any of the three.</p></div>
-      <div><p class="label">Dedicated, not shared</p><p>During your hours the whole fleet serves only your requests. Nobody else's traffic waits in front of yours, so answers start as soon as the fleet is free.</p></div>
-      <div><p class="label">By the hour</p><p>You pay for the fleet's time, not for tokens: long prompts, million-token contexts and agents that re-read their history cost nothing extra.</p></div>
-    </div>
-  </div>
-</section>
-
-<section id="compare" class="sec">
-  <div class="sec-rail">
-    <p class="label">Compare</p>
-    <p class="label">Hardware by the hour</p>
-  </div>
-  <div class="sec-body">
-    <h2>What an hour of comparable hardware costs.</h2>
-    <p class="prose">A fleet-hour rents a machine, so it compares with renting hardware, not with per-token APIs.</p>
+    <h2>Per-token APIs bill you for your codebase again and again.</h2>
+    <p class="prose">The API cache is built for short sessions. On Claude it lasts 5 minutes by default; a 1-hour cache costs twice the input price to write, and a 5-minute write costs 1.25 times. Kimi's default is also 5 minutes. So every break, meeting, branch switch and subagent pays for the whole context again, and waits while it prefills. That is why a $20–50 top-up runs out so fast in agentic work, and why subscription limits arrive before lunch.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Option</th><th>What you get</th><th>Per hour</th></tr></thead>
+      <thead><tr><th scope="col">Moment in the day</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
       <tbody>
-        <tr><td class="model">SparkPipe fleet-hour</td><td>16 DGX Sparks run as one machine, Kimi K3 loaded with a million-token context, speculation, operated for you</td><td class="figure"><b data-price="hourly">$20</b></td></tr>
-        <tr><td class="model">16 rented DGX Sparks</td><td>The same boxes, without the engine that runs one model across all sixteen</td><td class="figure">about $10–12</td></tr>
-        <tr><td class="model">One 8× B300 GPU server</td><td>2.3 TB of GPU memory: holds Kimi K3 at full precision and serves many requests at once</td><td class="figure">about $64–90</td></tr>
-        <tr><td class="model">One 8× H200 GPU server</td><td>1.1 TB of GPU memory: too small for Kimi K3 at full precision</td><td class="figure">about $38</td></tr>
+        <tr><td>Next turn, within minutes</td><td>A cache read, billed per token</td><td class="you"><b>Warm.</b> First token in 0.3–5 s at 137,700 tokens, measured, with no per-token charge</td></tr>
+        <tr><td>After a break or a meeting</td><td>Cache expired: the whole context is billed and prefilled again</td><td class="you"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
+        <tr><td>Switching branch or module</td><td>A new prefix: another cache write, another cold wait</td><td class="you"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
+        <tr><td>First turn in the morning</td><td>Everything cold</td><td class="you"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
+        <tr><td>Rewriting a whole file</td><td>The provider's speed; faster tiers cost more</td><td class="you"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
+        <tr><td>Price</td><td>Every re-read and re-write, or a subscription with quota walls</td><td class="you"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
       </tbody>
     </table></div>
-    <p class="caption">Public rental listings checked in October 2026: hosted DGX Sparks at $0.60–0.75 per hour (<a href="https://www.spheron.network/blog/dgx-spark-vs-renting-a-cloud-gpu-the-real-break-even-hours-2/">Spheron</a>), B300 at $8.00–11.19 per GPU-hour (<a href="https://computeprices.com/providers/latitude/gpus/hgx-b300">Latitude.sh</a>, <a href="https://computeprices.com/providers/digitalocean/gpus/hgx-b300">DigitalOcean</a>), H200 at $4.80 per GPU-hour (Spheron). Prices vary by provider and change often.</p>
+    <p class="prose">For you, the bill is the smaller cost. A wait of a minute or more sends you to another window, and getting back into the problem costs more than the wait. On your own fleet the context is computed once, and every turn after that starts from where the last one stopped.</p>
+    <p class="caption">Cache rules from <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic</a> and <a href="https://platform.kimi.ai/docs/pricing/chat">Kimi</a>, checked on 1 November 2026. Our own figures are measured on Fleet 1. The Customer Zero report, our own weeks of work on a fleet beside the same work on a per-token API, is published at launch.</p>
   </div>
 </section>
 
-<section id="speed" class="sec">
+<section id="fleet" class="sec">
   <div class="sec-rail">
-    <p class="label">Speed</p>
-    <p class="label">Measured and estimated</p>
+    <p class="label">02 Your fleet</p>
+    <p class="label">What stays</p>
   </div>
   <div class="sec-body">
-    <h2>Fast where agents need it.</h2>
-    <div class="facts">
-      <div><strong class="mono">126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation, measured; 15 tok/s without it. Search-and-replace edits run at 28 tok/s.</p></div>
-      <div><strong class="mono">0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, measured on Kimi K3 up to 137,700 tokens.</p></div>
-      <div><strong class="mono">37 s</strong><p><b>ESTIMATED</b>: a 128K-token Kimi K3 prompt from cold with four prefill accelerator boxes, 18 s with eight.</p></div>
+    <h2>A fleet that serves only you and remembers your code.</h2>
+    <div class="defs">
+      <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review. And when a job needs a burst, book idle fleets by the hour with the same HC.</p></div>
+      <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups. Treat it as working space, not an archive: if a failure ever takes both copies, we credit 24 hours of the fleet while the cache rebuilds.</p></div>
+      <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Pull models, datasets and repositories straight onto it from Hugging Face, S3 or any HTTPS URL: start a terabyte download from your laptop on a plane, and the fleet does the rest. Export it and restore it to any fleet you hold, and back up daily anything you want to keep.</p></div>
+      <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does.</p></div>
+      <div><p class="label">19 open models</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash and Korea's K-EXAONE 2.0, A.X K2, Solar Open 2 and Motif 3, among others, each under its publisher's license. Several stay loaded at once when they fit in the fleet's memory, and loading another takes 20 to 80 seconds. The <a href="fleets.html">Fleet List</a> has every model's measured speeds.</p></div>
+      <div><p class="label">Only in Korea</p><p>Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts. You contract with a Korean company under Korean law.</p></div>
     </div>
-    <p class="prose"><b>ESTIMATED</b> for Kimi K3 on Fleet 2, eight M5 Ultra Mac Studios: 23 tok/s for one request without speculation, and about 35 tok/s with it on agent coding turns. SKT's A.X K2 is estimated at 33 and about 49 tok/s. Estimates are projections from our measurements and published hardware figures, published only where we expect to meet them; the <a href="fleets.html#estimates">Fleet List</a> shows how each is made, and each is replaced by a measurement once the hardware runs.</p>
   </div>
 </section>
 
-<section id="roadmap" class="sec">
+<section id="functions" class="sec">
   <div class="sec-rail">
-    <p class="label">Roadmap</p>
-    <p class="label">Next</p>
+    <p class="label">03 Functions</p>
+    <p class="label">Work on your code</p>
   </div>
   <div class="sec-body">
-    <h2>What comes next.</h2>
-    <div class="check-list">
-      <div><b>Prefill accelerators</b><span>Boxes of four NVIDIA RTX 5080 cards compute long prompts, four boxes first, then eight. ESTIMATED: a 128K-token Kimi K3 prompt in 37 s (18 s with eight boxes), and a 1M-token prompt in about 17 minutes.</span></div>
-      <div><b>Fleet 2</b><span>Eight M5 Ultra Mac Studios with 2.2 times Fleet 1's memory bandwidth, for faster decoding. Measured on one of its Studios: Qwen 3.8 27B at full BF16 precision decodes 20.1 tok/s for one request, 90% of what the Studio's memory bandwidth allows, and 442 tok/s in total for 64 requests at once. ESTIMATED: Kimi K3 at 23 tok/s without speculation.</span></div>
-      <div><b>Better speculation</b><span>Tree drafts from several drafters at once, so more drafted tokens are accepted in each step.</span></div>
-      <div><b>Field search</b><span>Checkboxes in the chat add search tools for law, medicine, finance, patents and more, so any model answers from current primary sources and cites them.</span></div>
-      <div><b>More large models</b><span>Nemotron 3 Ultra and Mistral Large 3.</span></div>
-      <div><b>Fleet 3</b><span>Sixteen more DGX Sparks. With Fleet 1 and Fleet 2 together holding 4 TB, models above 2 TB, such as Qwen 3.8 Max at full FP8 precision, run across two fleets.</span></div>
+    <h2>Your fleet works on your code when you tell it to.</h2>
+    <p class="prose">A Function is software we build and run on a fleet you hold. Start one, or schedule it, from your account, the API or the CLI. It does its own setup: the first one you run ingests your repository. Results land in your storage and your morning report, and what a Function produces is yours. We keep adding Functions.</p>
+    <div class="fns">
+      <div class="fn"><p class="label">Your state</p><dl>
+        <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your token stays on your machine: it comes with each download, and the fleet holds it only while that download runs.</dd>
+        <dt>Ingest a repository</dt><dd>Takes your pushes as a git remote, with no token for your git host, and maps files, symbols and history.</dd>
+        <dt>Build and refresh the cache</dt><dd>Prefills the parts that change least first; after each push it recomputes only what changed.</dd>
+        <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm, and prefills the likely next ones between your turns.</dd>
+        <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
+        <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
+        <dt>Daily backup</dt><dd>One scheduled command on your own machine pulls the day's changes to your disk or bucket, with your own credentials.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Find problems</p><dl>
+        <dt>Review the day's changes</dt><dd>Reviews each change against the whole codebase, not just the diff, and confirms each finding with a test.</dd>
+        <dt>Second opinions</dt><dd>Runs the same review with other models and marks where they agree.</dd>
+        <dt>Security audit</dt><dd>Memory safety, concurrency, injection, secrets and dependencies, ranked, with reproductions.</dd>
+        <dt>Tests and fuzzing</dt><dd>Writes and runs unit tests and fuzzers for changed code, and reports any crash.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Do the work</p><dl>
+        <dt>Overnight agent</dt><dd>Works through a list of tasks and leaves a branch per task, with its test results.</dd>
+        <dt>Codebase-wide change</dt><dd>A rename, an API migration or a port, file by file, as one built and tested branch.</dd>
+        <dt>Ask the whole codebase</dt><dd>Runs one question or instruction over every file or module and collects the answers.</dd>
+        <dt>Keep docs current</dt><dd>Architecture notes, API docs and a map of the code, updated with each push.</dd>
+        <dt>Morning report</dt><dd>Everything the night produced, on one page and in one API call.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Models</p><dl>
+        <dt>Train a draft model</dt><dd>Trains on your repo and your sessions, so speculation accepts more of the model's tokens on your new code, week by week.</dd>
+        <dt>Evaluate models on your code</dt><dd>Runs your tests or eval set against every offered model and your own, to pick the best one per task.</dd>
+        <dt>Qualify your model</dt><dd>Checks your own model and driver against your reference outputs.</dd>
+        <dt>Train an adapter</dt><dd>Trains an adapter for an offered model or your own on your data.</dd>
+        <dt>Make training data</dt><dd>Generates training data for your own model, where each source model's license allows it.</dd>
+      </dl></div>
     </div>
+    <p class="caption">Functions that build or run your code do it in a sandbox on your fleet, with no network unless you allow it. When a fleet changes hands we restore it to our own image, so nothing one customer ran can reach the next.</p>
+  </div>
+</section>
+
+<section id="models" class="sec">
+  <div class="sec-rail">
+    <p class="label">04 Your model</p>
+    <p class="label">Private model list</p>
+  </div>
+  <div class="sec-body">
+    <h2>Trained your own model? Serve it on your own fleet.</h2>
+    <ol class="steps">
+      <li><h3>Upload</h3><p>Send your weights to your storage with the CLI or the API. Any model that fits the fleet's memory works; Kimi K3's 1.56 TB fits.</p></li>
+      <li><h3>Add a driver</h3><p>We publish the model-family interface and a guide written for coding agents, so your agent can write the driver. Most new models reuse a family schedule that already exists.</p></li>
+      <li><h3>Check it</h3><p>A Function runs your model against your reference outputs on your fleet and reports whether they match: the same qualification our own models pass.</p></li>
+      <li><h3>Use it</h3><p>It appears in your model list only, next to the offered models, behind the same endpoint, and works with every Function.</p></li>
+    </ol>
   </div>
 </section>
 
 <section id="how" class="sec">
   <div class="sec-rail">
-    <p class="label">How it works</p>
+    <p class="label">05 How it works</p>
     <p class="label">Four steps</p>
   </div>
   <div class="sec-body">
-    <h2>Account, hours, reservation, use.</h2>
+    <h2>Demo hour, then a fleet of your own.</h2>
     <ol class="steps">
-      <li><h3>Open an account</h3><p>Give your company's details and connect an Ethereum wallet: its address identifies the account. Accept the Hourly Terms by signing their text with the wallet. Every business is screened against sanctions lists.</p></li>
-      <li><h3>Buy hours</h3><p>Pay in advance: Korean businesses in won, by bank transfer against our electronic tax invoice; customers abroad in USDC, through an invoice from our payment processor. Korean VAT of 10% is added. Your hours are issued once the payment has cleared.</p></li>
-      <li><h3>Reserve</h3><p>Choose a fleet, a model and the hours on the fleet's calendar, and sign; on hourly terms you reserve up to 7 days ahead. A confirmed reservation is final and is taken from your balance as the hour passes.</p></li>
-      <li><h3>Use</h3><p>During your hours the whole fleet serves only your requests, through the SparkPipe API, which follows the OpenAI chat format. You issue the access tokens, so you decide who uses your hours.</p></li>
+      <li><h3>Open an account</h3><p>Your company's legal name or your own, a work email confirmed with a 6-digit code, and the Customer Agreement. No password. Then buy HC in any quantity.</p></li>
+      <li><h3>Book a demo hour</h3><p>The whole demo fleet by the hour, up to <span data-demo="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Point your own tools at it and try your codebase.</p></li>
+      <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
+      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
-    <p class="caption">Won payments go straight to HYOR AI Tech Ltd.'s Korean bank account. USDC payments go through a payment processor. Our system has no feature for passing hours between accounts.</p>
+    <p class="prose">Need more than one fleet for a while? Any fleet nobody holds can be booked by the hour with the same HC, up to the end of the current week, and your requests go to it like to your own. The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
+    <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
   </div>
 </section>
 
 <section id="prices" class="sec">
   <div class="sec-rail">
-    <p class="label">Prices</p>
-    <p class="label">Two ways to buy</p>
+    <p class="label">06 Prices</p>
+    <p class="label">One currency</p>
   </div>
   <div class="sec-body">
-    <h2>Try it by the hour. Commit for less.</h2>
-    <p class="prose">Every business starts on hourly terms. A business that wants every hour for two years at the lower price passes our business check and signs the two-year agreement, which it may negotiate clause by clause.</p>
+    <h2>Seven days for the price of six.</h2>
+    <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on demo hours and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
     <div class="table-wrap"><table class="cmp">
-      <thead><tr><th scope="col"></th><th scope="col">Hourly</th><th scope="col">Two years</th></tr></thead>
+      <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Price</th><td><span data-krw="hourly">₩26,000</span> or <span data-price="hourly">$20</span> per fleet-hour plus VAT</td><td><span data-krw="committed">₩20,000</span> or <span data-price="committed">$15</span> per fleet-hour plus VAT, fixed for the term</td></tr>
-        <tr><th scope="row">Commitment</th><td>None</td><td>Every hour of two years from signing: 17,520 hours, or 17,544 when the term contains 29 February</td></tr>
-        <tr><th scope="row">Models</th><td>Any offered model on the Fleet List, chosen for each reservation</td><td>The models you choose in the agreement stay available for the whole term; the others while they are listed</td></tr>
-        <tr><th scope="row">Business check</th><td>Not needed</td><td>Required before signing</td></tr>
-        <tr><th scope="row">Hours held</th><td>Up to <span data-cap="hourly">168</span> at a time, or <span data-cap="verified">720</span> after a business check; each lasts 12 months</td><td>Each month's paid hours, reserved when you choose within that month: 12 in each 12-hour window a day until you have prepaid the whole term</td></tr>
-        <tr><th scope="row">Payment</th><td>Before use: a won bank transfer against our electronic tax invoice (세금계산서) for Korean businesses, or a USDC invoice</td><td>A won bank transfer against our electronic tax invoice, a USD wire from your own account abroad (zero-rated for VAT), or a USDC invoice. Nothing is due in the first 30 days; you pay any amounts up to three deadlines, on days 30, 60 and 90</td></tr>
-        <tr><th scope="row">Reservations</th><td>Final. A two-year customer may take your reserved hour until 6 hours before it starts; the hour goes back to your balance</td><td>Final, and never taken by anyone</td></tr>
-        <tr><th scope="row">Downtime</th><td colspan="2">A reserved hour with more than 15 minutes of downtime comes back in full, automatically, from our own records</td></tr>
-        <tr><th scope="row">Refunds</th><td>None, unless we stop hourly service or close your account through no fault of yours</td><td>None, except paid hours not yet used if the agreement ends early (clause 11.3). If no payment is made by day 30, it ends with nothing owed</td></tr>
-        <tr><th scope="row">Terms</th><td><a href="hourly-terms.html">Hourly Terms</a><a href="hourly-terms-ko.html" hreflang="ko">시간제 이용약관</a></td><td><a href="agreement.html">Two-year agreement</a><a href="agreement-ko.html" hreflang="ko">2년 예약 계약서</a></td></tr>
+        <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩26,000</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩19,500</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
+        <tr><th scope="row">Demo hour</th><td><span data-hour="hc">1</span> HC for the whole demo fleet for an hour</td></tr>
+        <tr><th scope="row">Idle fleets</th><td>Any fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
+        <tr><th scope="row">Week</th><td><span data-week="hc">144</span> HC for seven days on a fleet pinned to you: <span data-week="usd">$2,160</span> at the <span data-hc="bulk-usd">$15</span> HC price, about <span data-week="effective">$12.86</span> an hour</td></tr>
+        <tr><th scope="row">Weeks ahead</th><td data-off="table">5% off each new week when you hold 4 or more weeks, 10% from 13, 15% from 26 and 20% at 52, counting the current week and the weeks you are booking</td></tr>
+        <tr><th scope="row">How far ahead</th><td>Up to <span data-ahead>52</span> weeks</td></tr>
+        <tr><th scope="row">Downtime</th><td>A booked hour with more than 15 minutes of downtime comes back as HC, automatically, from our own records. Maintenance takes up to 3 hours a fleet a week and is credited the same way</td></tr>
+        <tr><th scope="row">Payment</th><td>In won by card (Korean or overseas), bank transfer, virtual account or Korean easy pay through Toss Payments; in USDC or USDT through CoinPayments; or in US dollars by bank transfer (SWIFT) from your own account outside Korea. Korean businesses get a card slip or an electronic tax invoice</td></tr>
+        <tr><th scope="row">VAT</th><td>10% is added. A US dollar bank transfer (SWIFT) carries 0% when you have no place of business in Korea</td></tr>
+        <tr><th scope="row">Refunds</th><td>None, unless we stop offering service for HC or close your account through no fault of yours. HC locked in the waitlist that would lapse while you wait is refunded</td></tr>
       </tbody>
     </table></div>
-    <p class="caption">VAT is charged at 10% on every payment except a zero-rated wire. Any amount charged as VAT that turns out not to be owed is an overpayment, and we refund it. The Korean text of each contract prevails.</p>
-    <div class="actions"><a class="btn" href="buy.html">Preview the checkout</a><a class="btn" href="mailto:hyor@sparkpipe.ai?subject=Two-year%20fleet-hours">Ask for a two-year quote</a></div>
+    <p class="caption">Prices are set on this website and may change; HC you have bought and weeks you have booked keep their price. The <a href="agreement.html">SparkPipe Customer Agreement</a> governs, and its Korean text prevails. HYOR AI Tech Ltd. is the seller.</p>
+    <div class="actions"><a class="btn solid" href="buy.html">Buy HC</a><a class="btn" href="market.html">Book in your account</a></div>
   </div>
 </section>
 
-<section id="fleets" class="sec">
+<section id="setup" class="sec">
   <div class="sec-rail">
-    <p class="label">Fleets and models</p>
-    <p class="label">Fleet List</p>
+    <p class="label">07 Setup</p>
+    <p class="label">Your own tools</p>
   </div>
   <div class="sec-body">
-    <h2>One balance, every fleet.</h2>
-    <p class="prose">Your hours work on every fleet we operate. A fleet's rate is the number of hours one hour on it takes from your balance. The <a href="fleets.html">Fleet List</a> is the list the terms refer to: fleets, rates, models and their licenses.</p>
-    <div class="table-wrap"><table>
-      <thead><tr><th>Fleet</th><th>Machines</th><th>State</th><th>Rate</th></tr></thead>
-      <tbody>
-        <tr><td class="model">Fleet 1</td><td>16 NVIDIA DGX Spark, 2 TB of memory in all, 100 Gb/s RDMA</td><td><span class="state live">Serving</span></td><td class="figure">1</td></tr>
-        <tr><td class="model">Fleet 2</td><td>Apple Mac Studio, M5 Ultra</td><td><span class="state building">Under construction</span></td><td class="figure">1</td></tr>
-        <tr><td class="model">Fleet 3</td><td>16 NVIDIA DGX Spark</td><td><span class="state building">Under construction</span></td><td class="figure">1</td></tr>
-      </tbody>
-    </table></div>
-    <div class="table-wrap"><table class="models">
-      <thead><tr><th>Core model on Fleet 1</th><th>License</th><th>Context window</th><th>One request</th><th>Eight requests</th><th>Prefill, 8K prompt</th></tr></thead>
-      <tbody>
-        <tr><td><b>Kimi K3</b><span>Moonshot AI · kimi-k3</span></td><td><a href="https://huggingface.co/moonshotai/Kimi-K3/blob/main/LICENSE">Kimi K3 License</a></td><td class="figure">1M</td><td class="figure"><b>16.2</b>tok/s</td><td class="figure"><b>64</b>tok/s</td><td class="figure"><b>590</b>tok/s</td></tr>
-        <tr><td><b>GLM 5.3</b><span>Z.AI · glm-5.3</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3/blob/main/LICENSE">GLM-5.3 License</a></td><td class="figure">1M</td><td class="figure"><b>28.9</b>tok/s</td><td class="figure"><b>74</b>tok/s</td><td class="figure"><b>1,162</b>tok/s</td></tr>
-        <tr><td><b>GLM 5.3 Flash</b><span>Z.AI · glm-5.3-flash</span></td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="figure">128K</td><td class="figure"><b>55.0</b>tok/s</td><td class="figure"><b>176</b>tok/s</td><td class="figure"><b>876</b>tok/s</td></tr>
-        <tr><td><b>DeepSeek V4.1 Flash</b><span>DeepSeek · deepseek-v4.1-flash</span></td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="figure">1M</td><td class="figure"><b>42.5</b>tok/s ¹</td><td class="figure"><b>151</b>tok/s ¹</td><td class="figure"><b>1,290</b>tok/s ¹</td></tr>
-      </tbody>
-    </table></div>
-    <div class="table-wrap"><table class="models">
-      <thead><tr><th>Korean model on Fleet 1</th><th>License</th><th>Context window</th><th>One request</th><th>Prefill, 7K prompt</th><th>File rewrite, speculation</th></tr></thead>
-      <tbody>
-        <tr><td><b>K-EXAONE 2.0</b><span>LG AI Research · k-exaone-2.0</span></td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="figure">256K</td><td class="figure"><b>27.3</b>tok/s</td><td class="figure"><b>324</b>tok/s</td><td class="figure"><b>190.9</b>tok/s</td></tr>
-        <tr><td><b>A.X K2</b><span>SK Telecom · a.x-k2</span></td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="figure">256K</td><td class="figure"><b>23.8</b>tok/s</td><td class="figure"><b>1,274</b>tok/s</td><td class="figure"><b>298.0</b>tok/s</td></tr>
-        <tr><td><b>Solar Open 2</b><span>Upstage · solar-open-2</span></td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="figure">256K</td><td class="figure"><b>61.2</b>tok/s</td><td class="figure"><b>1,025</b>tok/s</td><td class="figure"><b>513.7</b>tok/s</td></tr>
-      </tbody>
-    </table></div>
-    <p class="caption">Context windows as served. Decode without speculation, measured on 2026-10-18 with prompts of 7 to 8K tokens. ¹ DeepSeek V4.1 Flash was measured on 2026-10-24 after a prompt of about a million tokens; its prefill figure is that prompt's average. The Korean models were measured on 2026-10-26 with prompts of 6,850 to 7,396 tokens. File rewrite: a file of about 3,800 tokens rewritten whole with one function renamed, with speculation drafting from the request's own text; the output is identical to decoding without speculation, and the rate includes the prompt's prefill (2026-10-26). All nineteen installed models, their licenses and speeds are on the <a href="fleets.html">Fleet List</a>; you must follow each model's license.</p>
-  </div>
-</section>
+    <h2>Point your coding agent at your fleet.</h2>
+    <p class="prose">Create an API key in your account and set it in your tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded.</p>
+    <div class="code">
+      <div class="code-head"><span>Your fleet, while you hold it</span><span>shell</span></div>
+      <pre><span class="d"># Claude Code</span>
+<span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
+<span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
+<span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
+<span class="k">export</span> CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 
-<section id="responsibility" class="sec">
-  <div class="sec-rail">
-    <p class="label">Responsibility</p>
-    <p class="label">Who does what</p>
-  </div>
-  <div class="sec-body">
-    <h2>We run the fleet. You run your work.</h2>
-    <div class="defs">
-      <div><p class="label">Capacity only</p><p>You alone decide what runs during your hours. We do not monitor, review or control your workloads, data or outputs, and we are not responsible for them or for how they are used.</p></div>
-      <div><p class="label">Your users</p><p>You may let your own users, or anyone you choose, use your hours through the key and access tokens you control. That happens outside our system: it keeps no register of it and takes no part. You stay responsible for everyone who uses your hours.</p></div>
-      <div><p class="label">Lawful use</p><p>Every use must follow the law, including sanctions and export control, personal data and intellectual property law, and each model's license. We may suspend use that a law or authority requires us to stop, that breaks the terms, or that threatens a fleet.</p></div>
-      <div><p class="label">AI law</p><p>If you offer generative AI to your own users, you are their provider under Korea's AI Basic Act and carry its notice and labelling duties.</p></div>
-      <div><p class="label">Your data</p><p>You keep every right in your data and outputs. We keep no backups of it. Cached request state is deleted within 24 hours of its last use. The fleets and our servers are in Seoul.</p></div>
-      <div><p class="label">Businesses only</p><p>Fleet-hours are sold to businesses for their business, never to consumers. Korean law governs both contracts, and disputes go to arbitration in Seoul under the Korean Commercial Arbitration Board's rules.</p></div>
+<span class="d"># Codex: ~/.codex/config.toml</span>
+model = "kimi-k3"
+model_provider = "sparkpipe"
+[model_providers.sparkpipe]
+name = "SparkPipe"
+base_url = "https://sparkpipe.ai/pay/api/v1"
+env_key = "SPARKPIPE_API_KEY"
+wire_api = "responses"
+
+<span class="d"># OpenCode: opencode.json</span>
+{
+  "provider": {
+    "sparkpipe": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "https://sparkpipe.ai/pay/api/v1", "apiKey": "{env:SPARKPIPE_API_KEY}" },
+      "models": { "kimi-k3": { "limit": { "context": 1000000, "output": 32768 } } }
+    }
+  },
+  "model": "sparkpipe/kimi-k3",
+  "share": "disabled"
+}
+
+<span class="d"># Any other tool that speaks the OpenAI API</span>
+<span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
+<span class="k">export</span> OPENAI_API_KEY=<span class="d">your key from your account</span>
+
+curl $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
     </div>
+    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span> and <span class="mono">setup opencode</span> write these settings for you, with the SparkPipe plugin that adds the fleet's code search, test runs on its sandbox, status and morning report to the agent. Each new release of the three is tested against the fleet before we recommend it. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
   </div>
 </section>
 
-<section id="technology" class="sec">
+<section id="speed" class="sec">
   <div class="sec-rail">
-    <p class="label">Technology</p>
-    <p class="label">Open source</p>
+    <p class="label">08 Speed</p>
+    <p class="label">Measured</p>
   </div>
   <div class="sec-body">
-    <h2>Sixteen small boxes, one frontier model.</h2>
-    <p class="prose">Decoding a large model is limited by how fast its weights can be read. SparkPipe splits every weight and every cache entry across the sixteen nodes, so each reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh in 16 to 38 microseconds. The engine is written from scratch in C and CUDA and published under the Apache 2.0 license.</p>
+    <h2>Fast where a warm fleet matters.</h2>
     <div class="facts">
-      <div><strong class="mono">1/16</strong><p>of the model and of every conversation's cache on each node. Kimi K3's 1.56 TB of weights are held whole across the fleet.</p></div>
-      <div><strong class="mono">5 s</strong><p>to answer the next turn of a 137,700-token conversation from the cache, against 299 s from cold.</p></div>
-      <div><strong class="mono">15 → 126</strong><p>tokens per second for Kimi K3 rewriting whole files with speculation. On new prose the gain is 1.0 to 1.2 times.</p></div>
+      <div><strong>126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation; 15 tok/s without it. The output is the model's own.</p></div>
+      <div><strong>0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, on Kimi K3 up to 137,700 tokens. From cold: 299 s.</p></div>
+      <div><strong>15.6 min</strong><p>to prefill a 1M-token Kimi K3 prompt from cold on one fleet. On your own fleet you pay that once, not after every pause.</p></div>
     </div>
     <div class="bars" role="img" aria-label="Kimi K3 decode on whole-file rewrites: 15.3 tokens per second plain, 126.4 with speculation. GLM 5.3: 27.6 plain, 124.2 with speculation.">
       <div class="bar"><span>K3, plain</span><i style="--w: 12.1%"></i><b>15.3</b></div>
@@ -277,13 +308,29 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div class="bar top"><span>GLM 5.3, speculation</span><i style="--w: 98.3%"></i><b>124.2</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, one request</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">Speculation drafts tokens from the request's own context, and from a draft model on a separate GPU, and the model verifies every draft, so the output is the model's own. All figures were measured on Fleet 1 through 2026-10-24; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>. Source: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>.</p>
+    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how a fleet gets faster on it. All figures are measured on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+  </div>
+</section>
+
+<section id="technology" class="sec">
+  <div class="sec-rail">
+    <p class="label">09 Technology</p>
+    <p class="label">Source available</p>
+  </div>
+  <div class="sec-body">
+    <h2>Sixteen small boxes, one frontier model.</h2>
+    <p class="prose">Decoding a large model is limited by how fast its weights can be read. SparkPipe splits every weight and every cache entry across the sixteen nodes of a fleet, so each reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh in 16 to 38 microseconds. The engine is written from scratch in C and CUDA, and its source is public under the Functional Source License with an added permission: use it for anything, commercially too, except renting out fleets or selling inference that runs on them. Each version becomes Apache 2.0 two years after we release it.</p>
+    <figure class="screen" role="img" aria-label="Animated diagram of a fleet: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
+      <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Korea</span><span id="phase">each node reads its 1/16 of the weights</span></div>
+      <canvas id="fleet-canvas" width="1600" height="700"></canvas>
+    </figure>
+    <p class="caption">Source: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>.</p>
   </div>
 </section>
 
 <section id="company" class="sec">
   <div class="sec-rail">
-    <p class="label">Company</p>
+    <p class="label">10 Company</p>
     <p class="label">Documents</p>
   </div>
   <div class="sec-body">
@@ -292,9 +339,9 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
       <div><b>Company</b><span>HYOR AI Tech Ltd. (효르에이아이테크 유한회사), a Korean limited company</span></div>
       <div><b>Representative</b><span>TURAN CEM</span></div>
       <div><b>Registration</b><span>Business registration number 641-87-03809</span></div>
-      <div><b>Location</b><span>Yongsan-gu, Seoul, Republic of Korea; full address on request by email</span></div>
+      <div><b>Address</b><span>Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea</span></div>
       <div><b>Contact</b><span><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></span></div>
-      <div><b>Terms</b><span><a href="terms.html">Hourly Terms and two-year agreement</a>, in English and Korean, published for review and in force from <span data-start>1 December 2026</span></span></div>
+      <div><b>Terms</b><span><a href="terms.html">SparkPipe Customer Agreement</a>, in English and Korean, published for review</span></div>
       <div><b>Privacy</b><span><a href="privacy.html">Privacy policy</a> · <a href="privacy-ko.html" hreflang="ko">개인정보처리방침</a></span></div>
       <div><b>Other service</b><span><a href="https://sparkpipe.ai:8443">SparkPipe Chat</a>, for invited users. Its replies are labelled as generated by AI.</span></div>
     </div>
@@ -302,36 +349,20 @@ h1 { font-size: clamp(40px, 6.4vw, 84px); line-height: .98; max-width: 14ch; }
 </section>
 </div>
 </main>
-
 <footer class="foot">
   <div class="wrap">
-    <span>© 2026 HYOR AI Tech Ltd</span>
-    <nav aria-label="Footer"><a href="buy.html">Fleet-hours</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-
 <script src="pricing.js"></script>
-<script>
-(function () {
-  var P = window.SP_PRICING;
-  if (!P) return;
-  var usd = function (n) { return "$" + (Number.isInteger(n) ? n : n.toFixed(2)); };
-  var months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-  var start = P.committedEarliestStart < P.hourlyEarliestStart ? P.committedEarliestStart : P.hourlyEarliestStart;
-  var parts = start.split("-");
-  var when = Number(parts[2]) + " " + months[Number(parts[1]) - 1] + " " + parts[0];
-  document.querySelectorAll("[data-price]").forEach(function (el) { el.textContent = usd(el.dataset.price === "hourly" ? P.hourlyPrice : P.committedPrice); });
-  document.querySelectorAll("[data-krw]").forEach(function (el) { el.textContent = "₩" + (el.dataset.krw === "hourly" ? P.hourlyPriceKRW : P.committedPriceKRW).toLocaleString("en-US"); });
-  document.querySelectorAll("[data-cap]").forEach(function (el) { el.textContent = (el.dataset.cap === "hourly" ? P.hourlyMaxHours : P.verifiedMaxHours).toLocaleString("en-US"); });
-  document.querySelectorAll("[data-start]").forEach(function (el) { el.textContent = when; });
-})();
-</script>
+<script src="prices.js"></script>
 <script>
 (function () {
   var reduce = false;
   try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
-  var canvas = document.getElementById("fleet");
+  var canvas = document.getElementById("fleet-canvas");
   var ctx = canvas.getContext("2d");
   var W = canvas.width, H = canvas.height;
   var nodes = [];

@@ -52,6 +52,19 @@ SPARK_MATH_FN float SparkMathRoundBf16(float value)
 	return(SparkMathBf16ToFloat(SparkMathFloatToBf16(value)));
 }
 
+SPARK_MATH_FN float SparkMathExp2Fast(float value)
+{
+#if defined(__CUDA_ARCH__)
+	float result;
+	asm("ex2.approx.ftz.f32 %0, %1;" : "=f"(result) : "f"(value));
+	return(result);
+#elif defined(__METAL_VERSION__)
+	return(metal::exp2(value));
+#else
+	return(exp2f(value));
+#endif
+}
+
 SPARK_MATH_FN float SparkMathScaledSigmoid(float scale, float value)
 {
 	return(scale / (1.0f + SPARK_MATH_EXP(-value)));

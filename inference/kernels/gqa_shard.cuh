@@ -105,7 +105,9 @@ void LmGqaShardPartialKernel(
 	for (index = 0u; index < VALUES; ++index)
 		accumulator[index] = 0.0f;
 	count = SparkKvShardLocalKeys(cache.shard,limit);
-	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u; local < count; ++local)
+	count = count < LmKvKeyWindowEnd(cache) ? count : LmKvKeyWindowEnd(cache);
+	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u, local = local > LmKvKeyWindowBegin(cache) ? local : LmKvKeyWindowBegin(cache);
+		local < count; ++local)
 	{
 		position = SparkKvShardLocalPosition(cache.shard,local);
 		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
@@ -220,6 +222,7 @@ void LmGqaShardTiledKernel(
 	const uint32_t record = width + 2u * slot_count;
 	uint32_t query[K_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
 	float output[VALUE_FRAGS][4], running_max[2] = { -INFINITY, -INFINITY }, running_sum[2] = { 0.0f, 0.0f };
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	bool valid[2], member[2];
 
 	if ( block_first >= vectors )
@@ -302,7 +305,9 @@ void LmGqaShardTiledKernel(
 			if ( row_position != 0 && row_position[row[side]] != LM_KV_POSITION_UNUSED && row_position[row[side]] + 1u < limit[side] )
 				limit[side] = row_position[row[side]] + 1u;
 			count[side] = SparkKvShardLocalKeys(cache.shard,limit[side]);
+			count[side] = count[side] < LmKvKeyWindowEnd(cache) ? count[side] : LmKvKeyWindowEnd(cache);
 			begin[side] = window != 0u && limit[side] > window ? SparkKvShardLocalKeys(cache.shard,limit[side] - window) : 0u;
+			begin[side] = begin[side] > LmKvKeyWindowBegin(cache) ? begin[side] : LmKvKeyWindowBegin(cache);
 			if ( (lane & 3u) == 0u && begin[side] < count[side] )
 			{
 				atomicMin(&run[2],begin[side]);
@@ -328,7 +333,7 @@ void LmGqaShardTiledKernel(
 			const uint32_t buffer = tile & 1u;
 			const uint32_t tile_keys = key_base + buffer * TILE * KEY_BYTES, tile_values = value_base + buffer * TILE * VALUE_BYTES;
 			const uint8_t *ahead = threadIdx.x < TILE && tile + 2u < tile_end ? lookup(tile + 2u) : 0;
-			float score[KEY_FRAGS][4], peak[2], next_max[2], rescale[2];
+			float score[KEY_FRAGS][4], peak[2], next_max[2], rescale[2], shift[2];
 			uint32_t b[4], first[2], second[2], weights[4];
 			bool whole;
 			if ( tile + 1u < tile_end )
@@ -370,10 +375,7 @@ void LmGqaShardTiledKernel(
 				for (frag = 0u; frag < KEY_FRAGS; ++frag)
 					#pragma unroll
 					for (entry = 0u; entry < 4u; ++entry)
-					{
-						score[frag][entry] *= qk_scale;
 						peak[entry / 2u] = fmaxf(peak[entry / 2u],score[frag][entry]);
-					}
 			}
 			else
 			{
@@ -390,7 +392,7 @@ void LmGqaShardTiledKernel(
 							visible = position / block_tokens >= limit[which] / block_tokens ||
 								((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
 						}
-						score[frag][entry] = visible ? score[frag][entry] * qk_scale : -INFINITY;
+						score[frag][entry] = visible ? score[frag][entry] : -INFINITY;
 						peak[which] = fmaxf(peak[which],score[frag][entry]);
 					}
 			}
@@ -399,8 +401,9 @@ void LmGqaShardTiledKernel(
 				peak[side] = fmaxf(peak[side],__shfl_xor_sync(0xffffffffu,peak[side],1u));
 				peak[side] = fmaxf(peak[side],__shfl_xor_sync(0xffffffffu,peak[side],2u));
 				next_max[side] = fmaxf(running_max[side],peak[side]);
-				rescale[side] = running_max[side] == -INFINITY ? 0.0f : __expf(running_max[side] - next_max[side]);
+				rescale[side] = running_max[side] == -INFINITY ? 0.0f : SparkMathExp2Fast((running_max[side] - next_max[side]) * scale_log2);
 				running_max[side] = next_max[side];
+				shift[side] = next_max[side] == -INFINITY ? 0.0f : next_max[side] * scale_log2;
 				running_sum[side] *= rescale[side];
 			}
 			#pragma unroll
@@ -416,7 +419,7 @@ void LmGqaShardTiledKernel(
 				#pragma unroll
 				for (entry = 0u; entry < 4u; ++entry)
 				{
-					const float weight = score[frag][entry] == -INFINITY ? 0.0f : __expf(score[frag][entry] - running_max[entry / 2u]);
+					const float weight = SparkMathExp2Fast(fmaf(score[frag][entry],scale_log2,-shift[entry / 2u]));
 					running_sum[entry / 2u] += weight;
 					score[frag][entry] = weight;
 				}
@@ -462,7 +465,7 @@ void LmGqaShardTiledKernel(
 			float *base = send + (uint64_t)destination * destination_stride + (uint64_t)row[side] * record;
 			if ( part == 0u && (lane & 3u) == 0u )
 			{
-				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM)] = running_max[side];
+				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM)] = running_max[side] == -INFINITY ? -INFINITY : running_max[side] * qk_scale;
 				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM) + 1u] = running_sum[side];
 			}
 			#pragma unroll

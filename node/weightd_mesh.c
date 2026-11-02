@@ -30,6 +30,7 @@
 #define SPARK_WEIGHTD_MESH_DORMANT_POLL_NS 200000L
 #define SPARK_WEIGHTD_MESH_FULL_SCAN_NS UINT64_C(1000000)
 #define SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS 100000u
+#define SPARK_WEIGHTD_MESH_STUCK_LOG_NS UINT64_C(1000000000)
 #define SPARK_WEIGHTD_MESH_REPAIR_INTERVAL_NS UINT64_C(10000000)
 #define SPARK_WEIGHTD_MESH_STATS_NS UINT64_C(10000000000)
 #define SPARK_WEIGHTD_MESH_TIMING_PEER_TEXT 80u
@@ -188,6 +189,12 @@ typedef struct SparkWeightdMesh
     uint64_t doorbell_posted[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint32_t doorbell_stuck[SPARK_WEIGHTD_MESH_BANDS *
+        SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    uint64_t doorbell_seen_seq[SPARK_WEIGHTD_MESH_BANDS *
+        SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    uint64_t doorbell_seen_ns[SPARK_WEIGHTD_MESH_BANDS *
+        SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
+    uint64_t doorbell_logged_ns[SPARK_WEIGHTD_MESH_BANDS *
         SPARK_WEIGHTD_MESH_RANKS_PER_BAND];
     uint64_t ship_log_count;
     uint64_t ship_log_key;
@@ -897,6 +904,9 @@ static void SparkWeightdMeshLaneResetLocked(uint32_t lane)
         weightd_mesh.issued[index] = 0u;
         weightd_mesh.doorbell_posted[index] = 0u;
         weightd_mesh.doorbell_stuck[index] = 0u;
+        weightd_mesh.doorbell_seen_seq[index] = 0u;
+        weightd_mesh.doorbell_seen_ns[index] = 0u;
+        weightd_mesh.doorbell_logged_ns[index] = 0u;
         weightd_mesh.wait_seen[index] = 0u;
         weightd_mesh.wait_terminal[index] = 0u;
         weightd_mesh.wait_started[index] = 0u;
@@ -2487,11 +2497,22 @@ static uint32_t SparkWeightdMeshDoorbellStable(uint32_t index,uint64_t snapshot[
     return(0u);
 }
 
-static void SparkWeightdMeshDoorbellStuck(uint64_t index,const char *phase,uint64_t seq,uint64_t bytes,uint64_t slot)
+static void SparkWeightdMeshDoorbellStuck(uint64_t index,const char *phase,uint64_t seq,uint64_t bytes,uint64_t slot,uint64_t now_ns)
 {
     weightd_mesh.doorbell_stuck[index]++;
-    if ( (weightd_mesh.doorbell_stuck[index] % 500u) == 0u )
-        fprintf(stderr,"WD-STUCK idx=%llu phase=%s seq=%llu posted=%llu bytes=%llu slot=%llu\n",(unsigned long long)index,phase,(unsigned long long)seq,(unsigned long long)weightd_mesh.doorbell_posted[index],(unsigned long long)bytes,(unsigned long long)slot);
+    if ( seq != weightd_mesh.doorbell_seen_seq[index] )
+    {
+        weightd_mesh.doorbell_seen_seq[index] = seq;
+        weightd_mesh.doorbell_seen_ns[index] = now_ns;
+        return;
+    }
+    if ( now_ns - weightd_mesh.doorbell_seen_ns[index] < SPARK_WEIGHTD_MESH_STUCK_LOG_NS ||
+         now_ns - weightd_mesh.doorbell_logged_ns[index] < SPARK_WEIGHTD_MESH_STUCK_LOG_NS )
+        return;
+    weightd_mesh.doorbell_logged_ns[index] = now_ns;
+    fprintf(stderr,"WD-STUCK idx=%llu phase=%s seq=%llu posted=%llu issued=%llu bytes=%llu slot=%llu for_ms=%llu sweeps=%u\n",(unsigned long long)index,phase,
+        (unsigned long long)seq,(unsigned long long)weightd_mesh.doorbell_posted[index],(unsigned long long)weightd_mesh.issued[index],(unsigned long long)bytes,
+        (unsigned long long)slot,(unsigned long long)((now_ns - weightd_mesh.doorbell_seen_ns[index]) / 1000000u),weightd_mesh.doorbell_stuck[index]);
 }
 
 static void SparkWeightdMeshTransferStuck(uint32_t index,uint64_t seq)
@@ -2518,7 +2539,7 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
     }
     if ( SparkWeightdMeshDoorbellStable(index,snapshot) == 0u )
     {
-        SparkWeightdMeshDoorbellStuck(index,"unstable",0u,0u,0u);
+        SparkWeightdMeshDoorbellStuck(index,"unstable",0u,0u,0u,now_ns);
         return(weightd_mesh.doorbell_stuck[index] < SPARK_WEIGHTD_MESH_STUCK_LIVE_SWEEPS ? 1u : 0u);
     }
     for (alternate=0u; alternate<2u; alternate++)
@@ -2538,7 +2559,7 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
     }
     if ( weightd_mesh.doorbell_stuck[index] != 0u && (weightd_mesh.doorbell_stuck[index] % 200u) == 0u )
         fprintf(stderr,"WD-SEEN idx=%u seq=%llu posted=%llu issued=%llu\n",index,(unsigned long long)newest,(unsigned long long)posted,(unsigned long long)weightd_mesh.issued[index]);
-    SparkWeightdMeshDoorbellStuck(index,"pending",newest,0u,0u);
+    SparkWeightdMeshDoorbellStuck(index,"pending",newest,0u,0u,now_ns);
     if ( count == 0u && (weightd_mesh.doorbell_stuck[index] % 5000u) == 0u )
         SparkWeightdMeshTransferStuck(index,newest);
     for (candidate=0u; candidate<count; candidate++)
@@ -2549,7 +2570,7 @@ static uint32_t SparkWeightdMeshDoorbellCell(uint32_t band,uint32_t rank,uint64_
         route.word = cell[3];
         if ( cell[2] >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND || SparkWeightdMeshRouteFits(route,cell[1]) == 0u )
         {
-            SparkWeightdMeshDoorbellStuck(index,"invalid",cell[0],cell[1],cell[2]);
+            SparkWeightdMeshDoorbellStuck(index,"invalid",cell[0],cell[1],cell[2],now_ns);
             break;
         }
         if ( weightd_mesh.publish_seq[record] != cell[0] )

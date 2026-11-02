@@ -233,6 +233,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   that step's tokens and scores to the host (`StageRunnerStepOutputs`), and
   each step is a separate graph launch. Move those checks and copies to the
   end of the chain so K steps are one enqueue or one graph.
+- A decode chain runs all of its steps after a lane samples a stop token; the
+  engine only bounds a chain to one second of measured steps
+  (`SPARK_MODEL_BATCH_CHAIN_BUDGET_NS`, `runtime/model_batch_engine.c`). The
+  runner already copies each step's tokens to the host, so it could end the
+  chain at a stop token and remove the waste.
 - The batch engine ends a decode chain at the nearest block end of any lane in
   the batch (`SparkModelBatchBuildDecodeRows`,
   `runtime/model_batch_engine.c`), so chains shorten as the batch grows. A
@@ -257,12 +262,19 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
-  whole, 9,088 ms in two 512-row lanes). GLM Full and GLM Flash deploy with a
-  1,024-row execution capacity, so their prefill waves never split and still
-  wait about 440 ms of a ~1.0 s wave in collective rounds
-  (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
-  with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
-  wave without reading the expert weights twice.
+  whole, 9,088 ms in two 512-row lanes). GLM 5.3 Flash's 4,096-row waves split
+  into two 2,048-row lanes. With two 1,024-row lanes, in a 108,324-token
+  prefill (2026-11-01, CUPTI on all 16 ranks), the GPU was busy 97% of the
+  time, compute kernels 66% and
+  collective kernels 60%, overlapping only 29%: the second lane waited for the
+  first lane's whole DSA attention before it started its own. Releasing it
+  after the first lane's cache writes, with the first lane at a higher stream
+  priority, cut that prefill from 93.0 s to 82.7 s with the same tokens and
+  logprobs. Still serial: the lanes take collective turns strictly in
+  alternation, so a lane with two rounds ready waits for the other lane's
+  turn, and each DSA layer exchanges fp32 attention records (126 KB a row)
+  and gathers the queries (63 KB a row) on top of the index scores, which grow
+  with the context.
 
 ## Prefill
 
@@ -285,6 +297,38 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Only Kimi K3 runs on the shared pass engine (`inference/runner/pass_prefill.cuh`).
+  - GLM 5.3 Full, GLM 5.3 Flash and DSV4.1 still prefill in TP16 waves, which
+    move every row's hidden state through the GPU mesh collectives at about
+    5 GB/s a node (pfbench, 2,048 x 6,144 reduce-scatter in 5.1 ms) and
+    re-gather the whole context's latent keys every wave. The weight stream
+    all-gathers at 24.8 GB/s a node with the pair link (wsbench, 650 MiB a
+    node).
+  - Carrying the waves' large collectives on the weight stream would help
+    every TP16 model without model code.
+  - Moving each model's attention onto the pass engine (rows stay on their
+    node, attention weights are streamed, MoE rows go to the resident expert
+    slices) would remove the attention collectives and the per-wave re-gather.
+  - GLM's TP16 slices are uneven (`kv_a`'s 576 columns are 72 granules, 5 or 4
+    a rank), so rank packs differ in layout. Streaming GLM's dense weights
+    needs every rank's entry table and broadcasts padded to the largest rank.
+- Kimi K3's streamed prefill (lanes whose stage config names
+  `streamed_prefill` and whose deployment names
+  `streamed_prefill_min_tokens`) takes every prompt token but the last; the
+  last runs as a one-row wave that samples. It has three gaps. The deferred span's
+  cache blocks are not published, so a later request does not reuse that
+  part of the prompt and no mid-prompt checkpoint is kept; publishing them
+  needs a sealed-page publish after the streamed prefill writes the pages.
+  Other requests on the lane wait while one prompt defers and streams. Beside
+  the full resident pack a node has about 11 GB free and runs 2,048 to 4,096
+  rows a pass; 16,384 to 32,768 rows a pass (two passes for 1M tokens) need a
+  prefill-only lane whose weightd leases experts from a bounded pool, so a
+  1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
+  stream gets no hidden states for the deferred span, only for the waves
+  after it, so a drafter that builds its context from taps drafts without
+  the span. The waves after the span (up to 2,048 tokens) lease the experts
+  of every layer from weightd one layer at a time with no read-ahead, about
+  36 s a wave at 1M context.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
@@ -372,9 +416,13 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   has its tier: each deployment node names its `kv_partition`, residentd
   refuses KV directories off it, and `kv_backing_maximum_bytes` and
   `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). The active model shard tier (1 TB)
-  has no named directory, byte budget or startup check, and nothing reserves
-  the 0.5 TB of system and runtime space against KV and shard growth.
+  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
+  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
+  evicts its oldest files before a write that would take the partition below
+  it. The active model shard tier (1 TB) has no named directory, byte budget or
+  startup check, so a shard copy can still take the partition below the
+  reserve; the KV stores give the space back only on their next write, and an
+  idle model's store keeps its files until the 24-hour expiry.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -516,12 +564,46 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- The format-2 KV snapshot tier (page files naming their parent, separate
-  state files, leaf-first eviction, ordered writes) is host-tested only.
-  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
-  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
-  conversations whole while older ones go tip-first, and an open that removes
-  the format-1 files of the previous release once.
+- One K3 page write on spark8 failed with an I/O error on 2026-11-01
+  (`KV-SNAPSHOT write status=4 tokens=64832`). The other fifteen ranks wrote
+  the same chain without error, and the kernel logged nothing. The step and
+  errno were not logged then, so the cause is unknown. The write path now
+  logs both, and the cache saves a failed page again. Close it with the errno
+  from the next occurrence, or a fleet fill of at least 1M tokens per rank in
+  which no write fails.
+- The streamed (pass) prefill keeps no state on the 16,384-token stride
+  inside its pass. Only its prompt checkpoint, one token before the end,
+  carries one. A prompt that diverges from a published one before that
+  checkpoint therefore recomputes from the newest state before the
+  divergence, which for a single long turn is token 0. An example is an
+  edited message in one long turn. The pass already holds those states:
+  `K3StreamedKdaNode` composes the gathered node summaries in order, so every
+  rank has its own head shard's state at each node boundary, and the gathered
+  convolution tails give the windows there. Close it by capturing the states
+  at the node boundaries that land on the stride, staging each through the
+  binding as the checkpoint of its page, and reporting them in the
+  completion so the API marks those blocks resumable.
+- The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
+  The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
+  it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
+  in 7.2 s and 13,257 pages in 2.2 s, GLM-5.3 Full made 620 restores and
+  DeepSeek V4.1 Flash restored 4,212 pages. K3 had filled its 8 GiB per rank
+  (about ten 500K-token conversations, at roughly 1.9 KB per token per rank).
+  The store now spreads its files over 256 identity shards, because one ext4
+  directory without `large_dir` refuses new names near 1.8 million entries
+  (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
+  to its parent and its orphans through one hash chain instead of a scan of
+  the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
+  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
+  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
+  per rank for the four core models and 64 GiB for the others. Not yet proven
+  on the fleet: a K3 store past 8 GiB that restores an older 500K
+  conversation with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
+  in under 15 s; a store at its budget that keeps the newest conversations
+  whole while older ones go tip-first; and the first open that removes the
+  previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
@@ -1026,17 +1108,17 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Fleet-hours
 
-Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and a checkout preview (`site/buy.html`) that keeps everything in the browser. Nothing else exists. The business flow is settled by the legal review of the terms, so building waits for it.
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
 
-- **Accounts.** Ethereum-address accounts; acceptance of the terms as an EIP-712 message signed over the text's hash; business details and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit; recovery addresses.
-- **Payments.** The payment processor's USDC invoices and confirmations, refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The processor is not approved yet.
-- **Ledger.** An append-only, hash-chained file of every payment, issue of hours, reservation, displacement, credit and consumption; a published daily root; per-customer proofs. Balances must come only from replaying it.
+- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
+- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
+- **Ledger.** The payment service's `ledger.jsonl` chains every order, invoice, payment and issue of hours. Still missing: reservations, displacement, credits and consumption in it, a published daily root and per-customer proofs. Until consumption is recorded, the 168- and 720-hour holding limits count every unexpired hour issued. Balances must come only from replaying it.
 - **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
 - **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
 - **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
 - **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
 - **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
-- **Korean site.** The checkout preview (`site/buy.html`) is English only; the console that replaces it needs Korean from the start. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
+- **Korean site.** The checkout, account and two-year pages (`site/buy.html`, `account.html`, `two-year.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
   - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
   - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
