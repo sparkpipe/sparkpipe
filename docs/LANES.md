@@ -58,6 +58,42 @@ while its prompt and output budget fit the free physical pages, so at full
 length fewer sequences run at once and the rest queue; `sequences` is the
 ceiling for short requests.
 
+## Weight files
+
+A lane names every weight file by its real path; nothing under a lane root
+links to a pack. Each rank's `config/adapter.json` names the rank pack in
+`stage_pack_path` as `/home/<host>/sparkdata/<pack directory>/<pack>`, and the
+engine opens beside it the pack's `.experts` manifest, its `.sha256` digest
+and the files the model's MODELS entry lists as `pack_siblings`. All of them
+are real files in the pack directory. DeepSeek V4.1 Flash attaches its pack
+and its engram shard whole, so its pack directory holds a zero-range
+`.experts` manifest for the pack and for the shard, and the shard, its digest
+and the engram hash tables under the names the engine opens:
+`engram.spengram`, `engram.spengram.digest`, `engram.spengram.experts` and
+`engram_tables.bin`.
+
+The lane root holds only small real files: binaries, the rendered
+configuration, `lane.sh`, `spine_budget`, `packs/pack.sha256` (the one digest
+residentd reads from `packs/`), the KV directories and the run logs.
+`stage_lane.sh setup` and `k3_lane.sh setup` check on every node, before
+touching the root, that each weight file of the rank is a regular file and
+not a symlink; a missing or linked file stops the setup with its path and
+host. Setup then deletes every symlink under the lane root, so a root set up
+by an older version comes out without links. Each run logs to
+`logs/residentd-<run id>.log`; there is no `residentd.log` link, and `status`,
+the fleet gateway's engine log and the release kit read the newest run log.
+
+```bash
+python3 tools/lane_pack_files.py
+python3 tools/lane_pack_files.py --host spark3 kimi-k3
+```
+
+`tools/lane_pack_files.py` renders the records and prints one line per
+weight file, `<host> <record> <role> <path>`, with role `pack`, `experts`,
+`digest`, `sibling`, or `named` for any other `sparkdata` path a rendered node
+file names. It reads nothing on the fleet: pruning and audits work from these
+names and never follow a link.
+
 ## Commands
 
 ```bash
@@ -80,7 +116,9 @@ an operator's shell exports reaches a production `lane.sh`.
 - the hub files with a repository source: `model_swap.json`, the chat
   layer's `config.json` and the LiteLLM configurations;
 - the weightd ceiling and KV reserve in every node's `weightd.log`;
-- lane roots and API directories that no record names.
+- lane roots and API directories that no record names;
+- every symlink under `~/stage-lanes` and `~/k3-lanes` (one `LINK` line
+  each; an audit of named records scans their lane roots).
 
 It prints one line per finding and exits non-zero when there is any.
 
@@ -100,8 +138,8 @@ records, which is how a gate tries a raised record before it is committed.
 `tools/stage_lane.sh` with `STAGE_RECORD=<swap id>` and `tools/k3_lane.sh`
 with `K3_RECORD=kimi-k3` render from the record when they set a lane up;
 their flag form stays for experiment lanes in their own roots. `stage_lane.sh
-setup` replaces the lane's binaries and rendered files and clears its pack
-links, KV cache and KV snapshots, so it refuses, before touching any node,
+setup` replaces the lane's binaries, rendered files and pack digest and clears
+its KV cache, KV snapshots and links, so it refuses, before touching any node,
 while the lane's unit is active, starting or stopping on any rank: stop the
 lane first. Run `lane_config.py audit` before a setup to see what it will
 replace.

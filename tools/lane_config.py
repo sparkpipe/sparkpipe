@@ -7,10 +7,11 @@ and the hub API's model_resident.json are rendered from that record by
 tools/stage_lane.py and tools/stage_lane.sh; nothing on the fleet is edited
 by hand. audit renders every record and compares it with what the nodes and
 the hub hold, together with the hub files that have a repository source,
-the weightd KV reserve and ceiling every node runs, and lane roots or API
-directories that no record names. push writes one record's rendered files
-to the nodes and the hub, keeping each replaced file as <file>.prev-<UTC>;
-binaries, packs and KV stay as they are.
+the weightd KV reserve and ceiling every node runs, lane roots or API
+directories that no record names, and every symlink under the lane trees.
+push writes one record's rendered files to the nodes and the hub, keeping
+each replaced file as <file>.prev-<UTC>; binaries, packs and KV stay as
+they are.
 """
 
 from __future__ import annotations
@@ -53,6 +54,10 @@ for path in request["paths"]:
         files[path] = None
 roots = sorted(os.path.dirname(p) for p in glob.glob(home + "/stage-lanes/*/lane*/root/deployment.json") + glob.glob(home + "/k3-lanes/lane*/root/deployment.json"))
 apis = sorted(os.path.dirname(p) for p in glob.glob(home + "/*-kv-api/model_resident.json"))
+links = []
+for top in request.get("links", []):
+    for directory, names, leaves in os.walk(os.path.join(home, top)):
+        links += [[os.path.join(directory, name), os.readlink(os.path.join(directory, name))] for name in sorted(names + leaves) if os.path.islink(os.path.join(directory, name))]
 weightd = None
 if request["weightd"]:
     line = subprocess.run("grep 'spark_weightd ready' ~/weightd.log | tail -1", shell=True, capture_output=True, text=True).stdout
@@ -71,7 +76,7 @@ if request.get("prefix"):
             prefixes[record_id] = namespace["directory_prefix"](namespace["Path"](directory))
         except Exception as error:
             prefixes[record_id] = "%s: %s" % (type(error).__name__, error)
-print(json.dumps({"files": files, "roots": roots, "apis": apis, "weightd": weightd, "prefixes": prefixes, "units": units}))
+print(json.dumps({"files": files, "roots": roots, "apis": apis, "links": links, "weightd": weightd, "prefixes": prefixes, "units": units}))
 '''
 WRITE = r'''
 import json, os, sys
@@ -258,7 +263,8 @@ def audit(selected: list[str], fleet: bool = True) -> int:
         apis = {f"{HUB_HOME}/{lanes[record_id]['model']}-kv-api" for record_id in lanes}
 
         def node(host: str):
-            return host, remote(host, READ, {"paths": sorted(expected_nodes[host]), "weightd": fleet})
+            trees = ["stage-lanes", "k3-lanes"] if fleet else sorted(os.path.relpath(lanes[record_id]["runtime_root"].format(host=host), f"/home/{host}") for record_id in selected)
+            return host, remote(host, READ, {"paths": sorted(expected_nodes[host]), "weightd": fleet, "links": trees})
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(stage_lane.HOSTS) + 1) as pool:
             futures = [pool.submit(node, host) for host in stage_lane.HOSTS]
@@ -277,6 +283,8 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 for path, (record_id, text) in sorted(expected_nodes[host].items()):
                     if not same(path, text, live["files"][path]):
                         drift.append(f"DRIFT {record_id} {host}:{path} {describe(path, text, live['files'][path])}")
+                for path, target in live.get("links", []):
+                    drift.append(f"LINK {host}:{path} -> {target} is a symlink under a lane tree; lanes name their files directly and setup removes the links under a lane root")
                 for root in live["roots"] if fleet else ():
                     if root.replace(f"/home/{host}/", "/home/" + "{host}" + "/") not in roots:
                         drift.append(f"ORPHAN {host}:{root} is a lane root no record names")

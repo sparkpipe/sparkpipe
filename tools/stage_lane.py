@@ -64,11 +64,7 @@ DSV41_FLASH = {
     "node_memory_bytes": 44 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/deepseek-v4.1-flash/tokenizer.json",
     "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs/rank{rank}.spstage",
-    "dense": True,
-    "extra_packs": {
-        "engram.spengram": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram/engram.rank{rank}.spengram",
-        "engram_tables.bin": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram_tables.bin",
-    },
+    "pack_siblings": ("engram.spengram", "engram.spengram.digest", "engram.spengram.experts", "engram_tables.bin"),
     "adapter": "libdsv41_flash_tp16_serving_adapter.so",
     "program": "dsv41_flash",
     "node_target": "cuda.sm121.dsv41_flash.stage_runner.linear_fp8.expert_mxfp4.kv_bf16",
@@ -416,11 +412,13 @@ def session_table() -> list[list[int]]:
     return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
 
 
-def rank_pack_path(model: dict, lane: int, rank: int, args) -> str:
-    host = HOSTS[rank]
-    if model.get("dense"):
-        return os.path.join(args.runtime_root.format(host=host), "packs", os.path.basename(model["pack"].format(rank=rank)))
-    return f"/home/{host}/" + model["pack"].format(rank=rank)
+def rank_pack_path(model: dict, rank: int) -> str:
+    return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank)
+
+
+def rank_weight_files(model: dict, rank: int) -> list[str]:
+    pack = rank_pack_path(model, rank)
+    return [pack, pack + ".experts", pack + ".sha256"] + [os.path.join(os.path.dirname(pack), name) for name in model.get("pack_siblings", ())]
 
 
 def model_hidden(model: dict) -> int:
@@ -432,7 +430,7 @@ def model_hidden(model: dict) -> int:
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
-        "stage_pack_path": rank_pack_path(model, lane, rank, args),
+        "stage_pack_path": rank_pack_path(model, rank),
         "tp_degree": WORLD,
         "tp_rank": rank,
         "world_size": WORLD,
@@ -513,6 +511,7 @@ def deployment(model: dict, lane: int, args) -> dict:
 
 
 HUB_LOG_DIR = "/srv/workspace/sparkpipe/logs"
+ADAPTER_PACK = "$(python3 -c \"import json; print(json.load(open('config/adapter.json'))['stage_pack_path'])\")"
 
 
 def swap_entry(name: str, model: dict, lane: int) -> dict:
@@ -543,7 +542,7 @@ def expert_warm(model: dict, root: str) -> dict:
         return {}
     revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
     return {"node_warm": (f"cd {root} && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1 | cut -d= -f2) "
-                          f"./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
+                          f"./bin/weightd_warm /tmp/spark_weightd.sock {ADAPTER_PACK} $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
                           f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
 
 

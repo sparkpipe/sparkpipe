@@ -180,7 +180,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
   through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
   id>.log` and refuses to overwrite it; the helper moves an older launcher's
-  `residentd.log` aside, and `archive` collects and removes the logs.
+  `residentd.log` aside (or removes the link an older version made), `status`
+  reads the newest run log, and `archive` collects and removes the logs.
   `fleet_node_agent.sh` moves a non-empty `residentd.log` aside with a
   timestamp before each start. Proof: a fleet run whose rank logs name the
   path of every chain and survive a second run on the same lane.
@@ -1188,6 +1189,29 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- Awaiting fleet proof (lane `lanes/direct-pack-paths`): lanes name their
+  weight files directly (docs/LANES.md, Weight files). `stage_lane.sh` and
+  `k3_lane.sh` setup no longer link packs, refuse a missing or linked weight
+  file and delete every link under the lane root; `lane_run_log.sh` no longer
+  links `residentd.log`; the swap entries' warm commands read the pack from
+  `config/adapter.json`; `tools/lane_pack_files.py` lists every lane's files;
+  `lane_config.py audit` reports each link. Fleet step before the gate:
+  DeepSeek V4.1 Flash's pack directory
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs` does not yet hold what
+  the engine opens beside the pack. The hub's source copy of
+  `rank<r>.spstage.experts` is a 61,440-group slice manifest (2,949,136
+  bytes; the node copies were placed from it), while the engine attaches the
+  pack whole and refuses anything but a zero-range manifest; the engram shard
+  (`engram/engram.rank<r>.spengram`), its digest and `engram_tables.bin` sit in
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16`. Until the directory is
+  completed, setup refuses that lane and names the first missing file. Proof:
+  setup of every lane, `release_compare` EXACT on every model against the
+  linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
+  and an audit with no `LINK` line. Still linking outside the lane trees:
+  the A/B arm `packs/` of `tools/ab_fleet.py` (docs/ACCURACY_AB.md),
+  `tools/devcycle.sh`, `tools/k3_multidev_run_family.sh`, the
+  `tools/glm5_next_*` experiment scripts, and `config/stage.json` in
+  `tools/fleet_serve.sh` and `tools/fleet_node_agent.sh`.
 - The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
   hub. They reach a person only while a session runs its `watch` command
   from the workstation. Nothing sends mail or a push on its own, and the
