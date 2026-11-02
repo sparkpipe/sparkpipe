@@ -481,29 +481,23 @@ template<class Format>
 static int32_t GlmSkinny(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows,
 	uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, cudaStream_t stream)
 {
-	const uint32_t stride = output_row_stride != 0u ? output_row_stride : output_dimension;
-	int32_t status = LM_LAUNCH_ERR_SHAPE;
-	for ( uint32_t first = 0u; first < rows; first += LM_SKINNY_ROWS_WIDE )
-	{
-		LmSkinnyArguments args;
-		memset(&args, 0, sizeof(args));
-		args.weight = (const uint8_t *)weight;
-		args.activation = activation + (uint64_t)first * input_dimension;
-		args.output_bf16 = output_bf16 != 0 ? output_bf16 + (uint64_t)first * stride : 0;
-		args.output_f32 = output_f32 != 0 ? output_f32 + (uint64_t)first * stride : 0;
-		args.scale = scale;
-		args.rows = rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE;
-		args.input_dimension = input_dimension;
-		args.output_dimension = output_dimension;
-		args.output_row_stride = stride;
-		args.output_column_offset = output_column_offset;
-		status = LmSkinnyValidate<Format>(&args);
-		if ( status == LM_LAUNCH_OK )
-			status = LmSkinnyLaunchRows<Format>(&args, input_dimension / LmSkinnyFormat<Format>::kElements, stream);
-		if ( status != LM_LAUNCH_OK )
-			return status;
-	}
-	return status;
+	LmSkinnyArguments args;
+	int32_t status;
+	memset(&args, 0, sizeof(args));
+	args.weight = (const uint8_t *)weight;
+	args.activation = activation;
+	args.output_bf16 = output_bf16;
+	args.output_f32 = output_f32;
+	args.scale = scale;
+	args.rows = rows;
+	args.input_dimension = input_dimension;
+	args.output_dimension = output_dimension;
+	args.output_row_stride = output_row_stride != 0u ? output_row_stride : output_dimension;
+	args.output_column_offset = output_column_offset;
+	status = LmSkinnyValidate<Format>(&args, 1u);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	return LmSkinnyLaunchRows<Format>(&args, input_dimension / LmSkinnyFormat<Format>::kElements, stream);
 }
 
 static int32_t GlmLinearBf16(const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows, uint32_t input_dimension,
@@ -669,7 +663,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 			{q_a.weight, b->projection_local_bf16, 0, q_count, width, 0u, GlmLinearScale<S>(q_a, S::kHidden, q_count)},
 			{kv_a.weight, b->projection_local_bf16, 0, kv_count, width, query_max, GlmLinearScale<S>(kv_a, S::kHidden, kv_count)}};
 		status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream) :
-			b->row_exact != 0u ? LmSkinnyDenseMultiRowChunks<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream) : LM_LAUNCH_ERR_SHAPE;
+			b->row_exact != 0u ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream, 1u) : LM_LAUNCH_ERR_SHAPE;
 		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
 	}

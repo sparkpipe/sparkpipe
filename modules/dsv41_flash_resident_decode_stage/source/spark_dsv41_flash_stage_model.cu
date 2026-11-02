@@ -308,8 +308,7 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<LmBf16Format>(&args, stream) :
-			LmSkinnyLaunchRowChunks<LmBf16Format>(&args, stream);
+		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
@@ -337,8 +336,7 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<LmMxfp8>(&args, stream) :
-			LmSkinnyLaunchRowChunks<LmMxfp8>(&args, stream);
+		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
@@ -365,8 +363,7 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 	{
 		const LmSkinnyDenseTarget targets[2] = { D41Target(first, first_destination, input_dimension, first_dimension),
 			D41Target(second, second_destination, input_dimension, second_dimension) };
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream) :
-			LmSkinnyDenseMultiRowChunks<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream);
+		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}

@@ -940,13 +940,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     Flash and Flash Fin, and Qwen 3.8 Max, 27B and Flash, with recurrent and
     linear-attention state restored to the accepted row through the binding's
     recurrent-state hook;
-  - verify frames run every dense projection as 16-row skinny chunks, so a
-    frame of n rows reads each projection's weights n / 16 times (routed
-    experts already read each touched expert once per batch of up to 16 of
-    its routes through the exact grouped launch,
-    `tests/test_exact_grouped_experts.cu`). A skinny variant
-    that keeps the per-row arithmetic for more than 16 rows per weight load
-    would cut that too; measure GLM 5.3 Full and A.X K2 long frames first;
+  - FP8 projections in verify frames above 16 rows run no faster than the
+    16-row launches they replaced (0.97-1.10x, `tools/exact_dense_rows_bench.cu`):
+    every 16-row block decodes the FP8 weights again, and that decode, not
+    DRAM, bounds the kernel. bf16 projections run 2-3x faster and MXFP8
+    1.1-2.3x. A skinny variant that decodes each weight tile once into shared
+    memory for all row blocks of a frame, keeping the per-row sums, would help
+    GLM 5.3 Full and A.X K2 long frames;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),

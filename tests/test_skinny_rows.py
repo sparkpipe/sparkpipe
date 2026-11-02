@@ -2,8 +2,8 @@
 """GB10 check that skinny matrix-vector launches do not depend on how many rows they carry.
 
 Builds build/test_skinny_rows and runs it on an sm_121 device. For mxfp8 and bf16 weights at the
-DSV4.1 projection shapes, with bf16 and f32 outputs, every row of a 1 to 256 row launch (row-chunked
-above 16 rows) and of a paired-target launch must be the same bits as a one-row launch of that row
+DSV4.1 projection shapes, with bf16 and f32 outputs, every row of a 1 to 256 row launch (one launch in
+16-row blocks above 16 rows) and of a paired-target launch must be the same bits as a one-row launch of that row
 alone. Every route of a grouped expert launch must match that route launched alone, for frames of
 1 to 233 rows. Speculative verify frames rely on both to reproduce decode exactly. Perturbing one
 activation must change only its own row.

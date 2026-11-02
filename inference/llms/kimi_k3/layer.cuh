@@ -251,17 +251,8 @@ struct K3LayerBuffers
 
 static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t *destination_bf16, float *destination_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t split, cudaStream_t stream)
 {
-	uint32_t first, count;
-	int32_t status = LM_LAUNCH_OK;
-	for ( first = 0u; first < rows && status == LM_LAUNCH_OK; first += count )
-	{
-		count = rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE;
-		status = (split != 0u ? LmSkinnyDenseSplit<LmBf16Format> : LmSkinnyDense<LmBf16Format>)(weight,source + (uint64_t)first * input_dimension,
-			destination_bf16 != 0 ? destination_bf16 + (uint64_t)first * output_dimension : (uint16_t *)0,
-			destination_f32 != 0 ? destination_f32 + (uint64_t)first * output_dimension : (float *)0,
-			count,input_dimension,output_dimension,0u,0u,stream);
-	}
-	return(status);
+	return((split != 0u ? LmSkinnyDenseSplit<LmBf16Format> : LmSkinnyDense<LmBf16Format>)(weight,source,destination_bf16,destination_f32,rows,input_dimension,
+		output_dimension,0u,0u,stream,1u));
 }
 
 template<class Format>
