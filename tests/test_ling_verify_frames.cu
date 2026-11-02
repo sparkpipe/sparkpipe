@@ -17,6 +17,9 @@
 #define VF_FFN 256u
 #define VF_FILL_ROWS 16u
 
+static_assert(SolarOpen2Geometry::kVerifyRows == VF_MAX_FRAME && Ling3Geometry::kVerifyRows == VF_MAX_FRAME,
+	"the test frames reach the verify rows Solar Open 2 and Ling 3.0 serve");
+
 struct SmallSolar : SolarOpen2Geometry
 {
 	static constexpr uint32_t kTpDegree = 1u;
@@ -35,15 +38,14 @@ struct SmallLing3 : Ling3Geometry
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 2304u;
 	static constexpr uint32_t kLayers = 6u;
-	static constexpr uint32_t kKdaHeads = 4u;
-	static constexpr uint32_t kMlaHeads = 4u;
+	static constexpr uint32_t kKdaHeads = 2u;
+	static constexpr uint32_t kMlaHeads = 2u;
 	static constexpr uint32_t kExperts = 32u;
 	static constexpr uint32_t kLocalExperts = 16u;
 	static constexpr uint32_t kMoeInter = 128u;
-	static constexpr uint32_t kVerifyRows = VF_MAX_FRAME;
 	static float RoutedLimit(uint32_t layer) { return layer == 4u ? 4.0f : 0.0f; }
 	static float SharedLimit(uint32_t layer) { return layer == 3u ? 5.0f : 0.0f; }
-	static const char *Tag(void) { return "ling-3.0"; }
+	static const char *Tag(void) { return "ling-3.0-flash"; }
 };
 
 template<class G>
