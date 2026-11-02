@@ -101,7 +101,7 @@
     }
   };
 
-  const statusText = { demo: 'Demo fleet', pinned: 'Pinned', free: 'Free' };
+  const statusText = { demo: 'Demo fleet', pinned: 'Pinned', free: 'Available' };
 
   function renderTop() {
     const st = S.state;
@@ -112,12 +112,12 @@
     fill('fleets', st.fleets.map((f) => {
       const own = mine(f.id);
       const yours = own ? `Booked through ${lastDay(own.through)} (${own.weeks} week${own.weeks === 1 ? '' : 's'}); book the next week by ${kst(own.deadline)} KST` : '';
-      const open = !own && f.firstWeek ? `free from ${kstDay(f.firstWeek)}` : '';
+      const open = !own && f.firstWeek ? `available from ${kstDay(f.firstWeek)}` : '';
       const status = own ? 'Pinned to you' : [statusText[f.status] || f.status, open].filter(Boolean).join(', ');
       return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : status, yours]);
     }), 'No fleet is listed yet.');
     fillSelect('weeks-fleet', st.fleets.filter((f) => (mine(f.id) && mine(f.id).canExtend) || (!mine(f.id) && f.firstWeek)).map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : ' (pin from ' + kstDay(f.firstWeek) + ')')]));
-    fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.demo || f.status === 'free')).map((f) => [f.id, f.name + (f.demo ? ' (demo)' : ' (free this week)')]));
+    fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.demo || f.status === 'free')).map((f) => [f.id, f.name + (f.demo ? ' (demo)' : ' (available this week)')]));
     fillSelect('try-model', (st.models || P.models).map((m) => [m.id, m.name]));
     fill('discounts', P.bookings.discounts.map((d) => row([`${d.weeks} or more`, pct(d.off)])), '');
     const waiting = st.waitlist && Number(st.waitlist.locks);

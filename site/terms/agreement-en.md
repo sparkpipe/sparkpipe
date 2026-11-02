@@ -52,13 +52,13 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.
 
-4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or free. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
+4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
 
 4.3. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish in each Week. We announce each maintenance period at least 7 days ahead, choose the times of least use, and rotate those times across the hours of the day. A booked hour under maintenance is credited under clause 4.4 as if the Fleet were unavailable throughout it, unless we serve Customer on another Fleet in that hour under clause 15.7.
 
 4.4. **Automatic credit.** If a Fleet that Customer holds is unavailable, or unreachable, for more than 15 consecutive minutes, every hour of its Booking in which any part of that period falls is credited within 24 hours after the period ends, from our own records, as HC equal to that Fleet's Rate for each such hour. Where Customer's records show such a period and ours do not, Customer may send them within 7 days, and we credit the hours unless our records show the Fleet was available throughout.
 
-4.5. Credits are made in HC, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 8.5.
+4.5. Credits under clauses 4.4 and 6.6 are made in HC, never in cash, and are Customer's only remedy for any failure of performance, subject to clause 8.5.
 
 ## 5. Use and responsibility
 
@@ -74,11 +74,13 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 6.2. **Working state.** Customer's working state is the cached state of its requests and the files that Customer, and the Functions it runs, keep in the file storage of a Fleet it holds (its **Customer storage**, of the size the Fleet List states). Working state stays on that Fleet, isolated from other customers, from one Booking of Customer's to the next, and is deleted when another customer's Booking of that Fleet starts, or 24 hours after the end of the last hour Customer holds on that Fleet, whichever comes first, or earlier when Customer asks.
 
-6.3. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. Before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image. We give no guarantee that working state is kept: it may be lost to a failure of the Fleet, and nothing is returned when a Booking or this Agreement ends. Customer keeps its own copies and may export what is in its Customer storage (clause 7.5).
+6.3. **Working state is temporary.** Customer must treat its working state as temporary, also while it holds a Fleet for many Weeks ahead, and keep its own copies of anything it wants to keep. We recommend exporting Customer storage at least daily (clause 7.5). Working state may be lost to a failure of the Fleet, an event under clause 8.7, maintenance or any other cause, and nothing is returned when a Booking or this Agreement ends. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. Before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image.
 
 6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.
 
 6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad.
+
+6.6. **Rebuild credit.** If an event on a Fleet that Customer holds destroys every copy we keep of part of Customer's working state on that Fleet, so that its cached state has to be rebuilt, we credit Customer, once for each such event, HC equal to 24 hours of that Fleet at its Rate, within 24 hours after we find the loss, and we tell Customer what was lost. This credit, with any credit under clause 4.4 for the same event, is Customer's only remedy for the loss of working state, whatever its cause, subject to clause 8.5.
 
 ## 7. Models and Functions
 
@@ -108,7 +110,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 8.6. Clauses 8.1 and 8.2 limit our liability only. They do not limit Customer's payment obligations or its liability under clauses 3.2, 5, 6 and 8.3.
 
-8.7. **Force majeure.** Neither party is liable for a delay or failure caused by an event beyond its reasonable control, including natural disaster, fire, flood, war, terrorism, epidemic, action of a government or authority, or failure of public power or telecommunications networks. Clause 4.4 still applies to booked hours lost to such an event and is Customer's only remedy for them.
+8.7. **Force majeure.** Neither party is liable for a delay or failure caused by an event beyond its reasonable control, including natural disaster, fire, flood, war, terrorism, epidemic, action of a government or authority, or failure of public power or telecommunications networks. Clause 4.4 still applies to booked hours lost to such an event, and clause 6.6 to working state lost to it; they are Customer's only remedies for them.
 
 ## 9. Changes and published settings
 
@@ -124,7 +126,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 10.3. **Right of use only; no refunds.** HC and Bookings give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software, models or intellectual property, are not a deposit, loan, security or investment, carry no expectation of profit from our efforts, and have no cash value. HC and Bookings cannot be moved to another account or withdrawn. **Every amount paid is non-refundable and non-cancellable**, except under clause 10.4 or 16.4 or where the law requires. Customer may not set off, deduct, counterclaim or withhold against any amount. We do not buy back HC or Bookings.
 
-10.4. If we stop offering service for HC, or close an Account other than for Customer's breach, we refund, at the price paid and within 60 days, the purchased HC not yet spent or lapsed and the HC spent on Bookings for hours that have not yet occurred, counting HC as spent from the oldest lot first. HC credited under clause 4.4 is not refunded.
+10.4. If we stop offering service for HC, or close an Account other than for Customer's breach, we refund, at the price paid and within 60 days, the purchased HC not yet spent or lapsed and the HC spent on Bookings for hours that have not yet occurred, counting HC as spent from the oldest lot first. HC credited under clause 4.4 or 6.6 is not refunded.
 
 10.5. Clauses 3.2, 3.4, 5, 6, 7.2, 8, 10, 11 and 12 survive the end of this Agreement.
 
@@ -184,7 +186,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 15.2. **Price.** Each Week costs the HC we publish for a Week, times the Fleet's Rate, less the discount we publish for the number of Customer's booked Weeks on that Fleet that have not ended, counting the Weeks being booked. The discount applies to the Weeks being booked.
 
-15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than the Demo Fleet that is free for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
+15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than the Demo Fleet that is available for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
 
 15.4. **Extending.** Customer may book further Weeks on a Fleet pinned to it, each following a Week already booked, and no Week more than 52 Weeks after the current Week. Nobody else may book any Week of a Fleet pinned to Customer.
 

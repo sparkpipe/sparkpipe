@@ -40,6 +40,48 @@ SITE_PATHS = (
     "docs/brand/*",
 )
 
+LIGHT_PATHS = (
+    "LICENSE",
+    "LICENSE-*",
+    "NOTICE",
+    ".gitignore",
+    ".gitattributes",
+    ".updaterepo-policy",
+    ".github/pull_request_template.md",
+    ".github/ISSUE_TEMPLATE/*",
+    ".github/CODEOWNERS",
+    "tools/ci_lanes.py",
+    "tests/test_ci_lanes.py",
+)
+
+ENGINE_PATHS = (
+    "Makefile",
+    "*.mk",
+    ".github/workflows/*",
+    "cache/*",
+    "config/*",
+    "deployment/*",
+    "examples/*",
+    "experiments/*",
+    "include/*",
+    "inference/*",
+    "model-families/*",
+    "model_contracts/*",
+    "modules/*",
+    "node/*",
+    "qualification/*",
+    "ring/*",
+    "runtime/*",
+    "scheduler/*",
+    "schema/*",
+    "scripts/*",
+    "src/*",
+    "tests/*",
+    "text/*",
+    "tools/*",
+    "validation/*",
+)
+
 FAST_TESTS = (
     "tests/test_ci_lanes.py",
     "tests/test_code_size.py",
@@ -61,16 +103,32 @@ FAST_TESTS = (
 MARKDOWN = re.compile(r"""["'/]docs["'/]|[A-Za-z0-9_./-]+\.md\b|\bREADME\b|\bTECHDEBT\b""")
 
 
+def matches(path, patterns):
+    return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+
+
 def site_path(path):
-    return any(fnmatch.fnmatchcase(path, pattern) for pattern in SITE_PATHS)
+    return matches(path, SITE_PATHS)
+
+
+def lane(path):
+    if site_path(path):
+        return "site"
+    if matches(path, LIGHT_PATHS):
+        return "repo"
+    if path.endswith(".md") or path.startswith("docs/"):
+        return "markdown"
+    if matches(path, ENGINE_PATHS):
+        return "engine"
+    return "unclassified"
 
 
 def markdown_path(path):
-    return path.endswith(".md") and not site_path(path)
+    return lane(path) == "markdown"
 
 
 def engine_needed(paths):
-    return paths is None or not all(site_path(path) or markdown_path(path) for path in paths)
+    return paths is None or any(lane(path) in ("engine", "unclassified") for path in paths)
 
 
 def tests_in(directory):
@@ -123,8 +181,7 @@ def main(argv):
         print("usage: ci_lanes.py BASE HEAD | full", file=sys.stderr)
         return 2
     for path in paths or []:
-        lane = "site" if site_path(path) else "markdown" if markdown_path(path) else "engine"
-        print(f"{lane:8} {path}", file=sys.stderr)
+        print(f"{lane(path):12} {path}", file=sys.stderr)
     print(f"engine={'true' if engine_needed(paths) else 'false'}")
     print(f"build={'true' if paths and any(markdown_path(path) for path in paths) else 'false'}")
     print(f"tests={' '.join(light_tests(paths))}")

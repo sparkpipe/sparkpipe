@@ -250,6 +250,24 @@ LAGUNA = {
     "kv_page_bytes": (48 * 64 * 4096) // WORLD,
     "recurrent_bytes": 0,
 }
+MOTIF3 = {
+    "swap_id": "motif-3",
+    "api_port": 8480,
+    "kv_label": "motif3_stage",
+    "node_memory_bytes": 48 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/motif-3-bf16-2ed2ed5cfabf/tokenizer.json",
+    "pack": "sparkdata/motif3.tp16/motif3.tp16.rank{rank:02d}.pack",
+    "adapter": "libmotif3_tp16_serving_adapter.so",
+    "program": "motif3",
+    "node_target": "cuda.sm121.motif3.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+    "contract": "model_contracts/motif3_authoritative.json",
+    "chat_template": "model-families/motif/chat_template.json",
+    "eos_token_ids": [0, 3, 6],
+    "tokenizer_vocabulary": 220160,
+    "hidden": 4096,
+    "kv_page_bytes": (53 * 64 * 1152) // WORLD,
+    "recurrent_bytes": 0,
+}
 KEXAONE2 = {
     "swap_id": "k-exaone-2.0",
     "api_port": 8477,
@@ -384,6 +402,7 @@ MODELS = {
     "k3": K3,
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
+    "motif3": MOTIF3,
     "axk2": AXK2,
     "solar_open2": SOLAR_OPEN2,
     "ling3_fin": LING3_FIN,

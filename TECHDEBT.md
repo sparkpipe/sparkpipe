@@ -262,12 +262,19 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
-  whole, 9,088 ms in two 512-row lanes). GLM Full and GLM Flash deploy with a
-  1,024-row execution capacity, so their prefill waves never split and still
-  wait about 440 ms of a ~1.0 s wave in collective rounds
-  (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
-  with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
-  wave without reading the expert weights twice.
+  whole, 9,088 ms in two 512-row lanes). GLM 5.3 Flash's 4,096-row waves split
+  into two 2,048-row lanes. With two 1,024-row lanes, in a 108,324-token
+  prefill (2026-11-01, CUPTI on all 16 ranks), the GPU was busy 97% of the
+  time, compute kernels 66% and
+  collective kernels 60%, overlapping only 29%: the second lane waited for the
+  first lane's whole DSA attention before it started its own. Releasing it
+  after the first lane's cache writes, with the first lane at a higher stream
+  priority, cut that prefill from 93.0 s to 82.7 s with the same tokens and
+  logprobs. Still serial: the lanes take collective turns strictly in
+  alternation, so a lane with two rounds ready waits for the other lane's
+  turn, and each DSA layer exchanges fp32 attention records (126 KB a row)
+  and gathers the queries (63 KB a row) on top of the index scores, which grow
+  with the context.
 
 ## Prefill
 
@@ -1063,11 +1070,19 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
   digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
   Qwen3.8-27b nvfp4, Ling, the last with possessive quantifiers), laguna's
-  leading newline-run split and muse-glimmer's cased letters. Any other
-  pre-tokenizer fails the load with an error naming the file. gemma4's
+  leading newline-run split, muse-glimmer's cased letters and Motif's
+  multi-word cased letters. Any other pre-tokenizer fails the load with an
+  error naming the file. gemma4's
   `Replace` plus `Split " "` loads: the split is a no-op once the normalizer
   has replaced every space, but this has not been checked against gemma4's own
   file.
+- Added tokens implement `lstrip` (Motif's whitespace-run tokens absorb the
+  whitespace before them, as Hugging Face does). An added token with `rstrip`
+  or `single_word` fails the load; no served model declares either. A
+  metaspace model whose character has no vocabulary entry and no complete
+  byte fallback fails the encode, where Hugging Face emits one `unk` per
+  character or drops it; Gemma 4, the only metaspace model, has every byte
+  token, so no served model reaches it.
 - The tokenizer implements the `NFC` normalizer (Ling, Qwen3.8, MiMo) and
   the metaspace `Replace`. Any other normalizer (`Sequence`, `NFKC`,
   `Lowercase`, another `Replace`) fails the load with an error. Implement
@@ -1608,6 +1623,22 @@ Metal backend and the single-Studio stage are in
     Each rank's BF16 partials of `o_b` and of the MoE before the all-reduce
     are extra roundings the references do not have; a TP1 gate, or an FP32
     all-reduce, would show whether they are the whole difference.
+- Motif 3 on Metal (`model-families/motif/device/`):
+  - the latent attention keeps the whole latent on every rank and attends
+    the rank's heads, where CUDA shards the context (gathered queries,
+    partial records, an all-to-all merge), so the softmax merge order
+    differs;
+  - the window layers' inverse frequencies come from the host in double
+    precision, not CUDA's per-pair `__powf`;
+  - the dense MLP and the shared expert run on their owner rank and the
+    other ranks add zeros, as CUDA; each rank's partial rounds to BF16 before
+    the BF16 all-reduce;
+  - the MTP layer is not packed, so speculation is refused;
+  - the CUDA driver is a first draft on `drivers/motif3`, and the Metal
+    operations follow it (`LmPolyNormMulKernel`, `LmDifferentialGateKernel`,
+    `MotifHcPolicy`, `LmMoeLocalWeightedFinalizeKernel`); the PolyNorm,
+    differential-gate and mHC gate formulas are shared through
+    `kernel_math.cuh`, the weighted finalize is not.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

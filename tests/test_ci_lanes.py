@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,7 +26,17 @@ def check_classification(failures):
         (["Makefile"], True),
         (["deployment/vps/chat-local/index.html"], True),
         (["deployment/vps/sparkpipe-public-api.conf"], True),
-        (["tools/ci_lanes.py"], True),
+        (["tools/ci_lanes.py"], False),
+        (["tests/test_ci_lanes.py", "tools/ci_lanes.py"], False),
+        (["LICENSE", "LICENSE-APACHE-2.0", "LICENSE-PERMISSION.md", "NOTICE", "CLA.md", "CONTRIBUTING.md"], False),
+        ([".gitignore", ".gitattributes", ".updaterepo-policy", ".github/pull_request_template.md", ".github/ISSUE_TEMPLATE/bug.md", ".github/CODEOWNERS"], False),
+        (["docs/images/fleet.svg", "docs/WORKING_STATE.md", "SPEC.md"], False),
+        (["LICENSE", "site/index.html", "README.md"], False),
+        (["LICENSE", "Makefile"], True),
+        (["tools/ci_lanes.py", "inference/kernels/x.cu"], True),
+        (["tools/serving/chat_frontend.py"], True),
+        (["model-families/k3/README.md"], False),
+        (["newdir/x.c"], True),
         ([".github/workflows/cuda13-sm121a-compile.yml"], True),
         (["website/site/x.html"], True),
         (None, True),
@@ -33,6 +44,12 @@ def check_classification(failures):
     site = ci_lanes.light_tests(["site/buy.html"])
     if "tests/test_site.py" not in site or "tests/test_ci_lanes.py" not in site or "tests/test_status_truth.py" in site:
         failures.append(f"a site change runs the wrong light tests: {site}")
+    repo = ci_lanes.light_tests(["LICENSE", "NOTICE", "tools/ci_lanes.py"])
+    for name in ("tests/test_ci_lanes.py", "tests/test_third_party_notices.py", "tests/test_package_manifest.py"):
+        if name not in repo:
+            failures.append(f"a repository-file change does not run {name}")
+    if ci_lanes.light_tests(["docs/images/fleet.svg"]) != ci_lanes.light_tests(["docs/WORKING_STATE.md"]):
+        failures.append("a non-Markdown file under docs/ does not run the Markdown readers")
     readme = ci_lanes.light_tests(["README.md"])
     for name in ("tests/test_status_truth.py", "tests/test_lane_records.py", "tests/test_open_webui_github_tool.py", "tests/test_site.py"):
         if name not in readme:
@@ -42,6 +59,18 @@ def check_classification(failures):
             failures.append(f"{paths}: engine lane {'skipped' if engine else 'run'}")
     if ci_lanes.changed("0" * 40, "HEAD") is not None or ci_lanes.changed("", "HEAD") is not None:
         failures.append("a push without a previous commit does not fall back to the engine lane")
+
+
+def check_every_file_has_a_lane(failures):
+    run = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True)
+    if run.returncode != 0:
+        failures.append(f"git ls-files exited {run.returncode}")
+        return 0
+    files = [entry for entry in run.stdout.decode("utf-8", "surrogateescape").split("\0") if entry]
+    loose = sorted({path.split("/")[0] for path in files if ci_lanes.lane(path) == "unclassified"})
+    for top in loose:
+        failures.append(f"{top}: no lane; add it to ENGINE_PATHS if the engine build or an engine test reads it, otherwise to LIGHT_PATHS")
+    return len(files)
 
 
 def check_fast_tests_exist(failures):
@@ -83,6 +112,7 @@ def check_build_ignores_site(failures):
 def main():
     failures = []
     check_classification(failures)
+    tracked = check_every_file_has_a_lane(failures)
     check_fast_tests_exist(failures)
     check_engine_tests_ignore_site(failures)
     check_build_ignores_site(failures)
@@ -90,7 +120,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print(f"ci lanes: {len(ci_lanes.SITE_PATHS)} site paths and Markdown skip the engine lane; no engine test or build rule reads the site paths; {len(ci_lanes.light_tests([]))} light tests cover the site and every whole-tree scan, and Markdown changes add the {len(ci_lanes.markdown_tests())} tests that can read Markdown")
+    print(f"ci lanes: only the {len(ci_lanes.ENGINE_PATHS)} engine paths run the engine lane, and each of the {tracked} tracked files has a lane; {len(ci_lanes.SITE_PATHS)} site paths, {len(ci_lanes.LIGHT_PATHS)} repository paths and Markdown skip it; no engine test or build rule reads the site paths; {len(ci_lanes.light_tests([]))} light tests cover the site and every whole-tree scan, and Markdown changes add the {len(ci_lanes.markdown_tests())} tests that can read Markdown")
     return 0
 
 

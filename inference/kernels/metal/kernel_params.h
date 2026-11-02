@@ -283,6 +283,36 @@ typedef struct SparkSiluMulParams
 	uint32_t pad[2];
 } SparkSiluMulParams;
 
+typedef struct SparkPolyNormParams
+{
+	uint32_t rows;
+	uint32_t width;
+	uint32_t input_stride;
+	uint32_t output_stride;
+	uint32_t param_count;
+	uint32_t indexed;
+	uint32_t routed;
+	uint32_t pad;
+	float clamp;
+	float bias_clamp;
+	float output_scale;
+	float epsilon;
+} SparkPolyNormParams;
+
+typedef struct SparkDifferentialGateParams
+{
+	uint32_t rows;
+	uint32_t groups;
+	uint32_t signal;
+	uint32_t dimension;
+	uint32_t heads_stride;
+	uint32_t lambda_stride;
+	uint32_t lambda_offset;
+	uint32_t gate_stride;
+	uint32_t output_stride;
+	uint32_t pad[3];
+} SparkDifferentialGateParams;
+
 typedef struct SparkLogprobParams
 {
 	uint32_t rows;
@@ -338,6 +368,10 @@ typedef struct SparkHcParams
 	float hc_epsilon;
 	float post_magnitude;
 	uint32_t iterations;
+	float gate_clamp;
+	float residual_clamp;
+	float sum_floor;
+	uint32_t pad;
 } SparkHcParams;
 
 #define SPARK_HC_COMB_MIXES 24u

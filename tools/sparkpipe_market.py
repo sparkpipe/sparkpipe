@@ -15,6 +15,7 @@ KST = timezone(timedelta(hours=9))
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round", "api_key", "api_key_revoke", "maintenance", "maintenance_done", "clock")
+AVAILABILITY = {"free": "available"}
 
 
 class Refusal(Exception):
@@ -326,7 +327,7 @@ class Market:
             raise Refusal(f"{fleet['name']} is pinned to a customer, who may book its next Week until {kst_text(first - DAY)}.", 409, "pinned")
         week = Decimal(str(pricing["bookings"]["weekHC"])) * fleet["rate"]
         if any(self.st.locked(account) >= week for account in self.st.locks):
-            raise Refusal("Customers on the waitlist come first: join the waitlist, which allocates each free Fleet every Sunday at 00:00 KST.", 409, "waitlist")
+            raise Refusal("Customers on the waitlist come first: join the waitlist, which allocates each available Fleet every Sunday at 00:00 KST.", 409, "waitlist")
 
     def week_plan(self, pricing, account, fleet, weeks, now):
         rules = pricing["bookings"]
@@ -710,9 +711,9 @@ class Market:
         with self.book.lock:
             now = self.now()
             self.advance(now)
-            rows = [f"{f['id']} {'serving' if f['serving'] else 'not-serving'} {self.status(f, now)}" for f in self.fleets(pricing)]
+            rows = [f"{f['id']} {'serving' if f['serving'] else 'not-serving'} {AVAILABILITY.get(self.status(f, now), self.status(f, now))}" for f in self.fleets(pricing)]
             rows.append(f"waitlist locks {len(self.st.locks)}")
-        return "\n".join([f"# SparkPipe availability, generated {stamp(now)}, Customer Agreement clause 4.2", "# fleet serving status (demo, pinned or free)"] + rows) + "\n"
+        return "\n".join([f"# SparkPipe availability, generated {stamp(now)}, Customer Agreement clause 4.2", "# fleet serving status (demo, pinned or available)"] + rows) + "\n"
 
     def holder_hours(self, fleet_id, start, end):
         if fleet_id not in [f["id"] for f in self.settings()["fleets"]]:

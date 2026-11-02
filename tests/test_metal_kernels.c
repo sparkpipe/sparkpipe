@@ -5244,6 +5244,301 @@ static void TestAttentionExtra(uint32_t heads)
 	SparkDeviceFree(&output);
 }
 
+static void TestPolyNorm(uint32_t rows, uint32_t width, uint32_t routed, uint32_t sets, double clamp)
+{
+	const uint32_t stride = 2u * width + 64u, out_stride = width + 32u;
+	const double epsilon = 1e-6, bias_clamp = 0.5, scale = 0.5;
+	SparkDeviceBuffer input, weights, index, output;
+	uint16_t *iv = (uint16_t *)Shared(&input,(uint64_t)rows * stride * 2u,"poly input");
+	float *wv = (float *)Shared(&weights,(uint64_t)sets * 4u * sizeof(float),"poly params");
+	uint32_t *xv = (uint32_t *)Shared(&index,(uint64_t)rows * sizeof(uint32_t),"poly index");
+	uint16_t *ov = (uint16_t *)Shared(&output,(uint64_t)rows * out_stride * 2u,"poly output");
+	SparkTensor index_tensor = Whole(&index);
+	SparkPolyNormParams params;
+	Check clean, corrupted;
+	char shape[112];
+	uint32_t pass, row, i, set;
+	FillBf16(iv,(uint64_t)rows * stride,1.0);
+	for ( i = 0u; clamp < 1e5 && i < rows; i++ )
+		iv[(uint64_t)i * stride + 7u] = ToBf16((float)(clamp * 1.5));
+	for ( set = 0u; set < sets; set++ )
+	{
+		for ( i = 0u; i < 3u; i++ )
+			wv[set * 4u + i] = (float)Normal();
+		wv[set * 4u + 3u] = (float)(1.2 * Normal());
+	}
+	for ( row = 0u; row < rows; row++ )
+		xv[row] = sets > 1u ? (uint32_t)(NextRandom() % (sets + 1u)) : 0u;
+	if ( sets > 1u )
+	{
+		xv[0] = sets;
+		xv[rows - 1u] = 1u;
+	}
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.width = width;
+	params.input_stride = stride;
+	params.output_stride = out_stride;
+	params.param_count = sets > 1u ? sets : 1u;
+	params.indexed = sets > 1u;
+	params.routed = routed;
+	params.clamp = (float)clamp;
+	params.bias_clamp = (float)bias_clamp;
+	params.output_scale = (float)scale;
+	params.epsilon = (float)epsilon;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * stride + 11u;
+		const uint16_t saved = iv[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			iv[poke] = ToBf16(Bf16(saved) * 64.0f + 3.0f);
+		if ( !Run(SparkOpsPolyNormMul(&ops,queue,Whole(&input),Whole(&weights),sets > 1u ? &index_tensor : 0,Whole(&output),&params),"poly_norm_mul") )
+			break;
+		iv[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			const uint16_t *gate = iv + (uint64_t)row * stride, *up = gate + width;
+			const uint32_t which = sets > 1u ? xv[row] : 0u;
+			double sum[3] = { 0.0, 0.0, 0.0 }, d[3], w[3], bias;
+			if ( which >= params.param_count )
+			{
+				for ( i = 0u; i < width; i++ )
+					Observe(check,Bf16(ov[(uint64_t)row * out_stride + i]),0.0,0.0);
+				continue;
+			}
+			for ( i = 0u; i < width; i++ )
+			{
+				const double g = fmin(fmax(Bf16(gate[i]),-clamp),clamp);
+				sum[0] += g * g;
+				sum[1] += g * g * g * g;
+				sum[2] += g * g * g * g * g * g;
+			}
+			for ( i = 0u; i < 3u; i++ )
+			{
+				d[i] = sqrt(sum[i] / width + epsilon);
+				w[i] = Sigmoid(wv[which * 4u + i]);
+			}
+			bias = routed != 0u ? fmin(fmax(wv[which * 4u + 3u],-bias_clamp),bias_clamp) : wv[which * 4u + 3u];
+			for ( i = 0u; i < width; i++ )
+			{
+				const double g = fmin(fmax(Bf16(gate[i]),-clamp),clamp), u = fmin(fmax(Bf16(up[i]),-clamp),clamp);
+				const double terms = fabs(w[0] * g * g * g / d[2]) + fabs(w[1] * g * g / d[1]) + fabs(w[2] * g / d[0]) + fabs(bias);
+				const double value = (w[0] * (g * g * g / d[2]) + w[1] * (g * g / d[1]) + w[2] * (g / d[0]) + bias) * u;
+				const double slack = (terms * (Gamma(width) * 2.0 + 16.0 * UNIT_F32 + FUNCTION_ERROR)) * fabs(u);
+				const double expected = routed != 0u ? fmin(fmax(value,-clamp),clamp) * scale : Bf16(ToBf16((float)value)) * scale;
+				const double tolerance = routed != 0u ? UNIT_BF16 * fabs(expected) + slack * scale : UNIT_BF16 * fabs(value) * scale + slack * scale +
+					UNIT_BF16 * fabs(expected);
+				Observe(check,Bf16(ov[(uint64_t)row * out_stride + i]),expected,tolerance);
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x %u, %s, %u parameter set%s, clamp %g",rows,width,routed != 0u ? "routed" : "dense",sets,sets == 1u ? "" : "s",clamp);
+	Report("poly_norm_mul",shape,&clean,&corrupted,"u|y| + |u| (sum of |terms|) (2 gamma_width + 16 eps32 + exp error); dense adds one bf16 rounding of poly x u");
+	SparkDeviceFree(&input);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&index);
+	SparkDeviceFree(&output);
+}
+
+static double RoundBf16Double(double value)
+{
+	return(Bf16(ToBf16((float)value)));
+}
+
+static void TestDifferentialGate(uint32_t rows)
+{
+	enum { GROUPS = 2u, SIGNAL = 4u, DIM = 128u, LAMBDA = 64u, OFFSET = 8u };
+	const uint32_t width = GROUPS * SIGNAL * DIM, heads_stride = GROUPS * (SIGNAL + 1u) * DIM + 32u, gate_stride = width + 16u;
+	SparkDeviceBuffer heads, lambda, gate, output;
+	uint16_t *hv = (uint16_t *)Shared(&heads,(uint64_t)rows * heads_stride * 2u,"diff heads");
+	uint16_t *lv = (uint16_t *)Shared(&lambda,(uint64_t)rows * LAMBDA * 2u,"diff lambda");
+	uint16_t *gv = (uint16_t *)Shared(&gate,(uint64_t)rows * gate_stride * 2u,"diff gate");
+	uint16_t *ov = (uint16_t *)Shared(&output,(uint64_t)rows * width * 2u,"diff output");
+	SparkDifferentialGateParams params;
+	Check clean, corrupted;
+	char shape[96];
+	uint32_t pass, row, element;
+	FillBf16(hv,(uint64_t)rows * heads_stride,1.0);
+	FillBf16(lv,(uint64_t)rows * LAMBDA,2.0);
+	FillBf16(gv,(uint64_t)rows * gate_stride,2.0);
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.groups = GROUPS;
+	params.signal = SIGNAL;
+	params.dimension = DIM;
+	params.heads_stride = heads_stride;
+	params.lambda_stride = LAMBDA;
+	params.lambda_offset = OFFSET;
+	params.gate_stride = gate_stride;
+	params.output_stride = width;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * heads_stride + SIGNAL * DIM + 5u;
+		const uint16_t saved = hv[poke];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			hv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -4.0f : 4.0f));
+		if ( !Run(SparkOpsDifferentialGate(&ops,queue,Whole(&heads),Whole(&lambda),Whole(&gate),Whole(&output),&params),"differential_gate") )
+			break;
+		hv[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( element = 0u; element < width; element++ )
+			{
+				const uint32_t head = element / DIM, d = element % DIM, team = head / SIGNAL, member = head % SIGNAL;
+				const uint16_t *base = hv + (uint64_t)row * heads_stride + (uint64_t)team * (SIGNAL + 1u) * DIM;
+				const double signal = Bf16(base[member * DIM + d]), noise = Bf16(base[SIGNAL * DIM + d]);
+				const double weight = RoundBf16Double(Sigmoid(Bf16(lv[(uint64_t)row * LAMBDA + OFFSET + head])));
+				const double opened = RoundBf16Double(Sigmoid(Bf16(gv[(uint64_t)row * gate_stride + element])));
+				const double combined = RoundBf16Double(signal - RoundBf16Double(weight * noise));
+				const double expected = combined * opened;
+				Observe(check,Bf16(ov[(uint64_t)row * width + element]),expected,UNIT_BF16 * fabs(expected) + 2.0 * UNIT_BF16 * (fabs(noise) * opened + fabs(combined)));
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, %u groups of %u signal + 1 noise heads x %u",rows,GROUPS,SIGNAL,DIM);
+	Report("differential_gate",shape,&clean,&corrupted,"u|y| + 2u(|noise| g + |sig - lambda noise|) for the bf16-rounded sigmoids");
+	SparkDeviceFree(&heads);
+	SparkDeviceFree(&lambda);
+	SparkDeviceFree(&gate);
+	SparkDeviceFree(&output);
+}
+
+static void TestHcClamped(uint32_t rows)
+{
+	enum { STREAMS = 4u, WIDTH = 4096u, THREADS = 256u, MIXES = 24u, ITERATIONS = 20u };
+	const uint32_t flat = STREAMS * WIDTH, terms = flat / THREADS + 5u + THREADS / 32u;
+	const double norm_epsilon = 1e-6, gate_clamp = 10.0, residual_clamp = 20.0, floor_sum = 1e-8;
+	SparkDeviceBuffer streams, fn, base, scale, post, comb, mixed;
+	uint16_t *sv = (uint16_t *)Shared(&streams,(uint64_t)rows * flat * 2u,"hc clamped streams");
+	float *fv = (float *)Shared(&fn,(uint64_t)MIXES * flat * sizeof(float),"hc clamped fn");
+	float *bv = (float *)Shared(&base,MIXES * sizeof(float),"hc clamped base");
+	float *cv = (float *)Shared(&scale,3u * sizeof(float),"hc clamped scale");
+	float *pv = (float *)Shared(&post,(uint64_t)rows * STREAMS * sizeof(float),"hc clamped post");
+	float *kv = (float *)Shared(&comb,(uint64_t)rows * STREAMS * STREAMS * sizeof(float),"hc clamped comb");
+	uint16_t *mv = (uint16_t *)Shared(&mixed,(uint64_t)rows * WIDTH * 2u,"hc clamped mixed");
+	SparkHcParams params;
+	Check clean, corrupted, weight_clean, weight_corrupted;
+	char shape[96];
+	uint64_t index;
+	uint32_t pass, row, s, t, d, m, c, iteration;
+	FillBf16(sv,(uint64_t)rows * flat,1.0);
+	for ( index = 0u; index < (uint64_t)MIXES * flat; index++ )
+		fv[index] = (float)(0.05 * Normal());
+	for ( m = 0u; m < MIXES; m++ )
+		bv[m] = (float)(4.0 * Normal());
+	cv[0] = 3.0f;
+	cv[1] = 2.5f;
+	cv[2] = 6.0f;
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.streams = STREAMS;
+	params.width = WIDTH;
+	params.mixes = MIXES;
+	params.norm_epsilon = (float)norm_epsilon;
+	params.post_magnitude = 1.0f;
+	params.iterations = ITERATIONS;
+	params.gate_clamp = (float)gate_clamp;
+	params.residual_clamp = (float)residual_clamp;
+	params.sum_floor = (float)floor_sum;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted, *weight_check = pass == 0u ? &weight_clean : &weight_corrupted;
+		const uint64_t poke = (uint64_t)(rows - 1u) * flat + 2u * WIDTH + 333u;
+		const uint16_t saved = sv[poke];
+		memset(check,0,sizeof(*check));
+		memset(weight_check,0,sizeof(*weight_check));
+		if ( pass == 1u )
+			sv[poke] = ToBf16(Bf16(saved) + (Bf16(saved) >= 0.0f ? -8.0f : 8.0f));
+		if ( !Run(SparkOpsHcSiteClamped(&ops,queue,Whole(&streams),Whole(&fn),Whole(&base),Whole(&scale),Whole(&post),Whole(&comb),Whole(&mixed),&params),
+			"hc_site_clamped") )
+			break;
+		sv[poke] = saved;
+		for ( row = 0u; row < rows; row++ )
+		{
+			double dot[MIXES], magnitude[MIXES], square = 0.0, mix[MIXES], error[MIXES], weight[STREAMS], cell[16], sums[STREAMS], inverse, worst = 0.0;
+			for ( m = 0u; m < MIXES; m++ )
+				dot[m] = magnitude[m] = 0.0;
+			for ( index = 0u; index < flat; index++ )
+			{
+				const double x = Bf16(sv[(uint64_t)row * flat + index]);
+				for ( m = 0u; m < MIXES; m++ )
+				{
+					dot[m] += x * fv[(uint64_t)m * flat + index];
+					magnitude[m] += fabs(x * fv[(uint64_t)m * flat + index]);
+				}
+				square += x * x;
+			}
+			inverse = 1.0 / sqrt(square / flat + norm_epsilon);
+			for ( m = 0u; m < MIXES; m++ )
+			{
+				mix[m] = dot[m] * inverse;
+				error[m] = Gamma(terms) * magnitude[m] * inverse + 4.0 * UNIT_F32 * fabs(mix[m]);
+			}
+			for ( s = 0u; s < STREAMS; s++ )
+			{
+				const double pre = mix[s] * cv[0] + bv[s], post_argument = mix[STREAMS + s] * cv[1] + bv[STREAMS + s];
+				const double expected = Sigmoid(fmin(fmax(post_argument,-gate_clamp),gate_clamp));
+				weight[s] = Sigmoid(fmin(fmax(pre,-gate_clamp),gate_clamp));
+				Observe(weight_check,pv[(uint64_t)row * STREAMS + s],expected,0.25 * (error[STREAMS + s] * cv[1] + 8.0 * UNIT_F32 * fabs(post_argument)) +
+					4.0 * FUNCTION_ERROR * expected);
+			}
+			for ( c = 0u; c < 16u; c++ )
+			{
+				const double argument = mix[2u * STREAMS + c] * cv[2] + bv[2u * STREAMS + c];
+				cell[c] = exp(fmin(fmax(argument,-residual_clamp),residual_clamp));
+				worst = fmax(worst,error[2u * STREAMS + c] * cv[2] + 8.0 * UNIT_F32 * fabs(argument));
+			}
+			for ( iteration = 0u; iteration < ITERATIONS; iteration++ )
+			{
+				for ( s = 0u; s < STREAMS; s++ )
+				{
+					sums[s] = 0.0;
+					for ( t = 0u; t < STREAMS; t++ )
+						sums[s] += cell[s * STREAMS + t];
+					for ( t = 0u; t < STREAMS; t++ )
+						cell[s * STREAMS + t] /= fmax(sums[s],floor_sum);
+				}
+				for ( t = 0u; t < STREAMS; t++ )
+				{
+					sums[t] = 0.0;
+					for ( s = 0u; s < STREAMS; s++ )
+						sums[t] += cell[s * STREAMS + t];
+				}
+				for ( c = 0u; c < 16u; c++ )
+					cell[c] /= fmax(sums[c % STREAMS],floor_sum);
+			}
+			for ( s = 0u; s < STREAMS; s++ )
+				for ( t = 0u; t < STREAMS; t++ )
+					Observe(weight_check,kv[(uint64_t)row * 16u + t * STREAMS + s],cell[s * STREAMS + t],
+						fabs(cell[s * STREAMS + t]) * (8.0 * worst + 2.0 * ITERATIONS * 8.0 * UNIT_F32 + 2.0 * FUNCTION_ERROR) + 1e-9);
+			for ( d = 0u; d < WIDTH; d++ )
+			{
+				double y = 0.0, slack = 0.0;
+				for ( s = 0u; s < STREAMS; s++ )
+				{
+					const double x = Bf16(sv[(uint64_t)row * flat + s * WIDTH + d]);
+					const double weight_error = 0.25 * (error[s] * cv[0] + 8.0 * UNIT_F32 * fabs(mix[s] * cv[0] + bv[s])) + 4.0 * FUNCTION_ERROR * weight[s];
+					y += weight[s] * x;
+					slack += fabs(x) * weight_error + Gamma(STREAMS) * fabs(weight[s] * x);
+				}
+				Observe(check,Bf16(mv[(uint64_t)row * WIDTH + d]),y,UNIT_BF16 * fabs(y) + slack);
+			}
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u, 4 streams x 4096, clamps 10 / 20, 20 floored passes",rows);
+	Report("hc_site_clamped",shape,&clean,&corrupted,"u|y| + sum_s |x_s| dw_s, dw from gamma_(flat/256 + 5 + 8) on the mix dots");
+	Report("hc_site_clamped post comb",shape,&weight_clean,&weight_corrupted,"the mix-dot bound through the clamped sigmoid and exp, 20 floored passes x 8 eps32; comb stored target-major");
+	SparkDeviceFree(&streams);
+	SparkDeviceFree(&fn);
+	SparkDeviceFree(&base);
+	SparkDeviceFree(&scale);
+	SparkDeviceFree(&post);
+	SparkDeviceFree(&comb);
+	SparkDeviceFree(&mixed);
+}
+
 int main(int argc, char **argv)
 {
 	if ( argc > 1 && (receipt = fopen(argv[1],"w")) == 0 )
@@ -5475,6 +5770,11 @@ int main(int argc, char **argv)
 	TestCompressedPositions(1u);
 	TestAttentionExtra(8u);
 	TestAttentionExtra(64u);
+	TestPolyNorm(5u,1280u,0u,1u,1e6);
+	TestPolyNorm(4u,1000u,1u,1u,3.0);
+	TestPolyNorm(9u,1280u,1u,6u,1e6);
+	TestDifferentialGate(3u);
+	TestHcClamped(3u);
 	if ( receipt != 0 )
 	{
 		fputs("\n]\n",receipt);

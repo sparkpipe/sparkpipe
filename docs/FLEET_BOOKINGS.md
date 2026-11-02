@@ -90,7 +90,7 @@ It is authenticated with `Authorization: Bearer` and the upstream key (`SPARKPIP
 
 ```text
 # SparkPipe availability, generated 2027-01-06T03:00:00Z, Customer Agreement clause 4.2
-# fleet serving status (demo, pinned or free)
+# fleet serving status (demo, pinned or available)
 F1 serving demo
 F3 serving pinned
 waitlist locks 2

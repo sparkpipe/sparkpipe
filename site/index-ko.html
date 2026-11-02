@@ -124,11 +124,11 @@ h1 { max-width: 14em; }
   <div class="sec-body">
     <h2>고객만을 위해 일하고 고객의 코드를 기억하는 플릿.</h2>
     <div class="defs">
-      <div><p class="label">고객에게 고정</p><p>플릿 전체가 고객의 요청만 처리합니다. 공유 대기열도, 공유 캐시도 없고, 플릿 자체의 속도 외에는 속도 제한도 없습니다. 다음 주를 계속 예약하는 동안 다른 누구도 그 시간을 예약할 수 없습니다. 일이 많으면 플릿을 더 보유하세요. 낮용, 밤용, 병렬 리뷰용으로.</p></div>
-      <div><p class="label">남는 작업 상태</p><p>플릿에 8 TB의 캐시, 노드당 1 TB를 짝 노드에 미러링합니다. 요청은 가장 긴 캐시된 프리픽스를 자동으로 재사용하므로 슬롯을 관리할 필요가 없습니다. 다른 고객의 그 플릿 예약이 시작되거나 고객의 마지막 시간 후 24시간이 지나면 삭제됩니다. 플릿 밖 사본도, 백업도 없습니다.</p></div>
-      <div><p class="label">고객 저장공간</p><p>모든 플릿에 저장소, 데이터셋, 어댑터와 모델을 위한 <span data-storage>4 TB</span>, 노드당 500 GB를 캐시처럼 미러링합니다. 보유한 어느 플릿으로든 내보내고 복원할 수 있습니다.</p></div>
-      <div><p class="label">고객의 도구</p><p>Claude Code, Codex, Cursor 또는 OpenAI 호환 도구에 엔드포인트와 키를 넣고, 계정에서 하는 모든 일은 <span class="mono">sparkpipe</span> CLI로 할 수 있습니다.</p></div>
-      <div><p class="label">오픈 모델 18종</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash와 국산 K-EXAONE 2.0, A.X K2, Solar Open 2 등을 각 게시자의 라이선스에 따라 제공합니다. 모델 전환은 20~80초입니다. <a href="fleets-ko.html">플릿 목록</a>에 모든 모델의 실측 속도가 있습니다.</p></div>
+      <div><p class="label">고객에게 고정</p><p>플릿 전체가 고객의 요청만 처리합니다. 공유 대기열도, 공유 캐시도 없고, 플릿 자체의 속도 외에는 속도 제한도 없습니다. 다음 주를 계속 예약하는 동안 다른 누구도 그 시간을 예약할 수 없습니다. 일이 많으면 플릿을 더 보유하세요. 낮용, 밤용, 병렬 리뷰용으로. 잠시 더 필요할 때는 같은 HC로 유휴 플릿을 시간 단위로 예약하세요.</p></div>
+      <div><p class="label">남는 작업 상태</p><p>플릿에 8 TB의 캐시, 노드당 1 TB를 짝 노드에 미러링합니다. 요청은 가장 긴 캐시된 프리픽스를 자동으로 재사용하므로 슬롯을 관리할 필요가 없습니다. 다른 고객의 그 플릿 예약이 시작되거나 고객의 마지막 시간 후 24시간이 지나면 삭제됩니다. 플릿 밖 사본도, 백업도 없습니다. 보관소가 아니라 작업 공간으로 다루세요. 장애로 두 사본이 모두 사라지면, 캐시를 다시 구축하는 동안 플릿 24시간분을 적립해 드립니다.</p></div>
+      <div><p class="label">고객 저장공간</p><p>모든 플릿에 저장소, 데이터셋, 어댑터와 모델을 위한 <span data-storage>4 TB</span>, 노드당 500 GB를 캐시처럼 미러링합니다. 보유한 어느 플릿으로든 내보내고 복원할 수 있으며, 보존하려는 것은 매일 백업하세요.</p></div>
+      <div><p class="label">고객의 도구</p><p>시니어 엔지니어가 가장 많이 쓰는 Claude Code, Codex, OpenCode를 명령 하나로 설정하고 릴리스마다 시험합니다. Anthropic이나 OpenAI API를 쓰는 다른 도구도 작동하며, 계정에서 하는 모든 일은 <span class="mono">sparkpipe</span> CLI로 할 수 있습니다.</p></div>
+      <div><p class="label">오픈 모델 18종</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash와 국산 K-EXAONE 2.0, A.X K2, Solar Open 2 등을 각 게시자의 라이선스에 따라 제공합니다. 메모리에 들어가면 여러 모델을 동시에 적재해 두며, 다른 모델을 적재하는 데는 20~80초가 걸립니다. <a href="fleets-ko.html">플릿 목록</a>에 모든 모델의 실측 속도가 있습니다.</p></div>
       <div><p class="label">한국에서만</p><p>요청과 데이터는 저희가 한국에서 운영하는 장비에서만 처리되며, 다른 AI 서비스로 보내지 않습니다. 한국은 <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU 적정성 결정</a>과 영국의 적정성 결정을 받았으므로, 유럽의 개인정보는 별도의 이전 계약 없이 고객의 플릿으로 올 수 있습니다. 계약 상대방은 한국법을 따르는 한국 회사입니다.</p></div>
     </div>
   </div>
@@ -149,6 +149,7 @@ h1 { max-width: 14em; }
         <dt>미리 프리필</dt><dd>지정한 브랜치와 모듈을 웜 상태로 두고, 턴 사이에 다음에 쓸 만한 것을 프리필합니다.</dd>
         <dt>세션 이어가기</dt><dd>어제의 에이전트 세션을 웜 상태로 두어, 멈춘 곳에서 이어갑니다.</dd>
         <dt>내보내기와 복원</dt><dd>저장공간, 캐시 스냅숏, 드래프트 모델과 어댑터를 보유한 어느 플릿으로든 옮깁니다.</dd>
+        <dt>매일 백업</dt><dd>지정한 저장공간 경로를 고객의 버킷이나 서버로 매일, 바뀐 부분만 복사합니다.</dd>
       </dl></div>
       <div class="fn"><p class="label">문제 찾기</p><dl>
         <dt>그날의 변경 리뷰</dt><dd>변경마다 diff만이 아니라 코드베이스 전체에 비추어 리뷰하고, 발견마다 테스트로 확인합니다.</dd>
@@ -201,10 +202,10 @@ h1 { max-width: 14em; }
     <ol class="steps">
       <li><h3>계정 열기</h3><p>회사의 법인명 또는 본인 이름, 6자리 코드로 확인한 업무용 이메일, 고객 계약 동의. 비밀번호는 없습니다. 그다음 HC를 원하는 만큼 삽니다.</p></li>
       <li><h3>데모 시간 예약</h3><p>데모 플릿 전체를 시간 단위로, 최대 <span data-demo="days">7</span>일 앞까지, 시간당 <span data-hour="hc">1</span> HC. 고객의 도구를 연결해 코드베이스로 시험해 보세요.</p></li>
-      <li><h3>플릿 고정</h3><p>비어 있는 플릿의 첫 주를 다음 월요일부터 예약합니다. 모든 플릿이 보유되어 있으면 최소 <span data-week="hc">144</span> HC를 잠가 대기 명단에 들어갑니다.</p></li>
-      <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 새 주는 더 저렴합니다.</p></li>
+      <li><h3>플릿 고정</h3><p>이용 가능한 플릿의 첫 주를 다음 월요일부터 예약합니다. 모든 플릿이 보유되어 있으면 최소 <span data-week="hc">144</span> HC를 잠가 대기 명단에 들어갑니다.</p></li>
+      <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 예약하는 모든 주의 할인이 커지며, 최대 <span data-off="max">20%</span>입니다.</p></li>
     </ol>
-    <p class="prose">대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서입니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
+    <p class="prose">잠시 플릿이 더 필요한가요? 아무도 보유하지 않은 플릿은 같은 HC로 현재 주의 끝까지 시간 단위로 예약할 수 있으며, 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서입니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
     <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개.</p>
   </div>
 </section>
@@ -222,6 +223,7 @@ h1 { max-width: 14em; }
       <tbody>
         <tr><th scope="row">시간 크레딧</th><td><span data-hc="bulk-from">144</span> HC 미만은 개당 <span data-hc="small-usd">$20</span>(<span data-hc="small-krw">₩26,000</span>), <span data-hc="bulk-from">144</span> HC부터는 개당 <span data-hc="bulk-usd">$15</span>(<span data-hc="bulk-krw">₩19,500</span>). 상한 없음. 각 구매분은 예약에 쓰지 않으면 <span data-hc="months">12</span>개월 후 소멸하며, 예약에 쓴 HC는 소멸하지 않습니다</td></tr>
         <tr><th scope="row">데모 시간</th><td>데모 플릿 전체 1시간에 <span data-hour="hc">1</span> HC</td></tr>
+        <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱한 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
         <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
         <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
         <tr><th scope="row">예약 가능 기간</th><td>최대 <span data-ahead>52</span>주 앞까지</td></tr>
@@ -250,8 +252,31 @@ h1 { max-width: 14em; }
 <span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
 <span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">계정에서 받은 키</span>
 <span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
+<span class="k">export</span> CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 
-<span class="d"># Codex, Cursor 등 OpenAI 호환 도구</span>
+<span class="d"># Codex: ~/.codex/config.toml</span>
+model = "kimi-k3"
+model_provider = "sparkpipe"
+[model_providers.sparkpipe]
+name = "SparkPipe"
+base_url = "https://sparkpipe.ai/pay/api/v1"
+env_key = "SPARKPIPE_API_KEY"
+wire_api = "responses"
+
+<span class="d"># OpenCode: opencode.json</span>
+{
+  "provider": {
+    "sparkpipe": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "https://sparkpipe.ai/pay/api/v1", "apiKey": "{env:SPARKPIPE_API_KEY}" },
+      "models": { "kimi-k3": { "limit": { "context": 1000000, "output": 32768 } } }
+    }
+  },
+  "model": "sparkpipe/kimi-k3",
+  "share": "disabled"
+}
+
+<span class="d"># OpenAI API를 쓰는 그 밖의 도구</span>
 <span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
 <span class="k">export</span> OPENAI_API_KEY=<span class="d">계정에서 받은 키</span>
 
@@ -259,7 +284,7 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "안녕하세요"}]}'</pre>
     </div>
-    <p class="caption">플릿을 여러 개 보유하고 있다면 <span class="mono">"sparkpipe": {"fleet": "F3"}</span>로 하나를 지정하세요. <span class="mono">sparkpipe</span> CLI는 터미널에서 예약, 업로드, 기능 시작과 아침 보고서 확인을 합니다.</p>
+    <p class="caption">플릿을 여러 개 보유하고 있다면 <span class="mono">"sparkpipe": {"fleet": "F3"}</span>로 하나를 지정하세요. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span>, <span class="mono">setup opencode</span>가 이 설정과 함께, 플릿의 코드 검색, 샌드박스 테스트 실행, 상태와 아침 보고서를 에이전트에 더하는 SparkPipe 플러그인을 설치합니다. 세 에이전트의 새 릴리스는 모두 플릿에서 시험한 뒤에 권장합니다. <span class="mono">sparkpipe</span> CLI는 터미널에서 예약, 업로드, 기능 시작과 아침 보고서 확인도 합니다.</p>
   </div>
 </section>
 

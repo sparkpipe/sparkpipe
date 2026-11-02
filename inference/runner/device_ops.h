@@ -147,6 +147,10 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_NGRAM_HASH_MAPPED,
 	SPARK_OPS_NGRAM_GATHER_E8M0,
 	SPARK_OPS_NGRAM_HISTORY_MAPPED,
+	SPARK_OPS_POLY_NORM_MUL,
+	SPARK_OPS_DIFFERENTIAL_GATE,
+	SPARK_OPS_HC_SITE_CLAMPED,
+	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -243,6 +247,8 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor output,
 	const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params);
@@ -300,6 +306,12 @@ SparkStatus SparkOpsHcSiteLagged(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkTensor pre, SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params);
 SparkStatus SparkOpsHcPostCombF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor post, SparkTensor comb, SparkTensor output,
 	const SparkHcParams *params);
+SparkStatus SparkOpsHcSiteClamped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
+	SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params);
+SparkStatus SparkOpsPolyNormMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gate_up, SparkTensor params_f32, const SparkTensor *param_of_row,
+	SparkTensor output, const SparkPolyNormParams *params);
+SparkStatus SparkOpsDifferentialGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor heads, SparkTensor lambda, SparkTensor gate, SparkTensor output,
+	const SparkDifferentialGateParams *params);
 SparkStatus SparkOpsHcCollapse(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor pre, SparkTensor output, const SparkHcParams *params);
 SparkStatus SparkOpsStreamKeyGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor kv, SparkTensor query_weight,
 	SparkTensor key_weight, const SparkGateParams *params);
