@@ -831,7 +831,10 @@ outside the daemon:
 ### Pool sizing
 
 Every lazy attach declares `expert_pool_bytes`. The daemon rejects 0,
-`UINT64_MAX` and values above its device budget. A pool larger than the pack
+`UINT64_MAX` and values above `device_bytes_max` less the KV reserve with
+`INVALID_ARGUMENT`; a pool that fits there but not beside lent KV is a
+capacity question, answered by reclaim (see
+[KV pools and the shared budget](#kv-pools-and-the-shared-budget)). A pool larger than the pack
 becomes one allocation for the whole arena whose chunks are never evicted
 (`SparkWeightdPremapPool`, logged as "pool single-alloc"). A pool no larger
 than the pack becomes a slot pool (`SparkWeightdCreateSlots`, logged as "pool
@@ -1424,12 +1427,18 @@ the arena.
 
 `SparkWeightdServerReclaimCold` runs before a new arena is created: in
 `SparkWeightdServerAttachCold` with the arena bytes, and in
-`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. While
-the resident bytes exceed `device_bytes_max`, or the needed bytes do not fit
-in what remains, it frees the cold arena with the lowest `generation` (the
-oldest created, not the least recently used). An arena is cold when its
-`refcount` is 0 and it holds no leases. When no cold arena is left it
-returns without a status, and the caller applies its own checks.
+`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. The
+arena ceiling is `device_bytes_max` less the larger of the KV reserve and
+the committed KV bytes (`SparkWeightdArenaCeiling`). While the resident bytes
+exceed it, or the needed bytes do not fit in what remains, reclaim first
+releases detached KV pools above the reserve, oldest detached first
+(`reason=arena_needs_room`), then calls
+`SparkWeightdServerReclaimColdWeights`: free slots of cold slot pools, then
+the coldest cold arena (least recently attached, then the oldest
+generation), whose cold expert groups go first and the arena itself only if
+that is not enough. An arena is cold when its `refcount` is 0 and it holds no
+leases. When nothing cold is left it returns without a status, and the
+caller applies its own checks.
 
 - After the byte reclaim, a full arena table frees its coldest cold arena
   (`SparkWeightdServerReclaimArenaSlot`: least recently attached, then the
@@ -1476,6 +1485,54 @@ returns without a status, and the caller applies its own checks.
   The failed-attach paths free an arena that the same request created.
   `SparkWeightdServerDestroy` closes every connection, which releases its
   leases and attach references, before it frees the remaining arenas.
+
+### KV pools and the shared budget
+
+Engines that use the common KV binding map their KV device memory from
+weightd KV pools (`KV_POOL_ATTACH`, `KV_POOL_RESIZE`, `KV_POOL_STATUS`,
+`KV_POOL_EXPORT`, `KV_POOL_DROP`, and `KV_SHARED_ATTACH` for shared prefix
+windows). Pools are made of `chunk_bytes` VMM chunks and grow and shrink by
+chunk; `kv_committed_bytes` counts every granted chunk. KV and weights share
+one budget, `device_bytes_max`, under these rules
+(`runtime/spark_weightd.c`):
+
+- **KV limit** (`SparkWeightdKvLimit`). With no arena attached it is
+  `--kv-reserve-bytes`. While arenas are attached it is `device_bytes_max`
+  less their full budgets (`SparkWeightdArenaFullBytes`: an eager arena's
+  bytes, a premapped lazy arena's one allocation, any other lazy arena's
+  preload plus its expert pool), and never below the reserve. A model whose
+  weights are small lends KV the rest of the ceiling, so one native-length
+  sequence fits where the reserve alone could not. A model whose budget
+  leaves less than the reserve keeps the reserve.
+  Without a reserve the limit is 0 and every pool is refused.
+- **What a grow gets** (`SparkWeightdKvFreeBytes`). The smaller of the
+  limit less the committed KV and the device bytes that neither weights nor
+  KV hold. A pool attaches with up to its full size and at least asks for its
+  minimum; chunks it cannot get are recorded as `wanted_chunks`, which other
+  pools see as `reclaim_wanted_bytes` and give back by shrinking.
+- **Making room for KV** (`SparkWeightdKvMakeRoom`). A grow first releases
+  detached pools, oldest first (`reason=evicted_detached`), never the pool
+  that grows. If the room is still short and the grow passes the reserve, it
+  reclaims cold weights with `SparkWeightdServerReclaimColdWeights` for
+  exactly the bytes above the larger of the reserve and the committed KV.
+  It never releases a pool there: a pool being created has no owner yet and
+  must not be mistaken for a detached one.
+- **Making room for weights**. Weight arenas grow only under the arena
+  ceiling, so lent KV is never overwritten by a load. When new weights need
+  room, detached KV pools above the reserve go first (see reclaim above). A
+  pool an engine owns is never taken: the attach is refused with the reason,
+  and the swap controller's `KV_POOL_DROP` of the stopped model frees it at a
+  switch.
+- **Logs**. `kv pool attached`, `kv pool resized` and `kv shared pool
+  attached` carry `kv_committed`, `kv_reserve` and `kv_limit`. A refused
+  pool prints its minimum, the limit, the reserve and the attached arenas'
+  budget against the ceiling; a refused weight attach prints the bytes it
+  needs, the resident bytes, the arena ceiling, the arena table and
+  `kv_committed`/`kv_reserve` held by KV pools.
+
+The IPC ABI is unchanged: grants and status replies still report
+`kv_reserve_bytes` and `kv_committed_bytes`, so engines built before lending
+work against a lending daemon, and the limit appears only in the daemon log.
 
 ### Chunk export (fd tier)
 

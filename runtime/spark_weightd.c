@@ -1146,6 +1146,15 @@ static uint64_t SparkWeightdArenaCeiling(const SparkWeightdServer *server)
     return server->config.device_bytes_max - SparkWeightdKvFloor(server);
 }
 
+static uint64_t SparkWeightdArenaFullBytes(const SparkWeightdArena *arena)
+{
+    if (arena->lazy == 0u)
+        return(arena->identity.arena_bytes);
+    if (arena->pool_export_handle != 0)
+        return(arena->chunk_bytes * (uint64_t)arena->chunk_count);
+    return(arena->preload_chunk_bytes + arena->expert_pool_bytes);
+}
+
 static uint32_t SparkWeightdAttachedArenaBudget(const SparkWeightdServer *server,uint64_t *budget)
 {
     uint32_t index,attached = 0u;
@@ -1153,8 +1162,7 @@ static uint32_t SparkWeightdAttachedArenaBudget(const SparkWeightdServer *server
     for (index = 0u; index < server->arena_count; index++)
         if (server->arenas[index].refcount != 0u)
         {
-            *budget += server->arenas[index].lazy != 0u ? server->arenas[index].preload_chunk_bytes + server->arenas[index].expert_pool_bytes :
-                server->arenas[index].identity.arena_bytes;
+            *budget += SparkWeightdArenaFullBytes(&server->arenas[index]);
             attached++;
         }
     return(attached);
@@ -1217,16 +1225,9 @@ static void SparkWeightdServerEvictColdGroups(SparkWeightdServer *server,
     }
 }
 
-static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
+static void SparkWeightdServerReclaimColdWeights(SparkWeightdServer *server,
     uint64_t needed_bytes)
 {
-    while (SparkWeightdServerShort(server, needed_bytes) != 0u && server->kv_committed_bytes > server->config.kv_reserve_bytes)
-    {
-        uint32_t victim = SparkWeightdKvPoolOldestDetached(server, 0);
-        if (victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX)
-            break;
-        SparkWeightdKvPoolRelease(server, victim, "arena_needs_room");
-    }
     while (SparkWeightdServerShort(server, needed_bytes) != 0u)
     {
         uint32_t coldest_slot = server->arena_count;
@@ -1273,6 +1274,19 @@ static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
         }
         SparkWeightdServerFreeArenaSlot(server, coldest_slot);
     }
+}
+
+static void SparkWeightdServerReclaimCold(SparkWeightdServer *server,
+    uint64_t needed_bytes)
+{
+    while (SparkWeightdServerShort(server, needed_bytes) != 0u && server->kv_committed_bytes > server->config.kv_reserve_bytes)
+    {
+        uint32_t victim = SparkWeightdKvPoolOldestDetached(server, 0);
+        if (victim == SPARK_WEIGHTD_KV_POOL_COUNT_MAX)
+            break;
+        SparkWeightdKvPoolRelease(server, victim, "arena_needs_room");
+    }
+    SparkWeightdServerReclaimColdWeights(server, needed_bytes);
 }
 
 static void SparkWeightdServerReclaimArenaSlot(SparkWeightdServer *server)
@@ -1575,9 +1589,10 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
             SparkWeightdArenaCeiling(server) ||
         server->arena_count >= SPARK_WEIGHTD_ARENA_COUNT_MAX)
     {
-        fprintf(stderr,"weightd attach refused: model=%s needs %llu bytes beside %llu resident under the ceiling %llu, %u of %u arenas held by attached or leased packs\n",
+        fprintf(stderr,"weightd attach refused: model=%s needs %llu bytes beside %llu resident under the ceiling %llu, %u of %u arenas held by attached or leased packs, kv_committed=%llu kv_reserve=%llu held by KV pools\n",
             identity.model,(unsigned long long)identity.arena_bytes,(unsigned long long)server->resident_bytes,
-            (unsigned long long)SparkWeightdArenaCeiling(server),server->arena_count,SPARK_WEIGHTD_ARENA_COUNT_MAX);
+            (unsigned long long)SparkWeightdArenaCeiling(server),server->arena_count,SPARK_WEIGHTD_ARENA_COUNT_MAX,
+            (unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
         (void)close(pack_fd);
         result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
         result->resident_bytes = server->resident_bytes;
@@ -1769,9 +1784,10 @@ static SparkStatus SparkWeightdCreateSlots(SparkWeightdServer *server,
 	if ( server->resident_bytes > SparkWeightdArenaCeiling(server) ||
 	     slot_bytes > SparkWeightdArenaCeiling(server) - server->resident_bytes )
 	{
-		fprintf(stderr,"weightd lazy attach refused: the %llu-byte expert pool does not fit the arena ceiling %llu beside %llu resident bytes\n",
-		    (unsigned long long)slot_bytes,(unsigned long long)SparkWeightdArenaCeiling(server),
-		    (unsigned long long)server->resident_bytes);
+		fprintf(stderr,"weightd lazy attach refused: model=%s needs a %llu-byte expert pool beside %llu resident under the ceiling %llu, kv_committed=%llu kv_reserve=%llu held by KV pools\n",
+		    arena->identity.model,(unsigned long long)slot_bytes,(unsigned long long)server->resident_bytes,
+		    (unsigned long long)SparkWeightdArenaCeiling(server),(unsigned long long)server->kv_committed_bytes,
+		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	arena->slot_handles = calloc(count,sizeof(*arena->slot_handles));
@@ -1829,7 +1845,13 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 	create_bytes = SparkWeightdVmmRoundUp(span_bytes,(uint64_t)granularity);
 	if (server->resident_bytes > SparkWeightdArenaCeiling(server) ||
 	    create_bytes > SparkWeightdArenaCeiling(server) - server->resident_bytes)
+	{
+		fprintf(stderr,"weightd lazy attach refused: model=%s needs a %llu-byte pool allocation beside %llu resident under the ceiling %llu, kv_committed=%llu kv_reserve=%llu held by KV pools\n",
+		    arena->identity.model,(unsigned long long)create_bytes,(unsigned long long)server->resident_bytes,
+		    (unsigned long long)SparkWeightdArenaCeiling(server),(unsigned long long)server->kv_committed_bytes,
+		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( cuMemCreate(&handle,(size_t)create_bytes,&prop,0ull) != CUDA_SUCCESS )
 	{
 		fprintf(stderr,"WD-POOL-PREMAP-FAIL single-alloc create span=%llu failed\n",
@@ -1900,7 +1922,7 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
             SPARK_WEIGHTD_PATH_BYTES) != SPARK_STATUS_OK ||
         request->expert_pool_bytes == 0ull ||
         request->expert_pool_bytes == UINT64_MAX ||
-        request->expert_pool_bytes > SparkWeightdArenaCeiling(server))
+        request->expert_pool_bytes > server->config.device_bytes_max - server->config.kv_reserve_bytes)
     {
         result->status = (uint32_t)SPARK_STATUS_INVALID_ARGUMENT;
         return;
@@ -3432,7 +3454,7 @@ static void SparkWeightdKvMakeRoom(SparkWeightdServer *server,const SparkWeightd
 	}
 	floor = SparkWeightdKvFloor(server);
 	if ( SparkWeightdKvFreeBytes(server) < bytes && server->kv_committed_bytes + bytes > floor )
-		SparkWeightdServerReclaimCold(server,server->kv_committed_bytes + bytes - floor);
+		SparkWeightdServerReclaimColdWeights(server,server->kv_committed_bytes + bytes - floor);
 }
 
 static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKvPool *pool,uint32_t target)
@@ -3518,11 +3540,14 @@ static uint32_t SparkWeightdKvMinimumChunks(const SparkWeightdIpcKvPoolAttach *r
 static SparkStatus SparkWeightdKvPoolCreate(SparkWeightdServer *server,const SparkWeightdIpcKvPoolAttach *request,uint32_t *slot_out)
 {
 	SparkWeightdKvPool *pool;
-	uint32_t slot,victim;
+	uint32_t slot,victim,attached;
+	uint64_t budget;
 	if ( (uint64_t)SparkWeightdKvMinimumChunks(request) * request->chunk_bytes > SparkWeightdKvLimit(server) )
 	{
-		fprintf(stderr,"weightd kv pool refused label=%s: the minimum %llu bytes (%u chunks of %llu) exceed the KV limit %llu (kv_reserve=%llu plus what the attached weights leave of the ceiling)%s\n",request->label,(unsigned long long)request->minimum_bytes,
-			SparkWeightdKvMinimumChunks(request),(unsigned long long)request->chunk_bytes,(unsigned long long)SparkWeightdKvLimit(server),(unsigned long long)server->config.kv_reserve_bytes,
+		attached = SparkWeightdAttachedArenaBudget(server,&budget);
+		fprintf(stderr,"weightd kv pool refused label=%s: the minimum %llu bytes (%u chunks of %llu) exceed the KV limit %llu: kv_reserve=%llu, and %u attached arenas hold %llu of the %llu-byte ceiling%s\n",request->label,
+			(unsigned long long)request->minimum_bytes,SparkWeightdKvMinimumChunks(request),(unsigned long long)request->chunk_bytes,(unsigned long long)SparkWeightdKvLimit(server),
+			(unsigned long long)server->config.kv_reserve_bytes,attached,(unsigned long long)budget,(unsigned long long)server->config.device_bytes_max,
 			server->config.kv_reserve_bytes == 0u ? "; weightd runs without --kv-reserve-bytes" : "");
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
@@ -3798,8 +3823,8 @@ static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWei
 		if ( pool->chunk_count != pool->chunk_capacity || pool->metadata_map == 0 ||
 			SparkKvSharedIndexFormat(pool->metadata_map,metadata_bytes,slot_count,request->page_bytes,request->layout_sha256) != SPARK_STATUS_OK )
 		{
-			fprintf(stderr,"weightd kv shared pool refused label=%s: %u of %u chunks granted within kv_reserve=%llu\n",request->label,pool->chunk_count,pool->chunk_capacity,
-				(unsigned long long)server->config.kv_reserve_bytes);
+			fprintf(stderr,"weightd kv shared pool refused label=%s: %u of %u chunks granted within the KV limit %llu (kv_reserve=%llu kv_committed=%llu)\n",request->label,pool->chunk_count,
+				pool->chunk_capacity,(unsigned long long)SparkWeightdKvLimit(server),(unsigned long long)server->config.kv_reserve_bytes,(unsigned long long)server->kv_committed_bytes);
 			SparkWeightdKvPoolRelease(server,slot,"shared_create_failed");
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
@@ -3814,9 +3839,9 @@ static SparkStatus SparkWeightdKvSharedAdmit(SparkWeightdServer *server,SparkWei
 	pool->holder_connection[holder] = (uint32_t)(connection - server->connections) + 1u;
 	pool->detached_ns = 0u;
 	connection->kv_pool_count++;
-	fprintf(stderr,"weightd kv shared pool attached label=%s generation=%llu holder=%u created=%u slots=%u bytes=%llu holders=%u kv_committed=%llu kv_reserve=%llu\n",pool->label,
+	fprintf(stderr,"weightd kv shared pool attached label=%s generation=%llu holder=%u created=%u slots=%u bytes=%llu holders=%u kv_committed=%llu kv_reserve=%llu kv_limit=%llu\n",pool->label,
 		(unsigned long long)pool->generation,holder,*created,slot_count,(unsigned long long)(pool->chunk_bytes * pool->chunk_count),(unsigned)__builtin_popcountll(pool->holder_mask),
-		(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
+		(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes,(unsigned long long)SparkWeightdKvLimit(server));
 	*slot_out = slot;
 	*holder_out = holder;
 	return(SPARK_STATUS_OK);
@@ -3900,9 +3925,9 @@ static uint32_t SparkWeightdServerOnKvPoolResize(SparkWeightdServer *server,Spar
 		pool->wanted_chunks = 0u;
 	}
 	if ( pool->chunk_count != before )
-		fprintf(stderr,"weightd kv pool resized label=%s generation=%llu chunks=%u->%u of %u wanted=%u kv_committed=%llu kv_reserve=%llu\n",pool->label,
+		fprintf(stderr,"weightd kv pool resized label=%s generation=%llu chunks=%u->%u of %u wanted=%u kv_committed=%llu kv_reserve=%llu kv_limit=%llu\n",pool->label,
 			(unsigned long long)pool->generation,before,pool->chunk_count,pool->chunk_capacity,pool->wanted_chunks,
-			(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes);
+			(unsigned long long)server->kv_committed_bytes,(unsigned long long)server->config.kv_reserve_bytes,(unsigned long long)SparkWeightdKvLimit(server));
 	result->status = (uint32_t)SPARK_STATUS_OK;
 	result->chunk_count = pool->chunk_count;
 	result->wanted_chunks = pool->wanted_chunks;

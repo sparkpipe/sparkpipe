@@ -66,7 +66,8 @@ binding: each engine maps one weightd KV pool. `SPARK_WEIGHTD_KV_RESERVE_BYTES`
 is carved out of `SPARK_WEIGHTD_DEVICE_BYTES_MAX` and always belongs to KV.
 While weights are attached, KV may also borrow what their budgets leave of
 the ceiling: the KV limit is the ceiling less the attached arenas' full sizes
-(a lazy arena's preload plus its expert pool), and never below the reserve.
+(a premapped lazy arena's one allocation, any other lazy arena's preload plus
+its expert pool), and never below the reserve.
 A model with small weights can so hold a long context that the reserve alone
 could not (Gemma 4 31B needs 14.8 GB per rank for one 262,144-position
 sequence). Borrowed KV is real: weight arenas may grow only into what KV
@@ -74,11 +75,12 @@ leaves (the ceiling less the larger of the reserve and the committed KV),
 cold weights are reclaimed when KV needs their room, and when weights need
 room, detached pools above the reserve are released first; a pool an engine
 still owns is never taken away, so the swap controller's KV drop at a model
-switch frees it. With no weights attached the limit is the reserve. The agent
+switch frees it. With no weights attached the limit is the reserve
+([`docs/WEIGHTD_DESIGN.md`](WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)). The agent
 passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
 set the reserve in the agent unit's environment on every node. Pools resize
-inside the reserve by chunk: an engine attaches with its full size when the
-reserve is free and with at least its minimum (one full-length sequence)
+inside the KV limit by chunk: an engine attaches with its full size when the
+limit has room and with at least its minimum (one full-length sequence)
 otherwise, waiting while idle engines give chunks back. An engine whose pool
 evicts or refuses for capacity grows it (`kv pool grew`), and weightd records
 the chunks it could not grant; an engine without that pressure for four 50 ms
@@ -97,7 +99,7 @@ five-year endurance pace) logs one `KV-WRITE-ALERT` line per hour and is named
 in the API's `/health` as `kv_write_alert_rank`. A pool
 stays in weightd when its engine stops; a clean engine restart reattaches it
 and adopts the sealed resident prefix pages, and detached pools are evicted
-only when a new pool needs the room.
+only when a new pool, or new weights beyond the reserve, need the room.
 
 ## Start gates
 
