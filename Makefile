@@ -257,6 +257,7 @@ TEST_NAMES := \
     test_model_batch_engine_mock_debug \
     test_model_pipeline_client_mock \
     test_tp_device_collective_mock \
+    test_tp_mesh_pipeline_boundaries \
     test_tp_chain_graph \
     test_pass_plan \
     test_tp_allreduce_fuzz \
@@ -1473,6 +1474,9 @@ build/test_tp_chain_graph: tests/test_tp_chain_graph.c include/sparkpipe/spark_t
 
 build/test_pass_plan: tests/test_pass_plan.c include/sparkpipe/spark_pass_plan.h | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pass_plan.c $(LDFLAGS) -o $@
+
+build/test_tp_mesh_pipeline_boundaries: tests/test_tp_mesh_pipeline_boundaries.c model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h include/sparkpipe/spark_weightd.h | build
+	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_mesh_pipeline_boundaries.c $(LDFLAGS) -o $@
 
 build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
