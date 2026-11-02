@@ -16,7 +16,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CC = os.environ.get("CC", "cc")
 CXX = os.environ.get("CXX", "c++")
-FLAGS = ["-Wall", "-Wextra", "-Werror", "-Wmissing-field-initializers", "-I.", "-Iinclude", "-Isrc", "-Iinference/runner"]
+FLAGS = ["-Wall", "-Wextra", "-Werror", "-Wmissing-field-initializers", "-I.", "-Iinclude", "-Isrc", "-Iinference/runner", "-Imodel-families/common/include"]
 MODULE_INCLUDES = ["-I" + str(path) for path in sorted(ROOT.glob("modules/*/include"))]
 
 

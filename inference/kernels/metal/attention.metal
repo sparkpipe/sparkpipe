@@ -66,6 +66,7 @@ static inline void SparkLoadLane(device const ushort *source, thread float *valu
 		}
 }
 
+template <bool SKIP>
 kernel void spark_kv_store_paged(constant SparkKvParams &p [[buffer(0)]], device const ushort *key [[buffer(1)]],
 	device const ushort *value [[buffer(2)]], device const uint *sequence_of_row [[buffer(3)]], device const uint *positions [[buffer(4)]],
 	device const uint *page_table [[buffer(5)]], device ushort *pool [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
@@ -73,6 +74,8 @@ kernel void spark_kv_store_paged(constant SparkKvParams &p [[buffer(0)]], device
 {
 	const uint threads = group_size.x;
 	const uint row = group.x, head = group.y, position = positions[row];
+	if ( SKIP && position == SPARK_KV_SKIP )
+		return;
 	uint page;
 	if ( !SparkKvPage(page_table, p.pages_per_sequence, p.page_slots, p.pool_pages, sequence_of_row[row], position, error, row, page) )
 		return;
@@ -84,7 +87,16 @@ kernel void spark_kv_store_paged(constant SparkKvParams &p [[buffer(0)]], device
 		slot[p.kv_heads * p.head_dimension + head * values + i] = value[(ulong)row * p.value_stride + p.value_offset + head * values + i];
 }
 
-template <uint D, uint DV>
+#define SPARK_KV_STORE_INSTANCE(name, skip) \
+	template [[host_name(name)]] kernel void spark_kv_store_paged<skip>(constant SparkKvParams &p [[buffer(0)]], device const ushort *key [[buffer(1)]], \
+		device const ushort *value [[buffer(2)]], device const uint *sequence_of_row [[buffer(3)]], device const uint *positions [[buffer(4)]], \
+		device const uint *page_table [[buffer(5)]], device ushort *pool [[buffer(6)]], device atomic_uint *error [[buffer(7)]], \
+		uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+
+SPARK_KV_STORE_INSTANCE("spark_kv_store_paged", false)
+SPARK_KV_STORE_INSTANCE("spark_kv_store_paged_skip", true)
+
+template <uint D, uint DV, bool EXTRA = false>
 kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]], device const ushort *query [[buffer(1)]],
 	device const ushort *pool [[buffer(2)]], device const uint *page_table [[buffer(3)]], device const uint *sequence_of_row [[buffer(4)]],
 	device const uint *positions [[buffer(5)]], device float *partial [[buffer(6)]], device atomic_uint *error [[buffer(7)]],
@@ -143,7 +155,7 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		for ( uint d = 0u; d < VLANE; d++ )
 			out[d] += shared_out[s][lane * VLANE + d] * factor;
 	}
-	device float *record = partial + (((ulong)row * p.heads + head) * p.partitions + part) * (DV + 2u);
+	device float *record = partial + (((ulong)row * p.heads + head) * p.partitions + (EXTRA ? p.partition_base : 0u) + part) * (DV + 2u);
 	if ( lane == 0u )
 	{
 		record[0] = total_max;
@@ -153,26 +165,31 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		record[2u + lane * VLANE + d] = out[d];
 }
 
-template <uint DK, uint D>
+template <uint DK, uint D, bool EXTRA = false>
 kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)]], device const float *partial [[buffer(1)]],
 	device const ushort *gate [[buffer(2)]], device const uint *positions [[buffer(3)]], device ushort *output [[buffer(4)]],
-	device const float *sinks [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+	device const float *sinks [[buffer(5)]], device const uint *extra_positions [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
 	const uint head = group.x, row = group.y, length = positions[row] + 1u;
-	const uint used = min(p.partitions, (length + p.partition_keys - 1u) / p.partition_keys);
+	const uint primary = EXTRA ? p.partitions - p.extra_partitions : p.partitions;
+	const uint used = min(primary, (length + p.partition_keys - 1u) / p.partition_keys);
+	const uint extra_used = EXTRA ? min(p.extra_partitions, (extra_positions[row] + 1u + p.partition_keys - 1u) / p.partition_keys) : 0u;
 	device const float *records = partial + ((ulong)row * p.heads + head) * p.partitions * (D + 2u);
 	float total_max = -INFINITY;
 	for ( uint part = 0u; part < used; part++ )
 		total_max = max(total_max, records[part * (D + 2u)]);
+	for ( uint part = 0u; part < extra_used; part++ )
+		total_max = max(total_max, records[(primary + part) * (D + 2u)]);
 	const float sink = p.has_sinks != 0u ? sinks[head] : -INFINITY;
 	total_max = max(total_max, sink);
 	for ( uint d = tid; d < D; d += threads )
 	{
 		float sum = 0.0f, value = 0.0f;
-		for ( uint part = 0u; part < used; part++ )
+		for ( uint part = 0u; part < used + extra_used; part++ )
 		{
-			device const float *record = records + part * (D + 2u);
+			device const float *record = records + (part < used ? part : primary + part - used) * (D + 2u);
 			const float factor = record[0] == -INFINITY ? 0.0f : exp(record[0] - total_max);
 			sum += record[1] * factor;
 			value += record[2u + d] * factor;
@@ -301,8 +318,8 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 		uint simd [[simdgroup_index_in_threadgroup]]); \
 	template [[host_name("spark_attention_combine_d" name)]] kernel void spark_attention_combine<dk, dv>(constant SparkAttentionParams &p [[buffer(0)]], \
 		device const float *partial [[buffer(1)]], device const ushort *gate [[buffer(2)]], device const uint *positions [[buffer(3)]], \
-		device ushort *output [[buffer(4)]], device const float *sinks [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], \
-		uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]); \
+		device ushort *output [[buffer(4)]], device const float *sinks [[buffer(5)]], device const uint *extra_positions [[buffer(6)]], \
+		uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]); \
 	template [[host_name("spark_attention_prefill_blocks_d" name)]] kernel void spark_attention_prefill_blocks<dk, dv>( \
 		constant SparkAttentionParams &p [[buffer(0)]], device bfloat *query [[buffer(1)]], device bfloat *pool [[buffer(2)]], \
 		device const uint *page_table [[buffer(3)]], device const uint *sequence_of_row [[buffer(4)]], device const uint *positions [[buffer(5)]], \
@@ -314,3 +331,13 @@ SPARK_ATTENTION_INSTANCES("512", 512, 512)
 SPARK_ATTENTION_INSTANCES("128", 128, 128)
 SPARK_ATTENTION_INSTANCES("192v128", 192, 128)
 SPARK_ATTENTION_INSTANCES("576v512", 576, 512)
+
+template [[host_name("spark_attention_decode_extra_d512")]] kernel void spark_attention_decode<512, 512, true>(constant SparkAttentionParams &p [[buffer(0)]],
+	device const ushort *query [[buffer(1)]], device const ushort *pool [[buffer(2)]], device const uint *page_table [[buffer(3)]],
+	device const uint *sequence_of_row [[buffer(4)]], device const uint *positions [[buffer(5)]], device float *partial [[buffer(6)]],
+	device atomic_uint *error [[buffer(7)]], uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]]);
+template [[host_name("spark_attention_combine_extra_d512")]] kernel void spark_attention_combine<512, 512, true>(constant SparkAttentionParams &p [[buffer(0)]],
+	device const float *partial [[buffer(1)]], device const ushort *gate [[buffer(2)]], device const uint *positions [[buffer(3)]],
+	device ushort *output [[buffer(4)]], device const float *sinks [[buffer(5)]], device const uint *extra_positions [[buffer(6)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
