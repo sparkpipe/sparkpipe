@@ -487,6 +487,96 @@ struct Probe
             device+SPARK_WEIGHTD_MESH_DOORBELL_ENTRY(rank,rank),device+SPARK_WEIGHTD_MESH_WAIT_ENTRY(rank,rank),ranks[rank].control,rank,degree,input,output,
             ranks[rank].scratch,count,operation,1u,1u,launch_routes,staging_device+rank*SPARK_WEIGHTD_MESH_STAGING_BAND_BYTES,timeout,SPARK_TP_MESH_STAGE_ALL));
     }
+    double PairAllReduceRun(uint32_t n,uint64_t count,bool pair,const std::vector<std::vector<uint16_t>> &values,const std::vector<uint16_t> &want,
+        const std::vector<void *> &input,const std::vector<void *> &output,const std::vector<void *> &share)
+    {
+        const uint32_t base=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER;
+        Setup(n,pair ? SPARK_TP_MESH_OPERATION_REDUCE_SCATTER : 1u,1u,count,pair ? 2u : 1u);
+        for (uint32_t rank=0u;rank<n;rank++)
+        {
+            CUDA(cudaMemcpyAsync(input[rank],values[rank].data(),count*sizeof(uint16_t),cudaMemcpyHostToDevice,ranks[rank].stream));
+            CUDA(cudaMemsetAsync(output[rank],0xcd,count*sizeof(uint16_t),ranks[rank].stream));
+            CUDA(cudaStreamSynchronize(ranks[rank].stream));
+        }
+        std::vector<std::thread> enqueue;
+        StartWorker();
+        uint64_t begin=Now();
+        for (uint32_t rank=0u;rank<n;rank++)
+            enqueue.emplace_back([&,rank] {
+                if (pair)
+                {
+                    LaunchRank(rank,input[rank],share[rank],SPARK_TP_MESH_OPERATION_REDUCE_SCATTER,base|SPARK_TP_MESH_ROUTES_PAIR_FIRST,count);
+                    LaunchRank(rank,share[rank],output[rank],SPARK_TP_MESH_OPERATION_ALL_GATHER,base|SPARK_TP_MESH_ROUTES_PAIR_FIRST,count);
+                }
+                else
+                    LaunchRank(rank,input[rank],output[rank],1u,base,count);
+                CUDA(cudaEventRecord(ranks[rank].done,ranks[rank].stream));
+            });
+        for (std::thread &thread:enqueue) thread.join();
+        double elapsed=Wait(begin);
+        EndWorker();
+        for (uint32_t rank=0u;rank<n;rank++)
+        {
+            SparkTpMeshRoundControl control={};std::vector<uint16_t> got(count);
+            CUDA(cudaMemcpy(&control,ranks[rank].control,sizeof(control),cudaMemcpyDeviceToHost));
+            CUDA(cudaMemcpy(got.data(),output[rank],count*sizeof(uint16_t),cudaMemcpyDeviceToHost));
+            if (control.error_word!=0u || control.rounds_done!=(pair ? 2u : 1u))
+                std::fprintf(stderr,"PAIR-ALLREDUCE-FAIL degree=%u elements=%llu pair=%u rank=%u error=%llx diag=%llx rounds_done=%llu seq=%llu\n",n,(unsigned long long)count,pair ? 1u : 0u,
+                    rank,(unsigned long long)control.error_word,(unsigned long long)control.diag_word,(unsigned long long)control.rounds_done,(unsigned long long)control.seq);
+            REQUIRE(control.error_word==0u && control.rounds_done==(pair ? 2u : 1u));
+            if (got!=want)
+            {
+                uint64_t index=0u;while (got[index]==want[index]) index++;
+                std::fprintf(stderr,"MISMATCH pair-allreduce degree=%u elements=%llu pair=%u rank=%u element=%llu actual=%04x expected=%04x\n",n,(unsigned long long)count,pair ? 1u : 0u,rank,
+                    (unsigned long long)index,got[index],want[index]);
+                REQUIRE(false);
+            }
+        }
+        return elapsed;
+    }
+    void PairAllReduce()
+    {
+        const uint32_t width=6144u,saved=routes;
+        routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR_FIRST;
+        for (uint32_t n:{4u,8u,16u})
+            for (uint32_t rows_count:{2048u,4096u})
+            {
+                const uint64_t count=static_cast<uint64_t>(rows_count)*width;
+                std::vector<std::vector<uint16_t>> values(n,std::vector<uint16_t>(count));
+                std::vector<uint16_t> pair_want(count),plain_want(count);
+                std::vector<void *> input(n,nullptr),output(n,nullptr),share(n,nullptr);
+                double plain_ms=0.0,pair_ms=0.0;
+                uint64_t differ=0u;
+                REQUIRE(SparkTpMeshAllReducePairFirst(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u);
+                for (uint32_t rank=0u;rank<n;rank++)
+                {
+                    for (uint64_t i=0u;i<count;i++)
+                    {
+                        float value=rank==0u ? 1.0f+static_cast<float>(i%5u)/8.0f : static_cast<float>(1u+(rank+i)%7u)/256.0f;
+                        values[rank][i]=Bf16((i+rank)%3u==0u ? -value : value);
+                    }
+                    CUDA(cudaMalloc(&input[rank],count*sizeof(uint16_t)));CUDA(cudaMalloc(&output[rank],count*sizeof(uint16_t)));
+                    CUDA(cudaMalloc(&share[rank],count/n*sizeof(uint16_t)));
+                }
+                for (uint64_t i=0u;i<count;i++)
+                {
+                    float pair_sum=0.0f,plain_sum=0.0f;
+                    for (uint32_t rank=0u;rank<n;rank+=2u) pair_sum+=Float(Bf16(Float(values[rank][i])+Float(values[rank+1u][i])));
+                    for (uint32_t rank=0u;rank<n;rank++) plain_sum+=Float(values[rank][i]);
+                    pair_want[i]=Bf16(pair_sum);plain_want[i]=Bf16(plain_sum);differ+=pair_want[i]!=plain_want[i] ? 1u : 0u;
+                }
+                for (uint32_t rep=0u;rep<3u;rep++)
+                {
+                    plain_ms+=PairAllReduceRun(n,count,false,values,plain_want,input,output,share)/3.0;
+                    pair_ms+=PairAllReduceRun(n,count,true,values,pair_want,input,output,share)/3.0;
+                }
+                for (uint32_t rank=0u;rank<n;rank++) { CUDA(cudaFree(input[rank]));CUDA(cudaFree(output[rank]));CUDA(cudaFree(share[rank])); }
+                completed_cases++;
+                std::printf("PAIR-ALLREDUCE degree=%u rows=%u row_elements=%u elements=%llu rounding_differs=%llu plain_ms=%.3f pair_ms=%.3f transport=cpu-copy PASS\n",n,rows_count,width,
+                    (unsigned long long)count,(unsigned long long)differ,plain_ms,pair_ms);
+            }
+        routes=saved;
+    }
     void PairFirstBoundary()
     {
         const uint64_t half=SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES/2u,small=513u,local=3u*half;
@@ -665,9 +755,9 @@ int main(int argc,char **argv)
 {
     if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0 && std::strcmp(argv[1],"--reduce-scatter")!=0 &&
         std::strcmp(argv[1],"--pipelined")!=0 && std::strcmp(argv[1],"--pair-first")!=0 && std::strcmp(argv[1],"--pair-first-gather")!=0 &&
-        std::strcmp(argv[1],"--pair-first-boundary")!=0))
+        std::strcmp(argv[1],"--pair-allreduce")!=0 && std::strcmp(argv[1],"--pair-first-boundary")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-first-boundary\n",argv[0]);
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-allreduce | --pair-first-boundary\n",argv[0]);
         return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
@@ -705,6 +795,12 @@ int main(int argc,char **argv)
     {
         probe.PairFirstBoundary();
         std::printf("PASS tp_mesh_hardware_probe pair-first-boundary cases=%u\n",probe.completed_cases);
+        return 0;
+    }
+    if (std::strcmp(argv[1],"--pair-allreduce")==0)
+    {
+        probe.PairAllReduce();
+        std::printf("PASS tp_mesh_hardware_probe pair-allreduce cases=%u\n",probe.completed_cases);
         return 0;
     }
     if (std::strcmp(argv[1],"--pair-first-gather")==0)

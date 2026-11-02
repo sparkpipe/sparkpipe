@@ -49,6 +49,8 @@ extern uint32_t cuda_stub_mesh_hardware_logical_rows;
 extern uint32_t cuda_stub_mesh_hardware_slice_routes;
 extern void *cuda_stub_mesh_hardware_staging;
 extern uint32_t cuda_stub_stream_sync_calls;
+extern cudaError_t (*cuda_stub_mesh_hardware_hook)(uint32_t rank,uint32_t degree,const void *local,void *output,uint64_t elements,
+    uint32_t operation,uint32_t slice_routes);
 
 static uint64_t mock_client_alive = 1u;
 static uint32_t mock_server;
@@ -707,13 +709,274 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_UNSUPPORTED &&
         SparkTpDeviceCollectiveRoundIndex(&collective) == 0u,
         "a pair-first reduce-scatter without hardware waits takes the reduce-scatter path and its refusal");
-    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
         "an unknown collective operation is refused");
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&collective,&submission,3u) == SPARK_STATUS_UNSUPPORTED,
         "legacy B1 round loop retains its missing callback rejection");
     CHECK(cuda_stub_mesh_publish_calls == old_publish,
         "missing legacy callbacks never publish data");
     SparkTpDeviceCollectiveDestroy(&collective);
+}
+
+typedef struct PairMesh
+{
+    uint32_t degree,rank,calls,scatter_routes;
+    uint32_t operation[4],routes[4];
+    uint64_t elements[4];
+    const void *local[4];
+    void *output[4];
+    const uint16_t *inputs;
+    uint64_t total;
+} PairMesh;
+
+static PairMesh pair_mesh;
+
+static float PairFloat(uint16_t bits)
+{
+    uint32_t word = (uint32_t)bits << 16u;
+    float value;
+    memcpy(&value,&word,sizeof(value));
+    return(value);
+}
+
+static uint16_t PairBf16(float value)
+{
+    uint32_t bits;
+    memcpy(&bits,&value,sizeof(bits));
+    bits += 0x7fffu + ((bits >> 16u) & 1u);
+    return((uint16_t)(bits >> 16u));
+}
+
+static const uint16_t *PairInput(uint32_t rank,const uint16_t *local)
+{
+    return local != 0 && rank == pair_mesh.rank ? local : pair_mesh.inputs + (uint64_t)rank * pair_mesh.total;
+}
+
+static uint16_t PairScatterElement(uint32_t owner,uint64_t index,const uint16_t *local,uint32_t routes)
+{
+    const uint64_t element = (uint64_t)owner * (pair_mesh.total / pair_mesh.degree) + index;
+    float sum = 0.0f;
+    uint32_t peer;
+    if ( (routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u )
+        for ( peer = owner & 1u; peer < pair_mesh.degree; peer += 2u )
+            sum += PairFloat(PairBf16(PairFloat(PairInput(peer,local)[element]) + PairFloat(PairInput(peer ^ 1u,local)[element])));
+    else
+        for ( peer = 0u; peer < pair_mesh.degree; peer++ )
+            sum += PairFloat(PairInput(peer,local)[element]);
+    return(PairBf16(sum));
+}
+
+static cudaError_t PairMeshLaunch(uint32_t rank,uint32_t degree,const void *local,void *output,uint64_t elements,uint32_t operation,uint32_t slice_routes)
+{
+    const uint64_t segment = pair_mesh.total / pair_mesh.degree;
+    uint64_t i;
+    uint32_t peer;
+    if ( pair_mesh.calls < 4u )
+    {
+        pair_mesh.operation[pair_mesh.calls] = operation;
+        pair_mesh.routes[pair_mesh.calls] = slice_routes;
+        pair_mesh.elements[pair_mesh.calls] = elements;
+        pair_mesh.local[pair_mesh.calls] = local;
+        pair_mesh.output[pair_mesh.calls] = output;
+    }
+    pair_mesh.calls++;
+    if ( rank != pair_mesh.rank || degree != pair_mesh.degree || elements != pair_mesh.total )
+        return cudaErrorInvalidValue;
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 )
+    {
+        pair_mesh.scatter_routes = slice_routes;
+        for ( i = 0u; i < segment; i++ )
+            ((uint16_t *)output)[i] = PairScatterElement(rank,i,(const uint16_t *)local,slice_routes);
+        return cudaSuccess;
+    }
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && pair_mesh.calls > 1u )
+    {
+        for ( peer = 0u; peer < degree; peer++ )
+            for ( i = 0u; i < segment; i++ )
+                ((uint16_t *)output)[(uint64_t)peer * segment + i] = peer == rank ? ((const uint16_t *)local)[i] :
+                    PairScatterElement(peer,i,0,pair_mesh.scatter_routes);
+        return cudaSuccess;
+    }
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 )
+    {
+        for ( i = 0u; i < elements; i++ )
+        {
+            float sum = 0.0f;
+            for ( peer = 0u; peer < degree; peer++ )
+                sum += PairFloat(PairInput(peer,(const uint16_t *)local)[i]);
+            ((uint16_t *)output)[i] = PairBf16(sum);
+        }
+        return cudaSuccess;
+    }
+    return cudaErrorInvalidValue;
+}
+
+static void PairSubmission(SparkTpDeviceCollectiveSubmission *submission,uint32_t rows,uint32_t row_elements,void *local,void *full)
+{
+    memset(submission,0,sizeof(*submission));
+    submission->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    submission->descriptor_bytes = sizeof(*submission);
+    submission->active_sequence_count = rows;
+    submission->logical_sequence_count = 1u;
+    submission->row_elements = row_elements;
+    submission->flags = SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION;
+    submission->local_device = local;
+    submission->full_device = full;
+    submission->cuda_stream = (void *)1;
+}
+
+static uint32_t PairCollective(SparkTpDeviceCollectiveConfig config,void *mesh,uint32_t degree,uint32_t rank,uint32_t rows,uint32_t width,
+    uint32_t wait_mode,SparkTpDeviceCollective *collective)
+{
+    volatile uint64_t *base = (volatile uint64_t *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
+        SPARK_WEIGHTD_MESH_DOORBELL_CELL_BASE * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
+    SparkWeightdMeshWaitRequest *request = (SparkWeightdMeshWaitRequest *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,rank));
+    uint64_t packed = 0u;
+    uint32_t ready;
+    for ( uint32_t i = 0u; i < degree; i++ )
+        packed |= (uint64_t)i << (4u * i);
+    config.tp_degree = degree;
+    config.tp_rank = rank;
+    config.local_hidden_dimension = width;
+    config.max_active_sequence_count = rows;
+    config.wait_mode = wait_mode;
+    config.combine_bf16_function = 0;
+    config.combine_u64_max_function = 0;
+    config.combine_gather_bf16_function = 0;
+    config.combine_fused_bf16_function = 0;
+    memset(request,0,sizeof(*request));
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    base[0] = 1024u;
+    base[1] = packed;
+    base[2] = degree;
+    memset(collective,0,sizeof(*collective));
+    ready = SparkTpDeviceCollectiveCreate(&config,collective) == SPARK_STATUS_OK &&
+        SparkTpDeviceCollectivePrepareReceiveBf16(collective,mesh,rows,width,0u,0) == SPARK_STATUS_OK ? 1u : 0u;
+    base[0] = 2048u;
+    if ( ready != 0u && rank == 0u )
+        ready = SparkTpDeviceCollectiveChainKey(collective,900u + degree) == SPARK_STATUS_OK ? 1u : 0u;
+    return(ready);
+}
+
+static void PairRefusal(SparkTpDeviceCollective *collective,uint32_t rows,uint32_t row_elements,uint16_t *buffer,const char *name)
+{
+    SparkTpDeviceCollectiveSubmission submission;
+    uint64_t round = SparkTpDeviceCollectiveRoundIndex(collective);
+    uint32_t calls = pair_mesh.calls;
+    PairSubmission(&submission,rows,row_elements,buffer,buffer);
+    CHECK(SparkTpDeviceCollectiveSupportsPairAllReduce(collective,rows,row_elements) == 0u &&
+        SparkTpDeviceCollectiveEnqueue(collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT &&
+        pair_mesh.calls == calls && SparkTpDeviceCollectiveRoundIndex(collective) == round,name);
+}
+
+static void TestPairAllReduce(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    static const uint32_t degrees[3] = {4u,8u,16u};
+    const uint32_t width = 2048u;
+    for ( uint32_t which = 0u; which < 3u; which++ )
+    {
+        const uint32_t degree = degrees[which],rows = 65u * degree;
+        const uint64_t total = (uint64_t)rows * width;
+        uint16_t *inputs = malloc((size_t)(degree * total * sizeof(uint16_t)));
+        uint16_t *pair = malloc((size_t)(total * sizeof(uint16_t))),*plain = malloc((size_t)(total * sizeof(uint16_t)));
+        uint16_t *buffer = malloc((size_t)(total * sizeof(uint16_t))),*output = malloc((size_t)(total * sizeof(uint16_t)));
+        uint64_t i,differ = 0u;
+        uint32_t rank,peer,pass;
+        CHECK(inputs != 0 && pair != 0 && plain != 0 && buffer != 0 && output != 0,"pair all-reduce buffers");
+        for ( rank = 0u; rank < degree; rank++ )
+            for ( i = 0u; i < total; i++ )
+            {
+                float value = rank == 0u ? 1.0f + (float)((i * 7u) % 13u) / 16.0f : (float)((rank * 5u + i * 3u) % 11u + 1u) / 512.0f;
+                inputs[(uint64_t)rank * total + i] = PairBf16((i + rank) % 3u == 0u ? -value : value);
+            }
+        for ( i = 0u; i < total; i++ )
+        {
+            float pair_sum = 0.0f,plain_sum = 0.0f;
+            for ( peer = 0u; peer < degree; peer += 2u )
+                pair_sum += PairFloat(PairBf16(PairFloat(inputs[(uint64_t)peer * total + i]) + PairFloat(inputs[(uint64_t)(peer + 1u) * total + i])));
+            for ( peer = 0u; peer < degree; peer++ )
+                plain_sum += PairFloat(inputs[(uint64_t)peer * total + i]);
+            pair[i] = PairBf16(pair_sum);
+            plain[i] = PairBf16(plain_sum);
+            differ += pair[i] != plain[i] ? 1u : 0u;
+        }
+        CHECK(differ != 0u,"the pair-first reference rounds each pair sum, so it differs from the plain sum on these inputs");
+        cuda_stub_mesh_hardware_alias = 0;
+        cuda_stub_mesh_hardware_prepare_result = 0;
+        cuda_stub_mesh_hardware_launch_result = 0;
+        cuda_stub_mesh_hardware_hook = PairMeshLaunch;
+        for ( pass = 0u; pass < 2u; pass++ )
+        {
+            SparkTpDeviceCollective collective;
+            SparkTpDeviceCollectiveSubmission submission;
+            rank = pass == 0u ? 0u : degree - 1u;
+            memset(&pair_mesh,0,sizeof(pair_mesh));
+            pair_mesh.degree = degree;
+            pair_mesh.rank = rank;
+            pair_mesh.inputs = inputs;
+            pair_mesh.total = total;
+            CHECK(PairCollective(config,mesh,degree,rank,rows,width,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE,&collective) != 0u,
+                "a hardware collective with peer routes over an even degree attaches");
+            CHECK(SparkTpDeviceCollectiveSupportsPairAllReduce(&collective,rows,0u) == 1u &&
+                SparkTpDeviceCollectiveSupportsPairAllReduce(&collective,rows,width) == 1u,
+                "the collective reports the pair-first all-reduce for a size both pair-first phases take");
+            memcpy(buffer,inputs + (uint64_t)rank * total,(size_t)(total * sizeof(uint16_t)));
+            PairSubmission(&submission,rows,0u,buffer,buffer);
+            CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK &&
+                pair_mesh.calls == 2u,"an in-place pair-first all-reduce runs as two hardware launches");
+            CHECK(pair_mesh.operation[0] == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
+                (pair_mesh.routes[0] & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u && pair_mesh.local[0] == buffer && pair_mesh.output[0] != buffer &&
+                pair_mesh.operation[1] == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && (pair_mesh.routes[1] & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u &&
+                pair_mesh.local[1] == pair_mesh.output[0] && pair_mesh.output[1] == buffer && pair_mesh.elements[0] == total && pair_mesh.elements[1] == total,
+                "the pair-first reduce-scatter lands this rank's share in the collective's own buffer and the pair-first all-gather spreads it into the output");
+            CHECK(memcmp(buffer,pair,(size_t)(total * sizeof(uint16_t))) == 0,
+                "the pair-first all-reduce equals the pair sums rounded to bf16, summed in fp32 and rounded once, element for element");
+            pair_mesh.calls = 0u;
+            memcpy(buffer,inputs + (uint64_t)rank * total,(size_t)(total * sizeof(uint16_t)));
+            memset(output,0xcd,(size_t)(total * sizeof(uint16_t)));
+            PairSubmission(&submission,rows,width,buffer,output);
+            CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK &&
+                memcmp(output,pair,(size_t)(total * sizeof(uint16_t))) == 0 &&
+                memcmp(buffer,inputs + (uint64_t)rank * total,(size_t)(total * sizeof(uint16_t))) == 0,
+                "an out-of-place pair-first all-reduce fills the output and leaves the input untouched");
+            pair_mesh.calls = 0u;
+            memcpy(buffer,inputs + (uint64_t)rank * total,(size_t)(total * sizeof(uint16_t)));
+            PairSubmission(&submission,rows,0u,buffer,buffer);
+            CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK &&
+                pair_mesh.calls == 1u && pair_mesh.operation[0] == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 &&
+                (pair_mesh.routes[0] & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u && memcmp(buffer,plain,(size_t)(total * sizeof(uint16_t))) == 0,
+                "the plain all-reduce of the same size keeps its one-launch fixed-order sum");
+            if ( rank == 0u )
+            {
+                PairRefusal(&collective,rows - degree,0u,buffer,"a size one row step below the pair-first threshold is refused before any round");
+                PairRefusal(&collective,rows,width - 2u,buffer,"a size that does not split into whole 8-byte rank segments is refused before any round");
+                PairSubmission(&submission,rows,0u,buffer,buffer);
+                CHECK(SparkTpDeviceCollectiveBegin(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_INVALID_ARGUMENT,
+                    "a pair-first all-reduce cannot be split into begin and finish");
+            }
+            SparkTpDeviceCollectiveDestroy(&collective);
+        }
+        free(inputs);free(pair);free(plain);free(buffer);free(output);
+    }
+    {
+        static const uint32_t unpaired[3][2] = {{2u,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE},{5u,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE},
+            {16u,SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN}};
+        static const char *const names[3] = {"two ranks have no parity groups: the pair-first all-reduce is refused",
+            "an odd degree has an unpaired rank: the pair-first all-reduce is refused",
+            "a spinning collective has no pair-first routes: the pair-first all-reduce is refused"};
+        for ( uint32_t which = 0u; which < 3u; which++ )
+        {
+            const uint32_t degree = unpaired[which][0],rows = 65u * (degree < 4u ? 4u : degree);
+            uint16_t *buffer = calloc((size_t)rows * 2048u,sizeof(uint16_t));
+            SparkTpDeviceCollective collective;
+            memset(&pair_mesh,0,sizeof(pair_mesh));
+            CHECK(buffer != 0 && PairCollective(config,mesh,degree,0u,rows,2048u,unpaired[which][1],&collective) != 0u,"unpaired collective attaches");
+            PairRefusal(&collective,rows,0u,buffer,names[which]);
+            SparkTpDeviceCollectiveDestroy(&collective);
+            free(buffer);
+        }
+    }
+    cuda_stub_mesh_hardware_hook = 0;
 }
 
 static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
@@ -1163,6 +1426,7 @@ int main(void)
 	SparkTpDeviceCollectiveDestroy(&collective);
 	TestHardwareDispatch(config,mesh_buffer);
 	TestPeerRoutes(config,mesh_buffer);
+	TestPairAllReduce(config,mesh_buffer);
 	TestSpinSingleSequenceWave(config,mesh_buffer);
 	TestDeferredRounds(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);

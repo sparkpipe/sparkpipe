@@ -236,6 +236,12 @@ static inline uint32_t SparkTpMeshGatherPairFirst(uint64_t elements,uint32_t deg
         SparkTpMeshPipelineChunks(elements / degree,half_payload_bytes) >= 3u ? 1u : 0u;
 }
 
+static inline uint32_t SparkTpMeshAllReducePairFirst(uint64_t elements,uint32_t degree,uint64_t slot_bytes,uint64_t half_payload_bytes)
+{
+    return degree != 0u && elements % (4u * (uint64_t)degree) == 0u && SparkTpMeshScatterPairFirst(elements,degree,half_payload_bytes) != 0u &&
+        SparkTpMeshGatherPairFirst(elements,degree,slot_bytes,half_payload_bytes) != 0u ? 1u : 0u;
+}
+
 #if defined(__CUDACC__)
 __host__ __device__
 #endif
