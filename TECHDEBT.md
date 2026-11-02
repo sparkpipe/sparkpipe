@@ -1070,11 +1070,19 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
   digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
   Qwen3.8-27b nvfp4, Ling, the last with possessive quantifiers), laguna's
-  leading newline-run split and muse-glimmer's cased letters. Any other
-  pre-tokenizer fails the load with an error naming the file. gemma4's
+  leading newline-run split, muse-glimmer's cased letters and Motif's
+  multi-word cased letters. Any other pre-tokenizer fails the load with an
+  error naming the file. gemma4's
   `Replace` plus `Split " "` loads: the split is a no-op once the normalizer
   has replaced every space, but this has not been checked against gemma4's own
   file.
+- Added tokens implement `lstrip` (Motif's whitespace-run tokens absorb the
+  whitespace before them, as Hugging Face does). An added token with `rstrip`
+  or `single_word` fails the load; no served model declares either. A
+  metaspace model whose character has no vocabulary entry and no complete
+  byte fallback fails the encode, where Hugging Face emits one `unk` per
+  character or drops it; Gemma 4, the only metaspace model, has every byte
+  token, so no served model reaches it.
 - The tokenizer implements the `NFC` normalizer (Ling, Qwen3.8, MiMo) and
   the metaspace `Replace`. Any other normalizer (`Sequence`, `NFKC`,
   `Lowercase`, another `Replace`) fails the load with an error. Implement

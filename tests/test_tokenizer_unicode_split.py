@@ -59,6 +59,19 @@ def main():
                 compared += 1
                 if expected != got:
                     failures.append(f"{name}: {text!r}: HF piece ends {expected}, ours {got}")
+        strip_path = Path(directory) / "added_strip.json"
+        strip_path.write_text(json.dumps(fixture["added_strip"]["tokenizer"]))
+        for text, expected, got in zip(texts, fixture["added_strip"]["ids"], run_records(strip_path, texts, "--encode")):
+            if expected != got:
+                failures.append(f"added_strip ids: {text!r}: HF {expected}, ours {got}")
+        for flag in ("rstrip", "single_word"):
+            refused = json.loads(json.dumps(fixture["added_strip"]["tokenizer"]))
+            refused["added_tokens"][0][flag] = True
+            refused_path = Path(directory) / f"refused_{flag}.json"
+            refused_path.write_text(json.dumps(refused))
+            loaded = subprocess.run([str(TOOL), str(refused_path)], input=b"a", capture_output=True)
+            if loaded.returncode == 0 or b"rstrip or single_word" not in loaded.stderr:
+                failures.append(f"an added token with {flag} loaded without a refusal: rc={loaded.returncode} {loaded.stderr[-200:]!r}")
         broken = Path(directory) / "letters.json"
         payload = subprocess.run([str(TOOL), str(broken)], input=b"ok \xff", capture_output=True)
         if not payload.stdout.decode().startswith("error"):
@@ -73,7 +86,7 @@ def main():
         print(f"{len(failures)} failures")
         return 1
     print(f"PASS pre-tokenizer splits match HF tokenizers {fixture['tokenizers_version']}: {len(fixture['patterns'])} patterns x {len(texts)} texts ({compared} splits), "
-          f"{len(fixture['oniguruma_class_ranges'])} Oniguruma class ranges, {len(fixture['oniguruma_case_ranges'])} letter case ranges, {len(texts)} glm-5.3-flash encodings")
+          f"{len(fixture['oniguruma_class_ranges'])} Oniguruma class ranges, {len(fixture['oniguruma_case_ranges'])} letter case ranges, {len(texts)} glm-5.3-flash encodings, {len(texts)} lstrip added-token encodings")
     return 0
 
 
