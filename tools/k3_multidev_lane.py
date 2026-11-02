@@ -158,9 +158,7 @@ def kv_backing_minimum(topology: str, physical_pages: int, logical_pages: int) -
 
 def state_memory_minimum(topology: str, sequences: int) -> int:
     return (2 * sequences + 2) * recurrent_page_bytes(topology)
-DEFAULT_KV_SNAPSHOT_BYTES = 8 * 1024 * 1024 * 1024
 K3_OUTPUT_VOCABULARY = 163840
-KV_PARTITION_RESERVE_BYTES = 512 * 1024 * 1024 * 1024
 KV_PAGES_PER_SEQUENCE = 64   # adapter_config default; x SPARK_K3_KV_PAGE_SLOTS (64) tokens
 MAX_ROWS = 2048
 
@@ -282,7 +280,6 @@ def chat_template() -> dict:
 
 def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
-                        kv_snapshot_bytes: int = DEFAULT_KV_SNAPSHOT_BYTES,
                         sequences: int = 16,
                         kv_pages: int = KV_PAGES_PER_SEQUENCE,
                         pipeline_transport: str = "host-rdma",
@@ -304,8 +301,6 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "kv_partition": "/",
             "kv_backing_maximum_bytes": kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "kv_snapshot_maximum_bytes": kv_snapshot_bytes,
-            "kv_partition_reserve_bytes": KV_PARTITION_RESERVE_BYTES,
             "control_endpoint": {
                 "kind": "tcp",
                 "host": host,
@@ -387,17 +382,6 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True,
                         help="directory receiving deployment.json and "
                              "adapter.json (created when missing)")
-    parser.add_argument("--kv-backing-bytes", type=int,
-                        default=None,
-                        help="finite KV backing cap for the private root; it "
-                             "must hold the spilled KV pages and two KDA "
-                             "checkpoints per sequence plus two "
-                             "(default: exactly that plus the in-flight margin)")
-    parser.add_argument("--kv-snapshot-bytes", type=int,
-                        default=DEFAULT_KV_SNAPSHOT_BYTES,
-                        help="finite KV snapshot store cap under the root; "
-                             "the KV binding refuses a deployment without "
-                             "one (default %(default)d)")
     parser.add_argument("--rank", type=int, choices=range(WORLD), default=None,
                         help="emit only this rank's adapter.json "
                              "(default: all sixteen)")
@@ -463,13 +447,7 @@ def main() -> int:
     if arguments.rows is not None and not arguments.sequences <= arguments.rows <= MAX_ROWS:
         raise SystemExit(f"rows must be within sequences..{MAX_ROWS}: a decode wave carries one row per sequence "
                          f"and the K3 adapter takes at most {MAX_ROWS} rows")
-    minimum = kv_backing_minimum(arguments.topology, arguments.kv_physical_pages, arguments.kv_logical_pages)
-    if arguments.kv_backing_bytes is None:
-        arguments.kv_backing_bytes = minimum
-    if arguments.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {arguments.kv_backing_bytes} cannot hold "
-                         f"{arguments.kv_logical_pages - arguments.kv_physical_pages + 2} spilled "
-                         f"{kv_page_bytes(arguments.topology)}-byte KV pages; it needs {minimum}")
+    arguments.kv_backing_bytes = kv_backing_minimum(arguments.topology, arguments.kv_physical_pages, arguments.kv_logical_pages)
     states = state_memory_minimum(arguments.topology, arguments.sequences)
     if arguments.state_memory_bytes is None:
         arguments.state_memory_bytes = 2 * states
@@ -477,8 +455,6 @@ def main() -> int:
         raise SystemExit(f"state-memory-bytes {arguments.state_memory_bytes} cannot hold "
                          f"{2 * arguments.sequences + 2} {recurrent_page_bytes(arguments.topology)}-byte "
                          f"KDA checkpoints; it needs {states}")
-    if arguments.kv_snapshot_bytes <= 0:
-        raise SystemExit("kv-snapshot-bytes must be positive and finite")
     if not 1 <= arguments.sequences <= 16:
         raise SystemExit("sequences must be within 1..16")
     if arguments.state_budget_bytes <= 0:
@@ -492,7 +468,7 @@ def main() -> int:
 
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
-        arguments.kv_backing_bytes, arguments.kv_snapshot_bytes, arguments.sequences, arguments.kv_pages,
+        arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
         arguments.pipeline_transport, arguments.tokenizer_sha256,
         arguments.rows, arguments.kv_physical_pages, arguments.kv_logical_pages))
     wrote = write_or_check(output / "deployment.json", deployment,

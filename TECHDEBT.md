@@ -425,15 +425,24 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - Enforce the internal NVMe tiers as validated directories with byte budgets
   on the existing root filesystem (owner 2026-10-03: no repartitioning). KV
   has its tier: each deployment node names its `kv_partition`, residentd
-  refuses KV directories off it, and `kv_backing_maximum_bytes` and
-  `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
-  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
-  evicts its oldest files before a write that would take the partition below
-  it. The active model shard tier (1 TB) has no named directory, byte budget or
-  startup check, so a shard copy can still take the partition below the
-  reserve; the KV stores give the space back only on their next write, and an
-  idle model's store keeps its files until the 24-hour expiry.
+  refuses KV directories off it, and the node's own KV on disk shares one
+  500 GB quota in the node ledger
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). The ledger counts only
+  KV, not free space: the active model shard tier (1 TB), user scratch and the
+  pair mirror have no ledger of their own, so a partition that holds less
+  free space than the quota fails KV writes with `ENOSPC` (refused, never
+  partial). Close it with a startup check per tier that the partition can
+  hold every tier's quota at once.
+- The node KV quota is in code and host tests only
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). Close it on the fleet:
+  two lanes on one node fill the 500 GB, the ledger's `used_bytes` stays at or
+  under the quota, the lane holding the oldest files frees them for the other
+  (`freed ... of the ... bytes the node KV quota asked`), a stopped lane's
+  oldest files are deleted for a running one (`was closed and held the node's
+  oldest KV`), and no lane logs `refused a ... file for the node KV quota`
+  while snapshot files remain. Eviction is oldest first to the minute for a
+  stopped lane (its files are cut by one-minute age buckets) and exact for a
+  running one.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -605,14 +614,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
   to its parent and its orphans through one hash chain instead of a scan of
   the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
-  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  the shards on eight threads; and shares the node KV quota. A lenovo7
   bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
-  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
-  per rank for the four core models and 64 GiB for the others. Not yet proven
+  431 MB index and 4.53 million in 7.6 s with 952 MB. Every lane now shares
+  the node's 500 GB quota instead of a budget of its own. Not yet proven
   on the fleet: a K3 store past 8 GiB that restores an older 500K
   conversation with `cached_tokens` covering it and tokens equal to an
   uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
-  in under 15 s; a store at its budget that keeps the newest conversations
+  in under 15 s; a node at its quota that keeps the newest conversations
   whole while older ones go tip-first; and the first open that removes the
   previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store

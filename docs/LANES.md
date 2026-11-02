@@ -18,7 +18,6 @@ whether the fleet still matches.
 | `context_reason` | required while `context_tokens` is below the contract maximum: what holds it there |
 | `kv_physical_pages` | pages the scheduler may reserve; weightd must be able to back them |
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
-| `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
 | `expert_pool_bytes`, `memory_max` | the residentd unit's expert pool and MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes them (and the socket and state budget) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry them |
@@ -40,8 +39,12 @@ weightd runs with.
   physical pages: the scheduler is never promised pages weightd cannot back.
   A model whose native maximum does not fit stays lower with its reason;
 - the record renders: physical pages hold one sequence, logical pages hold
-  every resident sequence at full length, the backing holds the parked
-  pages, recurrent checkpoint memory holds two per sequence plus two;
+  every resident sequence at full length, the backing is exactly the parked
+  pages plus two in flight (`kv_backing_maximum_bytes`, derived, never a record
+  field), recurrent checkpoint memory holds two per sequence plus two;
+- no record names `kv_backing_bytes` or `kv_snapshot_bytes`, and the document
+  names no `kv_partition_reserve_bytes`: every lane's KV on disk shares the
+  node's 500 GB quota ([`docs/INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh));
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
   `deployment/hub/chat_frontend.json` is the record's;

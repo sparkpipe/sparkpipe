@@ -74,8 +74,6 @@ render() {
     ${K3_KV_LOGICAL_PAGES:+--kv-logical-pages "$K3_KV_LOGICAL_PAGES"} \
     --topology "$K3_TOPOLOGY" \
     --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
-    ${K3_KV_BACKING_BYTES:+--kv-backing-bytes "$K3_KV_BACKING_BYTES"} \
-    --kv-snapshot-bytes "${K3_KV_SNAPSHOT_BYTES:-8589934592}" \
     --runtime-root "/home/{host}/k3-lanes/lane$K3_LANE/root" \
     --state-budget-bytes "$K3_STATE_BUDGET_BYTES" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"

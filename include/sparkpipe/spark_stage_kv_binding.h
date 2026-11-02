@@ -200,8 +200,7 @@ typedef struct SparkStageKvConfiguration
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
-	uint64_t snapshot_maximum_bytes;
-	uint64_t partition_reserve_bytes;
+	const char *ledger_path;
 	uint8_t pack_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint8_t contract_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint32_t expert_codec;
@@ -292,6 +291,8 @@ struct SparkStageKvBinding
 	char driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
+	SparkKvLedger ledger;
+	uint32_t backing_slot;
 	SparkWeightdKvPoolMapping kv_pool;
 	SparkWeightdKvSharedMapping kv_shared;
 	SparkKvSharedIndex shared_index;

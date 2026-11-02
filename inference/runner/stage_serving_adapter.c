@@ -840,9 +840,9 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.pipeline_slot_count = 1u;
 	kv.backing_directory = configuration->kv_backing_directory;
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+
 	kv.snapshot_directory = configuration->kv_snapshot_directory;
-	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
-	kv.partition_reserve_bytes = configuration->kv_partition_reserve_bytes;
+	kv.ledger_path = configuration->kv_ledger_path;
 	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
