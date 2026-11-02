@@ -2166,22 +2166,23 @@ static cudaError_t SparkTpMeshHardwarePipelineScatterRound(cudaStream_t stream,u
         status = SparkTpMeshHardwareArrivalView(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,
             SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u));
         if ( status != cudaSuccess ) return status;
-        if ( chunk == 0u )
+        if ( SparkTpMeshPipelineEarly(chunk,chunks) != SPARK_TP_MESH_PIPELINE_NONE )
         {
-            status = SparkTpMeshHardwareScatterHalfPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,1u,timeout_ns);
+            status = SparkTpMeshHardwareScatterHalfPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,
+                SparkTpMeshPipelineEarly(chunk,chunks),timeout_ns);
             if ( status != cudaSuccess ) return status;
-            published = 2u;
-            lag = 1u;
+            published++;
+            lag = published - 1u - chunk;
         }
         SparkTpMeshHardwareScatterHalfKernel<<<SparkTpMeshDirectBlocks(count,1u),SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(
             band,slot_bytes,slots_per_rank,control,degree,output,segment,begin,count,chunk + 1u == chunks ? 1u : 0u,rank,
             SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u));
         status = cudaPeekAtLastError();
         if ( status != cudaSuccess ) return status;
-        if ( chunk + 2u <= chunks - 2u || chunk + 2u == chunks )
+        if ( SparkTpMeshPipelineLate(chunk,chunks) != SPARK_TP_MESH_PIPELINE_NONE )
         {
             status = SparkTpMeshHardwareScatterHalfPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,
-                chunk + 2u <= chunks - 2u ? chunk + 2u : chunks - 1u,timeout_ns);
+                SparkTpMeshPipelineLate(chunk,chunks),timeout_ns);
             if ( status != cudaSuccess ) return status;
             published++;
         }
@@ -2225,14 +2226,22 @@ static cudaError_t SparkTpMeshHardwarePairFirstScatterRound(cudaStream_t stream,
     if ( slot_bytes != SPARK_WEIGHTD_MESH_SLOT_BYTES || slots_per_rank != SPARK_WEIGHTD_MESH_SLOTS_PER_RANK || chunks < 3u || staging == 0 ||
          degree < 4u || (degree & 1u) != 0u )
         return cudaErrorInvalidValue;
-    for ( published = 0u; published < 2u && status == cudaSuccess; published++ )
+    for ( published = 0u; published < SPARK_TP_MESH_PIPELINE_LEAD && status == cudaSuccess; published++ )
         status = SparkTpMeshHardwarePairFirstPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,published,chunks,timeout_ns);
     for ( round = 0u; round < rounds && status == cudaSuccess; round++ )
     {
-        const uint64_t lag = published - 1u - round;
-        const uint32_t view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
+        uint64_t lag = published - 1u - round;
+        uint32_t view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
         if ( lag > 1u ) return cudaErrorInvalidValue;
         status = SparkTpMeshHardwareArrivalView(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,view);
+        if ( status == cudaSuccess && SparkTpMeshPipelineEarly(round,rounds) != SPARK_TP_MESH_PIPELINE_NONE )
+        {
+            status = SparkTpMeshHardwarePairFirstPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,
+                SparkTpMeshPipelineEarly(round,rounds),chunks,timeout_ns);
+            published++;
+            lag = published - 1u - round;
+            view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
+        }
         if ( status == cudaSuccess && round < chunks )
         {
             const uint64_t count = segment - round * width < width ? segment - round * width : width;
@@ -2248,9 +2257,10 @@ static cudaError_t SparkTpMeshHardwarePairFirstScatterRound(cudaStream_t stream,
                 (uint16_t *)output + begin,count,round + 1u == rounds ? 1u : 0u,rank,view);
             status = cudaPeekAtLastError();
         }
-        if ( status == cudaSuccess && round + 2u < rounds )
+        if ( status == cudaSuccess && SparkTpMeshPipelineLate(round,rounds) != SPARK_TP_MESH_PIPELINE_NONE )
         {
-            status = SparkTpMeshHardwarePairFirstPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,round + 2u,chunks,timeout_ns);
+            status = SparkTpMeshHardwarePairFirstPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,segment,
+                SparkTpMeshPipelineLate(round,rounds),chunks,timeout_ns);
             published++;
         }
     }
@@ -2296,23 +2306,32 @@ static cudaError_t SparkTpMeshHardwarePairFirstGatherRound(cudaStream_t stream,u
     if ( slot_bytes != SPARK_WEIGHTD_MESH_SLOT_BYTES || slots_per_rank != SPARK_WEIGHTD_MESH_SLOTS_PER_RANK || chunks < 3u || staging == 0 ||
          degree < 4u || (degree & 1u) != 0u || local_elements % 4u != 0u )
         return cudaErrorInvalidValue;
-    for ( published = 0u; published < 2u && status == cudaSuccess; published++ )
+    for ( published = 0u; published < SPARK_TP_MESH_PIPELINE_LEAD && status == cudaSuccess; published++ )
         status = SparkTpMeshHardwarePairFirstGatherPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,local_elements,published,chunks,0u,timeout_ns);
     for ( round = 0u; round < rounds && status == cudaSuccess; round++ )
     {
-        const uint64_t lag = published - 1u - round;
-        const uint32_t view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
+        uint64_t lag = published - 1u - round;
+        uint32_t view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
         if ( lag > 1u ) return cudaErrorInvalidValue;
         status = SparkTpMeshHardwareArrivalView(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,view);
+        if ( status == cudaSuccess && SparkTpMeshPipelineEarly(round,rounds) != SPARK_TP_MESH_PIPELINE_NONE )
+        {
+            status = SparkTpMeshHardwarePairFirstGatherPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,local_elements,
+                SparkTpMeshPipelineEarly(round,rounds),chunks,view,timeout_ns);
+            published++;
+            lag = published - 1u - round;
+            view = SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u);
+        }
         if ( status == cudaSuccess )
         {
             SparkTpMeshPairFirstGatherKernel<<<dim3(SparkTpMeshDirectBlocks(width,degree),degree),SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,control,
                 (uint16_t *)output,(const uint16_t *)local,local_elements,round,chunks,round + 1u == rounds ? 1u : 0u,rank,view);
             status = cudaPeekAtLastError();
         }
-        if ( status == cudaSuccess && round + 2u < rounds )
+        if ( status == cudaSuccess && SparkTpMeshPipelineLate(round,rounds) != SPARK_TP_MESH_PIPELINE_NONE )
         {
-            status = SparkTpMeshHardwarePairFirstGatherPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,local_elements,round + 2u,chunks,view,timeout_ns);
+            status = SparkTpMeshHardwarePairFirstGatherPublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,staging,local_elements,
+                SparkTpMeshPipelineLate(round,rounds),chunks,view,timeout_ns);
             published++;
         }
     }
@@ -2373,22 +2392,23 @@ static cudaError_t SparkTpMeshHardwarePipelineRound(cudaStream_t stream,uint8_t 
         status = SparkTpMeshHardwareArrivalView(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,
             SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u));
         if ( status != cudaSuccess ) return status;
-        if ( chunk == 0u )
+        if ( SparkTpMeshPipelineEarly(chunk,chunks) != SPARK_TP_MESH_PIPELINE_NONE )
         {
-            status = SparkTpMeshHardwarePipelinePublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,local_elements,1u,timeout_ns);
+            status = SparkTpMeshHardwarePipelinePublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,local_elements,
+                SparkTpMeshPipelineEarly(chunk,chunks),timeout_ns);
             if ( status != cudaSuccess ) return status;
-            published = 2u;
-            lag = 1u;
+            published++;
+            lag = published - 1u - chunk;
         }
         SparkTpMeshHardwareDirectHalfKernel<<<dim3(SparkTpMeshDirectBlocks(count,degree),degree),SPARK_TP_MESH_DIRECT_THREADS,0u,stream>>>(
             band,slot_bytes,slots_per_rank,control,degree,output,local_elements,begin,count,chunk + 1u == chunks ? 1u : 0u,rank,
             SPARK_TP_MESH_VIEW_HALF | (lag != 0u ? SPARK_TP_MESH_VIEW_LAG : 0u));
         status = cudaPeekAtLastError();
         if ( status != cudaSuccess ) return status;
-        if ( chunk + 2u <= chunks - 2u || chunk + 2u == chunks )
+        if ( SparkTpMeshPipelineLate(chunk,chunks) != SPARK_TP_MESH_PIPELINE_NONE )
         {
             status = SparkTpMeshHardwarePipelinePublish(stream,band,slot_bytes,slots_per_rank,entry,request,control,rank,degree,local,local_elements,
-                chunk + 2u <= chunks - 2u ? chunk + 2u : chunks - 1u,timeout_ns);
+                SparkTpMeshPipelineLate(chunk,chunks),timeout_ns);
             if ( status != cudaSuccess ) return status;
             published++;
         }

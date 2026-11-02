@@ -544,6 +544,58 @@ lane owner's client. Two operations then use PEER:
 - **Direct rounds.** Single-row direct rounds (below 49,152 values or below
   degree 4) keep their slot path.
 
+**Pair-first routes.** A route with the `pair_first` bit carries two payloads
+in one publication (`SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair)`). The
+group bytes go to every peer of the sender's parity, into the sender's own
+slot half. The pair bytes go to the partner (`rank ^ 1`) over the pair link,
+one piece per segment of the partner's parity, each into the slot half of the
+sender of the other parity (`SparkWeightdMeshPairFirstArea`). Every other peer
+gets only the tail. Two collectives use it:
+
+- The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
+  sends each partner the segments of the partner's parity over the pair link,
+  sums each pair there, rounds the pair sum to BF16, and sums the pair sums of
+  a segment (eight at 16 ranks) over the switch in fp32.
+- The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
+  each chunk over the switch to the sender's parity group; two rounds later
+  every rank forwards the chunks it received to its partner over the pair
+  link. It moves the same bytes as the plain all-gather and is exact.
+
+Both are pipelined: a rank publishes round r + 2 once round r has arrived, so
+two publications are in flight. At the edges of every pipelined collective the
+lag is zero: round 1 is published only after round 0 has arrived, and the
+last round only after the round before it has arrived
+(`SparkTpMeshPipelineEarly`, `SparkTpMeshPipelineLate`). A whole-slot round
+(direct sums, all-to-all, staged peer rounds) fills both halves of its slot, so
+a collective that publishes two rounds before its first arrival can overwrite,
+at a slower peer, a whole-slot round that peer has not read yet. Until
+2026-11-02 the pair-first rounds published rounds 0 and 1 back to back and
+their last round one arrival early; `tp_mesh_hardware_probe
+--pair-first-boundary` reproduces the overwrite on one GPU by delaying one
+tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
+every pipelined collective against whole-slot neighbours with an adversarially
+slow rank at 4, 8 and 16 ranks.
+
+**Pair-first all-reduce.** `SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`
+runs the pair-first reduce-scatter into a share buffer the collective
+allocates when its peer routes attach (the configured maximum rows times the
+width over the degree, for an even degree of 4 or more), then the pair-first
+all-gather from that buffer into the output, so it also runs in place. It
+takes exactly the sizes both phases take (`SparkTpMeshAllReducePairFirst`:
+rank segments of whole 8-byte words above 131,096 values) on a hardware-wait
+collective with peer routes, and refuses anything else, an unpaired degree or
+a spinning collective included, with `INVALID_ARGUMENT` before it consumes a
+round; it cannot be split into begin and finish.
+`SparkTpDeviceCollectiveSupportsPairAllReduce` answers the same question for a
+caller, which picks the operation; the collective never falls back.
+Precision: each pair sum is rounded to BF16 before the fp32 group sum, which
+is rounded once more, so the result carries one more BF16 rounding than the
+plain all-reduce's single fixed-order fp32 sum. The stage runner uses it for
+prefill dispatches only (README, Invariants) and logs the rule once per
+collective (`TP-SUM-SELECTION ... pair_allreduce_from_rows=<rows>`) and the
+count per prefill wave (`TP-ROUND rank=<r> rows=<n> pair_allreduce=<n>
+allreduce=<n>`, totals in `STAGE-STEP-TIMING`).
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112

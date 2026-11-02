@@ -185,8 +185,12 @@ call from degree, datatype, payload bytes and a measured crossover profile:
 | Bandwidth-bound sums | reduce-scatter + all-gather over slice routes | 1.875 × payload |
 | Prefill, large batches | pair sum over the direct link, then an 8-way switched exchange | 3.5 × payload |
 
-**Invariants.** Every algorithm sums peers in the same fixed order, so
-switching algorithm never changes a result bit. A collective carries its
+**Invariants.** Decode and verify sums add the peers in one fixed order, so
+switching algorithm never changes a decode result bit. A prefill wave large
+enough for the pair-first all-reduce rounds each pair's sum to BF16 before
+the group sum: one more rounding than the plain sum, judged by accuracy
+rather than by token identity. The stage runner, not the model, picks it, from
+the dispatch that issued the round. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 

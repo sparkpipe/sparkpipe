@@ -119,6 +119,19 @@ static inline uint64_t SparkTpMeshPipelineChunks(uint64_t local_elements,uint64_
     return chunk == 0u || local_elements == 0u ? 0u : (local_elements - 1u) / chunk + 1u;
 }
 
+#define SPARK_TP_MESH_PIPELINE_LEAD 1u
+#define SPARK_TP_MESH_PIPELINE_NONE UINT64_MAX
+
+static inline uint64_t SparkTpMeshPipelineEarly(uint64_t round,uint64_t rounds)
+{
+    return round == 0u && rounds > 1u ? 1u : SPARK_TP_MESH_PIPELINE_NONE;
+}
+
+static inline uint64_t SparkTpMeshPipelineLate(uint64_t round,uint64_t rounds)
+{
+    return rounds >= 3u && round + 2u <= rounds - 2u ? round + 2u : round + 2u == rounds ? rounds - 1u : SPARK_TP_MESH_PIPELINE_NONE;
+}
+
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE 18432u
 #define SPARK_TP_MESH_RSAG_WIDE_DEGREE 16u
@@ -221,6 +234,12 @@ static inline uint32_t SparkTpMeshGatherPairFirst(uint64_t elements,uint32_t deg
     return degree >= 4u && (degree & 1u) == 0u && elements % degree == 0u && (elements / degree) % 4u == 0u &&
         SparkTpMeshDirectPipelined(elements,degree,SPARK_TP_MESH_OPERATION_ALL_GATHER,slot_bytes) != 0u &&
         SparkTpMeshPipelineChunks(elements / degree,half_payload_bytes) >= 3u ? 1u : 0u;
+}
+
+static inline uint32_t SparkTpMeshAllReducePairFirst(uint64_t elements,uint32_t degree,uint64_t slot_bytes,uint64_t half_payload_bytes)
+{
+    return degree != 0u && elements % (4u * (uint64_t)degree) == 0u && SparkTpMeshScatterPairFirst(elements,degree,half_payload_bytes) != 0u &&
+        SparkTpMeshGatherPairFirst(elements,degree,slot_bytes,half_payload_bytes) != 0u ? 1u : 0u;
 }
 
 #if defined(__CUDACC__)

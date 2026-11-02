@@ -1893,6 +1893,8 @@ cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device)
 }
 
 void *cuda_stub_mesh_hardware_staging;
+cudaError_t (*cuda_stub_mesh_hardware_hook)(uint32_t rank,uint32_t degree,const void *local,void *output,uint64_t elements,
+    uint32_t operation,uint32_t slice_routes);
 
 cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,void *gate,
@@ -1904,7 +1906,7 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     cuda_stub_mesh_hardware_staging = staging;
     (void)stage;
     cuda_stub_mesh_hardware_slice_routes = slice_routes;
-    (void)round_control;(void)rank;(void)degree;(void)local;(void)output;
+    (void)round_control;
     (void)scratch;(void)rounds;(void)timeout_ns;
     cuda_stub_mesh_hardware_calls++;
     cuda_stub_mesh_hardware_band = band;
@@ -1913,6 +1915,8 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     cuda_stub_mesh_hardware_elements = elements;
     cuda_stub_mesh_hardware_operation = operation;
     cuda_stub_mesh_hardware_logical_rows = logical_rows;
+    if ( cuda_stub_mesh_hardware_hook != 0 && cuda_stub_mesh_hardware_launch_result == 0 )
+        return cuda_stub_mesh_hardware_hook(rank,degree,local,output,elements,operation,slice_routes);
     return cuda_stub_mesh_hardware_launch_result;
 }
 
