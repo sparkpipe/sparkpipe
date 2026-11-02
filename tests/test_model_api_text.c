@@ -1204,13 +1204,14 @@ static void TestApiDegradedPath(TestApiStack *stack)
 	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
 	FILE *file;
 	assert(flag != 0 && TestApiWaitHealthBody(stack,200,"\"degraded_rank\":-1",20u) != 0u);
+	assert(TestApiWaitHealthBody(stack,200,"\"kv_capacity_tokens\":20,\"kv_capacity_max_tokens\":",20u) != 0u);
 	file = fopen(flag,"w");
 	assert(file != 0 && fclose(file) == 0);
 	assert(TestApiWaitHealthBody(stack,503,"\"degraded_path\":\"eager\"",20u) != 0u);
 	assert(TestApiWaitHealthBody(stack,503,"\"degraded_rank\":0",5u) != 0u);
 	assert(unlink(flag) == 0);
 	assert(TestApiWaitHealthBody(stack,200,"\"degraded_path\":\"none\"",20u) != 0u);
-	printf("test_model_api_text: degraded path OK (/health answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
+	printf("test_model_api_text: degraded path OK (/health reports kv_capacity_tokens as the smallest rank's grown pool, answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
 }
 
 static void TestApiRankLoss(TestApiStack *stack)

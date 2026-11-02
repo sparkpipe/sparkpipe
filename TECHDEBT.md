@@ -1091,13 +1091,41 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   Max have no reasoning-off switch in their templates: the chat layer
   refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
   they take, and `/v1/models` lists every model's `reasoning_efforts`.
-- Every stage-runner lane, GLM Flash included, is sized for every resident
-  sequence at full length by default: `tools/stage_lane.py` sets
-  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
-  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
-  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
-  and it takes that pool as a page count. Size the physical pool from a byte
-  budget the lanes share and let paged admission share it.
+- The device KV pool grows on demand into what the resident model leaves
+  of the node ([`docs/LANES.md`](docs/LANES.md),
+  [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)),
+  in code and host tests only. Close it on the fleet: for glm-5.3-flash,
+  glm-5.3, deepseek-v4.1-flash, kimi-k3, qwen3.8-27b and gemma-4-31b, fill
+  KV with long prompts until the pool stops growing, record `/health`
+  `kv_capacity_tokens` and the minimum `MemAvailable` over the 16 nodes
+  (above the margin, no earlyoom kill), and see `release_compare` EXACT 6/6
+  against main. The renderer's projections (`kv_physical_page_capacity`
+  times the KV block) are 86.3M tokens for GLM-5.3 Flash, 9.6M for GLM-5.3,
+  354M for DeepSeek V4.1 Flash, 7.8M for K3, 24.6M for Qwen 3.8 27B and 1.8M
+  for Gemma 4 31B; none is measured.
+- The batch scheduler admits against an engine's maximum device pages (what
+  the model could hold alone on the node), not its pool's live capacity, and
+  the rendered physical capacity takes the model's `node_memory_bytes` from
+  `tools/stage_lane.py` as its footprint. Two engines on one node can so be
+  promised more pages together than the node holds; their pools then stall
+  and evict instead of growing. Close it by sending each rank's live pool
+  capacity to the scheduler and admitting against the smallest rank's,
+  proven by two co-resident engines filling KV with no `KV-PARK-FAILED`.
+- Every device KV page is a logical page, so a lane's host page tables
+  (page cache, arena, store index) now scale with the node budget's pages,
+  up to 2.86M pages for Ling 3.0 Flash, instead of with
+  `sequences * kv_pages`. Measure that host memory on the fleet, and allocate
+  those tables as the pool grows if it matters.
+- KV on disk still has per-lane maxima: `kv_backing_bytes` and
+  `kv_snapshot_bytes` in every record (2.45 TB over 19 lanes) and the
+  512 GiB `kv_partition_reserve_bytes` free-space floor. Owner decision
+  (2026-11-02): one node-wide 500 GB quota for the node's own KV (backing and
+  snapshots), shared by every lane, oldest first under the retention rule;
+  the pair partner's 500 GB mirror stays with the working-state code and is
+  not counted. Close it by replacing the three settings with that quota in
+  `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
+  by two lanes on one node whose combined KV stays under 500 GB while each
+  evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
   fleet swapping and pushes the owner's model out after each reply. Each key

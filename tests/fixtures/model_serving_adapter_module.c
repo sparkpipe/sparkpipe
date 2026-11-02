@@ -589,6 +589,7 @@ static SparkStatus TestModelServingSnapshot(
 	snapshot->completed_count = state->completed_count;
 	snapshot->rejected_count = state->rejected_count;
 	snapshot->max_sequence_positions = UINT32_C(1) << 20;
+	snapshot->kv_store.pool_physical_pages = 5u;
 	if ( getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE") != 0 && access(getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE"),F_OK) == 0 )
 		snapshot->degraded_flags = SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH;
 	return(SPARK_STATUS_OK);

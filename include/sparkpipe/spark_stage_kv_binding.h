@@ -312,6 +312,8 @@ struct SparkStageKvBinding
 	uint32_t pool_wake_initialized;
 	uint32_t pool_idle_ticks;
 	uint32_t pool_last_status;
+	uint32_t pool_grow_refused;
+	uint64_t kv_margin_bytes;
 	pthread_cond_t pool_wake;
 	pthread_t pool_thread;
 	uint64_t pool_mapped_bytes;

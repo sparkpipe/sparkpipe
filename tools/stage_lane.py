@@ -37,6 +37,10 @@ DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
 DEFAULT_KV_PARTITION_RESERVE_BYTES = 512 << 30
 KV_BLOCK_TOKENS = 64
+KV_POOL_METADATA_BYTES_MAX = 256 << 20
+KV_POOL_SEAL_BYTES = 72
+KV_RESIDENT_RECORD_BYTES = 64
+KV_PHYSICAL_PAGES_MAX = (KV_POOL_METADATA_BYTES_MAX - KV_POOL_SEAL_BYTES) // KV_RESIDENT_RECORD_BYTES
 
 QWEN38_27B = {
     "swap_id": "qwen3.8-27b",
@@ -593,13 +597,21 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         record=swap_id, model=record["model"], lane=record["lane"], runtime_root=record["runtime_root"],
         weightd_socket=record["weightd_socket"], sequences=record["sequences"], rows=record["rows"],
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
-        kv_physical_pages=record["kv_physical_pages"], kv_logical_pages=record["kv_logical_pages"],
+        kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
         kv_partition_reserve_bytes=document["kv_partition_reserve_bytes"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
+
+
+def kv_physical_pages(model: dict, page_bytes: int, cap: int | None) -> int:
+    lendable = lane_records()["weightd"]["device_bytes_max"] - model["node_memory_bytes"]
+    pages = min(max(lendable, 0) // page_bytes, KV_PHYSICAL_PAGES_MAX)
+    if cap is not None and not 1 <= cap:
+        raise SystemExit(f"kv_physical_pages_cap {cap!r} must be a positive page count")
+    return pages if cap is None else min(pages, cap)
 
 
 def render(value: dict) -> str:
@@ -613,10 +625,10 @@ def check_arguments(model: dict, args) -> None:
         raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
     if args.shared_rows is not None and not 1 <= args.shared_rows < args.rows:
         raise SystemExit("shared rows must be within 1..rows-1")
-    args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
-    args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
-    if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
-        raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
+    args.kv_physical_pages = kv_physical_pages(model, model["kv_page_bytes"], args.kv_physical_pages_cap)
+    if args.kv_physical_pages < args.kv_pages:
+        raise SystemExit(f"the node budget holds {args.kv_physical_pages} device KV pages, fewer than one sequence's {args.kv_pages}")
+    args.kv_logical_pages = max(args.kv_logical_pages or args.sequences * args.kv_pages, args.kv_physical_pages)
     if args.kv_logical_pages < args.sequences * args.kv_pages:
         raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
     states = (2 * args.sequences + 2) * model["recurrent_bytes"]
@@ -645,7 +657,7 @@ def write_lane(args, output_dir: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     parser.add_argument("--record", default=None,
                         help=f"render the production lane of this swap id from {LANES.relative_to(ROOT) if LANES.is_relative_to(ROOT) else LANES}; no other lane flag applies")
     parser.add_argument("--model", choices=sorted(MODELS))
@@ -657,7 +669,8 @@ def main() -> int:
     parser.add_argument("--rows", type=int, default=1024)
     parser.add_argument("--shared-rows", type=int, default=None)
     parser.add_argument("--kv-pages", type=int, default=64)
-    parser.add_argument("--kv-physical-pages", type=int, default=None)
+    parser.add_argument("--kv-physical-pages-cap", type=int, default=None,
+                        help="keep the device KV pool below this many pages; by default it may grow to what the node budget leaves the model")
     parser.add_argument("--kv-logical-pages", type=int, default=None)
     parser.add_argument("--kv-backing-bytes", type=int, default=8 << 30)
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)

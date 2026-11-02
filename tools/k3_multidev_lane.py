@@ -57,6 +57,8 @@ import re
 import sys
 from pathlib import Path
 
+import stage_lane
+
 LANE = 3
 WORLD = 16
 TP = 4
@@ -377,7 +379,7 @@ def write_or_check(path: Path, text: str, check: bool) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(allow_abbrev=False,
         description="Generate the lane-3 k3 TP4xPP4 shared-socket deployment")
     parser.add_argument("--runtime-root", required=True,
                         help="private per-attempt runtime root "
@@ -413,9 +415,10 @@ def main() -> int:
     parser.add_argument("--rows", type=int, default=None,
                         help="input rows per submission, the prefill wave "
                              "width (default: --sequences)")
-    parser.add_argument("--kv-physical-pages", type=int, default=None,
-                        help="resident KV pages per rank (default: "
-                             "sequences x kv-pages)")
+    parser.add_argument("--kv-physical-pages-cap", type=int, default=None,
+                        help="keep the device KV pool below this many pages "
+                             "per rank; by default it may grow to what the "
+                             "node budget leaves K3")
     parser.add_argument("--kv-logical-pages", type=int, default=None,
                         help="KV pages per rank including the NVMe tier "
                              "(default: the physical pages)")
@@ -450,16 +453,16 @@ def main() -> int:
 
     select_topology(arguments.topology)
     select_lane(arguments.lane)
-    if arguments.kv_physical_pages is None:
-        arguments.kv_physical_pages = arguments.sequences * arguments.kv_pages
-    if arguments.kv_logical_pages is None:
-        arguments.kv_logical_pages = max(arguments.kv_physical_pages, arguments.sequences * arguments.kv_pages)
+    arguments.kv_physical_pages = stage_lane.kv_physical_pages(stage_lane.MODELS["k3"], kv_page_bytes(arguments.topology),
+                                                               arguments.kv_physical_pages_cap)
     if arguments.kv_physical_pages < arguments.kv_pages:
-        raise SystemExit(f"kv-physical-pages {arguments.kv_physical_pages} must hold one sequence's "
+        raise SystemExit(f"the node budget holds {arguments.kv_physical_pages} device KV pages, fewer than one sequence's "
                          f"{arguments.kv_pages} kv-pages")
-    if arguments.kv_logical_pages < max(arguments.kv_physical_pages, arguments.sequences * arguments.kv_pages):
-        raise SystemExit(f"kv-logical-pages {arguments.kv_logical_pages} must cover the physical pages and "
+    if arguments.kv_logical_pages is not None and arguments.kv_logical_pages < arguments.sequences * arguments.kv_pages:
+        raise SystemExit(f"kv-logical-pages {arguments.kv_logical_pages} must cover "
                          f"{arguments.sequences} sequences x {arguments.kv_pages} kv-pages")
+    arguments.kv_logical_pages = max(arguments.kv_logical_pages or 0, arguments.sequences * arguments.kv_pages,
+                                     arguments.kv_physical_pages)
     if arguments.rows is not None and not arguments.sequences <= arguments.rows <= MAX_ROWS:
         raise SystemExit(f"rows must be within sequences..{MAX_ROWS}: a decode wave carries one row per sequence "
                          f"and the K3 adapter takes at most {MAX_ROWS} rows")
