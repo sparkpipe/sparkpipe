@@ -100,6 +100,13 @@ static SparkStatus RunnerExpertWeights(void *context, uint32_t layer, const uint
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
+static SparkStatus RunnerExpertWeightsAhead(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2)
+{
+	(void)context; (void)layer; (void)routed_rows; (void)w1; (void)w2;
+	fprintf(stderr,"device_stage_runner: expert leases need weightd, which the device runner does not have\n");
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
 static SparkStatus RunnerVerifyPack(SparkDeviceStageRunner *runner)
 {
 	char expected[128], hex[SPARK_SHA256_HEX_BYTES], path[4096];
@@ -258,6 +265,7 @@ static SparkStatus RunnerOpenModel(SparkDeviceStageRunner *runner)
 	runner->services.published = RunnerPublished;
 	runner->services.fail = RunnerFailService;
 	runner->services.expert_weights = RunnerExpertWeights;
+	runner->services.expert_weights_ahead = RunnerExpertWeightsAhead;
 	request.configuration = c;
 	request.services = &runner->services;
 	request.stream = runner->queue;

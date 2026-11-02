@@ -65,6 +65,7 @@ void SparkWeightdManifestDestroy(SparkWeightdManifest *manifest);
 const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifest *manifest,uint32_t layer,uint32_t expert);
 
 SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,uint64_t offset,uint64_t bytes,uint64_t *compact_offset);
+SparkStatus SparkWeightdManifestLayerChunks(const SparkWeightdManifest *manifest,uint64_t chunk_bytes,uint32_t first_layer,uint32_t layer_count,uint64_t *chunks);
 
 #ifdef __cplusplus
 }
