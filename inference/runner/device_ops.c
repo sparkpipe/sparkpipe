@@ -135,7 +135,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_ngram_history_mapped",
 	"spark_poly_norm_mul",
 	"spark_differential_gate",
-	"spark_hc_site_clamped"
+	"spark_hc_site_clamped",
+	"spark_route_combine_weighted_shared"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1274,6 +1275,29 @@ SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *
 	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status;
+	if ( params->rows == 0u || params->top_k == 0u || params->top_k > SPARK_ROUTE_MAX_TOP_K || params->width == 0u )
+		return(OpsRefuse("route_combine_weighted_shared","rows, a top-k of at most 16 and a width are required"));
+	status = OpsNeed("route_combine_weighted_shared","expert outputs",expert_out,(uint64_t)params->rows * params->top_k * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared","shared",shared,(uint64_t)params->rows * params->width * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared","output",output,(uint64_t)params->rows * params->width * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,

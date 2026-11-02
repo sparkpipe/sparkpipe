@@ -150,6 +150,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_POLY_NORM_MUL,
 	SPARK_OPS_DIFFERENTIAL_GATE,
 	SPARK_OPS_HC_SITE_CLAMPED,
+	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -246,6 +247,8 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor output,
 	const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params);

@@ -10,6 +10,8 @@
              prompts.json -> --out report.json with, for every served token,
              the reference top-5, the reference logprob of the served token
              and the top-1/top-2 margin.
+  gate-prompts  the Metal gate prompts (tools/gemma4_reference.py's set) in
+             Motif's chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position: --prompts prompts.json ->
              --out DIR/<name>.ref_<v>.logits for --variants a,h. Variant b adds
              each row's routed experts in descending instead of ascending
@@ -383,16 +385,22 @@ def teacher(args):
             print(f"{prompt['name']}: {count - 1} positions, variant {label}", flush=True)
 
 
+def gate_prompts(args):
+    import gemma4_reference
+    gemma4_reference.gate_prompts(args, ("prefix", "user"), ("user_suffix", "generation"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("mode", choices=("tokenize", "score", "teacher"))
+    parser.add_argument("mode", choices=("tokenize", "score", "teacher", "gate-prompts"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
     parser.add_argument("--variants", default="a,h")
     parser.add_argument("--capture")
+    parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/motif/chat_template.json"))
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    {"tokenize": tokenize, "score": score, "teacher": teacher}[args.mode](args)
+    {"tokenize": tokenize, "score": score, "teacher": teacher, "gate-prompts": gate_prompts}[args.mode](args)
     return 0
 
 

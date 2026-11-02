@@ -116,6 +116,9 @@ typedef struct SparkDeviceLatentAttentionShape
 	uint32_t rope_original;
 	uint32_t rope_unrotated;
 	uint32_t gate_unrounded;
+	uint32_t rope_half;
+	uint32_t window;
+	uint32_t differential;
 } SparkDeviceLatentAttentionShape;
 
 typedef struct SparkDeviceLatentAttentionRope
@@ -136,6 +139,7 @@ typedef struct SparkDeviceLatentAttentionWeights
 	SparkTensor value_up;
 	SparkDeviceWeight gate;
 	SparkDeviceWeight out;
+	SparkDeviceWeight lambda;
 } SparkDeviceLatentAttentionWeights;
 
 typedef struct SparkDeviceLatentAttentionScratch
@@ -148,6 +152,8 @@ typedef struct SparkDeviceLatentAttentionScratch
 	SparkTensor records;
 	SparkTensor latent;
 	SparkTensor value;
+	SparkTensor lambda;
+	SparkTensor differential;
 } SparkDeviceLatentAttentionScratch;
 
 typedef struct SparkDeviceAttentionShape
@@ -291,6 +297,15 @@ typedef struct SparkDeviceRoutedFfnShape
 	uint32_t width;
 } SparkDeviceRoutedFfnShape;
 
+typedef struct SparkDeviceRoutedPoly
+{
+	SparkTensor params;
+	float clamp;
+	float bias_clamp;
+	float scale;
+	float epsilon;
+} SparkDeviceRoutedPoly;
+
 typedef struct SparkDeviceFfnScratch
 {
 	SparkTensor gate_up;
@@ -360,6 +375,9 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 SparkStatus SparkDeviceRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
 	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
 	SparkTensor input);
+SparkStatus SparkDeviceRoutedFfnPoly(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
+	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceRoutedPoly *poly,
+	const SparkDeviceExpertsScratch *scratch, SparkTensor input);
 SparkStatus SparkDeviceRoutedFfnQdq(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceRoutedFfnShape *shape, uint32_t rows,
 	const SparkDeviceExpertMatrix *gate, const SparkDeviceExpertMatrix *up, const SparkDeviceExpertMatrix *down, const SparkDeviceExpertsScratch *scratch,
 	SparkTensor input);

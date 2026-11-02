@@ -1613,6 +1613,21 @@ Metal backend and the single-Studio stage are in
     Each rank's BF16 partials of `o_b` and of the MoE before the all-reduce
     are extra roundings the references do not have; a TP1 gate, or an FP32
     all-reduce, would show whether they are the whole difference.
+- Motif 3 on Metal (`model-families/motif/device/`):
+  - the latent attention keeps the whole latent on every rank and attends
+    the rank's heads, where CUDA shards the context (gathered queries,
+    partial records, an all-to-all merge), so the softmax merge order
+    differs;
+  - the window layers' inverse frequencies come from the host in double
+    precision, not CUDA's per-pair `__powf`;
+  - the dense MLP and the shared expert run on their owner rank and the
+    other ranks add zeros, as CUDA; each rank's partial rounds to BF16 before
+    the BF16 all-reduce;
+  - the MTP layer is not packed, so speculation is refused;
+  - the CUDA driver is a first draft on `drivers/motif3`, and the Metal
+    operations follow it (`LmPolyNormMulKernel`, `LmDifferentialGateKernel`,
+    `MotifHcPolicy`, `LmMoeLocalWeightedFinalizeKernel`); its kernels do not
+    yet take the shared formulas from `kernel_math.cuh`.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

@@ -1156,3 +1156,62 @@ at 2.53 and 2.35 times and +20.7 and +23.6 sigma. The same swap in layer
 11 alone stays at +2.4 and +1.1 sigma, and in every layer's `o_b`, which
 moves two of the 5,120 hidden channels, it stayed within 1.2 times the a
 and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
+
+### Motif 3 on eight ranks
+
+Motif 3 (53 layers of 4,096, four mHC streams, 80 query heads in 16 groups
+of four signal heads and one noise head over a 512-wide latent, 384 BF16
+experts) runs on its family schedule `MotifSchedule`
+(`spark_motif_family.h`, the one the CUDA `MotifStage` steps through) with
+the Metal backend `MotifDevice` in `model-families/motif/device/` at TP 1, 2,
+4 or 8 (`SparkMotif3DeviceStageModelAt`).
+
+- Streams: `spark_hyper_expand` copies the embedding into four streams. Each
+  site runs `spark_hc_site_clamped`, the mHC site with Motif's policy as
+  CUDA's `MotifHcPolicy`: sigmoid pre and post gates of the RMS-scaled mixes
+  clamped at +-10, the exp of the residual logits clamped at +-20 and 20
+  Sinkhorn passes (rows, then columns) divided by sums floored at 1e-8; the
+  combination is stored target-major, so `spark_hc_post_comb_f32` applies it
+  as `LmHcPostF32Kernel` does (`bf16(post x out + sum_s comb_ts x_s)` in
+  FP32). The branch input is normed with the FP32 gain
+  (`spark_rmsnorm_residual`).
+- Attention: `SparkDeviceLatentAttention` with Motif's switches. q_a, its FP32
+  norm, q_b (the rank's five-head groups, 192 wide: nope 128 and rope 64);
+  kv_a, its FP32 norm on the latent; rotate-half rope (`rope_half`) on the
+  query's and the slot's last 64, with YaRN (factor 64 over 4,096) on the
+  full layers (layer % 4 == 0) and plain theta 1e4 on the others, which see
+  the last 129 keys (`window`); scales 0.1447 and 0.0722. The values pass
+  `spark_differential_gate` (`differential`, CUDA's
+  `LmDifferentialGateKernel`): each group's signal heads minus
+  `bf16(sigmoid(lambda))` times its noise head, times
+  `bf16(sigmoid(gate))`, where lambda is the replicated 64-wide projection of
+  the normed input and the gate the rank's signal rows projected from the
+  normed query LoRA; `wo` reads the signal heads only.
+- MLPs: the dense layers 0 and 1 and the shared expert run on rank
+  layer % T only (the others contribute zeros), gate and up in one
+  projection, then `spark_poly_norm_mul` (CUDA's `LmPolyNormMulKernel`):
+  `poly = sigmoid(w0) g^3/d3 + sigmoid(w1) g^2/d2 + sigmoid(w2) g/d1 + b`
+  with `d_k` the RMS of the gate powers, times up, rounded, then halved. The
+  BF16 router in FP32, sigmoid top 8 of `score + bias`, the unbiased scores
+  normalised by their sequential sum (+1e-20) times 2 as
+  `LmTopkGroupLimitedKernel`; the rank's 384/T experts
+  (`SparkDeviceRoutedFfnPoly`) project gate and up from the fused `moe_w13`,
+  apply the routed PolyNorm (bias clamped at +-0.5, the product clamped at
+  +-1e6 and halved in FP32) with each expert's parameters, and project down;
+  `spark_route_combine_weighted_shared` adds the weighted outputs and the
+  shared expert in FP32 and rounds once, as `LmMoeLocalWeightedFinalizeKernel`.
+- The end takes the mean of the streams and the head norm with its FP32 gain
+  (`prenormed_head`).
+
+CUDA shards the latent attention by context (gathered queries, partial
+records and an all-to-all merge); the Metal ranks keep the whole latent and
+attend their own heads, as for GLM 5.3. The window layers' inverse
+frequencies come from the host in double precision, where CUDA's
+`LmRopePerHeadKernel` takes `__powf` per pair.
+
+`tools/motif3_tp16_pack.py --tp-degree 8` writes the BF16 rank packs (about
+74 GB each); `tools/motif3_reference.py` gives the gate prompts in Motif's
+chat turn (`gate-prompts`) and the FP32 teacher:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh motif-3 PACKS/motif3.tp8.rank00.pack REFERENCE_DIR OUT REVISION
