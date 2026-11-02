@@ -1208,6 +1208,20 @@ and the multidev docs on 2026-09-28. Line numbers are in
   setup of every lane, `release_compare` EXACT on every model against the
   linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
   and an audit with no `LINK` line.
+- Awaiting the owner's first prune (lane `tools/node-pack-prune`):
+  `tools/node_pack_prune.py` lists every file under a node's `sparkdata`
+  that no lane record, swap command, live config, agent root or keep-list
+  entry (`deployment/sparkdata_keep.json`) uses, and `--delete` removes them
+  on the owner's order, refusing open and recently modified entries and
+  every entry on a node that lacks a file a record names. The lead's
+  2026-11-02 dry run (`prune_packs.sh`) found 643 to 725 GB per node. Until
+  the DeepSeek V4.1 Flash pack directory step of `lanes/direct-pack-paths`
+  runs, every node lacks the engram files the record names, so the tool
+  reports them `MISSING` and deletes nothing there; the engram shards still
+  sit in `dsv41flash-1017.mxfp4.tp16` and would otherwise look unused. The
+  open-file check sees only the processes of the user that runs it, and
+  the nodes' `~/KEEP` files are not read: the repository's keep list
+  replaces them.
 - Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
   weight file or a configuration (`tests/test_no_weight_links.py` holds the
   tree to it; the only link sites left are the CUDA toolkit alias in

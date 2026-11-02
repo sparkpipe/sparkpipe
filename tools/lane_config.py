@@ -8,7 +8,9 @@ tools/stage_lane.py and tools/stage_lane.sh; nothing on the fleet is edited
 by hand. audit renders every record and compares it with what the nodes and
 the hub hold, together with the hub files that have a repository source,
 the weightd KV reserve and ceiling every node runs, lane roots or API
-directories that no record names, and every symlink under the lane trees.
+directories that no record names, every symlink under the lane trees, and
+every file under a node's sparkdata that nothing uses or that a record names
+and the node lacks (tools/node_pack_prune.py).
 push writes one record's rendered files to the nodes and the hub, keeping
 each replaced file as <file>.prev-<UTC>; binaries, packs and KV stay as
 they are.
@@ -199,9 +201,9 @@ def hub_files(record_id: str, directory: Path) -> dict[str, Path]:
     return {f"{HUB_HOME}/{record(record_id)['model']}-kv-api/model_resident.json": directory / "model_resident.json"}
 
 
-def remote(host: str, script: str, request: dict) -> dict | list:
+def remote(host: str, script: str, request: dict, timeout: int = 120) -> dict | list:
     completed = subprocess.run([*SSH, host, "python3", "-c", shlex.quote(script)], input=json.dumps(request),
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, timeout=timeout)
     if completed.returncode != 0:
         raise RuntimeError(f"{host}: {completed.stderr.strip()[-400:]}")
     return json.loads(completed.stdout)
@@ -311,6 +313,14 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                         drift.append(f"ORPHAN {HUB}:{api} is an API directory no record names")
             except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
                 drift.append(f"UNREACHABLE {error}")
+    if fleet:
+        import node_pack_prune
+        for host, result in node_pack_prune.scan(stage_lane.HOSTS, node_pack_prune.keep_list()).items():
+            if "error" in result:
+                drift.append(f"UNREACHABLE {host}: unused-file scan: {result['error']}")
+                continue
+            drift += [f"MISSING {host}:/home/{host}/{path} is named by a lane record and absent" for path in result["missing"]]
+            drift += [f"UNUSED {entry['bytes']} {host}:/home/{host}/{entry['path']}" for entry in result["entries"]]
     for line in drift:
         print(line)
     print(f"lane audit: {len(selected)} records, {len(drift)} findings" + ("" if drift else "; the fleet and the hub match deployment/lanes.json"))
