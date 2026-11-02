@@ -1356,7 +1356,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
   gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
-  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  the RMS scale, the residual add before a norm (`SparkMathResidualSum`),
+  the rotary rotation, the KDA layers' bounded decay
   (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
   `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
   - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
@@ -1396,27 +1397,25 @@ and the multidev docs on 2026-09-28. Line numbers are in
     outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
     (+3.37 against A) fail the paired test; the attention arithmetic that
     takes all four through, on both backends, is still open;
-  - the residual norm: both backends take the statistic and the normed
-    value from the FP32 sum of residual and branch and store only the
-    residual rounded (CUDA's `LmFusedResidualRmsNormKernel` in the Gemma,
-    Qwen, Ling and GLM 5.2 stages, and Metal's `spark_rmsnorm_residual`
-    since it stopped rounding the sum first), where the publishers' eager
-    modules (and so the gate references) round the sum and normalise the
-    rounded value. Taking CUDA's order moved the paired test from +2.42 /
-    +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
-    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
-    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
-    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
-    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
-    which now fails against reference a although its CUDA stage uses the same
-    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
-    to the last digit. Both backends apply the gain with one rounding,
-    `bf16(x r w)`, where the publishers round `x r` first, and keep the
-    attention probabilities and the GQA gate in FP32 where the publishers
-    round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
-    Metal's output is 2.5e-3 of its norm from reference a against an a/b
-    floor of 8.3e-5, giving the reference those three roundings brings it
-    to 1.75e-3, and the rest is not located yet;
+  - the norms against the publishers: the residual add before a norm
+    rounds to BF16 first on both backends (`SparkMathResidualSum` in CUDA's
+    `LmFusedResidualRmsNormKernel` and Metal's `spark_rmsnorm_residual`), as
+    the publishers' eager `residual + hidden_states` does; until then both
+    normalised the FP32 sum and stored only the residual rounded. Still
+    different from the publishers: the Llama-style norms (Ling, Laguna,
+    K-EXAONE, Solar Open 2, GLM, MiMo) compute `weight * bf16(x r)`, rounding
+    twice, where both backends' fused norm rounds `bf16(x r w)` once (Gemma's
+    and Qwen 3.8's publishers round once too), and `tools/glm52_reference.py`
+    and `tools/k3_reference.py` take CUDA's single rounding; both backends
+    keep the attention probabilities and the GQA gate in FP32, where the
+    publisher's eager attention rounds the probabilities (its SDPA and flash
+    paths round the unnormalised exponentials instead, and the references
+    differ: Ling, K-EXAONE and Solar round the probabilities, MiMo, Laguna
+    and Gemma keep them in FP32). At Solar Open 2's layer 0 (GQA, no residual
+    add before it) Metal's output is 2.5e-3 of its norm from reference a
+    against an a/b floor of 8.3e-5; giving the reference the backends' choice
+    at those three points brings it to 1.75e-3, and the rest is not located
+    yet;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
     same hardware approximation: bitwise identical over the float range and
