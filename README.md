@@ -421,9 +421,9 @@ compiled out.
 
 **Verify frames.** The stage runner hands every verify frame to the model as
 a step with `commit == 0`. Such a step runs each row through the kernels a
-one-row decode uses (skinny projections in 16-row chunks, grouped skinny
-experts) and leaves recurrent state for `keep_rows` to fold over the kept
-rows; paged and sliding-window KV is addressed by position, so rows past the
+one-row decode uses (skinny projections in 16-row chunks, the decode's
+routed-expert kernel, the decode attention path) and leaves recurrent state
+for `keep_rows` to fold over the kept rows; paged and sliding-window KV is addressed by position, so rows past the
 accepted ones are never read and the next decode overwrites them.
 
 ## Determinism and evidence
@@ -582,9 +582,8 @@ model's cached prefixes come back from the KV snapshot store.
 - **Speculation** is yes where the serving adapter verifies drafts
   (`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`): drafts copied
   from the request's own context, up to 255 per frame, and on Kimi K3 also the
-  DFlash2 drafter on the hub. On the gemma4 stage (Gemma 4 31B and 26B,
-  Laguna S 2.1, Muse Glimmer 30B, K-EXAONE 2.0) every row of a verify frame is
-  bit-identical to decoding that row alone.
+  DFlash2 drafter on the hub. Every row of a verify frame is bit-identical to
+  decoding that row alone.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.

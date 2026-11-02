@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "sparkpipe/spark_weightd_cxx.h"
+#include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/gqa_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -383,25 +384,8 @@ struct GemmaModel
 	static int32_t Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		if ( rows <= LM_SKINNY_ROWS_WIDE || step->commit == 0u )
-		{
-			LmSkinnyArguments args;
-			int32_t status;
-			memset(&args, 0, sizeof(args));
-			args.weight = (const uint8_t *)weight;
-			args.activation = source;
-			args.output_bf16 = destination;
-			args.output_f32 = destination_f32;
-			args.scale = LmScaleTensorNone();
-			args.rows = rows;
-			args.input_dimension = input_dimension;
-			args.output_dimension = output_dimension;
-			status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<LmBf16Format>(&args, stream) : LmSkinnyLaunchRowChunks<LmBf16Format>(&args, stream);
-			if ( status != LM_LAUNCH_ERR_SHAPE || step->commit == 0u )
-				return status;
-		}
-		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
-			0u, 0u, step->multiprocessors, stream);
+		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
+			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
@@ -419,12 +403,9 @@ struct GemmaModel
 	static int32_t Experts(const LmLocalExpertRoutes &routes, const uint16_t *weight, const uint16_t *activation, uint16_t *output, uint32_t down,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		if ( step->commit == 0u )
-			return LmSkinnyGroupedExperts<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, routes.group_row_offset, routes.route_source_token,
-				routes.local_experts, routes.routes, down, input_dimension, output_dimension, stream);
-		if ( down != 0u )
-			return LmLocalExpertsDown<LmBf16Format>(routes, weight, LmScaleTensorNone(), activation, output, input_dimension, output_dimension, stream);
-		return LmLocalExpertsUp<LmBf16Format>(routes, weight, LmScaleTensorNone(), activation, output, input_dimension, output_dimension, stream);
+		const uint32_t exact = step->commit == 0u ? 1u : 0u;
+		return down != 0u ? LmLocalExpertsDown<LmBf16Format>(routes, weight, LmScaleTensorNone(), activation, output, input_dimension, output_dimension, stream, exact) :
+			LmLocalExpertsUp<LmBf16Format>(routes, weight, LmScaleTensorNone(), activation, output, input_dimension, output_dimension, stream, exact);
 	}
 
 	static SparkStatus Round(State *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *local, void *full)

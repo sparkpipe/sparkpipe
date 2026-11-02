@@ -940,21 +940,25 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     Flash and Flash Fin, and Qwen 3.8 Max, 27B and Flash, with recurrent and
     linear-attention state restored to the accepted row through the binding's
     recurrent-state hook;
-  - verify frames above 16 rows on the glm52 stage (GLM 5.3 Full, A.X K2) and
-    the ling stage (Solar Open 2) still run the streamed tensor-core GEMM, so
-    those rows are not bit-identical to one-row decode. The runner marks every
-    verify step `commit == 0`; those stages should take the skinny kernels in
-    16-row chunks for such steps, as K3, DeepSeek V4.1 Flash and the gemma4
-    stage do (`tests/test_gemma4_verify_frames.cu`);
+  - verify frames on the glm52 stage run the decode regime (unordered waves of
+    up to 256 rows through the scatter attention path, projections as skinny
+    16-row chunks, routed experts through the per-route skinny kernel in 8-row
+    chunks), so they read each touched weight once per chunk. Measure GLM 5.3
+    Full and A.X K2 long-frame speculation against the earlier ordered-wave
+    numbers; if frames above about 64 rows lose throughput, the fix is a
+    grouped expert kernel whose per-route sums match the per-route kernel bit
+    for bit (the grouped skinny kernel's wide variant does not today), not a
+    return to the prefill path;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
     so shared verify frames run eager;
-  - multi-row verify numerics differ from a 1-row decode by the reordering
-    floor, so speculative output is judged against the floor like batched
-    output. Add the accuracy gate as excess over the floor for edit-style
-    requests, and show that plain prompts with no matches lose no speed
-    beyond noise.
+  - show that plain prompts with no matches lose no speed beyond noise on
+    every model that speculates; every verify-capable stage now reproduces
+    one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`, and
+    the K3 and DeepSeek V4.1 Flash tests), so speculative output is judged
+    EXACT against output without speculation.
 
 ## Packaging and provenance
 
