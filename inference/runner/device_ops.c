@@ -132,7 +132,10 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_combine_extra_d512",
 	"spark_ngram_hash_mapped",
 	"spark_ngram_gather_e8m0",
-	"spark_ngram_history_mapped"
+	"spark_ngram_history_mapped",
+	"spark_poly_norm_mul",
+	"spark_differential_gate",
+	"spark_hc_site_clamped"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1541,8 +1544,8 @@ SparkStatus SparkOpsHcPost(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTe
 	return(OpsLaunch(ops,queue,SPARK_OPS_HC_POST,(uint32_t)((flat + 255u) / 256u),params->rows,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
-static SparkStatus OpsHcSite(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
-	const SparkTensor *pre, SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params)
+static SparkStatus OpsHcSite(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkOpsKernel kernel, SparkTensor streams, SparkTensor fn, SparkTensor base,
+	SparkTensor scale, const SparkTensor *pre, SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params)
 {
 	const uint64_t flat = (uint64_t)SPARK_HC_MAX_STREAMS * params->width;
 	SparkDeviceBinding bindings[8];
@@ -1575,19 +1578,27 @@ static SparkStatus OpsHcSite(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	bindings[6] = OpsBind(mixed,SPARK_DEVICE_BIND_WRITE);
 	if ( pre != 0 )
 		bindings[7] = OpsBind(*pre,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,pre != 0 ? SPARK_OPS_HC_SITE_LAGGED : SPARK_OPS_HC_SITE,params->rows,1u,1u,256u,params,sizeof(*params),bindings,pre != 0 ? 8u : 7u));
+	return(OpsLaunch(ops,queue,kernel,params->rows,1u,1u,256u,params,sizeof(*params),bindings,pre != 0 ? 8u : 7u));
 }
 
 SparkStatus SparkOpsHcSite(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
 	SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params)
 {
-	return(OpsHcSite(ops,queue,streams,fn,base,scale,0,post,comb,mixed,params));
+	return(OpsHcSite(ops,queue,SPARK_OPS_HC_SITE,streams,fn,base,scale,0,post,comb,mixed,params));
 }
 
 SparkStatus SparkOpsHcSiteLagged(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
 	SparkTensor pre, SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params)
 {
-	return(OpsHcSite(ops,queue,streams,fn,base,scale,&pre,post,comb,mixed,params));
+	return(OpsHcSite(ops,queue,SPARK_OPS_HC_SITE_LAGGED,streams,fn,base,scale,&pre,post,comb,mixed,params));
+}
+
+SparkStatus SparkOpsHcSiteClamped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,
+	SparkTensor post, SparkTensor comb, SparkTensor mixed, const SparkHcParams *params)
+{
+	if ( params->iterations == 0u || !(params->gate_clamp > 0.0f) || !(params->residual_clamp > 0.0f) || !(params->sum_floor > 0.0f) )
+		return(OpsRefuse("hc_site_clamped","Sinkhorn passes, positive gate and residual clamps and a positive sum floor"));
+	return(OpsHcSite(ops,queue,SPARK_OPS_HC_SITE_CLAMPED,streams,fn,base,scale,0,post,comb,mixed,params));
 }
 
 static SparkStatus OpsHcPostComb(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkOpsKernel kernel, SparkTensor streams, SparkTensor post, SparkTensor comb,
@@ -2170,4 +2181,56 @@ SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	bindings[0] = OpsBind(words,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(sink,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_STREAM_READ,groups,1u,1u,1024u,&params,sizeof(params),bindings,2u));
+}
+
+SparkStatus SparkOpsPolyNormMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gate_up, SparkTensor params_f32, const SparkTensor *param_of_row,
+	SparkTensor output, const SparkPolyNormParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status;
+	if ( params->rows == 0u || params->width == 0u || params->input_stride < 2u * params->width || params->output_stride < params->width ||
+		params->param_count == 0u || (params->indexed != 0u) != (param_of_row != 0) || !(params->clamp > 0.0f) || !(params->epsilon > 0.0f) ||
+		(params->routed != 0u && !(params->bias_clamp > 0.0f)) )
+		return(OpsRefuse("poly_norm_mul","rows, a width, strides that hold the gate and up halves, parameter sets, a row index exactly when indexed, "
+			"positive clamps and a positive epsilon"));
+	status = OpsNeed("poly_norm_mul","gate_up",gate_up,OpsRowsBytes(params->rows,params->input_stride,2u * params->width,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("poly_norm_mul","params",params_f32,(uint64_t)params->param_count * 4u * sizeof(float));
+	if ( status == SPARK_STATUS_OK && param_of_row != 0 )
+		status = OpsNeed("poly_norm_mul","param_of_row",*param_of_row,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("poly_norm_mul","output",output,OpsRowsBytes(params->rows,params->output_stride,params->width,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(gate_up,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(params_f32,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(param_of_row != 0 ? *param_of_row : params_f32,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_POLY_NORM_MUL,params->rows,1u,1u,256u,params,sizeof(*params),bindings,4u));
+}
+
+SparkStatus SparkOpsDifferentialGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor heads, SparkTensor lambda, SparkTensor gate, SparkTensor output,
+	const SparkDifferentialGateParams *params)
+{
+	const uint32_t width = params->groups * params->signal * params->dimension, signals = params->groups * params->signal;
+	SparkDeviceBinding bindings[4];
+	SparkStatus status;
+	if ( params->rows == 0u || params->groups == 0u || params->signal == 0u || params->dimension == 0u ||
+		params->heads_stride < params->groups * (params->signal + 1u) * params->dimension || params->lambda_stride < params->lambda_offset + signals ||
+		params->gate_stride < width || params->output_stride < width )
+		return(OpsRefuse("differential_gate","rows, groups of signal heads and one noise head, and strides that hold every head, lambda and gate"));
+	status = OpsNeed("differential_gate","heads",heads,OpsRowsBytes(params->rows,params->heads_stride,params->groups * (params->signal + 1u) * params->dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("differential_gate","lambda",lambda,OpsRowsBytes(params->rows,params->lambda_stride,params->lambda_offset + signals,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("differential_gate","gate",gate,OpsRowsBytes(params->rows,params->gate_stride,width,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("differential_gate","output",output,OpsRowsBytes(params->rows,params->output_stride,width,2u));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(heads,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(lambda,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(gate,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_DIFFERENTIAL_GATE,(width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }

@@ -369,4 +369,20 @@ SPARK_MATH_FN float SparkMathFp4Qdq(float value, float scale)
 	return(SparkMathRoundE2m1(SPARK_MATH_FMIN(SPARK_MATH_FMAX(value / scale,-6.0f),6.0f)) * scale);
 }
 
+SPARK_MATH_FN float SparkMathClamp(float value, float limit)
+{
+	return(SPARK_MATH_FMIN(SPARK_MATH_FMAX(value,-limit),limit));
+}
+
+SPARK_MATH_FN float SparkMathPolyNorm(float gate, float d1, float d2, float d3, float w0, float w1, float w2, float bias)
+{
+	return(w0 * (gate * gate * gate / d3) + w1 * (gate * gate / d2) + w2 * (gate / d1) + bias);
+}
+
+SPARK_MATH_FN float SparkMathDifferentialGate(float signal, float noise, float lambda, float gate)
+{
+	const float scaled = SparkMathRoundBf16(SparkMathRoundBf16(SparkMathSigmoid(lambda)) * noise);
+	return(SparkMathRoundBf16(signal - scaled) * SparkMathRoundBf16(SparkMathSigmoid(gate)));
+}
+
 #endif

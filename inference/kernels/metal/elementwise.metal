@@ -561,3 +561,60 @@ kernel void spark_compressed_positions(constant SparkCompressParams &p [[buffer(
 	rope[row] = position + 1u - p.ratio;
 	last[row] = (position + 1u) / p.ratio - 1u;
 }
+
+kernel void spark_poly_norm_mul(constant SparkPolyNormParams &p [[buffer(0)]], device const ushort *gate_up [[buffer(1)]],
+	device const float *params [[buffer(2)]], device const uint *param_of_row [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	if ( row >= p.rows )
+		return;
+	device const ushort *gate = gate_up + (ulong)row * p.input_stride, *up = gate + p.width;
+	device ushort *y = output + (ulong)row * p.output_stride;
+	const uint index = p.indexed != 0u ? param_of_row[row] : 0u;
+	if ( index >= p.param_count )
+	{
+		for ( uint i = tid; i < p.width; i += threads )
+			y[i] = 0u;
+		return;
+	}
+	float square = 0.0f, fourth = 0.0f, sixth = 0.0f;
+	for ( uint i = tid; i < p.width; i += threads )
+	{
+		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), g2 = g * g, g3 = g2 * g;
+		square += g * g;
+		fourth += g2 * g2;
+		sixth += g3 * g3;
+	}
+	square = SparkGroupSum(square, scratch, lane, simd, simds);
+	fourth = SparkGroupSum(fourth, scratch, lane, simd, simds);
+	sixth = SparkGroupSum(sixth, scratch, lane, simd, simds);
+	const float count = float(p.width);
+	const float d1 = sqrt(square / count + p.epsilon), d2 = sqrt(fourth / count + p.epsilon), d3 = sqrt(sixth / count + p.epsilon);
+	device const float *w = params + 4ul * index;
+	const float w0 = SparkMathSigmoid(w[0]), w1 = SparkMathSigmoid(w[1]), w2 = SparkMathSigmoid(w[2]);
+	const float bias = p.routed != 0u ? SparkMathClamp(w[3], p.bias_clamp) : w[3];
+	for ( uint i = tid; i < p.width; i += threads )
+	{
+		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), u = SparkMathClamp(SparkMathBf16ToFloat(up[i]), p.clamp);
+		const float value = SparkMathPolyNorm(g, d1, d2, d3, w0, w1, w2, bias) * u;
+		y[i] = p.routed != 0u ? SparkMathFloatToBf16(SparkMathClamp(value, p.clamp) * p.output_scale) :
+			SparkMathFloatToBf16(SparkMathRoundBf16(value) * p.output_scale);
+	}
+}
+
+kernel void spark_differential_gate(constant SparkDifferentialGateParams &p [[buffer(0)]], device const ushort *heads [[buffer(1)]],
+	device const ushort *lambda [[buffer(2)]], device const ushort *gate [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, element = group.x * group_size.x + tid, width = p.groups * p.signal * p.dimension;
+	if ( row >= p.rows || element >= width )
+		return;
+	const uint head = element / p.dimension, d = element % p.dimension, team = head / p.signal, member = head % p.signal;
+	device const ushort *base = heads + (ulong)row * p.heads_stride + (ulong)team * (p.signal + 1u) * p.dimension;
+	const float signal = SparkMathBf16ToFloat(base[(ulong)member * p.dimension + d]), noise = SparkMathBf16ToFloat(base[(ulong)p.signal * p.dimension + d]);
+	const float weight = SparkMathBf16ToFloat(lambda[(ulong)row * p.lambda_stride + p.lambda_offset + head]);
+	const float opened = SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + element]);
+	output[(ulong)row * p.output_stride + element] = SparkMathFloatToBf16(SparkMathDifferentialGate(signal, noise, weight, opened));
+}
