@@ -78,9 +78,9 @@ struct MotifHcPolicy
 		const float clamp = SPARK_MOTIF_MODEL_HC_GATE_CLAMP;
 		if ( lane < LM_HC_SITE_STREAMS )
 		{
-			pre[lane] = 1.0f / (1.0f + expf(-fminf(fmaxf(mixes[lane] * scale3[0] + base[lane], -clamp), clamp)));
-			post[lane] = SPARK_MOTIF_MODEL_HC_POST_COEFFICIENT / (1.0f + expf(-fminf(fmaxf(mixes[LM_HC_SITE_STREAMS + lane] * scale3[1] +
-				base[LM_HC_SITE_STREAMS + lane], -clamp), clamp)));
+			pre[lane] = SparkMathSigmoid(SparkMathClamp(mixes[lane] * scale3[0] + base[lane], clamp));
+			post[lane] = SparkMathScaledSigmoid(SPARK_MOTIF_MODEL_HC_POST_COEFFICIENT, SparkMathClamp(mixes[LM_HC_SITE_STREAMS + lane] * scale3[1] +
+				base[LM_HC_SITE_STREAMS + lane], clamp));
 		}
 	}
 
@@ -89,7 +89,7 @@ struct MotifHcPolicy
 		const uint32_t lane = threadIdx.x % LM_WARP_LANES, cell = lane & 15u;
 		const float clamp = SPARK_MOTIF_MODEL_HC_RESIDUAL_CLAMP, floor = SPARK_MOTIF_MODEL_HC_SUM_FLOOR;
 		float value = mixes[2u * LM_HC_SITE_STREAMS + cell] * scale3[2] + base[2u * LM_HC_SITE_STREAMS + cell];
-		value = expf(fminf(fmaxf(value, -clamp), clamp));
+		value = SPARK_MATH_EXP(SparkMathClamp(value, clamp));
 		for ( uint32_t iteration = 0u; iteration < SPARK_MOTIF_MODEL_HC_SINKHORN_ITERATIONS; ++iteration )
 		{
 			value /= fmaxf(LmHcRowSum(value, lane), floor);

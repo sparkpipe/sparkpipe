@@ -1626,9 +1626,9 @@ Metal backend and the single-Studio stage are in
   - the MTP layer is not packed, so speculation is refused;
   - the CUDA driver is a first draft on `drivers/motif3`, and the Metal
     operations follow it (`LmPolyNormMulKernel`, `LmDifferentialGateKernel`,
-    `MotifHcPolicy`, `LmMoeLocalWeightedFinalizeKernel`); the PolyNorm and
-    differential-gate formulas are shared through `kernel_math.cuh`, the mHC
-    policy and the finalize are not yet.
+    `MotifHcPolicy`, `LmMoeLocalWeightedFinalizeKernel`); the PolyNorm,
+    differential-gate and mHC gate formulas are shared through
+    `kernel_math.cuh`, the weighted finalize is not.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
