@@ -64,8 +64,8 @@ def compare(args):
         raise RuntimeError("run through spark_queue.py with GPU ownership")
     if re.fullmatch(r"[0-9a-f]{64}", args.pack_sha256) is None:
         raise ValueError("pack SHA256 must be 64 lowercase hexadecimal characters")
-    if args.pool_bytes <= 0 or args.spine_bytes <= 0:
-        raise ValueError("pool and spine budgets must be positive")
+    if args.pool_cap_bytes <= 0 or args.spine_bytes <= 0:
+        raise ValueError("the expert pool cap and the spine budget must be positive")
     args.output.mkdir(parents=True, exist_ok=False)
     deadline = time.monotonic() + 720
     environment = {key: value for key, value in os.environ.items()
@@ -95,7 +95,7 @@ def compare(args):
                 baseline[rows] = token_receipt(args.output / (name + ".log"), rows, args.prefix)
             socket = pathlib.Path(directory) / "socket"
             server = launch([str(args.daemon.resolve()), "--socket", str(socket),
-                             "--device-bytes-max", str(args.pool_bytes)], "daemon", environment)
+                             "--device-bytes-max", str(args.pool_cap_bytes)], "daemon", environment)
             ready_deadline = min(deadline, time.monotonic() + 10)
             while not socket.is_socket():
                 if server.poll() is not None or time.monotonic() >= ready_deadline:
@@ -103,7 +103,7 @@ def compare(args):
                 time.sleep(0.02)
             lazy = environment | {"SPARK_WEIGHTD_SOCKET": str(socket),
                                   "SPARK_WEIGHTD_PACK_SHA256": args.pack_sha256,
-                                  "SPARK_WEIGHTD_EXPERT_POOL_BYTES": str(args.pool_bytes),
+                                  "SPARK_WEIGHTD_EXPERT_POOL_BYTES": str(args.pool_cap_bytes),
                                   "SPARK_WEIGHTD_SPINE_BUDGET_BYTES": str(args.spine_bytes)}
             wait(probe("lazy", 1, "lazy-b1", lazy))
             # Both real processes start before either is waited on. This does
@@ -117,7 +117,7 @@ def compare(args):
             server.terminate()
             wait(server)
             receipt = {"result": "PASS local state and token parity" if args.prefix else "PASS local token parity", "queue": os.environ["SPARK_QUEUE_ID"],
-                       "pack_sha256": args.pack_sha256, "pool_bytes": args.pool_bytes,
+                       "pack_sha256": args.pack_sha256, "pool_cap_bytes": args.pool_cap_bytes,
                        "spine_bytes_per_consumer": args.spine_bytes,
                        "probe": "prefix-eviction-movement-state-reset-temporal" if args.prefix else "token-smoke",
                        "full_vocabulary_logits": False, "batch_widths": [1, 3, 5],
@@ -135,7 +135,7 @@ def main():
     for name in ("probe", "driver", "daemon", "pack", "output"):
         parser.add_argument("--" + name, type=pathlib.Path, required=True)
     parser.add_argument("--pack-sha256", required=True)
-    parser.add_argument("--pool-bytes", type=int, required=True)
+    parser.add_argument("--pool-cap-bytes", type=int, required=True)
     parser.add_argument("--spine-bytes", type=int, required=True)
     parser.add_argument("--prefix", action="store_true", help="compare checkpoint reuse and reset continuations")
     compare(parser.parse_args())

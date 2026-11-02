@@ -49,7 +49,7 @@ def main():
         record = next(name for name, lane in sorted(records["lanes"].items()) if lane["launcher"] == "stage_lane")
         clean = {name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ}
         polluted = dict(os.environ, STAGE_EXTRA_ENV="SPARK_REQUIRED_CHECK=0", STAGE_MEMORY_MAX="1G", STAGE_LANE="0",
-                        STAGE_WEIGHTD_SOCKET="/tmp/other.sock", STAGE_EXPERT_POOL_BYTES="1")
+                        STAGE_WEIGHTD_SOCKET="/tmp/other.sock", STAGE_EXPERT_POOL_CAP_BYTES="2097152")
         first, second, changed = directory / "clean", directory / "polluted", directory / "changed"
         for path in (first, second, changed):
             path.mkdir()
@@ -68,6 +68,30 @@ def main():
             failures.append(f"{record}: tools/stage_lane.py must render a candidate lanes file outside the repository (SPARK_LANES), as stage_lane.sh setup does: {direct.stderr.strip()[-200:]}")
         if any(b"-E SPARK_REQUIRED_CHECK" in data for data in baseline.values()):
             failures.append(f"{record}: a rendered lane.sh carries extra residentd environment")
+        scripts = {name: data for name, data in baseline.items() if name.startswith("lane.") and name.endswith(".sh")}
+        if len(scripts) != 16 or any(b"SPARK_WEIGHTD_EXPERT_POOL_BYTES" in data for data in scripts.values()):
+            failures.append(f"{record}: a record without expert_pool_cap_bytes must render 16 lane scripts that never set SPARK_WEIGHTD_EXPERT_POOL_BYTES, so weightd sizes the pool from the pack")
+        capped = json.loads(json.dumps(records))
+        capped["lanes"][record]["expert_pool_cap_bytes"] = 4194304
+        capped_file = directory / "lanes-capped.json"
+        capped_file.write_text(json.dumps(capped))
+        capped_dir = directory / "capped"
+        capped_dir.mkdir()
+        capped_scripts = {name: data for name, data in render(record, capped_dir, dict(clean, SPARK_LANES=str(capped_file))).items()
+                          if name.startswith("lane.") and name.endswith(".sh")}
+        if len(capped_scripts) != 16 or not all(b"-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=4194304 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES" in data for data in capped_scripts.values()):
+            failures.append(f"{record}: a record with expert_pool_cap_bytes 4194304 must pass that cap to every rank as SPARK_WEIGHTD_EXPERT_POOL_BYTES")
+        shell = subprocess.run([sys.executable, str(LANE_CONFIG), "shell", record], env=dict(clean, SPARK_LANES=str(capped_file)), capture_output=True, text=True, timeout=60)
+        plain = subprocess.run([sys.executable, str(LANE_CONFIG), "shell", record], env=clean, capture_output=True, text=True, timeout=60)
+        if "STAGE_EXPERT_POOL_CAP_BYTES=4194304" not in shell.stdout.split() or "STAGE_EXPERT_POOL" in plain.stdout:
+            failures.append(f"{record}: lane_config shell must print STAGE_EXPERT_POOL_CAP_BYTES only for a record with expert_pool_cap_bytes")
+        field = subprocess.run([sys.executable, str(LANE_CONFIG), "field", "kimi-k3", "expert_pool_cap_bytes"], env=clean, capture_output=True, text=True, timeout=60)
+        if field.returncode != 0 or field.stdout != "\n":
+            failures.append("lane_config field must print an empty line for a record without the optional expert_pool_cap_bytes")
+        if subprocess.run([sys.executable, str(LANE_CONFIG), "field", "kimi-k3", "expert_pool_bytes"], env=clean, capture_output=True, text=True, timeout=60).returncode == 0:
+            failures.append("lane_config field must refuse the retired expert_pool_bytes field")
+        if any("expert_pool_bytes" in lane for lane in records["lanes"].values()):
+            failures.append("deployment/lanes.json still hand-sets expert_pool_bytes; weightd sizes every pool from its pack")
     sys.path.insert(0, str(ROOT / "tools"))
     import lane_config
     for record_id, lane in sorted(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"].items()):
@@ -94,17 +118,19 @@ def main():
         root = f"$HOME/k3-lanes/lane{lane['lane']}/root"
         start, warm = swap[record_id]["node_start"], swap[record_id]["node_warm"]
         wanted = (root, f"--unit=sp-k3-rd{lane['lane']} ", f"MemoryMax={lane['memory_max']} ", f"SPARK_WEIGHTD_LANE={lane['lane']} ",
-                  f"SPARK_WEIGHTD_SOCKET={lane['weightd_socket']} ", f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_bytes']} ")
+                  f"SPARK_WEIGHTD_SOCKET={lane['weightd_socket']} ")
+        cap = f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_cap_bytes']} " if "expert_pool_cap_bytes" in lane else None
         missing = [piece for piece in wanted if piece not in start]
-        if lane["runtime_root"] != f"/home/{{host}}/k3-lanes/lane{lane['lane']}/root" or missing or \
-                f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_bytes']} " not in warm or f" {lane['weightd_socket']} " not in warm:
-            failures.append(f"{record_id}: the swap entry starts and warms the lane with values the record does not hold: {missing or 'runtime_root or warm'}")
+        pool_wrong = (cap is None and ("SPARK_WEIGHTD_EXPERT_POOL_BYTES" in start or "SPARK_WEIGHTD_EXPERT_POOL_BYTES" in warm)) or \
+            (cap is not None and (f"-E {cap}" not in start or cap not in warm))
+        if lane["runtime_root"] != f"/home/{{host}}/k3-lanes/lane{lane['lane']}/root" or missing or pool_wrong or f" {lane['weightd_socket']} " not in warm:
+            failures.append(f"{record_id}: the swap entry starts and warms the lane with values the record does not hold: {missing or 'runtime_root, expert pool cap or warm'}")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
     print("PASS lane tools: release_compare passes only when every prompt's tokens match (not on a diverged token, a missing prompt, an empty or a missing capture); "
-          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a draft server listens where taps.stream points, and a record without one is refused")
+          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a record sets SPARK_WEIGHTD_EXPERT_POOL_BYTES only from its explicit expert_pool_cap_bytes; a draft server listens where taps.stream points, and a record without one is refused")
 
 
 if __name__ == "__main__":

@@ -87,6 +87,7 @@ int main(int argc, char **argv)
     SparkWeightdLazyAttachRequest request;
     SparkWeightdLazyAttachResult attach;
     SparkWeightdEnsureResult ensure;
+    SparkWeightdPoolPlan pool;
     uint64_t pool_bytes;
     uint64_t touches;
     uint64_t total_ns = 0ull;
@@ -100,7 +101,7 @@ int main(int argc, char **argv)
 
     if (argc != 4)
     {
-        fprintf(stderr, "usage: weightd_loadall roster pool-mib touches\n");
+        fprintf(stderr, "usage: weightd_loadall roster cap-mib touches (cap-mib 0 sizes each pool from its pack)\n");
         return 2;
     }
     socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
@@ -111,7 +112,8 @@ int main(int argc, char **argv)
     }
     pool_bytes = strtoull(argv[2], 0, 10) << 20;
     touches = strtoull(argv[3], 0, 10);
-    if (pool_bytes == 0ull || touches == 0ull)
+    if (touches == 0ull || argv[2][0] == '\0' ||
+        argv[2][strspn(argv[2], "0123456789")] != '\0' || strlen(argv[2]) > 12u)
     {
         return 2;
     }
@@ -185,16 +187,18 @@ int main(int argc, char **argv)
         request.identity.geometry_fingerprint = 0x504F4355ull;
         request.identity.arena_bytes = file_bytes(arms[index].pack);
         memcpy(request.identity.pack_sha256, sha_hex, strlen(sha_hex) + 1u);
-        request.expert_pool_bytes = pool_bytes;
         memset(&attach, 0, sizeof(attach));
         if (request.identity.arena_bytes == 0ull ||
-            SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK)
+            SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK ||
+            SparkWeightdPackPoolPlan(arms[index].pack,
+                request.identity.arena_bytes, pool_bytes, &pool) != SPARK_STATUS_OK)
         {
             fprintf(stderr, "weightd_loadall: identity invalid %u\n",
                 (unsigned)index);
             SparkWeightdClientClose(client);
             return 1;
         }
+        request.expert_pool_bytes = pool.request_bytes;
         if (SparkWeightdClientAttachLazy(client, &request, &attach,
                 timeout_ns) != SPARK_STATUS_OK ||
             attach.status != SPARK_STATUS_OK)

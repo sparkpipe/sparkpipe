@@ -198,10 +198,12 @@ def prepare(spec, environment):
     require(all(any(first <= port <= last for first, last in reserved) for port in range(base, base + 3 * size + 1)), "queue does not reserve every listener")
     device = int(environment["SPARK_QUEUE_DEVICE_MEMORY_MIB"]) * 1024 * 1024
     limits = spec["budgets"]
-    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "expert_pool_bytes", "spine_bytes", "kv_reserve_bytes")), "all device budgets must be finite and positive")
+    require(all(isinstance(limits[key], int) and limits[key] > 0 for key in ("weightd_device_bytes", "model_device_bytes", "spine_bytes", "kv_reserve_bytes")), "all device budgets must be finite and positive")
+    require("expert_pool_bytes" not in limits, "expert_pool_bytes is gone: weightd sizes the expert pool from the pack, and expert_pool_cap_bytes is the optional explicit cap")
+    cap = limits.get("expert_pool_cap_bytes")
+    require(cap is None or (type(cap) is int and cap > 0 and cap % (2 << 20) == 0), "expert_pool_cap_bytes must be a positive whole number of 2 MiB weightd chunks")
     require(type(limits.get("weightd_overhead_bytes", 0)) is int and limits.get("weightd_overhead_bytes", 0) >= 0, "invalid daemon overhead budget")
     require(limits["weightd_device_bytes"] + limits.get("weightd_overhead_bytes", 0) + len(plans) * limits["model_device_bytes"] <= device, "device plan exceeds queue reservation")
-    require(limits["expert_pool_bytes"] + limits["spine_bytes"] + limits["kv_reserve_bytes"] <= limits["weightd_device_bytes"], "weightd working set and KV reserve exceed ceiling")
     deployment = json.loads(Path(spec["deployment"]).read_text())
     batch = json.loads(Path(spec["batch"]).read_text())
     reference = json.loads(Path(spec["reference"]).read_text())
@@ -237,6 +239,8 @@ def prepare(spec, environment):
     require(not Path(pack).is_absolute() and ".." not in Path(pack).parts, "pack escapes runtime root")
     require(pack + ".sha256" in assets and pack + ".experts" in assets, "lazy pack identity and experts manifest must be pinned")
     require((source / pack).is_file(), "stage pack is missing")
+    pool = cap if cap is not None else (source / pack).stat().st_size
+    require(pool + limits["spine_bytes"] + limits["kv_reserve_bytes"] <= limits["weightd_device_bytes"], "weightd working set and KV reserve exceed ceiling")
     if len(plans) > 1:
         require("working_set" in spec and limits.get("weightd_overhead_bytes", 0) > 0, "shared residents require explicit working set and daemon overhead")
         require(all(deployment["runtime_limits"][key] == 1 for key in ("max_inflight_submissions", "max_active_sequences", "max_input_rows", "resident_sequence_capacity")), "shared smoke requires B1 and one in-flight submission")
@@ -252,9 +256,9 @@ def prepare(spec, environment):
         raw = (source / working["path"]).read_bytes()
         require(0 < len(raw) <= 512 * 8 and len(raw) % 8 == 0, "working set requires 1..512 complete key pairs")
         if working["mode"] == "full":
-            require(limits["expert_pool_bytes"] > (source / pack).stat().st_size, "pin-all requires full pack budget")
+            require(cap is None, "pin-all requires full pack budget: the pool is sized from the pack, so no expert_pool_cap_bytes")
         else:
-            require(limits["expert_pool_bytes"] <= (source / pack).stat().st_size, "partial working set must not premap full pack")
+            require(cap is not None, "partial working set must not premap full pack: it needs an explicit expert_pool_cap_bytes")
     root.mkdir(mode=0o700)
     (root / "mesh").mkdir()
     peers = config.get("tp_collective", {}).get("peer_hosts", [])
@@ -341,11 +345,12 @@ def run(spec):
     limits = spec["budgets"]
     env.update(SPARK_WEIGHTD_ATTACH="1", SPARK_WEIGHTD_SOCKET=str(root / "weightd.sock"),
                SPARK_WEIGHTD_DEVICE_BYTES_MAX=str(limits["weightd_device_bytes"]),
-               SPARK_WEIGHTD_EXPERT_POOL_BYTES=str(limits["expert_pool_bytes"]),
                SPARK_WEIGHTD_SPINE_BUDGET_BYTES=str(limits["spine_bytes"]),
                SPARK_WEIGHTD_KV_RESERVE_BYTES=str(limits["kv_reserve_bytes"]),
                SPARK_WEIGHTD_MESH_DIR=str(root / "mesh"),
                SPARK_WEIGHTD_LATCH_PORT=str(spec["port_base"] + 3 * len(hosts)))
+    if "expert_pool_cap_bytes" in limits:
+        env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"] = str(limits["expert_pool_cap_bytes"])
     owned = {
         "SPARK_WEIGHTD_ATTACH", "SPARK_WEIGHTD_SOCKET", "SPARK_WEIGHTD_DEVICE_BYTES_MAX",
         "SPARK_WEIGHTD_EXPERT_POOL_BYTES", "SPARK_WEIGHTD_SPINE_BUDGET_BYTES",

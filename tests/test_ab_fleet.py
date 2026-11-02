@@ -83,11 +83,21 @@ class Spec(unittest.TestCase):
 
     def test_pool_rules(self):
         s = spec()
-        s["arms"]["F1AA"]["pool_bytes"] = 34359738368
-        self.refused(s, "share arena f1 with different pools")
+        s["arms"]["F1AA"]["pool_cap_bytes"] = 4294967296
+        self.refused(s, "share arena f1 with different pool caps None and 4294967296")
         s = spec()
-        s["arms"]["F0"]["pool_bytes"] = 42949672960
+        s["arms"]["F1"]["pool_cap_bytes"] = 4294967296
+        s["arms"]["F1AA"]["pool_cap_bytes"] = 4294967296
+        ab_fleet.check_spec(s)
+        s = spec()
+        s["arms"]["F0"]["pool_cap_bytes"] = 4294967296
         self.refused(s, "differs from production's")
+        s = spec()
+        s["arms"]["F2"]["pool_bytes"] = 34359738368
+        self.refused(s, "F2: pool_bytes is gone")
+        s = spec()
+        s["production"]["pool_bytes"] = 34359738368
+        self.refused(s, "production: pool_bytes is gone")
 
     def test_root_rules(self):
         s = spec()
@@ -126,7 +136,9 @@ class Env(unittest.TestCase):
         self.assertEqual(env["AGENT_SYNC"], "local")
         self.assertEqual(env["AGENT_MEMORY_NEED_GIB"], "50")
         self.assertEqual(env["SPARK_WEIGHTD_LANE"], "1")
-        self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "42949672960")
+        self.assertNotIn("SPARK_WEIGHTD_EXPERT_POOL_BYTES", env)
+        s["arms"]["F1"]["pool_cap_bytes"] = 4294967296
+        self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F1"))["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "4294967296")
         self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F1AA"))["AGENT_MEMORY_NEED_GIB"], "12")
         self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F0"))["AGENT_MEMORY_NEED_GIB"], "12")
 
@@ -383,7 +395,7 @@ class AgentParser(unittest.TestCase):
         role, sync, need, memory_max, env = out.stdout.strip().split("|")
         self.assertEqual((role, sync, need, memory_max), ("dev", "local", "50", "20G"))
         self.assertIn("SPARK_WEIGHTD_LANE=1", env.split())
-        self.assertIn("SPARK_WEIGHTD_EXPERT_POOL_BYTES=42949672960", env.split())
+        self.assertFalse([word for word in env.split() if word.startswith("SPARK_WEIGHTD_EXPERT_POOL_BYTES=")], env)
 
     def test_agent_gate_agrees_with_placement(self):
         for avail, expected in ((82, True), (81, False)):

@@ -657,7 +657,6 @@ and spec-on results are reported separately, per content class.
    R=~/release/glm53flash.fp8.tp16
    cat > $R/agent.env.new <<'ENV'
    AGENT_ROLE=production
-   SPARK_WEIGHTD_EXPERT_POOL_BYTES=34359738368
    SPARK_GLM5_NEXT_PIN_EXPERTS=1
    SPARK_GLM5_NEXT_GRAPH_PATH=1
    SPARK_TP_WAIT_MODE=hardware

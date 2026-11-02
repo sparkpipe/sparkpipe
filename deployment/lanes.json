@@ -20,7 +20,6 @@
    "kv_backing_bytes": 47244640256,
    "kv_snapshot_bytes": 274877906944,
    "state_budget_bytes": 12884901888,
-   "expert_pool_bytes": 55834574848,
    "memory_max": "28G",
    "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
    "text_prompt_prefix_token_ids": []
@@ -40,7 +39,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 274877906944,
    "state_budget_bytes": 12884901888,
-   "expert_pool_bytes": 34359738368,
    "memory_max": "24G",
    "tokenizer_sha256": "cbb3d47283ad867d9e4ea5ef5494a25b0d8de613036fdbcf764ce1e95099dc52",
    "text_prompt_prefix_token_ids": []
@@ -51,7 +49,6 @@
    "lane": 8,
    "runtime_root": "/home/{host}/k3-lanes/lane8/root",
    "weightd_socket": "/tmp/spark_weightd.sock",
-   "expert_pool_bytes": 99568941440,
    "memory_max": "16G",
    "sequences": 8,
    "rows": 2048,
@@ -102,7 +99,6 @@
    "kv_backing_bytes": 17179869184,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
    "text_prompt_prefix_token_ids": []
@@ -128,7 +124,6 @@
     "rank": 15,
     "window": 128
    },
-   "expert_pool_bytes": 268435456,
    "memory_max": "32G",
    "tokenizer_sha256": "3bbe031d05c81f60a90e07974bf0b61560cacb7b4dcbdb99c02e555d831b3d54",
    "text_prompt_prefix_token_ids": [],
@@ -165,7 +160,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
    "text_prompt_prefix_token_ids": []
@@ -184,7 +178,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
    "text_prompt_prefix_token_ids": []
@@ -204,7 +197,6 @@
    "kv_backing_bytes": 25769803776,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914",
    "text_prompt_prefix_token_ids": [
@@ -225,7 +217,6 @@
    "kv_backing_bytes": 51539607552,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "b5a7b6b3508a56324312737509f38f001ef8f54f728aaf54e054e9de0d022914",
    "text_prompt_prefix_token_ids": [
@@ -246,7 +237,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996",
    "text_prompt_prefix_token_ids": []
@@ -266,7 +256,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "32G",
    "tokenizer_sha256": "ac95145adf17fd0579a64bbcaade30f7cd5a0c4be69d9aa0473f83b163cde61c",
    "text_prompt_prefix_token_ids": []
@@ -285,7 +274,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "56c2ca763f0e60b4d8895e1a1122bc0aed8a039e1ca45dca7c7e739cb8bc14b4",
    "text_prompt_prefix_token_ids": [
@@ -306,7 +294,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "2b9bbfb072e09cc4e4ae7e92711e661878e2b705c7d325acf7a0d7d51ed3a996",
    "text_prompt_prefix_token_ids": []
@@ -326,7 +313,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "24G",
    "tokenizer_sha256": "c4422d45792ae0e0673d48f022a3186b0d675175d3ce55826130958452bc905b",
    "text_prompt_prefix_token_ids": [
@@ -348,7 +334,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052",
    "text_prompt_prefix_token_ids": []
@@ -368,7 +353,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "32G",
    "tokenizer_sha256": "b3736c75df6a767365e6df2d7762a7fc9e74974f8fa37124a9761f0e748c0052",
    "text_prompt_prefix_token_ids": []
@@ -387,7 +371,6 @@
    "kv_backing_bytes": 17179869184,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 4294967296,
-   "expert_pool_bytes": 268435456,
    "memory_max": "24G",
    "tokenizer_sha256": "f0bbfdc01fe00c3c5ee17aeff418f6e7f271deae5f5c5badc5c0cf7294aa1714",
    "text_prompt_prefix_token_ids": []
@@ -406,7 +389,6 @@
    "kv_backing_bytes": 17179869184,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 12884901888,
-   "expert_pool_bytes": 55834574848,
    "memory_max": "28G",
    "tokenizer_sha256": "899c0b89971cd5c2a944361bf7193db7616eb6d761c982800d80afbaaacf0fd4",
    "text_prompt_prefix_token_ids": []
@@ -426,7 +408,6 @@
    "kv_backing_bytes": 8589934592,
    "kv_snapshot_bytes": 68719476736,
    "state_budget_bytes": 5368709120,
-   "expert_pool_bytes": 268435456,
    "memory_max": "16G",
    "tokenizer_sha256": "b8e27a8697719fb4514eec2a950c164dbf249eef5ee807bec60541a1632baf95",
    "text_prompt_prefix_token_ids": []

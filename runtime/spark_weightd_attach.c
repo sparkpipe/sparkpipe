@@ -147,7 +147,14 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     {
         SparkWeightdLazyAttachRequest lazy_request;
         SparkWeightdLazyAttachResult lazy_result;
+        SparkWeightdPoolPlan pool;
 
+        status = SparkWeightdPackPoolPlan(pack_path, identity.arena_bytes, 0u, &pool);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkWeightdAttachSetReason(reason, SparkStatusToString(status));
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
         status = SparkWeightdClientConnect(socket, &outcome->client, 0);
         if (status != SPARK_STATUS_OK)
         {
@@ -161,8 +168,7 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
             strlen(pack_path) + 1u <= SPARK_WEIGHTD_PATH_BYTES
                 ? strlen(pack_path) + 1u
                 : SPARK_WEIGHTD_PATH_BYTES);
-        lazy_request.expert_pool_bytes =
-            identity.arena_bytes + (2ull * 1024ull * 1024ull);
+        lazy_request.expert_pool_bytes = pool.request_bytes;
         memset(&lazy_result, 0, sizeof(lazy_result));
         status = SparkWeightdClientAttachLazy(outcome->client,
             &lazy_request, &lazy_result, timeout_nanoseconds);

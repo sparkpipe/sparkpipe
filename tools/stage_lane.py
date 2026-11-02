@@ -542,7 +542,7 @@ def expert_warm(model: dict, root: str) -> dict:
     if warm is None:
         return {}
     revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
-    return {"node_warm": (f"cd {root} && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1 | cut -d= -f2) "
+    return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
                           f"./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
                           f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
 

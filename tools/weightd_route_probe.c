@@ -68,6 +68,7 @@ int main(int argc,char **argv)
 	SparkWeightdWorkingSetResult result;
 	uint64_t raw_generation = 0ull;
 	SparkWeightdManifest manifest;
+	SparkWeightdPoolPlan pool;
 	const SparkWeightdRangeGroup *group;
 	const SparkWeightdRange *range;
 	const uint8_t *address = 0;
@@ -80,7 +81,7 @@ int main(int argc,char **argv)
 	int status;
 	if ( argc != 11 )
 	{
-		fprintf(stderr,"usage: weightd_route_probe pack model revision pool-mib waves mode layer base resident sha\n");
+		fprintf(stderr,"usage: weightd_route_probe pack model revision cap-mib waves mode layer base resident sha (cap-mib 0 sizes the pool from the pack)\n");
 		return(2);
 	}
 	if ( SparkSha256HexIsValid(argv[10]) == 0 )
@@ -95,7 +96,7 @@ int main(int argc,char **argv)
 	}
 	pool_bytes = strtoull(argv[4],0,10) << 20;
 	waves = strtoull(argv[5],0,10);
-	if ( pool_bytes == 0ull || waves == 0ull )
+	if ( waves == 0ull || argv[4][0] == '\0' || argv[4][strspn(argv[4],"0123456789")] != '\0' || strlen(argv[4]) > 12u )
 		return(2);
 	if ( probe_copy(manifest_path,sizeof(manifest_path),argv[1]) != 0 ||
 		strlen(manifest_path) + 8u > sizeof(manifest_path) )
@@ -128,7 +129,6 @@ int main(int argc,char **argv)
 	request.identity.geometry_fingerprint = 0x52505455ull;
 	request.identity.arena_bytes = pack_bytes;
 	memcpy(request.identity.pack_sha256,argv[10],SPARK_SHA256_HEX_BYTES);
-	request.expert_pool_bytes = pool_bytes;
 	if ( SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"route-probe-7 identity invalid\n");
@@ -162,6 +162,9 @@ int main(int argc,char **argv)
 			fprintf(stderr,"route-probe-8 connect failed\n");
 			return(1);
 		}
+		if ( SparkWeightdManifestPoolPlan(&manifest,pack_bytes,pool_bytes,&pool) != SPARK_STATUS_OK )
+			return(2);
+		request.expert_pool_bytes = pool.request_bytes;
 		if ( SparkWeightdClientAttachLazy(raw_client,&request,&raw_attached,timeout_ns) != SPARK_STATUS_OK )
 		{
 			fprintf(stderr,"route-probe-8 raw attach failed\n");
@@ -175,7 +178,7 @@ int main(int argc,char **argv)
 		raw_generation = raw_attached.arena_generation;
 		goto raw_waves;
 	}
-	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
+	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,pool_bytes,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"route-probe-8 attach failed\n");
 		return(1);

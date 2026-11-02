@@ -830,14 +830,59 @@ outside the daemon:
 
 ### Pool sizing
 
-Every lazy attach declares `expert_pool_bytes`. The daemon rejects 0,
-`UINT64_MAX` and values above its device budget. A pool larger than the pack
-becomes one allocation for the whole arena whose chunks are never evicted
-(`SparkWeightdPremapPool`, logged as "pool single-alloc"). A pool no larger
-than the pack becomes a slot pool (`SparkWeightdCreateSlots`, logged as "pool
-slots"): the attach allocates `expert_pool_bytes / chunk_bytes` physical
-chunks up front and refuses with `CAPACITY_EXCEEDED` when they do not fit, so
-a pool that cannot be held fails at attach instead of mid-request.
+Every lazy attach sends `expert_pool_bytes`, and no person picks that number.
+Each client derives it from the pack's `PACK.experts` and the lane's optional
+cap with `SparkWeightdManifestPoolPlan` (`runtime/spark_weightd_manifest.c`):
+`SparkWeightdLazyPackCreate` (the common runner and every module's extra
+packs), `weightd_warm`, the configured lazy path of `SparkWeightdAttachPack`
+and the probes under `tools/`. Two engines that attach one pack with the same
+cap therefore send the same pool, which a shared arena requires (below). The
+daemon does not size pools; it keeps validating what it is sent.
+
+- The exact pool, `SparkWeightdManifestPoolBytes(manifest, chunk_bytes,
+  &bytes)`, is the number of distinct `chunk_bytes`-aligned chunks of the pack
+  that any expert range touches, times `chunk_bytes`. A manifest without
+  ranges gives one chunk, the smallest slot pool the daemon accepts. Clients
+  use `SPARK_WEIGHTD_EXPERT_CHUNK_BYTES` (2 MiB), the constant the daemon
+  sizes arena chunks with (`SparkWeightdVmmReserve` takes the larger of it and
+  the device's VMM granularity, 2 MiB on GB10). A lazy pack whose daemon
+  reports another chunk size is refused with `ABI_MISMATCH`.
+- Without a cap, a pack with expert ranges requests the arena bytes plus one
+  chunk. weightd then maps the whole arena in one allocation, preloads the
+  spine into it and never evicts. That is the least memory that holds every
+  expert chunk: a slot pool of the exact size would need the spine beside it
+  as each engine's private copy (`WD-SPINE-PRIVATE`), which costs at least as
+  much because chunks holding both spine and expert bytes are counted twice,
+  and it would give up the fixed pool the common runner needs before it
+  captures decode graphs (`StageRunnerCheckResident`, `STAGE-RESIDENT`). On
+  2026-11-02 Kimi K3's rank pack spanned 47,478 chunks (99.57 GB): 43,200 of
+  them hold expert bytes (90.60 GB) and the shared spine is 9.16 GB, so the
+  exact slot pool plus a private spine would have been 0.19 GB larger.
+- Without a cap, a pack without expert ranges requests one chunk: a one-slot
+  pool, with the spine as the engine's private copy.
+- An explicit cap, for a lane that streams experts on purpose, is the request:
+  a slot pool of cap / chunk chunks. A cap larger than the exact pool is
+  refused before any attach (`weightd pool refused: cap=<cap> is larger than
+  exact=<exact>, ...`); a larger cap only wastes memory. A cap that is not a
+  whole number of chunks is refused too.
+- Every plan logs `weightd pool exact=<bytes> cap=<bytes|none> used=<bytes>
+  mode=whole-arena|slots`, where `used` is what weightd commits for the pool:
+  the arena rounded up to whole chunks in whole-arena mode, the request
+  otherwise.
+
+`SPARK_WEIGHTD_EXPERT_POOL_BYTES` carries the cap and nothing else. A lane
+record's optional `expert_pool_cap_bytes` renders it into the lane's launch
+environment and warm command ([LANES.md](LANES.md)); without a cap the
+variable is not set, and a set but empty or zero value is refused.
+
+On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above its
+device budget. A pool larger than the pack becomes one allocation for the
+whole arena whose chunks are never evicted (`SparkWeightdPremapPool`, logged
+as "pool single-alloc"). A pool no larger than the pack becomes a slot pool
+(`SparkWeightdCreateSlots`, logged as "pool slots"): the attach allocates
+`expert_pool_bytes / chunk_bytes` physical chunks up front and refuses with
+`CAPACITY_EXCEEDED` when they do not fit, so a pool that cannot be held fails
+at attach instead of mid-request.
 Acquisitions load chunks on demand into free slots and evict the least
 recently used unpinned groups to stay inside the pool
 (`SparkWeightdAcquireBudget`); an eviction unmaps the chunk and returns its
@@ -846,11 +891,7 @@ this order: free slots of every cold arena, least recently used arena first,
 then the least recently used groups of the coldest arena, whose slots are
 released as they free. Such an arena stays registered with what it still
 holds, and the next attach refills its pool to full size or is refused. A later attach to an existing arena must
-declare the same pool or gets `INVALID_ARGUMENT`. The old 8 GiB default was
-deleted in 13c1113. Consumers set `SPARK_WEIGHTD_EXPERT_POOL_BYTES` explicitly,
-and the GLM module refuses to start without it. The fleet agent passes
-34359738368 (32 GiB), which is larger than the GLM rank pack, so production
-pools the whole pack.
+declare the same pool or gets `INVALID_ARGUMENT`.
 
 ### Leases and consumer mapping
 
@@ -917,7 +958,7 @@ would pay a full cold load.
 
 Arenas are keyed by the whole identity (model, revision, topology, geometry,
 pack SHA-256, arena bytes), so two lazy attaches with equal identities, equal
-manifests and equal `expert_pool_bytes` already map one arena. What a
+manifests and equal `expert_pool_bytes` (the same cap, or none) already map one arena. What a
 development root of the production model lacked:
 
 1. Nothing stopped a dev attach whose identity differed by one field (for
@@ -953,7 +994,7 @@ Unset or empty keeps today's private attach. Any other value is refused
 What a sharer must match: the owner's `model_revision`, topology and pack (a
 symlink to the production rank pack with the same `.sha256` and `.experts` is
 enough, since the identity carries the SHA and not the path), and the owner's
-`SPARK_WEIGHTD_EXPERT_POOL_BYTES` (34359738368 in production).
+cap: none in production, so both size the pool from the same manifest.
 
 Memory: the sharer adds only its residentd (KV, workspaces, CUDA context; no
 spine copy on a pooled arena). A GLM
@@ -1079,8 +1120,10 @@ the `weightd` member.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION`
   override the slice's model and revision. The slice's `pack_sha256` takes
   precedence over `SPARK_WEIGHTD_PACK_SHA256`.
-- With `SPARK_WEIGHTD_ATTACH_LAZY` set it sends a lazy attach with
-  `expert_pool_bytes` = pack bytes + 2 MiB and maps nothing. Any failure on
+- With `SPARK_WEIGHTD_ATTACH_LAZY` set it sends a lazy attach with the pool
+  `SparkWeightdPackPoolPlan` derives from `PACK.experts` without a cap (see
+  Pool sizing: pack bytes + 2 MiB when the pack has expert ranges) and maps
+  nothing. Any failure on
   that path returns `INVALID_ARGUMENT`; the reason is `no_daemon` for a failed
   connect, otherwise the name of the failed exchange status or of the
   daemon's result status. `SparkWeightdAttachImportMap` uses whole-arena
@@ -1103,14 +1146,19 @@ exist only on the lazy path (per-chunk imports and
 ### `spark_weightd_lazy_pack.h`
 
 `SparkWeightdLazyPackCreate` and `SparkWeightdLazyPackCreateChecked` are
-startup calls. They connect, attach lazily (or shared, see "Read-only arena
-sharing"), parse `<pack>.experts`, create the consumer map, place the spine
-and start a worker thread. A missing or invalid manifest fails the call like
-any other failure.
+startup calls. They connect, parse `<pack>.experts`, size the pool from it
+and the `pool_cap` argument (`SparkWeightdManifestPoolPlan`, see Pool sizing;
+0 means no cap), attach lazily with that pool (or shared, see "Read-only arena
+sharing"), create the consumer map, place the spine and start a worker thread.
+A missing or invalid manifest fails the call like any other failure, before
+the attach. The plan is kept in `pack->pool`.
 
 Every input is explicit:
 
-- `expert_pool_bytes` of 0 is `INVALID_ARGUMENT` before any connect.
+- The request's `expert_pool_bytes` must be 0: the pack sizes the pool. Any
+  other value is `INVALID_ARGUMENT` before any connect, with a stderr line.
+- A cap above the exact pool, or not a whole number of chunks, is
+  `INVALID_ARGUMENT` before the attach.
 - The identity must pass `SparkWeightdIdentityPrepare`.
 - A missing pack is `NOT_FOUND`. The pack must be a regular file whose size
   equals `identity.arena_bytes`, otherwise `IO_ERROR`. A relative `pack_path`
@@ -1732,10 +1780,12 @@ arguments may remain, counting the program name.
 
 Warm mode:
 
-- `SPARK_WEIGHTD_EXPERT_POOL_BYTES` is required except with `--identity-print`.
-  It must be a positive decimal no larger than
-  `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT`, and it becomes `expert_pool_bytes`.
-  Set it to the pool the resident will declare.
+- The pool comes from `PACK.experts` through `SparkWeightdManifestPoolPlan`,
+  exactly as the resident computes it, so the warmed arena is the one the
+  resident attaches. `SPARK_WEIGHTD_EXPERT_POOL_BYTES`, when set, is the cap
+  and must be the resident's: a positive decimal no larger than
+  `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (otherwise usage, exit 2), at most
+  the exact pool and a whole number of chunks (otherwise exit 1).
 - SHA256 must be 64 hex digits. The tool accepts upper-case digits, but the
   attach identity check accepts only lowercase, so an upper-case SHA256 fails
   the attach (exit 1). The tool does not hash the pack; the daemon verifies it
@@ -1807,8 +1857,9 @@ result equals the identity that family's resident sends:
     attaches through `SparkWeightdAttachMappedPack`, and `weightd_warm` always
     creates a lazy arena. An eager attach to a lazy arena returns
     `INVALID_ARGUMENT`. With `SPARK_WEIGHTD_ATTACH_LAZY` set, the helper makes
-    a lazy attach with a pool of pack size + 2 MiB, which succeeds only when
-    the warm run declared that pool. The helper's import map then needs
+    a lazy attach with the pool sized from `PACK.experts` without a cap (see
+    Pool sizing), the pool an uncapped warm run sends too. The helper's import
+    map then needs
     whole-arena `EXPORT`, which rejects lazy arenas (see Leases and consumer
     mapping).
 
@@ -1888,9 +1939,9 @@ Environment for `load` and `unload`:
   tool hashes the whole pack. Set to an empty value, the attach fails.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION` replace
   MODEL and REVISION when they are non-empty.
-- A non-empty `SPARK_WEIGHTD_ATTACH_LAZY` switches to a lazy attach with a pool
-  of pack size + 2 MiB. `PACK.experts` is then required and `cold` always
-  prints 0.
+- A non-empty `SPARK_WEIGHTD_ATTACH_LAZY` switches to a lazy attach with the
+  pool sized from `PACK.experts` without a cap (see Pool sizing). `PACK.experts`
+  is then required and `cold` always prints 0.
 - `SPARK_WEIGHTDCTL_TIMEOUT_NS` is the attach timeout in nanoseconds. The
   default is 300 s; an empty, non-numeric or 0 value also gives the default.
 
@@ -1922,7 +1973,7 @@ weightd_lazy_consumer SOCKET PACK pressure
 - `consumer F` runs these steps:
   1. Initialize CUDA and hash PACK.
   2. Create a `SparkWeightdLazyPack` with model `lazy-consumer-probe`,
-     `arena_bytes` 8 MiB and a pool of three chunks.
+     `arena_bytes` 8 MiB and a cap of three chunks (the exact pool is four).
   3. Check that the daemon's chunk size is 2 MiB.
   4. Acquire experts F and F+1 in one lease.
   5. Start an 8 KiB device-to-host copy from each expert and record
@@ -1956,18 +2007,21 @@ run.
 ### weightd_smoke
 
 ```
-weightd_smoke PACK MODEL REVISION POOL_MIB TOUCHES
+weightd_smoke PACK MODEL REVISION CAP_MIB TOUCHES
 ```
 
-Lazily attaches PACK with a pool of POOL_MIB MiB. It then sends TOUCHES legacy
+Lazily attaches PACK with the pool `SparkWeightdPackPoolPlan` sizes from
+`PACK.experts` and a cap of CAP_MIB MiB (0: no cap; see Pool sizing). It then
+sends TOUCHES legacy
 single-expert `ENSURE` requests for layer 0, spread evenly over expert ids 0 to
 `expert_count - 1`, detaches, and prints
-`SMOKE experts=… touches=… ensure_ns=… pool_mib=…`.
+`SMOKE experts=… touches=… ensure_ns=… pool_mib=…`, where `pool_mib` is the
+cap argument.
 
 - The socket comes from `SPARK_WEIGHTD_SOCKET` only. The tool does not read
   `SPARK_WEIGHTD_ATTACH`.
-- The digest comes from `PACK.sha256`. The tool never reads `PACK.experts`,
-  but the daemon needs a version 2 one for the lazy attach.
+- The digest comes from `PACK.sha256`. The pool comes from `PACK.experts`,
+  which the daemon also needs for the lazy attach.
 - The identity is MODEL, REVISION, topology 16, geometry fingerprint
   `0x504F4355` and `arena_bytes` = pack size.
 - The daemon answers every `ENSURE` with `UNSUPPORTED` (see Leases and
@@ -1980,16 +2034,17 @@ single-expert `ENSURE` requests for layer 0, spread evenly over expert ids 0 to
 Exit codes:
 
 - 0: success.
-- 1: connect failure, invalid identity (including an unreadable pack), attach
-  failure or ensure failure.
-- 2: usage error, unset socket variable, zero or non-numeric POOL_MIB or
-  TOUCHES, missing or malformed `PACK.sha256`, or an argument too long for its
-  field.
+- 1: connect failure, invalid identity (including an unreadable pack), a pool
+  the plan refuses (missing manifest, or a cap above the exact pool or not a
+  whole number of chunks), attach failure or ensure failure.
+- 2: usage error, unset socket variable, non-numeric CAP_MIB, zero or
+  non-numeric TOUCHES, missing or malformed `PACK.sha256`, or an argument too
+  long for its field.
 
 ### weightd_loadall
 
 ```
-weightd_loadall ROSTER POOL_MIB TOUCHES
+weightd_loadall ROSTER CAP_MIB TOUCHES
 ```
 
 Each ROSTER line is `<pack-path> <model>`, split at the first space. Trailing
@@ -2001,7 +2056,8 @@ lines without a space or with an empty field, and lines whose pack path is
 
 On one connection it lazily attaches every arm with the identity: revision
 `loadall`, topology 16, geometry `0x504F4355`, `arena_bytes` = pack size,
-digest from `PACK.sha256`, and the same pool of POOL_MIB MiB for every arm. It
+digest from `PACK.sha256`, and each arm's pool sized from its `PACK.experts`
+with the same cap of CAP_MIB MiB (0: no cap; see Pool sizing). It
 then sends TOUCHES `ENSURE` requests per arm, spread the same way as in
 `weightd_smoke`, and prints
 `LOADALL arms=… touches=… cold_faults=… ensure_ns=…`. It never detaches.
@@ -2024,10 +2080,10 @@ Daemon limits that apply:
 Exit codes:
 
 - 0: success.
-- 1: connect failure, missing or malformed `PACK.sha256`, invalid identity,
-  attach failure or ensure failure.
-- 2: usage error, unset `SPARK_WEIGHTD_SOCKET`, zero or non-numeric POOL_MIB
-  or TOUCHES, or an unreadable roster or one with no accepted line.
+- 1: connect failure, missing or malformed `PACK.sha256`, invalid identity, a
+  pool the plan refuses, attach failure or ensure failure.
+- 2: usage error, unset `SPARK_WEIGHTD_SOCKET`, non-numeric CAP_MIB, zero or
+  non-numeric TOUCHES, or an unreadable roster or one with no accepted line.
 
 ### weightd_expert_segments
 

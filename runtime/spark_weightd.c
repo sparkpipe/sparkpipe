@@ -979,8 +979,8 @@ static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
-    chunk_bytes = (uint64_t)granularity < (2ull * 1024ull * 1024ull)
-        ? (2ull * 1024ull * 1024ull)
+    chunk_bytes = (uint64_t)granularity < SPARK_WEIGHTD_EXPERT_CHUNK_BYTES
+        ? SPARK_WEIGHTD_EXPERT_CHUNK_BYTES
         : (uint64_t)granularity;
     chunk_count = (uint32_t)((arena_bytes + chunk_bytes - 1ull) / chunk_bytes);
     arena->chunk_handles = (void **)calloc(chunk_count, sizeof(void *));

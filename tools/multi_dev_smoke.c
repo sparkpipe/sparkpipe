@@ -380,13 +380,12 @@ static int smoke_dev(const char *socket,const char *pack_path,const char *name,
 	request.identity.arena_bytes = (uint64_t)info.st_size;
 	snprintf(request.identity.model,sizeof(request.identity.model),"%s",name);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",pack_path);
-	request.expert_pool_bytes = pool_bytes;
 	if ( SparkSha256File(pack_path,request.identity.pack_sha256) != SPARK_STATUS_OK )
 	{
 		SparkWeightdClientClose(client);
 		return -34;
 	}
-	if ( SparkWeightdLazyPackCreate(socket,&request,(uint64_t)info.st_size + 255u,
+	if ( SparkWeightdLazyPackCreate(socket,&request,pool_bytes,(uint64_t)info.st_size + 255u,
 		SMOKE_TIMEOUT,&pack) != SPARK_STATUS_OK )
 	{
 		SparkWeightdClientClose(client);
@@ -604,6 +603,7 @@ static int smoke_realws(const char *socket,const char *pack_path,const char *nam
 	SparkWeightdLazyAttachResult attached;
 	SparkWeightdWorkingSetResult working;
 	SparkWeightdManifest manifest;
+	SparkWeightdPoolPlan pool;
 	SmokeClassSum sums;
 	struct stat info;
 	char sidecar[512];
@@ -651,7 +651,13 @@ static int smoke_realws(const char *socket,const char *pack_path,const char *nam
 	request.identity.arena_bytes = (uint64_t)info.st_size;
 	snprintf(request.identity.model,sizeof(request.identity.model),"%s",name);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",pack_path);
-	request.expert_pool_bytes = pool_bytes;
+	if ( SparkWeightdManifestPoolPlan(&manifest,request.identity.arena_bytes,pool_bytes,&pool) != SPARK_STATUS_OK )
+	{
+		SparkWeightdManifestDestroy(&manifest);
+		SparkWeightdClientClose(client);
+		return -58;
+	}
+	request.expert_pool_bytes = pool.request_bytes;
 	if ( sha_hex != 0 && sha_hex[0] != '\0' )
 		snprintf(request.identity.pack_sha256,sizeof(request.identity.pack_sha256),
 			"%s",sha_hex);
@@ -789,10 +795,10 @@ int main(int argument_count,char **arguments)
 	if ( state == 2 )
 	{
 		fprintf(stderr,"usage: %s makepack PACK LAYERS EXPERTS KINDS RANGE_BYTES SPINE_GAP SEED\n"
-			"       %s dev SOCKET PACK NAME ROUNDS KEYS POOL_BYTES PINS HOLD_SECONDS\n"
+			"       %s dev SOCKET PACK NAME ROUNDS KEYS POOL_CAP_BYTES PINS HOLD_SECONDS\n"
 			"       %s bandwidth MB ITERS\n"
 			"       %s evictor SOCKET ACQUIRE_LANE(0|1) HOLD_SECONDS TARGETS\n"
-			"       %s realws SOCKET PACK NAME TOPK POOL_BYTES SHA256_OR_DASH\n",
+			"       %s realws SOCKET PACK NAME TOPK POOL_CAP_BYTES SHA256_OR_DASH\n",
 			arguments[0],arguments[0],arguments[0],arguments[0],arguments[0]);
 	}
 	return state;

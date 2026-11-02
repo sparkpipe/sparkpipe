@@ -4,7 +4,6 @@
 set -euo pipefail
 CHECKOUT="$(pwd)"
 make build/mesh_register_attach_repro
-export SPARK_WEIGHTD_EXPERT_POOL_BYTES="${SPARK_WEIGHTD_EXPERT_POOL_BYTES:-25769803776}"
 export SPARK_WEIGHTD_SPINE_BUDGET_BYTES="${SPARK_WEIGHTD_SPINE_BUDGET_BYTES:-4294967296}"
 HOST="$(hostname)"
 exec build/mesh_register_attach_repro /tmp/spark_weightd.sock \

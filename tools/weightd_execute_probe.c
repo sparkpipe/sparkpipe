@@ -61,7 +61,7 @@ int main(int argc,char **argv)
 
 	if ( argc != 7 )
 	{
-		fprintf(stderr,"usage: weightd_execute_probe pack model revision pool-mib waves pack-sha256-hex\n");
+		fprintf(stderr,"usage: weightd_execute_probe pack model revision cap-mib waves pack-sha256-hex (cap-mib 0 sizes the pool from the pack)\n");
 		return(2);
 	}
 	if ( SparkSha256HexIsValid(argv[6]) == 0 )
@@ -76,7 +76,7 @@ int main(int argc,char **argv)
 	}
 	pool_bytes = strtoull(argv[4],0,10) << 20;
 	waves = strtoull(argv[5],0,10);
-	if ( pool_bytes == 0ull || waves == 0ull )
+	if ( waves == 0ull || argv[4][0] == '\0' || argv[4][strspn(argv[4],"0123456789")] != '\0' || strlen(argv[4]) > 12u )
 		return(2);
 	if ( probe_copy(manifest_path,sizeof(manifest_path),argv[1]) != 0 ||
 		strlen(manifest_path) + 8u > sizeof(manifest_path) )
@@ -108,14 +108,13 @@ int main(int argc,char **argv)
 	request.identity.geometry_fingerprint = 0x504F4355ull;
 	request.identity.arena_bytes = probe_file_bytes(argv[1]);
 	memcpy(request.identity.pack_sha256,argv[6],SPARK_SHA256_HEX_BYTES);
-	request.expert_pool_bytes = pool_bytes;
 	if ( request.identity.arena_bytes == 0ull ||
 		SparkWeightdIdentityPrepare(&request.identity) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"probe-7 identity invalid\n");
 		return(1);
 	}
-	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
+	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,pool_bytes,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"probe-8 attach failed\n");
 		return(1);
