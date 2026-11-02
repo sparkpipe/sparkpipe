@@ -282,6 +282,49 @@ class Swapper:
         self.phase = None
         self.target = None
 
+    async def clear(self):
+        self.state = "swapping"
+        self.target = None
+        self.error = None
+        self.swap_started = time.time()
+        previous = self.active
+        try:
+            self.active = None
+            for model in self.models.values():
+                self.enter(f"stopping {model['id']}")
+                await self.stop(model)
+            for label in dict.fromkeys(model["kv_label"] for model in self.models.values()):
+                self.enter(f"releasing KV pool {label}")
+                await self.release(label)
+            for model in self.models.values():
+                self.enter(f"reclaiming {model['id']} cold arenas")
+                self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
+            self.state = "idle"
+        except SwapError as error:
+            self.state = "failed"
+            self.error = str(error)
+        except Exception as error:
+            self.state = "failed"
+            self.error = f"unexpected {type(error).__name__} during {self.phase}: {error}"
+            print(json.dumps({"event": "deactivate_exception", "phase": self.phase, "error": self.error}), file=sys.stderr, flush=True)
+        record = {"from": previous, "to": None, "ok": self.state == "idle", "seconds": round(time.time() - self.swap_started, 1), "error": self.error,
+                  "memory": None, "forced": self.forced, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        self.force_requested = False
+        self.forced = False
+        self.history.append(record)
+        print(json.dumps(dict(record, event="deactivate_done")), file=sys.stderr, flush=True)
+        self.phase = None
+        if self.wanted is not None:
+            await self.drive()
+
+    async def deactivate(self, request):
+        if self.state == "swapping":
+            return web.json_response(dict(self.status(), error="a switch is in progress; deactivate after it ends"), status=409)
+        self.wanted = None
+        self.state = "swapping"
+        self.task = asyncio.ensure_future(self.clear())
+        return web.json_response(self.status(), status=202)
+
     async def drive(self):
         while self.wanted is not None and self.wanted != self.active:
             target = self.wanted
@@ -362,6 +405,7 @@ def build(swapper, token):
     app.router.add_get("/status", swapper.get_status)
     app.router.add_post("/activate", swapper.activate)
     app.router.add_post("/force", swapper.force)
+    app.router.add_post("/deactivate", swapper.deactivate)
     return app
 
 
