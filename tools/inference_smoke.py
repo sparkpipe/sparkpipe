@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -20,6 +21,10 @@ def digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             value.update(block)
     return value.hexdigest()
+
+
+def direct(path):
+    return path.is_file() and not path.is_symlink()
 
 
 def require(condition, message):
@@ -228,6 +233,7 @@ def prepare(spec, environment):
     for name, sha in assets.items():
         path = Path(name)
         require(not path.is_absolute() and ".." not in path.parts, "asset escapes runtime root")
+        require(direct(source / name), f"{source / name} is missing, not a regular file or a symlink; name the real file directly")
         require(digest(source / name) == sha, "asset differs from reference: " + name)
     config = json.loads((source / config_name).read_text())
     backend_module = config.get("tp_collective", {}).get("backend_module_path")
@@ -236,7 +242,7 @@ def prepare(spec, environment):
     pack = config["stage_pack_path"]
     require(not Path(pack).is_absolute() and ".." not in Path(pack).parts, "pack escapes runtime root")
     require(pack + ".sha256" in assets and pack + ".experts" in assets, "lazy pack identity and experts manifest must be pinned")
-    require((source / pack).is_file(), "stage pack is missing")
+    require(direct(source / pack), f"{source / pack} is missing, not a regular file or a symlink; name the real file directly")
     if len(plans) > 1:
         require("working_set" in spec and limits.get("weightd_overhead_bytes", 0) > 0, "shared residents require explicit working set and daemon overhead")
         require(all(deployment["runtime_limits"][key] == 1 for key in ("max_inflight_submissions", "max_active_sequences", "max_input_rows", "resident_sequence_capacity")), "shared smoke requires B1 and one in-flight submission")
@@ -264,18 +270,16 @@ def prepare(spec, environment):
         local.mkdir(exist_ok=index == 0)
         runtime = local / "runtime"
         runtime.mkdir()
-        for name in set(assets) | {pack}:
+        for name in set(assets) - {config_name, pack, pack + ".experts"}:
             target = runtime / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            if name != config_name:
-                if name.endswith(".wset"):
-                    target.write_bytes((source / name).read_bytes())
-                else:
-                    target.symlink_to((source / name).resolve())
+            shutil.copy2(source / name, target)
         protected = set(range(replica["port_base"], replica["port_base"] + 2 * size)) | {base + 3 * size}
         effective = private_config(config, replica["port_map"], reserved, protected, attempt)
+        effective["stage_pack_path"] = str(source / pack)
         if replica["lane"] is not None and effective.get("tp_collective"):
             effective["tp_collective"]["collective_identifier"] += replica["lane"]
+        (runtime / config_name).parent.mkdir(parents=True, exist_ok=True)
         (runtime / config_name).write_text(json.dumps(effective) + "\n")
         require(all(any(first <= port <= last for first, last in reserved) for port in protected), "queue does not reserve resident listeners")
         (local / "kv").mkdir()

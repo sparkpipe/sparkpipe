@@ -81,6 +81,15 @@ def main():
         worse["above_floor_blocks"] = [[128, 128] for _ in range(4)]
         worse["above_floor_positions"] = 512
         check("a candidate above the floor at every position has paired +inf and fails", summary.paired(worse)[2] == math.inf)
+        reference = work / "reference"
+        reference.mkdir()
+        (work / "metal").mkdir()
+        (work / "metal" / "greedy.metal.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "generated": [1, 2, 3]}]}))
+        (reference / "greedy.ref.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "variant": variant, "generated": generated}
+                                                                         for variant, generated in (("a", [1, 2, 4]), ("b", [1, 2, 3]))]}))
+        table = summary.greedy_table(work, reference)["synthetic"]
+        check("the greedy table reads the reference directory it is given, never a link under the output",
+              not (work / "ref").exists() and table["metal_matches_reference_a_tokens"] == 2 and table["metal_matches_reference_b_tokens"] == 3)
     for what, candidate in (("one block of positions", {"above_floor_blocks": [[3, 100]], "positions": 100, "above_floor_positions": 3}),):
         try:
             summary.paired(candidate)

@@ -171,36 +171,29 @@ install -m 0644 "$GENERATED/deployment.json" "$ROOT/deployment.json"
 install -m 0644 "$GENERATED/adapter.json" "$ROOT/config/adapter.json"
 rm -rf "$GENERATED"
 
-# 3. Shared pack bytes through private symlinks, exactly one digest
-#    sidecar (model_residentd refuses anything else), and the routed
-#    expert manifest the lazy attach fails closed without.
-PRIVATE_PACK="$ROOT/packs/$(basename "$DEPLOYED_PACK")"
-ln -sfn "$DEPLOYED_PACK" "$PRIVATE_PACK"
-if [ -f "$DEPLOYED_PACK.experts" ] && python3 - "$DEPLOYED_PACK.experts" <<'PYVER'
+for weight in "$DEPLOYED_PACK" "$DEPLOYED_PACK.experts"; do
+  [ ! -L "$weight" ] && [ -f "$weight" ] ||
+    fail "$weight is missing, not a regular file or a symlink; the adapter names the deployed pack directly"
+done
+python3 - "$DEPLOYED_PACK.experts" <<'PYVER' ||
 import struct, sys
 with open(sys.argv[1], "rb") as handle:
     magic, version, count, _ = struct.unpack("<IIII", handle.read(16))
 raise SystemExit(0 if (magic == 0x58504557 and version == 2 and count > 0) else 1)
 PYVER
-then
-  # only a v2 routed-expert manifest with records is usable by the lazy
-  # attach; stale v1 sidecars regenerate below like missing ones
-  ln -sfn "$DEPLOYED_PACK.experts" "$PRIVATE_PACK.experts"
-else
-  bash "$CHECKOUT/tools/k3_multidev_experts_manifest.sh" "$PRIVATE_PACK"
-fi
+  fail "$DEPLOYED_PACK.experts is not a v2 routed-expert manifest with records; regenerate it beside the pack: tools/k3_multidev_experts_manifest.sh $DEPLOYED_PACK"
 CACHED_DIGEST="$DEPLOYED_PACK.sha256"
-if [ -r "$CACHED_DIGEST" ] && [ "$(wc -c < "$CACHED_DIGEST")" -ge 65 ] && \
+if [ ! -L "$CACHED_DIGEST" ] && [ -r "$CACHED_DIGEST" ] && [ "$(wc -c < "$CACHED_DIGEST")" -ge 65 ] && \
    grep -Eq '^[0-9a-f]{64}([ \t].*)?$' "$CACHED_DIGEST"; then
   head -c 64 "$CACHED_DIGEST" > "$ROOT/packs/pack.sha256"
 else
-  sha256sum "$PRIVATE_PACK" | awk '{print $1}' > "$ROOT/packs/pack.sha256"
+  sha256sum "$DEPLOYED_PACK" | awk '{print $1}' > "$ROOT/packs/pack.sha256"
   # Best-effort cache beside the deployed pack for later attempts.
   ( set -c; umask 022
     head -c 64 "$ROOT/packs/pack.sha256" > "$CACHED_DIGEST.tmp.$$" 2>/dev/null \
       && mv "$CACHED_DIGEST.tmp.$$" "$CACHED_DIGEST" 2>/dev/null ) || true
 fi
-[ "$(find "$ROOT/packs" -maxdepth 1 -name '*.sha256' | wc -l)" = 1 ] ||
+[ "$(find "$ROOT/packs" -maxdepth 1 -name '*.sha256' | wc -l)" -eq 1 ] ||
   fail "packs/ must contain exactly one .sha256 sidecar"
 
 # 3b. Optional cold-launch preload (M3): warm the smoke expert set
@@ -230,7 +223,7 @@ print(f"k3 preload: {len(local)} of {len(pairs)} keys are stage "
 PYW
   SHA_HEX="$(cat "$ROOT/packs/pack.sha256")"
   SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_BYTES" \
-    "$ROOT/bin/weightd_warm" "$SOCKET" "$PRIVATE_PACK" "$SHA_HEX" x 4 \
+    "$ROOT/bin/weightd_warm" "$SOCKET" "$DEPLOYED_PACK" "$SHA_HEX" x 4 \
     --family k3 --wset "$ROOT/preload.wset" 300 > "$ROOT/warm.log" 2>&1 ||
     { cat "$ROOT/warm.log" >&2; fail "working set warm failed"; }
   grep -q "WSET-WARM keys=" "$ROOT/warm.log" ||
@@ -256,7 +249,7 @@ export CUDA_MODULE_LOADING=LAZY
 export CUDA_MODULE_DATA_LOADING=LAZY
 export CUDA_DEVICE_MAX_CONNECTIONS=32
 echo "k3-$FAMILY-lane$LANE: rank=$RANK host=$HOST stage=$STAGE tp=$TP_RANK \
-pack=$PRIVATE_PACK pool=${K3_EXPERT_POOL_BYTES}B spine=${K3_SPINE_BUDGET_BYTES}B \
+pack=$DEPLOYED_PACK pool=${K3_EXPERT_POOL_BYTES}B spine=${K3_SPINE_BUDGET_BYTES}B \
 socket=$SOCKET"
 exec "$ROOT/bin/sparkpipe_model_residentd" \
   --deployment "$ROOT/deployment.json" \

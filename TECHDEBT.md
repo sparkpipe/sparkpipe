@@ -1207,11 +1207,28 @@ and the multidev docs on 2026-09-28. Line numbers are in
   completed, setup refuses that lane and names the first missing file. Proof:
   setup of every lane, `release_compare` EXACT on every model against the
   linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
-  and an audit with no `LINK` line. Still linking outside the lane trees:
-  the A/B arm `packs/` of `tools/ab_fleet.py` (docs/ACCURACY_AB.md),
-  `tools/devcycle.sh`, `tools/k3_multidev_run_family.sh`, the
-  `tools/glm5_next_*` experiment scripts, and `config/stage.json` in
-  `tools/fleet_serve.sh` and `tools/fleet_node_agent.sh`.
+  and an audit with no `LINK` line.
+- Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
+  weight file or a configuration (`tests/test_no_weight_links.py` holds the
+  tree to it; the only link sites left are the CUDA toolkit alias in
+  `tools/install_cuda13_compile_only_debian13.sh`, the systemd mask in
+  `tools/devcycle/ds4_spark_brickproof.py` and the source checkout of the
+  archived release replay `tools/replay_shared_serving_release.py`, whose
+  archived `stage-assets.sh` reads it). Deployments name each rank's own
+  `config/stage_<RR>.json`; `fleet_node_agent.sh`, `fleet_serve.sh` and
+  `lag_t1_launch.sh` refuse a rank whose node names anything else or a
+  linked file, and delete an older `config/stage.json` link before a
+  start; `fleet_serve.sh` now sees a refused start (the check and the run
+  log guard ran in the background before). The family job template, the
+  GLM cold-launch A/B, `inference_smoke.py` and the K3 run family name the
+  real pack and copy one digest; the A/B `root-check` refuses any link
+  under an arm root and a pack named any other way. The dead DSV4 dev cycle
+  (`tools/devcycle.sh`, `bbench.sh`), the GLM 5.2 `r3flash_exact_cell.sh`
+  and the one-off `glm5_next_pack_swap.sh` are gone. Fleet step before the
+  new agent ships: every agent-managed or `fleet_serve` root's
+  `model_resident.json` must name `config/stage_<RR>.json` per rank (the
+  agent holds the root in `blocked-config` otherwise); the A/B window
+  scripts must render absolute pack paths and copy `packs/<pack>.sha256`.
 - The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
   hub. They reach a person only while a session runs its `watch` command
   from the workstation. Nothing sends mail or a push on its own, and the

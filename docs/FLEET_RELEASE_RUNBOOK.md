@@ -163,7 +163,9 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
      `config/model_resident.json` restarts the root: TERM, 15 s grace,
      `kill -9` fallback, memory gate, start;
    - a changed `bin/sparkpipe_model_api` only drains the API;
-   - a changed `config/stage_*.json` only relinks `config/stage.json`.
+   - a changed `config/stage_*.json` restarts nothing; the deployment names
+     each rank's own stage file, so the next start reads it (no
+     `config/stage.json` link).
 
    The root's deployment file is `model_resident.json` at the top of the root
    (`:186`, `:201`, and the hub MANIFEST), which matches none of these patterns.

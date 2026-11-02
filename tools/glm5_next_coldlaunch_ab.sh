@@ -118,7 +118,7 @@ receipt_set daemon_census_before "$(census)"
 # the qualified smoke runtime limits (B1, context 512, 128 pages, 2 GiB cap).
 python3 - "$ROOT" "$RANK" "$CONTROL_BASE" "$COLLECTIVE_BASE" "$TRANSPORT_BASE" \
          "$SESSION_BASE" "$ATTEMPT" "$LANE" "$DEPLOYMENT_SOURCE" "$FAMILY_ROOT" "$EXEC_ROOT" <<'PYEOF'
-import json, sys
+import json, shutil, sys
 from pathlib import Path
 root, rank = Path(sys.argv[1]), int(sys.argv[2])
 control_base, collective_base, transport_base, session_base = (int(a) for a in sys.argv[3:7])
@@ -148,7 +148,13 @@ for r, node in enumerate(value["nodes"]):
     node["kv_backing_maximum_bytes"] = 2 * 1024 * 1024 * 1024
 
 config_name = value["nodes"][rank]["adapter_configuration_path"]
-config = json.loads((Path(family_root) / config_name).read_text())
+
+def direct(path, hint="name the real file directly"):
+    if path.is_symlink() or not path.is_file():
+        fail(f"{path} is missing, not a regular file or a symlink; {hint}")
+    return path
+
+config = json.loads(direct(Path(family_root) / config_name).read_text())
 
 PORT_NAMES = {"listen_port", "peer_ports", "session_ports", "session_ports_hc", "draft_bridge_port"}
 def remap(item):
@@ -183,25 +189,15 @@ runtime.mkdir(parents=True, exist_ok=True)
 pack = config["stage_pack_path"]
 if Path(pack).is_absolute() or ".." in Path(pack).parts:
     fail("pack escapes runtime root")
-source_pack = Path(family_root) / pack
-if not source_pack.is_file():
-    fail(f"pack missing: {source_pack}")
+source_pack = direct(Path(family_root) / pack)
+direct(Path(str(source_pack) + ".experts"))
+direct(Path(str(source_pack) + ".ck128"), "run tools/glm5_next_ck128_stamp.sh once per node (release shared weightd requirement)")
+config["stage_pack_path"] = str(source_pack)
 packs = runtime / "packs"
 packs.mkdir()
-packs.joinpath(source_pack.name).symlink_to(source_pack.resolve())
-for suffix in (".sha256", ".experts", ".ck128"):
-    sidecar = Path(str(source_pack) + suffix)
-    if not sidecar.is_file():
-        if suffix == ".ck128":
-            fail("missing .ck128 whole-pack sidecar - run tools/glm5_next_ck128_stamp.sh once per node (release shared weightd requirement)")
-        fail(f"missing sidecar {suffix}")
-    packs.joinpath(sidecar.name).write_bytes(sidecar.read_bytes())
+packs.joinpath("pack.sha256").write_bytes(direct(Path(str(source_pack) + ".sha256")).read_bytes())
 if len(list(packs.glob("*.sha256"))) != 1:
     fail("packs/ must hold exactly one digest")
-# symlink every binary the deployment loads (adapter, driver, transport and
-# the collective backend module) from the qualified NVMe runtime root; the
-# resident resolves these RELATIVE to runtime_root (a2 r2 postmortem:
-# adapter_load not_found with a packs/-only runtime)
 assets = {deployment["adapter"]["shared_object_path"], deployment["driver"]["shared_object_path"],
           deployment["transport"]["shared_object_path"]}
 backend = config.get("tp_collective", {}).get("backend_module_path")
@@ -213,7 +209,7 @@ for relative in sorted(assets):
         fail(f"runtime asset missing in the selected release: {relative}")
     target = runtime / relative
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(source.resolve())
+    shutil.copy2(source, target)
 (runtime / config_name).parent.mkdir(parents=True, exist_ok=True)
 (runtime / config_name).write_text(json.dumps(config) + "\n")
 (root / "kv").mkdir(exist_ok=True)
@@ -222,7 +218,7 @@ print("coldlaunch prep: rank", rank, "pack", source_pack.name)
 PYEOF
 
 config_rel="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes"][int(sys.argv[2])]["adapter_configuration_path"])' "$ROOT/deployment.json" "$RANK")"
-pack_rel="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$config_rel")"
+pack_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$config_rel")"
 revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model_revision","0"))' "$ROOT/runtime/$config_rel")"
 
 # the module and the warmer both require explicit finite pool/spine budgets
@@ -234,7 +230,7 @@ export SPARK_WEIGHTD_KV_RESERVE_BYTES=0
 
 # ------------------------------ arm B preload -------------------------------
 if [ "$ARM" = "B" ]; then
-  PACK="$ROOT/runtime/$pack_rel"
+  PACK="$pack_path"
   SHA="$(cut -d' ' -f1 "$PACK.sha256")"
   t0=$(date +%s.%N)
   "$EXEC_ROOT/bin/weightd_warm" "$SHARED_SOCKET" "$PACK" "$SHA" "$revision" 16 \

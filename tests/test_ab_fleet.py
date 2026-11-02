@@ -243,10 +243,16 @@ class ArmRoot(unittest.TestCase):
         nodes = []
         for index, host in enumerate(self.spec["nodes"]):
             runtime_root = str(root) if index == 0 else f"/home/{host}/sparkdata/{name}"
-            nodes.append({"rank_index": index, "runtime_root": runtime_root,
+            nodes.append({"rank_index": index, "runtime_root": runtime_root, "adapter_configuration_path": f"config/stage_{index:02d}.json",
                           "kv_backing_directory": backing if (backing and index == 0) else runtime_root + "/kvcache"})
         (root / "model_resident.json").write_text(json.dumps({"nodes": nodes}))
-        stage = {"stage_pack_path": "packs/rank0.sp"}
+        pack = self.home / "sparkdata" / self.spec["arms"][arm]["pack_root"] / "packs" / "rank0.sp"
+        pack.parent.mkdir(parents=True, exist_ok=True)
+        for path in (pack, Path(str(pack) + ".experts"), Path(str(pack) + ".sha256")):
+            path.write_text(path.name if path.suffix != ".sha256" else "cd" * 32 + "  rank0.sp\n")
+        (root / "packs").mkdir()
+        (root / "packs" / "rank0.sp.sha256").write_text("cd" * 32)
+        stage = {"stage_pack_path": str(pack)}
         if snapshot is not None:
             stage["kv_snapshot_directory"] = snapshot
         stage["score_dump_directory"] = "runs/r1/dump"
@@ -261,6 +267,67 @@ class ArmRoot(unittest.TestCase):
         errors, private = self.check("F2", root)
         self.assertEqual(errors, [])
         self.assertTrue(private["kv_snapshot_directory"].endswith("/qab-f2/runs/r1/kv_snapshot"))
+
+    def test_linked_or_indirect_packs_and_configs_are_refused(self):
+        def stage_doc(root):
+            return json.loads((root / "config" / "stage_00.json").read_text())
+
+        def relative_pack(root):
+            doc = stage_doc(root)
+            doc["stage_pack_path"] = "packs/rank0.sp"
+            (root / "config" / "stage_00.json").write_text(json.dumps(doc))
+
+        def linked_pack(root):
+            pack = Path(stage_doc(root)["stage_pack_path"])
+            pack.rename(str(pack) + ".real")
+            pack.symlink_to(str(pack) + ".real")
+
+        def missing_manifest(root):
+            Path(stage_doc(root)["stage_pack_path"] + ".experts").unlink()
+
+        def pack_link_in_root(root):
+            (root / "packs" / "rank0.sp").symlink_to(stage_doc(root)["stage_pack_path"])
+
+        def stale_digest(root):
+            (root / "packs" / "rank0.sp.sha256").write_text("ef" * 32)
+
+        def linked_digest(root):
+            (root / "packs" / "rank0.sp.sha256").unlink()
+            (root / "packs" / "rank0.sp.sha256").symlink_to(stage_doc(root)["stage_pack_path"] + ".sha256")
+
+        def shared_stage_link(root):
+            (root / "config" / "stage.json").symlink_to("stage_00.json")
+
+        def linked_config(root):
+            config = root / "config" / "stage_00.json"
+            config.rename(root / "config" / "stage_00.real.json")
+            config.symlink_to("stage_00.real.json")
+
+        def config_named_through_link(root):
+            shared_stage_link(root)
+            doc = json.loads((root / "model_resident.json").read_text())
+            doc["nodes"][0]["adapter_configuration_path"] = "config/stage.json"
+            (root / "model_resident.json").write_text(json.dumps(doc))
+
+        cases = {
+            "relative pack": (relative_pack, "must name the arm's pack under ~/sparkdata/glm53flash.s1-fp8.tp16 by its absolute path"),
+            "linked pack": (linked_pack, "packs/rank0.sp is missing, not a regular file or a symlink"),
+            "missing manifest": (missing_manifest, "packs/rank0.sp.experts is missing, not a regular file or a symlink"),
+            "pack link in the root": (pack_link_in_root, "packs/rank0.sp is a symlink under the arm root"),
+            "stale digest": (stale_digest, "packs/ must hold exactly one *.sha256, a copy of"),
+            "linked digest": (linked_digest, "packs/rank0.sp.sha256 is a symlink under the arm root"),
+            "stage.json link": (shared_stage_link, "config/stage.json is a symlink under the arm root"),
+            "linked config": (linked_config, "config/stage_00.json is a symlink under the arm root"),
+            "config named through a link": (config_named_through_link, "adapter_configuration_path 'config/stage.json' is missing, not a regular file or a symlink"),
+        }
+        for label, (mutate, wanted) in cases.items():
+            with self.subTest(case=label):
+                root = self.make_root("F2")
+                mutate(root)
+                errors, _ = self.check("F2", root)
+                self.assertTrue(any(wanted in error for error in errors), errors)
+                shutil.rmtree(root)
+                shutil.rmtree(self.home / "sparkdata" / "glm53flash.s1-fp8.tp16")
 
     def test_snapshot_directory_in_production_is_refused(self):
         root = self.make_root("F0", snapshot="runs/snap")
@@ -364,6 +431,7 @@ class AgentParser(unittest.TestCase):
             root = self.home / "sparkdata" / self.spec["arms"][arm]["root"]
             (root / "config").mkdir(parents=True)
             (root / "config" / "stage_00.json").write_text("{}\n")
+            (root / "model_resident.json").write_text(json.dumps({"nodes": [{"rank_index": 0, "adapter_configuration_path": "config/stage_00.json"}]}))
             (root / "agent.env").write_text(ab_fleet.render_env(self.spec, arm))
 
     def tearDown(self):

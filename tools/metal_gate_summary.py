@@ -119,8 +119,8 @@ def common_prefix(first, second):
     return count
 
 
-def greedy_table(out):
-    reference = json.loads((out / "ref" / "greedy.ref.json").read_text())["prompts"]
+def greedy_table(out, reference_dir):
+    reference = json.loads((reference_dir / "greedy.ref.json").read_text())["prompts"]
     metal = {item["name"]: item["generated"] for item in json.loads((out / "metal" / "greedy.metal.json").read_text())["prompts"]}
     table = {}
     for item in reference:
@@ -195,8 +195,10 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument("--prompts", type=Path, required=True)
+    parser.add_argument("--reference", type=Path, default=None, help="reference logits directory; OUT/ref by default")
     arguments = parser.parse_args()
     out = arguments.out
+    reference_dir = arguments.reference or out / "ref"
     rows = [json.loads(line) for line in (out / "compare" / "compare.jsonl").read_text().splitlines() if line.strip()]
     labels = {row["label"] for row in rows}
     candidates, free = numerics_set(rows, "", out)
@@ -222,7 +224,7 @@ def main():
                               f"the floor at most 0.5 + {PAIRED_SIGMA:g} block standard errors; Metal passes both legs, "
                               f"{' and '.join(REQUIRED_CONTROLS)} fail"),
                      "diagnostics": diagnostics, **free},
-        "greedy": greedy_table(out) if (out / "ref" / "greedy.ref.json").exists() else None,
+        "greedy": greedy_table(out, reference_dir) if (reference_dir / "greedy.ref.json").exists() else None,
         "speed": speed(out),
     }
     receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
