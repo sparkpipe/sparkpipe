@@ -388,7 +388,10 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - **Block reductions.** `LmBlockSum` and `LmBlockMax` reduce with warp
   shuffles first, then do one round through shared memory.
 - **Fused residual and norm.** `LmFusedResidualRmsNormKernel` reads the
-  residual once and writes both the normed row and the new residual.
+  residual once and writes both the normed row and the new residual. The
+  sum is rounded to BF16 before the statistic (`SparkMathResidualSum`), as
+  the publishers' eager `residual + hidden_states` rounds it, so the norm
+  reads the residual it stores.
 - **Activation quantize.** `LmQuantiseRowsKernel` rounds each group scale
   to UE4M3 first and encodes the codes against that stored scale, so the
   consumer's `code * scale` is the nearest grid point. A nonzero group never

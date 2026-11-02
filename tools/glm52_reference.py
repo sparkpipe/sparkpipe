@@ -17,9 +17,10 @@ The rounding points follow the CUDA stage (model-families/glm52/source/
 glm52_stage.cuh): FP8 projections are e4m3 x the FP32 block scale taken in
 FP32 (the skinny kernels' arithmetic), kv_b is bf16(e4m3 x scale) as the CUDA
 pack decodes it, and
-  norms      the residual sum v = hidden + residual in FP32, residual =
-             bf16(v), normed = bf16(v r w) with the BF16 gain; the q_a and
-             kv_a norms bf16(x r w)
+  norms      the residual sum rounded first, v = bf16(hidden + residual), as
+             the publisher's eager add (and so CUDA's fused norm), normed =
+             bf16(v r w) with the BF16 gain; the q_a and kv_a norms
+             bf16(x r w)
   MLA        q_a -> norm -> q_b (192 nope + 64 rope per head), kv_a -> the
              512 latent norm plus the 64-wide rope key; interleaved rope at
              theta 8e6 on the pairs (2i, 2i+1), each rotated value rounded
@@ -141,8 +142,8 @@ class Reference:
         return base.bf16(values * self.scale_of(values) * gain)
 
     def residual_norm(self, residual, addend, gain):
-        total = residual + addend
-        return base.bf16(total), base.bf16(total * self.scale_of(total) * gain)
+        total = base.bf16(residual + addend)
+        return total, base.bf16(total * self.scale_of(total) * gain)
 
     def norm_gate(self, normed, prefix):
         if self.model["gate_rank"] == 0:

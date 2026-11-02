@@ -79,6 +79,11 @@ SPARK_MATH_FN float SparkMathRmsScale(float total, float count, float epsilon)
 	return(SPARK_MATH_RSQRT(total / count + epsilon));
 }
 
+SPARK_MATH_FN float SparkMathResidualSum(float hidden, float branch)
+{
+	return(SparkMathRoundBf16(hidden + branch));
+}
+
 SPARK_MATH_FN float SparkMathExp2Fast(float value)
 {
 #if defined(__CUDA_ARCH__)

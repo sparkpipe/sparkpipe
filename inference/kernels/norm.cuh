@@ -68,7 +68,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	{
 		float value = LmBf16ToFloat(input_bf16[base + index]);
 		if ( residual_bf16 != 0 )
-			value += LmBf16ToFloat(residual_bf16[base + index]);
+			value = SparkMathResidualSum(value, LmBf16ToFloat(residual_bf16[base + index]));
 		row[index] = value;
 		total += value * value;
 	}

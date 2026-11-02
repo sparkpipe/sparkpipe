@@ -84,7 +84,7 @@ tensor sizes before each launch.
 | Kernel | Operation |
 | --- | --- |
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
-| `spark_rmsnorm_residual` | the FP32 sum `s = h + r`, `h = bf16(s)` written back, and `bf16(rmsnorm(s) * w)` with an FP32 gain, the statistic and the normed value taken from the unrounded sum as CUDA's `LmFusedResidualRmsNormKernel` does (the Gemma, Qwen, Ling and GLM 5.2 add-and-norms); or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
+| `spark_rmsnorm_residual` | the residual add rounded first, `h = bf16(h + r)` (`SparkMathResidualSum`), written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain, the statistic and the normed value taken from the rounded sum as the publishers' eager modules and CUDA's `LmFusedResidualRmsNormKernel` do (the Gemma, Qwen, Ling and GLM 5.2 add-and-norms); or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
 | `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and an output gate read from a fused row: SiLU, or sigmoid when `sigmoid_gate` is set (Qwen 3.8 Flash), as CUDA's `LmHeadRmsNormSiluGateKernel` / `LmHeadRmsNormSigmoidGateKernel`; with `weight_f32` (GLM 5.3 Flash's KDA, `SparkDeviceChannelDeltaShape.norm_f32`) the gain is FP32 and the result is rounded once, `bf16(x r w sigmoid(g))`, as `LmRmsNormSigmoidGateKernel`; `round_norm` rounds the normed product before the gate, `bf16(bf16(x r w) sigmoid(g))` (Kimi K3's KDA) |
 | `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding over the head's first `rope_dimension` dimensions with rotate-half pairs or, `interleaved`, adjacent pairs `(2i, 2i + 1)` (CUDA's `LM_ROPE_INTERLEAVED`), written at `output_head_stride` per head when that is set (latent attention ropes 64 dimensions of each 192-wide query head straight into its 576-wide packed row), a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is; YaRN fills it from `SparkRopePlanBuildYarnInvFrequency`), cos and sin times the rope scale, and either one FP32 rotation rounded once, CUDA's `LmRopePair` (`SparkMathRopeLow`, `SparkMathRopeHigh`), or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`), which the Gemma family keeps |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
@@ -144,7 +144,9 @@ bf16 conversion and rounding, the scaled sigmoid with sigmoid and SiLU as
 its cases, softplus, the head-gate softplus (`SparkMathSoftplusGate`), the
 gated-delta decay, the bounded per-channel decay of the KDA layers
 (`SparkMathBoundedDecay`), the clamped GLU (`SparkMathClampedGlu`), the tanh
-GeLU, the softcap, the RMS scale and the rotary rotation
+GeLU, the softcap, the RMS scale, the residual add before a norm
+(`SparkMathResidualSum`, the sum rounded to BF16 as the publishers' eager
+`residual + hidden_states` rounds it) and the rotary rotation
 (`SparkMathRopeCos`, `SparkMathRopeSin`, `SparkMathRopeLow`,
 `SparkMathRopeHigh`).
 The experts' tanh GeLU is `SparkMathGeluTanhScaleFirst`, which multiplies
@@ -1080,8 +1082,8 @@ experts with a plain SiLU and no route weight, `spark_route_combine_weighted`
 and the shared expert added, as CUDA's finalize and add. The projections stay
 FP8 (`fp8_e4m3` with an FP32 scale per row and 128 inputs, CUDA's skinny FP8
 arithmetic), and the last layer's partial is added and the head norm taken
-in the stage (`prenormed_head`) from the FP32 sum, as CUDA's closing
-`LmFusedResidualRmsNormKernel` does. The indexer is not built,
+in the stage (`prenormed_head`) from the rounded sum, as the publisher's
+closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do. The indexer is not built,
 so a row past position 2,047 is refused. The 704 GB checkpoint packs to about
 780 GB at TP8 (`tools/glm52_tp16_pack.py --model glm53full --tp-degree 8`,
 through the CUDA stagepack's reader), paged from the SSD;
