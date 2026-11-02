@@ -314,6 +314,7 @@ TEST_NAMES := \
     test_stage_module_common \
     test_weightd \
     test_weightd_lease \
+    test_weightd_pool_bytes \
     test_weightd_working_set \
     test_weightd_dense_manifest \
     test_weightd_churn \
@@ -664,6 +665,7 @@ PYTHON_TESTS := \
 	tests/test_open_webui_github_tool.py \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
+	tests/test_model_swap_deactivate.py \
 	tests/test_model_swap_token.py \
 	tests/test_swap_token_shell.py \
 	tests/test_chat_frontend_switch_now.py \
@@ -1784,6 +1786,9 @@ build/multi_dev_smoke: tools/multi_dev_smoke.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY
 
 build/test_weightd_lease: tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_lease.h include/sparkpipe/spark_weightd_manifest.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tests/test_weightd_lease.c runtime/spark_weightd_lease.c runtime/spark_weightd_manifest.c $(LDFLAGS) -o $@
+
+build/test_weightd_pool_bytes: tests/test_weightd_pool_bytes.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tests/test_weightd_pool_bytes.c runtime/spark_weightd_manifest.c $(LDFLAGS) -o $@
 
 build/test_weightd_dense_manifest: tests/test_weightd_dense_manifest.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
