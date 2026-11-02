@@ -2257,6 +2257,34 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	return status;
 }
 
+static void StageRunnerModelStep(const SparkStageRunnerState *state, const SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch,
+	uint32_t rows, SparkStageRunnerStep *in)
+{
+	memset(in, 0, sizeof(*in));
+	in->hidden_bf16 = state->hidden;
+	in->positions = dispatch->positions;
+	in->context_length = dispatch->context_length;
+	in->sequence_of_row = dispatch->sequence_of_row;
+	in->sequence_row_begin = dispatch->sequence_row_begin;
+	in->sequence_row_indices = dispatch->sequence_row_indices;
+	in->recurrent_index = dispatch->recurrent_index;
+	in->gather_context = (dispatch->flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) != 0u && dispatch->active_sequence_count == 1u
+		? dispatch->gather_context : 0u;
+	in->gather_sequence = in->gather_context != 0u ? dispatch->gather_sequence : 0u;
+	in->rows = rows;
+	in->sequences = dispatch->active_sequence_count;
+	in->commit = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u ? 0u : 1u;
+	in->context = state->max_context;
+	in->multiprocessors = state->multiprocessors;
+	in->last_rows_only = state->head_last_rows;
+	in->every_row_hidden = runner->owns_final_head == 0u || state->tap_final_entry != UINT32_MAX ? 1u : 0u;
+	in->token_ids = state->token_ids_device;
+	in->host_positions = dispatch->host_positions;
+	in->host_sequence_of_row = dispatch->host_sequence_of_row;
+	in->host_state_target = dispatch->host_state_target;
+	in->graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, in) : 1u;
+}
+
 SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerState *state;
@@ -2383,29 +2411,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
 	}
-	memset(&in, 0, sizeof(in));
-	in.hidden_bf16 = state->hidden;
-	in.positions = dispatch->positions;
-	in.context_length = dispatch->context_length;
-	in.sequence_of_row = dispatch->sequence_of_row;
-	in.sequence_row_begin = dispatch->sequence_row_begin;
-	in.sequence_row_indices = dispatch->sequence_row_indices;
-	in.recurrent_index = dispatch->recurrent_index;
-	in.gather_context = (dispatch->flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) != 0u && dispatch->active_sequence_count == 1u
-		? dispatch->gather_context : 0u;
-	in.gather_sequence = in.gather_context != 0u ? dispatch->gather_sequence : 0u;
-	in.rows = rows;
-	in.sequences = dispatch->active_sequence_count;
-	in.commit = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u && state->geometry.recurrent_bytes != 0u ? 0u : 1u;
-	in.context = state->max_context;
-	in.multiprocessors = state->multiprocessors;
-	in.last_rows_only = state->head_last_rows;
-	in.every_row_hidden = runner->owns_final_head == 0u || state->tap_final_entry != UINT32_MAX ? 1u : 0u;
-	in.token_ids = state->token_ids_device;
-	in.host_positions = dispatch->host_positions;
-	in.host_sequence_of_row = dispatch->host_sequence_of_row;
-	in.host_state_target = dispatch->host_state_target;
-	in.graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, &in) : 1u;
+	StageRunnerModelStep(state, runner, dispatch, rows, &in);
 	if ( steps > 1u && in.graph_key == 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: decode chain refused: steps=%u and the model reads host row metadata for this step, which a chain step does not advance\n",
