@@ -15,7 +15,7 @@
 #define VF_OTHER_PREFIX 100u
 #define VF_FFN 256u
 
-struct SmallHy4 : Hy4Geometry
+struct SmallHy4 : Hy4Geometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 2304u;
