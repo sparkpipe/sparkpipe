@@ -943,9 +943,9 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
 - Speculation serves on Kimi K3, GLM 5.3 Full, DeepSeek V4.1 Flash, A.X K2,
-  K-EXAONE 2.0, Solar Open 2, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1 and Muse
-  Glimmer 30B, whose adapters declare
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
+  K-EXAONE 2.0, Solar Open 2, Ling 3.0 Flash and Flash Fin, Hunyuan HY4
+  preview, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1 and Muse Glimmer 30B, whose
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
   - verify frames for GLM 5.3 Flash, MiMo V2.6 Pro and Flash, HY4, Ling 3.0
     Flash and Flash Fin, and Qwen 3.8 Max, 27B and Flash, with recurrent and
@@ -958,6 +958,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     1.1-2.3x. A skinny variant that decodes each weight tile once into shared
     memory for all row blocks of a frame, keeping the per-row sums, would help
     GLM 5.3 Full and A.X K2 long frames;
+  - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
+    pack drops it, so Ling 3.0 verifies only context-lookup drafts;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
@@ -965,7 +967,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - show that plain prompts with no matches lose no speed beyond noise on
     every model that speculates; every verify-capable stage now reproduces
     one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
-    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`, and
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_hy4_verify_frames.cu`, and
     the K3 and DeepSeek V4.1 Flash tests), so speculative output is judged
     EXACT against output without speculation.
 
