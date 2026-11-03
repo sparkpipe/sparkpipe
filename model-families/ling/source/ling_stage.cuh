@@ -45,8 +45,6 @@ struct LingShape : LingLayout<G>
 		LingLayout<G>::kGqaRankFused <= G::kHidden && LingLayout<G>::kGqaRankWidth % G::kGqaHeadDim == 0u),
 		"a GQA rank owns whole query heads and its fused rows fit one collective row");
 	static_assert(G::kKdaRank % 64u == 0u, "the low-rank decay and gate projections stream in 64-column steps");
-	static_assert(LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G::kLocalExperts,
-		"a 16-row verify chunk keeps its routes within the grouped skinny expert kernel");
 };
 
 typedef struct LingLayer
@@ -459,16 +457,18 @@ struct LingModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ExpertRows(State *state, const LingLayer *layer, uint32_t index, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows,
-		cudaStream_t stream)
+	static SparkStatus Experts(State *state, const Frame &frame, const LingLayer &entry, uint32_t index)
 	{
-		const uint32_t routes = rows * G::kTopK, exact = step->commit == 0u ? 1u : 0u;
-		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
+		const LingLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK, exact = step->commit == 0u ? 1u : 0u;
+		const uint16_t *normed = state->normed;
 		const float routed_limit = G::RoutedLimit(index), shared_limit = G::SharedLimit(index);
 		LmLocalExpertRoutes expert_routes;
 		if ( Linear(layer->router, normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK ||
 			LmTopkGroupLimitedLaunch<LG_THREADS,G::kExperts,G::kGroups,G::kTopkGroups,G::kTopK>(rows, state->router_logits, layer->expert_bias,
-				state->route_expert, state->route_weight, G::kRouteScale, stream) != cudaSuccess )
+				state->route_expert, state->route_weight, G::kRouteScale, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
@@ -505,18 +505,8 @@ struct LingModel
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-			state->route_expert, state->shared_out, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
+			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
-	}
-
-	static SparkStatus Experts(State *state, const Frame &frame, const LingLayer &entry, uint32_t index)
-	{
-		const SparkStageRunnerStep *step = frame.step;
-		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-			status = ExpertRows(state, &entry, index, step, first, step->rows - first < chunk ? step->rows - first : chunk, frame.stream);
-		return status;
 	}
 
 	static const LingLayer &LayerOf(State *state, uint32_t index)

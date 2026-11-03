@@ -584,6 +584,7 @@ PYTHON_TESTS := \
 	tests/test_project_chain_cuda.py \
 	tests/test_topk_warp_cuda.py \
 	tests/test_topk_small_cuda.py \
+	tests/test_route_nan_cuda.py \
 	tests/test_bf16_convert_cuda.py \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
@@ -652,6 +653,9 @@ PYTHON_TESTS := \
 	tests/test_ling_verify_frames.py \
 	tests/test_qwen38_verify_frames.py \
 	tests/test_glm52_verify_frames.py \
+	tests/test_hy4_verify_frames.py \
+	tests/test_exact_grouped_experts.py \
+	tests/test_exact_dense_rows.py \
 	tests/test_glm52_pack_bf16_passthrough.py \
 	tests/test_glm52_pack_nvfp4_passthrough.py \
 	tests/test_glm53_contract.py \
@@ -1770,6 +1774,16 @@ build/test_qwen38_verify_frames: tests/test_qwen38_verify_frames.cu tests/cuda/v
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames (no nvcc on this host)"; fi
 build/test_glm52_verify_frames: tests/test_glm52_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/glm52/source/glm52_stage.cuh $(wildcard modules/glm53_full_tp16_resident_decode_stage/source/*.cu modules/axk2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames (no nvcc on this host)"; fi
+build/test_hy4_verify_frames: tests/test_hy4_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/hy4/source/hy4_stage.cuh $(wildcard modules/hy4_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/hy4/include -Imodel-families/hy4/source -Imodules/hy4_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_hy4_verify_frames (no nvcc on this host)"; fi
+build/test_exact_grouped_experts: tests/test_exact_grouped_experts.cu tests/cuda/verify_frames_common.cuh inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_exact_grouped_experts (no nvcc on this host)"; fi
+build/test_exact_dense_rows: tests/test_exact_dense_rows.cu tests/cuda/verify_frames_common.cuh inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_exact_dense_rows (no nvcc on this host)"; fi
+build/exact_dense_rows_bench: tools/exact_dense_rows_bench.cu inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh model-families/glm52/include/sparkpipe/spark_glm52_model.h modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h $(CUDA_HEADER_DEPS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/hy4/include -Imodules/hy4_tp16_resident_decode_stage/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
+build/exact_grouped_experts_bench: tools/exact_grouped_experts_bench.cu inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh model-families/glm52/include/sparkpipe/spark_glm52_model.h $(CUDA_HEADER_DEPS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm52/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
 
 build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_rope_parity (no nvcc on this host)"; fi
@@ -1829,7 +1843,7 @@ build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
-build/test_stage_kv_pool_resize: $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) tests/test_weightd_kv_server.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_kv_pool_resize: $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) | build

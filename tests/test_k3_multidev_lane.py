@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import k3_multidev_lane as lane  # noqa: E402
+import stage_lane  # noqa: E402
 
 LANE_BLOCKS = (
     set(range(lane.CONTROL_BASE, lane.CONTROL_BASE + 16)),
@@ -75,11 +76,13 @@ def deployment_gates(deployment, runtime_root, socket, failures):
     # >= max_active_sequences and kv_logical >= resident_sequence_capacity.
     # k3's honest bound: resident capacity x the adapter's kv_pages per
     # sequence (the per-sequence token ceiling the seam commits to).
-    expected_pages = limits["resident_sequence_capacity"] * lane.KV_PAGES_PER_SEQUENCE
+    expected_pages = (stage_lane.lane_records()["weightd"]["device_bytes_max"] - stage_lane.MODELS["k3"]["node_memory_bytes"]) // lane.kv_page_bytes(lane.TOPOLOGY)
+    check(expected_pages > limits["resident_sequence_capacity"] * lane.KV_PAGES_PER_SEQUENCE, failures,
+          "the node budget leaves K3 more device pages than its resident sequences need")
     for key in ("kv_logical_page_capacity", "kv_physical_page_capacity"):
         check(limits[key] == expected_pages, failures,
-              f"{key} must equal resident_capacity x kv_pages "
-              f"({expected_pages}), got {limits[key]}")
+              f"{key} must equal what the weightd ceiling less K3's node memory holds "
+              f"({expected_pages} pages), got {limits[key]}")
     check(limits["kv_physical_page_capacity"] >= limits["max_active_sequences"],
           failures, "kv_physical_page_capacity must cover max_active_sequences")
     check(limits["kv_logical_page_capacity"] >= limits["resident_sequence_capacity"],
@@ -315,10 +318,12 @@ def main() -> int:
                  "a wave wider than the adapter's row limit is refused"),
                 (["--sequences", "4", "--rows", "3"], f"within sequences..{lane.MAX_ROWS}",
                  "a wave narrower than one row per sequence is refused"),
-                (["--sequences", "4", "--kv-pages", "4096", "--kv-physical-pages", "256"], "must hold one sequence",
-                 "physical pages below one sequence's pages are refused"),
-                (["--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "256", "--kv-logical-pages", "128"],
-                 "must cover the physical pages", "logical pages below the sequences' pages are refused")):
+                (["--sequences", "4", "--kv-pages", "4096", "--kv-physical-pages-cap", "256"], "fewer than one sequence's",
+                 "a physical cap below one sequence's pages is refused"),
+                (["--sequences", "4", "--kv-pages", "64", "--kv-physical-pages-cap", "256", "--kv-logical-pages", "128"],
+                 "must cover 4 sequences", "logical pages below the sequences' pages are refused"),
+                (["--sequences", "4", "--kv-physical-pages", "256"], "unrecognized arguments: --kv-physical-pages",
+                 "the fixed physical page count is gone")):
             refused = subprocess.run(
                 [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
                  "--runtime-root", runtime_root,
@@ -331,13 +336,25 @@ def main() -> int:
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,
              "--weightd-socket", socket_path,
-             "--sequences", "4", "--kv-pages", "64", "--kv-physical-pages", "64",
+             "--sequences", "4", "--kv-pages", "64", "--kv-physical-pages-cap", "64",
              "--kv-backing-bytes", str(40 * 10 ** 9),
              "--output-dir", str(Path(temporary) / "defaulted")],
             capture_output=True, text=True)
-        check(defaulted.returncode == 0 and json.loads((Path(temporary) / "defaulted" / "deployment.json").read_text())
-              ["runtime_limits"]["kv_logical_page_capacity"] == 256, failures,
-              "the logical pages default to the sequences' pages when the physical pages hold fewer")
+        limits = json.loads((Path(temporary) / "defaulted" / "deployment.json").read_text())["runtime_limits"] if defaulted.returncode == 0 else {}
+        check(limits.get("kv_logical_page_capacity") == 256 and limits.get("kv_physical_page_capacity") == 64, failures,
+              "a capped pool keeps the cap and the logical pages default to the sequences' pages")
+        filled = subprocess.run(
+            [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
+             "--runtime-root", runtime_root,
+             "--weightd-socket", socket_path,
+             "--sequences", "4", "--kv-pages", "64",
+             "--kv-backing-bytes", str(40 * 10 ** 9),
+             "--output-dir", str(Path(temporary) / "filled")],
+            capture_output=True, text=True)
+        budget = (stage_lane.lane_records()["weightd"]["device_bytes_max"] - stage_lane.MODELS["k3"]["node_memory_bytes"]) // lane.kv_page_bytes("tp4pp4")
+        limits = json.loads((Path(temporary) / "filled" / "deployment.json").read_text())["runtime_limits"] if filled.returncode == 0 else {}
+        check(limits.get("kv_physical_page_capacity") == budget > 256 and limits.get("kv_logical_page_capacity") == budget, failures,
+              "without a cap the device pool may grow to what the ceiling leaves K3, and the logical pages cover it")
 
         for rows, shared in ((2048, 1024), (1024, None)):
             wide_dir = Path(temporary) / f"rows{rows}"

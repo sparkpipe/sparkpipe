@@ -338,6 +338,7 @@ struct VfRig
 		step.commit = commit;
 		step.context = VF_PAGES * G::kPageSlots;
 		step.multiprocessors = multiprocessors;
+		step.route_fault = VfRouteFault();
 		last = step;
 		if ( commit == 0u )
 		{

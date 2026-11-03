@@ -22,7 +22,7 @@ static int32_t LmDenseRows(const void *weight, LmScaleTensor scale, const uint16
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
-		status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<Format>(&args, stream) : LmSkinnyLaunchRowChunks<Format>(&args, stream);
+		status = LmSkinnyLaunch<Format>(&args, stream, row_exact);
 		if ( status != LM_LAUNCH_ERR_SHAPE || row_exact != 0u )
 			return status;
 	}

@@ -124,6 +124,7 @@ typedef struct SparkModelBatchEngineView
 	uint32_t kv_logical_page_capacity;
 	uint32_t failed_status;
 	uint32_t context_limit;
+	uint32_t cache_block_token_count;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
 	uint64_t cancelled_request_count;

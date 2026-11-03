@@ -36,8 +36,6 @@
 template<class G>
 struct GemmaShape : GemmaLayout<G>
 {
-	static_assert(!G::kMoe || LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G::kLocalExperts,
-		"a 16-row verify chunk keeps its routes within the grouped skinny expert kernel");
 	using SlidingKvGeometry = LmKvHeads<16u, G::kSlidingKvHeads, G::kSlidingDim, G::kPageSlots>;
 	using FullKvGeometry = LmKvHeads<16u, G::kFullKvHeads, G::kFullDim, G::kPageSlots>;
 };
@@ -471,11 +469,11 @@ struct GemmaModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus ExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		const uint32_t routes = rows * G::kTopK;
-		const uint16_t *hidden = step->hidden_bf16 + (uint64_t)first * G::kHidden;
-		uint16_t *output = state->partial + ((uint64_t)step->rows + first) * G::kHidden;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK;
+		const uint16_t *hidden = step->hidden_bf16;
+		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
 		GemmaRouterInputKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, layer->router_scale, state->moe_normed, G::kHidden, G::kNormEpsilon,
 			(float)(1.0 / sqrt((double)G::kHidden)));
@@ -484,7 +482,7 @@ struct GemmaModel
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmRouterSoftmaxKernel<GM_THREADS,G::kExperts><<<rows, GM_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
 		if ( LmTopkRouteLaunch<GM_THREADS,G::kTopK,true,LM_TOPK_SCORE_IDENTITY>(rows, state->router_probs, G::kExperts, state->route_expert,
-			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, stream) != cudaSuccess )
+			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		GemmaExpertScaleKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, layer->expert_scale, routes);
 		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
@@ -511,12 +509,11 @@ struct GemmaModel
 		return Launched();
 	}
 
-	static SparkStatus SigmoidExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows,
-		cudaStream_t stream)
+	static SparkStatus SigmoidExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
-		const uint32_t routes = rows * G::kTopK;
-		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
-		uint16_t *output = state->partial + ((uint64_t)step->rows + first) * G::kHidden;
+		const uint32_t rows = step->rows, routes = rows * G::kTopK;
+		const uint16_t *normed = state->normed;
+		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
 		if constexpr ( G::kRouterFloat )
 		{
@@ -532,7 +529,7 @@ struct GemmaModel
 		}
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmTopkGroupLimitedLaunch<GM_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_probs, layer->expert_bias, state->route_expert,
-				state->route_weight, G::kRoutedScale, stream) != cudaSuccess )
+				state->route_weight, G::kRoutedScale, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
@@ -552,35 +549,18 @@ struct GemmaModel
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-			state->route_expert, state->partial + (uint64_t)first * G::kHidden, output, G::kTopK, G::kLocalExperts, G::kHidden);
+			state->route_expert, state->partial, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
-	}
-
-	template<bool SIGMOID>
-	static SparkStatus ExpertChunks(State *state, const Frame &frame, const GemmaLayer &entry)
-	{
-		const SparkStageRunnerStep *step = frame.step;
-		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
-		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-		{
-			const uint32_t rows = step->rows - first < chunk ? step->rows - first : chunk;
-			if constexpr ( SIGMOID )
-				status = SigmoidExpertRows(state, &entry, step, first, rows, frame.stream);
-			else
-				status = ExpertRows(state, &entry, step, first, rows, frame.stream);
-		}
-		return status;
 	}
 
 	static SparkStatus Experts(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
-		return ExpertChunks<false>(state, frame, entry);
+		return ExpertRows(state, &entry, frame.step, frame.stream);
 	}
 
 	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const GemmaLayer &entry)
 	{
-		return ExpertChunks<true>(state, frame, entry);
+		return SigmoidExpertRows(state, &entry, frame.step, frame.stream);
 	}
 
 	static const GemmaLayer &LayerOf(State *state, uint32_t index)
