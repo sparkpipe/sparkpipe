@@ -247,7 +247,7 @@ void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation)
 	allocation->backend = 0;
 }
 
-static void HostRun(HostOperation *operation)
+static void HostRun(HostQueue *queue, HostOperation *operation)
 {
 	if ( operation->kind == HOST_OPERATION_COPY )
 		memcpy(operation->destination,operation->source,(size_t)operation->bytes);
@@ -257,6 +257,10 @@ static void HostRun(HostOperation *operation)
 		operation->function(operation->context);
 	else if ( operation->kind == HOST_OPERATION_RECORD )
 	{
+		pthread_mutex_lock(&queue->mutex);
+		queue->completed = operation->sequence;
+		pthread_cond_broadcast(&queue->progress);
+		pthread_mutex_unlock(&queue->mutex);
 		pthread_mutex_lock(&operation->event->mutex);
 		if ( operation->event->completed < operation->generation )
 		{
@@ -291,7 +295,7 @@ static void *HostWorker(void *argument)
 		if ( queue->head == 0 )
 			queue->tail = 0;
 		pthread_mutex_unlock(&queue->mutex);
-		HostRun(operation);
+		HostRun(queue,operation);
 		pthread_mutex_lock(&queue->mutex);
 		queue->completed = operation->sequence;
 		pthread_cond_broadcast(&queue->progress);
@@ -529,4 +533,35 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"event_elapsed","",0,"the stop event completed before the start event"));
 	*nanoseconds = end - begin;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path)
+{
+	(void)path;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"library_load",library->owner,0,"the host backend loads no device kernel libraries"));
+}
+
+void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
+{
+	library->backend = 0;
+}
+
+SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
+{
+	(void)kernel;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",name,0,"the host backend creates no device kernels"));
+}
+
+void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
+{
+	kernel->backend = 0;
+}
+
+SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
+	SparkDeviceAllocation *const *allocations)
+{
+	(void)queue;
+	(void)launch;
+	(void)allocations;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"the host backend launches no device kernels"));
 }

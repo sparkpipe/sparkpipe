@@ -115,6 +115,7 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 	DecodeFillKernel<<<512,256>>>(values_device,(uint64_t)context * DECODE_WIDTH,0u);
 	DecodeFillKernel<<<256,256>>>(query_device,(uint64_t)degree * query_stride,1ull << 60u);
 	DECODE_CUDA(cudaGetLastError());
+	LmKvShardView last_view;
 	for (rank=0u; rank<degree; rank++)
 	{
 		SparkKvShard shard = {degree,rank,1u};
@@ -123,6 +124,7 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		DECODE_CUDA(cudaMalloc((void **)&pools[rank],bytes));
 		DECODE_CUDA(cudaMemset(pools[rank],0,bytes));
 		DecodeCheck(LmKvShardViewInitialize<DecodeKv>(&local,pools[rank],table_device,pages,1u,pages,error_device,shard) == 0,"shard view",label);
+		last_view = local;
 		LmKvShardStoreKernel<DecodeKv,256u><<<context,256>>>(local,values_device,token_sequence_device,token_position_device,context,DECODE_WIDTH);
 		DECODE_CUDA(cudaGetLastError());
 		DecodeCheck(LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(local,query_device,query_stride,heads_per_rank,sequences_device,
@@ -135,9 +137,13 @@ static void DecodeCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 			heads_per_rank * degree,sequences_device,contexts_device,positions_device,0,0u,0u,scale,pair_send_device + (uint64_t)rank * degree * 2u * rank_stride,
 			2u * rank_stride,2u * heads_per_rank,2u,rows,0) == cudaSuccess,"pair-grouped partial launch",label);
 	}
+	if ( LmLatentShardDecodeSplits(rows) > 1u )
+		DecodeCheck(LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(last_view,query_device,query_stride,heads_per_rank,sequences_device,
+			contexts_device,positions_device,scale,split_device,split_floats - 1u,decode_device + (uint64_t)(degree - 1u) * degree * rank_stride,rank_stride,rows,0) != cudaSuccess,
+			"a split buffer one float short is refused before launch on a valid view",label);
 	DecodeCheck(LmLatentShardDecodeLaunch<DecodeKv,LmKvShardView,DECODE_LATENT,DECODE_ROPE>(LmKvShardView(),query_device,query_stride,heads_per_rank,sequences_device,
-		contexts_device,positions_device,scale,split_device,LmLatentShardDecodeSplits(rows) > 1u ? split_floats - 1u : 0u,decode_device,rank_stride,rows,0) != cudaSuccess,
-		"a split buffer one float short or an invalid view is refused before launch",label);
+		contexts_device,positions_device,scale,split_device,split_floats,decode_device,rank_stride,rows,0) != cudaSuccess,
+		"an invalid view is refused before launch with a full split buffer",label);
 	for (target=0u; target<degree; target++)
 		for (source=0u; source<degree; source++)
 		{

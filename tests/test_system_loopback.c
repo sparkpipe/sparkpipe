@@ -24,6 +24,7 @@
 #include "fixtures/model_resident_deployment_fixture.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "fixtures/test_child_guard.h"
+#include "fixtures/test_tcp_port.h"
 
 #ifndef TEST_MODEL_API_PATH
 #define TEST_MODEL_API_PATH ""
@@ -75,28 +76,6 @@ static uint64_t TestLoopbackNowMs(void)
 	assert(clock_gettime(CLOCK_MONOTONIC,&timestamp) == 0);
 	return((uint64_t)timestamp.tv_sec * 1000u +
 		(uint64_t)timestamp.tv_nsec / 1000000u);
-}
-
-static uint32_t TestLoopbackProbeFreeTcpPort(void)
-{
-	struct sockaddr_in address;
-	socklen_t address_length;
-	int32_t fd;
-	uint32_t port;
-	port = 0u;
-	fd = socket(AF_INET,SOCK_STREAM,0);
-	if ( fd >= 0 )
-	{
-		memset(&address,0,sizeof(address));
-		address.sin_family = AF_INET;
-		address.sin_addr.s_addr = htonl(0x7f000001u);
-		address.sin_port = htons(0u);
-		address_length = (socklen_t)sizeof(address);
-		if ( bind(fd,(const struct sockaddr *)&address,(socklen_t)sizeof(address)) == 0 && getsockname(fd,(struct sockaddr *)&address,&address_length) == 0 )
-			port = (uint32_t)ntohs(address.sin_port);
-		close(fd);
-	}
-	return(port);
 }
 
 static int32_t TestLoopbackProbeTcpPort(uint32_t port)
@@ -210,9 +189,9 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 64u;
-	fixture.control_port_base = TestLoopbackProbeFreeTcpPort();
-	if ( fixture.control_port_base == 0u || fixture.control_port_base > UINT16_MAX - (TEST_LOOPBACK_RANK_COUNT - 1u) )
-		fixture.control_port_base = 59000u;
+	fixture.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
+	fixture.control_port_base = TestTcpPortRange(TEST_LOOPBACK_RANK_COUNT);
+	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_LOOPBACK_RANK_COUNT;
 	fixture.coordinator_rank_index = 0u;
 	assert(snprintf(stack->deployment_path,sizeof(stack->deployment_path),"%s/deployment.json",stack->root) > 0);
@@ -716,6 +695,45 @@ static void TestLoopbackOverload(const TestLoopbackStack *stack)
 		assert(TestLoopbackJoinRequest(requests[index],TEST_LOOPBACK_HTTP_DEADLINE_MS) == 0);
 }
 
+static void TestLoopbackTailLog(const char *path,uint32_t lines)
+{
+	char buffer[16384];
+	FILE *file = fopen(path,"rb");
+	long size,start;
+	size_t count,index;
+	uint32_t seen = 0u;
+	if ( file == 0 )
+	{
+		fprintf(stderr,"test_system_loopback: no %s\n",path);
+		return;
+	}
+	assert(fseek(file,0,SEEK_END) == 0);
+	size = ftell(file);
+	start = size > (long)sizeof(buffer) - 1 ? size - (long)sizeof(buffer) + 1 : 0;
+	assert(fseek(file,start,SEEK_SET) == 0);
+	count = fread(buffer,1u,sizeof(buffer) - 1u,file);
+	fclose(file);
+	buffer[count] = '\0';
+	for (index=count; index>0u; index--)
+		if ( buffer[index - 1u] == '\n' && index != count && ++seen == lines )
+			break;
+	fprintf(stderr,"test_system_loopback: ---- last %u lines of %s ----\n%s",lines,path,buffer + index);
+	fprintf(stderr,"test_system_loopback: ---- end of %s ----\n",path);
+}
+
+static void TestLoopbackDumpLogs(const TestLoopbackStack *stack)
+{
+	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
+	uint32_t rank;
+	assert(snprintf(path,sizeof(path),"%s/api.log",stack->root) > 0);
+	TestLoopbackTailLog(path,60u);
+	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
+	{
+		assert(snprintf(path,sizeof(path),"%s/rank%u.log",stack->root,rank) > 0);
+		TestLoopbackTailLog(path,20u);
+	}
+}
+
 static void TestLoopbackSleepMs(uint64_t milliseconds)
 {
 	struct timespec delay;
@@ -784,8 +802,11 @@ static void TestLoopbackResurrectMidFlight(TestLoopbackStack *stack)
 	outcome = TestLoopbackJoinRequest(request_child,
 		(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS + 5000u);
 	if ( outcome != 0 && outcome != 10 )
+	{
 		fprintf(stderr,"test_system_loopback: mid-flight request outcome=%d\n",
 			(int)outcome);
+		TestLoopbackDumpLogs(stack);
+	}
 	assert(outcome == 0 || outcome == 10);
 	TestLoopbackExpectServed(stack,4u,(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS,
 		(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS);
@@ -857,7 +878,13 @@ static void TestLoopbackFuzz(TestLoopbackStack *stack,uint32_t rounds,uint32_t s
 			TestLoopbackSleepMs(100u);
 			TestLoopbackKillRank(stack,rank);
 			TestLoopbackRestartRank(stack,rank);
-			outcome = TestLoopbackJoinRequest(requests[0],TEST_LOOPBACK_HTTP_DEADLINE_MS);
+			outcome = TestLoopbackJoinRequest(requests[0],(uint64_t)TEST_LOOPBACK_HTTP_DEADLINE_MS + 5000u);
+			if ( outcome != 0 && outcome != 10 )
+			{
+				fprintf(stderr,"test_system_loopback: seed=%u round=%u stopped-rank request outcome=%d (20: no answer within the request deadline, -1: killed)\n",
+					initial_seed,round,(int)outcome);
+				TestLoopbackDumpLogs(stack);
+			}
 			assert(outcome == 0 || outcome == 10);
 			break;
 		}
@@ -909,11 +936,28 @@ static void TestLoopbackRemoveTree(const TestLoopbackStack *stack)
 	assert(rmdir(stack->root) == 0);
 }
 
+static void TestLoopbackExpectDrained(const TestLoopbackStack *stack)
+{
+	char path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES],line[4096];
+	uint32_t drained = 0u;
+	FILE *file;
+	assert(snprintf(path,sizeof(path),"%s/api.log",stack->root) > 0);
+	file = fopen(path,"r");
+	assert(file != 0);
+	while ( fgets(line,sizeof(line),file) != 0 )
+		drained = strstr(line,"api_exit reason=signal drained=1") != 0 ? 1u : drained;
+	fclose(file);
+	assert(drained != 0u && "SIGTERM must drain the engine and save the prefix index before the API exits");
+}
+
 static void TestLoopbackStopStack(TestLoopbackStack *stack)
 {
 	uint32_t rank;
 	if ( stack->api_child > 0 )
+	{
 		TestLoopbackKillApi(stack,SIGTERM);
+		TestLoopbackExpectDrained(stack);
+	}
 	for (rank=0u; rank<TEST_LOOPBACK_RANK_COUNT; rank++)
 		if ( stack->residents[rank] > 0 )
 			TestLoopbackKillRank(stack,rank);
@@ -924,9 +968,9 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 {
 	memset(stack,0,sizeof(*stack));
 	assert(setenv("SPARK_BATCH_INFLIGHT_BUDGET_NS","5000000000",1) == 0);
-	stack->control_tcp_port = TestLoopbackProbeFreeTcpPort();
+	stack->control_tcp_port = TestTcpPortRange(1u);
 	assert(stack->control_tcp_port != 0u);
-	stack->api_port = TestLoopbackProbeFreeTcpPort();
+	stack->api_port = TestTcpPortRange(1u);
 	assert(stack->api_port != 0u && stack->api_port != stack->control_tcp_port);
 	TestLoopbackSetupRoot(stack);
 	TestLoopbackWriteDeployment(stack);

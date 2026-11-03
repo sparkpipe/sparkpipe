@@ -1,0 +1,6 @@
+[Unit]
+Description=Export the hashed Open WebUI chat list for chat memory pruning
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/lib/sparkpipe/open_webui_chat_list.py /srv/workspace/open-webui/data/webui.db /srv/workspace/sparkpipe/open-webui-chats.json

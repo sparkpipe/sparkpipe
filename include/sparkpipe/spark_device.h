@@ -30,6 +30,12 @@ typedef enum SparkDeviceSpace
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
 
+#define SPARK_DEVICE_BIND_READ 1u
+#define SPARK_DEVICE_BIND_WRITE 2u
+#define SPARK_DEVICE_MAX_BINDINGS 30u
+#define SPARK_DEVICE_MAX_CONSTANT_BYTES 4096u
+#define SPARK_DEVICE_KERNEL_NAME_BYTES 64u
+
 typedef struct SparkDeviceBuffer
 {
 	void *host;
@@ -48,7 +54,41 @@ typedef struct SparkDeviceRange
 
 typedef struct SparkDeviceQueue SparkDeviceQueue;
 typedef struct SparkDeviceEvent SparkDeviceEvent;
+typedef struct SparkDeviceLibrary SparkDeviceLibrary;
+typedef struct SparkDeviceKernel SparkDeviceKernel;
 typedef void (*SparkDeviceHostFunction)(void *context);
+
+typedef struct SparkDeviceGrid
+{
+	uint32_t x;
+	uint32_t y;
+	uint32_t z;
+} SparkDeviceGrid;
+
+typedef struct SparkDeviceBinding
+{
+	SparkDeviceRange range;
+	uint64_t bytes;
+	uint32_t access;
+} SparkDeviceBinding;
+
+typedef struct SparkDeviceLaunch
+{
+	SparkDeviceGrid groups;
+	SparkDeviceGrid threads;
+	uint32_t shared_bytes;
+	uint32_t constant_bytes;
+	const void *constants;
+	const SparkDeviceBinding *bindings;
+	uint32_t binding_count;
+} SparkDeviceLaunch;
+
+typedef struct SparkDeviceKernelInfo
+{
+	uint32_t max_threads;
+	uint32_t simd_width;
+	uint32_t static_shared_bytes;
+} SparkDeviceKernelInfo;
 
 typedef struct SparkDeviceProperties
 {
@@ -61,6 +101,8 @@ typedef struct SparkDeviceProperties
 	uint32_t compute_units;
 	uint32_t simd_width;
 	uint32_t properties;
+	uint32_t max_group_threads;
+	uint32_t max_shared_bytes;
 } SparkDeviceProperties;
 
 typedef struct SparkDeviceConfiguration
@@ -88,10 +130,12 @@ SparkStatus SparkDeviceSynchronize(uint64_t timeout_ns);
 SparkStatus SparkDeviceAllocate(SparkDeviceBuffer *buffer, SparkDeviceSpace space, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t bytes, uint32_t access, const char *owner);
 SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceMapFileSegments(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, uint64_t segment_stride, const char *owner);
 SparkStatus SparkDeviceFree(SparkDeviceBuffer *buffer);
 SparkStatus SparkDeviceResolve(SparkDeviceAddress address, uint64_t bytes, SparkDeviceRange *range);
 SparkStatus SparkDeviceAddressOf(SparkDeviceRange range, uint64_t bytes, SparkDeviceAddress *address);
 SparkStatus SparkDeviceHostOf(SparkDeviceRange range, uint64_t bytes, void **host);
+uint32_t SparkDeviceSegmented(SparkDeviceRange range);
 
 SparkStatus SparkDeviceCopy(SparkDeviceQueue *queue, SparkDeviceRange destination, SparkDeviceRange source, uint64_t bytes);
 SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destination, uint8_t value, uint64_t bytes);
@@ -110,6 +154,13 @@ SparkStatus SparkDeviceQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent 
 SparkStatus SparkDeviceEventQuery(SparkDeviceEvent *event);
 SparkStatus SparkDeviceEventWait(SparkDeviceEvent *event, uint64_t timeout_ns);
 SparkStatus SparkDeviceEventElapsed(SparkDeviceEvent *start, SparkDeviceEvent *stop, uint64_t *nanoseconds);
+
+SparkStatus SparkDeviceLibraryLoad(SparkDeviceLibrary **library, const char *path, const char *owner);
+SparkStatus SparkDeviceLibraryUnload(SparkDeviceLibrary *library);
+SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibrary *library, const char *name);
+SparkStatus SparkDeviceKernelDestroy(SparkDeviceKernel *kernel);
+SparkStatus SparkDeviceKernelGetInfo(const SparkDeviceKernel *kernel, SparkDeviceKernelInfo *info);
+SparkStatus SparkDeviceKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch);
 
 #ifdef __cplusplus
 }

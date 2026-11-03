@@ -5,10 +5,13 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release_rollout.sh"
+sys.path.insert(0, str(ROOT / "tools"))
+import stage_lane  # noqa: E402
 HEX = "0123456789abcdef"
 STAMP = "20261013T120000Z"
 SHIMS = {
@@ -37,9 +40,9 @@ for path in "$@"; do case "$path" in -*) ;; *) echo "fake 999999999 1 ${FAKE_DF_
 def lanes():
     text = SCRIPT.read_text()
     models = re.search(r'^MODELS="([^"]*)"', text, re.M).group(1).split()
-    extra = re.search(r'^EXTRA_LANES="([^"]*)"', text, re.M).group(1).split()
-    return [re.search(r'^\s*' + re.escape(model) + r'\) echo "(\S+) \S+ \S+ (\S+) ', text, re.M).groups()
-            for model in models], extra
+    rows = [subprocess.run([sys.executable, str(ROOT / "tools" / "lane_config.py"), "release-row", model], capture_output=True, text=True, check=True).stdout.split()
+            for model in models]
+    return [(row[0], row[3]) for row in rows], []
 
 
 def build(fleet, wd_bytes):
@@ -195,7 +198,7 @@ def backup(free_kib):
 def install(fail_host, process=None):
     def body(work, fleet, state, model_lanes, extra, old_wd):
         text = SCRIPT.read_text()
-        libraries = sorted(set(re.findall(r'^\s*\S+\) echo "\S+ (\S+) ', text, re.M)) | {"libqwen38_27b_bf16_tp16_serving_adapter.so"})
+        libraries = sorted({model.get("firmware_adapter", model["adapter"]) for model in stage_lane.MODELS.values()})
         firmware = work / "fw"
         firmware.mkdir()
         (firmware / "SOURCE_COMMIT").write_text("abcdef123\n")

@@ -196,6 +196,7 @@ static void TestRuntimeLimits(void)
 	limits.resident_sequence_capacity = 256u;
 	limits.kv_logical_page_capacity = 1024u;
 	limits.kv_physical_page_capacity = 64u;
+	limits.output_vocabulary = 32000u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_OK);
 	limits.max_inflight_submission_count = 5u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -223,6 +224,7 @@ static void TestIndependentPrefillCapacity(void)
 	limits.resident_sequence_capacity = 128u;
 	limits.kv_logical_page_capacity = 512u;
 	limits.kv_physical_page_capacity = 128u;
+	limits.output_vocabulary = 32000u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) == SPARK_STATUS_OK);
 }
 
@@ -241,14 +243,18 @@ static void TestJitKvRuntimeLimits(void)
 	limits.resident_sequence_capacity = 256u;
 	limits.kv_logical_page_capacity = 1024u;
 	limits.kv_physical_page_capacity = 64u;
+	limits.output_vocabulary = 32000u;
 	limits.kv_logical_page_capacity = 1024u;
 	limits.kv_physical_page_capacity = 64u;
+	limits.output_vocabulary = 32000u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
 		SPARK_STATUS_OK);
 	limits.kv_physical_page_capacity = 31u;
+	limits.output_vocabulary = 32000u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
 	limits.kv_physical_page_capacity = 64u;
+	limits.output_vocabulary = 32000u;
 	limits.kv_logical_page_capacity = 255u;
 	assert(SparkModelServingAdapterValidateRuntimeLimits(&descriptor,&limits) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
@@ -705,6 +711,7 @@ static void TestRuntimeSubmissionValidation(void)
 	limits.resident_sequence_capacity = 8u;
 	limits.kv_logical_page_capacity = 32u;
 	limits.kv_physical_page_capacity = 8u;
+	limits.output_vocabulary = 32000u;
 	memset(lanes,0,sizeof(lanes));
 	lanes[0].request_id = 10u;
 	lanes[0].request_generation = 1u;
@@ -1062,7 +1069,7 @@ static void TestVerifySubmission(void)
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	row_lanes[0] = 0u;
 	row_lanes[1] = 1u;
-	submission.flags = UINT32_C(0x00000002);
+	submission.flags = UINT32_C(0x80000000);
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
 	submission.tokens_per_sequence = 5u;

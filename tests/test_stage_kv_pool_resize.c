@@ -16,6 +16,7 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tests/test_weightd_kv_server.h"
+#include "tests/test_stderr_capture.h"
 
 #define TEST_BLOCK 4u
 #define TEST_POSITIONS 8u
@@ -99,6 +100,7 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;
 	configuration->snapshot_maximum_bytes = 1ull << 26;
+	configuration->partition_reserve_bytes = 1ull << 20;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
@@ -231,6 +233,27 @@ static void EnginePublish(TestEngine *engine,uint8_t seed)
 	assert(SparkStageKvBindingAdmit(&engine->binding,&request,&decision) == SPARK_STATUS_OK);
 }
 
+static uint32_t EngineOccupiedPages(TestEngine *engine)
+{
+	uint32_t slot,occupied = 0u;
+	assert(pthread_mutex_lock(&engine->binding.mutex) == 0);
+	for (slot=0u; slot<engine->binding.arena.resident_block_capacity; slot++)
+		if ( engine->binding.arena.resident_slot_logical_block_indices[slot] != SPARK_KV_CACHE_NO_BLOCK )
+			occupied++;
+	assert(pthread_mutex_unlock(&engine->binding.mutex) == 0);
+	return(occupied);
+}
+
+static void EngineFill(TestEngine *engine,uint8_t seed)
+{
+	uint32_t round;
+	for (round=0u; EngineOccupiedPages(engine) < EngineView(engine).pages; round++)
+	{
+		assert(round < 2u * TEST_PHYSICAL);
+		EnginePublish(engine,(uint8_t)(seed + round));
+	}
+}
+
 static uint64_t CommittedChunks(void)
 {
 	return(SparkWeightdServerKvCommittedBytes(TestKvServer) / TEST_CHUNK_BYTES);
@@ -239,14 +262,29 @@ static uint64_t CommittedChunks(void)
 static void TestLayoutAndAttach(void)
 {
 	TestPoolView a;
+	TestStderrCapture capture;
+	uint32_t round;
+	char *text;
+	TestStderrCaptureBegin(&capture);
 	assert(SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration) == SPARK_STATUS_OK);
+	text = TestStderrCaptureEnd(&capture);
+	assert(strstr(text,"kvpoola kv capacity pages=2/16 tokens=64 margin_bytes=") != 0 && strstr(text," event=attach resident_tokens=8 chunks=4/17") != 0);
+	free(text);
 	assert(ENGINE_A.binding.kv_pool.chunk_bytes == TEST_CHUNK_BYTES && ENGINE_A.binding.kv_pool.chunk_capacity == TEST_POOL_CHUNKS);
 	assert(ENGINE_A.binding.kv_pool_minimum_chunks == TEST_MINIMUM_CHUNKS);
 	assert(ENGINE_A.binding.kv_pool_chunk_need[0] == 0u && ENGINE_A.binding.kv_pool_chunk_need[TEST_MINIMUM_CHUNKS - 1u] <= ENGINE_A.binding.pages_per_sequence);
 	assert(ENGINE_A.binding.kv_pool_chunk_need[TEST_MINIMUM_CHUNKS] > ENGINE_A.binding.pages_per_sequence);
 	a = EngineView(&ENGINE_A);
-	assert(a.chunks == TEST_POOL_CHUNKS && a.pages == TEST_PHYSICAL && CommittedChunks() == TEST_POOL_CHUNKS);
-	printf("pool layout: the page table maps first, region chunks map in page order so any granted prefix of chunks serves a page prefix, the minimum is one full sequence, an uncontended pool takes its whole size\n");
+	assert(a.chunks == TEST_MINIMUM_CHUNKS && CommittedChunks() == TEST_MINIMUM_CHUNKS && a.grows == 0u);
+	assert(a.pages >= ENGINE_A.binding.pages_per_sequence && a.pages < TEST_PHYSICAL);
+	for (round=0u; round<TEST_WAIT_MS / 10u && a.chunks < TEST_POOL_CHUNKS; round++)
+	{
+		EnginePublish(&ENGINE_A,(uint8_t)(0x40u + round));
+		SleepMs(10u);
+		a = EngineView(&ENGINE_A);
+	}
+	assert(a.chunks == TEST_POOL_CHUNKS && a.pages == TEST_PHYSICAL && CommittedChunks() == TEST_POOL_CHUNKS && a.grows >= 1u);
+	printf("pool layout: the page table maps first, region chunks map in page order so any granted prefix of chunks serves a page prefix, the minimum is one full sequence, a pool attaches with its minimum and grows on demand to its whole size\n");
 }
 
 static void TestSecondEngineReclaimsMinimum(void)
@@ -286,15 +324,16 @@ static void TestBusyEngineBorrowsFromIdle(void)
 	assert(b.grows > b_before.grows && b.chunks > b_before.chunks);
 	assert(a.chunks < a_before.chunks && a.pages < a_before.pages && a.chunks >= TEST_MINIMUM_CHUNKS);
 	assert(CommittedChunks() <= TEST_POOL_CHUNKS);
+	EngineFill(&ENGINE_B,0x60u);
 	SleepMs(400u);
 	a_before = EngineView(&ENGINE_A);
 	b_before = EngineView(&ENGINE_B);
 	PressUntilLent(&ENGINE_A,&ENGINE_B,0x90u,&a,&b);
 	assert(a.grows > a_before.grows && a.chunks > a_before.chunks);
 	assert(b.chunks < b_before.chunks && b.pages < b_before.pages && b.chunks >= TEST_MINIMUM_CHUNKS);
-	assert(b.vacated > b_before.vacated);
+	assert(b.vacated - b_before.vacated == b_before.pages - b.pages);
 	assert(CommittedChunks() <= TEST_POOL_CHUNKS);
-	printf("two engines under load: the engine that evicts grows, the idle engine vacates its top pages (parked or discarded) and shrinks, the node reserve is never exceeded, and the roles reverse when the load moves\n");
+	printf("two engines under load: the engine that evicts grows, the idle engine, every page full, vacates each page it gives up (parked or discarded) and shrinks, the node reserve is never exceeded, and the roles reverse when the load moves\n");
 }
 
 static void TestVacatedPagesStillServe(void)

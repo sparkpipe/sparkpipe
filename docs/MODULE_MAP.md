@@ -66,7 +66,8 @@ A new model family provides:
 - a module directory with its serving glue (KV region layout, adapter
   descriptor) and the stage-model instantiation;
 - a stage packer built on `tools/spark_pack_common.py`;
-- a `tools/stage_lane.py` lane entry and a chat-layer model entry.
+- a `tools/stage_lane.py` model entry, a production lane record in
+  `deployment/lanes.json` (docs/LANES.md) and a chat-layer model entry.
 
 It uses the common stage runner, resident, weightd, deployment, transport,
 pipeline, batch and release interfaces unchanged.

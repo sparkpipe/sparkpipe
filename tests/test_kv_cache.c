@@ -13,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_kv_shared_index.h"
@@ -1375,6 +1376,79 @@ static void SparkTestPrefixCacheResumeInsideEarlierBlock(void)
 	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
 	assert(SparkPrefixCacheResumeTokenCount(&imported,follow,reply_end) == checkpoint);
 	printf("prefix cache resume points: a resumable point inside an earlier matched block is found when a later turn matches past it, a sibling that diverges before it gets none, and import keeps it findable: ok\n");
+}
+
+static void SparkTestPrefixCacheRetention(void)
+{
+	SparkTestKvFixture fixture,imported_fixture;
+	SparkPrefixCache cache,imported;
+	SparkPrefixCacheEntry entries[8u],imported_entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u],imported_bindings[16u];
+	SparkPrefixCacheCommittedRecord records[8u];
+	SparkPrefixCacheLookup lookup;
+	uint32_t tokens[12u],index,count,added,skipped,expired;
+	uint64_t now = (uint64_t)time(0);
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<12u; index++)
+		tokens[index] = 6000u + index;
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,3u * SPARK_TEST_BLOCK_TOKENS,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 3u);
+	for (index=0u; index<count; index++)
+		assert(records[index].used_seconds != 0u && (uint64_t)records[index].used_seconds + 60u >= now);
+	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheExpire(&cache,now,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 3u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == 0u);
+	assert(SparkPrefixCacheExportCommitted(&cache,records + 4u,4u,&added) == SPARK_STATUS_OK && added == 0u);
+	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
+	records[0].used_seconds = (uint32_t)(now - SPARK_KV_RETENTION_SECONDS - 60u);
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+	records[0].used_seconds = 0u;
+	assert(SparkPrefixCacheImportCommitted(&imported,records,1u,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == 1u);
+	records[0].used_seconds = (uint32_t)now;
+	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+	printf("prefix cache retention: an index record unused for %llu s leaves the cache and is refused on import, an entry a live request holds stays, a record without a use time is refused: ok\n",
+		(unsigned long long)SPARK_KV_RETENTION_SECONDS);
+}
+
+static void SparkTestPrefixCacheResumeSuperseded(void)
+{
+	SparkTestKvFixture fixture;
+	SparkPrefixCache cache;
+	SparkPrefixCacheEntry entries[8u];
+	SparkPrefixCacheSequenceBinding bindings[16u];
+	SparkPrefixCacheLookup lookup;
+	const uint32_t anchor = 3u * SPARK_TEST_BLOCK_TOKENS,checkpoint = 6u * SPARK_TEST_BLOCK_TOKENS + 2u;
+	uint32_t tokens[28u],index,position,superseded,total = 0u;
+	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
+	for (index=0u; index<28u; index++)
+		tokens[index] = 5000u + index;
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,28u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,8u,0u,anchor,&superseded) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,8u,4u,anchor + 1u,&superseded) == SPARK_STATUS_INVALID_ARGUMENT);
+	for (position=SPARK_TEST_BLOCK_TOKENS; position<=6u*SPARK_TEST_BLOCK_TOKENS; position+=SPARK_TEST_BLOCK_TOKENS)
+	{
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,position) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheSupersedeResume(&cache,tokens,position,4u,anchor,&superseded) == SPARK_STATUS_OK);
+		assert(superseded == (position == 5u * SPARK_TEST_BLOCK_TOKENS || position == 6u * SPARK_TEST_BLOCK_TOKENS ? 1u : 0u));
+		total += superseded;
+	}
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,11u) == 0u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,23u) == 20u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,checkpoint,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,28u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,28u,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
+	assert(total == 2u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,19u) == 16u);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,checkpoint) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,27u) == checkpoint);
+	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,28u) == 28u);
+	printf("prefix cache resume points: marking a resume point clears the block-aligned ones on its path beyond the three nearest, as the ranks drop those states, keeps every checkpoint-aligned one, and never counts a resume point inside a block: ok\n");
 }
 
 static void SparkTestPrefixCachePartialPublication(void)
@@ -3346,6 +3420,8 @@ int main(void)
 	SparkTestPrefixCacheResumePoints();
 	SparkTestPrefixCacheResumeInsideLastBlock();
 	SparkTestPrefixCacheResumeInsideEarlierBlock();
+	SparkTestPrefixCacheRetention();
+	SparkTestPrefixCacheResumeSuperseded();
 	SparkTestPrefixCachePartialPublication();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);

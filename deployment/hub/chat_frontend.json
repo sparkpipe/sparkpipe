@@ -1,10 +1,32 @@
 {
+ "public": {
+  "header": "X-SparkPipe-Public",
+  "keys_file": "api_keys.json",
+  "models": [
+   "glm-5.3",
+   "glm-5.3-flash",
+   "kimi-k3",
+   "deepseek-v4.1-flash",
+   "gemma-4-31b",
+   "gemma-4-26b-a4b",
+   "hy4-preview",
+   "ling-3.0-flash",
+   "muse-glimmer-30b",
+   "ling-3.0-flash-fin",
+   "laguna-s-2.1",
+   "mimo-v2.6-flash",
+   "mimo-v2.6-pro",
+   "k-exaone-2.0",
+   "a.x-k2",
+   "solar-open-2"
+  ]
+ },
  "models": [
   {
    "id": "glm-5.3",
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
-   "context_tokens": 262144,
+   "context_tokens": 1048576,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -27,9 +49,6 @@
     "clear_thinking"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "low"
-    },
     "low": {
      "reasoning_effort": "low"
     },
@@ -80,9 +99,6 @@
     "clear_thinking"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_effort": "low"
-    },
     "low": {
      "reasoning_effort": "low"
     },
@@ -108,20 +124,9 @@
   },
   {
    "id": "kimi-k3",
-   "chat_memory": {
-    "curator_suffix": "<|close|>think<|sep|><|open|>response<|sep|>",
-    "cache_checkpoint_tokens": 16384,
-    "open_budget": 1500,
-    "line_tokens": 48,
-    "working_tokens": 24576,
-    "ledger_tokens": 12288,
-    "part_small_tokens": 1024,
-    "part_cap_tokens": 12288,
-    "keep_tokens": 4096
-   },
    "model_dir": "models/kimi-k3",
    "engine": "http://127.0.0.1:8459",
-   "context_tokens": 737280,
+   "context_tokens": 1048576,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -171,7 +176,8 @@
    },
    "reasoning": {
     "start": "<|open|>think<|sep|>",
-    "end": "<|close|>think<|sep|>"
+    "end": "<|close|>think<|sep|>",
+    "close": "<|close|>think<|sep|><|open|>response<|sep|>"
    },
    "tool_calls": {
     "format": "tagged",
@@ -236,7 +242,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -345,7 +352,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -362,7 +370,7 @@
    "id": "qwen3.8-flash",
    "model_dir": "models/qwen3.8-flash",
    "engine": "http://127.0.0.1:8465",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -401,7 +409,8 @@
    },
    "reasoning": {
     "start": "<think>",
-    "end": "</think>"
+    "end": "</think>",
+    "close": "\n</think>\n\n"
    },
    "tool_calls": {
     "format": "function_xml",
@@ -470,7 +479,7 @@
    "id": "gemma-4-26b-a4b",
    "model_dir": "models/gemma-4-26b-a4b",
    "engine": "http://127.0.0.1:8467",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -577,7 +586,7 @@
    "id": "ling-3.0-flash",
    "model_dir": "models/ling-3.0-flash",
    "engine": "http://127.0.0.1:8468",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 0.6,
@@ -630,7 +639,7 @@
    "id": "muse-glimmer-30b",
    "model_dir": "models/muse-glimmer-30b",
    "engine": "http://127.0.0.1:8471",
-   "context_tokens": 32768,
+   "context_tokens": 131072,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -652,9 +661,6 @@
     "reasoning_strength"
    ],
    "reasoning_effort": {
-    "minimal": {
-     "reasoning_strength": "low"
-    },
     "low": {
      "reasoning_strength": "low"
     },
@@ -692,7 +698,7 @@
    "id": "ling-3.0-flash-fin",
    "model_dir": "models/ling-3.0-flash-fin",
    "engine": "http://127.0.0.1:8469",
-   "context_tokens": 32768,
+   "context_tokens": 262144,
    "max_output_tokens": 32768,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -905,6 +911,155 @@
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
    }
+  },
+  {
+   "id": "k-exaone-2.0",
+   "model_dir": "models/k-exaone-2.0",
+   "engine": "http://127.0.0.1:8477",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/generation_config.json",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|endofturn|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
+  },
+  {
+   "id": "a.x-k2",
+   "model_dir": "models/a.x-k2",
+   "engine": "http://127.0.0.1:8478",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 0.9,
+    "top_p": 0.95
+   },
+   "sampling_source": "/mnt/cold-raid6/models/ax-k2-fp8-official/generation_config.json",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im_end|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>"
+   },
+   "tool_calls": {
+    "format": "json",
+    "start": "<tool_call>",
+    "end": "</tool_call>"
+   }
+  },
+  {
+   "id": "solar-open-2",
+   "model_dir": "models/solar-open-2",
+   "engine": "http://127.0.0.1:8479",
+   "context_tokens": 262144,
+   "max_output_tokens": 32768,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 1.0
+   },
+   "sampling_source": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/README.md",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "stop_tokens": [
+    "<|im:end|>"
+   ],
+   "template_defaults": {},
+   "template_kwargs": [
+    "reasoning_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "reasoning_effort": "low"
+    },
+    "low": {
+     "reasoning_effort": "medium"
+    },
+    "medium": {
+     "reasoning_effort": "medium"
+    },
+    "high": {
+     "reasoning_effort": "high"
+    }
+   },
+   "reasoning": {
+    "start": "<|think:start|>",
+    "end": "<|think:end|>"
+   },
+   "tool_calls": {
+    "start": "<|tool_call:start|>",
+    "end": "<|tool_call:end|>",
+    "key_start": "<|tool_arg:start|>",
+    "key_end": "<|tool_arg:value|>",
+    "value_start": "",
+    "value_end": "<|tool_arg:end|>"
+   }
   }
  ],
  "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
@@ -916,7 +1071,22 @@
  "site_dir": "site",
  "chat_memory": {
   "store": "/srv/workspace/sparkpipe/chat-memory",
-  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret"
+  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret",
+  "open_webui_chat_list": "/srv/workspace/sparkpipe/open-webui-chats.json",
+  "budgets": {
+   "open_budget": 1500,
+   "line_tokens": 48,
+   "group_size": 16,
+   "working_tokens": 24576,
+   "working_context_share": 0.1875,
+   "ledger_tokens": 12288,
+   "ledger_context_share": 0.1,
+   "part_small_tokens": 1024,
+   "part_cap_tokens": 12288,
+   "keep_tokens": 4096,
+   "target_tolerance": 0.25,
+   "target_minimum_tokens": 16384
+  }
  },
  "client": {
   "citation_wrapper": {

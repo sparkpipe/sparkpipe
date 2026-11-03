@@ -8,6 +8,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_named_pack.h"
+#include "sparkpipe/spark_named_pack_bind.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
@@ -31,10 +32,11 @@
 #include "inference/kernels/topk_group.cuh"
 #include "runtime/gemm.cuh"
 
+#include "sparkpipe/spark_hy4_family.h"
+
 #define HY_THREADS 256u
 #define HY_HC_ROWS 4u
 #define HY_SCALE_GROUP 32u
-#define HY_PACK_ALIGNMENT 128u
 #define HY_SELECT_CHUNK 64u
 #define HY_HC_LANES 256u
 #define HY_HC_SLICE 32u
@@ -42,20 +44,12 @@
 #define HY_HC_SPLIT_ROWS 16u
 
 template<class G>
-struct HyShape
+struct HyShape : HyLayout<G>
 {
-	static constexpr uint32_t kRankHeads = G::kHeads / G::kTpDegree;
-	static constexpr uint32_t kQkDim = G::kNope + G::kRope;
-	static constexpr uint32_t kSlot = G::kLatent + G::kRope;
 	static constexpr uint32_t kRecord = LM_LATENT_SHARD_RECORD_FLOATS(G::kLatent);
-	static constexpr uint32_t kResidual = G::kStreams * G::kHidden;
-	static constexpr uint32_t kIndexWidth = G::kIndexHeads * G::kIndexDim;
-	static constexpr uint32_t kCandidateSplit = (G::kIndexTopk * 4u + G::kHidden - 1u) / G::kHidden;
-	using Kv = LmKvGeometry<kSlot * 2u, G::kPageSlots, true>;
+	using Kv = LmKvGeometry<HyLayout<G>::kSlot * 2u, G::kPageSlots, true>;
 	using IndexKv = LmKvGeometry<G::kIndexDim * 2u, G::kPageSlots, true>;
-	static_assert(G::kHeads % G::kTpDegree == 0u && G::kExperts % G::kTpDegree == 0u, "heads and experts split evenly over the ranks");
-	static_assert(kRankHeads * kSlot <= G::kHidden, "a rank's packed queries fit one collective row");
-	static_assert(G::kIndexTopk % kCandidateSplit == 0u, "the candidate rows split evenly into collective rows");
+	static_assert(HyLayout<G>::kRankHeads * HyLayout<G>::kSlot <= G::kHidden, "a rank's packed queries fit one collective row");
 };
 
 typedef struct HyScaled
@@ -188,12 +182,12 @@ template<uint32_t STREAMS, uint32_t MIXES>
 static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t flat, const float *base, const float *scale, float norm_epsilon,
 	float hc_epsilon, float post_magnitude, float *weights, float *post)
 {
-	const float inverse = rsqrtf(total[MIXES] / (float)flat + norm_epsilon);
+	const float inverse = SparkMathRmsScale(total[MIXES], (float)flat, norm_epsilon);
 	for ( uint32_t s = 0u; s < STREAMS; ++s )
 	{
-		weights[s] = 1.0f / (1.0f + expf(-(total[s] * inverse * scale[0] + base[s]))) + hc_epsilon;
+		weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + hc_epsilon;
 		if ( MIXES > STREAMS && post != 0 )
-			post[s] = post_magnitude / (1.0f + expf(-(total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]))) + hc_epsilon;
+			post[s] = SparkMathScaledSigmoid(post_magnitude,total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]) + hc_epsilon;
 	}
 }
 
@@ -364,7 +358,7 @@ void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *ou
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 		if ( threadIdx.x + step * THREADS < WIDTH )
 			total += values[step] * values[step];
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(total, reduction) / (float)WIDTH + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)WIDTH, epsilon);
 #pragma unroll
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 	{
@@ -389,7 +383,7 @@ void HyLayerNormKernel(uint16_t *rows, const float *weight, const float *bias, u
 		const float centred = LmBf16ToFloat(row[index]) - mean;
 		squares += centred * centred;
 	}
-	const float inverse = rsqrtf(LmBlockSum<THREADS>(squares, reduction) / (float)width + epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(squares, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 		row[index] = LmFloatToBf16((LmBf16ToFloat(row[index]) - mean) * inverse * weight[index] + bias[index]);
 }
@@ -408,7 +402,7 @@ __global__ static void HySigmoidGateKernel(uint16_t *values, const uint16_t *gat
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(1.0f / (1.0f + expf(-LmBf16ToFloat(gate_logits[index])))));
+		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
 		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
 	}
 }
@@ -466,6 +460,13 @@ struct HyModel
 {
 	using S = HyShape<G>;
 	using State = HyState<G>;
+	using Layer = HyLayer;
+
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+	};
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -573,8 +574,11 @@ struct HyModel
 		return Launched();
 	}
 
-	static SparkStatus Attention(State *state, const HyLayer *layer, uint32_t index, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Attention(State *state, const Frame &frame, const HyLayer &entry, uint32_t index)
 	{
+		const HyLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, degree = state->tp_degree;
 		const uint64_t query_stride = (uint64_t)rows * S::kRankHeads * S::kSlot;
 		const uint64_t record_unit = G::kHidden * sizeof(uint16_t) / sizeof(float);
@@ -635,8 +639,11 @@ struct HyModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Dense(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Dense(State *state, const Frame &frame, const HyLayer &entry)
 	{
+		const HyLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors;
 		if ( Linear(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * state->ffn_rows, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -647,8 +654,11 @@ struct HyModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Moe(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Experts(State *state, const Frame &frame, const HyLayer &entry)
 	{
+		const HyLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
 		LmLocalExpertRoutes expert_routes;
 		if ( Dense16(layer->router, state->normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, sms, stream) != LM_LAUNCH_OK ||
@@ -710,66 +720,75 @@ struct HyModel
 			mixed, rows, G::kHidden, G::kEpsilon, G::kHcEpsilon, magnitude);
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static const HyLayer &LayerOf(State *state, uint32_t index)
 	{
-		State *state = (State *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
+		return state->layers[index];
+	}
+
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
+	{
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		HyExpandStreamsKernel<<<dim3(Blocks(S::kResidual), rows), HY_THREADS, 0, stream>>>(hidden, state->streams, G::kStreams, G::kHidden);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const HyLayer *layer = &state->layers[index];
-			HcPre<2u * G::kStreams>(state, layer->attn_hc_fn, layer->attn_hc_base, layer->attn_hc_scale, state->hc_post, state->mixed, rows,
-				G::kHcMagnitude, stream);
-			HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->input_norm, state->normed, G::kHidden, G::kHidden,
-				G::kEpsilon);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK )
-				status = Attention(state, layer, index, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			HyHcPostKernel<<<dim3(Blocks(S::kResidual), rows), HY_THREADS, 0, stream>>>(state->streams, state->hc_post, state->partial, G::kStreams, G::kHidden);
-			HcPre<2u * G::kStreams>(state, layer->mlp_hc_fn, layer->mlp_hc_base, layer->mlp_hc_scale, state->hc_post, state->mixed, rows,
-				G::kHcMagnitude, stream);
-			HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, stream>>>(state->mixed, layer->post_norm, state->normed, G::kHidden, G::kHidden,
-				G::kEpsilon);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK )
-				status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : Moe(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			HyHcPostKernel<<<dim3(Blocks(S::kResidual), rows), HY_THREADS, 0, stream>>>(state->streams, state->hc_post, state->partial, G::kStreams, G::kHidden);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		HcPre<G::kStreams>(state, state->head_hc_fn, state->head_hc_base, state->head_hc_scale, (float *)0, hidden, rows, 0.0f, stream);
+		frame->step = step;
+		frame->stream = (cudaStream_t)stream;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus HyperBegin(State *state, const Frame &frame)
+	{
+		HyExpandStreamsKernel<<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->streams,
+			G::kStreams, G::kHidden);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus HyperNorm(State *state, const Frame &frame, const HyLayer &layer, HyHyperPart part)
+	{
+		const bool ffn = part == HY_FFN_PART;
+		const uint32_t rows = frame.step->rows;
+		HcPre<2u * G::kStreams>(state, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn, ffn ? layer.mlp_hc_base : layer.attn_hc_base,
+			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, state->hc_post, state->mixed, rows, G::kHcMagnitude, frame.stream);
+		HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, frame.stream>>>(state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
+			G::kHidden, G::kHidden, G::kEpsilon);
 		return Launched();
 	}
 
-	static SparkStatus Entry(State *state, const char *name, const char *kind, uint64_t *offset, uint64_t *bytes, uint32_t *rows)
+	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
-		SparkNamedPackEntry entry;
-		if ( SparkNamedPackEntryLoad(&state->pack, name, &entry) != SPARK_STATUS_OK || strcmp(entry.kind, kind) != 0 || entry.shape_count < 1u )
-		{
-			fprintf(stderr, "%s: pack tensor %s missing or not %s\n", G::Tag(), name, kind);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
-		*offset = state->pack.payload_base + entry.payload_offset;
-		*bytes = entry.bytes;
-		if ( rows != 0 )
-			*rows = entry.shape[0];
+		HyHcPostKernel<<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(state->streams, state->hc_post, state->partial,
+			G::kStreams, G::kHidden);
 		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus HyperEnd(State *state, const Frame &frame)
+	{
+		HcPre<G::kStreams>(state, state->head_hc_fn, state->head_hc_base, state->head_hc_scale, (float *)0, frame.step->hidden_bf16, frame.step->rows,
+			0.0f, frame.stream);
+		return Launched();
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame)
+	{
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+	}
+
+	static SparkStatus Check(State *state, const Frame &frame)
+	{
+		(void)state;
+		(void)frame;
+		return Launched();
+	}
+
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		(void)frame;
+		if ( state->services->layer_done != 0 )
+			state->services->layer_done(state->services->context, index);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return HySchedule<G, HyModel>::Step((State *)model, step, stream);
 	}
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
@@ -930,10 +949,18 @@ struct HyModel
 		geometry->kv_shard.rank = state->tp_rank;
 		geometry->kv_shard.grain = 1u;
 		geometry->head_norm_f32 = 1u;
-		if ( Entry(state, "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
-			Entry(state, "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-			Entry(state, "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
+		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
+			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( embed_rows != vocab_rows || geometry->head_rows != vocab_rows || geometry->embed_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)vocab_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
+		{
+			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes; the rank holds %u vocab rows of %u\n", G::Tag(),
+				embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
+				(unsigned long long)geometry->head_norm_bytes, vocab_rows, G::kHidden);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
 		geometry->embed_rows = embed_rows;
 		return SPARK_STATUS_OK;
 	}
@@ -949,34 +976,32 @@ struct HyModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, const void **field)
+	static SparkStatus Slice(State *state, SparkWeightdLazyPack *lazy_pack, const char *key, const char *kind, uint64_t expected_bytes, const void **field)
 	{
-		uint64_t offset, bytes;
-		const void *bound = 0;
-		if ( Entry(state, key, kind, &offset, &bytes, 0) != SPARK_STATUS_OK ||
-			SparkWeightdLazyPackSlice(lazy_pack, offset, bytes, &bound) != SPARK_STATUS_OK || bound == 0 )
-		{
-			fprintf(stderr, "%s: weightd has no resident bytes for %s\n", G::Tag(), key);
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		}
-		*field = bound;
-		return SPARK_STATUS_OK;
+		return SparkNamedPackBindSized(&state->pack, lazy_pack, G::Tag(), key, kind, expected_bytes, field);
 	}
 
 	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field)
+	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field, uint64_t elements)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
 		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		return Slice(state, lazy_pack, key, kind, (const void **)field);
+		return Slice(state, lazy_pack, key, kind, elements * sizeof(T), (const void **)field);
 	}
 
-	static SparkStatus BindScaled(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, HyScaled *field)
+	static SparkStatus BindScaled(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, HyScaled *field, uint64_t rows,
+		uint32_t columns)
 	{
 		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		SparkStatus status = Bind(state, lazy_pack, index, name, "fp8", &field->weight);
+		SparkStatus status;
+		if ( columns % HY_SCALE_GROUP != 0u )
+		{
+			fprintf(stderr, "%s: layer %u %s has %u columns, not whole %u-column scale groups\n", G::Tag(), index, name, columns, HY_SCALE_GROUP);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
+		}
+		status = Bind(state, lazy_pack, index, name, "fp8", &field->weight, rows * columns);
 		snprintf(key, sizeof(key), "%s_scale", name);
-		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, "u8", &field->scale) : status;
+		return status == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, key, "u8", &field->scale, rows * (columns / HY_SCALE_GROUP)) : status;
 	}
 
 	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
@@ -984,56 +1009,56 @@ struct HyModel
 		State *state = (State *)model;
 		uint32_t indexers = 0u;
 		(void)geometry;
-		if ( Slice(state, lazy_pack, "head_hc_fn", "f32", (const void **)&state->head_hc_fn) != SPARK_STATUS_OK ||
-			Slice(state, lazy_pack, "head_hc_base", "f32", (const void **)&state->head_hc_base) != SPARK_STATUS_OK ||
-			Slice(state, lazy_pack, "head_hc_scale", "f32", (const void **)&state->head_hc_scale) != SPARK_STATUS_OK )
+		if ( Slice(state, lazy_pack, "head_hc_fn", "f32", (uint64_t)G::kStreams * S::kResidual * sizeof(float), (const void **)&state->head_hc_fn) != SPARK_STATUS_OK ||
+			Slice(state, lazy_pack, "head_hc_base", "f32", (uint64_t)G::kStreams * sizeof(float), (const void **)&state->head_hc_base) != SPARK_STATUS_OK ||
+			Slice(state, lazy_pack, "head_hc_scale", "f32", sizeof(float), (const void **)&state->head_hc_scale) != SPARK_STATUS_OK )
 			return SPARK_STATUS_PARSE_ERROR;
 		for ( uint32_t index = 0u; index < G::kLayers; ++index )
 		{
 			HyLayer *layer = &state->layers[index];
-			SparkStatus status = Bind(state, lazy_pack, index, "attn_hc_fn", "f32", &layer->attn_hc_fn);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_base", "f32", &layer->attn_hc_base);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_scale", "f32", &layer->attn_hc_scale);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_fn", "f32", &layer->mlp_hc_fn);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_base", "f32", &layer->mlp_hc_base);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_scale", "f32", &layer->mlp_hc_scale);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "input_norm", "bf16", &layer->input_norm);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "post_norm", "bf16", &layer->post_norm);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_a", &layer->q_a);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "q_norm", "bf16", &layer->q_norm);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_b", &layer->q_b);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "kv_a", &layer->kv_a);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "kv_norm", "bf16", &layer->kv_norm);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uk", "bf16", &layer->uk);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uv", "bf16", &layer->uv);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "gate", "bf16", &layer->gate);
-			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "out", &layer->out);
-			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "sinks", "f32", &layer->sinks);
+			SparkStatus status = Bind(state, lazy_pack, index, "attn_hc_fn", "f32", &layer->attn_hc_fn, (uint64_t)2u * G::kStreams * S::kResidual);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_base", "f32", &layer->attn_hc_base, 2u * G::kStreams);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "attn_hc_scale", "f32", &layer->attn_hc_scale, 2u);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_fn", "f32", &layer->mlp_hc_fn, (uint64_t)2u * G::kStreams * S::kResidual);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_base", "f32", &layer->mlp_hc_base, 2u * G::kStreams);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "mlp_hc_scale", "f32", &layer->mlp_hc_scale, 2u);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "input_norm", "bf16", &layer->input_norm, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "post_norm", "bf16", &layer->post_norm, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_a", &layer->q_a, G::kQLora, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "q_norm", "bf16", &layer->q_norm, G::kQLora);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "q_b", &layer->q_b, (uint64_t)S::kRankHeads * S::kQkDim, G::kQLora);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "kv_a", &layer->kv_a, S::kSlot, G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "kv_norm", "bf16", &layer->kv_norm, G::kLatent);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uk", "bf16", &layer->uk, (uint64_t)S::kRankHeads * G::kLatent * G::kNope);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "uv", "bf16", &layer->uv, (uint64_t)S::kRankHeads * G::kValueDim * G::kLatent);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "gate", "bf16", &layer->gate, (uint64_t)S::kRankHeads * G::kValueDim * G::kHidden);
+			if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "out", &layer->out, G::kHidden, S::kRankHeads * G::kValueDim);
+			if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "sinks", "f32", &layer->sinks, G::kHeads);
 			if ( G::IndexerLayer(index) )
 			{
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_q", &layer->index_q);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_k", &layer->index_k);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_norm", "f32", &layer->index_k_norm);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_bias", "f32", &layer->index_k_bias);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_weights", "bf16", &layer->index_weights);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_q", &layer->index_q, S::kIndexWidth, G::kQLora);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "index_k", &layer->index_k, G::kIndexDim, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_norm", "f32", &layer->index_k_norm, G::kIndexDim);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_k_bias", "f32", &layer->index_k_bias, G::kIndexDim);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "index_weights", "bf16", &layer->index_weights, (uint64_t)G::kIndexHeads * G::kHidden);
 				layer->index_slot = indexers++;
 			}
 			else
 				layer->index_slot = indexers == 0u ? 0u : indexers - 1u;
 			if ( index < G::kDenseLayers )
 			{
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_gate_up", &layer->ffn_gate_up);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_down", &layer->ffn_down);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_gate_up", &layer->ffn_gate_up, 2u * (uint64_t)state->ffn_rows, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "ffn_down", &layer->ffn_down, G::kHidden, state->ffn_rows);
 			}
 			else
 			{
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router);
-				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router_bias", "f32", &layer->router_bias);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w1", &layer->moe_w1);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w3", &layer->moe_w3);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w2", &layer->moe_w2);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_gate_up", &layer->shared_gate_up);
-				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_down", &layer->shared_down);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router, (uint64_t)G::kExperts * G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = Bind(state, lazy_pack, index, "router_bias", "f32", &layer->router_bias, G::kExperts);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w1", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w3", &layer->moe_w3, (uint64_t)G::kLocalExperts * G::kMoeInter, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "moe_w2", &layer->moe_w2, (uint64_t)G::kLocalExperts * G::kHidden, G::kMoeInter);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_gate_up", &layer->shared_gate_up, 2u * (uint64_t)state->shared_rows, G::kHidden);
+				if ( status == SPARK_STATUS_OK ) status = BindScaled(state, lazy_pack, index, "shared_down", &layer->shared_down, G::kHidden, state->shared_rows);
 			}
 			if ( status != SPARK_STATUS_OK )
 				return SPARK_STATUS_PARSE_ERROR;

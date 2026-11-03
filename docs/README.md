@@ -28,6 +28,9 @@ current authority.
 - [`MODULE_MAP.md`](MODULE_MAP.md): source ownership boundaries.
 - [`INFERENCE_OS_DESIGN.md`](INFERENCE_OS_DESIGN.md): device-layer memory
   model for hardware independence.
+- [`METAL_BACKEND.md`](METAL_BACKEND.md): kernel launch in the device API,
+  the Metal queue and kernel library, the single-device stage runner, the
+  precision policy and the single-Studio Qwen3.8-27B gates.
 - [`EXPERT_GROUPED_SCHEDULING.md`](EXPERT_GROUPED_SCHEDULING.md):
   expert-grouped continuous batching.
 
@@ -83,9 +86,9 @@ current authority.
 
 ## Other models
 
-- [`K3_PERF.md`](K3_PERF.md): SparkPipe's only K3 numbers.
 - [`K3_VS_GB10_VLLM.md`](K3_VS_GB10_VLLM.md): K3 against the gb10-vllm
-  stack, lever by lever.
+  stack, lever by lever, with SparkPipe's numbers from
+  [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
 
 ## Speculation
 
@@ -113,6 +116,8 @@ current authority.
   cycle.
 - [`INCIDENT_RECOVERY_PLAYBOOK.md`](INCIDENT_RECOVERY_PLAYBOOK.md): Spark boot
   and OOM recovery (PXE, then the brickproof controller).
+- [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
+  each item exists, and the procedure for replacing or adding a node.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
@@ -141,8 +146,6 @@ current authority.
   target, model direction, COMPSEC-17 gate).
 - [`HANDOFF_DRIVERS_2026-09-28.md`](HANDOFF_DRIVERS_2026-09-28.md): milestone
   and driver status and open operator questions as of 2026-09-28.
-- [`MARKETPLACE_PLAN.md`](MARKETPLACE_PLAN.md): business plan draft for the
-  provider network.
 
 ## Evidence and research material
 

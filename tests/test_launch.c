@@ -108,6 +108,13 @@ int main(void)
 	shape_for(&shape, 128u, 8u, 128u);
 	expect(LmLaunchPlanBuild(&shape, 0u, &plan) == LM_LAUNCH_ERR_SHAPE,
 		"a zero SM count is rejected rather than producing an empty grid");
+	shape_for(&shape, 128u, 16u, 64u);
+	shape.input_dimension = 80u;
+	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_ERR_SHAPE,
+		"a depth that is not a whole number of k-tiles is rejected");
+	shape.k_tail = 1u;
+	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_OK,
+		"the same depth plans when both operand loads zero-fill past it");
 	shape_for(&shape, 128u, 6u, 32u);
 	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_ERR_MAP,
 		"6-bit at a 32-element tile is 24 bytes and no span divides it");

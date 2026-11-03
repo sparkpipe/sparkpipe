@@ -268,13 +268,28 @@ def node_metric_map(raw: object) -> Dict[str,float]:
     return(out)
 
 
+MAP_TEXT_LIMIT = 2048
+
+
+def bounded_join(parts: List[str], limit: int = MAP_TEXT_LIMIT) -> str:
+    kept: List[str] = []
+    used = 0
+    for part in parts:
+        cost = len(part) + (1 if kept else 0)
+        if used + cost > limit:
+            break
+        kept.append(part)
+        used += cost
+    return(";".join(kept))
+
+
 def format_node_map(values: Dict[str,float]) -> str:
     parts: List[str] = []
     for key in sorted(values):
         value = values[key]
         text = str(int(value)) if float(value).is_integer() else ("%.3f" % value).rstrip("0").rstrip(".")
         parts.append("%s:%s" % (key,text))
-    return(";".join(parts)[:240])
+    return(bounded_join(parts))
 
 
 def format_text_map(values: Dict[str,str]) -> str:
@@ -283,7 +298,7 @@ def format_text_map(values: Dict[str,str]) -> str:
         value = str(values[key]).replace(";",",").strip()
         if key and value:
             parts.append("%s:%s" % (key,value[:80]))
-    return(";".join(parts)[:240])
+    return(bounded_join(parts))
 
 
 def add_service_id(values: Dict[str,object], raw: Any) -> None:

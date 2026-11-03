@@ -11,9 +11,12 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <pwd.h>
+#include <time.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_kv_snapshot.h"
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
@@ -51,6 +54,72 @@ static void SparkWeightdSignal(int signal_number)
 {
     (void)signal_number;
     SparkWeightdStop = 1;
+}
+
+static char weightd_kv_purge_root[SPARK_KV_SNAPSHOT_PATH_BYTES];
+
+static void SparkWeightdKvPurgeOnce(void)
+{
+    SparkKvSnapshotPurgeResult result;
+    struct timespec now;
+    SparkStatus status;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0)
+        return;
+    status = SparkKvSnapshotPurgeTree(weightd_kv_purge_root, (uint64_t)now.tv_sec, &result);
+    if (status != SPARK_STATUS_OK || result.deleted_files != 0u || result.failed_unlinks != 0u)
+        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu\n",
+            weightd_kv_purge_root, SparkStatusToString(status), result.stores, result.busy_stores,
+            (unsigned long long)result.deleted_files, (unsigned long long)result.deleted_bytes, result.failed_unlinks,
+            (unsigned long long)SPARK_KV_RETENTION_SECONDS);
+}
+
+static void *SparkWeightdKvPurgeThread(void *argument)
+{
+    uint32_t waited = SPARK_KV_PURGE_SECONDS;
+    (void)argument;
+    while (__atomic_load_n(&SparkWeightdStop, __ATOMIC_SEQ_CST) == 0)
+    {
+        if (waited >= SPARK_KV_PURGE_SECONDS)
+        {
+            SparkWeightdKvPurgeOnce();
+            waited = 0u;
+        }
+        sleep(1);
+        waited++;
+    }
+    return 0;
+}
+
+static SparkStatus SparkWeightdKvPurgeStart(void)
+{
+    static pthread_t purge_thread;
+    const struct passwd *owner = getpwuid(geteuid());
+    if (owner == 0 || owner->pw_dir == 0 || owner->pw_dir[0] != '/' ||
+        strlen(owner->pw_dir) >= sizeof(weightd_kv_purge_root))
+    {
+        fprintf(stderr, "weightd kv purge: no home directory for uid %u; startup failed\n", (unsigned)geteuid());
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    memcpy(weightd_kv_purge_root, owner->pw_dir, strlen(owner->pw_dir) + 1u);
+    if (pthread_create(&purge_thread, 0, SparkWeightdKvPurgeThread, 0) != 0)
+    {
+        fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    fprintf(stderr, "weightd kv purge: every %u s under %s, cache files unused for %llu s are deleted\n",
+        SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root, (unsigned long long)SPARK_KV_RETENTION_SECONDS);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkWeightdStartThreads(int mesh_enabled)
+{
+    static pthread_t mesh_thread;
+    if (mesh_enabled && pthread_create(&mesh_thread, 0, SparkWeightdMeshThread, 0) != 0)
+    {
+        fprintf(stderr, "weightd-mesh: thread create failed; startup failed\n");
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkWeightdKvPurgeStart();
 }
 
 static void SparkWeightdUsage(const char *program)
@@ -489,16 +558,11 @@ int main(int argument_count, char **arguments)
         SparkWeightdServerDestroy(server);
         return 1;
     }
-    if (mesh_fields == 15u)
+    if (SparkWeightdStartThreads(mesh_fields == 15u) != SPARK_STATUS_OK)
     {
-        static pthread_t mesh_thread;
-        if (pthread_create(&mesh_thread,0,SparkWeightdMeshThread,0) != 0)
-        {
-            fprintf(stderr,"weightd-mesh: thread create failed; startup failed\n");
-            SparkWeightdMeshStop();
-            SparkWeightdServerDestroy(server);
-            return 1;
-        }
+        SparkWeightdMeshStop();
+        SparkWeightdServerDestroy(server);
+        return 1;
     }
 
     printf("spark_weightd ready unix=%s ceiling=%llu kv_reserve=%llu arena_ceiling=%llu load_pace_per_second=%llu kv_shared_window=%llu\n",

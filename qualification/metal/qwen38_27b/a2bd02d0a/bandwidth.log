@@ -1,0 +1,10 @@
+device_private: 256 groups x 1024 threads: median 1083.4 GB/s, best 1102.8 GB/s
+device_private: 512 groups x 1024 threads: median 1099.2 GB/s, best 1102.5 GB/s
+device_private: 1024 groups x 1024 threads: median 1129.6 GB/s, best 1131.1 GB/s
+device_private: 2048 groups x 1024 threads: median 1129.7 GB/s, best 1134.4 GB/s
+device_private: 4096 groups x 1024 threads: median 1144.3 GB/s, best 1145.2 GB/s
+file_mapping: 256 groups x 1024 threads: median 1094.6 GB/s, best 1097.8 GB/s
+file_mapping: 512 groups x 1024 threads: median 1100.1 GB/s, best 1104.0 GB/s
+file_mapping: 1024 groups x 1024 threads: median 1130.8 GB/s, best 1134.7 GB/s
+file_mapping: 2048 groups x 1024 threads: median 1131.6 GB/s, best 1136.3 GB/s
+file_mapping: 4096 groups x 1024 threads: median 1148.0 GB/s, best 1150.8 GB/s

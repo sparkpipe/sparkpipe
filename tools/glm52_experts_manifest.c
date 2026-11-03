@@ -74,7 +74,7 @@ static int32_t entry_write(FILE *pack,FILE *out,const SparkGlm52StagePackHeader 
 	return(0);
 }
 
-static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHeader *header)
+static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHeader *header,uint32_t first_routed)
 {
 	SparkGlm52StagePackEntry entry;
 	uint32_t words[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,SPARK_WEIGHTD_RANGE_MANIFEST_VERSION,0u,0u};
@@ -89,7 +89,7 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHead
 			return(-9);
 		if ( entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE || entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_DOWN )
 		{
-			if ( entry.layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER )
+			if ( entry.layer_index < first_routed || entry.layer_index >= header->layer_count )
 				return(-23);
 			if ( entry.tensor_kind == SPARK_GLM52_STAGEPACK_TENSOR_EXPERT_UP_GATE )
 				up_seen++;
@@ -100,7 +100,7 @@ static int32_t manifest_write(FILE *pack,FILE *out,const SparkGlm52StagePackHead
 		if ( err < 0 )
 			return(err);
 	}
-	if ( up_seen != down_seen || up_seen != SPARK_GLM52_MODEL_LAYER_COUNT - SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
+	if ( up_seen != down_seen || up_seen != header->layer_count - first_routed || words[2] == 0u || fseeko(out,0,SEEK_SET) != 0 || fwrite(words,1u,sizeof(words),out) != sizeof(words) )
 		return(-10);
 	return(0);
 }
@@ -115,7 +115,7 @@ static int32_t header_read(FILE *pack,SparkGlm52StagePackHeader *header)
 		return(-12);
 	if ( header->file_bytes != (uint64_t)st.st_size || header->routed_expert_count == 0u || header->tensor_count == 0u )
 		return(-13);
-	if ( header->layer_count != SPARK_GLM52_MODEL_LAYER_COUNT )
+	if ( header->layer_count == 0u || header->first_layer_index != 0u || header->layer_count != header->total_layer_count )
 		return(-26);
 	directory_bytes = ((uint64_t)header->tensor_count * sizeof(SparkGlm52StagePackEntry));
 	if ( header->directory_offset < sizeof(*header) || header->directory_offset > header->file_bytes || directory_bytes > (header->file_bytes - header->directory_offset) )
@@ -123,7 +123,7 @@ static int32_t header_read(FILE *pack,SparkGlm52StagePackHeader *header)
 	return(0);
 }
 
-static int32_t manifest_publish(FILE *pack,const SparkGlm52StagePackHeader *header,const char *path)
+static int32_t manifest_publish(FILE *pack,const SparkGlm52StagePackHeader *header,const char *path,uint32_t first_routed)
 {
 	SparkWeightdManifest manifest;
 	char temporary[4096];
@@ -142,7 +142,7 @@ static int32_t manifest_publish(FILE *pack,const SparkGlm52StagePackHeader *head
 		unlink(temporary);
 		return(-17);
 	}
-	err = manifest_write(pack,out,header);
+	err = manifest_write(pack,out,header,first_routed);
 	if ( fflush(out) != 0 && err == 0 )
 		err = -18;
 	if ( err == 0 && fsync(fd) != 0 )
@@ -168,9 +168,18 @@ int main(int argc,char **argv)
 	FILE *pack;
 	char path[4096];
 	int32_t err,written;
-	if ( argc != 2 )
+	uint32_t first_routed = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
+	char *end = 0;
+	if ( argc == 3 )
 	{
-		fprintf(stderr,"usage: %s <verified-separate-plane-pack.glm52sp>\n",argv[0]);
+		unsigned long value = strtoul(argv[2],&end,10);
+		if ( end == argv[2] || *end != '\0' || value == 0ul || value > 0xfffful )
+			argc = 0;
+		first_routed = (uint32_t)value;
+	}
+	if ( argc != 2 && argc != 3 )
+	{
+		fprintf(stderr,"usage: %s <verified-separate-plane-pack.glm52sp> [first-routed-layer]\n",argv[0]);
 		return(2);
 	}
 	written = snprintf(path,sizeof(path),"%s.experts",argv[1]);
@@ -181,7 +190,7 @@ int main(int argc,char **argv)
 		return(4);
 	err = header_read(pack,&header);
 	if ( err == 0 )
-		err = manifest_publish(pack,&header,path);
+		err = manifest_publish(pack,&header,path,first_routed);
 	fclose(pack);
 	if ( err < 0 )
 		fprintf(stderr,"expert manifest failed: error=%d (separate-plane expert packs only; existing output is preserved)\n",err);

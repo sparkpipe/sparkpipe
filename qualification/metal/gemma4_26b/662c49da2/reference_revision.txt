@@ -1,0 +1,3 @@
+reference logits and routes from tools/gemma4_reference.py teacher --variants a,b,bp at 662c49da2 (one pass, 3.6 h on the hub); its variant a is byte-identical to a separate run of the reference at 218ee9d13 (before the expert-route and weight-cache changes)
+a and b chose different experts at 18.30% of (layer, position) decisions over the 5,636 positions (0.2% at layer 0, 36.4% at layer 29) and at one layer or more for 94.6% of positions
+RECEIPT.json was rewritten from these outputs by tools/metal_gate_summary.py at the PR head, which only drops a prefill roofline sentence that did not hold for a routed model

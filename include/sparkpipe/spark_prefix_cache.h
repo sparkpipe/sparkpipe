@@ -35,6 +35,7 @@ extern "C" {
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_STALE 0x00000010u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME 0x00000020u
 #define SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD 0x00000040u
+#define SPARK_PREFIX_CACHE_RESUME_RECENT_MAXIMUM 16u
 
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
 #define SPARK_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
@@ -65,7 +66,7 @@ typedef struct SparkPrefixCacheEntry
     uint64_t committed_epoch;
     uint64_t lookahead_protection_epoch;
     uint32_t hash_next;
-    uint32_t reserved1;
+    uint32_t used_seconds;
     uint8_t content_digest[32];
 } SparkPrefixCacheEntry;
 
@@ -355,7 +356,7 @@ typedef struct SparkPrefixCacheCommittedRecord
     uint64_t content_hash;
     uint8_t content_digest[SPARK_SHA256_DIGEST_BYTES];
     uint32_t flags;
-    uint32_t reserved;
+    uint32_t used_seconds;
 } SparkPrefixCacheCommittedRecord;
 
 SparkStatus SparkPrefixCacheMarkResume(
@@ -367,11 +368,23 @@ SparkStatus SparkPrefixCacheClearResume(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count);
+
+SparkStatus SparkPrefixCacheSupersedeResume(
+    SparkPrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t recent_count,
+    uint32_t anchor_token_count,
+    uint32_t *superseded_out);
 uint32_t SparkPrefixCacheResumeTokenCount(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t matched_token_count);
 
+SparkStatus SparkPrefixCacheExpire(
+    SparkPrefixCache *cache,
+    uint64_t now_seconds,
+    uint32_t *expired_out);
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,

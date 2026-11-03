@@ -1,0 +1,1932 @@
+{
+ "model": "deepseek-v4.1-flash",
+ "chats": 3,
+ "seed": 1017,
+ "effort": "low",
+ "recall": {
+  "memory": 15,
+  "full": 15
+ },
+ "probes_per_arm": 15,
+ "mean_prompt_tokens": {
+  "memory": 12610,
+  "full": 18911
+ },
+ "uncached_prompt_tokens": {
+  "memory": 97992,
+  "full": 101005
+ },
+ "previous_prompt_misses": [],
+ "failed_jobs": [],
+ "stale_prefix_recomputes": {
+  "memory": {
+   "turns": 1,
+   "background": 2
+  },
+  "full": {
+   "turns": 0,
+   "background": 0
+  }
+ },
+ "checks": {
+  "recall": true,
+  "keeps_previous_prompt": true,
+  "rereads_no_more_than_full": true,
+  "memory_jobs": true,
+  "full_context_has_no_memory_jobs": true,
+  "no_stale_recomputes_from_memory": false
+ },
+ "qualified": false,
+ "results": [
+  {
+   "arm": "memory",
+   "chat": "2a190265f5d1",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 785,
+     "cached_tokens": 784,
+     "seconds": 6.31,
+     "content": "Elif Kaya's memo moves the Thornbury quarterly review to 12 November, assigns charges to budget code B6786, and sets the meeting in room 395 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3790,
+     "cached_tokens": 830,
+     "seconds": 6.29,
+     "content": "Green tea is best steeped for about **2\u20133 minutes** in water around **75\u201385 \u00b0C (170\u2013185 \u00b0F)** \u2014 cooler and shorter than black tea, since hotter water or longer steeping turns it bitter. Loose leaf generally needs ~2 minutes; a teabag 2\u20133. If you like it stronger, add a little more leaf rather than m"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3927,
+     "cached_tokens": 3879,
+     "seconds": 1.41,
+     "content": "**Orbis Freight** is the cheapest at **4,710 EUR** \u2014 about 1,980 EUR less than the next lowest (Stellar Parts at 6,690 EUR)."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6900,
+     "cached_tokens": 3972,
+     "seconds": 4.36,
+     "content": "A hash map is a data structure that stores key\u2013value pairs and uses a hash function to compute an index into an array of buckets, so lookups, inserts, and deletes average O(1) time. When two keys hash to the same bucket, a collision occurs, which is typically resolved by chaining (a list per bucket)"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7034,
+     "cached_tokens": 6995,
+     "seconds": 11.59,
+     "content": "Short answer: **option B, Read Replica Promotion**, carries the least risk \u2014 assuming the target is the same engine/version and you can drain replication lag before cutover.\n\nWhy, briefly:\n\n- **B \u2014 Read Replica Promotion:** the data path stays replication-based, so there's no new application write l"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10330,
+     "cached_tokens": 7334,
+     "seconds": 3.96,
+     "content": "Canberra is the capital of Australia \u2014 not Sydney or Melbourne, though those are larger and better known. It was purpose-built as a compromise capital between the two rivals and has been the seat of government since 1927."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10397,
+     "cached_tokens": 10381,
+     "seconds": 4.09,
+     "content": "Noted \u2014 Thornbury budget recorded as **41,000 EUR**.\n\nFor reference, this sits alongside the other Thornbury details from the earlier memo: quarterly review on **12 November**, charges to budget code **B6786**, meeting in **room 395, fourth floor**. Let me know if you want the 41,000 EUR tied to tha"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13415,
+     "cached_tokens": 10494,
+     "seconds": 6.12,
+     "content": "Compound interest is interest that earns interest on itself. You start with a sum, and each period you earn interest not just on your original money but also on the interest already added \u2014 so the balance grows faster and faster over time.\n\nA quick illustration: 1,000 EUR at 10% a year. After year o"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13578,
+     "cached_tokens": 13563,
+     "seconds": 1.45,
+     "content": "Understood \u2014 I'll end every answer from now on with cobalt81."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16517,
+     "cached_tokens": 13599,
+     "seconds": 6.32,
+     "content": "Use `git reset --soft HEAD~1` \u2014 that moves the branch back one commit but leaves the changes staged, so they're still there ready to re-commit.\n\nVariants depending on what you want:\n\n- `git reset --soft HEAD~1` \u2014 undo the commit, changes stay **staged**.\n- `git reset HEAD~1` (or `--mixed`) \u2014 undo th"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16733,
+     "cached_tokens": 16714,
+     "seconds": 1.52,
+     "content": "Corrected \u2014 the Thornbury budget is **77,000 EUR**, superseding the earlier 41,000 EUR figure.\n\nEverything else from that record stands: quarterly review on **12 November**, charges to budget code **B6786**, meeting in **room 395, fourth floor**. cobalt81"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 19688,
+     "cached_tokens": 16799,
+     "seconds": 10.91,
+     "content": "A few things that matter most for a first half:\n\n**Training**\n- Build mileage gradually \u2014 the classic rule is don't increase weekly volume by more than ~10%. A typical build is 12\u201316 weeks, with a longest run of 16\u201318 km about 2\u20133 weeks before race day.\n- Include one longer slow run per week and mos"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 23035,
+     "cached_tokens": 20044,
+     "seconds": 6.46,
+     "content": "Sunlight contains all colours, but air molecules scatter short wavelengths much more strongly than long ones \u2014 roughly as 1/\u03bb\u2074, the Rayleigh scattering law. Blue light (around 450 nm) is scattered several times more efficiently than red (around 700 nm), so blue light gets bounced around the sky and "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 26132,
+     "cached_tokens": 23206,
+     "seconds": 8.12,
+     "content": "HTTP **429 Too Many Requests** means the client has sent more requests in a given time window than the server is willing to accept \u2014 you're being rate limited.\n\nPractical points:\n\n- **It's temporary, not an error in your request.** The endpoint and credentials are usually fine; you've just exceeded "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7643,
+     "cached_tokens": 4662,
+     "seconds": 6.1,
+     "content": "**Keep basil fresh by treating it like cut flowers \u2014 but never refrigerate it.**\n\nQuick method:\n1. Trim the stem ends at an angle.\n2. Stand the stems in a glass with an inch or two of water, like a bouquet.\n3. Loosely cover with a plastic bag (or leave open) and keep it on the counter, out of direct"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10727,
+     "cached_tokens": 7796,
+     "seconds": 8.09,
+     "content": "**Short version: a list is mutable, a tuple is immutable.**\n\n| | List | Tuple |\n|---|---|---|\n| Syntax | `[1, 2, 3]` | `(1, 2, 3)` |\n| Mutability | Can add/remove/reassign | Fixed once created |\n| Methods | `append`, `extend`, `pop`, `sort`, \u2026 | Only `count`, `index` |\n| Hashable | No \u2014 can't be a d"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13914,
+     "cached_tokens": 10993,
+     "seconds": 6.76,
+     "content": "**Formula: \u00b0F = (\u00b0C \u00d7 9/5) + 32** \u2014 i.e. multiply by 1.8, then add 32.\n\nGoing the other way: **\u00b0C = (\u00b0F \u2212 32) \u00d7 5/9**.\n\nQuick reference points:\n\n| \u00b0C | \u00b0F |\n|---|---|\n| \u221240 | \u221240 |\n| 0 (water freezes) | 32 |\n| 10 | 50 |\n| 20 | 68 |\n| 37 (body temp) | 98.6 |\n| 100 (water boils) | 212 |\n\nMental shortc"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14184,
+     "cached_tokens": 14160,
+     "seconds": 0.39,
+     "content": "395"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14201,
+     "cached_tokens": 14183,
+     "seconds": 1.55,
+     "content": "42\n\ncobalt81"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14227,
+     "cached_tokens": 14200,
+     "seconds": 0.38,
+     "content": "77000"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14255,
+     "cached_tokens": 14226,
+     "seconds": 0.41,
+     "content": "6690"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14284,
+     "cached_tokens": 14254,
+     "seconds": 0.3,
+     "content": "Read Replica Promotion"
+    }
+   ],
+   "probes": [
+    {
+     "question": "Which room did Elif Kaya's memo give for the Thornbury review? Reply with the number only.",
+     "answer": "395",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42\n\ncobalt81",
+     "correct": true
+    },
+    {
+     "question": "What is the Thornbury budget? Reply with the amount only.",
+     "answer": "77000",
+     "correct": true
+    },
+    {
+     "question": "What price did Stellar Parts quote for the solar panel? Reply with the number only.",
+     "answer": "6690",
+     "correct": true
+    },
+    {
+     "question": "For the Thornbury database move, what was option B called? Reply with its name only.",
+     "answer": "Read Replica Promotion",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 0,
+    "background": 0
+   },
+   "jobs": [
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 1257,
+     "cached_tokens": 1115,
+     "seconds": 1.251
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 831,
+     "cached_tokens": 784,
+     "seconds": 0.17
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4126,
+     "cached_tokens": 3980,
+     "seconds": 1.679
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 3880,
+     "cached_tokens": 3789,
+     "seconds": 0.214
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4127,
+     "cached_tokens": 3975,
+     "seconds": 1.616
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 3973,
+     "cached_tokens": 3926,
+     "seconds": 0.162
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7147,
+     "cached_tokens": 6990,
+     "seconds": 1.686
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 6996,
+     "cached_tokens": 6990,
+     "seconds": 0.107
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7773,
+     "cached_tokens": 7033,
+     "seconds": 1.961
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7335,
+     "cached_tokens": 7033,
+     "seconds": 0.425
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10544,
+     "cached_tokens": 10329,
+     "seconds": 1.293
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10382,
+     "cached_tokens": 10329,
+     "seconds": 0.211
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10746,
+     "cached_tokens": 10572,
+     "seconds": 1.6
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10495,
+     "cached_tokens": 10396,
+     "seconds": 0.246
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13740,
+     "cached_tokens": 13414,
+     "seconds": 1.923
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13564,
+     "cached_tokens": 13414,
+     "seconds": 0.285
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13825,
+     "cached_tokens": 13577,
+     "seconds": 0.906
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13600,
+     "cached_tokens": 13577,
+     "seconds": 0.146
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 16917,
+     "cached_tokens": 16516,
+     "seconds": 1.746
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 16715,
+     "cached_tokens": 16516,
+     "seconds": 0.341
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 17014,
+     "cached_tokens": 16818,
+     "seconds": 1.083
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 16800,
+     "cached_tokens": 16732,
+     "seconds": 0.203
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 20253,
+     "cached_tokens": 19968,
+     "seconds": 1.811
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 20045,
+     "cached_tokens": 19687,
+     "seconds": 0.516
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 23417,
+     "cached_tokens": 23034,
+     "seconds": 1.889
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 23207,
+     "cached_tokens": 23034,
+     "seconds": 0.321
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 27524,
+     "cached_tokens": 26131,
+     "seconds": 3.935
+    },
+    {
+     "kind": "stem",
+     "outcome": "done",
+     "prompt_tokens": 1510,
+     "cached_tokens": 0,
+     "seconds": 1.54
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 4663,
+     "cached_tokens": 1509,
+     "seconds": 2.704
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 8021,
+     "cached_tokens": 7642,
+     "seconds": 1.84
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7797,
+     "cached_tokens": 7642,
+     "seconds": 0.294
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 11230,
+     "cached_tokens": 11005,
+     "seconds": 1.521
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10994,
+     "cached_tokens": 10726,
+     "seconds": 0.413
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 14394,
+     "cached_tokens": 13913,
+     "seconds": 2.141
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 14161,
+     "cached_tokens": 13913,
+     "seconds": 0.394
+    }
+   ]
+  },
+  {
+   "arm": "full",
+   "chat": "232987d06819",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 79,
+     "cached_tokens": 0,
+     "seconds": 1.39,
+     "content": "Thornbury quarterly review moved to 12 November; charges to budget code B6786; meeting in room 395 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3070,
+     "cached_tokens": 0,
+     "seconds": 5.02,
+     "content": "Steep green tea for about **2\u20133 minutes at 75\u201380\u00b0C (165\u2013175\u00b0F)**; for delicate Japanese greens, try **1\u20132 minutes** at a slightly lower temperature, and adjust to taste."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3169,
+     "cached_tokens": 3069,
+     "seconds": 1.31,
+     "content": "Orbis Freight is cheapest at **4710 EUR**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6111,
+     "cached_tokens": 3168,
+     "seconds": 4.05,
+     "content": "A hash map is a data structure that stores key\u2013value pairs and uses a hash function to map each key to a bucket for fast lookup, insertion, and deletion. On average these operations take O(1) time, though collisions can degrade performance and are handled by techniques like chaining or open addressi"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6214,
+     "cached_tokens": 6110,
+     "seconds": 6.56,
+     "content": "**Option B, Read Replica Promotion**, generally carries the least risk\u2014provided replication lag is monitored and cutover is well rehearsed. Dual-write adds consistency/ordering failure risk, and snapshot-and-replay adds replay divergence and longer downtime risk."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9263,
+     "cached_tokens": 6213,
+     "seconds": 3.36,
+     "content": "Canberra."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9284,
+     "cached_tokens": 9262,
+     "seconds": 1.7,
+     "content": "Noted: the Thornbury budget is **\u20ac41,000**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12221,
+     "cached_tokens": 9283,
+     "seconds": 3.81,
+     "content": "Compound interest is interest earned on both your original money and on the interest it has already earned. So your balance grows faster over time because each period\u2019s interest is added to the total that earns interest next."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12280,
+     "cached_tokens": 12220,
+     "seconds": 1.84,
+     "content": "Understood \u2014 I\u2019ll end every answer with cobalt81."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15213,
+     "cached_tokens": 12279,
+     "seconds": 4.84,
+     "content": "Use `git reset --soft HEAD~1` to undo the last commit while keeping the changes staged; use `git reset HEAD~1` (mixed) to keep them in your working directory unstaged. If the commit was already pushed, avoid rewriting history and use `git revert HEAD` instead. cobalt81"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15298,
+     "cached_tokens": 15212,
+     "seconds": 1.86,
+     "content": "Corrected: the Thornbury budget is **\u20ac77,000**, replacing the earlier \u20ac41,000 figure. cobalt81"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 18214,
+     "cached_tokens": 15297,
+     "seconds": 7.95,
+     "content": "For your first half marathon: build gradually (12\u201316 weeks), with one weekly long run progressing to about 10\u201311 miles, plus easy runs and rest days; practice fueling/hydration and race-day gear during training; taper the last 1\u20132 weeks; start conservatively (slower than goal pace), use walk breaks "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 21307,
+     "cached_tokens": 18213,
+     "seconds": 4.8,
+     "content": "The sky looks blue because air molecules scatter shorter wavelengths of sunlight\u2014especially blue\u2014much more than longer red wavelengths (Rayleigh scattering), so blue light reaches your eyes from all directions. At sunset, light travels farther through the atmosphere, scattering out the blue and leav"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 24295,
+     "cached_tokens": 21306,
+     "seconds": 4.16,
+     "content": "HTTP 429 means **\u201cToo Many Requests\u201d** \u2014 the client has hit a rate limit and should wait before retrying, ideally following any `Retry-After` header. cobalt81"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 27317,
+     "cached_tokens": 24294,
+     "seconds": 5.59,
+     "content": "Treat basil like cut flowers: trim the stems, stand them in a glass of water, cover loosely with a plastic bag, and keep at room temperature\u2014changing the water every 1\u20132 days. Avoid refrigerating basil if possible, since cold can blacken the leaves. cobalt81"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 30309,
+     "cached_tokens": 27316,
+     "seconds": 5.49,
+     "content": "A Python **list** is mutable (can be changed after creation) and written with square brackets, e.g. `[1, 2, 3]`, while a **tuple** is immutable (cannot be changed) and written with parentheses, e.g. `(1, 2, 3)`. Use lists for changing collections and tuples for fixed records or hashable keys. cobalt"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 33314,
+     "cached_tokens": 30308,
+     "seconds": 4.96,
+     "content": "Multiply the Celsius temperature by **9/5 (or 1.8)**, then add **32**: **\u00b0F = \u00b0C \u00d7 1.8 + 32**. For example, 20\u00b0C \u2192 20 \u00d7 1.8 + 32 = **68\u00b0F**. cobalt81"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33403,
+     "cached_tokens": 33313,
+     "seconds": 2.94,
+     "content": "395"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33416,
+     "cached_tokens": 33402,
+     "seconds": 1.01,
+     "content": "42 cobalt81"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33436,
+     "cached_tokens": 33415,
+     "seconds": 6.12,
+     "content": "\u20ac77,000"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33462,
+     "cached_tokens": 33435,
+     "seconds": 3.69,
+     "content": "6690"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33487,
+     "cached_tokens": 33461,
+     "seconds": 4.46,
+     "content": "Read Replica Promotion"
+    }
+   ],
+   "probes": [
+    {
+     "question": "Which room did Elif Kaya's memo give for the Thornbury review? Reply with the number only.",
+     "answer": "395",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42 cobalt81",
+     "correct": true
+    },
+    {
+     "question": "What is the Thornbury budget? Reply with the amount only.",
+     "answer": "\u20ac77,000",
+     "correct": true
+    },
+    {
+     "question": "What price did Stellar Parts quote for the solar panel? Reply with the number only.",
+     "answer": "6690",
+     "correct": true
+    },
+    {
+     "question": "For the Thornbury database move, what was option B called? Reply with its name only.",
+     "answer": "Read Replica Promotion",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 0,
+    "background": 0
+   },
+   "jobs": []
+  },
+  {
+   "arm": "memory",
+   "chat": "2d3edbb52dac",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 786,
+     "cached_tokens": 785,
+     "seconds": 3.26,
+     "content": "Amara Okafor\u2019s memo: the Thornbury quarterly review moves to 10 November, charges go to budget code D6192, and the meeting is in room 302 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3810,
+     "cached_tokens": 834,
+     "seconds": 5.15,
+     "content": "**Sable** \u2014 it fits a grey cat (sable is a soft grey-brown), and it echoes the \u201cSablefin\u201d that keeps surfacing in your notes.\n\nA couple of alternatives if you want something else: **Ash**, **Juniper**, or **Cobalt** (grey with a cool blue cast)."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3931,
+     "cached_tokens": 3883,
+     "seconds": 1.22,
+     "content": "**Harmon Labs** is the cheapest at **2,950 EUR** \u2014 well below Orbis Freight (4,010 EUR), Cedarline (9,080 EUR), and Vexley & Sons (9,500 EUR)."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6919,
+     "cached_tokens": 3985,
+     "seconds": 9.21,
+     "content": "Here are a few practical pointers for a first half marathon:\n\n**Training**\n- Build gradually \u2014 don't increase weekly mileage by more than ~10% and keep one long run a week, peaking around 18\u201320 km three weeks out.\n- Run most sessions easy (conversational pace); save hard efforts for one quality sess"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7275,
+     "cached_tokens": 7237,
+     "seconds": 10.83,
+     "content": "**Option C, Blue-Green Cutover**, generally carries the least risk \u2014 provided the new environment is kept in sync with the old one until the switch.\n\nWhy:\n- **Blue-green (C):** You build and validate the new database in parallel, then switch traffic over in one step. The old environment stays intact"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10531,
+     "cached_tokens": 7588,
+     "seconds": 5.63,
+     "content": "Use:\n\n```bash\ngit reset --soft HEAD~1\n```\n\nThat moves the branch back one commit and leaves the changes **staged** (in the index), so `git status` shows them as ready to commit again.\n\nVariants:\n- `git reset --mixed HEAD~1` (the default if you omit `--soft`) \u2014 undoes the commit and unstages the chan"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10714,
+     "cached_tokens": 10698,
+     "seconds": 1.52,
+     "content": "Noted \u2014 Thornbury budget: **57,000 EUR**. I'll use that figure for any Thornbury cost or budget questions going forward."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13653,
+     "cached_tokens": 10749,
+     "seconds": 2.68,
+     "content": "Canberra."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13677,
+     "cached_tokens": 13662,
+     "seconds": 1.1,
+     "content": "Understood \u2014 from now on, every answer I give will end with copper84."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16686,
+     "cached_tokens": 13700,
+     "seconds": 7.66,
+     "content": "The core difference is **mutability**: lists can change after creation, tuples cannot.\n\n**Lists** \u2014 `[1, 2, 3]`\n- Mutable: you can append, remove, or reassign items.\n- Slightly more overhead in memory and speed.\n- Use when you have a collection that will grow, shrink, or be edited \u2014 e.g. a queue of "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16955,
+     "cached_tokens": 16936,
+     "seconds": 1.17,
+     "content": "Updated \u2014 Thornbury budget is now **85,000 EUR** (correcting the earlier 57,000 EUR figure). I'll use 85,000 EUR for any Thornbury cost or budget questions from here on. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 19910,
+     "cached_tokens": 17008,
+     "seconds": 5.2,
+     "content": "Stand basil stems in a glass of water like flowers: trim the ends, put them in an inch or two of water, and leave the glass on the counter (basil hates cold, so not the fridge). Loosely cover the leaves with a plastic bag to hold humidity, change the water every day or two, and it'll keep for a week"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 22944,
+     "cached_tokens": 20029,
+     "seconds": 4.29,
+     "content": "A hash map stores key-value pairs in an array of buckets, using a hash function to convert each key into an index so lookups, inserts, and deletes take roughly constant time on average. When two keys hash to the same bucket, the map resolves the collision\u2014typically by chaining entries or probing for"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 25938,
+     "cached_tokens": 23030,
+     "seconds": 7.02,
+     "content": "**HTTP 429 Too Many Requests** means the client has sent more requests in a given time window than the server allows \u2014 it's a rate-limiting response.\n\nKey points:\n- The server is saying \"slow down,\" not that the request was malformed or the resource missing.\n- It may include a **`Retry-After`** head"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7454,
+     "cached_tokens": 4469,
+     "seconds": 7.31,
+     "content": "**Compound interest** is interest that earns interest on itself.\n\nSimple version: with simple interest, you only earn interest on your original money. With compound interest, each period's interest gets added to the balance, and then *that* larger balance earns interest next time \u2014 so the growth sno"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10613,
+     "cached_tokens": 7726,
+     "seconds": 7.83,
+     "content": "**Short answer: Rayleigh scattering.**\n\nSunlight contains all colours. When it passes through the atmosphere it collides with gas molecules (mostly nitrogen and oxygen) that are far smaller than the wavelength of visible light. Those molecules scatter short wavelengths \u2014 blue and violet \u2014 much more "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13830,
+     "cached_tokens": 10870,
+     "seconds": 8.59,
+     "content": "**About 2\u20133 minutes at 75\u201380 \u00b0C (165\u2013175 \u00b0F).**\n\nThat's the sweet spot for most green teas. Details that matter:\n\n- **Water temperature is the big one.** Boiling water (100 \u00b0C) scalds green tea, pulling out bitterness and astringency. Let the kettle sit 2\u20133 minutes after boiling, or add a splash of "
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14137,
+     "cached_tokens": 14122,
+     "seconds": 5.49,
+     "content": "85000 EUR copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14169,
+     "cached_tokens": 14136,
+     "seconds": 1.85,
+     "content": "Log Shipping Mirror copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14205,
+     "cached_tokens": 14168,
+     "seconds": 0.45,
+     "content": "302 copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14224,
+     "cached_tokens": 14204,
+     "seconds": 0.56,
+     "content": "42 copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14252,
+     "cached_tokens": 14223,
+     "seconds": 0.31,
+     "content": "2950 copper84"
+    }
+   ],
+   "probes": [
+    {
+     "question": "What is the Thornbury budget? Reply with the amount only.",
+     "answer": "85000 EUR copper84",
+     "correct": true
+    },
+    {
+     "question": "For the Thornbury database move, what was option B called? Reply with its name only.",
+     "answer": "Log Shipping Mirror copper84",
+     "correct": true
+    },
+    {
+     "question": "Which room did Amara Okafor's memo give for the Thornbury review? Reply with the number only.",
+     "answer": "302 copper84",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42 copper84",
+     "correct": true
+    },
+    {
+     "question": "What price did Harmon Labs quote for the solar panel? Reply with the number only.",
+     "answer": "2950 copper84",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 0,
+    "background": 0
+   },
+   "jobs": [
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 1157,
+     "cached_tokens": 1015,
+     "seconds": 1.123
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 835,
+     "cached_tokens": 785,
+     "seconds": 0.199
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4097,
+     "cached_tokens": 3951,
+     "seconds": 1.237
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 3884,
+     "cached_tokens": 3809,
+     "seconds": 0.205
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4142,
+     "cached_tokens": 3930,
+     "seconds": 1.329
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 3986,
+     "cached_tokens": 3930,
+     "seconds": 0.188
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7400,
+     "cached_tokens": 7243,
+     "seconds": 1.037
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7238,
+     "cached_tokens": 6918,
+     "seconds": 0.479
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7949,
+     "cached_tokens": 7786,
+     "seconds": 1.174
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7589,
+     "cached_tokens": 7274,
+     "seconds": 0.447
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10870,
+     "cached_tokens": 10702,
+     "seconds": 1.44
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10699,
+     "cached_tokens": 10530,
+     "seconds": 0.303
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10938,
+     "cached_tokens": 10752,
+     "seconds": 1.043
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10750,
+     "cached_tokens": 10713,
+     "seconds": 0.16
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13836,
+     "cached_tokens": 13657,
+     "seconds": 0.862
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13663,
+     "cached_tokens": 13657,
+     "seconds": 0.094
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13919,
+     "cached_tokens": 13734,
+     "seconds": 0.895
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13701,
+     "cached_tokens": 13676,
+     "seconds": 0.151
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 17128,
+     "cached_tokens": 16685,
+     "seconds": 1.401
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 16937,
+     "cached_tokens": 16685,
+     "seconds": 0.427
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 17217,
+     "cached_tokens": 17021,
+     "seconds": 1.05
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 17009,
+     "cached_tokens": 16954,
+     "seconds": 0.188
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 20233,
+     "cached_tokens": 19909,
+     "seconds": 1.832
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 20030,
+     "cached_tokens": 19909,
+     "seconds": 0.258
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 23232,
+     "cached_tokens": 23025,
+     "seconds": 1.676
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 23031,
+     "cached_tokens": 23025,
+     "seconds": 0.11
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 27155,
+     "cached_tokens": 25937,
+     "seconds": 3.33
+    },
+    {
+     "kind": "stem",
+     "outcome": "done",
+     "prompt_tokens": 1335,
+     "cached_tokens": 0,
+     "seconds": 1.39
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 4470,
+     "cached_tokens": 1334,
+     "seconds": 2.69
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7952,
+     "cached_tokens": 7733,
+     "seconds": 1.655
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7727,
+     "cached_tokens": 7453,
+     "seconds": 0.418
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 11101,
+     "cached_tokens": 10612,
+     "seconds": 1.707
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10871,
+     "cached_tokens": 10612,
+     "seconds": 0.4
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 14360,
+     "cached_tokens": 13829,
+     "seconds": 2.009
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 14123,
+     "cached_tokens": 13829,
+     "seconds": 0.443
+    }
+   ]
+  },
+  {
+   "arm": "full",
+   "chat": "84a34aac72ac",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 80,
+     "cached_tokens": 0,
+     "seconds": 2.11,
+     "content": "Amara Okafor\u2019s memo: the Thornbury quarterly review moves to 10 November, charges go to budget code D6192, and the meeting is in room 302 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3100,
+     "cached_tokens": 0,
+     "seconds": 6.45,
+     "content": "**Ash** \u2014 simple, elegant, and perfect for a grey cat."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3165,
+     "cached_tokens": 3099,
+     "seconds": 0.96,
+     "content": "Harmon Labs is cheapest at **2,950 EUR**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6113,
+     "cached_tokens": 3164,
+     "seconds": 11.84,
+     "content": "Here are practical tips for your first half marathon:\n\n1. **Follow a proven 10\u201312 week plan** and don\u2019t cram. Consistency matters more than occasional hero workouts.\n2. **Build mileage gradually** \u2014 increase weekly volume by roughly 10% and include cutback weeks.\n3. **Practice race pace** in a few r"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6523,
+     "cached_tokens": 6112,
+     "seconds": 10.1,
+     "content": "**Option B \u2014 Log Shipping Mirror** carries the least risk: it keeps the new database continuously synchronized with minimal application changes, allows validation before cutover, and gives a clear rollback path until the switch. Dual-write adds consistency complexity, and blue-green cutover has more"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9530,
+     "cached_tokens": 6522,
+     "seconds": 6.27,
+     "content": "Use:\n\n```bash\ngit reset --soft HEAD~1\n```\n\nThis removes the last commit but keeps all its changes **staged**.\n\nIf you want the changes kept but **unstaged**:\n\n```bash\ngit reset HEAD~1\n```\n\nUse this only if the commit hasn\u2019t been pushed/shared. If it has been pushed, prefer `git revert` instead of re"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9628,
+     "cached_tokens": 9529,
+     "seconds": 1.27,
+     "content": "Noted \u2014 the Thornbury budget is **\u20ac57,000**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12548,
+     "cached_tokens": 9627,
+     "seconds": 3.24,
+     "content": "Canberra."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12568,
+     "cached_tokens": 12547,
+     "seconds": 1.57,
+     "content": "Understood. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15561,
+     "cached_tokens": 12567,
+     "seconds": 5.73,
+     "content": "In Python:\n\n- **List**: mutable, ordered sequence written with `[ ]` (e.g. `[1, 2, 3]`). You can add, remove, or change items. Lists can\u2019t be dictionary keys because they\u2019re unhashable.\n- **Tuple**: immutable, ordered sequence written with `( )` (e.g. `(1, 2, 3)`). Once created, its contents can\u2019t b"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15736,
+     "cached_tokens": 15560,
+     "seconds": 1.3,
+     "content": "Corrected: the Thornbury budget is **\u20ac85,000**, not \u20ac57,000. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 18662,
+     "cached_tokens": 15735,
+     "seconds": 5.83,
+     "content": "Trim the stems and stand basil in a glass of water like flowers, loosely cover with a plastic bag, and keep it at room temperature out of direct sun\u2014change the water every day or two. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 21621,
+     "cached_tokens": 18661,
+     "seconds": 4.47,
+     "content": "A hash map is a data structure that stores key\u2013value pairs and uses a hash function to map each key to a bucket, allowing fast average-case lookup, insertion, and deletion. It handles collisions (when different keys hash to the same bucket) via techniques like chaining or open addressing, and typica"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 24608,
+     "cached_tokens": 21620,
+     "seconds": 4.36,
+     "content": "HTTP 429 means **\u201cToo Many Requests\u201d** \u2014 the client has sent more requests than the server\u2019s rate limit allows in a given time window. The response often includes a `Retry-After` header telling you when to try again; clients should back off and retry later rather than hammering the server. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 27663,
+     "cached_tokens": 24607,
+     "seconds": 4.59,
+     "content": "Compound interest is interest earned on both your original money and on the interest it has already earned\u2014so your balance can grow faster over time. For example, \u20ac100 at 5% grows to \u20ac105 after a year, then the next year\u2019s 5% is calculated on \u20ac105, not just \u20ac100. copper84"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 30619,
+     "cached_tokens": 27662,
+     "seconds": 4.56,
+     "content": "The sky looks blue because air molecules scatter shorter-wavelength blue light from the Sun much more than longer red light, so blue light reaches your eyes from all across the sky. At sunrise and sunset, sunlight passes through more atmosphere, scattering blue away and leaving warmer reds and orang"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 33640,
+     "cached_tokens": 30618,
+     "seconds": 5.06,
+     "content": "Steep green tea for about **2\u20133 minutes** in water around **70\u201380\u00b0C (160\u2013175\u00b0F)**; delicate teas may need only 1\u20132 minutes, and boiling water can make it bitter. copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33707,
+     "cached_tokens": 33639,
+     "seconds": 3.49,
+     "content": "\u20ac85,000 copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33736,
+     "cached_tokens": 33706,
+     "seconds": 1.77,
+     "content": "Log Shipping Mirror copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33768,
+     "cached_tokens": 33735,
+     "seconds": 2.26,
+     "content": "302 copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33783,
+     "cached_tokens": 33767,
+     "seconds": 0.76,
+     "content": "42 copper84"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33807,
+     "cached_tokens": 33782,
+     "seconds": 5.73,
+     "content": "2950 copper84"
+    }
+   ],
+   "probes": [
+    {
+     "question": "What is the Thornbury budget? Reply with the amount only.",
+     "answer": "\u20ac85,000 copper84",
+     "correct": true
+    },
+    {
+     "question": "For the Thornbury database move, what was option B called? Reply with its name only.",
+     "answer": "Log Shipping Mirror copper84",
+     "correct": true
+    },
+    {
+     "question": "Which room did Amara Okafor's memo give for the Thornbury review? Reply with the number only.",
+     "answer": "302 copper84",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42 copper84",
+     "correct": true
+    },
+    {
+     "question": "What price did Harmon Labs quote for the solar panel? Reply with the number only.",
+     "answer": "2950 copper84",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 0,
+    "background": 0
+   },
+   "jobs": []
+  },
+  {
+   "arm": "memory",
+   "chat": "831b4e5975e4",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 787,
+     "cached_tokens": 786,
+     "seconds": 3.03,
+     "content": "Priya Natarajan's memo moves the Corvane quarterly review to 22 November, charges it to budget code D8316, and sets the meeting in room 303 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3787,
+     "cached_tokens": 834,
+     "seconds": 5.65,
+     "content": "Green tea is best steeped for about **2\u20133 minutes** in water that's **80 \u00b0C / 175 \u00b0F** (not boiling \u2014 let the kettle rest a minute or two first). Steep longer and it turns bitter and astringent; if you like it stronger, add more leaf rather than more time. Loose leaf usually wants ~3 minutes, delica"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3947,
+     "cached_tokens": 3900,
+     "seconds": 2.0,
+     "content": "**Grayson Co** is cheapest at **4100 EUR** \u2014 350 below Orbis Freight (4450), 630 below Stellar Parts (4730), and 1660 below Cedarline (5760)."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6937,
+     "cached_tokens": 4000,
+     "seconds": 6.91,
+     "content": "**\u00b0F = (\u00b0C \u00d7 9/5) + 32**\n\nSo: 0 \u00b0C \u2192 32 \u00b0F, 100 \u00b0C \u2192 212 \u00b0F, 20 \u00b0C \u2192 68 \u00b0F, and 37 \u00b0C \u2192 98.6 \u00b0F. Going the other way: **\u00b0C = (\u00b0F \u2212 32) \u00d7 5/9**.\n\nA quick mental shortcut: double the Celsius figure and add 30 \u2014 close enough for weather (20 \u00b0C \u2248 68 \u00b0F, shortcut gives 70 \u00b0F).\n\n(Your notes this week are "
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7294,
+     "cached_tokens": 7117,
+     "seconds": 17.88,
+     "content": "No prior notes in this conversation cover these options, so this is general guidance rather than a verdict from your own material.\n\n**Ranked by cutover risk, typically: Blue-Green (B) < Read Replica Promotion (C) < Snapshot and Replay (A)** \u2014 with a big \"it depends\":\n\n- **B, Blue-Green Cutover** \u2014 l"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10405,
+     "cached_tokens": 7441,
+     "seconds": 4.6,
+     "content": "**Canberra** \u2014 not Sydney or Melbourne. It was purpose-built as a compromise capital between the two rival cities and has held that role since 1913 (Parliament moved there in 1927).\n\n(Your notes this week are word-salad again \u2014 nothing about Australia in them.)"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10487,
+     "cached_tokens": 10470,
+     "seconds": 1.81,
+     "content": "Noted: the Corvane budget is **42,000 EUR** (charges under budget code D8316, per the memo in your first note)."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13479,
+     "cached_tokens": 10526,
+     "seconds": 7.3,
+     "content": "Use `git reset` \u2014 it moves HEAD back one commit but leaves your working tree alone:\n\n- **`git reset --soft HEAD~1`** \u2014 uncommits, and the changes stay **staged** (in the index), ready to re-commit as-is.\n- **`git reset HEAD~1`** (the default, `--mixed`) \u2014 uncommits and **unstages**; your edits remai"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 13645,
+     "cached_tokens": 13630,
+     "seconds": 2.85,
+     "content": "Understood \u2014 I'll end every answer from here on with \"copper33\".\n\ncopper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16634,
+     "cached_tokens": 13671,
+     "seconds": 8.07,
+     "content": "Keep basil **out of the fridge** \u2014 cold blackens the leaves. Treat it like a cut flower: trim the stems, stand them in a glass of water (change it every day or two), and drape a loose plastic bag over the top to keep humidity in. Leave it on the counter, out of direct sun.\n\nIf you need it longer tha"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 16792,
+     "cached_tokens": 16772,
+     "seconds": 1.58,
+     "content": "Corrected: the Corvane budget is **87,000 EUR**, replacing the earlier figure of 42,000 EUR. I'll use 87,000 from here on.\n\ncopper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 19783,
+     "cached_tokens": 16838,
+     "seconds": 6.57,
+     "content": "**Ash** is the classic \u2014 short, soft, and it fits a grey coat. A few more depending on personality:\n\n- **Smoke** or **Smokey** \u2014 for a fluffy, drifting sort\n- **Pewter**, **Slate**, or **Graphite** \u2014 a bit more distinctive\n- **Nimbus** or **Storm** \u2014 if the cat is dramatic\n- **Biscuit** \u2014 for the ir"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 22845,
+     "cached_tokens": 19913,
+     "seconds": 7.49,
+     "content": "**HTTP 429 = \"Too Many Requests\"** \u2014 rate limiting. The client has sent more requests than the server allows in a given window, so the server is refusing to process more for now.\n\nStandard handling: back off and retry later, ideally honouring the **`Retry-After`** header (seconds or an HTTP date) if"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 25932,
+     "cached_tokens": 23009,
+     "seconds": 8.0,
+     "content": "**Rayleigh scattering.** Sunlight is a mix of all wavelengths, and when it passes through air molecules, the short wavelengths (blue, ~450 nm) scatter far more strongly than the long ones (red, ~700 nm) \u2014 roughly in proportion to 1/\u03bb\u2074, so blue scatters several times more than red.\n\nThat scattered bl"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 7872,
+     "cached_tokens": 5008,
+     "seconds": 5.41,
+     "content": "A hash map is a data structure that stores key\u2013value pairs by running each key through a hash function to compute an index into an array of buckets, so lookups, inserts, and deletes take O(1) time on average. Its main weakness is collisions \u2014 when two keys hash to the same bucket \u2014 which are handled"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 10957,
+     "cached_tokens": 7967,
+     "seconds": 16.46,
+     "content": "Congrats on signing up \u2014 a half is a very forgiving distance to debut at. A few things that matter most:\n\n**Training**\n- **Build the long run gradually** \u2014 add about 1\u20132 km (or 5\u201310 min) per week, with every third or fourth week easier. Get one long run of 16\u201318 km in about 3\u20134 weeks before race day"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 14386,
+     "cached_tokens": 11428,
+     "seconds": 12.57,
+     "content": "**Mutability is the core difference.** A list is mutable \u2014 you can append, remove, or reassign items in place. A tuple is immutable \u2014 once built, its contents can't change (though mutable objects *inside* a tuple can still be modified).\n\n```python\nxs = [1, 2, 3]      # list\nxs[0] = 99          # fin"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14735,
+     "cached_tokens": 14719,
+     "seconds": 7.07,
+     "content": "87000 EUR"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14765,
+     "cached_tokens": 14734,
+     "seconds": 0.65,
+     "content": "4450"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14795,
+     "cached_tokens": 14764,
+     "seconds": 0.44,
+     "content": "Blue-Green Cutover"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14832,
+     "cached_tokens": 14794,
+     "seconds": 0.48,
+     "content": "303"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 14849,
+     "cached_tokens": 14831,
+     "seconds": 0.62,
+     "content": "42\n\ncopper33"
+    }
+   ],
+   "probes": [
+    {
+     "question": "What is the Corvane budget? Reply with the amount only.",
+     "answer": "87000 EUR",
+     "correct": true
+    },
+    {
+     "question": "What price did Orbis Freight quote for the server rack? Reply with the number only.",
+     "answer": "4450",
+     "correct": true
+    },
+    {
+     "question": "For the Corvane database move, what was option B called? Reply with its name only.",
+     "answer": "Blue-Green Cutover",
+     "correct": true
+    },
+    {
+     "question": "Which room did Priya Natarajan's memo give for the Corvane review? Reply with the number only.",
+     "answer": "303",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42\n\ncopper33",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 1,
+    "background": 2
+   },
+   "jobs": [
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 1074,
+     "cached_tokens": 932,
+     "seconds": 1.249
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 835,
+     "cached_tokens": 786,
+     "seconds": 0.178
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4089,
+     "cached_tokens": 3943,
+     "seconds": 1.511
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 3901,
+     "cached_tokens": 3786,
+     "seconds": 0.245
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 4157,
+     "cached_tokens": 3946,
+     "seconds": 2.532
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 4001,
+     "cached_tokens": 3946,
+     "seconds": 0.171
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7239,
+     "cached_tokens": 6936,
+     "seconds": 2.954
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7078,
+     "cached_tokens": 6936,
+     "seconds": 0.268
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 7943,
+     "cached_tokens": 7680,
+     "seconds": 2.529
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7442,
+     "cached_tokens": 7117,
+     "seconds": 0.444
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10644,
+     "cached_tokens": 10404,
+     "seconds": 2.085
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10471,
+     "cached_tokens": 10404,
+     "seconds": 0.199
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 10716,
+     "cached_tokens": 10496,
+     "seconds": 1.759
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 10527,
+     "cached_tokens": 10486,
+     "seconds": 0.174
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13826,
+     "cached_tokens": 13478,
+     "seconds": 2.688
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13631,
+     "cached_tokens": 13478,
+     "seconds": 0.305
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 13919,
+     "cached_tokens": 13644,
+     "seconds": 1.49
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 13672,
+     "cached_tokens": 13644,
+     "seconds": 0.148
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 17012,
+     "cached_tokens": 16640,
+     "seconds": 2.47
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 16773,
+     "cached_tokens": 16633,
+     "seconds": 0.276
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 17036,
+     "cached_tokens": 16791,
+     "seconds": 1.964
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 16839,
+     "cached_tokens": 16791,
+     "seconds": 0.181
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 20116,
+     "cached_tokens": 19782,
+     "seconds": 2.3
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 19914,
+     "cached_tokens": 19782,
+     "seconds": 0.296
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 23219,
+     "cached_tokens": 22844,
+     "seconds": 2.806
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 23010,
+     "cached_tokens": 22844,
+     "seconds": 0.303
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 27247,
+     "cached_tokens": 26112,
+     "seconds": 5.185
+    },
+    {
+     "kind": "stem",
+     "outcome": "done",
+     "prompt_tokens": 1173,
+     "cached_tokens": 0,
+     "seconds": 1.298
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 5009,
+     "cached_tokens": 1172,
+     "seconds": 3.057
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 8191,
+     "cached_tokens": 7936,
+     "seconds": 2.636
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 7968,
+     "cached_tokens": 7871,
+     "seconds": 0.226
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 11676,
+     "cached_tokens": 10956,
+     "seconds": 3.046
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 11429,
+     "cached_tokens": 10956,
+     "seconds": 0.636
+    },
+    {
+     "kind": "curator",
+     "outcome": "done",
+     "prompt_tokens": 14977,
+     "cached_tokens": 14746,
+     "seconds": 2.71
+    },
+    {
+     "kind": "prewarm",
+     "outcome": "done",
+     "prompt_tokens": 14720,
+     "cached_tokens": 14385,
+     "seconds": 0.473
+    }
+   ]
+  },
+  {
+   "arm": "full",
+   "chat": "47328fea0b39",
+   "rows": [
+    {
+     "kind": "turn",
+     "prompt_tokens": 81,
+     "cached_tokens": 0,
+     "seconds": 2.64,
+     "content": "Corvane quarterly review is moved to 22 November; charges go to budget code D8316, and the meeting will be in room 303 on the fourth floor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3071,
+     "cached_tokens": 0,
+     "seconds": 5.32,
+     "content": "Steep green tea for about **2\u20133 minutes** in water around **80\u00b0C (175\u00b0F)**. Adjust shorter for delicate teas, longer for stronger flavor."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 3156,
+     "cached_tokens": 3070,
+     "seconds": 1.99,
+     "content": "Grayson Co is cheapest at **4100 EUR**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6107,
+     "cached_tokens": 3155,
+     "seconds": 5.15,
+     "content": "To convert Celsius to Fahrenheit: **\u00b0F = (\u00b0C \u00d7 9/5) + 32**.  \nExample: 20\u00b0C \u2192 (20 \u00d7 1.8) + 32 = **68\u00b0F**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 6197,
+     "cached_tokens": 6106,
+     "seconds": 6.33,
+     "content": "**Option B \u2014 Blue-Green Cutover** generally carries the least risk, assuming it\u2019s properly implemented: it allows validation of the new environment and a fast rollback to the old one.\n\nCaveat: for a database, replication/sync and cutover consistency must be handled carefully; if those aren\u2019t mature,"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9253,
+     "cached_tokens": 6196,
+     "seconds": 3.45,
+     "content": "Canberra."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 9275,
+     "cached_tokens": 9252,
+     "seconds": 1.7,
+     "content": "Noted \u2014 Corvane budget is **\u20ac42,000**."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12244,
+     "cached_tokens": 9274,
+     "seconds": 6.73,
+     "content": "Use:\n\n```bash\ngit reset --soft HEAD~1\n```\n\nThis undoes the last commit but keeps all changes **staged**.\n\nIf you want the changes kept but **unstaged**:\n\n```bash\ngit reset HEAD~1\n```\n\nIf the commit was already pushed/shared, avoid resetting history and use:\n\n```bash\ngit revert HEAD\n```"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 12335,
+     "cached_tokens": 12243,
+     "seconds": 2.05,
+     "content": "Understood \u2014 I\u2019ll end every answer with copper33."
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15313,
+     "cached_tokens": 12334,
+     "seconds": 5.99,
+     "content": "Trim the stems and stand basil in a glass of water like flowers; leave it at room temperature (not the fridge), loosely cover with a plastic bag, and change the water every 1\u20132 days. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 15380,
+     "cached_tokens": 15312,
+     "seconds": 1.35,
+     "content": "Corrected \u2014 the Corvane budget is **\u20ac87,000** (not \u20ac42,000). copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 18351,
+     "cached_tokens": 15379,
+     "seconds": 4.96,
+     "content": "**Ash** is a great name for a grey cat \u2014 short, soft, and fitting. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 21306,
+     "cached_tokens": 18350,
+     "seconds": 5.44,
+     "content": "HTTP **429 Too Many Requests** means the client has sent too many requests in a given amount of time \u2014 it\u2019s a rate-limiting response. The server may include a `Retry-After` header telling you when to try again. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 24282,
+     "cached_tokens": 21305,
+     "seconds": 5.01,
+     "content": "The sky looks blue because air molecules scatter shorter blue wavelengths of sunlight much more strongly than longer red wavelengths (Rayleigh scattering); that scattered blue light reaches your eyes from all directions. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 27186,
+     "cached_tokens": 24281,
+     "seconds": 6.65,
+     "content": "A hash map is a data structure that stores key\u2013value pairs and uses a hash function to map each key to a bucket for fast lookup, insertion, and deletion. On average these operations take O(1) time, though collisions and resizing can affect performance. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 30234,
+     "cached_tokens": 27185,
+     "seconds": 5.17,
+     "content": "Build mileage gradually, include one longer weekly run, practice race-day nutrition/hydration, taper the last 1\u20132 weeks, start conservatively, and prioritize sleep and recovery. copper33"
+    },
+    {
+     "kind": "turn",
+     "prompt_tokens": 33233,
+     "cached_tokens": 30233,
+     "seconds": 6.09,
+     "content": "Lists are mutable (can be changed after creation) and use square brackets `[]`; tuples are immutable (fixed after creation) and use parentheses `()`. Tuples are generally faster and can be used as dictionary keys when hashable, while lists are better for collections you need to modify. copper33"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33312,
+     "cached_tokens": 33232,
+     "seconds": 13.72,
+     "content": "\u20ac87,000"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33339,
+     "cached_tokens": 33311,
+     "seconds": 3.88,
+     "content": "4450"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33365,
+     "cached_tokens": 33338,
+     "seconds": 3.79,
+     "content": "Blue-Green Cutover"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33398,
+     "cached_tokens": 33364,
+     "seconds": 6.07,
+     "content": "303"
+    },
+    {
+     "kind": "probe",
+     "prompt_tokens": 33411,
+     "cached_tokens": 33397,
+     "seconds": 1.55,
+     "content": "42 copper33"
+    }
+   ],
+   "probes": [
+    {
+     "question": "What is the Corvane budget? Reply with the amount only.",
+     "answer": "\u20ac87,000",
+     "correct": true
+    },
+    {
+     "question": "What price did Orbis Freight quote for the server rack? Reply with the number only.",
+     "answer": "4450",
+     "correct": true
+    },
+    {
+     "question": "For the Corvane database move, what was option B called? Reply with its name only.",
+     "answer": "Blue-Green Cutover",
+     "correct": true
+    },
+    {
+     "question": "Which room did Priya Natarajan's memo give for the Corvane review? Reply with the number only.",
+     "answer": "303",
+     "correct": true
+    },
+    {
+     "question": "What is 17 plus 25?",
+     "answer": "42 copper33",
+     "correct": true
+    }
+   ],
+   "stale": {
+    "turns": 0,
+    "background": 0
+   },
+   "jobs": []
+  }
+ ]
+}

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+import json
+import pathlib
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "tools"))
+import stage_lane  # noqa: E402
+import lane_config  # noqa: E402
+
+
+def main():
+    document = stage_lane.lane_records()
+    lanes = document["lanes"]
+    reserve = document["weightd"]["kv_reserve_bytes"]
+    swap = {entry["id"]: entry for entry in json.loads((ROOT / "deployment/hub/model_swap.json").read_text())["models"]}
+    chat = {entry["id"]: entry for entry in json.loads((ROOT / "deployment/hub/chat_frontend.json").read_text())["models"]}
+    readme = {}
+    for row in (ROOT / "README.md").read_text().splitlines():
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if len(cells) > 3 and cells[0].startswith("`") and cells[0].strip("`") in lanes:
+            readme[cells[0].strip("`")] = cells[3]
+    failures = []
+    original = lane_config.record
+    try:
+        cold = dict(lanes["kimi-k3"])
+        cold["draftd"] = dict(cold["draftd"], drafter="/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb")
+        lane_config.record = lambda record_id: cold
+        lane_config.draftd_environment("kimi-k3")
+        failures.append("a draft server whose drafter sits on /mnt/cold-raid6 rendered; inference must read local NVMe only")
+    except SystemExit:
+        pass
+    finally:
+        lane_config.record = original
+    partition_reserve = document.get("kv_partition_reserve_bytes", 0)
+    if not isinstance(partition_reserve, int) or not 1 << 30 <= partition_reserve < 1 << 42:
+        failures.append(f"kv_partition_reserve_bytes {partition_reserve!r}: every node needs a finite reserve the KV snapshot stores keep free")
+    capped = stage_lane.record_arguments("glm-5.3-flash")
+    capped.kv_physical_pages_cap = 4096
+    stage_lane.check_arguments(stage_lane.MODELS[capped.model], capped)
+    if capped.kv_physical_pages != 4096 or capped.kv_logical_pages != lanes["glm-5.3-flash"]["kv_logical_pages"]:
+        failures.append(f"a kv_physical_pages_cap of 4096 rendered {capped.kv_physical_pages} physical and {capped.kv_logical_pages} logical pages")
+    capped = stage_lane.record_arguments("glm-5.3-flash")
+    capped.kv_physical_pages_cap = 1
+    try:
+        stage_lane.check_arguments(stage_lane.MODELS[capped.model], capped)
+        failures.append("a kv_physical_pages_cap below one sequence rendered")
+    except SystemExit:
+        pass
+    for missing in sorted(set(swap) - set(lanes)):
+        failures.append(f"{missing}: the swap controller serves it but deployment/lanes.json has no record")
+    for extra in sorted(set(lanes) - set(swap)):
+        failures.append(f"{extra}: a lane record the swap controller does not serve")
+    for record_id, record in sorted(lanes.items()):
+        model = stage_lane.MODELS.get(record.get("model"))
+        if model is None or model["swap_id"] != record_id:
+            failures.append(f"{record_id}: model {record.get('model')!r} is no tools/stage_lane.py MODELS entry with this swap id")
+            continue
+        if record.get("draft_server") is not None or record.get("draftd") is not None:
+            try:
+                lane_config.draftd_environment(record_id)
+            except SystemExit as error:
+                failures.append(f"{record_id}: draft server does not render: {error}")
+        if "expert_pool_bytes" in record:
+            failures.append(f"{record_id}: expert_pool_bytes is gone; weightd sizes the expert pool from the pack's expert manifest")
+        cap = record.get("expert_pool_cap_bytes")
+        if cap is not None and (not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0 or cap % (2 << 20)):
+            failures.append(f"{record_id}: expert_pool_cap_bytes {cap!r} must be a positive whole number of 2 MiB weightd chunks")
+        if record["launcher"] not in ("stage_lane", "k3_lane"):
+            failures.append(f"{record_id}: launcher {record['launcher']!r} is neither stage_lane nor k3_lane")
+        if record["launcher"] == "stage_lane" and record["runtime_root"] != f"/home/{{host}}/stage-lanes/{record['model']}/lane{record['lane']}/root":
+            failures.append(f"{record_id}: a stage lane lives under /home/{{host}}/stage-lanes/{record['model']}/lane{record['lane']}/root, not {record['runtime_root']}")
+        native = stage_lane.native_context_tokens(model)
+        context = record["context_tokens"]
+        reason = record.get("context_reason", "")
+        if context > native:
+            failures.append(f"{record_id}: context_tokens {context} exceeds the contract maximum {native}")
+        elif context < native and not reason.strip():
+            failures.append(f"{record_id}: serves {context} of the contract's {native} positions without a context_reason")
+        elif context == native and reason:
+            failures.append(f"{record_id}: serves the contract maximum, so context_reason must go")
+        block = model.get("kv_block_tokens", stage_lane.KV_BLOCK_TOKENS)
+        sequence_bytes = context // block * model["kv_page_bytes"]
+        if sequence_bytes > reserve:
+            failures.append(f"{record_id}: one {context}-position sequence needs {sequence_bytes} KV bytes per rank, over the weightd KV reserve {reserve}")
+        if "kv_physical_pages" in record:
+            failures.append(f"{record_id}: kv_physical_pages is gone; the device KV pool grows to what the node budget leaves (kv_physical_pages_cap keeps room on purpose)")
+        cap = record.get("kv_physical_pages_cap")
+        if cap is not None and (not isinstance(cap, int) or cap < context // block):
+            failures.append(f"{record_id}: kv_physical_pages_cap {cap!r} must be a page count holding one {context}-position sequence")
+        with tempfile.TemporaryDirectory() as directory:
+            args = stage_lane.record_arguments(record_id)
+            try:
+                stage_lane.write_lane(args, pathlib.Path(directory))
+            except SystemExit as error:
+                failures.append(f"{record_id}: does not render: {error}")
+                continue
+            limits = json.loads((pathlib.Path(directory) / "deployment.json").read_text())["runtime_limits"]
+            budget = min((document["weightd"]["device_bytes_max"] - model["node_memory_bytes"]) // model["kv_page_bytes"], stage_lane.KV_PHYSICAL_PAGES_MAX, cap or stage_lane.KV_PHYSICAL_PAGES_MAX)
+            if limits["kv_physical_page_capacity"] != budget or limits["kv_logical_page_capacity"] != max(record["kv_logical_pages"], budget):
+                failures.append(f"{record_id}: the device KV pool may hold {limits['kv_physical_page_capacity']} pages and the cache {limits['kv_logical_page_capacity']}, not the {budget} the node budget leaves and max(kv_logical_pages, {budget})")
+            hub = json.loads((pathlib.Path(directory) / "model_resident.json").read_text())
+            node = json.loads((pathlib.Path(directory) / "deployment.json").read_text())
+            if "tokenizer" in node or "draft_server" in node or hub["tokenizer"]["sha256"] != record["tokenizer_sha256"]:
+                failures.append(f"{record_id}: the tokenizer and draft server belong to the hub model_resident.json only")
+            prefix = record.get("text_prompt_prefix_token_ids")
+            if not isinstance(prefix, list) or not all(isinstance(token, int) and not isinstance(token, bool) and 0 <= token < model["tokenizer_vocabulary"] for token in prefix):
+                failures.append(f"{record_id}: text_prompt_prefix_token_ids must list the ids the publisher tokenizer puts before a raw text prompt (tools/tokenizer_text_prefix.py), [] for none")
+            elif hub["tokenizer"].get("text_prompt_prefix_token_ids", []) != prefix:
+                failures.append(f"{record_id}: the hub model_resident.json carries text prompt prefix {hub['tokenizer'].get('text_prompt_prefix_token_ids')}, the record {prefix}")
+        if record["launcher"] == "stage_lane":
+            generated = stage_lane.swap_entry(record["model"], model, record["lane"])
+            entry = swap.get(record_id, {})
+            for key, value in generated.items():
+                if entry.get(key) != value:
+                    failures.append(f"{record_id}: deployment/hub/model_swap.json {key} differs from the lane record's swap entry")
+        elif swap.get(record_id, {}).get("node_memory_bytes") != model["node_memory_bytes"]:
+            failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
+        if record_id in chat and chat[record_id].get("context_tokens") != context:
+            failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
+        label = f"{context // 1048576}M" if context % 1048576 == 0 else f"{context // 1024}K"
+        if readme.get(record_id) != label:
+            failures.append(f"{record_id}: README.md's model table lists context {readme.get(record_id)} where the engine serves {label}")
+    for line in failures:
+        print("FAILED: " + line)
+    if failures:
+        return 1
+    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic scan for stale ceph OSD device-mapper tables
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -111,7 +111,7 @@ __global__ static void LmStageSoftcapKernel(float *values, uint64_t count, float
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 	{
 		const float value = scale != 0.0f ? values[index] * scale : values[index];
-		values[index] = cap != 0.0f ? cap * tanhf(value / cap) : value;
+		values[index] = cap != 0.0f ? SparkMathSoftcap(value,cap) : value;
 	}
 }
 

@@ -1,0 +1,9 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.37 s: pack 53793417600 bytes, device state 5175664384 bytes
+solo references: 64 sequences x 128 steps in 454.13 s
+B1: step 55.083 ms, 18.155 tok/s per sequence, 18.15 tok/s aggregate, 1/1 sequences identical to solo
+B2: step 56.145 ms, 17.811 tok/s per sequence, 35.62 tok/s aggregate, 2/2 sequences identical to solo
+B4: step 58.248 ms, 17.168 tok/s per sequence, 68.67 tok/s aggregate, 4/4 sequences identical to solo
+B8: step 61.706 ms, 16.206 tok/s per sequence, 129.65 tok/s aggregate, 8/8 sequences identical to solo
+B16: step 69.225 ms, 14.446 tok/s per sequence, 231.13 tok/s aggregate, 16/16 sequences identical to solo
+B32: step 87.592 ms, 11.417 tok/s per sequence, 365.33 tok/s aggregate, 32/32 sequences identical to solo
+B64: step 144.823 ms, 6.905 tok/s per sequence, 441.92 tok/s aggregate, 64/64 sequences identical to solo

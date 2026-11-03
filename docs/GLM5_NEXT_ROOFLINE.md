@@ -114,6 +114,31 @@ earlier kernel, which gathered the partials into CTA 0 and broadcast `pre`
 with two more cluster syncs. The result is bitwise equal
 (`test_glm5_next_hc_mix`, `ROOFLINE-HASH`). Only CTA 0 writes `mixes`, `pre`
 and `post` to global memory.
+
+For prefill a cluster takes `G5N_HC_ROWS` (8) rows. Each `fn` vector is loaded
+once and applied to all eight rows, so a 2,048-row site reads the 1.5 MiB
+matrix 256 times instead of 2,048 times. The rows are staged as bf16, which
+converts to the same floats, so each row's dot product, Sinkhorn and collapse
+are unchanged. On one GB10 (lenovo7) a 2,048-row site takes 1,245 us against
+3,250 us with one row per cluster, and the outputs are bitwise equal
+(`tests/test_glm5_next_hc_site_cuda.py`). The fleet profile of 2026-10-27
+put the site at 13% of a GLM 5.3 Flash 16K prefill wave.
+
+The indexer pool score (`Glm5NextPoolScoreKernel`) ran one block per row and
+local pool. Each block rebuilt the pool's softmax-mixed key, which depends
+only on the sequence and the pool. It then reduced 32 heads one after
+another through `LmBlockSum`, about 130 block barriers for 4,096
+multiply-adds. Its cost grows with context, since a wave scores every pool
+that came before it. Waves of 64 rows or more now run
+`Glm5NextPoolScoreRowsKernel`: one block takes 32 pools and 16 rows, builds
+each pool's key once, keeps a row's queries in registers and gives each warp
+four heads. The head score replays the block-sum tree exactly. Each 8-lane
+group first sums its four elements in the tree's first two levels, then
+does three width-8 shuffles, and the four group sums combine in the
+eight-warp order with the zero-valued warps added in. On one GB10 a
+2,048-row wave takes 2.6 ms against 30.8 ms at 16K context, and 10.1 ms
+against 130 ms at 64K. The scores are bitwise equal, including -inf and
+unwritten entries (`tests/test_glm5_next_pool_score_cuda.py`).
 Bench, sparkf, 5 interleaved rounds: B1 12.912 -> 12.831 ms, B8 31.569 -> 31.531 ms
 (`qualification/glm5next/performance/glmflash_b1_20260929/ab/ab_hc1_one_sync.txt`).
 

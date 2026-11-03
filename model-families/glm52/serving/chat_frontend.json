@@ -10,7 +10,6 @@
       "template_defaults": {},
       "template_kwargs": ["reasoning_effort", "clear_thinking"],
       "reasoning_effort": {
-        "minimal": {"reasoning_effort": "low"},
         "low": {"reasoning_effort": "low"},
         "medium": {"reasoning_effort": "high"},
         "high": {"reasoning_effort": "max"}

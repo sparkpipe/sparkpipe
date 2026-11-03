@@ -1,0 +1,9 @@
+opened /Users/m5u0/models/packs/gemma4_26b_tp1_bf16/gemma4_26b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.45 s: pack 50467750912 bytes, device state 19199647488 bytes
+solo references: 64 sequences x 128 steps in 91.88 s
+B1: step 10.828 ms, 92.356 tok/s per sequence, 92.36 tok/s aggregate, 1/1 sequences identical to solo
+B2: step 13.311 ms, 75.127 tok/s per sequence, 150.25 tok/s aggregate, 2/2 sequences identical to solo
+B4: step 19.396 ms, 51.558 tok/s per sequence, 206.23 tok/s aggregate, 0/4 sequences identical to solo
+B8: step 27.418 ms, 36.472 tok/s per sequence, 291.77 tok/s aggregate, 1/8 sequences identical to solo
+B16: step 42.675 ms, 23.433 tok/s per sequence, 374.92 tok/s aggregate, 3/16 sequences identical to solo
+B32: step 76.443 ms, 13.082 tok/s per sequence, 418.61 tok/s aggregate, 7/32 sequences identical to solo
+B64: step 136.396 ms, 7.332 tok/s per sequence, 469.22 tok/s aggregate, 13/64 sequences identical to solo

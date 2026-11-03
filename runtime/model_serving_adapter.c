@@ -266,9 +266,10 @@ SparkStatus SparkModelServingAdapterValidateRuntimeLimits(
 		 runtime_limits->kv_logical_page_capacity <
 		 runtime_limits->resident_sequence_capacity ||
 		 runtime_limits->kv_physical_page_capacity >
-		 runtime_limits->kv_logical_page_capacity )
+		 runtime_limits->kv_logical_page_capacity ||
+		 runtime_limits->output_vocabulary == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	for (index=0u; index<4u; index++)
+	for (index=0u; index<3u; index++)
 		if ( runtime_limits->reserved[index] != 0u )
 			SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	return(SPARK_STATUS_OK);

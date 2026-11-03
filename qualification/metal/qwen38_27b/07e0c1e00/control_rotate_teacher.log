@@ -1,0 +1,5 @@
+opened /Users/m5u0/gates/07e0c1e00/control.pack on Apple M5 Ultra (metal.apple10) in 0.13 s: pack 53793417600 bytes, device state 1652602432 bytes
+teacher design: 1099 positions (550 by prefill, 549 by decode)
+teacher code: 1799 positions (900 by prefill, 899 by decode)
+teacher korean: 699 positions (350 by prefill, 349 by decode)
+teacher rules: 2039 positions (1020 by prefill, 1019 by decode)

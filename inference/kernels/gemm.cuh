@@ -328,7 +328,7 @@ void LmGemmKernel(
         (TILE_N / WARPS / FormatA::kMmaN);
     const uint32_t neuron_tiles =
         (args.output_dimension + TILE_N - 1u) / TILE_N;
-    const uint32_t k_tiles = args.input_dimension / TILE_K;
+    const uint32_t k_tiles = (args.input_dimension + TILE_K - 1u) / TILE_K;
     const uint32_t dense_rows = args.group_count == 1u
         ? args.group_row_offset[1] - args.group_row_offset[0]
         : 0u;
@@ -344,7 +344,7 @@ void LmGemmKernel(
     uint32_t neuron_base, k, stage, ahead, total_tiles;
     uint32_t phase;
 
-    LmPipelineInitialise<STAGES>(barrier, 1u);
+    LmPipelineInitialise<STAGES>(barrier, INDIRECT_A && ACTIVATION_CODEC == SPARK_ACTIVATION_CODEC_NONE ? 1u + blockDim.x : 1u);
     phase = 0u;
     total_tiles = args.group_count == 1u
         ? dense_tiles

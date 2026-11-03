@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 8.21s content='The capital of France is Paris.' reasoning=294 chars
+stream        PASS  | finish='stop' 8.19s content='The capital of France is Paris.' reasoning=294 chars
+tool          PASS  | finish='tool_calls' 8.13s content="I'll check the current weather in Paris for you." reasoning=0 chars
+tool_result   PASS  | finish='stop' 1.61s content='The weather in Paris right now is **18°C and sunny**.' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 3.4s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 8.76s content='391' reasoning=252 chars
+UI-SMOKE hy4-preview: 6/6

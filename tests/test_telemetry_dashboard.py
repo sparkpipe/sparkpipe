@@ -41,6 +41,41 @@ class SparkTelemetryDashboardTest(unittest.TestCase):
         self.assertEqual(node["gpu_power_raw_w"],11)
         self.assertEqual(node["gpu_power_reason"],"nvml-power-limit-unavailable")
 
+    def write_snapshot(self, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "summary.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return(dashboard.build_snapshot(str(path)))
+
+    def healthy_node(self, **fields):
+        row = {"sample_count": 2, "last_sample_age_s": 2.0, "last_gpu_util_pct": 10, "last_gpu_temp_c": 40}
+        row.update(fields)
+        return(row)
+
+    def test_fresh_summary_and_sample_are_not_stale(self):
+        snap = self.write_snapshot({"updated_unix": int(time.time()), "nodes": {"spark0": self.healthy_node()}})
+        self.assertFalse(snap["stale"])
+        self.assertEqual(snap["nodes"][0]["state"],"idle")
+
+    def test_old_summary_marks_every_node_stale(self):
+        snap = self.write_snapshot({"updated_unix": int(time.time()) - int(dashboard.SUMMARY_STALE_AFTER_S) - 60, "nodes": {"spark0": self.healthy_node(last_vllm_requests_running=1)}})
+        self.assertTrue(snap["stale"])
+        self.assertGreater(snap["age_s"],dashboard.SUMMARY_STALE_AFTER_S)
+        self.assertEqual(snap["nodes"][0]["state"],"warn")
+        self.assertEqual(snap["nodes"][0]["state_label"],"stale")
+        self.assertEqual(snap["active_nodes"],0)
+
+    def test_old_node_sample_is_stale_in_a_fresh_summary(self):
+        snap = self.write_snapshot({"updated_unix": int(time.time()), "nodes": {"spark0": self.healthy_node(last_sample_age_s=dashboard.SAMPLE_STALE_AFTER_S + 1.0, last_vllm_requests_running=1)}})
+        self.assertFalse(snap["stale"])
+        self.assertEqual(snap["nodes"][0]["state_label"],"stale")
+
+    def test_latest_sample_error_is_shown(self):
+        snap = self.write_snapshot({"updated_unix": int(time.time()), "nodes": {"spark0": self.healthy_node(last_sample_error="nvidia-smi timeout")}})
+        self.assertEqual(snap["nodes"][0]["state"],"warn")
+        self.assertEqual(snap["nodes"][0]["state_label"],"sample error")
+        self.assertEqual(snap["nodes"][0]["last_sample_error"],"nvidia-smi timeout")
+
     def test_node_down_requires_three_distinct_error_snapshots(self):
         payload = {
             "updated_iso": "2026-05-26T00:00:00+00:00",
@@ -257,7 +292,7 @@ class SparkTelemetryDashboardTest(unittest.TestCase):
     def test_snapshot_ignores_ds4_stage_payload_for_node_telemetry(self):
         payload = {
             "updated_iso": "2026-05-26T00:00:00+00:00",
-            "updated_unix": 1,
+            "updated_unix": int(time.time()),
             "queue": {
                 "local_queue_source": "ds4-api:http://10.20.0.10:8700",
                 "local_queue_depth": 0,

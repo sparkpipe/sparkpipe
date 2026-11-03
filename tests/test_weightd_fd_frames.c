@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_sha256.h"
 
 static uint32_t mesh_map_forced,mesh_map_offset,mesh_map_failure,mesh_map_calls;
@@ -681,6 +682,11 @@ static void check_cold_control_progress(void)
 	__atomic_store_n(&server.stop,1,__ATOMIC_SEQ_CST);
 	assert(pthread_join(server_thread,0) == 0);
 	SparkWeightdServerDestroy(server.server);
+	{
+		char verified[sizeof(path) + sizeof(SPARK_WEIGHTD_RECEIPT_SUFFIX)];
+		assert(snprintf(verified,sizeof(verified),"%s%s",path,SPARK_WEIGHTD_RECEIPT_SUFFIX) > 0);
+		(void)unlink(verified);
+	}
 	assert(unlink(path) == 0 && unlink(manifest_path) == 0 && unlink(wset_path) == 0 && rmdir(root) == 0);
 }
 

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Qwen3.8-27B official FP8 or BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Qwen3.8-27B official FP8 or BF16 checkpoint -> TP16 or TP1 named stage packs.
 
 One pass over the checkpoint writes every rank: each tensor is read once and
-its sixteen rank slices go to the sixteen pack writers. Output per rank:
-<out>/qwen38_27b.tp16.rank<NN>.pack (tools/spark_named_pack.py container,
+its rank slices go to the rank pack writers. --tp-degree 16 writes the
+sixteen Spark ranks; --tp-degree 1 writes one whole-model pack for a single
+device (one Mac Studio). Output per rank:
+<out>/qwen38_27b.tp<T>.rank<NN>.pack (tools/spark_named_pack.py container,
 magic SPNP), plus <pack>.sha256 and the empty-range <pack>.experts that the
 weightd lazy attach reads for a dense pack.
 
-Rank r holds (block = the checkpoint's 128x128 FP8 scale block):
+At TP16 rank r holds (block = the checkpoint's 128x128 FP8 scale block; at
+TP1 the single rank holds every row and column of the same tensors):
   embed / head        vocab rows [r*15520, +15520), bf16
   norms               (1 + w) as f32 for input, post-attention, final, q and
                       k norms; the gated GDN norm weight raw bf16
@@ -41,9 +44,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
+TP_DEGREES = (1, 16)
 HIDDEN = 5120
 LAYERS = 64
 VOCAB = 248320
@@ -117,16 +121,16 @@ def ffn_window(rank):
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume):
+    def __init__(self, out_dir, resume, identity):
         self.out_dir = Path(out_dir)
-        self.writers = [PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists())
+        self.writers = [PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists())
                         for rank in range(TP)]
 
     def payload(self, rank):
-        return self.out_dir / f"qwen38_27b.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"qwen38_27b.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"qwen38_27b.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"qwen38_27b.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         array = np.ascontiguousarray(array)
@@ -238,9 +242,10 @@ def pack_gdn(checkpoint, packs, layer, codec):
     if qkv.shape != (2 * GDN_QK + GDN_V, HIDDEN) or z.shape != (GDN_V, HIDDEN) or out.shape != (HIDDEN, GDN_V):
         raise PackFailure(f"layer {layer}: GDN projection shapes {qkv.shape} {z.shape} {out.shape}")
     heads = GDN_VALUE_HEADS // TP
+    key_heads = GDN_KEY_HEADS // TP
     for rank in range(TP):
-        q = (rank * GDN_KEY_DIM, GDN_KEY_DIM)
-        k = (GDN_QK + rank * GDN_KEY_DIM, GDN_KEY_DIM)
+        q = (rank * key_heads * GDN_KEY_DIM, key_heads * GDN_KEY_DIM)
+        k = (GDN_QK + rank * key_heads * GDN_KEY_DIM, key_heads * GDN_KEY_DIM)
         v = (2 * GDN_QK + rank * heads * GDN_VALUE_DIM, heads * GDN_VALUE_DIM)
         payload, scale = rows_blocks(qkv, qkv_scale, (q, k, v))
         z_payload, z_scale_rank = rows_blocks(z, z_scale, ((rank * heads * GDN_VALUE_DIM, heads * GDN_VALUE_DIM),))
@@ -328,8 +333,11 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--codec", choices=("fp8", "bf16"), default="fp8")
+    parser.add_argument("--tp-degree", type=int, choices=TP_DEGREES, required=True)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
     config = json.loads((args.checkpoint / "config.json").read_text())
     text = config["text_config"]
     if (text["hidden_size"], text["num_hidden_layers"], text["vocab_size"], text["intermediate_size"],
@@ -341,7 +349,7 @@ def main():
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume)
+    packs = RankPacks(args.output_dir, args.resume, source_identity(args.checkpoint, "qwen38_27b_tp16_pack", files=(args.contract,)))
     pack_globals(checkpoint, packs)
     for layer in range(LAYERS):
         if layer % FULL_PERIOD == FULL_PHASE:

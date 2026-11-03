@@ -4,6 +4,8 @@
 #include <cuda_fp16.h>
 #include <stdint.h>
 
+#include "inference/kernels/kernel_math.cuh"
+
 
 struct LmBf16 { static constexpr uint32_t kBits = 16u; };
 struct LmE4m3 { static constexpr uint32_t kBits = 8u; };
@@ -28,7 +30,7 @@ static __host__ __device__ __forceinline__ uint64_t LmBytesForElements(uint64_t 
 
 static __device__ __forceinline__ float LmBf16ToFloat(uint16_t value)
 {
-	return(__uint_as_float((uint32_t)value << 16u));
+	return(SparkMathBf16ToFloat(value));
 }
 
 static __device__ __forceinline__ float LmScalarToFloat(uint16_t value)
@@ -43,8 +45,7 @@ static __device__ __forceinline__ float LmScalarToFloat(float value)
 
 static __device__ __forceinline__ uint16_t LmFloatToBf16(float value)
 {
-	uint32_t bits = __float_as_uint(value);
-	return((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+	return(SparkMathFloatToBf16(value));
 }
 
 static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64_t pair_index)
@@ -139,14 +140,12 @@ static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
 
 static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
 {
-	return(__uint_as_float(value == 0u ? 0x00400000u : (value == 0xffu ? 0x7fffffffu : (uint32_t)value << 23u)));
+	return(SparkMathUe8m0ToFloat(value));
 }
 
 static __device__ __forceinline__ float LmE2m1ToFloatPure(uint32_t nibble)
 {
-	uint32_t exponent = (nibble >> 1u) & 3u, sign = (nibble & 8u) << 28u;
-	uint32_t magnitude = exponent != 0u ? ((exponent + 126u) << 23u) | ((nibble & 1u) << 22u) : ((nibble & 1u) != 0u ? 0x3f000000u : 0u);
-	return(__uint_as_float(sign | magnitude));
+	return(SparkMathE2m1ToFloat(nibble));
 }
 
 static __device__ __forceinline__ uint32_t LmRoundPositiveToNearestEven(
@@ -187,15 +186,7 @@ static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
 
 static __device__ __forceinline__ float LmUe4m3ToFloat(uint8_t value)
 {
-	uint32_t biased,mantissa;
-	value &= 0x7fu;
-	biased = (uint32_t)value >> 3u;
-	mantissa = (uint32_t)value & 7u;
-	if ( biased == 0u )
-		return(ldexpf((float)mantissa,-9));
-	if ( biased == 15u && mantissa == 7u )
-		return(LM_E4M3_MAX);
-	return(ldexpf(1.0f + ((float)mantissa / 8.0f),(int32_t)biased - 7));
+	return(SparkMathUe4m3ToFloat(value));
 }
 
 template<class T>

@@ -104,7 +104,7 @@ def main():
         (base / "tokenizer_config.json").write_text("{}")
         renderer = chat_frontend.TemplateRenderer(base, {}, None)
         try:
-            renderer.render([{"role": "user", "content": "hi"}], [{"type": "function", "function": {"name": "f"}}], {})
+            renderer.render([{"role": "user", "content": "hi"}], [{"type": "function", "function": {"name": "f"}}], {}, 1 << 30)
             check(False, "a template that cannot render a request raises")
         except chat_frontend.RequestError as error:
             check(error.status == 400 and "TypeError" in error.message, "a template TypeError becomes a 400 that names the error")

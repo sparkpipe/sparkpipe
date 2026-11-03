@@ -95,7 +95,9 @@ static SparkModelResidentClient *mock_registry[MOCK_RESIDENT_MAX_RANKS];
 static uint32_t mock_registry_count;
 static uint32_t mock_auto_tokens;
 static SparkModelServingLane mock_lane_log[256];
+static uint32_t mock_lane_submission_flags[256];
 static uint32_t mock_lane_log_count;
+static uint32_t mock_max_decode_lanes;
 static SparkModelServingCacheIdentity mock_identity_log[256];
 static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
@@ -106,6 +108,7 @@ static uint32_t mock_max_tokens_per_sequence;
 static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
 static uint32_t mock_script_count;
 static uint32_t mock_step_delay_us;
+static uint32_t mock_prefill_delay_us;
 static uint32_t mock_verify_row_sevenths = 1u;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
@@ -181,6 +184,11 @@ uint32_t MockResidentClientLaneLog(uint32_t index,SparkModelServingLane *lane)
 		return(0u);
 	*lane = mock_lane_log[index];
 	return(1u);
+}
+
+uint32_t MockResidentClientLaneSubmissionFlags(uint32_t index)
+{
+	return(index < mock_lane_log_count ? mock_lane_submission_flags[index] : 0u);
 }
 
 uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *lane)
@@ -407,6 +415,7 @@ void MockResidentClientReset(void)
 			free(mock_registry[i]);
 	mock_registry_count = 0u;
 	mock_lane_log_count = 0u;
+	mock_max_decode_lanes = 0u;
 	mock_identity_log_count = 0u;
 	mock_auto_tokens = 0u;
 	mock_script_count = 0u;
@@ -585,16 +594,24 @@ static SparkStatus MockResidentClientEnqueue(
 		slot->ready_ns = MockResidentClientNowNs() + us * 1000u;
 		slot->service_ns = us * 1000u;
 	}
+	if ( mock_prefill_delay_us != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) == 0u )
+	{
+		slot->ready_ns = MockResidentClientNowNs() + (uint64_t)mock_prefill_delay_us * 1000u;
+		slot->service_ns = (uint64_t)mock_prefill_delay_us * 1000u;
+	}
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
+	if ( client->stage_index == 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->lane_count > mock_max_decode_lanes )
+		mock_max_decode_lanes = submission->lane_count;
 	for (lane=0u; client->stage_index == 0u && submission->lanes != 0 && lane<submission->lane_count && mock_lane_log_count<256u; lane++)
 	{
 		uint32_t identity;
 		mock_lane_log[mock_lane_log_count] = submission->lanes[lane];
 		mock_lane_log[mock_lane_log_count].cache_block_identity_first = mock_identity_log_count;
+		mock_lane_submission_flags[mock_lane_log_count] = submission->flags;
 		for (identity=0u; identity<submission->lanes[lane].cache_block_identity_count && mock_identity_log_count<256u; identity++)
 			mock_identity_log[mock_identity_log_count++] = submission->cache_block_identities[submission->lanes[lane].cache_block_identity_first + identity];
 		mock_lane_log_count++;
@@ -772,6 +789,13 @@ void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)
 	mock_logprob_corrupt = corrupt;
 }
 
+uint32_t MockResidentClientTakeMaxDecodeLanes(void)
+{
+	uint32_t lanes = mock_max_decode_lanes;
+	mock_max_decode_lanes = 0u;
+	return(lanes);
+}
+
 uint32_t MockResidentClientTakeMaxTokensPerSequence(void)
 {
 	uint32_t maximum = mock_max_tokens_per_sequence;
@@ -837,6 +861,11 @@ static void MockScriptCompletion(const MockInflight *saved,SparkModelServingComp
 void MockResidentClientSetStepDelay(uint32_t microseconds)
 {
 	mock_step_delay_us = microseconds;
+}
+
+void MockResidentClientSetPrefillDelay(uint32_t microseconds)
+{
+	mock_prefill_delay_us = microseconds;
 }
 
 void MockResidentClientSetVerifyRowCost(uint32_t sevenths)

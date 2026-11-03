@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="LVM2_member", TAG+="systemd", ENV{SYSTEMD_WANTS}+="spark-osd-guard@%k.service"

@@ -65,6 +65,8 @@ uint64_t SparkWeightdServerResidentBytes(const SparkWeightdServer *server)
 { (void)server; return 0u; }
 const char *SparkStatusToString(SparkStatus status)
 { (void)status; return "test-status"; }
+SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+{ (void)root; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
 ''', encoding="utf-8")
     subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE",
                     "-pthread", "-I.", "-Iinclude", str(fixture), "-o", str(binary)],
@@ -100,5 +102,10 @@ const char *SparkStatusToString(SparkStatus status)
         assert result.returncode == 2 and "bad SPARK_WEIGHTD_MESH_DOORBELL_CPU" in result.stderr, (value, result)
     result = subprocess.run(arguments, env={"SPARK_WEIGHTD_MESH_DOORBELL_CPU": "0", "TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
     assert result.returncode == 1 and "thread create failed" in result.stderr, result
-    result = subprocess.run([str(binary)], env={}, capture_output=True, text=True)
+    result = subprocess.run([str(binary)], env={"TEST_THREAD_OK": "1"}, capture_output=True, text=True)
     assert result.returncode == 0 and "SERVER-RUN" in result.stdout, result
+    assert "weightd kv purge: every" in result.stderr, result
+    result = subprocess.run([str(binary)], env={}, capture_output=True, text=True)
+    assert result.returncode == 1 and "kv purge: thread create failed" in result.stderr, result
+    assert markers(result.stdout) == ["SERVER-UNBOUND", "SERVER-LISTEN", "MESH-STOP", "SERVER-DESTROY"], result
+    assert "ready" not in result.stdout, result

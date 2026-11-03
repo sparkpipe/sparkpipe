@@ -66,6 +66,7 @@ typedef struct LmHostThreads
 	pthread_barrier_t block_barrier;
 	pthread_barrier_t warp_barrier[LM_HOST_THREADS_MAX / 32u];
 	float shuffle[LM_HOST_THREADS_MAX];
+	unsigned shuffle_word[LM_HOST_THREADS_MAX];
 	unsigned ballot[LM_HOST_THREADS_MAX];
 }
 LmHostThreads;
@@ -92,6 +93,18 @@ static inline float LmHostThreadsShuffleXor(unsigned, float value, int mask, int
 }
 
 #define __shfl_xor_sync LmHostThreadsShuffleXor
+
+static inline unsigned LmHostThreadsShuffleUp(unsigned, unsigned value, unsigned delta, int = 32)
+{
+	unsigned thread = threadIdx.x,warp = thread / 32u,result;
+	lm_host_threads.shuffle_word[thread] = value;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	result = thread % 32u >= delta ? lm_host_threads.shuffle_word[thread - delta] : value;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	return(result);
+}
+
+#define __shfl_up_sync LmHostThreadsShuffleUp
 
 static inline unsigned LmHostThreadsBallot(unsigned, int predicate)
 {

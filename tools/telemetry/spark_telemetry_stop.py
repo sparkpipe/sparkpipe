@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import spark_telemetry_common as telemetry
+
+UNIT = "ds4-spark-telemetry.service"
 
 
 @dataclass(frozen=True)
@@ -52,16 +58,35 @@ def is_python_command(command: str) -> bool:
     return first.endswith("python") or "python" in os.path.basename(first)
 
 
+def command_out_dir(argv: list[str]) -> str:
+    for index, argument in enumerate(argv):
+        if argument == "--out-dir" and index + 1 < len(argv):
+            return argv[index + 1]
+        if argument.startswith("--out-dir="):
+            return argument[len("--out-dir="):]
+    return telemetry.TELEMETRY_DIR
+
+
 def is_monitor_command(command: str, out_dir: str) -> bool:
-    if "spark_node_telemetry_monitor.py" not in command:
+    try:
+        argv = shlex.split(command)
+    except ValueError:
         return False
-    if not is_python_command(command):
+    if len(argv) < 2 or not is_python_command(command) or os.path.basename(argv[1]) != "spark_node_telemetry_monitor.py":
         return False
-    if "spark_telemetry_stop.py" in command or "spark_telemetry_start.sh" in command:
-        return False
-    if out_dir and f"--out-dir {out_dir}" not in command:
+    if out_dir and os.path.normpath(command_out_dir(argv)) != os.path.normpath(out_dir):
         return False
     return True
+
+
+def unit_active() -> bool:
+    result = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT], check=False)
+    return result.returncode == 0
+
+
+def stop_unit() -> bool:
+    result = subprocess.run(["systemctl", "--user", "stop", UNIT], check=False)
+    return result.returncode == 0 and not unit_active()
 
 
 def find_matches(rows: list[ProcessRow], out_dir: str) -> list[ProcessRow]:
@@ -104,9 +129,17 @@ def signal_pids(pids: list[int], sig: signal.Signals) -> None:
 
 def main() -> int:
     args = parse_args()
+    if unit_active():
+        if args.dry_run:
+            print(f"would stop {UNIT}, which restarts the monitor within 3 s of any signal")
+        elif not stop_unit():
+            print(f"failed to stop {UNIT}", file=sys.stderr)
+            return 2
+        else:
+            print(f"stopped {UNIT}; start it again with systemctl --user start {UNIT}")
     matches = find_matches(process_table(), args.out_dir)
     if not matches:
-        print("no matching telemetry monitor processes")
+        print("no other matching telemetry monitor processes")
         return 0
     for row in matches:
         print(f"matched pid={row.pid} ppid={row.ppid} cmd={row.command}")

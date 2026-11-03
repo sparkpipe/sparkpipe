@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Qwen3.8 Flash (qwen4_exp) NVIDIA NVFP4 checkpoint -> sixteen TP16 named stage packs.
+"""Qwen3.8 Flash (qwen4_exp) NVIDIA NVFP4 checkpoint -> TP16 or TP1 named stage packs.
 
 One pass over the checkpoint writes every rank. Output per rank:
-<out>/qwen38_flash.tp16.rank<NN>.pack (tools/spark_named_pack.py container),
+<out>/qwen38_flash.tp<T>.rank<NN>.pack (tools/spark_named_pack.py container),
 plus <pack>.sha256 and the empty-range <pack>.experts.
 
-Rank r holds:
+--tp-degree 16 (the default) writes the sixteen Spark ranks; --tp-degree 1
+writes one whole-model pack for a single device, every slice below widened to
+the whole tensor and the shared expert padded to a multiple of 64 rows (640,
+so no padding). At TP16 rank r holds:
   embed / head        vocab rows [r*15520, +15520), bf16
   hyper-connections   every layer's attn and mlp mixer, and the final mixer,
                       replicated: hc_norm (1 + w) f32 [10240], down bf16
@@ -45,7 +48,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 HIDDEN = 2560
@@ -80,6 +83,8 @@ MOE_INTER = 640
 SHARED_INTER = 640
 SHARED_ROWS = SHARED_INTER // TP
 SHARED_ROWS_PADDED = 64
+SHARED_ROWS_MULTIPLE = 64
+TP_DEGREES = (1, 16)
 PLE_LAYER = 1
 PLE_SHARDS = 128
 PLE_SHARDS_PER_RANK = PLE_SHARDS // TP
@@ -92,6 +97,16 @@ EXPERTS_VERSION = 2
 
 class PackFailure(RuntimeError):
     pass
+
+
+def set_degree(degree):
+    global TP, VOCAB_ROWS, LOCAL_EXPERTS, SHARED_ROWS, SHARED_ROWS_PADDED, PLE_SHARDS_PER_RANK
+    TP = degree
+    VOCAB_ROWS = VOCAB // TP
+    LOCAL_EXPERTS = EXPERTS // TP
+    SHARED_ROWS = SHARED_INTER // TP
+    SHARED_ROWS_PADDED = -(-SHARED_ROWS // SHARED_ROWS_MULTIPLE) * SHARED_ROWS_MULTIPLE
+    PLE_SHARDS_PER_RANK = PLE_SHARDS // TP
 
 
 class Checkpoint:
@@ -154,17 +169,17 @@ def scalar_f32(checkpoint, name):
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks):
+    def __init__(self, out_dir, resume, ranks, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists())
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists())
                         for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"qwen38_flash.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"qwen38_flash.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"qwen38_flash.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"qwen38_flash.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind, extra=None):
         if rank not in self.writers:
@@ -207,10 +222,11 @@ def pack_gdn(checkpoint, packs, layer):
     a_log = bf16_to_f32(checkpoint.array(p + "A_log", "BF16", (GDN_VALUE_HEADS,)))
     dt_bias = bf16_to_f32(checkpoint.array(p + "dt_bias", "BF16", (GDN_VALUE_HEADS,)))
     norm = checkpoint.array(p + "norm.weight", "BF16", (GDN_VALUE_DIM,))
+    key_heads = GDN_KEY_HEADS // TP
     heads = GDN_VALUE_HEADS // TP
     for rank in range(TP):
-        q = (rank * GDN_KEY_DIM, GDN_KEY_DIM)
-        k = (GDN_QK + rank * GDN_KEY_DIM, GDN_KEY_DIM)
+        q = (rank * key_heads * GDN_KEY_DIM, key_heads * GDN_KEY_DIM)
+        k = (GDN_QK + rank * key_heads * GDN_KEY_DIM, key_heads * GDN_KEY_DIM)
         v = (2 * GDN_QK + rank * heads * GDN_VALUE_DIM, heads * GDN_VALUE_DIM)
         zr = (rank * heads * GDN_VALUE_DIM, heads * GDN_VALUE_DIM)
         name = f"layers.{layer}."
@@ -248,8 +264,8 @@ def expert_planes(checkpoint, source, proj, experts, rows, cols):
     globals_ = np.empty(len(experts), dtype=np.float32)
     for slot, expert in enumerate(experts):
         p = f"{source}{expert}.{proj}."
-        payloads.append(np.asarray(checkpoint.array(p + "weight", "U8", (rows, cols // 2))))
-        planes.append(np.asarray(checkpoint.array(p + "weight_scale", "F8_E4M3", (rows, cols // 16))))
+        payloads.append(np.array(checkpoint.array(p + "weight", "U8", (rows, cols // 2))))
+        planes.append(np.array(checkpoint.array(p + "weight_scale", "F8_E4M3", (rows, cols // 16))))
         globals_[slot] = scalar_f32(checkpoint, p + "weight_scale_2")
     return np.concatenate(payloads), globals_, np.concatenate(planes)
 
@@ -361,11 +377,12 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
+    parser.add_argument("--tp-degree", type=int, choices=TP_DEGREES, default=16)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)),
-                        help="comma-separated ranks to write (default every rank)")
+    parser.add_argument("--ranks", help="comma-separated ranks to write (default every rank)")
     args = parser.parse_args()
-    ranks = sorted({int(rank) for rank in args.ranks.split(",")})
+    set_degree(args.tp_degree)
+    ranks = sorted({int(rank) for rank in args.ranks.split(",")}) if args.ranks else list(range(TP))
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
     text = json.loads((args.checkpoint / "config.json").read_text())["text_config"]
@@ -376,7 +393,7 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
     ple = ple_config(checkpoint, text)
-    packs = RankPacks(args.output_dir, args.resume, ranks)
+    packs = RankPacks(args.output_dir, args.resume, ranks, source_identity(args.checkpoint, "qwen38_flash_tp16_pack", files=(args.contract,)))
     pack_globals(checkpoint, packs)
     for layer in range(LAYERS):
         name = f"{PREFIX}layers.{layer}."

@@ -55,7 +55,7 @@ configure_direct_pair()
         return 3
     fi
     ip link set dev "${DIRECT_DEVICE}" up
-    ethtool -G "${DIRECT_DEVICE}" rx 8192 tx 8192
+    ethtool -G "${DIRECT_DEVICE}" rx 1024 tx 1024
     ethtool -K "${DIRECT_DEVICE}" tx-tcp-mangleid-segmentation off
     ip link set dev "${DIRECT_DEVICE}" mtu "${DIRECT_MTU}"
     ip -4 addr flush dev "${DIRECT_DEVICE}" scope global

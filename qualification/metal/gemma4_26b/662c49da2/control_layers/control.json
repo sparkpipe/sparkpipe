@@ -1,0 +1,218 @@
+{
+  "pack": "/Users/m5u0/models/packs/gemma4_26b_tp1_bf16/gemma4_26b.tp1.rank00.pack",
+  "control_pack": "/Users/m5u0/gates/gemma-662c49da2/control.pack",
+  "pattern": "layers.*.ffn_down",
+  "corruption": "rows 0 and 1 swapped",
+  "tensors": [
+    {
+      "tensor": "layers.0.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "7b5e45c9418ef38c42f23978326a69c247eb319ab66a9cc64f50c36205b60644",
+      "sha256_after": "d3f6b4dba2a405e823ff24cb2759e9bd18c3beb4879f27fff22f61217d70380d"
+    },
+    {
+      "tensor": "layers.1.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "212db6a8b9715ce485f1249a75da3c538155e2c37e25edcb32a80b066940b7fe",
+      "sha256_after": "9503225107f86dfedc997a9cffd339ccc3d31c930747916dc85ff73f42af4f31"
+    },
+    {
+      "tensor": "layers.10.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "3be9655d98f2b733ec5d2bdbd8cae13336df7d4bed140e31e902d654bef677da",
+      "sha256_after": "39bc2c966374191098810a643466bb6164cf82257a14dfe648663c1ad1015ec5"
+    },
+    {
+      "tensor": "layers.11.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "b7c16d5f0dedd74dad5647768d3d9b09b18a2915c3fe425cab53e5c376d597e5",
+      "sha256_after": "62bf4217250ab7fdc4a61b63874ec2e67ffe09f35f50cb9764334ac54aa3ca8c"
+    },
+    {
+      "tensor": "layers.12.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "e3efb5145cd9a8a28043876172a6eaad5f8bfceb2b69553011f912af04a7d8cf",
+      "sha256_after": "be247519556f6c0979fbfb8432e0ace7a205e81985ea42018ac04a9137aa549a"
+    },
+    {
+      "tensor": "layers.13.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "b5648c600d29e858b7b0251e69fa77906e2e24278254795deb3e77bda97c47a1",
+      "sha256_after": "19c446f9f66b9347bda27e3bb52eca1ad61de979bd57314a5ccbb517aae62af1"
+    },
+    {
+      "tensor": "layers.14.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "0548acdcfa1a0da3d80901c891e7186f00bee19010f18498bc3e39b432cb76bc",
+      "sha256_after": "80e125bc159d55a1767923bba6af24c0d3a2159ff4179eddfc252789bc67efca"
+    },
+    {
+      "tensor": "layers.15.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "b7953649897f82be19da09717ac5d4e12fa97e45113bd06168ab2fe1f52e36f3",
+      "sha256_after": "eb04447c4893a3fe248974c24b69a45c0e044fc4b7630e21fe4ab071b7d7972e"
+    },
+    {
+      "tensor": "layers.16.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "f173cc69b214c2e34c672f843ac29e4b590359f78e8afc3f58b5ff3bc3d75300",
+      "sha256_after": "02449797f57362ed991525faf7e3e42a9046aca35dfc25a7622da321aaf24ad0"
+    },
+    {
+      "tensor": "layers.17.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "934ab18f161353940556287830947dc9349fbfc7af739e01c19b52702b00bc18",
+      "sha256_after": "0ab2852155084fde7f79670f8d5c6eab48258023c990df28edf836aa535e0a4f"
+    },
+    {
+      "tensor": "layers.18.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "439cfa0ad01b7e3eb6d8d81e92390f370db148f2ca2676f9a7cab9da51b5ea93",
+      "sha256_after": "b003a6cd3104f7b15a05877f67e25c9e67fe1d44ecbc84340b295f83887153d7"
+    },
+    {
+      "tensor": "layers.19.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "5f69b3595acd68ffd983f9c82791c5b737450dd8e4cdba0e658dab6ba1fe4a4d",
+      "sha256_after": "e64d3affb9823b05df7b38249b102da1aef3b99ceba0144a62c57a333b489cf5"
+    },
+    {
+      "tensor": "layers.2.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "5690a3b18b91949463446e2f0b78e91e9fc4b1503ab3620a05db79d5d3756b81",
+      "sha256_after": "14ab5f8d8770e8ac8ae9e4e4e3e281ab35ce3a1cc864ae9da1801a7415456f27"
+    },
+    {
+      "tensor": "layers.20.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "e027f4284d45f76b41886bd07aafeed7e34280803b7b8861ddb3d895002f52b7",
+      "sha256_after": "6d04f333c8fcb2844f05972577bb9a2a5e9526f9b55ffb9cd6353c93d4e41090"
+    },
+    {
+      "tensor": "layers.21.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "952fe4e7168bec35be483adce214a9310914a9ecc4752d355d19a4287d93f389",
+      "sha256_after": "8b1eb12f4aa50c66f8518665e7924a94750986543e696e78db3979a97658ba88"
+    },
+    {
+      "tensor": "layers.22.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "098ccdd59b72b8c683fa6e8c6102a7e56c2dfda1d1ec1388021fae4235905f6d",
+      "sha256_after": "cab48f193542a02773088c7510299da3d1fb4d4956361fda9cdc3946cfce02c5"
+    },
+    {
+      "tensor": "layers.23.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "f87bfc1055e5f1f9a17af08f2858100fba7c7c34368f365040fd05110096c2d0",
+      "sha256_after": "52f8cf6109b44469ec3ab20c96d3673adcfa2ab7be8279825f1df724190c8f10"
+    },
+    {
+      "tensor": "layers.24.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "dbac94bc6a98d05c5a221e6a28fb9722e9424ca2f7b0efe5a1ae790fab58100d",
+      "sha256_after": "4bae0a6f60fdccd7afaa9e65a35184622419980adac94673e3d07c64a586a2f3"
+    },
+    {
+      "tensor": "layers.25.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "93f915b75e543b92d3cc81efd8a9017e6901914761946421c6f001487bce138d",
+      "sha256_after": "4a556073ae53b59547370b219ad34b86712e79e9882af51f0e22c476db8a70bd"
+    },
+    {
+      "tensor": "layers.26.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "5328a347f2b62794b5ff6687ba94965adda550131a7138b4c0b6d562f6700b2b",
+      "sha256_after": "ffb6146604ccd4576bf1075f050ce14aea5c1507311481afe429b786713d5213"
+    },
+    {
+      "tensor": "layers.27.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "0b885dfcd31f6f3d29877cb656dbb2ca629e52e27ab28c8f0784a0cab18abc86",
+      "sha256_after": "22ee8442d48d7fa98651c421b7a6e96cf165a346d3518a2ba46eecbefeec6ed2"
+    },
+    {
+      "tensor": "layers.28.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "f6ab4e78446a1d3a889617b6e074f4709acf7bb2b8bce657fb0d42b03726b5fe",
+      "sha256_after": "c8d2297ea7d4a3ac1cc70506bfb83df5b06e98c1320389f755fa26c4fecf0958"
+    },
+    {
+      "tensor": "layers.29.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "704dfa0a1586981059132126cf87018800d11910a1383ccf8487965ca7d6b55d",
+      "sha256_after": "af0bf0b25fab993638cda88f3fec1b37d275371d3163fd8aa86ce4e1656334f6"
+    },
+    {
+      "tensor": "layers.3.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "32b74086d495a5bc733d6f258da57b911e8f17e1fe05827cf514e82609254ee6",
+      "sha256_after": "4755b2ae6f915a7dc884254a53ef23798a1c3e4dbf92bf52d20e67fcae60d18d"
+    },
+    {
+      "tensor": "layers.4.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "fd8f2e91eb470bec13108bccac17a798f0aa663a0935c456ccc7f46e85b36f3f",
+      "sha256_after": "8b351b81e10292b63dd002504f163bdb525dd7b1ea349ea0f790f1e7df20c450"
+    },
+    {
+      "tensor": "layers.5.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "a268dd354954407a599196ffdc71134bb52919f9bb8017a11369d2fc26675d15",
+      "sha256_after": "066ded9c4d553a9eb62ee7ff482673d71ce62c72379fcbfa7c8103d82f594934"
+    },
+    {
+      "tensor": "layers.6.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "54b3afc2d0b44a941e78e399696fca9c4cd06277cca8d38695e1c0717f8a7622",
+      "sha256_after": "e570b6f067a9ab35dd188ff490f539f7c874425e62d16503a3352e04bed22bc5"
+    },
+    {
+      "tensor": "layers.7.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "bddb8fbf802a888c4318915516b3445d418c89bc9126486e3f2ffecc2bdd2d75",
+      "sha256_after": "d92b7aab2b0bbe1520525209e7bada1f1e81d5edd4d16a87c1a4fefa7cbc45c1"
+    },
+    {
+      "tensor": "layers.8.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "abe38efae065a229f15d74ee08326840e787e506cb8f34ef790f8e389a21a3ec",
+      "sha256_after": "b7417d480f20ef81e8129c4279192855b4b645d25f3ee1140875c4a84550fd92"
+    },
+    {
+      "tensor": "layers.9.ffn_down",
+      "rows": 2816,
+      "row_bytes": 4224,
+      "sha256_before": "debd1103067080547b0c37e864f229bfb16bf612ae0ff9a54194919c5aa5e9b5",
+      "sha256_after": "16c1281a8da1fe37a5fd3e24739d34b4c9573e28b6bc9e6866e11d36565d2044"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+ "phase": "first",
+ "chars": 60000,
+ "cold": {
+  "text": " The KV cache stores the complete computation state for each sequence, including KV tensors, sparse-attention indexer keys, recurrent state, convolution windows, and position fields, with entries sharded across the fleet so each node holds 1/N of the cache. It uses paging with copy-on-write sharing for immutable prefixes, content-hash",
+  "finish": "length",
+  "prompt_tokens": 15831,
+  "cached_tokens": 0,
+  "completion_tokens": 64,
+  "seconds": 28.62
+ },
+ "follow": {
+  "text": " Speculation uses a unified seam per serving adapter where each family has one source mask selecting draft sources (local MTP heads, DSpark, or remote drafters via the DFT3 bridge), with one model-neutral policy engine handling acceptance accounting. Verification pins every emitted token to the target model's multi-row verify output,",
+  "finish": "length",
+  "prompt_tokens": 15914,
+  "cached_tokens": 15894,
+  "completion_tokens": 64,
+  "seconds": 4.34
+ }
+}

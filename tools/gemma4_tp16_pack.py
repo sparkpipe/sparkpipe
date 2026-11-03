@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Gemma 4 (31B dense, 26B A4B MoE) or Muse Glimmer 30B BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Gemma 4 (31B dense, 26B A4B MoE) or Muse Glimmer 30B BF16 checkpoint -> TP named stage packs (sixteen by default).
 
-Output per rank: <out>/<prefix>.tp16.rank<NN>.pack (tools/spark_named_pack.py
+--tp-degree sets the rank count (16 for the Sparks, 1 for a single device;
+the per-rank splits below are of 1/degree each). Output per rank:
+<out>/<prefix>.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container; prefix gemma4 for the 31B, gemma4_26b for the 26B), plus
 <pack>.sha256 and the empty-range <pack>.experts (experts are plain tensors).
 
@@ -39,7 +41,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 PREFIX = "model.language_model."
@@ -78,17 +80,17 @@ class Checkpoint:
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks, prefix):
+    def __init__(self, out_dir, resume, ranks, prefix, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
         self.prefix = prefix
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -206,8 +208,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
+    args.ranks = args.ranks or ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -218,13 +224,13 @@ def main():
     expected = ["full_attention" if index % period == period - 1 else "sliding_attention" for index in range(text["num_hidden_layers"])]
     if text["layer_types"] != expected or text["vocab_size"] % TP or text["intermediate_size"] % 64 or \
             (text.get("enable_moe_block") and (text["num_experts"] % TP or text["moe_intermediate_size"] % 64)):
-        raise PackFailure("layer pattern, vocab, intermediate or expert sizes differ from the packer's TP16 layout")
+        raise PackFailure(f"layer pattern, vocab, intermediate or expert sizes differ from the packer's TP{TP} layout")
     receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
     revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
-    packs = RankPacks(args.output_dir, args.resume, ranks, "muse" if is_muse(text) else "gemma4_26b" if text.get("enable_moe_block") else "gemma4")
+    packs = RankPacks(args.output_dir, args.resume, ranks, "muse" if is_muse(text) else "gemma4_26b" if text.get("enable_moe_block") else "gemma4", source_identity(args.checkpoint, "gemma4_tp16_pack", files=(args.contract,)))
     hidden, vocab_rows = text["hidden_size"], text["vocab_size"] // TP
     embed = checkpoint.array(PREFIX + "embed_tokens.weight", (text["vocab_size"], hidden))
     head = checkpoint.array("lm_head.weight", (text["vocab_size"], hidden)) if is_muse(text) else None

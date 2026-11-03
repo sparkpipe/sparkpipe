@@ -1,0 +1,1 @@
+Gemma 4 26B A4B at 3b09cd778 (projection family declared per model, Gemma on the GEMV family): teacher-forced logits on the four gate prompts with free routes and with routes pinned to reference a, and the 128-token greedy continuations, are byte-identical to the 662c49da2 receipt (cmp_662c49da2.txt).

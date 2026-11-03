@@ -68,13 +68,20 @@ it is about 300 us p50.
 ## K3 block drafter (production since 2026-10-17)
 
 K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
-- **Unit:** the transient user unit `sparkpipe-draftd`, started by
-  `tools/hub_draftd.sh start /srv/workspace/sparkpipe/draftd-<sha>`. The
-  directory holds `block_draftd.py` and `spec_offline/` from that commit.
-  `tools/hub_draftd.sh status` shows the unit, its two ports and the last
-  timing and tap lines; `stop` stops it.
+- **Unit:** the transient user unit `sparkpipe-draftd`, started from the
+  lane record's `draftd` entry (`deployment/lanes.json`) by
+  `tools/lane_config.py draftd kimi-k3`, which runs `tools/hub_draftd.sh`
+  on the hub with the record's unit, source directory, drafter, target
+  shard, tap and window. The source directory
+  (`/srv/workspace/sparkpipe/draftd-<sha>`) holds `block_draftd.py` and
+  `spec_offline/` from that commit; the weights are on the hub's NVMe under
+  `/srv/workspace/sparkpipe/drafter-weights`. `hub_draftd.sh` refuses a
+  path off `/srv/workspace` or `/home`, since inference never reads CephFS
+  or cold storage, and `tools/lane_config.py audit` reports a drafter unit
+  that is down or runs other flags. `tools/hub_draftd.sh status` shows the
+  unit, its two ports and the last timing and tap lines; `stop` stops it.
 - **Restart after a hub reboot:** like every hub unit, it does not survive a
-  reboot. Start it again with `tools/hub_draftd.sh start`. Until then, K3
+  reboot. Start it again with `tools/lane_config.py draftd kimi-k3`. Until then, K3
   serves without model drafts: the tap rank retries every 5 s, and each draft
   request answers unavailable.
 - **Inputs:** the K3 tap rank (sparkf, rank 15) streams the drafter's five
@@ -110,7 +117,8 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
 `dflash_config.attention_mode` is `mla`: lightseekorg/kimi-k3-dflash2 at
 e77935fb (5 layers, 3.69B parameters, received 2026-10-18 into
 `/mnt/cold-raid6/models/kimi-k3-dflash2-lightseek-e77935fb`, sha256
-1f2a5376...52c2, receipt beside it). `open_drafter` in `block_drafter.py`
+1f2a5376...52c2, receipt beside it; the serving copy is
+`/srv/workspace/sparkpipe/drafter-weights/kimi-k3-dflash2-lightseek-e77935fb`). `open_drafter` in `block_drafter.py`
 picks it by that field, so `block_drafter.py` and `long_drafter.py` score it
 like the RadixArk drafter, and `block_draftd.py` serves it (DRAFTD-READY says
 `drafter latent`); it has not run against live taps yet.

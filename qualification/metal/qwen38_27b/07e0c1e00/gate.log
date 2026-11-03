@@ -1,0 +1,64 @@
+{"pattern": "layers.31.ffn_down", "tensors": 1, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.*.ffn_down", "tensors": 64, "corruption": "rows 0 and 1 swapped"}
+{"pattern": "layers.31.ffn_down", "tensors": 1, "corruption": "every row moved down by one"}
+{
+ "numerics_pass": true,
+ "speculation_exact": true,
+ "metal": {
+  "reference_a": {
+   "kl_ratio_to_floor": 0.8090360682780234,
+   "top1_disagreement_ratio_to_floor": 0.8818897637795251,
+   "paired_sigma": -3.6217875220438196,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.0009513383384367,
+   "top1_disagreement_ratio_to_floor": 1.1338582677165336,
+   "paired_sigma": 1.958914555593202,
+   "pass": true
+  }
+ },
+ "control_layers": {
+  "reference_a": {
+   "kl_ratio_to_floor": 4.356831554967534,
+   "top1_disagreement_ratio_to_floor": 3.858267716535422,
+   "paired_sigma": 95.01574925894563,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 4.778891709405472,
+   "top1_disagreement_ratio_to_floor": 3.9370078740157406,
+   "paired_sigma": 123.88228166066587,
+   "pass": false
+  }
+ },
+ "control_rotate": {
+  "reference_a": {
+   "kl_ratio_to_floor": 15.163803647016476,
+   "top1_disagreement_ratio_to_floor": 6.377952755905498,
+   "paired_sigma": 188.41615490101321,
+   "pass": false
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 17.51254363313431,
+   "top1_disagreement_ratio_to_floor": 6.354330708661405,
+   "paired_sigma": 196.9813576595333,
+   "pass": false
+  }
+ },
+ "control": {
+  "reference_a": {
+   "kl_ratio_to_floor": 0.7907237247039433,
+   "top1_disagreement_ratio_to_floor": 0.9685039370078727,
+   "paired_sigma": -4.793151626497126,
+   "pass": true
+  },
+  "reference_b": {
+   "kl_ratio_to_floor": 1.0048744544516985,
+   "top1_disagreement_ratio_to_floor": 1.0787401574803133,
+   "paired_sigma": 0.16128551073593325,
+   "pass": true
+  }
+ },
+ "decode": "51.25 GB read per token / 1141.8 GB/s measured = 22.28 tok/s; measured 20.13 tok/s = 90.4%"
+}

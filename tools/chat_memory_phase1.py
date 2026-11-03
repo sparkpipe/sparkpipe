@@ -14,13 +14,15 @@ SPEC = importlib.util.spec_from_file_location("cf_memexp", BASE / "chat_frontend
 cf = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cf)
 CONFIG = json.load(open(BASE / "config.json"))
-MODEL_ID = sys.argv[1] if len(sys.argv) > 1 else "kimi-k3"
-OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "/srv/workspace/sparkpipe/memexp/phase1.jsonl")
-API_LOG = Path(sys.argv[3] if len(sys.argv) > 3 else "/srv/workspace/sparkpipe/logs/k3-kv-api.log")
-BLOCK = int(sys.argv[4]) if len(sys.argv) > 4 else 64
+if len(sys.argv) != 5:
+    raise SystemExit("usage: chat_memory_phase1.py MODEL_ID OUT_JSONL API_LOG BLOCK_TOKENS")
+MODEL_ID, OUT, API_LOG, BLOCK = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4])
+SPECS = [m for m in CONFIG["models"] if m["id"] == MODEL_ID]
+if len(SPECS) != 1 or not isinstance(SPECS[0].get("chat_memory"), dict) or "curator_suffix" not in SPECS[0]["chat_memory"] or "low" not in SPECS[0].get("reasoning_effort", {}):
+    raise SystemExit(f"{MODEL_ID} needs one config entry with chat_memory.curator_suffix and a low reasoning effort")
 SENT = "QQZXSENTINELQQZX"
-KWARGS = {"thinking_effort": "low"}
-CURATOR_SUFFIX = {"kimi-k3": "<|close|>think<|sep|><|open|>response<|sep|>"}
+KWARGS = dict(SPECS[0]["reasoning_effort"]["low"])
+CURATOR_SUFFIX = SPECS[0]["chat_memory"]["curator_suffix"]
 
 SYSTEM = ("You are SparkPipe Chat, an assistant served by SparkPipe on sixteen GB10 nodes. "
           "The first user message starts with <ledger>, one summary line per earlier exchange in reported speech, "
@@ -122,7 +124,7 @@ def curator_tail(model, instruction):
     ids = []
     for segment in segments:
         ids.extend(model.vocabulary.encode(segment.text, segment.allow_special))
-    ids.extend(model.vocabulary.encode(CURATOR_SUFFIX[model.id], True))
+    ids.extend(model.vocabulary.encode(CURATOR_SUFFIX, True))
     return ids
 
 
@@ -132,6 +134,14 @@ def curator_instruction(next_e, missing, open_ids, sizes):
             "\"open\": [\"<ids worth showing in full next turn>\"], \"regroup\": []}\n"
             f"Write lines for: {', '.join(missing)}. Exchange {missing[-1]} is the one just answered; e{next_e - 2} is the earlier raw one above it. "
             f"Currently open: {open_ids or 'none'}. Node sizes in tokens: {sizes}. Open budget: 1500 tokens. Ledger budget: 8000 tokens, not exceeded.")
+
+
+def content_text(model, prompt_ids, tokens):
+    tail = "".join(model.vocabulary.piece(t) for t in prompt_ids[-16:])
+    reasoning_open = tail.rstrip().endswith(model.reasoning["start"].rstrip())
+    parser = cf.OutputParser(model, None, reasoning_open, [])
+    text = "".join(model.vocabulary.piece(t) for t in tokens if t not in model.stop_token_ids)
+    return "".join(value for kind, value in list(parser.feed(text)) + list(parser.finish()) if kind == "content").strip()
 
 
 def floor_block(n):
@@ -181,7 +191,7 @@ def api_measurements(offset):
 
 
 async def main():
-    model = cf.Model([m for m in CONFIG["models"] if m["id"] == MODEL_ID][0], BASE)
+    model = cf.Model(SPECS[0], BASE)
     url = model.engine + "/v1/completions"
     lines = list(LEDGER)
     exchanges = {"e81": (RAW_U, RAW_A)}
@@ -214,16 +224,14 @@ async def main():
             if answer["finish"] != "stop":
                 emit({"label": f"C_{e}", "turn": e, "skipped": f"answer finished {answer['finish']}"})
                 break
-            text = "".join(model.vocabulary.piece(t) for t in answer["tokens"] if t not in model.stop_token_ids)
-            visible = text.split("<|open|>response<|sep|>", 1)[-1].split("<|close|>response<|sep|>", 1)[0].strip()
+            visible = content_text(model, a_ids, answer["tokens"])
             exchanges[f"e{e}"] = (question, visible)
             missing = pending + [f"e{e}"]
             sizes = {k: len(model.vocabulary.encode(v[0] + v[1], False)) for k, v in exchanges.items()}
             instruction = curator_instruction(e + 1, missing, open_ids, sizes)
             c_ids = a_ids + answer["tokens"] + curator_tail(model, instruction)
             curator = await complete(session, url, c_ids, 240, f"C_{e}")
-            ctext = "".join(model.vocabulary.piece(t) for t in curator["tokens"] if t not in model.stop_token_ids)
-            body = ctext.split("<|close|>response<|sep|>", 1)[0].strip()
+            body = content_text(model, c_ids, curator["tokens"])
             try:
                 parsed = json.loads(body[body.index("{"):body.rindex("}") + 1])
                 ok = isinstance(parsed.get("lines"), dict) and all(k in parsed["lines"] for k in missing)

@@ -136,6 +136,13 @@ changes to common code. Track implementation evidence in
 - **I27 — Restored execution matches uninterrupted execution.** Prove hits,
   misses, eviction, movement, copy-on-write, slot changes and reset with real
   model state. Descriptor declarations and byte-copy tests alone are insufficient.
+- **Cached request state expires.** KV and recurrent state derived from
+  requests are deleted from every tier (device, host, weightd pool, snapshot
+  files) within 24 hours of their last use, whether or not their model is
+  running, and so are the hub draft servers' sequence contexts, the batch
+  engine's copy of a finished request's tokens and the API's prefix index
+  records. The limit is a constant; no flag, configuration or driver path
+  lengthens it, and a restart keeps each entry's age.
 
 ## 6. Experts, fleet access and deployment
 
@@ -151,17 +158,13 @@ changes to common code. Track implementation evidence in
   I33). Independent jobs interleave within real resource budgets. Full-fleet
   reservations are for tests that actually require the full topology, including
   distributed correctness and isolated performance measurements.
-- **Full expert pinning under I28-I30.** A captured GLM 5.3 Flash graph bakes
-  expert pointers into its kernel arguments, and since `78c2c21` it refuses to
-  run unless every routed expert is leased. Production therefore pins all
-  12096 experts (`G5_PIN_EXPERTS=1`). That is the explicit resident mode I28
-  allows: selected by configuration and reported with its memory cost. It is
-  a deliberate, reported deviation from I29's bounded residency, held only
-  until relocatable expert graphs patch expert pointers on lease
-  ([`TECHDEBT.md`](TECHDEBT.md), Model residency and storage;
-  [GLM expert residency](docs/GLM_LAZY_DRIVER_INTEGRATION.md)). Eager chains
-  keep strict lazy loading, and pinning is not a substitute for I29 in any
-  other driver.
+- **Full expert pinning under I28-I30.** Pinning every routed expert so a
+  captured graph's baked expert pointers stay valid is the explicit resident
+  mode I28 allows: selected by configuration and reported with its memory
+  cost. It deviates from I29's bounded residency, which relocatable expert
+  graphs restore by patching expert pointers on lease
+  ([GLM expert residency](docs/GLM_LAZY_DRIVER_INTEGRATION.md)). Eager chains
+  keep strict lazy loading, and pinning is never a substitute for I29.
 - **I31 — One authoritative resource ledger.** Queue jobs and persistent
   engines both count toward memory/device reservations. An empty queue does
   not prove idle hardware. Notes, stale locks or observation timeouts cannot
@@ -207,10 +210,9 @@ changes to common code. Track implementation evidence in
   across ranks, steps and generations. Workspaces and credits remain valid
   through GPU and transport completion. Measure exposed communication, rank
   imbalance and weight reuse lost through splitting; splitting is not free.
-- **I38 — Qualify each topology.** TP16 is the topology GLM 5.3 Flash serves
-  in today. TP4xPP4, PP16 and any other placement must be qualified
-  separately before it serves, and placement is chosen by measured tokens/s
-  and latency, not fixed in advance. A TP16 pass cannot qualify TP4xPP4
+- **I38 — Qualify each topology.** TP16, TP4xPP4, PP16 and any other
+  placement must be qualified separately before it serves, and placement is
+  chosen by measured tokens/s and latency, not fixed in advance. A TP16 pass cannot qualify TP4xPP4
   boundaries or a filled pipeline. A single-rank probe with collectives
   disabled is component evidence.
 

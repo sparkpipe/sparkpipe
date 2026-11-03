@@ -1,5 +1,10 @@
 import importlib.util
+import json
+import re
 import base64
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 import struct
 import tempfile
@@ -148,13 +153,13 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertNotIn("WantedBy=multi-user.target",service)
             self.assertIn("WantedBy=timers.target",timer)
 
-    def test_ceph_startup_assets_are_removed_and_masked(self) -> None:
+    def test_ceph_package_units_are_masked_and_cephadm_targets_are_kept(self) -> None:
         for name in ("ds4-optional-storage.service","ds4-optional-storage.timer"):
             self.assertFalse((ROOT / "tools" / "devcycle" / "fleet" / name).exists())
             self.assertNotIn(f"/etc/systemd/system/{name}",MODULE.ASSET_SOURCES)
         for name in ("ds4-switched-fabric.service.conf","ds4-direct-pair-fabric.service.conf"):
             self.assertFalse((ROOT / "tools" / "devcycle" / "boot-unblock" / name).exists())
-        self.assertIn("ceph.target",MODULE.CEPH_MASK_UNITS)
+        self.assertNotIn("ceph.target",MODULE.CEPH_MASK_UNITS)
         self.assertIn("ceph-crash.service",MODULE.CEPH_MASK_UNITS)
         self.assertIn("ceph-osd@.service",MODULE.CEPH_MASK_UNITS)
         self.assertNotIn(
@@ -162,92 +167,95 @@ Boot0002* ubuntu HD(1,GPT,def)
             MODULE.BOOT_TIMEOUT_SOURCES,
         )
 
-    def test_ceph_startup_link_scan_is_scoped(self) -> None:
+    def test_ceph_policy_keeps_cephadm_daemons_and_disables_units_without_state(self) -> None:
+        fsid = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            wants = root / "multi-user.target.wants"
+            systemd = root / "systemd"
+            state = root / "state"
+            logs = root / "log"
+            wants = systemd / f"ceph-{fsid}.target.wants"
+            wants.mkdir(parents=True)
+            (systemd / f"ceph-{fsid}.target").write_text("[Unit]\n")
+            for daemon in ("osd.8","mgr.spark8.abc","mds.ds4warm.spark8.x","crash"):
+                (state / fsid / daemon).mkdir(parents=True)
+            (state / "79e60319-97d7-11f1-b71f-48210b969ab9").mkdir(parents=True)
+            for instance in ("osd.8","crash"):
+                (wants / f"ceph-{fsid}@{instance}.service").symlink_to(systemd / f"ceph-{fsid}@.service")
+            retired = systemd / "ceph-osd-retry.service"
+            retired.write_text("[Service]\n")
+            commands = []
+            disabled = []
+
+            def record(argv: list[str],**_kwargs: object) -> object:
+                commands.append(argv)
+                return(mock.Mock(returncode=0))
+
+            with mock.patch.object(MODULE,"run",side_effect=record), \
+                    mock.patch.object(MODULE,"disable_persistent_unit",side_effect=disabled.append), \
+                    mock.patch.object(MODULE,"retired_paths",return_value=[retired]), \
+                    mock.patch.object(MODULE.os,"chown") as chown:
+                changes = MODULE.install_ceph_policy(systemd,state,logs,root / "marker",root / "backup")
+            self.assertIn(f"ceph-{fsid}@crash.service",disabled)
+            self.assertNotIn(f"ceph-{fsid}@osd.8.service",disabled)
+            enable = [argv for argv in commands if argv[:2] == ["systemctl","enable"]]
+            self.assertEqual(enable,[["systemctl","enable","ceph.target",f"ceph-{fsid}.target",f"ceph-{fsid}@mgr.spark8.abc.service",f"ceph-{fsid}@osd.8.service"]])
+            self.assertIn(["systemctl","reset-failed","ceph-osd-retry.service",*MODULE.OBSOLETE_CEPH_STARTUP_UNITS],commands)
+            self.assertEqual((logs / fsid).stat().st_mode & 0o777,0o770)
+            self.assertFalse((logs / "79e60319-97d7-11f1-b71f-48210b969ab9").exists())
+            chown.assert_called_once_with(logs / fsid,MODULE.CEPH_UID,MODULE.CEPH_UID)
+            for unit in MODULE.CEPH_MASK_UNITS:
+                self.assertEqual((systemd / unit).readlink(),Path("/dev/null"))
+            self.assertFalse(retired.exists())
+            self.assertTrue((root / "backup" / retired.relative_to("/")).exists())
+            self.assertIn(f"disabled stray ceph-{fsid}@crash.service",changes)
+
+    def test_ceph_clusters_are_directories_with_a_target_or_daemons(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            systemd = root / "systemd"
+            state = root / "state"
+            systemd.mkdir()
+            (state / "79e60319-97d7-11f1-b71f-48210b969ab9").mkdir(parents=True)
+            (state / "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1" / "osd.3").mkdir(parents=True)
+            (state / "541e9482-0000-0000-0000-000000000000").mkdir()
+            (systemd / "ceph-541e9482-0000-0000-0000-000000000000.target").write_text("[Unit]\n")
+            (state / "bootstrap-osd").mkdir()
+            self.assertEqual(MODULE.ceph_fsids(state,systemd),["541e9482-0000-0000-0000-000000000000","cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"])
+
+    def test_ceph_stray_units_come_from_enablement_links(self) -> None:
+        fsid = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
+        with tempfile.TemporaryDirectory() as directory:
+            systemd = Path(directory)
+            wants = systemd / f"ceph-{fsid}.target.wants"
             wants.mkdir()
-            ceph = wants / "ceph.target"
-            unrelated = wants / "ssh.service"
-            ceph.symlink_to("/lib/systemd/system/ceph.target")
-            unrelated.symlink_to("/lib/systemd/system/ssh.service")
-            self.assertEqual(MODULE.ceph_persistent_links(root),[ceph])
+            for instance in ("osd.3","crash"):
+                (wants / f"ceph-{fsid}@{instance}.service").symlink_to(systemd / f"ceph-{fsid}@.service")
+            other = systemd / "ceph-541e9482-0000-0000-0000-000000000000.target.wants"
+            other.mkdir()
+            (other / "ceph-541e9482-0000-0000-0000-000000000000@osd.1.service").symlink_to(systemd / "x")
+            enabled = MODULE.ceph_enabled_instances(fsid,systemd)
+            self.assertEqual(enabled,["crash","osd.3"])
+            self.assertEqual(MODULE.ceph_stray_units(fsid,["osd.3"],enabled),[f"ceph-{fsid}@crash.service"])
 
-    def test_ceph_startup_artifacts_allow_only_masks(self) -> None:
+    def test_ceph_unit_mask_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            mask = root / "ceph.target"
-            dropin = root / "ceph-osd@.service.d"
-            unrelated = root / "ssh.service"
-            mask.symlink_to("/dev/null")
-            dropin.mkdir()
-            unrelated.write_text("[Unit]\n")
-            self.assertEqual(MODULE.ceph_startup_artifacts(root),[dropin])
+            unit = root / "ceph-osd.target"
+            unit.write_text("[Unit]\n")
+            MODULE.mask_unit_file("ceph-osd.target",root)
+            self.assertTrue(unit.is_symlink())
+            self.assertEqual(unit.readlink(),Path("/dev/null"))
+            MODULE.mask_unit_file("ceph-osd.target",root)
+            self.assertEqual(unit.readlink(),Path("/dev/null"))
 
-    def test_ceph_process_match_is_limited_to_ceph_daemons(self) -> None:
-        matcher = MODULE.CEPH_PROCESS_PATTERN
-        self.assertIsNotNone(matcher.search("123 ceph-osd /usr/bin/ceph-osd -i 4"))
-        self.assertIsNotNone(matcher.search("124 python3 /usr/sbin/ceph-crash"))
-        self.assertIsNone(matcher.search("125 python3 audit-ceph-state.py"))
-
-    def test_ceph_container_query_is_labeled_and_fail_closed(self) -> None:
-        with mock.patch.object(MODULE.shutil,"which",return_value="/usr/bin/podman"), \
-                mock.patch.object(MODULE,"command",return_value="abc:ceph-osd:Up") as query:
-            self.assertEqual(MODULE.active_ceph_containers(),["abc:ceph-osd:Up"])
-        query.assert_called_once_with([
-            "podman","ps","--filter=label=ceph=True",
-            "--format={{.ID}}:{{.Names}}:{{.Status}}",
-        ])
-
-    def test_remove_path_handles_ceph_dropin_directories(self) -> None:
+    def test_remove_path_handles_dropin_directories(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ceph-osd@.service.d"
             path.mkdir()
             (path / "override.conf").write_text("[Service]\n")
             MODULE.remove_path(path)
             self.assertFalse(path.exists())
-
-    def test_ceph_quarantine_masks_before_stopping(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "systemd"
-            marker = Path(directory) / "enable-ceph-warm-storage"
-            root.mkdir()
-            marker.write_text("enabled\n")
-            (root / "ceph-old@.service").write_text("[Service]\n")
-            dropin = root / "ceph-old@.service.d"
-            dropin.mkdir()
-            (dropin / "override.conf").write_text("[Service]\n")
-            commands = []
-
-            def record(argv: list[str],**_kwargs: object) -> object:
-                commands.append(argv)
-                return(mock.Mock(returncode=0))
-
-            with mock.patch.object(MODULE,"ceph_unit_file_states",return_value={"ceph-old@.service":"enabled"}), \
-                    mock.patch.object(MODULE,"active_ceph_units",side_effect=[["ceph-old@osd.4.service"],[]]), \
-                    mock.patch.object(MODULE,"active_ceph_processes",return_value=[]), \
-                    mock.patch.object(MODULE,"active_ceph_containers",return_value=[]), \
-                    mock.patch.object(MODULE,"disable_persistent_unit"), \
-                    mock.patch.object(MODULE,"run",side_effect=record):
-                MODULE.remove_ceph_startup([],root,marker)
-            self.assertFalse(marker.exists())
-            self.assertEqual(MODULE.ceph_startup_artifacts(root),[])
-            self.assertEqual((root / "ceph-old@.service").readlink(),Path("/dev/null"))
-            self.assertEqual((root / "ceph-old@osd.4.service").readlink(),Path("/dev/null"))
-            reload_index = commands.index(["systemctl","daemon-reload"])
-            stop_index = commands.index(["systemctl","stop","ceph-old@osd.4.service"])
-            self.assertLess(reload_index,stop_index)
-
-    def test_ceph_unit_mask_is_idempotent(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            unit = root / "ceph.target"
-            unit.write_text("[Unit]\n")
-            MODULE.mask_unit_file("ceph.target",root)
-            self.assertTrue(unit.is_symlink())
-            self.assertEqual(unit.readlink(),Path("/dev/null"))
-            MODULE.mask_unit_file("ceph.target",root)
-            self.assertEqual(unit.readlink(),Path("/dev/null"))
 
     def test_ceph_logrotate_compatibility_is_processed_first(self) -> None:
         source = (ROOT / "tools" / "devcycle" / "fleet" / "00-sparkpipe-cephadm").read_text()
@@ -275,16 +283,48 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertNotIn("LOCAL_ASSET_SOURCES",source)
         self.assertIn('remote_script = git_show(repo,ref,SELF_SOURCE)',source)
         self.assertIn('controller does not match {ref}:{SELF_SOURCE}',source)
-        self.assertIn('script_data = str(staged_payload.pop("remote_script")).encode("utf-8")',source)
+
+    def test_remote_action_streams_script_and_payload_over_stdin(self) -> None:
+        script = "def remote_audit(payload):\n    return({'node_seen':payload['recovery_network']['node_id'],'value':payload['value']})\n"
+        calls = []
+        def fake_ssh(host,*argv,input_bytes=None,timeout=120,check=True):
+            remote_argv = shlex.split(" ".join(argv))
+            calls.append((host,remote_argv))
+            result = subprocess.run([sys.executable,*remote_argv[3:]],input=input_bytes,capture_output=True,check=True)
+            return(subprocess.CompletedProcess(remote_argv,0,result.stdout,result.stderr))
+        with mock.patch.object(MODULE,"ssh",side_effect=fake_ssh):
+            document = MODULE.remote_action("spark2","audit",{"remote_script":script,"value":7})
+        self.assertEqual(document,{"node":"spark2","node_seen":"spark2","value":7})
+        self.assertEqual(len(calls),1)
+        self.assertEqual(calls[0][1][:5],["sudo","-n","python3","-I","-c"])
+        self.assertEqual(calls[0][1][6:],["audit"])
+        self.assertFalse(any("/tmp" in argument for argument in calls[0][1]))
+        with mock.patch.object(MODULE,"ssh") as ssh, self.assertRaises(MODULE.BrickproofError):
+            MODULE.remote_action("spark2","remove",{"remote_script":script})
+        ssh.assert_not_called()
+
+    def test_remote_bootstrap_loads_the_real_script_without_running_its_controller(self) -> None:
+        probe = "\ndef remote_probe(payload):\n    return({'module':BrickproofError.__module__,'payload':payload,'path':sys.path[0]})\n"
+        request = json.dumps({"payload":{"value":3},"script":SCRIPT.read_text() + probe})
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "json.py").write_text("raise SystemExit('planted json imported')\n")
+            result = subprocess.run([sys.executable,"-I","-c",MODULE.REMOTE_BOOTSTRAP,"probe"],input=request.encode("utf-8"),capture_output=True,cwd=directory,timeout=60)
+        self.assertEqual(result.returncode,0,result.stderr.decode("utf-8",errors="replace"))
+        document = json.loads(result.stdout)
+        self.assertEqual(document["module"],"ds4_spark_brickproof")
+        self.assertEqual(document["payload"],{"value":3})
+        self.assertNotEqual(document["path"],"")
 
     def test_kernel_image_and_modules_are_required_packages(self) -> None:
         self.assertEqual(MODULE.required_packages("6.17.0-test"),(
             "earlyoom",
             "dropbear-initramfs",
             "efibootmgr",
+            *MODULE.FLEET_TOOL_PACKAGES,
             "linux-image-6.17.0-test",
             "linux-modules-6.17.0-test",
         ))
+        self.assertTrue({"iperf3","fio","ninja-build","python3.12-dev"} <= set(MODULE.FLEET_TOOL_PACKAGES))
 
     def test_boot_kernel_release_comes_from_canonical_vmlinuz_link(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -359,6 +399,15 @@ Boot0002* ubuntu HD(1,GPT,def)
                 with self.assertRaises(MODULE.BrickproofError):
                     MODULE.direct_pair_linked(0)
 
+    def test_fabric_netdev_rings_are_sized_for_roce(self) -> None:
+        fleet = ROOT / "tools" / "devcycle" / "fleet"
+        for name in ("ds4_direct_pair_fabric_apply.sh","ds4_switched_fabric_apply.sh"):
+            with self.subTest(script=name):
+                rings = re.findall(r'ethtool -G "\$\{[A-Z_]+\}" rx (\d+) tx (\d+)',(fleet / name).read_text())
+                self.assertEqual(rings,[("1024","1024")])
+        door = (ROOT / "tools" / "devcycle" / "spark_fabric_door.sh").read_text()
+        self.assertIn('rings="${1:-1024}"',door)
+
     def test_every_mesh_link_map_copy_agrees(self) -> None:
         agent = (ROOT / "tools" / "fleet_node_agent.sh").read_text()
         apply = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
@@ -404,7 +453,7 @@ Boot0002* ubuntu HD(1,GPT,def)
         source = SCRIPT.read_text()
         self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
         self.assertIn('["tailscale","status","--json"]',source)
-        self.assertIn('extnvme-not-mounted-rw',source)
+        self.assertIn('layout-root-not-writable:',source)
 
     def test_persistent_unit_links_only_returns_dependency_links(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

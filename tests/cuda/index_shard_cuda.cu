@@ -72,6 +72,48 @@ static std::vector<T> ProbeDownload(const T *device,uint64_t count)
 	return host;
 }
 
+static float ProbeValue(uint16_t bits)
+{
+	const uint32_t word = (uint32_t)bits << 16u;
+	float value;
+	memcpy(&value,&word,4u);
+	return value;
+}
+
+static void ProbeScoreReference(const std::vector<uint16_t> &query,const std::vector<uint16_t> &weight,const std::vector<uint16_t> &keys,
+	const std::vector<uint32_t> &position,const std::vector<float> &dense,uint32_t rows,uint32_t context,float scale,const char *label)
+{
+	uint64_t checked = 0u,mismatched = 0u,gated = 0u;
+	uint32_t row,key,head,dim;
+	char what[160];
+	for (row=0u; row<rows; row++)
+		for (key=0u; key<=position[row] && key<context; key++)
+		{
+			double relu = 0.0,plain = 0.0,magnitude = 0.0;
+			for (head=0u; head<PROBE_HEADS; head++)
+			{
+				double dot = 0.0;
+				for (dim=0u; dim<PROBE_DIM; dim++)
+					dot += (double)ProbeValue(query[((uint64_t)row * PROBE_HEADS + head) * PROBE_DIM + dim]) * ProbeValue(keys[(uint64_t)key * PROBE_DIM + dim]);
+				const double w = ProbeValue(weight[(uint64_t)row * PROBE_HEADS + head]);
+				relu += w * (dot > 0.0 ? dot : 0.0);
+				plain += w * dot;
+				magnitude += fabs(w * dot);
+			}
+			const double expected = relu * scale,tolerance = 1e-4 * magnitude * scale + 1e-6;
+			checked++;
+			if ( fabs((double)dense[(uint64_t)row * context + key] - expected) > tolerance )
+				mismatched++;
+			if ( fabs(plain * scale - expected) > tolerance )
+				gated++;
+		}
+	snprintf(what,sizeof(what),"%s: every score is the sum over heads of the head weight times ReLU(q.k), %llu of %llu off",label,
+		(unsigned long long)mismatched,(unsigned long long)checked);
+	ProbeCheck(checked != 0u && mismatched == 0u,what);
+	snprintf(what,sizeof(what),"%s: dropping the ReLU would change %llu of %llu scores, so the check sees it",label,(unsigned long long)gated,(unsigned long long)checked);
+	ProbeCheck(gated * 2u > checked,what);
+}
+
 static void ProbeTopk(const float *scores,uint32_t rows,uint32_t n,uint32_t k,uint32_t *selected)
 {
 	PROBE_CUDA((LmTopkExactLaunch<PROBE_THREADS>(scores,rows,n,k,n,0u,0,0,0u,selected,0)));
@@ -121,6 +163,8 @@ static void ProbeCase(uint32_t context,uint32_t degree)
 	ProbeTopk(d_dense,rows,context,PROBE_SELECTED,d_reference);
 	PROBE_CUDA(cudaDeviceSynchronize());
 	std::vector<float> dense = ProbeDownload(d_dense,(uint64_t)rows * context);
+	if ( context <= 9000u )
+		ProbeScoreReference(query,weight,keys,position,dense,rows,context,scale,label);
 	SparkKvShard shard = {degree,0u,1u};
 	const uint32_t stride = SparkKvShardGatherKeys(shard,context);
 	const uint32_t keep = stride < PROBE_SELECTED ? stride : PROBE_SELECTED;

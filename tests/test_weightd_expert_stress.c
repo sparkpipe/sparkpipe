@@ -5,12 +5,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "cuda.h"
 #include "sparkpipe/spark_ck128.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_sha256.h"
 #include "fixtures/test_child_guard.h"
 
@@ -42,7 +44,9 @@ typedef struct TestServer
 	char path[256];
 	char manifest[272];
 	char recording[272];
+	char receipt[272];
 	char socket_path[256];
+	uint32_t settled;
 } TestServer;
 
 typedef struct ConcurrentAcquire
@@ -88,7 +92,7 @@ static void write_fixture(const char *path,const char *manifest_path)
 	assert(fclose(pack) == 0 && fclose(manifest) == 0);
 }
 
-static void server_start(TestServer *state)
+static void server_start(TestServer *state,uint32_t settled)
 {
 	SparkWeightdServerConfig config = {0};
 	memset(state,0,sizeof(*state));
@@ -97,8 +101,15 @@ static void server_start(TestServer *state)
 	snprintf(state->path,sizeof(state->path),"%s/pack",state->root);
 	snprintf(state->manifest,sizeof(state->manifest),"%s.experts",state->path);
 	snprintf(state->recording,sizeof(state->recording),"%s.wset",state->path);
+	snprintf(state->receipt,sizeof(state->receipt),"%s%s",state->path,SPARK_WEIGHTD_RECEIPT_SUFFIX);
 	snprintf(state->socket_path,sizeof(state->socket_path),"%s/socket",state->root);
 	write_fixture(state->path,state->manifest);
+	state->settled = settled;
+	if ( settled != 0u )
+	{
+		const struct timespec wait = { (time_t)(SPARK_WEIGHTD_RECEIPT_SETTLE_NS / 1000000000u) + 1, 100000000L };
+		(void)nanosleep(&wait,0);
+	}
 	config.socket_path = state->socket_path;
 	config.device_bytes_max = (POOL_CHUNKS + 1u) * CHUNK;
 	assert(SparkWeightdServerCreate(&config,&state->server) == SPARK_STATUS_OK);
@@ -112,6 +123,8 @@ static void server_stop(TestServer *state,const char *name)
 	SparkWeightdServerDestroy(state->server);
 	CHECK( spark_stub_cuda_outstanding_allocs() == 0u,name);
 	(void)unlink(state->recording);
+	if ( unlink(state->receipt) != 0 )
+		CHECK( state->settled == 0u,"a pack that settled before its verification gets a receipt beside it");
 	assert(unlink(state->manifest) == 0 && unlink(state->path) == 0 && rmdir(state->root) == 0);
 }
 
@@ -222,7 +235,7 @@ static void check_concurrent_same_expert(void)
 	pthread_t threads[2];
 	uint32_t arrived = 0u,baseline,maps,index,expert = 2u;
 	uint64_t generations[2] = {0u,0u};
-	server_start(&state);
+	server_start(&state,0u);
 	memset(acquirers,0,sizeof(acquirers));
 	for (index=0u; index<2u; index++)
 	{
@@ -269,7 +282,7 @@ static void check_mid_acquire_death(void)
 	SparkStatus status = SPARK_STATUS_IO_ERROR;
 	pid_t pid;
 	int wstatus = 0;
-	server_start(&state);
+	server_start(&state,0u);
 	assert(SparkWeightdClientConnect(state.socket_path,&a,0) == SPARK_STATUS_OK);
 	assert(attach(a,state.path,&generation) == SPARK_STATUS_OK);
 	baseline = spark_stub_cuda_outstanding_allocs();
@@ -335,7 +348,7 @@ static void check_eviction_reload(void)
 	const uint32_t order[6] = {0u,1u,2u,3u,0u,1u};
 	uint64_t generation = 0u;
 	uint32_t baseline,step;
-	server_start(&state);
+	server_start(&state,1u);
 	assert(SparkWeightdClientConnect(state.socket_path,&a,0) == SPARK_STATUS_OK);
 	assert(attach(a,state.path,&generation) == SPARK_STATUS_OK);
 	baseline = spark_stub_cuda_outstanding_allocs();

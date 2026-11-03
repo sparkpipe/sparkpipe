@@ -8,7 +8,7 @@ static uint16_t host_bf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits,&value,sizeof(bits));
-	return((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+	return((bits & 0x7fffffffu) > 0x7f800000u ? (uint16_t)0x7fffu : (uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
 }
 
 static float host_float(uint16_t value)

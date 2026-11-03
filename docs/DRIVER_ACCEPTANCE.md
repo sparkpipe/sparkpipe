@@ -28,6 +28,12 @@ Reuse has overlapping boundaries, not a rigid family inheritance tree:
    DSA, recurrent attention, routing, normalization and dense/expert execution.
    Parameterize geometry, precision and layout; use callbacks when behavior
    differs. A model family composes these operations rather than owning a copy.
+   A stage template's defaults struct (`GlmDefaults`, `LingDefaults`,
+   `GemmaDefaults`, `QwenHybridDefaults`) defaults only absent features (a
+   zero width, a gate that is off). Every arithmetic switch (codecs, norm
+   epsilons, rope pairing, activations, norm and router variants, attention
+   kind, YaRN betas once YaRN is on) is a member each geometry must define, so
+   a new geometry that leaves one out does not compile.
 4. Device implementations shared by all users of CUDA, Metal or another
    backend: kernels, allocation, copies, events and submission mechanisms.
 

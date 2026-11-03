@@ -1,0 +1,20 @@
+{
+ "phase": "first",
+ "chars": 60000,
+ "cold": {
+  "text": " The KV cache is paged, with logical identity separated from physical residency, and entries hold the complete computation state (KV tensors, sparse-attention indexer keys, recurrent state, convolution windows, position and continuity fields). Prefix reuse uses chained content hashes keyed by model and cache-layout fingerprints, with transactional publication (prepare,",
+  "finish": "length",
+  "prompt_tokens": 16106,
+  "cached_tokens": 0,
+  "completion_tokens": 64,
+  "seconds": 21.01
+ },
+ "follow": {
+  "text": " Speculation goes through one seam per serving adapter, with a model-neutral policy engine doing acceptance accounting (longest accepted path plus one bonus token). A model customizes exactly three things: a model contract, a draft function or hidden-tap rows, and a fold/rollback for its own state. Verification pins every emitted",
+  "finish": "length",
+  "prompt_tokens": 16188,
+  "cached_tokens": 16169,
+  "completion_tokens": 64,
+  "seconds": 1.33
+ }
+}

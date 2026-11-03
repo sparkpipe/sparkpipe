@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import gpu_test_runner
+
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,20 +190,7 @@ def check_fp8_linear(workspace, rng):
 
 
 def main():
-    built = subprocess.run(["make", "-s", str(BINARY.relative_to(ROOT))], cwd=ROOT, capture_output=True, text=True)
-    if built.returncode != 0:
-        print(built.stdout + built.stderr)
-        return 1
-    if not BINARY.is_file():
-        print("SKIP test_dsv41_flash_kernels (nvcc unavailable on this host)")
-        return 0
-    if shutil.which("nvidia-smi") is None:
-        print("SKIP test_dsv41_flash_kernels (no GPU on this host)")
-        return 0
-    capabilities = subprocess.run(["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
-                                  capture_output=True, text=True).stdout.split()
-    if "12.1" not in capabilities:
-        print(f"SKIP test_dsv41_flash_kernels (needs an sm_121 device; this host reports {capabilities or 'none'})")
+    if gpu_test_runner.built_binary("test_dsv41_flash_kernels", BINARY) is None:
         return 0
     rng = np.random.default_rng(20260928)
     workspace = Path(tempfile.mkdtemp(prefix="dsv41-kernels-"))

@@ -47,9 +47,9 @@ def main():
     pieces = [("first piece", True), ("second piece", False), ("first piece", False), ("first piece", True)]
     direct = [id for piece, special in pieces for id in CountingVocabulary(CONTROLS).encode(piece, special)]
     vocabulary.calls = 0
-    _, cold = chat_frontend.encode_pieces(cache, "text", pieces)
+    _, cold = chat_frontend.encode_pieces(cache, "text", pieces, 1 << 30)
     cold_calls = vocabulary.calls
-    _, warm = chat_frontend.encode_pieces(cache, "text", pieces)
+    _, warm = chat_frontend.encode_pieces(cache, "text", pieces, 1 << 30)
     if cold != direct or warm != direct:
         failures.append("cached encoding must equal encoding every piece directly, cold and warm")
     if cold_calls != 3 or vocabulary.calls != 3:
@@ -58,15 +58,25 @@ def main():
     small = chat_frontend.PieceCache(vocabulary, 4096)
     for index in range(500):
         piece = f"piece {index} " * 4
-        if list(small.encode(piece, False)) != vocabulary.encode(piece, False)[:]:
+        if list(small.encode(piece, False, 1 << 30)) != vocabulary.encode(piece, False)[:]:
             failures.append("a cache under eviction pressure must still return exact ids")
             break
         if small.bytes > small.budget:
             failures.append(f"the cache holds {small.bytes} bytes over its {small.budget}-byte budget")
             break
     huge = "x" * 10000
-    if list(small.encode(huge, True)) != vocabulary.encode(huge, True) or (huge, True) in small.entries:
+    if list(small.encode(huge, True, 1 << 30)) != vocabulary.encode(huge, True) or (huge, True) in small.entries:
         failures.append("a piece larger than the whole budget should be encoded exactly and not kept")
+
+    bounded = chat_frontend.PieceCache(vocabulary, 1 << 20)
+    long_piece = "y" * 300
+    if list(bounded.encode(long_piece, False, 100)) != vocabulary.encode(long_piece, False) or (long_piece, False) in bounded.entries:
+        failures.append("a piece with more tokens than the context has room for should be encoded exactly and not kept")
+    _, ids = chat_frontend.encode_pieces(bounded, "text", [("a" * 60, False), ("b" * 60, False)], 100)
+    if len(ids) != 122 or ("a" * 60, False) not in bounded.entries or ("b" * 60, False) in bounded.entries:
+        failures.append("encode_pieces should keep the pieces that fit the room and not the one that overflows it")
+    if list(bounded.encode("y" * 50, False, 100)) != vocabulary.encode("y" * 50, False) or ("y" * 50, False) not in bounded.entries:
+        failures.append("a piece within the room should be kept")
 
     for failure in failures:
         print("FAIL", failure)

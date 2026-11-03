@@ -22,6 +22,8 @@ static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16
 static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_EXPANDED_PREFILL_TILE == 0u, "an expanded value pass starts on an expanded key tile");
 
 #define K3_DISPATCH_EXPANDED_MIN_ROWS 256u
+#define K3_DISPATCH_MHA_MIN_ROWS 256u
+#define K3_DISPATCH_MHA_MIN_CONTEXT 262144u
 
 static uint64_t K3DispatchGatherWindowKeys(uint32_t max_rows, uint32_t degree)
 {
@@ -44,49 +46,7 @@ extern "C" int32_t K3StageSlicePair(const void *layer_weights, const void *slice
 	void *buffers_a, void *buffers_b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a,
 	uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, void *stream);
 
-#define WF(field, name) { offsetof(K3LayerWeights, field), name }
-static const struct SparkK3WeightBind
-{
-	size_t offset;
-	const char *name;
-} k3_weight_binds[] =
-{
-	WF(attn_norm_weight, "attn_norm_weight"),
-	WF(mlp_norm_weight, "mlp_norm_weight"),
-	WF(kda_qkv_beta_weight, "kda_qkv_beta_weight"),
-	WF(kda_decay_down_weight, "kda_decay_down_weight"),
-	WF(kda_q_conv_weight, "kda_q_conv_weight"),
-	WF(kda_k_conv_weight, "kda_k_conv_weight"),
-	WF(kda_v_conv_weight, "kda_v_conv_weight"),
-	WF(kda_decay_up_weight, "kda_decay_up_weight"),
-	WF(kda_decay_bias, "kda_decay_bias"),
-	WF(kda_head_log_scale, "kda_head_log_scale"),
-	WF(kda_gate_weight, "kda_gate_weight"),
-	WF(kda_out_norm_weight, "kda_out_norm_weight"),
-	WF(kda_out_weight, "kda_out_weight"),
-	WF(mla_q_down_weight, "mla_q_down_weight"),
-	WF(mla_q_norm_weight, "mla_q_norm_weight"),
-	WF(mla_q_up_weight, "mla_q_up_weight"),
-	WF(mla_kv_a_weight, "mla_kv_a_weight"),
-	WF(mla_kv_a_norm_weight, "mla_kv_a_norm_weight"),
-	WF(mla_kv_b_value_weight, "mla_kv_b_value_weight"),
-	WF(mla_gate_weight, "mla_gate_weight"),
-	WF(mla_out_weight, "mla_out_weight"),
-	WF(router_weight, "router_weight"),
-	WF(router_bias, "router_bias"),
-	WF(routed_down_weight, "routed_down_weight"),
-	WF(routed_up_weight, "routed_up_weight"),
-	WF(routed_norm_weight, "routed_norm_weight"),
-	WF(expert_w1_weight, "expert_w1_weight"),
-	WF(expert_w2_weight, "expert_w2_weight"),
-	WF(shared_w1_weight, "shared_w1_weight"),
-	WF(shared_w2_weight, "shared_w2_weight"),
-	WF(dense_gate_up_weight, "dense_gate_up_weight"),
-	WF(dense_down_weight, "dense_down_weight"),
-	WF(attnres_attn_weight, "attnres_attn_weight"),
-	WF(attnres_mlp_weight, "attnres_mlp_weight"),
-};
-#undef WF
+#include "spark_k3_weight_binds.h"
 
 static const char *const k3_required_every[] =
 {
@@ -497,12 +457,65 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->gather_plan);
 	cudaFree(d->pair_arrays);
 	cudaFree(d->replay_pool);
+	cudaFree(d->mha_keys);
+	cudaFree(d->mha_query);
 	delete d->pair_buffers;
 	delete[] d->mla_cache;
 	delete[] d->weights;
 	delete d->slice_state;
 	delete d->buffers;
 	memset(d, 0, sizeof(*d));
+}
+
+static int32_t K3DispatchMhaPrepare(SparkK3Dispatch *d, const K3LayerWeights *host, uint32_t layer_count)
+{
+	K3LayerBuffers *b = d->buffers_host;
+	uint32_t index, latent = 0u, expanded = 0u;
+	uint64_t keys, query_bytes;
+	for ( index = 0u; index < layer_count; ++index )
+	{
+		if ( K3_LAYER_KIND(d->first_layer + index) != LM_LAYER_LATENT )
+			continue;
+		latent++;
+		if ( host[index].mla_q_b_weight != 0 && host[index].mla_kv_b_key_full_weight != 0 && host[index].mla_kv_b_value_full_weight != 0 )
+			expanded++;
+	}
+	if ( expanded == 0u || d->tp_degree < 2u || d->streamed_prefill != 0u )
+	{
+		fprintf(stderr, "sparkpipe_k3: expanded MHA attention off (%s)\n", expanded == 0u ? "the packs carry no expanded attention tensors" :
+			d->tp_degree < 2u ? "single rank" : "long prompts go to the streamed prefill");
+		return SPARK_K3_DISPATCH_OK;
+	}
+	if ( expanded != latent )
+	{
+		fprintf(stderr, "sparkpipe_k3: %u of %u latent attention layers carry the expanded attention tensors; all or none must\n", expanded, latent);
+		return SPARK_K3_DISPATCH_ERR_BIND;
+	}
+	if ( d->tp_degree * SparkK3KvShardHeads(d->tp_degree) != K3_MLA_HEADS )
+	{
+		fprintf(stderr, "sparkpipe_k3: expanded MHA attention needs the %u heads split evenly over %u ranks\n", (uint32_t)K3_MLA_HEADS, d->tp_degree);
+		return SPARK_K3_DISPATCH_ERR_BIND;
+	}
+	keys = SparkKvShardGatherKeys(b->kv_shard, d->kv_pages_per_view * K3_KV_PAGE_SLOTS);
+	query_bytes = (uint64_t)d->attention_rows * K3_MLA_HEADS * K3_MHA_QK * sizeof(uint16_t);
+	cudaSetDevice(d->device);
+	if ( cudaMalloc(&d->mha_keys, keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc(&d->mha_query, query_bytes) != cudaSuccess )
+	{
+		fprintf(stderr, "sparkpipe_k3: expanded MHA attention buffers (%llu local keys, %llu bytes) do not fit\n",
+			(unsigned long long)keys, (unsigned long long)(keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t) + query_bytes));
+		cudaFree(d->mha_keys);
+		d->mha_keys = 0;
+		d->mha_query = 0;
+		return SPARK_K3_DISPATCH_ERR_CUDA;
+	}
+	d->mha_bytes = keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t) + query_bytes;
+	b->shard_mha_keys = d->mha_keys;
+	b->shard_mha_keys_bytes = keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t);
+	b->shard_mha_query_bf16 = d->mha_query;
+	fprintf(stderr, "sparkpipe_k3: expanded MHA attention on: %u latent layers, %llu local keys, %llu bytes\n",
+		latent, (unsigned long long)keys, (unsigned long long)d->mha_bytes);
+	return SPARK_K3_DISPATCH_OK;
 }
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
@@ -630,7 +643,9 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 		else
 			d->buffers_host->attnres_out_weight = 0;
 		d->buffers_host->router_bias = 0;
-		memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
+		status = K3DispatchMhaPrepare(d, host, layer_count);
+		if ( status == SPARK_K3_DISPATCH_OK )
+			memcpy(d->weights, host, (size_t)layer_count * sizeof(K3LayerWeights));
 	}
 	delete[] host;
 	return status;
@@ -796,6 +811,27 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	return 1;
 }
 
+static int32_t K3DispatchMhaPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequences,
+	const SparkK3StepInput *in, cudaStream_t stream)
+{
+	const uint32_t most = SparkKvShardGatherKeys(b->kv_shard, in->gather_context);
+	const uint64_t send_bytes = (uint64_t)b->kv_shard.degree * SparkK3KvShardPartialStride(d->attention_rows, b->kv_shard.degree) * sizeof(float);
+	if ( d->mha_keys == 0 || d->gather_plan == 0 || sequences != 1u || in->gather_sequence >= d->sequences ||
+		rows < K3_DISPATCH_MHA_MIN_ROWS || rows > d->attention_rows || in->gather_context < K3_DISPATCH_MHA_MIN_CONTEXT || most == 0u ||
+		(uint64_t)most * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t) > b->shard_mha_keys_bytes ||
+		(uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) > send_bytes )
+		return 0;
+	K3DispatchGatherPlanKernel<<<1u, 1u, 0, stream>>>(d->gather_plan, d->sequences, in->gather_sequence, in->gather_context);
+	if ( cudaPeekAtLastError() != cudaSuccess )
+		return -1;
+	b->shard_mha = 1u;
+	b->shard_gather_most_keys = most;
+	b->shard_gather_list = d->gather_plan;
+	b->shard_gather_offset = d->gather_plan + d->sequences;
+	b->shard_gather_context = d->gather_plan + 2u * d->sequences;
+	return 1;
+}
+
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
 	uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
@@ -831,6 +867,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->shard_gather_expanded = 0u;
 	b->shard_gather_history = 0u;
 	b->shard_gather_prefetched = 0u;
+	b->shard_mha = 0u;
 	if ( rows > d->attention_rows && (b->kv_shard.degree < 2u || sequences != 1u || commit == 0u || in->pair_rows == 0u ||
 		in->pair_rows > d->attention_rows || rows - in->pair_rows > d->attention_rows || in->gather_context == 0u ||
 		d->pair_buffers == 0 || d->pair_arrays == 0 || d->widths.latent != K3_ROUTED_EXPERT_HIDDEN) )
@@ -841,15 +878,18 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	}
 	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE && commit != 0u )
 	{
-		const int32_t gather = in->gather_context != 0u && sequences == 1u
+		const int32_t mha = K3DispatchMhaPlan(d, b, rows, sequences, in, stream);
+		const int32_t gather = mha == 0 && in->gather_context != 0u && sequences == 1u
 			? K3DispatchGatherPlan(d, b, rows, in->gather_sequence, in->gather_context, in->gather_first, stream) : 0;
-		if ( gather < 0 )
+		if ( mha < 0 || gather < 0 )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
-		if ( gather > 0 )
+		if ( mha > 0 )
+			d->mla_mha_waves++;
+		else if ( gather > 0 )
 			d->mla_gather_waves++;
 		else
 			d->mla_scatter_waves++;
-		if ( gather == 0 && rows > d->attention_rows )
+		if ( mha == 0 && gather == 0 && rows > d->attention_rows )
 		{
 			fprintf(stderr, "sparkpipe_k3: refused a %u-row wave at context %u: its keys do not fit the paired gather\n",
 				rows, in->gather_context);

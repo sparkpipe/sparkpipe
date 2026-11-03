@@ -166,16 +166,28 @@ class TokenizersVocabulary:
     def adopt(self, tokenizer):
         self.tokenizer = tokenizer
         document = json.loads(tokenizer.to_str())
+        self.spacing = {token["content"]: token["id"] for token in document["added_tokens"]
+                        if not token["special"] and token["content"] and not token["content"].strip() and
+                        not (token.get("lstrip") or token.get("rstrip") or token.get("single_word"))}
+        self.spacing_pattern = re.compile("(" + "|".join(re.escape(text) for text in sorted(self.spacing, key=len, reverse=True)) + ")") if self.spacing else None
         document["added_tokens"] = []
         self.plain = Tokenizer.from_str(json.dumps(document))
 
     def encode(self, text, special):
         if special:
             return self.tokenizer.encode(text, add_special_tokens=False).ids
-        return self.plain.encode(text, add_special_tokens=False).ids
+        if self.spacing_pattern is None:
+            return self.plain.encode(text, add_special_tokens=False).ids
+        ids = []
+        for index, piece in enumerate(self.spacing_pattern.split(text)):
+            if index % 2 == 1:
+                ids.append(self.spacing[piece])
+            elif piece:
+                ids.extend(self.plain.encode(piece, add_special_tokens=False).ids)
+        return ids
 
     def control_strings(self):
-        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values()]
+        return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.content not in self.spacing]
 
     def decoder(self):
         stream = DecodeStream(skip_special_tokens=False)
@@ -227,10 +239,24 @@ VOCABULARIES = {"tokenizers": TokenizersVocabulary, "tiktoken": TiktokenVocabula
 
 CARRIED = re.compile("\ue000([0-9]+)\ue001")
 PIECE_CACHE_BYTES = 512 << 20
+TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
 BULK_SUFFIX = "-bulk"
+
+
+def context_target(body):
+    value = body.get("num_ctx")
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        value = int(value.strip())
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    if value is None or value in (0, -1):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise RequestError(400, "invalid_request", "num_ctx must be a positive whole number: the context chat memory keeps the prompt near")
+    return value
 
 
 def request_priority(model, body):
@@ -266,7 +292,7 @@ class PieceCache:
         self.entries = OrderedDict()
         self.bytes = 0
 
-    def encode(self, piece, special):
+    def encode(self, piece, special, room):
         key = (piece, special)
         entry = self.entries.get(key)
         if entry is not None:
@@ -274,7 +300,7 @@ class PieceCache:
             return entry[0]
         ids = array("I", self.vocabulary.encode(piece, special))
         size = sys.getsizeof(piece) + ids.itemsize * len(ids) + 128
-        if size <= self.budget:
+        if size <= self.budget and len(ids) <= room:
             self.entries[key] = (ids, size)
             self.bytes += size
             while self.bytes > self.budget:
@@ -322,10 +348,10 @@ def uncarry(pieces, carried, expected):
     return result
 
 
-def encode_pieces(cache, text, pieces):
+def encode_pieces(cache, text, pieces, room):
     ids = []
     for piece, special in pieces:
-        ids.extend(cache.encode(piece, special))
+        ids.extend(cache.encode(piece, special, room - len(ids)))
     return text, ids
 
 
@@ -339,7 +365,7 @@ class TemplateRenderer:
         tokenizer_config = json.loads((directory / spec.get("tokenizer_config", "tokenizer_config.json")).read_text())
         self.template_tokens = {name: tokenizer_config[name] for name in ("bos_token", "eos_token", "pad_token", "unk_token") if isinstance(tokenizer_config.get(name), str)}
         self.vocabulary = vocabulary
-        self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
+        self.cache = PieceCache(vocabulary, TEMPLATE_PIECE_CACHE_BYTES)
 
     def render_text(self, messages, tools, context):
         try:
@@ -358,8 +384,8 @@ class TemplateRenderer:
             return text, [(text, True)]
         return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
 
-    def render(self, messages, tools, kwargs):
-        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
+    def render(self, messages, tools, kwargs, room):
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
 
 
 class SegmentRenderer:
@@ -390,8 +416,8 @@ class SegmentRenderer:
         marked = self.segments(marked_messages, marked_tools, kwargs)
         return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
 
-    def render(self, messages, tools, kwargs):
-        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs))
+    def render(self, messages, tools, kwargs, room):
+        return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
 
 
 RENDERERS = {"template": TemplateRenderer, "segments": SegmentRenderer}
@@ -496,17 +522,17 @@ class Model:
         self.reasoning = spec.get("reasoning")
         self.tool_calls = dict(spec["tool_calls"])
         self.tool_calls.setdefault("format", "key_value")
-        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object"):
-            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml or object")
+        if self.tool_calls["format"] not in ("key_value", "tagged", "function_xml", "object", "json"):
+            raise SystemExit(f"chat_frontend: {self.id} tool_calls format must be key_value, tagged, function_xml, object or json")
         if self.tool_calls["format"] == "object" and not all(isinstance(self.tool_calls.get(key), str) and self.tool_calls[key] for key in ("name_prefix", "string_delimiter")):
             raise SystemExit(f"chat_frontend: {self.id} object tool calls need name_prefix and string_delimiter")
         self.content_markers = list(spec.get("content_markers", []))
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
-        self.memory = spec.get("chat_memory")
-        if self.memory is not None and not isinstance(self.memory, dict):
-            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object")
+        self.memory = spec.get("chat_memory", {})
+        if not isinstance(self.memory, dict):
+            raise SystemExit(f"chat_frontend: {self.id} chat_memory must be an object of budget overrides")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -521,7 +547,7 @@ class Model:
     def render(self, messages, tools, kwargs):
         context = dict(self.template_defaults)
         context.update(kwargs)
-        return self.renderer.render(messages, tools, context)
+        return self.renderer.render(messages, tools, context, self.context_tokens - 1)
 
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
@@ -625,6 +651,43 @@ def canonical_citations(messages, wrapper):
         return result, {"citation_markers": len(set(markers.values())), "citation_labelled": labelled,
                         "citation_unmatched": len(set(markers.values()) - used), "citation_files": len(files)}
     return messages, {}
+
+
+PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status"})
+PUBLIC_KEY_PREFIX = "sk-sp-"
+PUBLIC_KEY_CONCURRENCY = 4
+PUBLIC_BODY_BYTES_PER_TOKEN = 16
+PUBLIC_BODY_OVERHEAD_BYTES = 1 << 20
+PUBLIC_KEY_PREFIX_BLOCKS = 1 << 16
+STATUS_VIEW_FIELDS = ("state", "phase", "swap_elapsed_s", "phase_elapsed_s", "force_requested")
+DRAINING_VIEW_FIELDS = ("live_requests", "waited_s", "limit_s", "quiet_s", "quiet_needed_s")
+HISTORY_VIEW_FIELDS = ("finished", "seconds", "forced", "ok")
+
+
+class PublicKeys:
+    def __init__(self, path):
+        self.path = path
+        self.stamp = None
+        self.entries = {}
+
+    def lookup(self, key):
+        if not key.startswith(PUBLIC_KEY_PREFIX):
+            return None
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except OSError:
+            return None
+        if stamp != self.stamp:
+            try:
+                document = json.loads(self.path.read_text())
+            except (OSError, json.JSONDecodeError):
+                return None
+            self.entries = {entry["sha256"]: entry for entry in document.get("keys", []) if isinstance(entry, dict) and isinstance(entry.get("sha256"), str)}
+            self.stamp = stamp
+        entry = self.entries.get(hashlib.sha256(key.encode()).hexdigest())
+        if entry is None or entry.get("revoked") or (entry.get("expires") is not None and entry["expires"] <= time.time()):
+            return None
+        return entry
 
 
 def short_hash(value):
@@ -810,7 +873,26 @@ class OutputParser:
             return self.parse_function_xml_call(body)
         if self.call["format"] == "object":
             return self.parse_object_call(body)
+        if self.call["format"] == "json":
+            return self.parse_json_call(body)
         return self.parse_key_value_call(body)
+
+    def parse_json_call(self, body):
+        try:
+            parsed = json.loads(body.strip())
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict) or set(parsed) - {"name", "arguments"} or not isinstance(parsed.get("name"), str) or not parsed["name"]:
+            return None
+        arguments = parsed.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                return None
+        if not isinstance(arguments, dict):
+            return None
+        return call_entry(parsed["name"], arguments)
 
     def parse_object_call(self, body):
         prefix = self.call["name_prefix"]
@@ -1146,6 +1228,7 @@ class PrefixLedger:
 
 class Frontend:
     memory = None
+    commands = None
     citation_wrapper = None
     prefixes = None
 
@@ -1166,6 +1249,17 @@ class Frontend:
         if wrapper is not None and (not isinstance(wrapper, dict) or set(wrapper) != CITATION_WRAPPER_KEYS or not all(isinstance(wrapper[key], str) and wrapper[key] for key in CITATION_WRAPPER_KEYS)):
             raise SystemExit(f"chat_frontend: client.citation_wrapper needs exactly the non-empty strings {sorted(CITATION_WRAPPER_KEYS)}")
         self.citation_wrapper = wrapper
+        public = config.get("public")
+        self.public_header, self.public_keys, self.public_models = None, None, frozenset()
+        if public is not None:
+            if not isinstance(public, dict) or set(public) - {"header", "keys_file", "models"} or not isinstance(public.get("header"), str) or not public["header"] or not isinstance(public.get("keys_file"), str):
+                raise SystemExit("chat_frontend: public needs a header and a keys_file, and optionally the public models")
+            models = public.get("models", sorted(self.models))
+            if not isinstance(models, list) or not set(models) <= set(self.models):
+                raise SystemExit(f"chat_frontend: public models must be served models; served: {sorted(self.models)}")
+            self.public_header, self.public_keys, self.public_models = public["header"], PublicKeys(base / public["keys_file"]), frozenset(models)
+        self.public_inflight = {}
+        self.public_prefixes = {}
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
@@ -1174,11 +1268,22 @@ class Frontend:
             module = importlib.util.module_from_spec(loader)
             loader.loader.exec_module(module)
             self.memory = module.Memory(config["chat_memory"], self)
+            self.memory_switch = module.memory_switch
+            loader = importlib.util.spec_from_file_location("sparkpipe_chat_commands", Path(__file__).with_name("chat_commands.py"))
+            commands = importlib.util.module_from_spec(loader)
+            loader.loader.exec_module(commands)
+            self.commands = commands.Commands(self.memory, module, self)
+            self.command_strip = commands.strip
 
     async def start(self, app):
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
+        self.prune_task = None
+        if self.memory is not None and self.memory.chat_list:
+            self.prune_task = asyncio.create_task(self.memory.prune_loop())
 
     async def stop(self, app):
+        if self.prune_task is not None:
+            self.prune_task.cancel()
         await self.session.close()
 
     def model_for(self, body):
@@ -1206,17 +1311,43 @@ class Frontend:
     async def liveliness(self, request):
         return web.json_response({"ok": True})
 
+    async def login_role(self, authorization):
+        async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            user = await response.json(content_type=None) if response.status == 200 else None
+        return user.get("role") if isinstance(user, dict) else None
+
+    def status_view(self, payload):
+        def shown(model_id):
+            return model_id if model_id is None or self.public_header is None or model_id in self.public_models else None
+        view = {key: payload.get(key) for key in STATUS_VIEW_FIELDS}
+        for key in ("active", "target", "wanted"):
+            view[key] = shown(payload.get(key))
+        draining = payload.get("draining")
+        view["draining"] = dict({key: draining.get(key) for key in DRAINING_VIEW_FIELDS}, model=shown(draining.get("model"))) if isinstance(draining, dict) else None
+        view["models"] = [{"id": entry.get("id"), "active": entry.get("active")} for entry in payload.get("models") or [] if isinstance(entry, dict) and shown(entry.get("id")) is not None]
+        view["history"] = [dict({key: entry.get(key) for key in HISTORY_VIEW_FIELDS}, **{"from": shown(entry.get("from")), "to": shown(entry.get("to"))})
+                           for entry in payload.get("history") or [] if isinstance(entry, dict)]
+        view["waiting"] = {model_id: count for model_id, count in (payload.get("waiting") or {}).items() if shown(model_id) is not None}
+        return view
+
     async def control_status(self, request):
         if self.control is None:
             return web.json_response(error_body("not_found", "this front end has no model control"), status=404)
+        public = request.get("public_key") is not None
+        authorization = request.headers.get("Authorization", "")
+        try:
+            admin = not public and authorization.startswith("Bearer ") and await self.login_role(authorization) == "admin"
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+            admin = False
         try:
             async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 payload = await response.json(content_type=None)
-                if isinstance(payload, dict):
-                    payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
-                return web.json_response(payload, status=response.status)
+                if not isinstance(payload, dict):
+                    raise json.JSONDecodeError("the controller status is not an object", "", 0)
+                payload["waiting"] = {model.id: model.gate.state()["waiting"] for model in self.models.values() if model.gate.state()["waiting"]}
+                return web.json_response(payload if admin else self.status_view(payload), status=response.status)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
-            return web.json_response(error_body("control_unavailable", str(error)), status=503)
+            return web.json_response(error_body("control_unavailable", str(error) if admin else "the fleet controller is unreachable"), status=503)
 
     async def control_switch_now(self, request):
         if self.control is None or "force_url" not in self.control:
@@ -1225,11 +1356,10 @@ class Frontend:
         if not authorization.startswith("Bearer ") or not authorization[len("Bearer "):].strip():
             return web.json_response(error_body("unauthorized", "Switch now needs the admin's SparkPipe Chat login"), status=401)
         try:
-            async with self.session.get(self.control["admin_url"], headers={"Authorization": authorization}, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                user = await response.json(content_type=None) if response.status == 200 else None
+            role = await self.login_role(authorization)
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", f"could not check the login: {error}"), status=503)
-        if not isinstance(user, dict) or user.get("role") != "admin":
+        if role != "admin":
             return web.json_response(error_body("forbidden", "only the admin can use Switch now"), status=403)
         body = {}
         if request.can_read_body:
@@ -1247,18 +1377,27 @@ class Frontend:
             return web.json_response(error_body("control_unavailable", str(error)), status=503)
 
     async def site_root(self, request):
-        raise web.HTTPFound("/site/playground.html")
+        raise web.HTTPFound("/site/fleet.html")
 
     async def list_models(self, request):
         created = int(time.time())
+        public = request is not None and request.get("public_key") is not None
         return web.json_response({"object": "list", "data": [
-            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens}
-            for model in self.models.values() for name in (model.id, model.id + BULK_SUFFIX)]})
+            {"id": name, "object": "model", "created": created, "owned_by": "sparkpipe", "max_model_len": model.context_tokens,
+             "reasoning_efforts": sorted(model.reasoning_effort)}
+            for model in self.models.values() if not public or model.id in self.public_models for name in (model.id, model.id + BULK_SUFFIX)]})
 
     def prefix_ledger(self, model):
         if self.prefixes is None:
             self.prefixes = {}
         return self.prefixes.setdefault(model.id, PrefixLedger())
+
+    def public_body_limit(self):
+        context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
+        return PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES
+
+    def public_prefix_ledger(self, key, model):
+        return self.public_prefixes.setdefault((key["id"], model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         plan = self.plan(model, body, None)
@@ -1305,11 +1444,28 @@ class Frontend:
         if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):
             messages, citations = canonical_citations(messages, self.citation_wrapper)
             trace.update(citations)
-        if self.memory is not None and headers is not None:
-            session = self.memory.session(model, headers, messages, tools, kwargs)
+        memory_off = False
+        identity, settings = None, {}
+        if self.memory is not None:
+            messages, memory_off = self.memory_switch(messages)
+            if headers is not None:
+                identity = self.commands.identity(headers)
+                command = self.commands.match(messages)
+                if command is not None:
+                    trace.update(command=command[0])
+                    return {"command": command, "identity": identity, "messages": messages, "memory_off": memory_off, "trace": trace}
+                messages = self.command_strip(messages)
+                settings = self.commands.settings(identity)
+            memory_off = memory_off or settings.get("memory") == "off"
+            if memory_off:
+                trace.update(memory_off=True)
+                messages = self.commands.compacted(identity, messages)
+        target = context_target(body) or settings.get("target")
+        if self.memory is not None and headers is not None and not memory_off:
+            session = self.memory.session(model, headers, messages, tools, kwargs, target)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
-                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
+                trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
         plan = self.finish_plan(model, body, messages, tools, kwargs, session)
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
@@ -1375,7 +1531,7 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
-    async def engine_stream(self, model, engine_body):
+    async def engine_stream(self, model, engine_body, public):
         deadline = None
         while True:
             started = False
@@ -1392,7 +1548,7 @@ class Frontend:
                 await events.aclose()
             now = asyncio.get_running_loop().time()
             deadline = deadline if deadline is not None else now + model.gate.wait_seconds
-            if self.memory is not None:
+            if self.memory is not None and not public:
                 self.memory.cancel_all()
             await model.gate.wait_ready(self.session, deadline - now, self.controller_headers)
 
@@ -1412,7 +1568,7 @@ class Frontend:
             entries.append(entry)
         return entries
 
-    async def generate_attempt(self, model, engine_body, parser, outcome):
+    async def generate_attempt(self, model, engine_body, parser, outcome, public):
         step = model.vocabulary.decoder()
         finish = None
         usage = None
@@ -1422,7 +1578,7 @@ class Frontend:
         written = 0
         stop_string = False
         logprobs = engine_body.get("logprobs")
-        stream = self.engine_stream(model, engine_body)
+        stream = self.engine_stream(model, engine_body, public)
         try:
             async for chunk in stream:
                 if "error" in chunk:
@@ -1484,13 +1640,13 @@ class Frontend:
         print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
                           "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
 
-    async def generate(self, model, engine_body, parser):
+    async def generate(self, model, engine_body, parser, public):
         prompt = list(engine_body["prompt_token_ids"])
         budget = engine_body.get("max_tokens")
         body, kept, attempt = engine_body, [], 0
         while True:
             outcome = {"attempt": attempt}
-            async for event in self.generate_attempt(model, body, parser, outcome):
+            async for event in self.generate_attempt(model, body, parser, outcome, public):
                 yield event
             fault = outcome.get("fault")
             if fault is None:
@@ -1533,14 +1689,14 @@ class Frontend:
     async def respond(self, model, plan):
         session = plan["session"]
         if session is None:
-            async for event in self.generate(model, plan["engine_body"], plan["parser"]):
+            async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan):
                 yield event
             return
         completion = 0
         while True:
             internal, visible, content, reasoning = [], [], [], []
             result = {}
-            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"]):
+            async for kind, value in self.generate(model, plan["engine_body"], plan["parser"], False):
                 if kind == "tool_call" and session.claims(value):
                     internal.append(value)
                     continue
@@ -1659,12 +1815,18 @@ class Frontend:
             content.extend(value for kind_, value in parser.finish() if kind_ == "content")
         return "".join(content)
 
-    def usage_block(self, usage, prompt_tokens):
+    def usage_block(self, usage, prompt_tokens, plan):
         usage = usage or {}
         completion = usage.get("completion_tokens", 0)
         prompt = usage.get("prompt_tokens", prompt_tokens)
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+        if "public_key" in plan:
+            cached = min(cached, plan["public_cached"])
         return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion, "prompt_tokens_details": {"cached_tokens": cached}}
+
+    def record_public_prefix(self, model, plan, result):
+        if "public_key" in plan:
+            self.public_prefix_ledger(plan["public_key"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
 
     def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
@@ -1683,11 +1845,35 @@ class Frontend:
             body = await request.json()
         except json.JSONDecodeError:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        public = request.get("public_key")
         try:
             model = self.model_for(body)
-            plan = self.plan(model, body, request.headers)
+            if public is not None and model.id not in self.public_models:
+                raise RequestError(404, "model_not_found", f"model {body.get('model')!r} is not served here; served: {sorted(self.public_models)}")
+            if public is not None and self.public_inflight.get(public["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
+                raise RequestError(429, "rate_limited", f"this key already has {PUBLIC_KEY_CONCURRENCY} requests running; wait for one to finish")
+            plan = self.plan(model, body, None if public is not None else request.headers)
         except RequestError as error:
             return error_response(error)
+        if public is not None:
+            plan["trace"]["key"] = public["id"]
+            plan["public_key"] = public
+            plan["public_cached"] = self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0]
+            self.public_inflight[public["id"]] = self.public_inflight.get(public["id"], 0) + 1
+            try:
+                return await self.answer(request, model, body, plan, started)
+            finally:
+                self.public_inflight[public["id"]] -= 1
+                if self.public_inflight[public["id"]] == 0:
+                    del self.public_inflight[public["id"]]
+        if "command" in plan:
+            name, argument = plan["command"]
+            try:
+                text = await self.commands.run(model, plan["identity"], plan["messages"], name, argument, plan["memory_off"])
+            except RequestError as error:
+                return error_response(error)
+            print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
+            return await self.reply_text(request, model, body, text)
         if self.memory is not None:
             self.memory.enter(model)
         try:
@@ -1695,6 +1881,24 @@ class Frontend:
         finally:
             if self.memory is not None:
                 self.memory.leave(model)
+
+    async def reply_text(self, request, model, body, text):
+        identifier = "chatcmpl-" + uuid.uuid4().hex
+        created = int(time.time())
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        if not body.get("stream"):
+            return web.json_response({"id": identifier, "object": "chat.completion", "created": created, "model": model.id,
+                                      "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "logprobs": None, "finish_reason": "stop"}], "usage": usage})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+        await response.prepare(request)
+        for delta, finish in (({"role": "assistant", "content": text}, None), ({}, "stop")):
+            payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id,
+                       "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+            if finish:
+                payload["usage"] = usage
+            await response.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     async def answer(self, request, model, body, plan, started):
         engine_body, prompt_tokens = plan["engine_body"], plan["prompt_tokens"]
@@ -1727,9 +1931,10 @@ class Frontend:
         if calls:
             message["tool_calls"] = calls
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
+        self.record_public_prefix(model, plan, result)
         choice = {"index": 0, "message": message, "logprobs": {"content": logprobs} if "logprobs" in engine_body else None, "finish_reason": result.get("finish_reason")}
         return web.json_response({"id": "chatcmpl-" + uuid.uuid4().hex, "object": "chat.completion", "created": int(time.time()),
-                                  "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens)})
+                                  "model": model.id, "choices": [choice], "usage": self.usage_block(result.get("usage"), prompt_tokens, plan)})
 
     async def chat_stream(self, request, model, body, plan, started):
         prompt_tokens = plan["prompt_tokens"]
@@ -1780,13 +1985,14 @@ class Frontend:
         except asyncio.CancelledError:
             self.log(model, prompt_tokens, result.get("usage"), started, first, "client_gone", plan.get("trace"))
             raise
-        usage = self.usage_block(result.get("usage"), prompt_tokens)
+        usage = self.usage_block(result.get("usage"), prompt_tokens, plan)
         await response.write(chunk({}, result.get("finish_reason"), usage))
         if include_usage:
             payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
             await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
         await response.write(b"data: [DONE]\n\n")
         self.log(model, prompt_tokens, result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
+        self.record_public_prefix(model, plan, result)
         return response
 
 
@@ -1805,8 +2011,32 @@ def raise_open_files():
     return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
+def public_door(frontend):
+    @web.middleware
+    async def door(request, handler):
+        if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
+            return await handler(request)
+        if request.path not in PUBLIC_PATHS:
+            return web.json_response(error_body("not_found", "this path is not served to the public API"), status=404)
+        if request.path == "/health/liveliness":
+            return await handler(request)
+        authorization = request.headers.get("Authorization", "")
+        entry = frontend.public_keys.lookup(authorization[len("Bearer "):].strip()) if authorization.startswith("Bearer ") else None
+        if entry is None:
+            return web.json_response(error_body("invalid_api_key", "send a valid SparkPipe API key as Authorization: Bearer sk-sp-..."), status=401)
+        request["public_key"] = entry
+        if request.method == "POST":
+            if request.content_length is None:
+                return web.json_response(error_body("length_required", "send the request body with a Content-Length"), status=411)
+            limit = frontend.public_body_limit()
+            if request.content_length > limit:
+                return web.json_response(error_body("request_too_large", f"the request body is {request.content_length} bytes; the public API takes at most {limit}"), status=413)
+        return await handler(request)
+    return door
+
+
 def build(frontend):
-    app = web.Application(client_max_size=256 * 1024 * 1024)
+    app = web.Application(client_max_size=256 * 1024 * 1024, middlewares=[public_door(frontend)])
     app.on_startup.append(frontend.start)
     app.on_cleanup.append(frontend.stop)
     app.router.add_get("/health", frontend.health)
@@ -1832,7 +2062,7 @@ def main():
     except ValueError:
         loopback = False
     if not loopback:
-        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks no API key, so it serves this host only and LiteLLM is the door")
+        raise SystemExit(f"chat_frontend: --host {arguments.host} is not a loopback address; the chat layer checks API keys only on requests the public door marks, so it serves this host only")
     config_path = Path(arguments.config).resolve()
     frontend = Frontend(json.loads(config_path.read_text()), config_path.parent)
     print(f"chat_frontend: open files limit {raise_open_files()}", file=sys.stderr, flush=True)

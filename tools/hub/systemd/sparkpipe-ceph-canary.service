@@ -1,0 +1,16 @@
+[Unit]
+Description=SparkPipe CephFS read/write canary for the hub and every Spark
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/sparkpipe-ceph-canary
+ExecStart=/usr/bin/python3 ceph_canary.py run --config ceph_canary.json
+StandardOutput=append:/srv/workspace/sparkpipe/logs/ceph-canary.log
+StandardError=append:/srv/workspace/sparkpipe/logs/ceph-canary.log
+Restart=always
+RestartSec=10
+MemoryMax=512M
+
+[Install]
+WantedBy=default.target

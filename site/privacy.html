@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Privacy</title>
+<meta name="description" content="How HYOR AI Tech handles personal information on sparkpipe.ai, hyor.io, SparkPipe Chat and fleet-hour accounts.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/privacy.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/privacy-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/privacy.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 76ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul, .policy ol { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy .scroll { overflow-x: auto; }
+.policy .scroll table { min-width: 640px; }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">privacy</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="terms.html">Terms</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="privacy.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="privacy-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Privacy</h1>
+    <p class="effective">Effective 2 November 2026 · <a href="privacy-ko.html" hreflang="ko">국문 개인정보처리방침</a> (the Korean text governs)</p>
+    <p>This policy explains how <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사, business registration 641-87-03809, Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea; "we") handles personal information. It covers the sparkpipe.ai and hyor.io websites, SparkPipe Chat at sparkpipe.ai:8443, fleet customer accounts, their bookings and the requests and working state on the fleets they book, and email sent to us. It is published under Article 30 of Korea's Personal Information Protection Act.</p>
+  </section>
+
+  <section>
+    <h2>1. The short version</h2>
+    <ul>
+      <li>The models run on computers we own and operate in Seoul. We do not send your conversations to any other AI company, and we do not train models on them.</li>
+      <li>We do not sell personal information, show ads, or use analytics or tracking.</li>
+      <li>We keep each kind of data only as long as the table below says, then delete it.</li>
+      <li>You can ask us at any time to see, correct, delete or stop processing your data: write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>2. Where your data is processed</h2>
+    <p>The models run on sixteen NVIDIA DGX Spark computers and a server that hosts the chat application. We operate all of them in Seoul on SK Telecom's network. Public traffic reaches them through a server we rent from KCInfra in Seoul, which ends the encrypted HTTPS connection, forwards traffic to our hardware through an encrypted tunnel, and runs our email. Code you run with the chat's code interpreter runs in your own browser. Speech-to-text, document reading and search over your files run on our own hardware.</p>
+  </section>
+
+  <section id="data">
+    <h2>3. What we process, why, and for how long</h2>
+    <p>Each item shows the paragraph of Article 15(1) of the Personal Information Protection Act ("PIPA") that it relies on.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Personal information</th><th>When we collect it</th><th>Purpose and legal basis</th><th>How long we keep it</th></tr>
+      <tr><td>Access logs: IP address, time, requested address, response code and size, referring page, browser identifier; for email, the sending server and addresses</td><td>Every visit to sparkpipe.ai, hyor.io or the chat, and every email to or from sparkpipe.ai or hyor.io</td><td>Running and securing the service; keeping access records that telecommunications operators must keep (legal duty, Art. 15(1)(2), and our legitimate interest, Art. 15(1)(6))</td><td>3 months, as the Protection of Communications Secrets Act (Art. 15-2; Enforcement Decree Art. 41(2)) requires</td></tr>
+      <tr><td>Chat account: name, email address, password stored only as a hash, profile picture if added</td><td>When you sign up for SparkPipe Chat; accounts wait for our approval</td><td>Signing you in (contract, Art. 15(1)(4))</td><td>Until you ask us to delete the account</td></tr>
+      <tr><td>Chat content: your messages, the model's replies, files you upload and the text extracted from them, chat settings</td><td>When you use SparkPipe Chat</td><td>Showing your chats and answering them (contract, Art. 15(1)(4))</td><td>Until you delete the chat or the account</td></tr>
+      <tr><td>Chat memory: a summary of earlier turns of each chat, and the exchanges it was built from</td><td>When chat memory is on (the default; the Full context control turns it off for a chat)</td><td>Keeping long chats within the model's working context (contract, Art. 15(1)(4))</td><td>Until you delete the chat or the account; a deleted chat's memory is deleted within two hours</td></tr>
+      <tr><td>Model cache: the model's computed internal state for recent chat prompts, derived from your messages and not stored as text</td><td>Every chat request</td><td>Answering follow-up messages quickly (contract, Art. 15(1)(4))</td><td>Deleted within 24 hours of its last use, or sooner when newer requests overwrite it</td></tr>
+      <tr><td>Working state on a booked fleet: the model's computed internal state for the customer's requests, derived from them and not stored as text, and the files the customer and the functions it runs keep in its storage on the fleet, including any draft model a function trains and any model and driver the customer adds</td><td>Every request, file and function on a fleet the customer holds through a booking</td><td>Keeping the customer's work ready from one booking to the next (contract, Art. 15(1)(4)); the customer decides what is stored and answers for it</td><td>Kept on that fleet, isolated from other customers, from one booking of the customer's to the next; deleted when another customer's booking of that fleet starts, 24 hours after the customer's last hour on it, or sooner when the customer asks. No copy is kept outside the fleet and no backup is made</td></tr>
+      <tr><td>Operational records for each request: model used, token counts, timings, chat and message identifiers, a one-way hash of the prompt, and the token numbers of the reply, from which its text can be rebuilt; no prompt text</td><td>Every chat request and fleet request</td><td>Operating the service and measuring its performance (legitimate interest, Art. 15(1)(6))</td><td>1 year</td></tr>
+      <tr><td>Requests and replies on a booked fleet</td><td>When a customer, or someone it lets use its fleet, sends a request with the account's API key</td><td>Serving the request for the customer (contract, Art. 15(1)(4)); the customer decides what is sent and answers for it</td><td>Our payment service passes them between the caller and the fleet without storing them; on the fleet, nothing is kept apart from the working state and the operational records above</td></tr>
+      <tr><td>Email you send us: your address, name and message</td><td>When you write to us</td><td>Answering you (legitimate interest, Art. 15(1)(6))</td><td>3 years after the last message, unless a longer period below applies</td></tr>
+      <tr><td>Fleet-hour account: the company name, registration number and country, or the customer's own name; contact name, email and phone if given; the verified email address that identifies the account</td><td>When a customer signs up</td><td>Entering into and performing the contract with the customer, and sending notices (contract, Art. 15(1)(4); a company's staff: legitimate interest, Art. 15(1)(6))</td><td>While the account is open, then as long as the payment records below</td></tr>
+      <tr><td>Acceptance records: the hashes of the Customer Agreement accepted, the statement accepted, time, IP address and browser</td><td>When a customer accepts the Customer Agreement</td><td>Proving what was agreed (legitimate interest, Art. 15(1)(6))</td><td>As long as the payment records, in the same ledger</td></tr>
+      <tr><td>Payments, orders, hour-credits and bookings: amounts, VAT, payment references; hour-credits bought, spent, locked in the waitlist, credited, refunded and lapsed; hours and weeks booked and credited; the waitlist position; for payments in won through Toss Payments, its payment reference, the method, the time of approval, the link to the card slip, the virtual account issued and its deadline, and, where we issue an electronic tax invoice, the Korean business registration number given and the details the invoice must carry; for a US dollar bank transfer, the paying bank, the account holder and account, the payment reference, the amount received and the customer's statement that it has no place of business in Korea; for a refund to a bank account, the account given for it</td><td>Each order, payment, booking and waitlist lock</td><td>Performing the contract and keeping tax records (legal duty, Art. 15(1)(2))</td><td>5 years, as the Framework Act on National Taxes (Art. 85-3) requires</td></tr>
+      <tr><td>A credential you send with a download request, such as a Hugging Face token</td><td>With each download request</td><td>Carrying out that download (contract, Art. 15(1)(4)); sent only to the host it is for</td><td>Not stored: held in memory only while the download runs, never written to disk or a log</td></tr>
+      <tr><td>API keys: a SHA-256 hash of each key, never the key itself; its last four characters, the note given, and when it was created or revoked</td><td>When an account creates or revokes a key</td><td>Checking requests to the fleets (contract, Art. 15(1)(4))</td><td>As long as the payment records above</td></tr>
+    </table>
+    </div>
+    <p>We do not process sensitive information (Art. 23) or unique identification numbers (Art. 24), and we do not create pseudonymised information (Art. 28-2). Our ledger of payments, bookings and the waitlist identifies each account by an account number; the account's email address and company name appear only in the lines that open the account and record its orders and its acceptance of our terms. We publish which fleets are pinned or available, and how many waitlist locks are waiting, without any account number, name or other identity; each customer sees only its own place on the waitlist. We publish performance figures for the service, such as tokens per second; they never include your content.</p>
+    <p>The people who operate SparkPipe can access stored accounts, chats, chat memory and logs. They do so only to run the service, give support, keep it secure or meet a legal obligation.</p>
+  </section>
+
+  <section>
+    <h2>4. Deletion</h2>
+    <p>When a retention period ends or its purpose is met, we delete the data from our systems so it cannot be recovered, and destroy any printed copy by shredding. Where a law requires us to keep data longer (the 3-month access logs and the 5-year tax records above), we keep only those items, separately, and only for that period.</p>
+  </section>
+
+  <section>
+    <h2>5. Giving data to third parties</h2>
+    <p>We do not give personal information to third parties, except where a law requires it, such as a court order or a warrant (PIPA Art. 17 and 18).</p>
+  </section>
+
+  <section>
+    <h2>6. Processors we use</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>Processor</th><th>Task</th></tr>
+      <tr><td>KCInfra Inc. (Seoul)</td><td>Hosting the public websites and the email server for sparkpipe.ai and hyor.io</td></tr>
+      <tr><td>Toss Payments Corp. (토스페이먼츠 주식회사, Seoul)</td><td>Processing payments in Korean won for hour-credits and fleet-hours, by card, bank transfer, virtual account and easy pay: the payment window, approval, card slips, deposits into virtual accounts, and refunds</td></tr>
+      <tr><td>CoinPayments (COINPAYMENTS, Inc.), through PaidInSatoshi Inc. (Panama) or Centauri Pay LLC (United States)</td><td>Processing stablecoin payments for hour-credits and fleet-hours, such as USDC and USDT: the invoice, the checkout page and the confirmation of payment</td></tr>
+    </table>
+    </div>
+    <p>Toss Payments receives the order number, the order's name and amount, and the account email and company name: from your browser when you pay, and from our server when we confirm, check or refund the payment, together with the bank account you give for a refund of a virtual account payment. It collects your card, bank account or wallet details itself, in its own payment window, under its own terms and privacy policy, and keeps its payment records for as long as the Electronic Financial Transactions Act and the Act on the Consumer Protection in Electronic Commerce require (5 years for most payment records). We receive back only the payment's reference, method, state and time, the link to its card slip and, for a virtual account, the account number and deadline, never a card number, and keep them as the payment records above. On our checkout and account pages, your browser loads Toss Payments' script and payment window from its servers, which receive your IP address and browser identifier.</p>
+    <p>CoinPayments decides which of its companies provides its service and may change them; <a href="https://www.coinpayments.com/privacy-policy">its privacy policy</a> names the current ones.</p>
+    <p>SK Telecom carries traffic to our hardware, and Let's Encrypt issues our HTTPS certificate; neither receives the content of your data. We bind processors by contract to use data only for the task (PIPA Art. 26).</p>
+  </section>
+
+  <section>
+    <h2>7. Data that leaves Korea</h2>
+    <div class="scroll">
+    <table>
+      <tr><th>What, to whom and where</th><th>When and how</th><th>Why, and for how long</th><th>How to refuse</th></tr>
+      <tr><td>Your IP address and browser identifier, to Google LLC (United States)</td><td>When your browser loads the fonts on our home and checkout pages, over HTTPS</td><td>Displaying the fonts; Google keeps them under its own privacy policy</td><td>Block fonts.googleapis.com in your browser; the pages still work. The chat, the API and this page do not load them</td></tr>
+      <tr><td>The search terms of a chat, without your account details, to public web search engines</td><td>Only when you turn on web search in a chat; sent from our server</td><td>Answering with search results; not kept by us beyond the chat</td><td>Leave web search off</td></tr>
+      <tr><td>A tool request, to the tool's service, such as GitHub, Inc. (United States)</td><td>Only when the model uses a tool you have enabled</td><td>Carrying out the request</td><td>Leave the tool off</td></tr>
+      <tr><td>A credential you send with a download, and the requests it signs, to the host it is for, such as Hugging Face, Inc. (United States)</td><td>Only when you ask the fleet to download from that host</td><td>Carrying out your request</td><td>Do not send one</td></tr>
+      <tr><td>For a stablecoin payment, the company name, account email, order number and amount on the invoice, to CoinPayments, through PaidInSatoshi Inc. (Panama) or Centauri Pay LLC (United States), whichever CoinPayments assigns</td><td>When a business places a stablecoin order; sent from our server over HTTPS</td><td>Processing the payment and any refund; CoinPayments keeps them under its own privacy policy and the law that applies to it</td><td>Pay in won through Toss Payments, or by USD wire where a written order offers it</td></tr>
+    </table>
+    </div>
+    <p>We disclose these transfers as PIPA Article 28-8 requires. Web search and tools run only when you turn them on. If you are in the European Union, the European Commission has recognised Korea as providing an adequate level of data protection.</p>
+  </section>
+
+  <section>
+    <h2>8. Your rights</h2>
+    <p>You can view, export and delete your chats in the chat application. You may also ask us to show you your personal information, correct or delete it, or stop processing it, and you may withdraw any consent (PIPA Art. 35 to 37). A legal representative or someone you authorise may ask for you. Write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>; we answer within 10 days. We may decline only where a law allows it, for example when a law requires us to keep the data, and we will tell you why. No decision about you is made solely by automated processing (Art. 37-2): our sanctions screening only flags accounts for a person to review. Depending on where you live, for example in the EU or the UK, you may also have the right to object to or restrict processing, and to complain to a data protection authority.</p>
+  </section>
+
+  <section>
+    <h2>9. How we protect data</h2>
+    <ul>
+      <li>All traffic to sparkpipe.ai and hyor.io is encrypted with HTTPS; traffic between our servers runs through encrypted tunnels.</li>
+      <li>Passwords and API keys are stored only as hashes, and account data is kept on our server in Seoul, readable only by the payment service and its administrators.</li>
+
+      <li>Only the people who operate SparkPipe can reach the systems, by personal key. Servers sit behind firewalls that block addresses after repeated failed logins.</li>
+      <li>We keep access records for our systems and review them after any incident.</li>
+      <li>Our computers are in premises we control in Seoul, and our public server is in KCInfra's data centre.</li>
+    </ul>
+    <p>No system is perfectly secure, so do not send information you could not afford to have exposed.</p>
+  </section>
+
+  <section>
+    <h2>10. Cookies and browser storage</h2>
+    <p>The chat keeps you signed in with a session token stored in your browser; without it the chat cannot work. The fleet-hour account keeps you signed in with the cookie <span class="mono">sp_session</span> for 30 days: it holds only your account number, its expiry and our signature over them, and is sent only to our payment service. The checkout remembers the hours you chose in the browser's session storage until you pay. None of these leaves your browser except to sign you in. When you pay in won, Toss Payments' payment window, which runs from its own servers, may store what it needs for the payment in your browser under its own privacy policy.</p>
+    <p><b>Language.</b> On your first visit, the site shows Korean pages if your IP address is in the Korean address ranges that APNIC, the regional internet registry, publishes, and English pages otherwise. The check runs on our own server against a copy of that list; your address goes to no one else, and we keep no record of the result. When you choose a language with the EN / 한국어 switch, a cookie named <span class="mono">lang</span>, holding only <span class="mono">ko</span> or <span class="mono">en</span>, remembers your choice for one year and is sent to our server with each page request.</p>
+    <p><b>Chat controls and local mode.</b> The chat keeps your language choice, the memory switch of each chat and the compaction setting in the browser's local storage. In local mode (<span class="mono">sparkpipe.ai:8443/local/</span>) your chats are stored only in the browser's IndexedDB: each message is sent to the model and the reply comes back, and our servers keep no chat history or memory of them.</p>
+    <p>We use no advertising, analytics or tracking cookies. You can delete or block any of these in your browser settings.</p>
+  </section>
+
+  <section>
+    <h2>11. Children</h2>
+    <p>SparkPipe is not meant for children under 16; please do not create an account if you are under 16. We do not knowingly collect personal information of children under 14, which PIPA Article 22-2 allows only with a legal guardian's consent. If we learn that we have, we delete it.</p>
+  </section>
+
+  <section>
+    <h2>12. Privacy officer</h2>
+    <p>Our privacy officer is <b>TURAN CEM</b>, Representative Director, who also handles complaints about personal information: <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>. We give our full postal address on request.</p>
+  </section>
+
+  <section>
+    <h2>13. Where else to turn</h2>
+    <ul>
+      <li>Personal Information Dispute Mediation Committee: 1833-6972, <a href="https://www.kopico.go.kr">www.kopico.go.kr</a></li>
+      <li>Personal Information Infringement Report Center (KISA): 118, <a href="https://privacy.kisa.or.kr">privacy.kisa.or.kr</a></li>
+      <li>Supreme Prosecutors' Office: 1301, <a href="https://www.spo.go.kr">www.spo.go.kr</a></li>
+      <li>Korean National Police Agency, cyber investigation: 182, <a href="https://ecrm.police.go.kr">ecrm.police.go.kr</a></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>14. Changes</h2>
+    <p>We publish any change here, with its date at the top, and it takes effect on that date. Earlier versions are available on request.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="terms.html">Terms</a><a href="privacy-ko.html?lang=ko" hreflang="ko" lang="ko">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>

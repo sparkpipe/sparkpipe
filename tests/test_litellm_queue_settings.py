@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import json
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+LANES = json.loads((ROOT / "deployment/lanes.json").read_text())["lanes"]
 CONFIGS = ["config/litellm-config.yaml", "deployment/hub/litellm-chatui.yaml"]
 WEEK = 7 * 24 * 3600
 
@@ -21,8 +23,15 @@ def main():
         if not isinstance(settings.get("request_timeout"), int) or settings["request_timeout"] < WEEK:
             failures.append(f"{name}: request_timeout {settings.get('request_timeout')} would drop a request still waiting in the queue; it must be at least {WEEK} s")
         routes = {entry["model_name"]: entry["litellm_params"] for entry in config["model_list"]}
+        for entry in config["model_list"]:
+            served = entry["model_name"].removesuffix("-bulk")
+            if served in LANES and (entry.get("model_info") or {}).get("max_input_tokens") != LANES[served]["context_tokens"]:
+                failures.append(f"{name}: {entry['model_name']} max_input_tokens {(entry.get('model_info') or {}).get('max_input_tokens')} differs from the {LANES[served]['context_tokens']} positions its lane record serves")
+        wildcard = "*" in routes
         for model, params in routes.items():
-            if model == "*" or model.endswith("-bulk"):
+            if model.endswith("-bulk") and not wildcard:
+                failures.append(f"{name}: {model}: a door without a '*' route serves interactive clients only, so it lists no -bulk names")
+            if model == "*" or model.endswith("-bulk") or not wildcard:
                 continue
             twin = routes.get(model + "-bulk")
             if twin is None or twin.get("model") != params.get("model") + "-bulk" or twin.get("api_base") != params.get("api_base"):
@@ -31,7 +40,7 @@ def main():
         print("FAIL", failure)
     if failures:
         return 1
-    print(f"PASS {len(CONFIGS)} LiteLLM configs cancel upstream on disconnect, never retry, let a request wait in the queue for a week, and route every model's -bulk name to its chat layer")
+    print(f"PASS {len(CONFIGS)} LiteLLM configs cancel upstream on disconnect, never retry, let a request wait in the queue for a week, route every model's -bulk name to its chat layer on the door with a '*' route and list none on the others, and give each model the context its lane record serves")
     return 0
 
 

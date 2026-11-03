@@ -16,13 +16,12 @@
 #define PACK 264u
 #define RECORD LM_LATENT_SHARD_RECORD_FLOATS(LATENT)
 #define GRAIN 8u
-#define PAGE 128u
+#define PAGE_TOKENS 256u
 #define RING 8u
 #define WINDOW 128u
 #define TOPK 512u
 #define SLOT 1280u
 
-using Kv = LmKvGeometry<SLOT, PAGE, true>;
 
 #define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
 #define CUDA(call) REQUIRE((call) == cudaSuccess)
@@ -69,9 +68,12 @@ static void Settled(const LmKvAccessError *error_d, const char *phase)
 	}
 }
 
+template<uint32_t RATIO>
 static uint32_t Case(uint32_t rows, uint32_t first_position)
 {
-	const uint32_t context = first_position + rows, keys = context / 2u;
+	using Kv = LmKvGeometry<SLOT, PAGE_TOKENS / RATIO, true>;
+	const uint32_t PAGE = PAGE_TOKENS / RATIO;
+	const uint32_t context = first_position + rows, keys = context / RATIO;
 	const uint32_t pages = (keys + PAGE - 1u) / PAGE;
 	const uint32_t landing_keys = (uint32_t)SparkKvShardGatherKeys(SparkKvShard{DEGREE, 0u, GRAIN}, keys);
 	const uint64_t stride = (uint64_t)rows * LOCAL * RECORD, query_stride = (uint64_t)rows * (LOCAL * LATENT + PACK);
@@ -88,7 +90,7 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 	{
 		positions[row] = first_position + row;
 		ordinal[row] = indices[row] = row;
-		bound[row] = (positions[row] + 1u) / 2u - 1u;
+		bound[row] = (positions[row] + 1u) / RATIO - 1u;
 		const uint32_t visible = bound[row] + 1u;
 		for ( uint32_t entry = 0u; entry < TOPK; ++entry )
 			selected[(uint64_t)row * TOPK + entry] = (row * 13u + entry * 389u) % visible;
@@ -222,8 +224,8 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 		for ( size_t record = 0u; record < b.size() / RECORD; ++record )
 			mismatched_split += memcmp(&b[record * RECORD], &e[record * RECORD], RECORD * sizeof(float)) != 0 ? 1u : 0u;
 	}
-	printf("%s rows %u positions %u-%u compressed keys %u landing keys %u: %u of %u records and %u of %u outputs differ; split lists change %u records\n",
-		mismatched_records == 0u && mismatched_outputs == 0u && mismatched_split == 0u ? "ok  " : "FAIL", rows, first_position, context - 1u, keys, landing_keys,
+	printf("%s ratio %u rows %u positions %u-%u compressed keys %u landing keys %u: %u of %u records and %u of %u outputs differ; split lists change %u records\n",
+		mismatched_records == 0u && mismatched_outputs == 0u && mismatched_split == 0u ? "ok  " : "FAIL", RATIO, rows, first_position, context - 1u, keys, landing_keys,
 		mismatched_records, (uint32_t)((uint64_t)DEGREE * DEGREE * rows * LOCAL), mismatched_outputs, (uint32_t)((uint64_t)DEGREE * rows * LOCAL * LATENT),
 		mismatched_split);
 	for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
@@ -239,12 +241,17 @@ static uint32_t Case(uint32_t rows, uint32_t first_position)
 int main(void)
 {
 	uint32_t failures = 0u;
-	failures += Case(17u, 300u);
-	failures += Case(64u, 2000u);
-	failures += Case(200u, 3000u);
-	failures += Case(256u, 1500u);
+	failures += Case<2u>(17u, 300u);
+	failures += Case<2u>(64u, 2000u);
+	failures += Case<2u>(200u, 3000u);
+	failures += Case<2u>(256u, 1500u);
+	failures += Case<1u>(17u, 300u);
+	failures += Case<1u>(64u, 2000u);
+	failures += Case<1u>(200u, 3000u);
+	failures += Case<1u>(256u, 1500u);
+	failures += Case<1u>(256u, 9000u);
 	if ( failures != 0u )
 		return 1;
-	printf("PASS dsv41 landing: attention over landed KV for a rank's own heads equals the all-to-all records and merged output bit for bit, with or without split selection lists and one head per block\n");
+	printf("PASS dsv41 landing: attention over a landed KV copy of a ratio-2 cache and of the full-length ratio-1 cache, for a rank's own heads, equals the all-to-all records and merged output bit for bit, with or without split selection lists and one head per block\n");
 	return 0;
 }

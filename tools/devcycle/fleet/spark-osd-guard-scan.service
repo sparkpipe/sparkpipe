@@ -1,0 +1,10 @@
+[Unit]
+Description=Scan ceph OSD device-mapper tables for stale mappings
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spark-osd-guard scan
+TimeoutStartSec=240
+Nice=10
+IOSchedulingClass=idle
+SuccessExitStatus=1 2 3 4 5 6 7 8 9 10 124 126 127

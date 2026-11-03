@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""MiMo V2.6 Flash / Pro (official FP8 + MXFP4 checkpoint) -> sixteen TP16 named stage packs.
+"""MiMo V2.6 Flash / Pro (official FP8 + MXFP4 checkpoint) -> TP named stage packs (sixteen by default).
 
-Output per rank: <out>/mimo26_<model>.tp16.rank<NN>.pack (tools/spark_named_pack.py
+--tp-degree sets the rank count (16 for the Sparks, 8 for eight Studios, 1 for a single device; every per-rank
+split below is 1/degree, so the TP1 rank holds whole tensors).
+Output per rank: <out>/mimo26_<model>.tp<degree>.rank<NN>.pack (tools/spark_named_pack.py
 container), <pack>.sha256 and the empty-range <pack>.experts v2 manifest (experts
 are plain tensors). Every weight keeps the official bytes; nothing is requantised.
 
@@ -42,7 +44,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble  # noqa: E402
+from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
 BLOCK = 128
@@ -155,7 +157,7 @@ def check_config(config, model):
     need(quant.get("quant_method") == "fp8" and quant.get("fmt") == "e4m3" and list(quant.get("weight_block_size", [])) == [BLOCK, BLOCK] and
          quant.get("store_dtype") == "mxfp4" and quant.get("mxfp4_block_size") == MX_GROUP, "fp8 e4m3 128x128 spine, mxfp4 g32 experts")
     need(config["vocab_size"] % TP == 0 and config["num_attention_heads"] % TP == 0 and config["n_routed_experts"] % TP == 0 and
-         config["intermediate_size"] % (TP * BLOCK) == 0, "vocab, heads, experts and the dense intermediate split over 16 ranks")
+         config["intermediate_size"] % (TP * BLOCK) == 0, f"vocab, heads, experts and the dense intermediate split over {TP} ranks")
     need(config["num_key_value_heads"] >= 1 and config["swa_num_key_value_heads"] >= 1, "kv heads")
     ignored = set(quant.get("ignored_layers", []))
     need(all(f"model.layers.{layer}.self_attn.o_proj" in ignored for layer in range(config["num_hidden_layers"])),
@@ -194,17 +196,17 @@ def verify_interleave(weight, scale, geometry, layer, segment, blocks):
 
 
 class RankPacks:
-    def __init__(self, out_dir, resume, ranks, prefix):
+    def __init__(self, out_dir, resume, ranks, prefix, identity):
         self.out_dir = Path(out_dir)
         self.ranks = ranks
         self.prefix = prefix
-        self.writers = {rank: PayloadWriter(self.payload(rank), resume=resume and self.payload(rank).exists()) for rank in ranks}
+        self.writers = {rank: PayloadWriter(self.payload(rank), identity, resume=resume and self.payload(rank).exists()) for rank in ranks}
 
     def payload(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"{self.prefix}.tp16.rank{rank:02d}.pack"
+        return self.out_dir / f"{self.prefix}.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         if rank in self.writers:
@@ -320,8 +322,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = args.tp_degree
+    args.ranks = args.ranks or ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
@@ -340,7 +346,7 @@ def main():
         raise PackFailure(f"index metadata tp_size {checkpoint.metadata.get('tp_size')} is not a qkv interleave this packer knows")
     geometry = Geometry(config, args.model, interleave)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    packs = RankPacks(args.output_dir, args.resume, ranks, f"mimo26_{args.model}")
+    packs = RankPacks(args.output_dir, args.resume, ranks, f"mimo26_{args.model}", source_identity(args.checkpoint, f"mimo26_{args.model}", files=(args.contract,)))
     hidden, vocab_rows = geometry.hidden, geometry.vocab_rows
     embed = checkpoint.raw("model.embed_tokens.weight", "BF16", (geometry.vocab, hidden))
     head = checkpoint.raw("lm_head.weight", "BF16", (geometry.vocab, hidden))

@@ -1,0 +1,14 @@
+opened /Users/m5u0/models/packs/gemma4_26b_tp1_bf16/gemma4_26b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.16 s: pack 50467750912 bytes, device state 2277553236 bytes
+decode run 0 (warm-up): 92.817 tok/s (median step 10.774 ms)
+decode run 1: 92.754 tok/s (median step 10.778 ms)
+decode run 2: 92.730 tok/s (median step 10.784 ms)
+decode run 3: 92.708 tok/s (median step 10.786 ms)
+decode median of 3: 92.730 tok/s
+prefill 1024 run 0 (warm-up): 1127.68 tok/s
+prefill 1024 run 1: 1127.50 tok/s
+prefill 1024 run 2: 1127.55 tok/s
+prefill 1024 run 3: 1127.53 tok/s
+prefill 8192 run 0 (warm-up): 1113.11 tok/s
+prefill 8192 run 1: 1112.93 tok/s
+prefill 8192 run 2: 1112.81 tok/s
+prefill 8192 run 3: 1113.23 tok/s

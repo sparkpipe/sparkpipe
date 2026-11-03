@@ -1,0 +1,11 @@
+/home/spec/sparkpipe-chat/*.log /srv/workspace/sparkpipe/logs/*.log /srv/workspace/sparkpipe/logs/*.out {
+	monthly
+	rotate 11
+	maxage 334
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+	su spec spec
+}

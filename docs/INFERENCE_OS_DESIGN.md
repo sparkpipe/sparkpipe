@@ -26,7 +26,7 @@ in the kernel. Mapped honestly to what exists:
 | Block I/O / DMA engine | `SparkMemoryBufferCopy` (space-aware copy); open-coded cudaMemcpyAsync elsewhere; memlink lanes for network | partial |
 | Filesystem / storage tiers | pack format v2, warm/ceph + cold archive, verifier | exists (model-scoped) |
 | Driver discovery | hardware probes (topology/kernel/transport, dlopen'd) | probe pattern exists |
-| Device drivers / HAL | no `spark_device.h`; `SparkMemoryBuffer` is the first device-layer piece | started (memory only) |
+| Device drivers / HAL | `spark_device.h`: buffers in five spaces, register, map_file, queues, events, kernel launch; host, CUDA and Metal backends | exists; production modules still call CUDA directly |
 | IPC / network stack | weightd RDMA mesh (README §The mesh) driven by `ring/transport/tp_device_collective.c`; memlink; fabric topology | exists — flat peers; link classes + island model are the addendum below |
 
 When this was written, the two missing rows were both memory. That was the

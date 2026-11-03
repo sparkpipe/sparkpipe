@@ -53,7 +53,6 @@ hardware evidence yet.
 | M6 residency, multi-model | Two lanes are deployed. Eight lanes fail at a 4 GB `cudaHostRegister` inside the engine but not standalone. There is no catalog, promotion or pooled store. (handoff) GLM graphs need every expert pinned (`78c2c21`), and relocatable expert graphs are not built. |
 | M7 models, code health | 13 modules build and link (i21), and twins are folded (i26-i33). About 17,400 of about 41,000 module source lines recur elsewhere. There are 33 packers. (handoff) |
 | M8 beyond CUDA | The device layer is `SparkMemoryBuffer` only. The Mac Studios are on order; the handoff expected them in October 2026. |
-| M9 provider network | Only the LiteLLM door and the static site and playground exist. It needs batch-invariant numerics, logprobs and promotion. (handoff) |
 
 M1 notes:
 
@@ -152,7 +151,6 @@ These are proposed and not yet started.
 | Topology | Answered. No fixed topology: hill-climb TP16, PP16 and TP4 x PP4 on tok/s and latency (GOALS.md). |
 | Speculation direction | Answered as direction. A multi-drafter tree with conditional truncation and extension, aiming for TensorFold-class gains at B8 and B64 (GOALS.md). The truncation condition is open. |
 | Mac Studio arrival | Open. They are on order. |
-| Provider network: tailnet control server, payout rails, identity checks | Open. |
 
 ## Working rules
 

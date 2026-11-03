@@ -82,7 +82,7 @@ async def collect(frontend, model, body):
         "type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}], False, [])
     events = []
     try:
-        async for event in frontend.generate(model, body, parser):
+        async for event in frontend.generate(model, body, parser, False):
             events.append(event)
     except RequestError as error:
         return events, error

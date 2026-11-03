@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 35u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 37u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -95,8 +95,9 @@ extern "C" {
 #define SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH 4u
 
 #define SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY UINT32_C(0x00000001)
+#define SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER UINT32_C(0x00000002)
 #define SPARK_MODEL_SERVING_SUBMISSION_KNOWN_FLAGS \
-	SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY
+	(SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY | SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER)
 #define SPARK_MODEL_SERVING_NO_TOKEN UINT32_MAX
 
 static inline uint32_t SparkModelServingWorkKindUsesRows(uint32_t work_kind)
@@ -186,7 +187,8 @@ typedef struct SparkModelServingRuntimeLimits
 	uint32_t resident_sequence_capacity;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
-	uint32_t reserved[4];
+	uint32_t output_vocabulary;
+	uint32_t reserved[3];
 } SparkModelServingRuntimeLimits;
 
 typedef struct SparkModelServingCacheIdentity
@@ -360,6 +362,7 @@ typedef struct SparkModelServingAdapterConfiguration
 	uint64_t kv_backing_maximum_bytes;
 	const char *kv_snapshot_directory;
 	uint64_t kv_snapshot_maximum_bytes;
+	uint64_t kv_partition_reserve_bytes;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;

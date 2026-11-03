@@ -1,0 +1,15 @@
+[Unit]
+Description=Spark host input firewall
+After=network-pre.target systemd-sysctl.service
+Before=ssh.service ssh-emergency.service docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/sbin/nft delete table inet spark_guard
+ExecStart=/usr/sbin/nft -f /etc/spark-firewall.nft
+ExecReload=/usr/sbin/nft -f /etc/spark-firewall.nft
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

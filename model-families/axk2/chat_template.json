@@ -1,0 +1,21 @@
+{
+ "prefix": "",
+ "thinking_prefix": "",
+ "plain_prefix": "",
+ "system": "<|im_start|>system\n",
+ "system_thinking": "<|im_start|>system\n",
+ "user": "<|im_start|>user\n",
+ "observation": "<|im_start|>tool\n<tool_response>\n",
+ "assistant": "<|im_start|>assistant\n</think>",
+ "assistant_thinking": "<|im_start|>assistant\n</think>",
+ "turn_suffix": "",
+ "assistant_suffix": "<|im_end|>\n",
+ "user_suffix": "<|im_end|>\n",
+ "system_turn_suffix": "<|im_end|>\n",
+ "observation_suffix": "\n</tool_response><|im_end|>\n",
+ "generation": "<|im_start|>assistant\n</think>",
+ "generation_thinking": "<|im_start|>assistant\n<think>",
+ "stop_markers": [
+  "<|im_end|>"
+ ]
+}

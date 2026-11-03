@@ -1,0 +1,91 @@
+== gemma-4-31b
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2264, 'long_8k': 8792}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2264, 'long_8k': 8792}
+== muse-glimmer-30b
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1760, 'long_8k': 6834}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1760, 'long_8k': 6834}
+== laguna-s-2.1
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1992, 'long_8k': 7757}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1992, 'long_8k': 7757}
+== ling-3.0-flash
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2061, 'long_8k': 7930}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2061, 'long_8k': 7930}
+== glm-5.3-flash
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1740, 'long_8k': 6772}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1740, 'long_8k': 6772}
+== gemma-4-26b-a4b
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2263, 'long_8k': 8791}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 2263, 'long_8k': 8791}
+== mimo-v2.6-flash
+new2 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1782, 'long_8k': 6902}
+new3 vs new:
+code: exact n=48 served_max_dlp=0.0000
+long_2k: exact n=48 served_max_dlp=0.0000
+long_8k: exact n=48 served_max_dlp=0.0000
+EXACT 6/6
+  cached: {'long_2k': 1782, 'long_8k': 6902}

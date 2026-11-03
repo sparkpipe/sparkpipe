@@ -91,6 +91,10 @@ typedef struct SparkK3Dispatch
 	uint32_t *gather_plan;
 	uint64_t mla_gather_waves;
 	uint64_t mla_scatter_waves;
+	uint64_t mla_mha_waves;
+	uint8_t *mha_keys;
+	uint16_t *mha_query;
+	uint64_t mha_bytes;
 	K3LayerBuffers *pair_buffers;
 	uint32_t *pair_arrays;
 	uint32_t pair_active;
@@ -98,6 +102,7 @@ typedef struct SparkK3Dispatch
 	uint64_t pair_waves;
 	uint32_t tp_degree;
 	uint32_t kda_rank_heads;
+	uint32_t streamed_prefill;
 	SparkK3RankStateBytes state_bytes;
 	uint32_t kv_attached;
 	uint8_t *replay_pool;

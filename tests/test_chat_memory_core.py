@@ -72,7 +72,7 @@ keys = [cm.exchange_key(e) for e in exchanges]
 none = cm.build_layout(head, exchanges, current, {}, [])
 users = [m["content"] for m in none["messages"] if m["role"] == "user"]
 assert none["lined"] == 0 and none["working"] == [0, 1, 2, 3, 4] and cm.SYSTEM_NOTE in none["messages"][0]["content"] and not any(cm.LEDGER_OPEN in u for u in users)
-assert users[0] == "[e1] question 1" and users[-1] == cm.REFERENCE_OPEN + cm.REFERENCE_CLOSE + "[e6] question 6", users
+assert users[0] == "[e1] question 1" and users[-1] == "[e6] question 6", ("with nothing to show, the newest question carries no reference block", users)
 lines_all = {k: f"line {i + 1}" for i, k in enumerate(keys)}
 assert cm.build_layout(head, exchanges, current, lines_all, [])["lined"] == 0, "lines alone never take an exchange out of the working set"
 committed = cm.build_layout(head, exchanges, current, lines_all, ["e1", "e4", "e9", "e3"], [keys[0], keys[3], keys[1]])
@@ -80,7 +80,11 @@ assert committed["lined"] == 3 and committed["working"] == [2, 4] and committed[
 first_user = [m for m in committed["messages"] if m["role"] == "user"][0]["content"]
 assert first_user == cm.LEDGER_OPEN + "[e1] line 1\n[e4] line 4\n[e2] line 2\n" + cm.LEDGER_CLOSE + "[e3] question 3", "the ledger lists commits in commit order before the first open exchange"
 last = committed["messages"][-1]["content"]
-assert last.startswith(cm.REFERENCE_OPEN) and '<history id="e1">' in last and 'id="e4"' in last and 'id="e3"' not in last and last.endswith("[e6] question 6")
+assert last.startswith("[e6] question 6" + cm.REFERENCE_OPEN) and '<history id="e1">' in last and 'id="e4"' in last and 'id="e3"' not in last and last.endswith(cm.REFERENCE_CLOSE), \
+    "open nodes follow the newest question, so nothing before it changes when they close"
+following = cm.build_layout(head, exchanges + [current + [{"role": "assistant", "content": "answer 6"}]], [{"role": "user", "content": "question 7"}], lines_all, [], [keys[0], keys[3], keys[1]])
+before = cm.build_layout(head, exchanges, current, lines_all, [], [keys[0], keys[3], keys[1]])["messages"]
+assert following["messages"][:len(before)] == before, "the next turn's prompt starts with this turn's prompt when no node was open"
 assert committed["open"] == ["e1", "e4"], "only committed exchanges can be opened; open ones are shown in full anyway"
 more = cm.build_layout(head, exchanges, current, lines_all, [], [keys[0], keys[3], keys[1], keys[2]])
 grown = [m for m in more["messages"] if m["role"] == "user"][0]["content"]

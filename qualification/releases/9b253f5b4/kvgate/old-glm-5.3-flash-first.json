@@ -1,0 +1,20 @@
+{
+ "phase": "first",
+ "chars": 60000,
+ "cold": {
+  "text": " The KV cache is paged, with logical identity separated from physical residency, copy-on-write sharing for immutable prefixes, and transactional publication keyed by chained content hashes plus model and layout fingerprints. Each node stores 1/16 of every sequence's cache, so the fleet serves 1,048,576-token",
+  "finish": "length",
+  "prompt_tokens": 16106,
+  "cached_tokens": 0,
+  "completion_tokens": 64,
+  "seconds": 21.31
+ },
+ "follow": {
+  "text": " Speculation goes through one seam per serving adapter, with a model-neutral policy engine that accepts the longest path plus one bonus token. Verification pins every emitted token to the target model's multi-row verify output, and every built speculation path can be selected individually.</think>Speculation goes through one seam per serving adapter, with a",
+  "finish": "length",
+  "prompt_tokens": 16189,
+  "cached_tokens": 16169,
+  "completion_tokens": 64,
+  "seconds": 1.32
+ }
+}

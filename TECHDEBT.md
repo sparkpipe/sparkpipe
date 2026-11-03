@@ -8,15 +8,7 @@ removed rather than retained as a progress diary.
 Required behaviour that is not implemented is recorded here as "Left out on
 purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
-accepted. The 2026-10-02 entries come from the JIT KV audit, the prefix-reuse
-audit and the production-code findings of the 2026-10-01 test-honesty audit,
-each verified against branch `kv/sequence-shard` at `b41ed891f`; their line
-citations refer to that commit.
-
-On 2026-10-14 every item was checked against the code on `sprint/integration`
-(`059e7eaab`), and each claim that an item was finished or obsolete was
-checked a second time. Finished and obsolete items were removed and partly
-finished ones rewritten to say what is left.
+accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Dual-fabric topology contract
 
@@ -99,11 +91,14 @@ finished ones rewritten to say what is left.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
+- **Pair-first sums are not bit-identical to the rank-order sum.** The pair-first reduce-scatter (K3's paired prefill waves, op 6) now keeps pair sums in fp32 (accuracy equal to the plain reduce-scatter), but adds pairs first, so the last BF16 bit of a few elements can differ from the rank-order sum the other algorithms use. That breaks the README invariant that switching algorithm never changes a result bit. Fix: make the pairwise fp32 order canonical for every sum algorithm (direct, reduce-scatter, all-reduce), a one-time ulp-level change on every model, or keep pair-first off where bit identity with other algorithms matters. Owner decision.
 - Left out on purpose (2026-10-02): decode communication is not overlapped
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
   half's compute: `StageRunnerLanesSplit` (`inference/runner/stage_runner.cu`)
-  for GLM Full, GLM Flash and the Qwen 3.8 hybrid, and `K3LaunchSlicePair`
+  for GLM Full, GLM Flash, the Qwen 3.8 hybrid and the Ling and Gemma stages
+  (Solar Open 2 +12% and K-EXAONE 2.0 +8% short-prompt prefill on the fleet,
+  tokens identical), and `K3LaunchSlicePair`
   (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
   Begin and Finish. Every other decode step and multi-sequence wave is still
   one serial chain (compute, all-reduce, compute), so every collective wait is
@@ -239,6 +234,11 @@ finished ones rewritten to say what is left.
   that step's tokens and scores to the host (`StageRunnerStepOutputs`), and
   each step is a separate graph launch. Move those checks and copies to the
   end of the chain so K steps are one enqueue or one graph.
+- A decode chain runs all of its steps after a lane samples a stop token; the
+  engine only bounds a chain to one second of measured steps
+  (`SPARK_MODEL_BATCH_CHAIN_BUDGET_NS`, `runtime/model_batch_engine.c`). The
+  runner already copies each step's tokens to the host, so it could end the
+  chain at a stop token and remove the waste.
 - The batch engine ends a decode chain at the nearest block end of any lane in
   the batch (`SparkModelBatchBuildDecodeRows`,
   `runtime/model_batch_engine.c`), so chains shorten as the batch grows. A
@@ -263,12 +263,77 @@ finished ones rewritten to say what is left.
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
-  whole, 9,088 ms in two 512-row lanes). GLM Full and GLM Flash deploy with a
-  1,024-row execution capacity, so their prefill waves never split and still
-  wait about 440 ms of a ~1.0 s wave in collective rounds
-  (`SparkTpMeshHardwareGuardKernel`, rank-15 profile, 2026-10-02) serially
-  with about 400 ms of compute. Overlap the collectives of a 1,024-row MoE
-  wave without reading the expert weights twice.
+  whole, 9,088 ms in two 512-row lanes). GLM 5.3 Flash's 4,096-row waves split
+  into two 2,048-row lanes. With two 1,024-row lanes, in a 108,324-token
+  prefill (2026-11-01, CUPTI on all 16 ranks), the GPU was busy 97% of the
+  time, compute kernels 66% and
+  collective kernels 60%, overlapping only 29%: the second lane waited for the
+  first lane's whole DSA attention before it started its own. Releasing it
+  after the first lane's cache writes, with the first lane at a higher stream
+  priority, cut that prefill from 93.0 s to 82.7 s with the same tokens and
+  logprobs. Still serial: the lanes take collective turns strictly in
+  alternation, so a lane with two rounds ready waits for the other lane's
+  turn, and each DSA layer exchanges fp32 attention records (126 KB a row)
+  and gathers the queries (63 KB a row) on top of the index scores, which grow
+  with the context.
+
+## Prefill
+
+- Prefill reaches at most 5% of the fleet's compute: Kimi K3 prefills an 8K
+  prompt at 590 tok/s and a 137,700-token prompt in 299 s
+  ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#prefill)). The target is
+  80% of the first resource to saturate. The overlap of prefill-wave
+  collectives under Mesh collectives is part of it; the prefill accelerators
+  under Fleet-hours take the long prompts.
+- Routed expert down projections on the grouped skinny path run 1.2 to 2.0
+  times slower than the tensor-core GEMM between 128 and 512 rows a wave
+  (one GB10, `build/expert_gemm_bench`: K-EXAONE's shape at 512 rows takes
+  3.8 ms against 1.9 ms, Solar Open 2's 2.0 ms against 1.2 ms).
+  `LmSkinnyGroupedExperts` takes waves of up to 16 rows per expert, and its
+  per-lane dot products are slow at the short input of a down projection
+  (80 to 128). Moving the crossover changes those waves' rounding; a
+  short-input skinny that matches the GEMM keeps it.
+- The context-split GQA attention runs tiled on tensor cores for key heads
+  up to 256 wide (Solar Open 2, K-EXAONE 2.0, Laguna, Muse Glimmer, MiMo,
+  Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
+  keys) still take the scalar kernel, which re-reads every key for every row
+  and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- Only Kimi K3 runs on the shared pass engine (`inference/runner/pass_prefill.cuh`).
+  - GLM 5.3 Full, GLM 5.3 Flash and DSV4.1 still prefill in TP16 waves, which
+    move every row's hidden state through the GPU mesh collectives at about
+    5 GB/s a node (pfbench, 2,048 x 6,144 reduce-scatter in 5.1 ms) and
+    re-gather the whole context's latent keys every wave. The weight stream
+    all-gathers at 24.8 GB/s a node with the pair link (wsbench, 650 MiB a
+    node).
+  - Carrying the waves' large collectives on the weight stream would help
+    every TP16 model without model code.
+  - Moving each model's attention onto the pass engine (rows stay on their
+    node, attention weights are streamed, MoE rows go to the resident expert
+    slices) would remove the attention collectives and the per-wave re-gather.
+  - GLM's TP16 slices are uneven (`kv_a`'s 576 columns are 72 granules, 5 or 4
+    a rank), so rank packs differ in layout. Streaming GLM's dense weights
+    needs every rank's entry table and broadcasts padded to the largest rank.
+- Kimi K3's streamed prefill (lanes whose stage config names
+  `streamed_prefill` and whose deployment names
+  `streamed_prefill_min_tokens`) takes every prompt token but the last; the
+  last runs as a one-row wave that samples. It has three gaps. The deferred span's
+  cache blocks are not published, so a later request does not reuse that
+  part of the prompt and no mid-prompt checkpoint is kept; publishing them
+  needs a sealed-page publish after the streamed prefill writes the pages.
+  Other requests on the lane wait while one prompt defers and streams. Beside
+  the full resident pack a node has about 11 GB free and runs 2,048 to 4,096
+  rows a pass; 16,384 to 32,768 rows a pass (two passes for 1M tokens) need a
+  prefill-only lane whose weightd leases experts from a bounded pool, so a
+  1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
+  stream gets no hidden states for the deferred span, only for the waves
+  after it, so a drafter that builds its context from taps drafts without
+  the span. The waves after the span (up to 2,048 tokens) lease the experts
+  of every layer from weightd one layer at a time with no read-ahead, about
+  36 s a wave at 1M context.
+- Kimi K3's prefill attention expands the values but keeps the keys latent
+  (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
+  keys (192 wide) would cost 640. At 250K positions MLA attention is about
+  2.0 s of a 3.6 s wave.
 
 ## Placement beyond TP16
 
@@ -306,6 +371,23 @@ finished ones rewritten to say what is left.
 
 ## Model residency and storage
 
+- Expert pools were hand-set per lane record until #1725, and the Kimi K3
+  value was wrong in the costly direction. Measured 2026-11-02: every K3 rank
+  pack is 100,255,758,720 bytes, above the record's 99,568,941,440-byte pool,
+  so weightd built a 47,478-slot pool (99.57 GB) and every engine loaded its
+  own 9.85 GB spine beside it (`WD-SPINE-PRIVATE`): 109.4 GB per node, about
+  9.16 GB more than the whole arena (47,806 chunks, 100.26 GB) that holds
+  every expert chunk with the spine shared. That is where K3's cold start
+  ended with 1.3-1.8 GB available on four nodes and earlyoom killed weightd
+  or the engine. The GLM 5.3 (52 GiB), GLM 5.3 Flash (32 GiB) and A.X K2
+  (52 GiB) pools sat above their packs, so weightd already mapped those
+  whole arenas and wasted nothing; the 256 MB pools of spine-only models held
+  128 slots they never used. Pools are now planned from each pack's
+  `PACK.experts` ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md#pool-sizing)):
+  the whole arena without a cap, one slot for a pack without expert ranges,
+  and `expert_pool_cap_bytes` only for a lane that streams experts on
+  purpose. Open until #1725's fleet gate shows K3 in whole-arena mode on all
+  16 nodes with the 9.16 GB returned.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
@@ -352,9 +434,13 @@ finished ones rewritten to say what is left.
   has its tier: each deployment node names its `kv_partition`, residentd
   refuses KV directories off it, and `kv_backing_maximum_bytes` and
   `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). The active model shard tier (1 TB)
-  has no named directory, byte budget or startup check, and nothing reserves
-  the 0.5 TB of system and runtime space against KV and shard growth.
+  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
+  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
+  evicts its oldest files before a write that would take the partition below
+  it. The active model shard tier (1 TB) has no named directory, byte budget or
+  startup check, so a shard copy can still take the partition below the
+  reserve; the KV stores give the space back only on their next write, and an
+  idle model's store keeps its files until the 24-hour expiry.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -409,7 +495,7 @@ finished ones rewritten to say what is left.
   4 and a TP4xPP4 deployment cannot hold 1/16 of the KV per node. Close it
   with the TP4xPP4 runtime above, proven by a TP4xPP4 fleet run with T1 parity
   in which each rank holds 1/4 of its group's latent KV and indexer keys.
-- KV pools resize by chunk inside the node reserve with resident demand
+- KV pools resize by chunk inside the node's KV limit with resident demand
   (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
   `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
   between two bindings in one process under the CUDA stub. Not yet proven on
@@ -463,6 +549,16 @@ finished ones rewritten to say what is left.
 
 ## KV tiers
 
+- The 24-hour retention outside a running model (weightd's purge thread and
+  its release of detached KV pools, the draft servers' context expiry, the
+  batch engine's slot clearing and the prefix index's record expiry) has no
+  fleet proof yet. Proof: backdate an inactive model's snapshot store while
+  another model serves and see `weightd kv purge` empty it within a minute;
+  swap a model away and see `reason=detached_retention` an hour later; see
+  `CONTEXT-EXPIRED` and `prefix index expired` on a backdated hub. The
+  retired API directories on the hub keep prefix index files that no engine
+  opens; they need deleting by hand.
+
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
   lane pager and the header-only `LmCache` are deleted, and every driver
@@ -486,12 +582,46 @@ finished ones rewritten to say what is left.
   lane rejoins, so a lane is parked and restored page by page rather than as
   one contiguous transfer. Close it with a fleet backpressure run at 2x device
   pages where parked lanes restore bit-exact at B1 and B16.
-- The format-2 KV snapshot tier (page files naming their parent, separate
-  state files, leaf-first eviction, ordered writes) is host-tested only.
-  Prove it on the fleet: a K3 -> GLM -> K3 swap that restores a 270K
-  conversation in under 15 s, a store of 8 GiB per rank that keeps the newest
-  conversations whole while older ones go tip-first, and an open that removes
-  the format-1 files of the previous release once.
+- One K3 page write on spark8 failed with an I/O error on 2026-11-01
+  (`KV-SNAPSHOT write status=4 tokens=64832`). The other fifteen ranks wrote
+  the same chain without error, and the kernel logged nothing. The step and
+  errno were not logged then, so the cause is unknown. The write path now
+  logs both, and the cache saves a failed page again. Close it with the errno
+  from the next occurrence, or a fleet fill of at least 1M tokens per rank in
+  which no write fails.
+- The streamed (pass) prefill keeps no state on the 16,384-token stride
+  inside its pass. Only its prompt checkpoint, one token before the end,
+  carries one. A prompt that diverges from a published one before that
+  checkpoint therefore recomputes from the newest state before the
+  divergence, which for a single long turn is token 0. An example is an
+  edited message in one long turn. The pass already holds those states:
+  `K3StreamedKdaNode` composes the gathered node summaries in order, so every
+  rank has its own head shard's state at each node boundary, and the gathered
+  convolution tails give the windows there. Close it by capturing the states
+  at the node boundaries that land on the stride, staging each through the
+  binding as the checkpoint of its page, and reporting them in the
+  completion so the API marks those blocks resumable.
+- The KV snapshot tier is proven on the fleet only at its old 8 GiB budget.
+  The hub API's `kv_store_report` lines up to 2026-11-01 show restores from
+  it with no misses: K3 restored 16,241 pages (about 1.04M tokens) on one rank
+  in 7.2 s and 13,257 pages in 2.2 s, GLM-5.3 Full made 620 restores and
+  DeepSeek V4.1 Flash restored 4,212 pages. K3 had filled its 8 GiB per rank
+  (about ten 500K-token conversations, at roughly 1.9 KB per token per rank).
+  The store now spreads its files over 256 identity shards, because one ext4
+  directory without `large_dir` refuses new names near 1.8 million entries
+  (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
+  to its parent and its orphans through one hash chain instead of a scan of
+  the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
+  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
+  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
+  per rank for the four core models and 64 GiB for the others. Not yet proven
+  on the fleet: a K3 store past 8 GiB that restores an older 500K
+  conversation with `cached_tokens` covering it and tokens equal to an
+  uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
+  in under 15 s; a store at its budget that keeps the newest conversations
+  whole while older ones go tip-first; and the first open that removes the
+  previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
   writes each file to a `.kvs-writing-` temporary, fsyncs, renames and fsyncs
   the directory, and its open deletes leftover temporaries; the binding opens
@@ -659,11 +789,12 @@ Related common-code debt:
 
 ## Dynamic batching
 
-- GLM Flash's shared batch scheduler already selects arbitrary counts up to
+- Kimi K3 and GLM 5.3 Full serve at most 8 sequences at once and GLM 5.3
+  Flash 16. GLM Flash's shared batch scheduler selects arbitrary counts up to
   its configured limit; a power-of-two kernel bucket is not an admission rule.
   The GLM deployments set active and resident capacity to 16 or less
-  (`deployment/glm5_next_tp16/model_resident.json`,
-  `deployment/glm53full_tp16_lane6/model_resident.json`), while the stage
+  (`deployment/glm5_next_tp16/model_resident.json` and the GLM records in
+  `deployment/lanes.json`), while the stage
   serving adapter allows up to `SPARK_STAGE_SERVING_MAX_LANES` (128). KV is
   paged from the weightd pool through `runtime/stage_kv_binding.c`, so a
   sequence no longer reserves its full context. Qualify explicit larger
@@ -732,9 +863,7 @@ Related common-code debt:
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
   has none.
-- Remove legacy model names from operator surfaces: `site/index.html` still
-  lists DeepSeek V4 Pro, Qwen4 Flash and MiniMax H3, whose drivers are gone,
-  and `deployment/minimax_text_tp4` remains.
+- Remove `deployment/minimax_text_tp4`; the MiniMax driver is gone.
 - `model_contracts/glm53_full_authoritative.json` carries no rope theta or
   interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
   recipes from `spark_glm52_model.h`. Add them to the contract's geometry at
@@ -742,6 +871,15 @@ Related common-code debt:
   Full build pins) and read them from there.
 - Retain independent numerical, transport, memory, and performance gates for
   every model and precision route.
+- GLM 5.3 Full serves Z.ai's FP8 release (`glm53full.fp8lin.tp16`), and the
+  BF16 release fits one fleet. #1558 builds the stage with BF16 codecs on the
+  BF16 packs (`glm53full.bf16.tp16`) and scores both against the CT-short
+  corpus through the API; its result decides the served precision.
+- `model_contracts/glm53_full_authoritative.json`'s top-level `model_id` names
+  `RadixArk/GLM-5.3-NVFP4`, which no lane serves, and
+  `tools/glm52_model_contract.py --print-build-identity bf16` prints the FP8
+  revision. Re-freeze the contract with the served source on top and give each
+  codec its own source's revision.
 - K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
   uses the skinny experts. Wide waves use `LmCellMmaExperts`
   (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
@@ -752,8 +890,53 @@ Related common-code debt:
   `LmCellMmaExperts`. Qualify the tensor-core expert paths and the full expert
   path (route, gate/up, down, combine) against a dequantised reference at
   prefill widths.
+- Two stages still bind pack tensors without checking each one's bytes against
+  the stage geometry, so a pack built for another geometry would bind and the
+  kernels would read past its tensors. The Qwen 3.8 hybrid stage
+  (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`) checks name and
+  dtype only. K3 (`modules/k3_resident_decode_stage`) checks that each tensor
+  is present and reads its rank dimensions from one layer per kind. Every
+  other stage checks every tensor: GLM, glm5_next and DSV4.1 check the whole
+  pack directory at open, and Ling, Gemma, hy4 and mimo26 check each bind's
+  bytes.
+
+## Korean models
+
+The sources are pinned. All three serve.
+
+- **K-EXAONE 2.0** (`LGAI-EXAONE/K-EXAONE-2.0-750B-A37B@fec0c8dd`, BF16, 1.50 TB): 78 layers with 64 query and 8 KV heads of 128; 20 layers attend globally without position encoding, 57 a 128-token window and one a 4,096-token window; 256 routed experts (top 8) plus one shared, after two dense layers; one MTP layer. Its DSpark drafter is `model-dspark.safetensors` of `LGAI-EXAONE/K-EXAONE-2.0-750B-A37B-DSpark@e42409db`, whose other files are the base weights.
+  - **Serving:** contract, driver (`kexaone2` on the Gemma stage), packs and lane 11.
+  - **Measured:** 27.3 tok/s at B1 without speculation (median of eight runs) and 324 tok/s prefill at 6,850 tokens, with every expert split over the ranks by rows. It was 23.5 and 23.7 in the same hold before the grouped skinny kernel stopped launching a task per local expert: the down projection ran 24,576 blocks per layer, 768 of them with work, and took 158 us against 63 us for the gate and up projections, which move the same bytes. Giving each rank 16 whole experts measured 12.0 and 273: a token's 8 experts landed unevenly. Both layouts score the same on the A/B corpus (McNemar p 0.39). The cp.async expert gather and grouped skinny batches (#1633) took prefill on a 7.7K prompt from 364 to 539 tok/s in both rounds of one hold (16K needle 43.4 to 30.2 s, 64K 223.6 to 170.4 s), captures token-identical.
+  - **Missing:**
+    - The numpy reference (`tools/kexaone2_reference.py`) agrees with the served tokens of the whole-expert layout at all 92 positions of six prompts (served logprobs within 0.11, median under 0.005). The rows layout agrees at 91 of 92 positions (logprobs within 0.153, median under 0.005). It flips one near tie, at `python_is_prime` token 4: the served margin there is 0.006. The reference itself is unstable at that position: with the same four preceding tokens, its margin was 0.107 when it scored the whole-expert capture and 0.28 when it scored the rows capture, which differs only in later tokens and so in matrix shapes. The position is sensitive to rounding in both implementations, so it is not a served-path error. That shape dependence was the reference's: BLAS picks its summation order by matrix shape. The K-EXAONE, A.X K2, Ling and Solar references now accumulate every product in f64 before rounding and round attention probabilities to bf16 as the publisher does, so a prompt's numbers no longer depend on the other prompts or on later tokens; the 92-position comparison has to be re-scored with them. With reasoning off the model answers 17 × 23 as 401 in the reference too, so the UI smoke's one miss is the model's answer.
+    - Speculation from the request's own context verifies drafts in frames: a whole-file rewrite runs at 190.9 tok/s against 19.4 without speculation, with identical output (3,703 of 4,186 drafts kept). Its MTP layer and the DSpark drafter are not wired.
+- **A.X K2** (`skt/A.X-K2@d0805cfd`, block-128 FP8, the precision it was trained in, 0.69 TB): 61 layers of latent attention (query rank 1,536, KV rank 512) with top-2,048 sparse attention through a 64-head indexer, a gated attention output and a gated norm; 256 routed experts (top 8) plus one shared; YaRN to 256K. Drafter `skt/A.X-K2-DSpark@0b278334`. GLM 5.3 Full has the same attention and expert design.
+  - **Serving:** contract, tokenizer split, driver (`axk2` on the GLM stage, with its options for the query gate, gated norms, index rope and ReLU, YaRN and grouped routing), FP8 packer, numpy reference and lane 3. Answers are right in English and Korean, including a 3,076-token passkey past the indexer's 2,048 tokens.
+  - **Measured (main fc764057b, 10-27):** 26.8 tok/s at B1 without speculation and 1,234 tok/s prefill at 8K, in one hold with the previous lane build (26.9 and 1,152). The low-rank gate split (#1597) and the expert top-k sized to the expert count (#1598) took B1 from 23.8; the hardware bf16 conversion (#1602) took back the 6.4% of prefill the NaN-safe software rounding had cost.
+  - **Expert routing masks unselected groups with −inf.**
+    - The publisher's `modeling_axk2.py` fills the experts of the unselected groups with 0.0 before the top-8, as the DeepSeek-V3 HF code does. At layers 24, 34 and 36 every routing bias is negative (layer 24: −1.64 to −1.50), so every allowed expert scores below zero. With 0.0-fill, the router then takes 8 experts from the unselected groups, tied at 0.0, in whatever order the top-k breaks ties.
+    - DeepSeek's own gate and Megatron mask with −inf.
+    - Teacher-forced on the A/B corpus (20 documents, 640 positions, the same engine and firmware but for the mask), −inf predicts the next token correctly at 63.9% of positions against 58.8% with 0.0-fill. Only −inf is right at 49 positions, only 0.0-fill at 16 (McNemar p = 5e-5), and −inf gives the true token 0.17 nats more log-probability per position.
+    - The lane serves −inf since 2026-10-26 14:55Z. The numpy reference masks the same way.
+  - **Reference:** with both masking with −inf, the served tokens agree with the numpy reference at all 122 positions, served logprobs within 0.31 (median under 0.005). Under 0.0-fill, the Korean contract prompt had disagreed at 3 to 5 of 48 positions, and which positions moved with how the reference batched its prompts.
+  - **Missing:**
+    - Speculation with the DSpark drafter is not wired.
+- **Solar Open 2** (`upstage/Solar-Open2-250B@9190fbe6`, BF16, 0.50 TB): 48 layers, three linear-attention layers (short convolution 4, 64 heads) for each GQA layer, no position encoding, 320 routed experts (top 8) plus one shared, 1M context. The Upstage Solar License asks that derivatives be named Solar and show "Built with Solar".
+  - **Serving:** contract, tokenizer (the C tokenizer matches HF on 306 mixed English, Korean, code and emoji texts), driver (`solar_open2` on the Ling stage, with its options for gated GQA without position encoding over position-sharded KV, the low-rank decay and output gates, the doubled write gate and 1e-5 norms), BF16 packer, numpy reference and lane 4. Answers are right in English and Korean, including a 3,076-token passkey; the UI smoke passes 6 of 6, tool calls included.
+  - **Measured:** 61.2 tok/s at B1 without speculation (median of eight runs), 1,025 tok/s prefill at 6K. The grouped expert kernel's routed-row grid (#1584) took it from 56.2 and 56.6 to 60.4 and 62.5 in one hold, capture unchanged. The cp.async expert gather and grouped skinny batches (#1633) took prefill on an 8.1K prompt from 995 and 1,000 to 1,476 and 1,489 tok/s in one hold (16K needle 18.1 to 13.0 s, 64K 105.5 to 83.9 s), captures token-identical. Every routed expert is split over the 16 ranks by rows, 80 real rows per rank. Same-hold A/B on 2026-10-26: 47.0 and 47.4 tok/s with the 80 rows zero-padded to 128 against 57.0 and 56.4 at 80 rows; prefill on an 8.1K prompt 972 and 973 against 1,003 and 994 tok/s. Earlier layouts measured 41.1 tok/s with 20 whole experts per rank. The 80-row pack is 31.5 GB per rank, against 49.6 GB padded.
+  - **Speculation:** drafts from the request's own context are verified in frames. The Ling stage saves each KDA layer's convolution input, decay and write gate during a verify step and replays them for the kept rows (`keep_rows`). A whole-file rewrite runs at 513.7 tok/s against 44.3 without speculation, both including prefill, with identical output. Without speculation the six reference prompts' tokens and logprobs are byte-identical to the reference-checked capture.
+  - The decay follows the fla kernel the publisher's fast path calls, lower bound × sigmoid(exp(A_log) · (g + dt_bias)); the publisher's torch fallback computes −exp(A_log) · softplus(g + dt_bias) clamped at the bound, which is a different function.
+  - **Missing:**
+    - The lane serves 256K; the model's 1M needs the max-context gate.
+    - The shared expert's 80 rows per rank are still zero-padded to 128: its prefill runs on the stream GEMM, which needs a whole number of 64-element k-tiles. The weight-only TMA GEMM takes a zero-filled tail and carries the routed experts at 80 rows; the stream GEMM has no tail path.
+    - The rest of the step is the per-layer fixed cost (collectives and latency-bound small kernels), not graph launches: a GB10 graph node costs 0.4 to 0.7 us, about 1 ms over the 1,708 nodes of a decode step.
+    - No drafter is wired.
+
+Each needs, in order: the checkpoint contract, the driver on the common stage runner, the packer emitter and packs, a lane record, the release gates and qualification, speculation with its drafter, then the perf climb that every core model gets.
 
 ## Speculation
+
+- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
 
 - Tree verification is not wired. The policy engine resolves trees
   (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
@@ -766,34 +949,21 @@ Related common-code debt:
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Context-lookup speculation has its engine half, but no model serves it. The
-  engine (`runtime/model_batch_engine.c`) keeps a 3-gram chain index over each
-  request's prompt and generated tokens (`SparkSpeculationLookupIndex`) and
-  drafts up to 8 tokens with the adaptive depth of
-  `spark_speculation_depth.h`. It sends a wave with drafts as one decode
-  submission flagged `SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY` and commits
-  the longest matching prefix plus the model's token at the first mismatch. It
-  counts verify lanes, drafted and accepted tokens in the API's
-  `engine_measurements` line. The page cache and stage binding keep the verify
-  rewind window (`cache/kv_page_cache.c`, `runtime/stage_kv_binding.c`). The
-  engine drafts only for an adapter that declares `SPECULATIVE_VERIFY`, and
-  none does. The glm52 adapter that ran verify frames with the certified head
-  on every row was deleted with the per-family modules. The stage serving
-  adapter (`inference/runner/stage_serving_adapter.c`) maps no verify frame.
+- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - a verify wave on the stage runner with the certified head on every row,
-    declared by GLM Full, GLM Flash and K3, plus restoring recurrent state to
-    the accepted row for GLM Flash and K3 through the binding's
-    recurrent-state hook;
-  - verify waves on the graph path: the runner captures graphs only for one
-    row per sequence;
+  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
+    Flash's recurrent state restored to the accepted row through the
+    binding's recurrent-state hook;
+  - graphs for verify frames that carry several sequences: the runner
+    captures a graph for one row per sequence or for one sequence's verify
+    frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
+    so shared verify frames run eager;
   - multi-row verify numerics differ from a 1-row decode by the reordering
     floor, so speculative output is judged against the floor like batched
-    output. Close it with a fleet session on GLM-5.3 Full of edit-style
-    requests (a long file re-emitted with small changes). Report the
-    acceptance-length distribution, verify-wave cost and tok/s against plain
-    decode, and the accuracy gate as excess over the floor. Plain prompts with
-    no matches must show no slowdown beyond noise.
+    output. Add the accuracy gate as excess over the floor for edit-style
+    requests, and show that plain prompts with no matches lose no speed
+    beyond noise.
 
 ## Packaging and provenance
 
@@ -823,6 +993,9 @@ Related common-code debt:
 
 ## Driver consolidation
 
+- Kimi K3's device code (its slices and unity kernels) lives in
+  `inference/llms/kimi_k3/`, outside `model-families/k3/` where every other
+  model's math lives. Move it there.
 - Every stage-runner model, K3 included, resets every runner slot and the KV
   binding on a client reset and refuses stale-generation submissions
   (`StageServingReset` and the `reset_generation` check in
@@ -930,92 +1103,94 @@ Related common-code debt:
   outside the step's CUDA graph, because the certified screen prunes with
   un-noised bounds. Noise the screen bounds and capture the sampling pass in
   the step graph to lift both.
-- The chat layer silently turns a request for no reasoning into the lowest
-  effort for models whose template has no off switch. GLM-5.3 Full and Flash
-  map `minimal` to `reasoning_effort: low` and Muse Glimmer to
-  `reasoning_strength: low` (`deployment/hub/chat_frontend.json`). GLM Flash
-  and Muse Glimmer still reasoned with reasoning off, so `tools/ui_smoke.py
-  --reasoning both` fails that case for them; GLM Full happened to pass it.
-  Qwen 3.8 Max maps no `minimal` at all and answers it with a 400, and Laguna
-  returned no reasoning with reasoning on (release qualifications of
-  `e05394f94` and `1d89e0377`, 2026-10-14). Answer reasoning off with a clear
-  error, or a documented per-model capability in `/v1/models`, where the
-  template cannot turn it off, and find out why Laguna does not reason when
-  asked.
-- Every stage-runner lane, GLM Flash included, is sized for every resident
-  sequence at full length by default: `tools/stage_lane.py` sets
-  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
-  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
-  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
-  and it takes that pool as a page count. Size the physical pool from a byte
-  budget the lanes share and let paged admission share it.
+- Laguna returned no reasoning with reasoning on (release qualifications of
+  `e05394f94` and `1d89e0377`, 2026-10-14); find out why it does not
+  reason when asked. GLM-5.3 Full, GLM-5.3 Flash, Muse Glimmer and Qwen 3.8
+  Max have no reasoning-off switch in their templates: the chat layer
+  refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
+  they take, and `/v1/models` lists every model's `reasoning_efforts`.
+- The device KV pool grows on demand into what the resident model leaves
+  of the node ([`docs/LANES.md`](docs/LANES.md),
+  [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)),
+  in code and host tests only. Close it on the fleet: for glm-5.3-flash,
+  glm-5.3, deepseek-v4.1-flash, kimi-k3, qwen3.8-27b and gemma-4-31b, fill
+  KV with long prompts until the pool stops growing, record `/health`
+  `kv_capacity_tokens` and the minimum `MemAvailable` over the 16 nodes
+  (above the margin, no earlyoom kill), and see `release_compare` EXACT 6/6
+  against main. The renderer's projections (`kv_physical_page_capacity`
+  times the KV block) are 86.3M tokens for GLM-5.3 Flash, 9.6M for GLM-5.3,
+  354M for DeepSeek V4.1 Flash, 7.8M for K3, 24.6M for Qwen 3.8 27B and 1.8M
+  for Gemma 4 31B; none is measured.
+- The batch scheduler admits against an engine's maximum device pages (what
+  the model could hold alone on the node), not its pool's live capacity, and
+  the rendered physical capacity takes the model's `node_memory_bytes` from
+  `tools/stage_lane.py` as its footprint. Two engines on one node can so be
+  promised more pages together than the node holds; their pools then stall
+  and evict instead of growing. Close it by sending each rank's live pool
+  capacity to the scheduler and admitting against the smallest rank's,
+  proven by two co-resident engines filling KV with no `KV-PARK-FAILED`.
+- Every device KV page is a logical page, so a lane's host page tables
+  (page cache, arena, store index) now scale with the node budget's pages,
+  up to 2.86M pages for Ling 3.0 Flash, instead of with
+  `sequences * kv_pages`. Measure that host memory on the fleet, and allocate
+  those tables as the pool grows if it matters.
+- KV on disk still has per-lane maxima: `kv_backing_bytes` and
+  `kv_snapshot_bytes` in every record (2.45 TB over 19 lanes) and the
+  512 GiB `kv_partition_reserve_bytes` free-space floor. Owner decision
+  (2026-11-02): one node-wide 500 GB quota for the node's own KV (backing and
+  snapshots), shared by every lane, oldest first under the retention rule;
+  the pair partner's 500 GB mirror stays with the working-state code and is
+  not counted. Close it by replacing the three settings with that quota in
+  `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
+  by two lanes on one node whose combined KV stays under 500 GB while each
+  evicts its oldest files.
+- A public API key that asks for a public model that is not loaded starts
+  the swap, as any caller does. One key that alternates two models keeps the
+  fleet swapping and pushes the owner's model out after each reply. Each key
+  runs at most four requests at once, but nothing limits how often a key may
+  start a swap. Which public requests may swap the fleet is an owner
+  decision (serve only the loaded model to keys, or a lower activation
+  priority and a per-key swap rate).
 
-## Provider network
+## Fleet-hours
 
-Of the provider network in `README.md`, the tree has only the LiteLLM front
-door, the static pages in `site/` and the login-gated sparkpipe.ai playground
-(`docs/LITELLM_FRONTEND.md`, sparkpipe.ai).
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
 
-- **Tailnet.** No tailnet exists yet. It needs a control server that scales
-  to hundreds of providers at a sane cost (Tailscale or a self-hosted
-  Headscale), tagged auth keys issued at registration, access rules that
-  let only the router and the reference nodes reach a provider's model API
-  port (and providers nothing of each other), key rotation, and removal of
-  a provider whose bond is forfeited.
-- **Provider agent.** `sparkpipe provider register` and an agent that
-  joins the tailnet, publishes the provider's offers (models, prices,
-  limits, the resale switch) to the router and signs completion receipts.
-- **Owner-first scheduling.** The batch engine has priorities but no
-  preemptible class. Add a network class that runs only on capacity owner
-  traffic leaves idle, and that yields at frame boundaries.
-- **Hand-off.** A network request either finishes within the bound the
-  router set when it placed it, or resumes on another provider. Resuming
-  mid-request needs KV transfer between installations; until then, a
-  preempted network request restarts elsewhere.
-- **LiteLLM door limits.** Found with LiteLLM 1.74 and a mock upstream
-  (`docs/LITELLM_FRONTEND.md`, browser clients):
-  - LiteLLM consumes a request's `priority` for its own scheduler and does not
-    forward it, so the batch engine's priorities do not cross the door.
-    `seed`, `temperature` and `deadline_ms` do.
-  - `tools/generate_litellm_config.py` emits `num_retries: 1`, which retries a
-    failed upstream call once and can duplicate a generation on the fleet; the
-    hub's hand-written `config/litellm-config.yaml` uses 0.
-  - The LAN door has no accounts: `config/litellm-config.yaml` sets no
-    `master_key` or `database_url`, so anyone on the LAN who reaches port
-    4000 can use the fleet. sparkpipe.ai puts one Apache login file in
-    front of an external LiteLLM with a master key, but has no per-user
-    keys, quotas or spend logs. Those need LiteLLM's Postgres database
-    (`tools/generate_litellm_config.py --database-url --master-key`).
-- **Metering, billing, payouts and bonds.** Bill buyers from signed receipts
-  at the serving provider's price, pay providers 85% after the challenge
-  window, and hold and forfeit bonds.
-- **Audit service.** It needs:
-  - a cost-weighted secret sampler over real completed requests (about 2% of
-    tokens);
-  - a replay scheduler, and reference nodes for each hardware type and
-    driver build;
-  - a comparator: exact tokens for greedy traffic, logprobs within a stated
-    tolerance for sampled traffic;
-  - the challenge and dispute state machine;
-  - weight fingerprints.
-- **Exact replays need batch-invariant numerics.** Batched decode is not
-  bitwise equal to B1 (see Dynamic batching). Until the batch kernels agree
-  bitwise, replays of batched requests can only compare logprobs within a
-  tolerance, which is weaker against mild quantization.
-- **Every driver update splits audit cohorts.** Replays compare only against
-  the same driver hash, so the router must track each provider's build, and
-  releases need per-model cohort changeovers.
-- **sparkpipe.ai has no marketplace pages.** The VPS serves the landing page,
-  the provider page and the playground from `site/`. The playground and `/v1`
-  need a login, and the hub tunnel forwards `/v1` to an external LiteLLM
-  without the Qwen models and `/v1/sparkpipe/status` to the chat layer
-  (`docs/LITELLM_FRONTEND.md`, sparkpipe.ai). The catalog, the buyer console
-  and the provider dashboard need the router and the ledger behind them.
-- **Payments.** Provider identity checks, tax reporting and payout rails
-  (fiat, crypto or both) are undecided.
+- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
+- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
+- **Ledger.** The payment service's `ledger.jsonl` chains every order, invoice, payment and issue of hours. Still missing: reservations, displacement, credits and consumption in it, a published daily root and per-customer proofs. Until consumption is recorded, the 168- and 720-hour holding limits count every unexpired hour issued. Balances must come only from replaying it.
+- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
+- **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
+- **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
+- **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
+- **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
+- **Korean site.** The checkout, account and two-year pages (`site/buy.html`, `account.html`, `two-year.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
+- **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
+  - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
+  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Mistral Large 3, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
+- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
+
+## SparkPipe Chat
+
+- **AI label on downloaded chats.** Copied replies end with the bilingual AI label (`ui.watermark`); chats downloaded as files carry none, and Open WebUI v0.12.0 has no setting for it.
+- **Notice before sign-up.** Open WebUI's sign-up page cannot show text. The AI and privacy notice appears on the waiting screen right after sign-up, before the account is approved or used.
+- **Field search.** None of README's field search exists. Each field is an Open WebUI tool beside `tools/serving/open_webui/tools/github.py`, shown as a checkbox and attached per chat, and every answer cites the documents it used. Sources to evaluate first: Korean statutes and court decisions (the national law information center's open API), EU law (EUR-Lex), US federal law (eCFR and the Federal Register), medicine (PubMed), Korean company filings (Open DART) and patents (KIPRIS). A tool whose source is abroad sends the query out of Korea and must say so before the user ticks it.
+- **Memory switch state.** The toolbar shows the memory setting it last sent from this browser; a `/memory` typed by hand or sent from another device is not reflected. A chat-layer endpoint that reports a chat's memory settings would let the toolbar read the real state.
+- **Local mode needs an account.** Local mode reaches the models through the user's Open WebUI session; access by API key without an account is #1549.
+- **Tunnel port 18080.** `sparkpipe-ai-door` forwards VPS 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Removing both is an SSH change for the owner.
 
 ## Production qualification
 
+- Fold the engine-evidence checks of the closed end-to-end suite (#1491) into the release qualification: assert `cached_prompt_tokens`, `stale_prefix_recomputes`, `status` and `finish_reason` from each request's `request_measurements` line, so prefix sharing, KV restore and park/resume pass only on engine evidence.
+- `scripts/release_rollout.sh` captures the old and the new build through the
+  live prefix cache, so a capture can be served from KV another build wrote:
+  in the 2026-10-25 release most old captures read their long prompts from
+  cache entries of earlier builds. Clear the model's cached state on every
+  node before each capture and fail the comparison unless every capture
+  reports `cached_tokens` 0.
 - `tools/sparkpipe_weightd_vmm_verify.sh` prints `SKIP` and exits 0 when CUDA
   or a GPU is missing, so a receipt run on the wrong host reads as a pass.
   Make both cases exit nonzero with the named reason.
@@ -1059,30 +1234,154 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
+  hub. They reach a person only while a session runs its `watch` command
+  from the workstation. Nothing sends mail or a push on its own, and the
+  hub's own outage shows only as the watcher's stale-state exit.
 
 ## Hardware independence
 
-- The device layer exists only as `SparkMemoryBuffer`
-  (`include/sparkpipe/spark_memory_buffer.h`). Build the rest of the memory
-  interface (register, map_file, make_resident/evict) and then streams,
-  events and launch, per `docs/INFERENCE_OS_DESIGN.md`.
-- Modules call the CUDA runtime directly. Move them behind the device layer
-  so a module target can be `host.*`, `metal.*` or `rocm.*`.
+- The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
+  has buffers in the five spaces, register and map_file, queues, events and
+  kernel launch, with host, CUDA and Metal backends built as one shared
+  library each. Only the contract tests and the Metal stage runner use it.
+  Production modules call the CUDA runtime directly and own their streams,
+  graphs and allocations; move them behind the device layer so a module
+  target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
+  kernel launch (it refuses kernel libraries today) and graph capture and
+  replay.
+- The stage-runner model interface
+  (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
+  device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,
+  `reset_slot` and `sideband`, and raw pointers in `SparkStageRunnerStep` and
+  `SparkStageRunnerKv`. The Metal model reads them as a `SparkDeviceQueue *`
+  and device addresses. Convert them to `SparkDeviceQueue *` and
+  `SparkDeviceAddress` in one ABI change with every consumer.
+- The Metal kernels (`inference/kernels/metal/`) implement the operations of
+  the CUDA kernels (`inference/kernels/`) a second time, in Metal. The
+  formulas they share are moving into `inference/kernels/kernel_math.cuh`
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
+  bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
+  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
+  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
+  `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
+  - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
+    value before the SiLU, and calling `SparkMathClampedGlu` reorders those
+    instructions (same values, different code), so it keeps its text until
+    a CUDA change with its own qualification takes the shared one;
+  - the gate-limited GLU (`SparkMathGateLimitedGlu`, K-EXAONE's last 16
+    layers: the gate clamped above before the SiLU, the up value to
+    `+-limit`) is Metal's; CUDA's `LmSiluMulGateLimitKernel` and
+    `LmSwigluPackedValue` (every MoE stage) compute the same values, but
+    calling the shared function loads the up value before the gate's clamp
+    and changes their PTX, so they keep their text the same way;
+  - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
+    Metal's host table in double), the delta-rule cell update,
+    online-softmax merges and the log-probability reduction;
+  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
+    of the rotary terms, which the reference follows, while CUDA rotates in
+    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
+    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
+    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
+    to +3.48 / +3.86, so the two backends differ here until
+    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
+    qualification);
+  - expressions that differ inside a backend, each a numerical change that
+    needs the affected model's gate: the experts' tanh GeLU
+    (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
+    `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
+    cube first, so Gemma 4's dense and expert FFNs round differently; the
+    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
+    gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
+    `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
+  - attention softmax: both backends rescale at every new maximum. A
+    Metal-only margin of 8 (from #1605, tried as 9daff83ca and reverted)
+    moved the running maximum only past it: Gemma 4 31B then passed the
+    paired test (+0.92 / +1.65 sigma), but Gemma 4 26B (+3.86 against A) and
+    Qwen3.8-27B (+3.79 against B) fell outside it and Muse Glimmer stayed
+    outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
+    (+3.37 against A) fail the paired test; the attention arithmetic that
+    takes all four through, on both backends, is still open;
+  - the residual norm: both backends take the statistic and the normed
+    value from the FP32 sum of residual and branch and store only the
+    residual rounded (CUDA's `LmFusedResidualRmsNormKernel` in the Gemma,
+    Qwen, Ling and GLM 5.2 stages, and Metal's `spark_rmsnorm_residual`
+    since it stopped rounding the sum first), where the publishers' eager
+    modules (and so the gate references) round the sum and normalise the
+    rounded value. Taking CUDA's order moved the paired test from +2.42 /
+    +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
+    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
+    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
+    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
+    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
+    which now fails against reference a although its CUDA stage uses the same
+    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
+    to the last digit. Both backends apply the gain with one rounding,
+    `bf16(x r w)`, where the publishers round `x r` first, and keep the
+    attention probabilities and the GQA gate in FP32 where the publishers
+    round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
+    Metal's output is 2.5e-3 of its norm from reference a against an a/b
+    floor of 8.3e-5, giving the reference those three roundings brings it
+    to 1.75e-3, and the rest is not located yet;
+  - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
+    others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
+    same hardware approximation: bitwise identical over the float range and
+    on every special value, up to 3.9e-6 relative from the exact value on
+    [-87, 10), denormals flushed. So Metal already computes the fast flavor
+    everywhere. Swapping the attention softmax to `fast::exp` changes only the
+    AIR intrinsic (`air.exp.f32` to `air.fast_exp.f32`) and with it how the
+    compiler schedules the arithmetic around it, and that alone moved the
+    paired test by 2 to 4 sigma: Gemma 4 31B +4.8 to +2.0, Muse Glimmer +3.37
+    to -1.3, MiMo +3.49 to +2.23 (all to passing), Gemma 4 26B with free
+    routing +0.85 to +5.1 and Qwen3.8-27B +2.0 to +4.0 (both to failing). The
+    paired test of the models near its limit is within reach of
+    reduction-order noise; the code keeps `exp`. The gate's floor now
+    carries that noise: reference variant h (`tools/reference_device_error.py`)
+    adds a GPU's measured exp and tanh error to variant b's reduction order,
+    because the floor of reduction order alone (a against b) failed the
+    reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
+    the models gated against a and b are being re-gated against a and h;
+  Kernel bodies (the schedules) stay per backend.
+- Every family runs one schedule for all backends
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
+  Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
+  have a Metal backend. Still open: the GLM 5.3 Full and A.X
+  K2 geometries stay in their `.cu` files until `LmRopePairing` and the
+  stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
+  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  the `D41_*` defines) rather than a geometry struct. The CUDA backends still
+  carry one copy of an operation per family: GQA attention with its gather,
+  split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed
+  experts in six families.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
-- Qualify the Metal backend on the Mac Studios and keep the host backend as
-  a CI oracle for common policy, not only for kernels.
-- Left out on purpose (2026-10-02): KV and weights share weightd but not one
-  budget. weightd maps KV device memory as KV pools that grow and shrink in
-  chunks (`runtime/spark_weightd_kv_pool.c`, driven from
-  `runtime/stage_kv_binding.c`) and weights through leases. The weight budget
-  is `device_bytes_max` minus the static `--kv-reserve-bytes` carve-out
-  (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
-  idle weight memory and the reverse. KV pages still enter the arena through
+- Keep the host backend as a CI oracle for common policy, not only for
+  kernels. The Metal backend is qualified on one M5 Ultra for the device
+  contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
+  models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
+  other model and no multi-Studio topology is.
+- KV and weights share weightd's per-node ceiling in code
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)):
+  KV borrows what the attached weights' budgets leave of the ceiling
+  (`SparkWeightdKvLimit`), a KV grow reclaims cold weights
+  (`SparkWeightdKvMakeRoom`), and new weights release detached pools above
+  the reserve but never an owned one (`SparkWeightdServerReclaimCold`). Not
+  yet fleet-proven. Close it with a weightd release on all 16 nodes, the
+  production models switched through the controller with `release_compare`
+  EXACT 6/6 against the previous weightd, and `maxctx.sh` at native context
+  for Gemma 4 31B (262,144) and Laguna S 2.1, MiMo V2.6 Flash and MiMo V2.6
+  Pro (1,048,576): each lane starts, finds a needle near the end, and logs no
+  earlyoom kill or weightd refusal. Until then those four records stay at
+  32,768 positions and `tests/test_lane_records.py` bounds every record's
+  physical pages by the reserve; after the proof that rule becomes per model
+  (physical pages within the ceiling less the model's weights).
+- Left out on purpose (2026-10-02): KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
-  layer offers only allocate, free and copy
-  (`include/sparkpipe/spark_memory_buffer.h`), while
-  `docs/INFERENCE_OS_DESIGN.md` requires one `make_resident`/`evict` for both.
+  API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both. weightd sizes KV
+  pools (`runtime/spark_weightd_kv_pool.c`, driven from
+  `runtime/stage_kv_binding.c`) and evicts expert leases by its own rules.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one
@@ -1091,8 +1390,246 @@ and the multidev docs on 2026-09-28. Line numbers are in
 ## Mac Studio deployment
 
 The design is in
-[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool); the
+Metal backend and the single-Studio stage are in
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md).
 
+- Serve the single-Studio stage. `inference/runner/device_stage_runner.c`
+  runs Qwen3.8-27B on one M5 Ultra through the stage-runner model interface,
+  but no serving process hosts it: `model_residentd` and the stage serving
+  adapter are CUDA builds. A served Studio replica still needs:
+  - a device-backend serving adapter that drives the device runner from the
+    batch engine, with admission, continuous batching, cancellation and
+    release in common code (I02, I18-I20);
+  - JIT and prefix KV reuse (I23-I27): the runner holds one identity page
+    table over a fixed pool and no page store, so every request recomputes
+    its prompt. Its pages must come from the common page cache with
+    copy-on-write prefixes, and cached request state from the snapshot tiers
+    under the 24-hour retention rule;
+  - state save and restore: the model's `recurrent_copy` packs its recurrent
+    state in the CUDA model's order, but no runner path exports or restores a
+    sequence's KV pages and state, and decode after a restore has not been
+    compared with uninterrupted decode;
+  - generation policy: EOS from deployment metadata (I49), stop tokens and
+    sampling beyond greedy;
+  - weight residency: the runner maps the pack in its own process; weightd,
+    the arena that survives a code-only redeploy, is CUDA VMM only;
+  - a lane record, model description and swap-controller entry for the
+    Studio target (`metal.apple10`);
+  - one frame chooser. Until the batch engine drives the device runner,
+    `tools/metal_stage_run.c` chooses speculative frames itself on the
+    common cost model (`src/spark_speculation_frame.c`). That includes the
+    rule that a first probe frame may cost at most the cost model's margin
+    over a plain step (one draft where no frame is that cheap), which took
+    Metal prose from a 0.5% loss to a 0.4% gain. The batch engine (`runtime/model_batch_engine.c`) has its own
+    chooser. Fold both into one function in `src/` that the engine and every
+    backend call, and check whether the probe rule also helps the CUDA
+    lanes' prose speculation.
+- Map the numerics gate's resolution at BF16. The gate now judges the Studio
+  stage against the reference's own reduction-order floor (mean KL at most
+  2 times, top-1 disagreement at most 1.5 times, a paired block test at 3
+  standard errors, both reference variants), and it passes Metal while
+  failing two controls by wide margins: two output rows of `ffn_down`
+  swapped in all 64 layers (4.4 times the floor's KL, paired test at 95
+  standard errors) and a whole tensor offset by one row (15 times, 188).
+  What it cannot see: the same two-row swap in one layer only
+  (`layers.31.ffn_down`; 0.79 and 1.00 times the floor's KL, paired test at
+  -4.8 and +0.2 standard errors), a fault whose effect on the output is
+  smaller than BF16 rounding noise. Between those two sizes the threshold is
+  not measured; controls at 2, 8 and 32 layers, and more positions to shrink
+  the block standard error, would place it
+  ([`qualification/metal/qwen38_27b/`](qualification/metal/qwen38_27b/)).
+- Batch past the per-sequence state on a Studio. Decode reads the weights
+  once per step for up to 64 rows, but per-sequence work then dominates: at
+  B64 the gated delta rule reads and writes 3.1 MB of FP32 state per layer
+  and sequence (about 27 ms of a 145 ms step) and decode attention reads each
+  KV head once per query head (about 14 ms at 1,100 positions). A delta-rule
+  kernel near the state's streaming bound and a decode attention that serves
+  a KV head's query heads from one read raise B32 and B64; above 64 rows the
+  projections fall to the prefill GEMM, which reads the weights once per 128
+  rows. Prefill and decode mixed in one step are not measured (I18, I19,
+  I21), and speculative verify frames have no cost curve yet.
+- Long verify frames: each device model declares its projection family
+  (`SparkDeviceStageShape.projection`, owner decision 2026-10-27).
+  Qwen3.8-27B takes row tiles, so a 32-row verify frame costs 72 ms against
+  a 55 ms one-row step and every batch row has its solo bits, at a B1 cost
+  of 20.1 to 18.2 tok/s; Gemma 4 26B A4B keeps the GEMV (B1 92.7 tok/s,
+  32-row frame 68 ms in eight-row passes), since row tiles would cost it 18%
+  of B1 and 19% of its Korean summary for 13% on the rewrite
+  ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#decode-and-prefill-by-row-count)).
+  The row-tile kernel's one-row cost is the lever: 7 to 9% above the GEMV on
+  large matrices and 35 to 110% on small ones (6144 x 5120: 69 against 51
+  us; 5120 x 96: 59 against 28), the split reduce's second dispatch and the
+  threadgroup weight staging being most of it; an 8-row tile, other split
+  counts and weights read straight from device memory did not close it, and
+  an in-kernel reduce by the last split gave wrong sums. A one-row cost at
+  the GEMV's would let every model take row tiles. A GEMV holding 16 to 64
+  rows per pass in the one-row order is exact but capped at 6 to 7 TFLOPS
+  of SIMT FP32 (a 32-row Qwen frame of at least 230 ms).
+  Verify frames over several sequences in one step, and speculation through
+  a served request (the serving adapter is CUDA), are not built.
+- Close the B1 gap to the streaming roofline (81.8%, 18.12 of 22.16 tok/s on
+  row tiles; 90.4% with the one-row GEMV). The row tiles' one-row cost is
+  the first lever (above); with the GEMV the projections stream at about
+  1,100 GB/s, and the rest of the 49.8 ms step
+  is about 710 dependent dispatches with a floor of about 5 us each, the
+  residual RMSNorm (14 us a call, 128 calls; it loads 2 bytes per thread per
+  step), the two-kernel delta rule (33 us) and the convolution (9 us). The
+  levers are fewer dispatches: the norm in the next projection's prologue,
+  convolution, preparation and delta rule as one kernel, rotary embedding
+  with the KV store, and the gate projection in the same launch as the mix
+  projection (it has 96 outputs and runs at 105 GB/s on its own).
+- The kernel library builds with Metal 4.0 and its prefill GEMM uses the
+  Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
+  Another Studio generation needs its own qualified kernel set.
+- A model larger than the Studio's memory (Laguna's eight TP8 packs on one
+  M5 Ultra) pages from the SSD, and the cyclic layer order defeats the
+  page cache: a decode step pages in about 130 GB, 15 s per token. Pinning
+  a fixed share of the layers resident (wired, or kept by `madvise`) and
+  streaming only the rest would read about the overflow per step; until
+  then a simulation decodes a sample of positions
+  (`--decode-positions`). A segmented pack now binds page spans and its
+  BF16 experts only their routes' experts; with the earlier 2 GiB windows
+  Solar Open 2's decode step read the whole 502 GB pack (about 110 s per
+  token at 4.6 GB/s). The FP4 routed experts bind one expert per launch in
+  a segmented pack (`SparkDeviceRoutedFfn`), so they page only their routes'
+  experts too.
+- Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
+  still take one GEMV per route in prefill, re-reading the expert for every
+  row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder
+  spends most of an hour in batched prefill. BF16 experts group their routes
+  by expert above 64 rows (`ExpertsGroupedFfn`); the FP4 formats need a
+  grouped GEMM with the block-scaled operand (CUDA dequantizes the tile to
+  BF16 before the MMA). The grouping also reads the step's routes back to the
+  host after a queue wait; a device-side sort and a grouped GEMM over an
+  offset table would drop that sync.
+- Device stages exist for the Gemma 4 family (Gemma 4 26B A4B and 31B, Muse
+  Glimmer 30B, Laguna S 2.1, K-EXAONE 2.0), Qwen 3.8 (27B BF16 and FP8, 3.8
+  Flash Next), MiMo V2.6 (Flash, Pro), Ling 3 (Ling 3.0 Flash and Fin,
+  Solar Open 2), HY4, GLM 5.3 Flash and the GLM 5.2 family (GLM 5.3 Full,
+  A.X K2). Each is its family's Metal backend placed on the model's
+  geometry at TP 1, 2, 4 or 8 (`model-families/<family>/device/`, over the
+  device stage and layer kinds in `inference/runner/device_stage_model.c`
+  and `device_layers.c`), plus its packs and gates; the models larger than
+  one Studio gate at TP8 on one Studio with the packs paged from the SSD.
+  Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
+  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash and A.X K2; the paired
+  test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
+  (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
+  (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
+  reference and Kimi K3 for its pack and reference. The Metal backends for
+  DeepSeek V4.1 Flash and Qwen 3.8 Max are in progress.
+- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
+  `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
+  top-2,048 per rank and over the gathered candidates, the second KV pool
+  of 128-wide keys) is not built, so the stage refuses a row past position
+  2,047; below that the indexer keeps every key and attention is dense. The
+  latent KV slot stores the 512-wide latent a second time as the value (1,088
+  elements per slot where CUDA keeps 576), and the rope's inverse
+  frequencies come from a double-precision table where CUDA's kernel
+  computes `__powf`.
+- GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
+  indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
+  with the compressor gate and position embedding, the top 512 of 4-key
+  pools, the index key pool) is not built, so the stage refuses a row past
+  position 2,047, below which every pool is selected and attention is
+  dense. The rope-free latent slot stores the 512-wide latent twice, as the
+  key and as the value (CUDA keeps it once and reads it as both), and the
+  latent attention is not sharded by context across ranks: each rank
+  attends its own heads over the whole context. The MTP layer is not
+  packed.
+- K-EXAONE 2.0 on the Studio (`GemmaDevice<Kexaone2Device>`, TP8 paged from
+  the SSD) passes the gate's KL (0.91x / 0.68x of the floor) and top-1 (1.10x /
+  1.02x) tests and fails the paired test (+6.18 / +8.52 sigma). Its references
+  a and b differ only in the routed experts' FP32 summation order, so the
+  floor is tight: per-prompt KL means of 0.002 to 0.012 and medians of 1e-4 to
+  2e-3, against 0.15 to 0.43 means for Gemma 4 26B. Metal's means are as small
+  (0.003 to 0.010, top-1 agreement 0.97 to 0.99) and its median sits 10 to 35%
+  above the floor's on every prompt, which puts most positions above the floor
+  and the paired share far past 0.5.
+- GLM 5.3 Full on the Studio (`Glm52Device<Glm53FullDevice>`): the DSA
+  indexer is not built either (rows past position 2,047 refused) and the
+  MTP layer is not packed. The rope's inverse frequencies come from a
+  double-precision table, as the teacher's, where CUDA's kernels compute
+  `__powf` (about 1e-6 relative, 1e-3 rad by position 2,000). Its geometry
+  is the shared model constants plus a
+  Metal-side `Geometry` with the layer count and first routed layer, because
+  `Glm53FullGeometry` still lives in the CUDA module's `.cu`. A.X K2
+  (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
+  which the CUDA `Axk2Geometry` also takes its values from; its indexer
+  (64 heads, ReLU scores, half-split rope) is not built either.
+- Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
+  - the QSA indexer is not built, so the stage refuses contexts past 2,048
+    positions. Below 2,052 the indexer keeps every block and attention is
+    dense, so nothing is lost there; longer contexts need the index key pool,
+    the block-key and tail kernels, the score and top-512 selection and a
+    block mask in the attention kernels;
+  - speculation replays the n-gram conv window and token history for the
+    kept rows from the verify step's saved conv input; it is exact only if
+    a speculative run's tokens equal plain decoding's, which the gate checks
+    once the indexer lets speculation prompts run past 2,050 positions;
+  - route overrides (pinned routes) are refused for its experts;
+  - the NVFP4 experts take CUDA's skinny decode arithmetic at every row
+    count; CUDA switches to a BF16-dequantised GEMM once a step routes more
+    than 16 rows per expert (820 rows at TP1), so long prefill chunks differ
+    from CUDA by that operand rounding, and run slower than a grouped GEMM.
+- FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
+  skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) on the FP8 GEMV,
+  in passes of eight rows. Qwen3.8-27B FP8 beats its BF16 pack up to B4 (30.2
+  against 18.1 tok/s at B1, 90.7 against 68.5 at B4) but trails at B16 (123
+  against 230), where the BF16 row tiles run on the tensor operations, and
+  speculative verify frames gain less than on BF16. An FP8 row-tile kernel
+  on the tensor operations that keeps the per-chunk scale would close it.
+- The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
+  26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
+  92.2 to 92.5 without it, interleaved runs), since every BF16 store now
+  compares and selects. Metal's own `bfloat` conversion cannot replace it:
+  `build/test_metal_bf16_convert` runs all 2^32 FP32 inputs and finds the
+  shared conversion exact, but the hardware one differs on 16,711,678
+  non-NaN inputs (it flushes subnormals, from `0x00008001`) as well as on
+  the NaNs, so the software path stays. A cheaper exact formulation, or
+  fewer BF16 stores (the B1 dispatch work), is what is left.
+- Gemma 4 26B A4B on the Studio:
+  - experts run as one GEMV per route (`spark_gemv_routed`): a prefill chunk
+    or a batch reads an expert once for every row routed to it, not once per
+    step. Prefill (1,100 tok/s) and the batch ladder need routes grouped by
+    expert into one skinny or tensor-unit GEMM per expert;
+  - B1 decode runs at 63.9% of its 7.88 GB-per-token roofline (92.73 of
+    145.0 tok/s); the attention layers and the per-layer small kernels
+    (three per-head norms, the KV store, the router norm, top-k and combine)
+    are the rest, for the B1 dispatch work;
+  - the KV pool holds the full context for the 25 sliding-window layers,
+    which only ever read their last 1,024 positions: at 256K positions that
+    is 52 GB of the Studio's 256 GB for nothing. A windowed attention layer
+    should take its pages from a ring of `window / page + 1` pages per
+    sequence, indexed by position modulo the ring;
+  - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
+    and folds the route weight into the activation; the Metal stage and the
+    numpy reference follow the publisher's eager order (cube first, weight
+    after the down projection, BF16 sums in ascending expert order), so the
+    two backends differ by those rounding points. The CUDA stage should take
+    the shared GeLU and the publisher's order and pass this reference's
+    pinned-route gate;
+  - speculation is exact (every run's tokens equal plain decode's on six
+    prompts) and takes the rewrite from 92 to 323 tok/s, but a frame costs
+    more than a step from two rows on, so the first probe in a match class
+    is one draft and costs 0.1 to 0.3% on text the lookup cannot predict.
+    The cost model should price a probe by the expected acceptance of its
+    match length instead of capping it;
+  - the numerics gate checks the arithmetic with every layer's experts pinned
+    to reference A's choice, because FP32 reduction order alone flips the
+    BF16 router's top 8 at a growing share of rows (7 of 160 rows at layer 1,
+    63 at layer 29) and so moves free-route logits as far as a corrupted
+    tensor does. Metal's own top-k is checked by the kernel test only; how
+    often it agrees with the reference's choice in a pinned run, against
+    how often b's does, is not measured;
+  - at three to eight rows a Gemma batch takes the row tiles with their
+    split reduce, which are slower here than the row-exact GEMV passes: the
+    exact-rows ladder decodes B4 and B8 at 235.5 and 311.4 tok/s against
+    206.2 and 291.8 on the fast path, and its tokens are each sequence's
+    solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
+    family would make B3 to B8 both faster and identical to solo decode;
+    it needs Gemma's ladder gate re-run.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers
@@ -1129,14 +1666,32 @@ The design is in
 
 ## Multi-model serving (parallel inference on shared Sparks)
 
-Assessed 2026-09-13 against the lane/mesh/weightd architecture
-(PRs #959-#973). Handled today: per-model lanes (weightd-assigned, fail-closed),
-weight arenas shared by content identity (same model never loads twice),
-per-connection collectives (two engines of one model get distinct mesh
-pathways), swap-in loads that run daemon-side (a serving model does not
-stop while another loads), and per-engine continuous batching at
-MAXBATCHSIZE=128 with per-request completion. The gaps below are required
-for seamless production multi-model.
+One model holds a fleet at a time, and loading another takes about a
+minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
+items below.
+
+- Two lanes in two processes on one GPU stall each other. Each process's
+  collective waits spin on the GPU, and the GPU time-slices between
+  processes, so a 1024 x 7168 reduce-scatter round that takes 1.47 ms on one
+  lane takes 10.97 ms on each of two concurrent lanes, for the production
+  pipelined reduce-scatter and for pair-first alike. Under a per-user MPS
+  daemon the two lanes take 2.53 ms (pipelined) and 2.12 ms (pair-first)
+  per round, and one lane is unchanged at 1.47 ms (2026-10-26, 16 ranks,
+  interleaved plain and MPS arms, no AER). The mesh is not the cause: the
+  nodes logged no repairs and no completion errors. Fix by starting MPS with
+  each lane launch (runtime only; one client's fault ends every client of
+  that daemon) or by hosting the lanes in one process, and gate it with two
+  concurrent lanes of one model and with two co-resident models.
+
+- Pair-first all-gather wins wherever it applies. On link A with 16 ranks
+  (2026-10-26, two interleaved passes agreeing within 0.2%), a 7168-element
+  row all-gather per round went from 707 to 568 us at 32 rows (-20%), 2776
+  to 2108 us at 128 rows and 43276 to 32696 us at 2048 rows (-24%); at 16
+  rows it is not pipelined and both arms take 366 us. At the production slot
+  size a pipelined all-gather always has three or more chunks, so
+  `SparkTpMeshGatherPairFirst` picks pair-first at every size that gains.
+  K3 speculative decode never reaches it: a 256-row verify frame gathers
+  114,688 elements per rank, below the pipelining threshold.
 
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in

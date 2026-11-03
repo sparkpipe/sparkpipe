@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 0.52s content='The capital of France is Paris.' reasoning=64 chars
+stream        PASS  | finish='stop' 0.45s content='The capital of France is Paris.' reasoning=64 chars
+tool          PASS  | finish='tool_calls' 1.4s content="I'll check the current weather in Paris for you.\n\n" reasoning=0 chars
+tool_result   PASS  | finish='stop' 1.18s content="Here's the current weather in Paris:\n\n- **Temperature:** 18 °C (about 64 °F)\n- **Condition" reasoning=40 chars
+reasoning_off PASS  | finish='stop' 0.27s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 0.29s content='391' reasoning=40 chars
+UI-SMOKE deepseek-v4.1-flash: 6/6

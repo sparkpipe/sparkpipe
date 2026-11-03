@@ -59,6 +59,13 @@ static cudaError_t LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 gri
 #define LM_LAUNCH_ERR_LAUNCH (-46)
 #define LM_LAUNCH_ERR_OUTPUT (-47)
 
+#define LM_LAUNCH_GRID_Y_MAX 65535u
+
+static inline uint32_t LmLaunchGridRows(uint32_t rows)
+{
+	return(rows < LM_LAUNCH_GRID_Y_MAX ? rows : LM_LAUNCH_GRID_Y_MAX);
+}
+
 #define LM_LAUNCH_TILE_MIN 16u
 #define LM_LAUNCH_TILE_MAX 64u
 
@@ -76,6 +83,7 @@ typedef struct LmLaunchShape
 	uint32_t tokens,top_k,expert_count,input_dimension,output_dimension;
 	uint32_t stored_bits,stored_bits_a,tile_n,tile_k,stages;
 	uint32_t interleaved_b;
+	uint32_t k_tail;
 }
 LmLaunchShape;
 
@@ -137,7 +145,7 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	plan->tile_m = LmLaunchSelectTile(LmLaunchPeakRowsPerGroup(shape));
 	if ( plan->tile_m < LM_LAUNCH_TILE_MIN || plan->tile_m > LM_LAUNCH_TILE_MAX )
 		return(LM_LAUNCH_ERR_TILE);
-	if ( (shape->input_dimension % shape->tile_k) != 0u )
+	if ( shape->k_tail == 0u && (shape->input_dimension % shape->tile_k) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	plan->shared_bytes = LmLaunchSharedBytes(shape,plan->tile_m);
 	if ( plan->shared_bytes > LM_SMEM_SM_TOTAL )

@@ -82,7 +82,7 @@ def main():
         p = f"model.layers.{layer}."
         _, attention = pick(0x10000 + layer)
         normed = reference.norm(attention[0], p + "input_layernorm.weight", reference.hidden)
-        kind = "mla" if reference.is_mla(layer) else "kda"
+        kind = "mla" if reference.is_attention(layer) else "kda"
         computed = reference.mla(layer, normed, positions) if kind == "mla" else reference.kda(layer, normed)
         entry = {"attention": kind, "attention_err": error(attention[1], computed)}
         _, mlp = pick(layer)

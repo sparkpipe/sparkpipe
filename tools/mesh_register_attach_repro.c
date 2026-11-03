@@ -29,7 +29,8 @@ int main(int argc, char **argv)
     SparkWeightdLazyAttachResult attached;
     SparkWeightdManifest manifest;
     struct stat pack;
-    unsigned long topology, pool, spine = 4294967296ul, seconds = 120;
+    unsigned long topology, pool = 0ul, spine = 4294967296ul, seconds = 120;
+    SparkWeightdPoolPlan plan;
     SparkStatus status;
     char manifest_path[4096];
     cudaError_t err;
@@ -38,11 +39,11 @@ int main(int argc, char **argv)
 
     if (argc != 6 ||
         !parse_positive(argv[5], 65535u, &topology) ||
-        getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") == 0 ||
-        !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"), 1099511627775ul, &pool))
+        (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 &&
+         !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"), 1099511627775ul, &pool)))
     {
         fprintf(stderr, "usage: %s SOCKET PACK SHA256 REVISION TOPOLOGY\n"
-                        "env: finite SPARK_WEIGHTD_EXPERT_POOL_BYTES, optional "
+                        "env: optional SPARK_WEIGHTD_EXPERT_POOL_BYTES (the expert pool cap), optional "
                         "SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n", argv[0]);
         return 2;
     }
@@ -63,7 +64,6 @@ int main(int argc, char **argv)
     request.identity.arena_bytes = (uint64_t)pack.st_size;
     request.identity.topology = (uint32_t)topology;
     strcpy(request.pack_path, argv[2]);
-    request.expert_pool_bytes = pool;
     snprintf(manifest_path, sizeof(manifest_path), "%s.experts", argv[2]);
     status = SparkWeightdManifestLoad(manifest_path, request.identity.arena_bytes, &manifest);
     if (status != SPARK_STATUS_OK)
@@ -71,6 +71,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "expert manifest failed status=%d\n", (int)status);
         return 2;
     }
+    status = SparkWeightdManifestPoolPlan(&manifest, request.identity.arena_bytes, pool, &plan);
+    if (status != SPARK_STATUS_OK)
+        return 2;
+    request.expert_pool_bytes = plan.request_bytes;
 
     status = SparkWeightdClientConnect(argv[1], &client, 0);
     if (status == SPARK_STATUS_OK)

@@ -22,6 +22,13 @@ static __global__ void LmTpF32ToBf16Kernel(uint16_t *destination,const float *so
 		destination[index] = LmFloatToBf16(source[index]);
 }
 
+static __global__ void LmTpAccumulateBf16Kernel(float *accumulator,const uint16_t *value,uint64_t elements,uint32_t first)
+{
+	const uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	if ( index < elements )
+		accumulator[index] = (first != 0u ? 0.0f : accumulator[index]) + LmBf16ToFloat(value[index]);
+}
+
 template<uint32_t MaxRanks>
 __global__ void LmTpF32SumKernel(float *destination,LmTpF32Contributions<MaxRanks> inputs,uint32_t elements)
 {

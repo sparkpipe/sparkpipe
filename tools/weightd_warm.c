@@ -227,6 +227,7 @@ int main(int argument_count,char **arguments)
     SparkWeightdLazyAttachRequest request = {0};
     SparkWeightdLazyAttachResult attached = {0};
     SparkWeightdManifest manifest = {0};
+    SparkWeightdPoolPlan pool;
     SparkWeightdClient *client = 0;
     SparkWeightdExpertKey *keys = 0;
     struct stat pack;
@@ -234,11 +235,12 @@ int main(int argument_count,char **arguments)
     char manifest_path[SPARK_WEIGHTD_PATH_BYTES + 16u];
     const char *wset_path = 0;
     const char *family = 0;
+    const char *model_tag = 0;
     int identity_print = 0;
     int shared = 0;
     char *filtered[24];
     int filtered_count = 0, index_argument;
-    uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology;
+    uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology,cap = 0u;
     uint32_t first,index,count = 0u;
     int exit_status = 1;
     for ( index_argument = 0; index_argument < argument_count; index_argument++ )
@@ -247,6 +249,12 @@ int main(int argument_count,char **arguments)
             index_argument + 1 < argument_count )
         {
             family = arguments[++index_argument];
+            continue;
+        }
+        if ( strcmp(arguments[index_argument],"--model") == 0 &&
+            index_argument + 1 < argument_count )
+        {
+            model_tag = arguments[++index_argument];
             continue;
         }
         if ( strcmp(arguments[index_argument],"--identity-print") == 0 )
@@ -269,6 +277,11 @@ int main(int argument_count,char **arguments)
          strcmp(family,"ling") != 0 && strcmp(family,"glm52") != 0 )
     {
         fprintf(stderr,"weightd_warm: unknown family %s (dsv41_flash, glm52, k3, ling)\n",family);
+        goto usage;
+    }
+    if ( model_tag != 0 && (family != 0 || model_tag[0] == '\0' || strlen(model_tag) >= sizeof(request.identity.model)) )
+    {
+        fprintf(stderr,"weightd_warm: --model takes one module tag shorter than %zu bytes and excludes --family\n",sizeof(request.identity.model));
         goto usage;
     }
     if ( argument_count >= 4 && strcmp(arguments[2],"--reclaim-pack") == 0 )
@@ -316,9 +329,7 @@ int main(int argument_count,char **arguments)
          (argument_count > 8 && !parse_positive(arguments[8],UINT64_MAX / UINT64_C(1000000000),&seconds)) ||
          (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 &&
           !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"),
-             SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&request.expert_pool_bytes)) ||
-         (!identity_print &&
-          getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") == 0) )
+             SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&cap)) )
         goto usage;
     if ( strlen(arguments[2]) >= sizeof(request.pack_path) ||
          strlen(arguments[3]) != 64u ||
@@ -346,6 +357,10 @@ int main(int argument_count,char **arguments)
     else if ( family != 0 && strcmp(family,"glm52") == 0 )
     {
         strcpy(request.identity.model,"glm52_stage");
+    }
+    else if ( model_tag != 0 )
+    {
+        (void)snprintf(request.identity.model,sizeof(request.identity.model),"%s",model_tag);
     }
     else if ( family != 0 && strcmp(family,"k3") == 0 )
     {
@@ -379,6 +394,9 @@ int main(int argument_count,char **arguments)
         fprintf(stderr,"weightd_warm: expert manifest failed status=%d\n",(int)status);
         goto done;
     }
+    if ( SparkWeightdManifestPoolPlan(&manifest,request.identity.arena_bytes,cap,&pool) != SPARK_STATUS_OK )
+        goto done;
+    request.expert_pool_bytes = pool.request_bytes;
     if ( wset_path == 0 )
         for (index=0u; index<manifest.group_count; index++)
             if ( manifest.groups[index].layer >= layers || manifest.groups[index].expert >= experts )
@@ -466,6 +484,7 @@ usage:
         "       options (any position): --family dsv41_flash (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family ling (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
         "                           --family glm52 (pin the module tag; REVISION/TOPOLOGY stay authoritative)\n"
+        "                           --model TAG (pin this module tag, the stage's weightd model name; excludes --family)\n"
         "                           --family k3 (pin the k3 runner identity: kimi-k3/mxfp4,\n"
         "                              topology = TOPOLOGY, the runner tp_degree: 4 or 16;\n"
         "                              arena bytes stay the pack size per the daemon's\n"
@@ -473,6 +492,7 @@ usage:
         "                           --shared (warm only an arena a lane already attached with this identity;\n"
         "                              the daemon refuses instead of loading another copy of the pack)\n"
         "                           --identity-print (print the derived identity and exit)\n"
-        "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n");
+        "       the pool is sized from PACK.experts as every engine sizes it; SPARK_WEIGHTD_EXPERT_POOL_BYTES,\n"
+        "       when set, is the lane's explicit expert pool cap and must match the engine's\n");
     return 2;
 }

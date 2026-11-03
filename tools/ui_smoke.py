@@ -50,6 +50,25 @@ def post(endpoint: str, body: dict, timeout: int):
         return None, f"{type(error).__name__}: {error}"
 
 
+def advertised_efforts(endpoint: str, model: str, timeout: int) -> list[str]:
+    with urllib.request.urlopen(endpoint.rstrip("/") + "/v1/models", timeout=timeout) as resp:
+        listing = json.loads(resp.read())
+    for entry in listing.get("data", []):
+        if entry.get("id") == model:
+            return list(entry.get("reasoning_efforts", []))
+    raise SystemExit(f"{model} is not in {endpoint}/v1/models")
+
+
+def refused(endpoint: str, body: dict, timeout: int) -> tuple[int, str]:
+    resp, error = post(endpoint, body, timeout)
+    if resp is not None:
+        with resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    if error.startswith("HTTP "):
+        return int(error[5:8]), error
+    return 0, error
+
+
 def complete(endpoint: str, body: dict, timeout: int) -> dict:
     started = time.monotonic()
     resp, error = post(endpoint, body, timeout)
@@ -167,8 +186,14 @@ def main() -> int:
         elif name == "tool":
             results.append({"check": "tool_result", "request": None, "reply": None, "problems": ["skipped: no tool call to answer"]})
     if args.reasoning == "both":
+        efforts = advertised_efforts(args.endpoint, args.model, args.timeout)
         for name, effort in (("reasoning_off", args.off_effort), ("reasoning_on", args.on_effort)):
             body = dict(base, messages=PRODUCT, reasoning_effort=effort, max_tokens=args.reasoning_max_tokens)
+            if effort not in efforts:
+                status, text = refused(args.endpoint, body, args.timeout)
+                problems = [] if status == 400 and "reasoning_effort" in text else [f"{effort} is not advertised for this model, yet the request got {status} {text[:120]!r} instead of a 400 naming reasoning_effort"]
+                results.append({"check": name, "request": body, "reply": {"status": status, "error": text[:400]}, "problems": problems})
+                continue
             reply = complete(args.endpoint, body, args.timeout)
             results.append({"check": name, "request": body, "reply": reply, "problems": judge(name, reply)})
     for result in results:

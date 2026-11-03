@@ -1,0 +1,21 @@
+[Unit]
+Description=SparkPipe payments and bookings: email accounts, Toss Payments and CoinPayments, HC, Hours, Weeks, the waitlist, the API gateway and the ledger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sparkpipe-pay
+Group=sparkpipe-pay
+EnvironmentFile=/etc/sparkpipe-pay/env
+ExecStart=/usr/bin/python3 /opt/sparkpipe-pay/sparkpipe_pay.py serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/sparkpipe-pay
+ReadOnlyPaths=/var/www/html /etc/sparkpipe-pay /opt/sparkpipe-pay
+
+[Install]
+WantedBy=multi-user.target

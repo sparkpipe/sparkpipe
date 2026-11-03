@@ -121,7 +121,7 @@ from complexity_report import scan, scope_rows  # noqa: E402
 
 # The committed production max-CCN ceiling. MOVES DOWN with every
 # shrinking landing; moves up ONLY with a ledger entry above.
-CEILING = 80
+CEILING = 79
 
 # The committed production MEAN-CCN ceiling (secondary guard: complexity
 # may not silently spread). At landing: 7.81.

@@ -3,327 +3,372 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe</title>
-<meta name="description" content="Sixteen DGX Sparks serving frontier open-weight models as one machine: Kimi K3, GLM 5.3 and fourteen more, from scratch in C and CUDA.">
+<title>SparkPipe · a fleet of your own for your codebase</title>
+<meta name="description" content="A whole AI fleet in Korea that serves only you and keeps your codebase warm all week: no cache expiry, no per-token bill, Functions that work on your code overnight, and your own model beside Kimi K3 and GLM 5.3. 144 HC a week.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
 <style>
-/* Layout: a single long column of instrument panels, each section one idea with one live figure beside its copy. */
-:root {
-  --bg: #eceef1;
-  --panel: #f7f8fa;
-  --fg: #14171c;
-  --muted: #5a626e;
-  --line: #d2d7de;
-  --gold: #9c6f16;
-  --signal: #17788b;
-  --dim: #c4cad3;
-  --plain: #8a929e;
-  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
-  --body: "Archivo", "Helvetica Neue", Arial, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  color-scheme: light;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0e1115; --panel: #151a20; --fg: #e6e8eb; --muted: #98a1ad; --line: #252c35;
-    --gold: #d9a845; --signal: #4fb6c9; --dim: #2b333d; --plain: #6f7884; color-scheme: dark;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #0e1115; --panel: #151a20; --fg: #e6e8eb; --muted: #98a1ad; --line: #252c35;
-  --gold: #d9a845; --signal: #4fb6c9; --dim: #2b333d; --plain: #6f7884; color-scheme: dark;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; }
-img { max-width: 100%; }
-[hidden] { display: none !important; }
-html { scroll-behavior: smooth; }
-@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
-body {
-  background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 17px; line-height: 1.55;
-  padding-inline: 20px; padding-block: 0 64px; -webkit-font-smoothing: antialiased;
-}
-.wrap { max-width: 1120px; margin: 0 auto; }
-a { color: var(--signal); text-underline-offset: 3px; }
-a:focus-visible, button:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 4px; }
-nav.top {
-  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  padding-block: 18px; border-bottom: 1px solid var(--line);
-}
-.mark { font-family: var(--display); font-weight: 800; font-stretch: 112%; letter-spacing: -0.01em; font-size: 20px; }
-.mark span { color: var(--gold); }
-nav.top ul { display: flex; gap: 18px; list-style: none; margin: 0; padding: 0; flex-wrap: wrap; font-size: 14px; }
-nav.top a { color: var(--muted); text-decoration: none; }
-nav.top a:hover { color: var(--fg); }
-.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gold); }
-h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
-h1 { font-size: clamp(40px, 7vw, 84px); line-height: 0.98; font-weight: 800; font-stretch: 118%; letter-spacing: -0.02em; }
-h2 { font-size: clamp(28px, 4vw, 44px); line-height: 1.05; font-weight: 750; font-stretch: 108%; letter-spacing: -0.01em; }
-h3 { font-size: 19px; font-weight: 700; font-stretch: 100%; }
-p { margin: 0; max-width: 62ch; }
-.lede { font-size: clamp(18px, 2vw, 21px); color: var(--muted); }
-.hero { display: grid; gap: 28px; padding-block: 56px 32px; }
-.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
-.stat { background: var(--panel); padding: 16px 18px; display: grid; gap: 4px; min-width: 0; }
-.stat b { font-family: var(--mono); font-weight: 600; font-size: clamp(20px, 2.1vw, 25px); white-space: nowrap; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
-.stat span { font-size: 14px; color: var(--muted); }
-.fleet { background: var(--panel); border: 1px solid var(--line); position: relative; }
-.fleet canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 7; max-width: 100%; }
-.fleet-cap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.phase { color: var(--fg); }
-section.panel { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 40px; align-items: start; padding-block: 72px; border-top: 1px solid var(--line); }
-section.panel .copy { display: grid; gap: 16px; min-width: 0; }
-section.panel .fig { min-width: 0; }
-@media (max-width: 860px) { section.panel { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 52px; } }
-.box { background: var(--panel); border: 1px solid var(--line); padding: 18px; display: grid; gap: 14px; }
-.seg { display: inline-flex; border: 1px solid var(--line); background: var(--bg); padding: 3px; gap: 3px; flex-wrap: wrap; }
-.seg button { font: 600 13px var(--mono); color: var(--muted); background: transparent; border: 0; padding: 7px 12px; cursor: pointer; }
-.seg button[aria-pressed="true"] { background: var(--panel); color: var(--fg); box-shadow: 0 0 0 1px var(--line); }
-.bars { display: grid; gap: 14px; }
-.bar-row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 6.5em; align-items: center; gap: 12px; font-size: 14px; }
-.bar-row .track { height: 26px; background: var(--bg); border: 1px solid var(--line); position: relative; overflow: hidden; }
-.bar-row .fill { position: absolute; inset: 0 auto 0 0; width: 0; transition: width 900ms cubic-bezier(.2,.7,.2,1); }
-@media (prefers-reduced-motion: reduce) { .bar-row .fill { transition: none; } }
-.fill.cold { background: var(--plain); }
-.fill.warm { background: var(--gold); }
-.bar-row .v { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-.note { font-size: 13px; color: var(--muted); }
-.race { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-@media (max-width: 560px) { .race { grid-template-columns: minmax(0, 1fr); } }
-.lane { border: 1px solid var(--line); background: var(--bg); display: grid; grid-template-rows: auto 1fr auto; min-width: 0; }
-.lane header { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); font: 600 12px var(--mono); }
-.lane header .rate { color: var(--muted); }
-.lane.spec header .rate { color: var(--gold); }
-.lane pre { margin: 0; padding: 10px; height: 260px; overflow: hidden; font: 12px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; color: var(--fg); }
-.lane pre .cur { display: inline-block; width: 7px; height: 14px; background: var(--gold); vertical-align: -2px; }
-.lane footer { padding: 8px 10px; border-top: 1px solid var(--line); font: 12px var(--mono); color: var(--muted); display: flex; justify-content: space-between; gap: 8px; font-variant-numeric: tabular-nums; }
-.btn { font: 600 14px var(--body); background: var(--fg); color: var(--bg); border: 0; padding: 10px 16px; cursor: pointer; justify-self: start; }
-.models { display: flex; flex-wrap: wrap; gap: 8px; }
-.models button { font: 600 13px var(--mono); padding: 8px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
-.models button[aria-pressed="true"] { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
-.models button.core::before { content: ""; display: inline-block; width: 6px; height: 6px; background: var(--gold); margin-right: 7px; vertical-align: 2px; }
-.readout { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
-.readout div { background: var(--panel); padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
-.readout b { font: 600 22px var(--mono); font-variant-numeric: tabular-nums; }
-.readout span { font-size: 13px; color: var(--muted); }
-@media (max-width: 480px) { .readout { grid-template-columns: minmax(0, 1fr); } }
-.cmp { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
-.cmp table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 15px; }
-.cmp th, .cmp td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 1px solid var(--line); }
-.cmp th { font: 600 12px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
-.cmp td:first-child { font-weight: 700; width: 18%; }
-.cmp td.sp { color: var(--fg); }
-.cmp td.them { color: var(--muted); }
-.cmp tr:last-child td { border-bottom: 0; }
-.road { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
-.road div { background: var(--panel); padding: 14px 16px; display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 14px; }
-.road .tag { font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--signal); }
-.road .tag.now { color: var(--gold); }
-.road p { font-size: 15px; }
-footer.end { border-top: 1px solid var(--line); padding-block: 28px; display: grid; gap: 8px; font-size: 14px; color: var(--muted); }
-.k { font-family: var(--mono); font-size: 0.92em; }
-.lead-list { margin: 0; padding-left: 1.1em; display: grid; gap: 8px; font-size: 15px; color: var(--muted); max-width: 62ch; }
-.lead-list b { color: var(--fg); font-weight: 650; }
-.notyet { border-left: 3px solid var(--signal); padding: 4px 0 4px 14px; display: grid; gap: 8px; }
-.notyet ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; font-size: 15px; color: var(--muted); }
+h1 { max-width: 15ch; }
+.company div { grid-template-columns: 200px minmax(0, 1fr); }
+@media (max-width: 720px) { .company div { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <nav class="top" aria-label="Sections">
-    <div class="mark">Spark<span>Pipe</span></div>
-    <ul>
-      <li><a href="#machine">One machine</a></li>
-      <li><a href="#context">Long context</a></li>
-      <li><a href="#speculation">Speculation</a></li>
-      <li><a href="#models">Models</a></li>
-      <li><a href="#different">What's different</a></li>
-      <li><a href="#next">Next</a></li>
-      <li><a href="playground.html">Playground</a></li>
-    </ul>
-  </nav>
-
-  <header class="hero">
-    <div class="eyebrow">Open source · Apache-2.0 · C and CUDA · 16 NVIDIA DGX Sparks</div>
-    <h1>Sixteen small boxes. One frontier model.</h1>
-    <p class="lede">SparkPipe makes sixteen desk-side DGX Spark computers serve open models that normally need a datacenter server. Kimi K3 runs all 2.8 trillion parameters at the publisher's precision. The engine is written from scratch in C and CUDA, and the fleet runs on office power.</p>
-    <div class="fleet" role="img" aria-label="Animated diagram of sixteen DGX Spark nodes on a shared switch, with direct pair links. Each decode step, every node reads its sixteenth of the weights, then the nodes exchange partial results and one token comes out.">
-      <canvas id="fleet" width="1600" height="700"></canvas>
-      <div class="fleet-cap"><span>One K3 decode step, slowed down: <span class="phase" id="phase">each node reads its 1/16 of the weights</span></span><span id="tokcount">0 tokens</span></div>
-    </div>
-    <div class="stats">
-      <div class="stat"><b>2 TB · 4.4 TB/s</b><span>memory and bandwidth across 16 nodes</span></div>
-      <div class="stat"><b>1.56 TB</b><span>Kimi K3 checkpoint, held whole across the fleet</span></div>
-      <div class="stat"><b>15 → 126 tok/s</b><span>K3 rewriting a whole file, with speculation</span></div>
-      <div class="stat"><b>5 s</b><span>to resume a 137K-token conversation, from 299 s cold</span></div>
-    </div>
-  </header>
-
-  <section class="panel" id="machine">
-    <div class="copy">
-      <div class="eyebrow">One machine</div>
-      <h2>Every node reads one sixteenth. Every token.</h2>
-      <p>Decoding is bound by memory bandwidth: a step takes about as long as reading its weights once. SparkPipe splits every weight and every cache entry so each node reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh. A 16-node collective takes 16 to 38 microseconds.</p>
-      <p>Without speculation, Kimi K3 decodes at 58% of the floor set by the bytes it reads per token. Speculation starts from there.</p>
-    </div>
-    <div class="fig">
-      <div class="box">
-        <div class="seg" role="group" aria-label="Model">
-          <button type="button" id="m-k3" aria-pressed="true">Kimi K3</button>
-          <button type="button" id="m-full" aria-pressed="false">GLM 5.3 Full</button>
-          <button type="button" id="m-flash" aria-pressed="false">GLM 5.3 Flash</button>
-        </div>
-        <div class="readout">
-          <div><b id="r-b1">16.2</b><span>tok/s, one request</span></div>
-          <div><b id="r-b8">64</b><span>tok/s, 8 requests</span></div>
-          <div><b id="r-floor">58%</b><span>of the floor for its bytes</span></div>
-        </div>
-        <div class="bars" id="floorbars"></div>
-        <p class="note">No speculation. Floor: the bytes each node reads per token at the measured 243-247 GB/s. K3 measured 2026-10-14, the GLM models 2026-10-18.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="context">
-    <div class="copy">
-      <div class="eyebrow">Built for agents</div>
-      <h2>Long conversations, short turns.</h2>
-      <p>A coding agent sends the same growing conversation again and again. In the coding-agent sessions we measured, the median step carried 270,000 tokens of context, and 97% of the input had been seen before.</p>
-      <p>SparkPipe keeps that prefix. Each node stores its sixteenth of it, so K3's 737,280-token window needs only 1.36 GB of cache per node, and the next turn computes only what is new. In testing, a 137,600-token prefix came back in 2.7 seconds after a round trip to another model.</p>
-    </div>
-    <div class="fig">
-      <div class="box">
-        <div class="seg" role="group" aria-label="Conversation length">
-          <button type="button" id="c-137" aria-pressed="true">137K tokens</button>
-          <button type="button" id="c-337" aria-pressed="false">337K tokens</button>
-        </div>
-        <div class="bars" id="ctxbars"></div>
-        <p class="note">Time to the first token of the next turn on Kimi K3. Cold: the whole conversation is computed. Cached: only the new turn is.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="speculation">
-    <div class="copy">
-      <div class="eyebrow">Speculation</div>
-      <h2>Most of an edit is already in the context.</h2>
-      <p>When an agent rewrites a file, most of what it writes is already in the conversation. SparkPipe drafts those tokens by looking them up in the request itself and checks up to 255 of them in one pass of the model. Where lookup finds nothing, a draft model on the hub's RTX 5090 proposes the next tokens. The target model verifies every draft, so the output is the model's own.</p>
-      <p>Measured on whole-file rewrites: Kimi K3 goes from 15 to 126-140 tok/s, GLM 5.3 Full from 28 to 233.</p>
-    </div>
-    <div class="fig">
-      <div class="box">
-        <div class="race">
-          <div class="lane"><header><span>Plain decode</span><span class="rate">15.3 tok/s</span></header><pre id="laneA" aria-live="off"></pre><footer><span id="cntA">0 tokens</span><span id="tA">0.0 s</span></footer></div>
-          <div class="lane spec"><header><span>With speculation</span><span class="rate">126.4 tok/s</span></header><pre id="laneB" aria-live="off"></pre><footer><span id="cntB">0 tokens</span><span id="tB">0.0 s</span></footer></div>
-        </div>
-        <button type="button" class="btn" id="replay">Run the race again</button>
-        <p class="note">Both panes type at the rates Kimi K3 measured on the same 20 whole-file edits in one session, 2026-10-15. The code is an illustration. On plain prose the gain is 1.0-1.6×.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="models">
-    <div class="copy">
-      <div class="eyebrow">Sixteen models</div>
-      <h2>Ask for a model. The fleet becomes it.</h2>
-      <p>Sixteen models are installed, three of them for internal use only. One holds the fleet at a time. Name another in a request and SparkPipe swaps it in, in about a minute (K3 takes up to 79 s), and brings back its cached conversations. Every release must reproduce the previous build's tokens on six fixed prompts for every model.</p>
-    </div>
-    <div class="fig">
-      <div class="box">
-        <div class="models" id="modelchips" role="group" aria-label="Served models"></div>
-        <div class="readout">
-          <div><b id="d-b1">16.2</b><span>tok/s, one request</span></div>
-          <div><b id="d-ctx">720K</b><span>context window</span></div>
-          <div><b id="d-pre">590</b><span>tok/s prefill, 8K prompt</span></div>
-        </div>
-        <p class="note">Gold marks the three core models that get performance work. One request, no speculation.</p>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="different">
-    <div class="copy">
-      <div class="eyebrow">What's different</div>
-      <h2>Not a datacenter engine on smaller hardware.</h2>
-      <p id="diff-lede">Engines like vLLM and SGLang are built around GPUs that share one fast interconnect. SparkPipe starts from the other end: many small unified-memory boxes on Ethernet RDMA, where every byte read and every round trip counts.</p><p>Other teams run large models on Sparks too, and some lead today. Credit where it is due:</p><ul class="lead-list" id="leads"></ul>
-    </div>
-    <div class="fig">
-      <div class="cmp">
-        <table>
-          <thead><tr><th scope="col"></th><th scope="col">SparkPipe</th><th scope="col">Typical engines</th></tr></thead>
-          <tbody id="cmprows"></tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
-  <section class="panel" id="next">
-    <div class="copy">
-      <div class="eyebrow">Where it is going</div>
-      <h2>The fleet is the computer.</h2>
-      <p>The goal: run every open-weight frontier model at the speed its memory allows, then multiply that with speculation tuned to the work, on hardware that fits on a desk.</p><div class="notyet"><h3>Not there yet</h3><ul id="notyet"></ul></div>
-    </div>
-    <div class="fig">
-      <div class="road" id="road"></div>
-    </div>
-  </section>
-
-  <footer class="end">
-    <div>All performance figures were measured on the reference fleet of sixteen DGX Spark nodes, through 2026-10-18. Methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</div>
-    <div>Source, Apache-2.0: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a> · Try the API in the <a href="playground.html">playground</a> · <a href="https://twitter.com/sparkpipeai">@sparkpipeai</a> · <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></div>
-  </footer>
+<div class="strip">
+  <div class="wrap">
+    <span>Fleets in <b>Korea</b></span>
+    <span>Demo hours from <b data-start="demo">1 December 2026</b></span>
+    <span>Weeks from <b data-start="weeks">4 January 2027</b></span>
+    <span>Kimi K3 · GLM 5.3 · 19 open models · <b>and yours</b></span>
+  </div>
 </div>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">your own fleet</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#why">Why</a>
+      <a href="#fleet">Your fleet</a>
+      <a href="#functions">Functions</a>
+      <a href="#prices">Prices</a>
+      <a href="#setup">Setup</a>
+      <a href="market.html">Your account</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="index.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+      <a class="btn small" href="terms.html">Terms</a>
+      <a class="btn small solid" href="buy.html">Buy HC</a>
+    </div>
+  </div>
+</header>
 
-<script>
-window.SP_CMP = [
-  ["Built for", "Sixteen 128 GB unified-memory boxes on 100 Gb/s Ethernet RDMA, run as one TP16 machine", "GPUs inside one fast NVLink domain; NVIDIA's own vLLM and TensorRT-LLM playbooks link two Sparks"],
-  ["Serving code", "From-scratch C and CUDA: kernels, RDMA transport, tokenizer, scheduler and cache", "A Python runtime over PyTorch and kernel libraries"],
-  ["How a model runs", "Compiled into content-addressed firmware modules, each validated once", "Loaded into a general-purpose runtime"],
-  ["Precision", "The publisher's own weights; any other format must pass a teacher-forced A/B against a same-precision floor", "Small clusters usually quantize to 4 bits to fit"],
-  ["KV cache", "1/16 per node, split by context; pages spill to NVMe; cached prefixes return after a model swap", "vLLM's decode context parallel also splits KV, and LMCache and SGLang HiCache add disk tiers"],
-  ["Speculation", "Drafts copied from the request and verified 255 at a time, plus a draft model on a separate GPU, sized every step", "MTP, EAGLE, n-gram and suffix decoding, with suffix trees up to depth 24 by default in vLLM"],
-  ["Models", "Sixteen installed; one serves at a time and swaps in about a minute", "One model per server process"]
-];
-window.SP_LEADS = [
-  ["gb10-vllm", "a vLLM fork, publishes Kimi K3 on 16 GB10s with speculation at 29.8 tok/s for one coding stream, 20-21 tok/s at 100-200K context and 87 tok/s across 8 streams (published 2026-09-20). SparkPipe is ahead on whole-file edits and cached follow-up turns, behind on long-context prose and on 8 streams.", "https://github.com/ciprianveg/gb10-vllm"],
-  ["TensorFold", "reports GLM 5.3 Flash on two Sparks with MTP at about 51 tok/s at 32K context.", "https://github.com/ashhart/TensorFold"],
-  ["DGPP", "a C++/CUDA engine, reports DeepSeek V4 Flash on four Sparks at 44 tok/s without drafts (2026-10-02). SparkPipe's DeepSeek V4.1 Flash runs at 29.5 tok/s on sixteen.", "https://github.com/HawkBearPig/dgpp"]
-];
-window.SP_ROAD = [
-  ["Now", "Sixteen models at TP16.", "Kimi K3 with lookup and draft-model speculation and a 737,280-token window; GLM 5.3 Full with lookup speculation."],
-  ["Next", "DeepSeek V4.1 Flash 1017 as a fourth core model.", "New weights, longer context, its own draft blocks."],
-  ["Next", "Speculation that sizes itself.", "Every step picks the source and depth with the most tokens per millisecond, drafts the next step while this one verifies, then grows trees where drafts branch."],
-  ["Next", "Bigger batches.", "16 to 32 concurrent requests on K3 and GLM 5.3 Full."],
-  ["Next", "Faster prefill.", "Toward the network floor that binds first at TP16."],
-  ["Planned", "Mac Studio pools.", "M5 Ultra Studios joining over Thunderbolt 5, with Sparks prefilling and Studios decoding. Needs a Metal backend, not yet built."]
-];
-window.SP_NOTYET = [
-  "Prefill reaches at most 5% of the compute floor.",
-  "Batches stop at 8 requests on K3 and GLM 5.3 Full, 16 on GLM 5.3 Flash.",
-  "Only K3 and GLM 5.3 Full speculate, and only for one request at a time.",
-  "The 737,280-token window is measured end to end to 337K, from a branch not yet merged.",
-  "Long agent sessions hit a cache-record limit after about 977 requests in one conversation.",
-  "Some nodes' network cards fault under heavy load, and the node reboots."
-];
-</script>
+<main>
+<section class="wrap hero">
+  <p class="label hero-kicker">For engineers who live in a large codebase</p>
+  <h1>Your codebase, warm all week, on a fleet of your own.</h1>
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <p class="lead">Per-token APIs forget your code after a few minutes and bill you to read it again. A SparkPipe fleet serves <b>only you</b>, keeps what it computed about your codebase from turn to turn and week to week, and <b>works on it overnight</b> when you tell it to. One flat price a week, in Korea, with nothing sent to any other AI service.</p>
+      <div class="actions">
+        <a class="btn solid" href="buy.html">Buy HC and book a demo hour</a>
+        <a class="btn" href="#why">An API day against a fleet day</a>
+      </div>
+      <p class="note">Sending a few prompts a day? A $20 plan serves you better. SparkPipe is for engineers who work all day with coding agents, and for teams with their own model. For companies, professionals and independent developers, not household consumers. Try every step without money in the <a href="market.html?sandbox">sandbox</a>.</p>
+    </div>
+    <figure class="screen">
+      <div class="screen-bar"><span><b>One working day</b> · large codebase</span><span>API · your fleet</span></div>
+      <table class="day">
+        <thead><tr><th scope="col">Moment</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
+        <tbody>
+          <tr><td>09:00 first turn</td><td data-l="Per-token API"><span>Cold: the whole context billed and prefilled again</span></td><td class="you" data-l="Your fleet"><span>Warm: your Functions refreshed it overnight</span></td></tr>
+          <tr><td>10:45 after a meeting</td><td data-l="Per-token API"><span>Cache expired after 5 minutes: billed again</span></td><td class="you" data-l="Your fleet"><span>Warm: first token in 0.3–5 s</span></td></tr>
+          <tr><td>13:30 after lunch</td><td data-l="Per-token API"><span>Cold again</span></td><td class="you" data-l="Your fleet"><span>Still warm</span></td></tr>
+          <tr><td>14:10 other branch</td><td data-l="Per-token API"><span>A new prefix: another cache write</span></td><td class="you" data-l="Your fleet"><span>Prefilled ahead</span></td></tr>
+          <tr><td>16:00 rewrite a file</td><td data-l="Per-token API"><span>The provider's speed, per output token</span></td><td class="you" data-l="Your fleet"><span>126 tok/s, identical output</span></td></tr>
+          <tr><td>19:00 go home</td><td data-l="Per-token API"><span>Nothing kept</span></td><td class="you" data-l="Your fleet"><span>Review, tests and a draft model run, if you start them</span></td></tr>
+        </tbody>
+      </table>
+      <div class="screen-read">
+        <div><small>Warm turn, 137,700 tokens</small><strong>0.3–5 s</strong></div>
+        <div><small>Kimi K3, file rewrites</small><strong>126 tok/s</strong></div>
+        <div><small>Around the clock</small><strong data-week="effective">$12.86</strong></div>
+      </div>
+    </figure>
+  </div>
+  <div class="specs">
+    <div><strong data-week="usd">$2,160</strong><span>a week for a whole fleet: <span data-week="hc">144</span> HC, seven days for the price of six, about <span data-week="effective">$12.86</span> an hour, plus VAT</span></div>
+    <div><strong>8 TB <em>cache</em></strong><span>kept on your fleet from turn to turn and week to week, beside <span data-storage>4 TB</span> of storage for your repo and models</span></div>
+    <div><strong>Functions</strong><span>that ingest your repo, refresh the cache, train a draft model on your code, and review and test the day's changes</span></div>
+    <div><strong>19 <em>+ yours</em></strong><span>Kimi K3, GLM 5.3 and Korea's K-EXAONE 2.0, A.X K2, Solar Open 2 and Motif 3, and your own model, listed only for you</span></div>
+  </div>
+</section>
+
+<div class="wrap">
+<section id="why" class="sec">
+  <div class="sec-rail">
+    <p class="label">01 Why</p>
+    <p class="label">Your time, not tokens</p>
+  </div>
+  <div class="sec-body">
+    <h2>Per-token APIs bill you for your codebase again and again.</h2>
+    <p class="prose">The API cache is built for short sessions. On Claude it lasts 5 minutes by default; a 1-hour cache costs twice the input price to write, and a 5-minute write costs 1.25 times. Kimi's default is also 5 minutes. So every break, meeting, branch switch and subagent pays for the whole context again, and waits while it prefills. That is why a $20–50 top-up runs out so fast in agentic work, and why subscription limits arrive before lunch.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th scope="col">Moment in the day</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
+      <tbody>
+        <tr><td>Next turn, within minutes</td><td>A cache read, billed per token</td><td class="you"><b>Warm.</b> First token in 0.3–5 s at 137,700 tokens, measured, with no per-token charge</td></tr>
+        <tr><td>After a break or a meeting</td><td>Cache expired: the whole context is billed and prefilled again</td><td class="you"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
+        <tr><td>Switching branch or module</td><td>A new prefix: another cache write, another cold wait</td><td class="you"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
+        <tr><td>First turn in the morning</td><td>Everything cold</td><td class="you"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
+        <tr><td>Rewriting a whole file</td><td>The provider's speed; faster tiers cost more</td><td class="you"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
+        <tr><td>Price</td><td>Every re-read and re-write, or a subscription with quota walls</td><td class="you"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
+      </tbody>
+    </table></div>
+    <p class="prose">For you, the bill is the smaller cost. A wait of a minute or more sends you to another window, and getting back into the problem costs more than the wait. On your own fleet the context is computed once, and every turn after that starts from where the last one stopped.</p>
+    <p class="caption">Cache rules from <a href="https://platform.claude.com/docs/en/build-with-claude/prompt-caching">Anthropic</a> and <a href="https://platform.kimi.ai/docs/pricing/chat">Kimi</a>, checked on 1 November 2026. Our own figures are measured on Fleet 1. The Customer Zero report, our own weeks of work on a fleet beside the same work on a per-token API, is published at launch.</p>
+  </div>
+</section>
+
+<section id="fleet" class="sec">
+  <div class="sec-rail">
+    <p class="label">02 Your fleet</p>
+    <p class="label">What stays</p>
+  </div>
+  <div class="sec-body">
+    <h2>A fleet that serves only you and remembers your code.</h2>
+    <div class="defs">
+      <div><p class="label">Pinned to you</p><p>The whole fleet serves only your requests: no shared queue, no shared cache, no rate limit but the fleet's own speed. Nobody else can book its hours while you keep booking the next week. Hold more fleets for more work: one for the day, one for the night, one for a parallel review. And when a job needs a burst, book idle fleets by the hour with the same HC.</p></div>
+      <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups. Treat it as working space, not an archive: if a failure ever takes both copies, we credit 24 hours of the fleet while the cache rebuilds.</p></div>
+      <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Pull models, datasets and repositories straight onto it from Hugging Face, S3 or any HTTPS URL: start a terabyte download from your laptop on a plane, and the fleet does the rest. Export it and restore it to any fleet you hold, and back up daily anything you want to keep.</p></div>
+      <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does.</p></div>
+      <div><p class="label">19 open models</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash and Korea's K-EXAONE 2.0, A.X K2, Solar Open 2 and Motif 3, among others, each under its publisher's license. Several stay loaded at once when they fit in the fleet's memory, and loading another takes 20 to 80 seconds. The <a href="fleets.html">Fleet List</a> has every model's measured speeds.</p></div>
+      <div><p class="label">Only in Korea</p><p>Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts. You contract with a Korean company under Korean law.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="functions" class="sec">
+  <div class="sec-rail">
+    <p class="label">03 Functions</p>
+    <p class="label">Work on your code</p>
+  </div>
+  <div class="sec-body">
+    <h2>Your fleet works on your code when you tell it to.</h2>
+    <p class="prose">A Function is software we build and run on a fleet you hold. Start one, or schedule it, from your account, the API or the CLI. It does its own setup: the first one you run ingests your repository. Results land in your storage and your morning report, and what a Function produces is yours. We keep adding Functions.</p>
+    <div class="fns">
+      <div class="fn"><p class="label">Your state</p><dl>
+        <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your token stays on your machine: it comes with each download, and the fleet holds it only while that download runs.</dd>
+        <dt>Ingest a repository</dt><dd>Takes your pushes as a git remote, with no token for your git host, and maps files, symbols and history.</dd>
+        <dt>Build and refresh the cache</dt><dd>Prefills the parts that change least first; after each push it recomputes only what changed.</dd>
+        <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm, and prefills the likely next ones between your turns.</dd>
+        <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
+        <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
+        <dt>Daily backup</dt><dd>One scheduled command on your own machine pulls the day's changes to your disk or bucket, with your own credentials.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Find problems</p><dl>
+        <dt>Review the day's changes</dt><dd>Reviews each change against the whole codebase, not just the diff, and confirms each finding with a test.</dd>
+        <dt>Second opinions</dt><dd>Runs the same review with other models and marks where they agree.</dd>
+        <dt>Security audit</dt><dd>Memory safety, concurrency, injection, secrets and dependencies, ranked, with reproductions.</dd>
+        <dt>Tests and fuzzing</dt><dd>Writes and runs unit tests and fuzzers for changed code, and reports any crash.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Do the work</p><dl>
+        <dt>Overnight agent</dt><dd>Works through a list of tasks and leaves a branch per task, with its test results.</dd>
+        <dt>Codebase-wide change</dt><dd>A rename, an API migration or a port, file by file, as one built and tested branch.</dd>
+        <dt>Ask the whole codebase</dt><dd>Runs one question or instruction over every file or module and collects the answers.</dd>
+        <dt>Keep docs current</dt><dd>Architecture notes, API docs and a map of the code, updated with each push.</dd>
+        <dt>Morning report</dt><dd>Everything the night produced, on one page and in one API call.</dd>
+      </dl></div>
+      <div class="fn"><p class="label">Models</p><dl>
+        <dt>Train a draft model</dt><dd>Trains on your repo and your sessions, so speculation accepts more of the model's tokens on your new code, week by week.</dd>
+        <dt>Evaluate models on your code</dt><dd>Runs your tests or eval set against every offered model and your own, to pick the best one per task.</dd>
+        <dt>Qualify your model</dt><dd>Checks your own model and driver against your reference outputs.</dd>
+        <dt>Train an adapter</dt><dd>Trains an adapter for an offered model or your own on your data.</dd>
+        <dt>Make training data</dt><dd>Generates training data for your own model, where each source model's license allows it.</dd>
+      </dl></div>
+    </div>
+    <p class="caption">Functions that build or run your code do it in a sandbox on your fleet, with no network unless you allow it. When a fleet changes hands we restore it to our own image, so nothing one customer ran can reach the next.</p>
+  </div>
+</section>
+
+<section id="models" class="sec">
+  <div class="sec-rail">
+    <p class="label">04 Your model</p>
+    <p class="label">Private model list</p>
+  </div>
+  <div class="sec-body">
+    <h2>Trained your own model? Serve it on your own fleet.</h2>
+    <ol class="steps">
+      <li><h3>Upload</h3><p>Send your weights to your storage with the CLI or the API. Any model that fits the fleet's memory works; Kimi K3's 1.56 TB fits.</p></li>
+      <li><h3>Add a driver</h3><p>We publish the model-family interface and a guide written for coding agents, so your agent can write the driver. Most new models reuse a family schedule that already exists.</p></li>
+      <li><h3>Check it</h3><p>A Function runs your model against your reference outputs on your fleet and reports whether they match: the same qualification our own models pass.</p></li>
+      <li><h3>Use it</h3><p>It appears in your model list only, next to the offered models, behind the same endpoint, and works with every Function.</p></li>
+    </ol>
+  </div>
+</section>
+
+<section id="how" class="sec">
+  <div class="sec-rail">
+    <p class="label">05 How it works</p>
+    <p class="label">Four steps</p>
+  </div>
+  <div class="sec-body">
+    <h2>Demo hour, then a fleet of your own.</h2>
+    <ol class="steps">
+      <li><h3>Open an account</h3><p>Your company's legal name or your own, a work email confirmed with a 6-digit code, and the Customer Agreement. No password. Then buy HC in any quantity.</p></li>
+      <li><h3>Book a demo hour</h3><p>The whole demo fleet by the hour, up to <span data-demo="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Point your own tools at it and try your codebase.</p></li>
+      <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
+      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
+    </ol>
+    <p class="prose">Need more than one fleet for a while? Any fleet nobody holds can be booked by the hour with the same HC, up to the end of the current week, and your requests go to it like to your own. The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
+    <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
+  </div>
+</section>
+
+<section id="prices" class="sec">
+  <div class="sec-rail">
+    <p class="label">06 Prices</p>
+    <p class="label">One currency</p>
+  </div>
+  <div class="sec-body">
+    <h2>Seven days for the price of six.</h2>
+    <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on demo hours and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
+    <div class="table-wrap"><table class="cmp">
+      <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩26,000</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩19,500</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
+        <tr><th scope="row">Demo hour</th><td><span data-hour="hc">1</span> HC for the whole demo fleet for an hour</td></tr>
+        <tr><th scope="row">Idle fleets</th><td>Any fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
+        <tr><th scope="row">Week</th><td><span data-week="hc">144</span> HC for seven days on a fleet pinned to you: <span data-week="usd">$2,160</span> at the <span data-hc="bulk-usd">$15</span> HC price, about <span data-week="effective">$12.86</span> an hour</td></tr>
+        <tr><th scope="row">Weeks ahead</th><td data-off="table">5% off each new week when you hold 4 or more weeks, 10% from 13, 15% from 26 and 20% at 52, counting the current week and the weeks you are booking</td></tr>
+        <tr><th scope="row">How far ahead</th><td>Up to <span data-ahead>52</span> weeks</td></tr>
+        <tr><th scope="row">Downtime</th><td>A booked hour with more than 15 minutes of downtime comes back as HC, automatically, from our own records. Maintenance takes up to 3 hours a fleet a week and is credited the same way</td></tr>
+        <tr><th scope="row">Payment</th><td>In won by card (Korean or overseas), bank transfer, virtual account or Korean easy pay through Toss Payments; in USDC or USDT through CoinPayments; or in US dollars by bank transfer (SWIFT) from your own account outside Korea. Korean businesses get a card slip or an electronic tax invoice</td></tr>
+        <tr><th scope="row">VAT</th><td>10% is added. A US dollar bank transfer (SWIFT) carries 0% when you have no place of business in Korea</td></tr>
+        <tr><th scope="row">Refunds</th><td>None, unless we stop offering service for HC or close your account through no fault of yours. HC locked in the waitlist that would lapse while you wait is refunded</td></tr>
+      </tbody>
+    </table></div>
+    <p class="caption">Prices are set on this website and may change; HC you have bought and weeks you have booked keep their price. The <a href="agreement.html">SparkPipe Customer Agreement</a> governs, and its Korean text prevails. HYOR AI Tech Ltd. is the seller.</p>
+    <div class="actions"><a class="btn solid" href="buy.html">Buy HC</a><a class="btn" href="market.html">Book in your account</a></div>
+  </div>
+</section>
+
+<section id="setup" class="sec">
+  <div class="sec-rail">
+    <p class="label">07 Setup</p>
+    <p class="label">Your own tools</p>
+  </div>
+  <div class="sec-body">
+    <h2>Point your coding agent at your fleet.</h2>
+    <p class="prose">Create an API key in your account and set it in your tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded.</p>
+    <div class="code">
+      <div class="code-head"><span>Your fleet, while you hold it</span><span>shell</span></div>
+      <pre><span class="d"># Claude Code</span>
+<span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
+<span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
+<span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
+<span class="k">export</span> CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
+
+<span class="d"># Codex: ~/.codex/config.toml</span>
+model = "kimi-k3"
+model_provider = "sparkpipe"
+[model_providers.sparkpipe]
+name = "SparkPipe"
+base_url = "https://sparkpipe.ai/pay/api/v1"
+env_key = "SPARKPIPE_API_KEY"
+wire_api = "responses"
+
+<span class="d"># OpenCode: opencode.json</span>
+{
+  "provider": {
+    "sparkpipe": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "https://sparkpipe.ai/pay/api/v1", "apiKey": "{env:SPARKPIPE_API_KEY}" },
+      "models": { "kimi-k3": { "limit": { "context": 1000000, "output": 32768 } } }
+    }
+  },
+  "model": "sparkpipe/kimi-k3",
+  "share": "disabled"
+}
+
+<span class="d"># Any other tool that speaks the OpenAI API</span>
+<span class="k">export</span> OPENAI_BASE_URL=https://sparkpipe.ai/pay/api/v1
+<span class="k">export</span> OPENAI_API_KEY=<span class="d">your key from your account</span>
+
+curl $OPENAI_BASE_URL/chat/completions \
+  -H "Authorization: Bearer $OPENAI_API_KEY" \
+  -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
+    </div>
+    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span> and <span class="mono">setup opencode</span> write these settings for you, with the SparkPipe plugin that adds the fleet's code search, test runs on its sandbox, status and morning report to the agent. Each new release of the three is tested against the fleet before we recommend it. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
+  </div>
+</section>
+
+<section id="speed" class="sec">
+  <div class="sec-rail">
+    <p class="label">08 Speed</p>
+    <p class="label">Measured</p>
+  </div>
+  <div class="sec-body">
+    <h2>Fast where a warm fleet matters.</h2>
+    <div class="facts">
+      <div><strong>126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation; 15 tok/s without it. The output is the model's own.</p></div>
+      <div><strong>0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, on Kimi K3 up to 137,700 tokens. From cold: 299 s.</p></div>
+      <div><strong>15.6 min</strong><p>to prefill a 1M-token Kimi K3 prompt from cold on one fleet. On your own fleet you pay that once, not after every pause.</p></div>
+    </div>
+    <div class="bars" role="img" aria-label="Kimi K3 decode on whole-file rewrites: 15.3 tokens per second plain, 126.4 with speculation. GLM 5.3: 27.6 plain, 124.2 with speculation.">
+      <div class="bar"><span>K3, plain</span><i style="--w: 12.1%"></i><b>15.3</b></div>
+      <div class="bar top"><span>K3, speculation</span><i style="--w: 100%"></i><b>126.4</b></div>
+      <div class="bar"><span>GLM 5.3, plain</span><i style="--w: 21.8%"></i><b>27.6</b></div>
+      <div class="bar top"><span>GLM 5.3, speculation</span><i style="--w: 98.3%"></i><b>124.2</b></div>
+      <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, one request</em><em>126</em></span><span></span></div>
+    </div>
+    <p class="caption">For brand-new code, Kimi K3 decodes at 16.2 tok/s for one request today; a draft model trained on your own code is how a fleet gets faster on it. All figures are measured on Fleet 1; methods and receipts are in <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>.</p>
+  </div>
+</section>
+
+<section id="technology" class="sec">
+  <div class="sec-rail">
+    <p class="label">09 Technology</p>
+    <p class="label">Source available</p>
+  </div>
+  <div class="sec-body">
+    <h2>Sixteen small boxes, one frontier model.</h2>
+    <p class="prose">Decoding a large model is limited by how fast its weights can be read. SparkPipe splits every weight and every cache entry across the sixteen nodes of a fleet, so each reads only its own sixteenth, then merges the partial results over a 100 Gb/s RDMA mesh in 16 to 38 microseconds. The engine is written from scratch in C and CUDA, and its source is public under the Functional Source License with an added permission: use it for anything, commercially too, except renting out fleets or selling inference that runs on them. Each version becomes Apache 2.0 two years after we release it.</p>
+    <figure class="screen" role="img" aria-label="Animated diagram of a fleet: sixteen DGX Spark nodes on one switch with direct pair links. Each decode step, every node reads its sixteenth of the model, the nodes exchange partial results, and one token comes out.">
+      <div class="screen-bar"><span><b>Fleet 1</b> · 16 × DGX Spark · Korea</span><span id="phase">each node reads its 1/16 of the weights</span></div>
+      <canvas id="fleet-canvas" width="1600" height="700"></canvas>
+    </figure>
+    <p class="caption">Source: <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>.</p>
+  </div>
+</section>
+
+<section id="company" class="sec">
+  <div class="sec-rail">
+    <p class="label">10 Company</p>
+    <p class="label">Documents</p>
+  </div>
+  <div class="sec-body">
+    <h2>Who you contract with.</h2>
+    <div class="check-list company">
+      <div><b>Company</b><span>HYOR AI Tech Ltd. (효르에이아이테크 유한회사), a Korean limited company</span></div>
+      <div><b>Representative</b><span>TURAN CEM</span></div>
+      <div><b>Registration</b><span>Business registration number 641-87-03809</span></div>
+      <div><b>Address</b><span>Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea</span></div>
+      <div><b>Contact</b><span><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></span></div>
+      <div><b>Terms</b><span><a href="terms.html">SparkPipe Customer Agreement</a>, in English and Korean, published for review</span></div>
+      <div><b>Privacy</b><span><a href="privacy.html">Privacy policy</a> · <a href="privacy-ko.html" hreflang="ko">개인정보처리방침</a></span></div>
+      <div><b>Other service</b><span><a href="https://sparkpipe.ai:8443">SparkPipe Chat</a>, for invited users. Its replies are labelled as generated by AI.</span></div>
+    </div>
+  </div>
+</section>
+</div>
+</main>
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="pricing.js"></script>
+<script src="prices.js"></script>
 <script>
 (function () {
   var reduce = false;
   try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) {}
   function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
-
-  var canvas = document.getElementById("fleet");
+  var canvas = document.getElementById("fleet-canvas");
   var ctx = canvas.getContext("2d");
   var W = canvas.width, H = canvas.height;
   var nodes = [];
-  var names = ["spark0","spark1","spark2","spark3","spark4","spark5","spark6","spark7","spark8","spark9","sparka","sparkb","sparkc","sparkd","sparke","sparkf"];
   for (var i = 0; i < 16; i++) {
     var row = i < 8 ? 0 : 1, col = i % 8;
-    nodes.push({ x: 150 + col * 170, y: row === 0 ? 150 : 550, name: names[i], rank: i });
+    nodes.push({ x: 150 + col * 170, y: row === 0 ? 150 : 550, name: "node " + (i + 1) });
   }
   var switchY = 350, hub = { x: 1520, y: 550 };
   var phases = [
@@ -331,218 +376,75 @@ window.SP_NOTYET = [
     { label: "partial results cross the mesh", dur: 900 },
     { label: "the next token comes out", dur: 600 }
   ];
-  var t0 = performance.now(), tokens = 0, lastPhase = -1;
-  var phaseEl = document.getElementById("phase"), countEl = document.getElementById("tokcount");
-
+  var t0 = performance.now(), lastPhase = -1;
+  var phaseEl = document.getElementById("phase");
   function roundRect(x, y, w, h, r) {
     ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
   function draw(now) {
-    var gold = css("--gold"), signal = css("--signal"), line = css("--line"), fg = css("--fg"), muted = css("--muted"), panel = css("--panel"), dim = css("--dim");
+    var bg = css("--screen"), panel = css("--screen-panel"), line = css("--screen-rule"), ink = css("--screen-ink"), dim = css("--screen-dim"), hot = css("--brand"), mono = css("--mono");
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = panel; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
     var cycle = phases[0].dur + phases[1].dur + phases[2].dur;
     var t = reduce ? phases[0].dur * 0.7 : (now - t0) % cycle;
     var p = 0, local = t;
     while (p < 2 && local > phases[p].dur) { local -= phases[p].dur; p++; }
     var f = local / phases[p].dur;
-    if (p !== lastPhase) {
-      if (p === 2 && lastPhase === 1) { tokens++; countEl.textContent = tokens + (tokens === 1 ? " token" : " tokens"); }
-      lastPhase = p; phaseEl.textContent = phases[p].label;
-    }
+    if (p !== lastPhase) { lastPhase = p; phaseEl.textContent = phases[p].label; }
     ctx.lineWidth = 3; ctx.strokeStyle = line;
     ctx.beginPath(); ctx.moveTo(90, switchY); ctx.lineTo(1430, switchY); ctx.stroke();
-    ctx.fillStyle = muted; ctx.font = "600 22px " + css("--mono");
+    ctx.fillStyle = dim; ctx.font = "500 22px " + mono;
     ctx.fillText("100 Gb/s switch", 96, switchY - 14);
     for (var i = 0; i < 16; i++) {
       var n = nodes[i];
       ctx.strokeStyle = line; ctx.lineWidth = 2;
       ctx.beginPath(); ctx.moveTo(n.x, n.y + (n.y < switchY ? 50 : -50)); ctx.lineTo(n.x, switchY); ctx.stroke();
     }
-    for (var k = 0; k < 14; k += 2) {
+    for (var k = 0; k < 16; k += 2) {
       var a = nodes[k], b = nodes[k + 1];
-      ctx.strokeStyle = dim; ctx.lineWidth = 5;
+      ctx.strokeStyle = line; ctx.lineWidth = 5;
       var yy = a.y + (a.y < switchY ? -62 : 62);
       ctx.beginPath(); ctx.moveTo(a.x, yy); ctx.lineTo(b.x, yy); ctx.stroke();
     }
-    ctx.strokeStyle = dim; ctx.lineWidth = 5;
+    ctx.strokeStyle = line; ctx.lineWidth = 5;
     ctx.beginPath(); ctx.moveTo(nodes[15].x + 60, nodes[15].y); ctx.lineTo(hub.x - 50, hub.y); ctx.stroke();
     if (p === 1) {
       for (var i = 0; i < 16; i++) {
         var n = nodes[i], dir = n.y < switchY ? 1 : -1;
         var y0 = n.y + dir * 50, travel = Math.min(1, f * 1.6);
-        var yp = y0 + (switchY - y0) * travel;
-        ctx.fillStyle = signal; ctx.beginPath(); ctx.arc(n.x, yp, 7, 0, Math.PI * 2); ctx.fill();
-        var xs = n.x + (f - 0.35) * 2 * ((i % 8) - 3.5) * -60;
-        if (f > 0.5) { ctx.globalAlpha = 1 - (f - 0.5) * 2; ctx.beginPath(); ctx.arc(xs, switchY, 6, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1; }
+        ctx.fillStyle = hot; ctx.beginPath(); ctx.arc(n.x, y0 + (switchY - y0) * travel, 7, 0, Math.PI * 2); ctx.fill();
       }
-      for (var k = 0; k < 14; k += 2) {
+      for (var k = 0; k < 16; k += 2) {
         var a = nodes[k], b = nodes[k + 1], yy = a.y + (a.y < switchY ? -62 : 62);
-        var xp = a.x + (b.x - a.x) * ((f * 2) % 1);
-        ctx.fillStyle = signal; ctx.beginPath(); ctx.arc(xp, yy, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = hot; ctx.beginPath(); ctx.arc(a.x + (b.x - a.x) * ((f * 2) % 1), yy, 6, 0, Math.PI * 2); ctx.fill();
       }
     }
     for (var i = 0; i < 16; i++) {
       var n = nodes[i];
-      ctx.fillStyle = css("--bg"); ctx.strokeStyle = line; ctx.lineWidth = 2;
-      roundRect(n.x - 60, n.y - 50, 120, 100, 10); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = panel; ctx.strokeStyle = line; ctx.lineWidth = 2;
+      roundRect(n.x - 60, n.y - 50, 120, 100, 8); ctx.fill(); ctx.stroke();
       var fillFrac = p === 0 ? f : 1;
-      ctx.fillStyle = gold; ctx.globalAlpha = p === 0 ? 0.9 : (p === 1 ? 0.35 : 0.2);
-      roundRect(n.x - 52, n.y + 42 - 70 * fillFrac, 104, 70 * fillFrac, 6); ctx.fill(); ctx.globalAlpha = 1;
-      ctx.fillStyle = fg; ctx.font = "600 21px " + css("--mono"); ctx.textAlign = "center";
+      ctx.fillStyle = hot; ctx.globalAlpha = p === 0 ? 0.85 : (p === 1 ? 0.3 : 0.18);
+      roundRect(n.x - 52, n.y + 42 - 70 * fillFrac, 104, 70 * fillFrac, 5); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = ink; ctx.font = "600 20px " + mono; ctx.textAlign = "center";
       ctx.fillText(n.name, n.x, n.y - 18);
-      ctx.fillStyle = muted; ctx.font = "18px " + css("--mono");
+      ctx.fillStyle = dim; ctx.font = "18px " + mono;
       ctx.fillText("1/16", n.x, n.y + 8);
       ctx.textAlign = "left";
     }
-    ctx.fillStyle = css("--bg"); ctx.strokeStyle = p === 2 ? gold : line; ctx.lineWidth = p === 2 ? 4 : 2;
-    roundRect(hub.x - 50, hub.y - 50, 100, 100, 10); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = fg; ctx.font = "600 21px " + css("--mono"); ctx.textAlign = "center";
-    ctx.fillText("hub", hub.x, hub.y - 8);
-    ctx.fillStyle = muted; ctx.font = "16px " + css("--mono"); ctx.fillText("API · drafter", hub.x, hub.y + 18);
+    ctx.fillStyle = panel; ctx.strokeStyle = p === 2 ? hot : line; ctx.lineWidth = p === 2 ? 4 : 2;
+    roundRect(hub.x - 50, hub.y - 50, 100, 100, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = ink; ctx.font = "600 20px " + mono; ctx.textAlign = "center";
+    ctx.fillText("API", hub.x, hub.y + 7);
     if (p === 2) {
-      ctx.fillStyle = gold; ctx.globalAlpha = 1 - f;
-      ctx.font = "700 30px " + css("--mono"); ctx.fillText("token", hub.x, hub.y - 70 - f * 40); ctx.globalAlpha = 1;
+      ctx.fillStyle = hot; ctx.globalAlpha = 1 - f;
+      ctx.font = "700 30px " + mono; ctx.fillText("token", hub.x, hub.y - 70 - f * 40); ctx.globalAlpha = 1;
     }
     ctx.textAlign = "left";
     if (!reduce) requestAnimationFrame(draw);
   }
   requestAnimationFrame(draw);
-
-  var floor = {
-    k3: { b1: "16.2", b8: "64", pct: "58%", rows: [["Measured", 16.2, "16.2"], ["Memory floor", 27.7, "27.7"]] },
-    full: { b1: "28.9", b8: "74", pct: "~50%", rows: [["Measured", 28.9, "28.9"], ["Memory floor", 59, "~59"]] },
-    flash: { b1: "55.0", b8: "176", pct: "59%", rows: [["Measured", 55.0, "55.0"], ["Memory floor", 94, "94"]] }
-  };
-  function renderFloor(key) {
-    var d = floor[key], max = d.rows[1][1];
-    document.getElementById("r-b1").textContent = d.b1;
-    document.getElementById("r-b8").textContent = d.b8;
-    document.getElementById("r-floor").textContent = d.pct;
-    var box = document.getElementById("floorbars"); box.innerHTML = "";
-    d.rows.forEach(function (r, idx) {
-      var row = document.createElement("div"); row.className = "bar-row";
-      row.innerHTML = '<span>' + r[0] + '</span><div class="track"><div class="fill ' + (idx === 0 ? "warm" : "cold") + '"></div></div><span class="v">' + r[2] + ' tok/s</span>';
-      box.appendChild(row);
-      var fill = row.querySelector(".fill");
-      requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = (100 * r[1] / max).toFixed(1) + "%"; }); });
-    });
-  }
-  [["m-k3", "k3"], ["m-full", "full"], ["m-flash", "flash"]].forEach(function (pair) {
-    document.getElementById(pair[0]).addEventListener("click", function () {
-      ["m-k3", "m-full", "m-flash"].forEach(function (id) { document.getElementById(id).setAttribute("aria-pressed", id === pair[0] ? "true" : "false"); });
-      renderFloor(pair[1]);
-    });
-  });
-  renderFloor("k3");
-
-  var ctxData = { "137": { cold: 299, warm: 5, label: "137,700 tokens" }, "337": { cold: 982, warm: 8, label: "336,600 tokens" } };
-  function renderCtx(key) {
-    var d = ctxData[key], box = document.getElementById("ctxbars"); box.innerHTML = "";
-    [["Cold", d.cold, "cold"], ["Cached", d.warm, "warm"]].forEach(function (r) {
-      var row = document.createElement("div"); row.className = "bar-row";
-      row.innerHTML = '<span>' + r[0] + '</span><div class="track"><div class="fill ' + r[2] + '"></div></div><span class="v">' + r[1] + ' s</span>';
-      box.appendChild(row);
-      var fill = row.querySelector(".fill");
-      requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = Math.max(0.8, 100 * r[1] / 982).toFixed(1) + "%"; }); });
-    });
-  }
-  [["c-137", "137"], ["c-337", "337"]].forEach(function (pair) {
-    document.getElementById(pair[0]).addEventListener("click", function () {
-      ["c-137", "c-337"].forEach(function (id) { document.getElementById(id).setAttribute("aria-pressed", id === pair[0] ? "true" : "false"); });
-      renderCtx(pair[1]);
-    });
-  });
-  renderCtx("137");
-
-  var code = "import time\nfrom dataclasses import dataclass, field\n\n\n@dataclass\nclass TokenBucket:\n    rate: float\n    capacity: float\n    tokens: float = field(init=False)\n    updated: float = field(init=False)\n\n    def __post_init__(self):\n        self.tokens = self.capacity\n        self.updated = time.monotonic()\n\n    def refill(self, now: float) -> None:\n        elapsed = now - self.updated\n        self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)\n        self.updated = now\n\n    def take(self, cost: float = 1.0) -> bool:\n        self.refill(time.monotonic())\n        if self.tokens < cost:\n            return False\n        self.tokens -= cost\n        return True\n\n    def wait_time(self, cost: float = 1.0) -> float:\n        self.refill(time.monotonic())\n        missing = cost - self.tokens\n        return 0.0 if missing <= 0 else missing / self.rate\n\n\nclass Limiter:\n    def __init__(self, rate: float, burst: float):\n        self.buckets: dict[str, TokenBucket] = {}\n        self.rate = rate\n        self.burst = burst\n\n    def bucket(self, key: str) -> TokenBucket:\n        if key not in self.buckets:\n            self.buckets[key] = TokenBucket(self.rate, self.burst)\n        return self.buckets[key]\n\n    def allow(self, key: str, cost: float = 1.0) -> bool:\n        return self.bucket(key).take(cost)\n\n    def retry_after(self, key: str, cost: float = 1.0) -> float:\n        return self.bucket(key).wait_time(cost)\n\n    def forget_idle(self, idle_seconds: float) -> int:\n        now = time.monotonic()\n        idle = [k for k, b in self.buckets.items() if now - b.updated > idle_seconds]\n        for key in idle:\n            del self.buckets[key]\n        return len(idle)\n";
-  var pieces = code.match(/\s+|[A-Za-z_]+|\d+|[^\sA-Za-z_\d]/g) || [];
-  var toks = [];
-  for (var i = 0; i < pieces.length; i++) {
-    var s = pieces[i];
-    if (/^\s+$/.test(s) && toks.length) { toks[toks.length - 1] += s; } else { toks.push(s); }
-  }
-  var raceStart = 0, raceTimer = null;
-  var A = document.getElementById("laneA"), B = document.getElementById("laneB");
-  function laneText(n) { return toks.slice(0, n).join(""); }
-  function renderLane(el, n) {
-    el.textContent = laneText(n);
-    var c = document.createElement("span"); c.className = "cur"; el.appendChild(c);
-    el.scrollTop = el.scrollHeight;
-  }
-  function tick() {
-    var dt = (performance.now() - raceStart) / 1000;
-    var na = Math.min(toks.length, Math.floor(dt * 15.3)), nb = Math.min(toks.length, Math.floor(dt * 126.4));
-    renderLane(A, na); renderLane(B, nb);
-    document.getElementById("cntA").textContent = na + " tokens"; document.getElementById("cntB").textContent = nb + " tokens";
-    document.getElementById("tA").textContent = dt.toFixed(1) + " s";
-    document.getElementById("tB").textContent = (nb >= toks.length ? (toks.length / 126.4) : dt).toFixed(1) + " s";
-    if (dt < 14) raceTimer = requestAnimationFrame(tick);
-  }
-  function race() {
-    if (raceTimer) cancelAnimationFrame(raceTimer);
-    if (reduce) {
-      var t = 6;
-      renderLane(A, Math.floor(t * 15.3)); renderLane(B, toks.length);
-      document.getElementById("cntA").textContent = Math.floor(t * 15.3) + " tokens"; document.getElementById("cntB").textContent = toks.length + " tokens";
-      document.getElementById("tA").textContent = t.toFixed(1) + " s"; document.getElementById("tB").textContent = (toks.length / 126.4).toFixed(1) + " s";
-      return;
-    }
-    raceStart = performance.now(); tick();
-  }
-  document.getElementById("replay").addEventListener("click", race);
-  var raced = false;
-  try {
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) { if (e.isIntersecting && !raced) { raced = true; race(); } });
-    }, { threshold: 0.4 });
-    io.observe(document.getElementById("speculation"));
-  } catch (e) { race(); }
-  renderLane(A, 40); renderLane(B, 320);
-
-  var models = [
-    ["kimi-k3", "16.2", "720K", "590", true], ["glm-5.3", "28.9", "256K", "1,162", true], ["glm-5.3-flash", "55.0", "128K", "876", true],
-    ["deepseek-v4.1-flash", "29.5", "16K", "178"], ["gemma-4-31b", "34.4", "32K", "834"], ["gemma-4-26b-a4b", "89.5", "32K", "1,848"],
-    ["ling-3.0-flash", "80.4", "32K", "1,514"], ["ling-3.0-flash-fin", "79.2", "32K", "1,550"], ["laguna-s-2.1", "51.0", "32K", "773"],
-    ["muse-glimmer-30b", "37.9", "32K", "1,186"], ["hy4-preview", "14.2", "32K", "53"], ["mimo-v2.6-pro", "19.0+", "32K", "55+"],
-    ["mimo-v2.6-flash", "40.9+", "32K", "157+"]
-  ];
-  var chips = document.getElementById("modelchips");
-  models.forEach(function (m, idx) {
-    var b = document.createElement("button"); b.type = "button"; b.textContent = m[0]; b.id = "chip-" + idx;
-    if (m[4]) b.className = "core";
-    b.setAttribute("aria-pressed", idx === 0 ? "true" : "false");
-    b.addEventListener("click", function () {
-      chips.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", "false"); });
-      b.setAttribute("aria-pressed", "true");
-      document.getElementById("d-b1").textContent = m[1]; document.getElementById("d-ctx").textContent = m[2]; document.getElementById("d-pre").textContent = m[3];
-    });
-    chips.appendChild(b);
-  });
-
-  var cmp = window.SP_CMP || [];
-  var rows = document.getElementById("cmprows");
-  cmp.forEach(function (r) {
-    var tr = document.createElement("tr");
-    tr.innerHTML = "<td>" + r[0] + "</td><td class=\"sp\">" + r[1] + "</td><td class=\"them\">" + r[2] + "</td>";
-    rows.appendChild(tr);
-  });
-  var leads = document.getElementById("leads");
-  (window.SP_LEADS || []).forEach(function (r) {
-    var li = document.createElement("li");
-    li.innerHTML = '<a href="' + r[2] + '"><b>' + r[0] + '</b></a>, ' + r[1];
-    leads.appendChild(li);
-  });
-  var ny = document.getElementById("notyet");
-  (window.SP_NOTYET || []).forEach(function (t) { var li = document.createElement("li"); li.textContent = t; ny.appendChild(li); });
-  var road = window.SP_ROAD || [];
-  var rbox = document.getElementById("road");
-  road.forEach(function (r) {
-    var d = document.createElement("div");
-    d.innerHTML = '<span class="tag' + (r[0] === "Now" ? " now" : "") + '">' + r[0] + '</span><p><strong>' + r[1] + '</strong> ' + r[2] + '</p>';
-    rbox.appendChild(d);
-  });
 })();
 </script>
 </body>

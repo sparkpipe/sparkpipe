@@ -1,0 +1,5 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 0.10 s: pack 53793417600 bytes, device state 615497556 bytes
+greedy design: 128 tokens after a 1100-token prompt
+greedy code: 128 tokens after a 1800-token prompt
+greedy korean: 128 tokens after a 700-token prompt
+greedy rules: 128 tokens after a 2040-token prompt

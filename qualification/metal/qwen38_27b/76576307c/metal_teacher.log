@@ -1,0 +1,5 @@
+opened /Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack on Apple M5 Ultra (metal.apple10) in 15.44 s: pack 53793417600 bytes, sha256 4ab7a71054721c64b4b4c28fb4cd5d08d017489d0d7901036d56110dc91ffbca, device state 1652602176 bytes
+teacher design: 1099 positions (550 by prefill, 549 by decode)
+teacher code: 1799 positions (900 by prefill, 899 by decode)
+teacher korean: 699 positions (350 by prefill, 349 by decode)
+teacher rules: 2039 positions (1020 by prefill, 1019 by decode)

@@ -32,6 +32,11 @@ static __device__ __forceinline__ uint32_t LmPrefillSwizzle(uint32_t row, uint32
 	return(chunk ^ (row & 7u));
 }
 
+static __device__ __forceinline__ uint32_t LmPrefillMin(uint32_t a, uint32_t b)
+{
+	return(a < b ? a : b);
+}
+
 static __device__ __forceinline__ void LmPrefillLoadX4(uint32_t address, uint32_t r[4])
 {
 	asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
@@ -100,7 +105,7 @@ void LmPrefillSparseUnionKernel(
 		return;
 	}
 	first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : table * ROWS_PER_BLOCK;
-	row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
+	row_end = block_table != 0 ? LmPrefillMin(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
 	rows_here = row_end > first_row ? row_end - first_row : 0u;
 	if (threadIdx.x < ROWS_PER_BLOCK)
 		length[threadIdx.x] = threadIdx.x < rows_here
@@ -207,7 +212,7 @@ void LmLatentAttentionPrefillKernel(
 	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : 0;
 	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : 0;
 	const uint32_t first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : (gridDim.x - 1u - blockIdx.x) * ROWS_PER_BLOCK;
-	const uint32_t row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
+	const uint32_t row_end = block_table != 0 ? LmPrefillMin(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query);
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
 	float output[COLUMN_FRAGS][4];

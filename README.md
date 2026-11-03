@@ -22,54 +22,6 @@ This file describes the system SparkPipe is built to be.
 [`TECHDEBT.md`](TECHDEBT.md) lists where the code does not match it yet, and
 [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md) holds the measurements.
 
-## Performance today
-
-Sixteen DGX Spark nodes at TP16, measured 2026-10-18. Methods and receipts
-are in [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
-
-**Decode without speculation**
-
-| | Kimi K3 | GLM 5.3 Full | GLM 5.3 Flash |
-| --- | ---: | ---: | ---: |
-| 1 request | 16.2 tok/s | 28.9 tok/s | 55.0 tok/s |
-| 1 request, long context | 15.1 tok/s at 73K | 24.1 tok/s at 197K | 46 tok/s at 71K |
-| 8 requests, total | 64 tok/s | 74 tok/s | 176 tok/s |
-| 16 requests, total | – | – | 227 tok/s |
-| Of the floor for the bytes it reads | 58% | about 50% | 59% |
-| Prefill, 8K prompt | 590 tok/s | 1,162 tok/s | 876 tok/s |
-| Context window | 737,280 tokens (measured to 337K) | 262,144 tokens | 131,072 tokens |
-
-**Speculation, one request**
-
-| Workload | Kimi K3 | GLM 5.3 Full |
-| --- | --- | --- |
-| Whole-file code rewrite | 15.3 → 140 tok/s | 27.6 → 233 tok/s |
-| SEARCH/REPLACE edit | 1.9× | 1.3× |
-| Short edits with the draft model | 1.4-1.6× | – |
-
-Drafts come from the request's own context (lookup) and, on K3, from a
-draft model on the hub's RTX 5090. The target model verifies every draft.
-
-**Long context and cache**
-
-- Each node stores 1/16 of every sequence's cache, so K3's 737,280-token
-  window needs 1.36 GB of KV per node.
-- The next turn of a long conversation reuses its cached prefix: 5 s at
-  137K tokens instead of 299 s, 8 s at 337K instead of 982 s.
-- Cached prefixes survive model swaps: 137,600 tokens restore in 2.7 s.
-
-**Accuracy**
-
-- Every release reproduces the previous build's tokens for all 16 models.
-- ds4_eval, 92 questions: Qwen 3.8 Max 82/92 and Qwen 3.8 Flash 79/92 as
-  served by SparkPipe.
-- Number formats ship only after a teacher-forced A/B shows no loss beyond
-  a same-precision floor.
-
-Limits today: K3 and GLM 5.3 Full serve up to 8 requests at once and GLM
-5.3 Flash up to 16; prefill reaches at most 5% of compute; and only K3 and
-GLM 5.3 Full speculate.
-
 ## The constraint everything follows from
 
 Decoding one token is bound by memory bandwidth: a step takes about as long
@@ -160,10 +112,14 @@ packs. A pack is already sharded for one topology and already in the exact
 byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier.
 
-SparkPipe never quantizes a model itself. Packs carry either the
-publisher's own precision (BF16, FP8, MXFP4, NVFP4) or a vetted community
-release with pinned provenance. The packer only converts formats, slices by
-topology and lays out scale planes; its codecs come from one shared table.
+SparkPipe never quantizes a model itself. Packs carry a publisher's release
+or a vetted community release with pinned provenance. A model at or near the
+frontier serves at its publisher's full precision whenever it fits one fleet:
+BF16, or the format it was trained or released in (A.X K2's FP8, Kimi K3's
+MXFP4 experts). A vetted 4-bit build serves only a model that does not fit one
+fleet at full precision (Qwen 3.8 Max), because that is better than not
+serving it. The packer only converts formats, slices by topology and lays out
+scale planes; its codecs come from one shared table.
 
 **weightd.** One persistent daemon per node, `weightd`, owns the weight
 arenas:
@@ -177,17 +133,16 @@ arenas:
   process and re-attaches in milliseconds, with the weights untouched.
 - It loads routed experts lazily. The arena reserves the full expert address
   space; experts are acquired on demand under leases and reclaimed within a
-  declared budget. A missing or corrupt expert manifest is an error, never a
-  reason to load the whole pack eagerly.
+  pool every client sizes from the pack's expert manifest, so no lane sets a
+  number by hand. Without a cap the pool holds every expert chunk; a lane
+  that streams experts on purpose names an explicit cap below that, and a cap
+  above it is refused. A missing or corrupt expert manifest is an error, never
+  a reason to load the whole pack eagerly.
 - Captured decode graphs work with lazy residency. A graph records which
   kernel arguments are expert pointers and has them patched when leases
   move, so a graph never forces the whole expert set to stay resident.
   Pinning every expert is a separate resident mode, selected explicitly and
-  reported with its memory cost. GLM graphs currently require that mode
-  (invariants I28-I30, [`TECHDEBT.md`](TECHDEBT.md)): since `78c2c21`, GLM
-  5.3 Flash graph serving pins the whole expert pack on every rank, and it
-  will until graphs are relocatable
-  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#glm-graph-residency-today)).
+  reported with its memory cost.
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:
@@ -238,12 +193,13 @@ switching algorithm never changes a result bit. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
-**End state.** Two micro-batches alternate, so one computes while the other
-communicates. A GB10 SM cannot ring the CX-7 doorbell (the 2026-10-01 probe:
-no write lands, no completion, no fault), and GPU-built work requests with a
-CPU doorbell measured within about 1 us of today's relay per round, so the
-CPU keeps ringing the NIC. Both rails carry traffic at once: the switch for
-all-to-all reach, the direct pair link for the first reduction level.
+**Overlap.** Two micro-batches alternate, so one computes while the other
+communicates. The leading micro-batch runs at a higher stream priority, and
+each layer releases the trailing one as soon as the cache rows it reads are
+written, so the trailing micro-batch gathers while the leader attends. A GB10 SM cannot ring the CX-7 doorbell, and work requests
+built on the GPU gain nothing over the CPU posting them, so the CPU rings
+the NIC. Both rails carry traffic at once: the switch for all-to-all reach,
+the direct pair link for the first reduction level.
 
 ## Batching
 
@@ -257,7 +213,50 @@ running as a separate one-row chain.
 the resident stages. Each step's tokens feed the next step on the device, and
 cache blocks completed inside the chain are published from it, so the host
 protocol between submissions is paid once per chain rather than once per
-token.
+token. The engine shortens a chain to the steps that fit in one second of the
+decode step time it has measured at that context. A lane whose steps are slow
+(one that leases experts every step, for example) then wastes at most that
+second of steps after a stop token.
+
+**Streamed prefill for long prompts.** On a lane whose stage config names
+`streamed_prefill` (Kimi K3 today), a prompt of at least
+`streamed_prefill_min_tokens` tokens takes a different path:
+- Every token but the last runs through the streamed prefill. The last token
+  then runs as a one-row wave that samples. On a model with recurrent state
+  the streamed prefill stops one token earlier: the token before the last
+  runs as a one-row wave whose state is the prompt's checkpoint, then the last
+  token samples.
+- Each node takes a contiguous slice of every pass's tokens. The streamer
+  brings every layer's weights through a window, so a pass can hold
+  16,384–32,768 rows a node. The deferred tokens are split evenly over the
+  passes.
+- The last pass's padding rows change neither the recurrent state nor the
+  cache: they leave the KDA state unchanged, attend no key and write no KV.
+- A pass waits at every attention layer for the slowest node; a GPU that
+  runs hot is the usual cause. To shorten that wait, each node times its own
+  attention, and every six attention layers the nodes all-gather those times
+  and plan from them.
+  - The plan sends work from slower nodes to faster ones. A faster node
+    attends the last rows of its own token slice for a slower node's head
+    groups, so the values it computes are already on the node that owns
+    those rows.
+  - The output does not depend on the plan: a row's attention is computed
+    the same way on whichever node runs it.
+- The pass engine is shared (`inference/runner/pass_prefill.cuh`).
+  - It owns the pass plan and the weight window and stream. It also owns the
+    streamer thread, the buffer rings, the checked collectives, the balancer,
+    the embedding and the per-layer health checks.
+  - A model supplies its buffers, weight binding, layer math and recurrent
+    states through hooks (Kimi K3's are in
+    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+  - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
+  - Storing a pass's keys into the decode shards and gathering older keys back
+    is in `inference/runner/pass_keys.cuh`.
+  - A model whose layers stream no expert blocks needs no partner pack. It
+    moves rows instead: a row region on a second weight stream all-gathers
+    each node's rows (`LmPassRowsAllGather`) and exchanges per-destination
+    blocks (`LmPassRowsExchange`). A fixed-order fp32 sum of the 16 landed
+    blocks (`LmPassSumBlocks`) turns an exchange into a reduce-scatter.
 
 **Expert-grouped MoE.** Routed rows are sorted by expert, and each expert's
 weights are read once per step for all of its rows. At 288 experts with
@@ -308,11 +307,52 @@ KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
 **Tiers.** KV device memory belongs to weightd, which keeps each engine's
-pool across an engine restart. Pages leaving the device park in a per-engine
+pool across an engine restart. KV and weights share weightd's per-node
+ceiling: KV always has its reserve and may borrow what the attached weights
+leave of the ceiling, reclaiming cold weights for it, so a model with small
+weights can hold a longer sequence than the reserve alone; new weights take
+back only pools no engine owns
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)).
+An engine's device KV pool attaches with one full-length sequence and grows
+on demand into what the resident model leaves of the node, stopping where
+`MemAvailable` would cross a margin above earlyoom's line; `/health`
+reports `kv_capacity_tokens` (what the smallest rank's pool holds now) and
+`kv_capacity_max_tokens` (the most it may grow to). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
 DRAM tier ([`TECHDEBT.md`](TECHDEBT.md), KV tiers).
+
+The snapshot store spreads its files over 256 subdirectories by prefix
+identity, so one store holds tens of millions of page files; a single ext4
+directory without `large_dir` stops near 1.8 million. Linking a page to its
+parent and its orphans costs one hash chain, not a scan of the index, and the
+startup scan reads the shards on eight threads. Each store has a byte budget
+(`kv_snapshot_bytes` in [`deployment/lanes.json`](deployment/lanes.json):
+256 GiB per rank for K3, GLM-5.3 Full, GLM-5.3 Flash and DeepSeek V4.1 Flash,
+64 GiB for the other models). Every store also keeps the node's
+`kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
+write it evicts its oldest files until the partition holds the reserve plus
+the new file, and refuses the write when nothing is left to evict, so KV never
+fills the system drive. A write the store cannot complete is logged with the step
+that failed and its errno. The cache then drops that entry's saved mark and,
+after an I/O error, saves the entry again, so one failed write never leaves a
+chain that cannot restore.
+
+For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
+attention), a resume point is a page with its state saved beside it:
+- one state on every checkpoint stride (`cache_checkpoint_token_count`,
+  16,384 tokens for K3, 4,096 for GLM-5.3 Flash);
+- the prompt checkpoint, one token before each prompt's end, which the store
+  writes as soon as its wave publishes it;
+- the newest state of a sequence whose reply ends on a stop token or its
+  token budget, which the release saves with the pages. The stop tokens are
+  the model's end-of-sequence tokens and the request's own, which for a chat
+  request are its template's stop markers.
+
+After a restart or a model swap, a repeated prompt resumes one token before
+its end, and a follow-up turn resumes at the newest of these points on its
+path.
 
 **Sharding.** The fleet stores 1/N of the cache on each of N nodes:
 
@@ -381,17 +421,16 @@ A model customizes exactly three things:
 - a fold/rollback for its own recurrent and paged state.
 
 **Sources.** A new method arrives as a new source behind the seam, not as
-edits to every family. The end state, not yet built, is a tree verifier that
-checks several drafters' candidates in one target pass, and multi-drafter
-composition that races decorrelated drafters and retires the ones that stop
-paying for themselves. Today every served acceptance is a chain
+edits to every family. A tree verifier checks several drafters' candidates
+in one target pass, and multi-drafter composition races decorrelated
+drafters and retires the ones that stop paying for themselves
 ([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
 **Guarantees.** Verification pins every emitted token to the target model's
-multi-row verify output. Batched rows are not yet bitwise equal to B1
-([`TECHDEBT.md`](TECHDEBT.md), Dynamic batching), so a speculative run can
-differ from a B1 run without speculation. Every built speculation path can
-be selected individually, and none can be compiled out.
+multi-row verify output, and batched rows are bitwise equal to B1, so a
+speculative run emits the same tokens as a B1 run without speculation.
+Every built speculation path can be selected individually, and none can be
+compiled out.
 
 ## Determinism and evidence
 
@@ -408,6 +447,15 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+Greedy, sampled and logprob tokens come only from ids the tokenizer can
+decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
+and Flash by 24 ids, Ling 3.0 by 31, Qwen 3.8 by 243, MiMo V2.6 by 901. Every
+deployment names `runtime_limits.output_vocabulary`, and the lane tool sets
+it to the tokenizer's vocabulary. Each rank's final head scores only its
+rows below that limit, and the top-p/top-k sampler ranks only tokens below
+it. The engines report the limit in their hello, and the API refuses a
+deployment whose limit differs from its tokenizer's vocabulary.
 
 **Evidence domains.** Each of these is separate:
 
@@ -439,7 +487,11 @@ as `(address, space, residency)`. The spaces are device-private,
 coherent-shared, host-pinned, host-pageable and file-backed. Copies are
 elided when both ends are coherent (GB10) and staged when they are not
 (discrete GPUs). Weights, KV pages and collective buffers are all memory
-objects with residency transitions.
+objects with residency transitions. Kernels launch through the same layer:
+a backend loads a kernel library and launches kernels by name with
+buffer-range bindings, which the layer checks against the kernel's limits
+and keeps alive until the work that reads them completes
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
@@ -462,6 +514,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
 | 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
+| Prefill accelerators (4 RTX 5080) | compute long prompts for a fleet and hand it the KV cache |
 
 **Fabric.** Every Spark uses two data rails:
 
@@ -476,8 +529,10 @@ other. Management networks never carry inference traffic.
 fully meshed islands of four, and to the Sparks over a TCP bridge. No
 tensor-parallel collective crosses hardware classes: a mixed plan hands over
 the KV cache after prefill, or each token's residual stream at a pipeline
-stage boundary. The Studios need the Metal backend. See
-[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool).
+stage boundary. The Studios run the Metal backend; a model that fits one
+Studio runs on its single-device stage runner. See
+[`docs/HARDWARE_TOPOLOGY.md`](docs/HARDWARE_TOPOLOGY.md#mac-studio-pool) and
+[`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md).
 
 **Topology generation.** One deployment JSON generates the pinned
 interfaces, peers and topology tables for every rank. Startup rejects
@@ -497,74 +552,49 @@ the aarch64 Spark binaries. Host roles and the release procedure are in
 ## Models
 
 The product set and the owner's direction are in
-[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Sixteen models serve today,
-all on the common TP16 stage runner (`inference/runner/`). Each model's math
-lives under `model-families/<family>/` and its serving adapter under
-`modules/`. One model holds the fleet at a time. A request names its model;
-if another model is loaded, the request waits while the swap controller
-(`tools/serving/model_swap.py`) swaps the named one in, and that model's
-cached prefixes come back from the KV snapshot store.
+[`docs/MODEL_SUPPORT.md`](docs/MODEL_SUPPORT.md). Every model runs on the
+common TP16 stage runner (`inference/runner/`). Each model's math lives
+under `model-families/<family>/` and its serving adapter under `modules/`.
+A request names its model; if that model is not loaded, the request waits
+while the swap controller (`tools/serving/model_swap.py`) loads it, and the
+model's cached prefixes come back from the KV snapshot store.
 
-| Served name | Model | Family | Context | Swap in | Decode, B1 | Of ideal floor | Prefill, 7-8K prompt | COMPSEC-17 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 256K | 38 s | 28.9 tok/s | 27% | 1,162 tok/s | 15 |
-| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | 24 s | 55.0 tok/s | 23% | 876 tok/s | 13 |
-| `kimi-k3` | Kimi K3 | `k3` | 720K | 46 s | 16.2 tok/s | 51% | 590 tok/s | 17 |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 16K | 24 s | 29.5 tok/s | – | 182 tok/s | 16 |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | 24 s | 19.0 tok/s ‡ | – | 55 tok/s ‡ | 17 |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | 19 s | 40.9 tok/s ‡ | – | 157 tok/s ‡ | 16 |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | 28 s | 14.2 tok/s | 16% | 53 tok/s | 17 |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | 17 s | 34.4 tok/s | 48% | 834 tok/s | 16 |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 32K | 16 s | 89.5 tok/s | 16% | 1,848 tok/s | 16 |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 32K | 20 s | 80.4 tok/s | 19% | 1,514 tok/s | 13 |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 32K | 20 s | 79.2 tok/s | 18% | 1,550 tok/s | 13 |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | 20 s | 51.0 tok/s | – | 773 tok/s | 13 |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 32K | 16 s | 37.9 tok/s | 51% | 1,186 tok/s | 17 |
-| `qwen3.8-max` | Qwen 3.8 Max (internal) | `qwen38` | 32K | 35 s | 10.4 tok/s | – | 35 tok/s | 5 † |
-| `qwen3.8-27b` | Qwen 3.8 27B (internal) | `qwen38` | 256K | 19 s | 57.4 tok/s | 35% | 1,852 tok/s | 14 |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 32K | 20 s | 45.0 tok/s | – | 358 tok/s | 15 |
+| Served name | Model | Family | Context |
+| --- | --- | --- | ---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K |
+| `kimi-k3` | Kimi K3 | `k3` | 1M |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K |
+| `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K |
+| `a.x-k2` | A.X K2 | `axk2` | 256K |
+| `solar-open-2` | Solar Open 2 | `solar_open2` | 256K |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K |
 
-All on sixteen Sparks at TP16, with the GPU clocks capped at 2200 MHz and
-no speculation:
-
-- **Decode, B1** is one request, greedy, generating 256 tokens (case
-  `b1_o256` of `tools/api_serving_perf.py`), on a quiet fleet. Most rows
-  come from the qualification of release `91c0e6be3` on 2026-10-12, with
-  old and new builds measured in one hold. Newer runs replace four rows:
-  K3 on 2026-10-14 (release `1d89e0377`), the two GLM models on
-  2026-10-18, and DeepSeek V4.1 Flash on 2026-10-13 after its decode fix.
-- **Of ideal floor** compares B1 with the ideal memory floor: each rank
-  reads 1/16 of the active weights once per token at 273 GB/s. A dash means
-  the floor is not computed, or the split of active parameters between
-  formats is not verified. The arithmetic is in
-  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models).
-- **Prefill** is one cold prompt of about 7,400 tokens (case `ttft6000`;
-  the count depends on the tokenizer): prompt tokens over the time to the
-  first token. K3 and GLM 5.3 Full were measured at 8K, on 2026-10-13 and
-  2026-10-15.
-- **COMPSEC-17** is the 17-question security set of the release
-  qualification, from release `91c0e6be3`; MiMo at its bring-up on
-  2026-10-13. † Qwen 3.8 Max always thinks; it ran with a 2,048-token
-  budget.
-- **Swap in** is the median time from a swap request until the model
-  serves, over the swaps the controller logged on 2026-10-13 and 2026-10-14.
-  It includes stopping the previous model. The slowest single swap was K3's,
-  at 79 s.
 - **Context** is the window the chat layer serves
-  (`deployment/hub/chat_frontend.json`). K3's is 737,280 tokens.
-- ‡ MiMo was measured only in the release qualification of 2026-10-14,
-  while a CPU tenant kept about 16 cores busy on every node, so its numbers
-  are lower bounds. The same load cut K3 from 16.2 to 10.0 tok/s.
-- On the six fixed release prompts every model produced the same tokens as
-  the build it replaced. GLM 5.3 Full's logprob golden moved slightly: 706 of
-  708 top-1 tokens agree, and the one flip is a near tie.
-- The Qwen models are internal only. They serve on the LAN door but not on
-  sparkpipe.ai, because of their license terms.
-
-Serving is not a readiness claim. Hy4 has not yet matched a reference run
-([`TECHDEBT.md`](TECHDEBT.md), Production qualification), and each driver's
-acceptance status is in [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md)
-and [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md).
+  (`deployment/hub/chat_frontend.json`), from the lane records in
+  `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
+  to them.
+- Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
+  its license requires a separate agreement with Qwen for any
+  model-as-a-service business.
+- **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
+  FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
+  on the same runner, each with its publisher's drafter where there is one.
+- Speed, accuracy and swap times for every model, with their receipts, are in
+  [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#all-served-models); each
+  driver's acceptance status is in
+  [`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md).
 
 ## Serving API
 
@@ -583,86 +613,35 @@ A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.
 
-## The provider network
+## SparkPipe Chat
 
-Anyone running SparkPipe can sell the capacity they are not using through
-sparkpipe.ai and keep 85% of what it earns. The economics are in
-[`docs/MARKETPLACE_PLAN.md`](docs/MARKETPLACE_PLAN.md).
+SparkPipe Chat (`https://sparkpipe.ai:8443`) is Open WebUI in front of the
+chat layer, in Korean and English, for accounts the operator approves
+([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)).
 
-**Joining.** `sparkpipe provider register` binds an installation to a
-sparkpipe.ai account and joins its head node to the SparkPipe tailnet: one
-WireGuard mesh that connects every provider, the router and the reference
-nodes. The installation opens no port to the internet. The tailnet's access
-rules let only the router and the reference nodes reach the installation's
-model API. The provider chooses, in the dashboard or the agent's
-configuration:
+- **Memory:** one memory layer serves every model. A chat that outgrows the
+  context keeps its most relevant turns and a summary of the rest; a switch
+  turns memory off for a chat, and a slider compacts it by hand.
+- **Local mode** (`/local/`) keeps a user's chats in the browser; the servers
+  keep no history of them.
+- **Field search:** checkboxes in the chat add search tools for one field at a
+  time (law, medicine, finance, patents and others), so any model answers from
+  current primary sources and cites them. Korean law comes from the national
+  law database; each tool says where its queries go before it is ticked.
 
-- which resident models to offer;
-- its own price per million input and output tokens for each model;
-- limits on concurrency, context length and hours of availability;
-- whether reselling is on at all. Switching it off stops new network work
-  at once.
+## Fleet-hours
 
-**The owner comes first.** Network requests run as the lowest priority class
-in the installation's own batch engine, on capacity the owner's traffic
-leaves idle. When the owner's traffic arrives, network work yields at the
-next frame boundary. A network request that is still running either finishes
-within the bound the router set when it placed the request, or goes back to
-the router, which resumes it on another provider. Offering a model that is
-not resident costs one model promotion.
+HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from Seoul, first of all to Korean companies whose data must stay in Korea. The terms, the Fleet List and the privacy policy are on [sparkpipe.ai](https://sparkpipe.ai), in Korean and English: visitors from Korean addresses get the Korean pages first, everyone else the English ones, and an EN / 한국어 switch on every page keeps their choice.
 
-**Providers are interchangeable.** Every provider is verified (below), so
-all offers of the same model at the same quantization serve the same model.
-The router is a LiteLLM proxy, the same OpenAI-compatible door the fleet
-already uses. Each offer is one LiteLLM deployment of its model, at the
-provider's tailnet address and priced at the provider's price. The router
-spreads a buyer's requests across as many providers as it needs, choosing
-by price, measured latency, load and verification record, so one buyer can
-use more capacity than any single installation has. Requests that share a
-prompt prefix stay on one provider, so its KV cache is reused. A buyer who
-needs a seeded reply to replay bit for bit is pinned to one driver build and
-hardware type, because different kernels give different bits.
-
-**Metering.** Every completion carries a receipt signed by the provider,
-naming:
-
-- the driver hash and model contract hash;
-- the request identity and sampling seed;
-- the input and output token counts.
-
-Buyers pay the serving provider's own price, with nothing added. The
-provider is paid 85% of it and sparkpipe.ai keeps 15%.
-
-**Verification.** Every provider is verified the same way; there is no
-unverified tier. Nothing a provider's machine reports about itself is
-trusted, so about 2% of served tokens are computed again. The router
-secretly samples real completed requests, weighted by cost, and replays them
-on reference nodes. The reference nodes run the same pinned driver build and
-weights on the same hardware type.
-
-- **Greedy replays compare token for token.** Determinism (above) makes that
-  exact.
-- **Logprobs are recomputed for sampled tokens.** They cover sampled traffic,
-  and they catch quantization even where the tokens agree.
-- **Cheaper secondary checks:** weight fingerprints (trigger prompts whose
-  responses only the exact weights reproduce) and performance envelopes.
-
-A mismatch holds the payout through the challenge window and triggers one
-independent re-execution. If that confirms it, the provider forfeits its
-bond. The verification replays are paid for out of the 15%. A provider sees
-the prompts it serves, as with any hosted API; GB10 has no confidential
-computing mode.
-
-**sparkpipe.ai.** The site ([`site/`](site/)) holds:
-
-- the landing page, and the provider page with an earnings calculator;
-- the playground, which talks to the LiteLLM door: it lists the models,
-  streams replies with their time to first token and decode rate, and
-  writes the same request as curl or Python;
-- the public model catalog, with live prices and capacity;
-- the buyer console: keys, usage and billing;
-- the provider dashboard: registration, models and prices, the resale
-  switch, earnings and the verification record.
+- **A fleet-hour** is one entire fleet for sixty minutes. During it the fleet serves only the customer's requests, with the model the customer chose from the [Fleet List](https://sparkpipe.ai/fleets.html).
+- **Two ways to buy:**
+  - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
+  - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
+- **Self-serve:** an account is a verified email address, signed in to with one-time codes. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account while signed in, or through the API with its access tokens. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
+- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); any customer may pay in USDC or USDT through our payment processor, CoinPayments, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
+- **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
+- **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
+- **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
 
 ## Repository
 
@@ -675,9 +654,8 @@ computing mode.
 | `cache/` | paged KV cache, prefix cache, page store, pager, NVMe tier |
 | `ring/transport/` | RDMA transport, device collectives, fabric topology |
 | `inference/kernels/` | shared CUDA kernels: GEMM/MMA/TMA, skinny and row-blocked GEMV, attention, routing, top-k, norms, speculation |
-| `inference/llms/` | older per-checkpoint device code (K3, MiMo 2.5, Qwen 3.6) |
 | `modules/` | per-family resident decode stages (firmware modules and serving adapters) |
-| `common/` | GLM-lineage stage module and CUDA tree, GDN stage kernels, KV frame and geometry headers; the GLM files are pending moves in `tests/test_dry_law.py` |
+| `common/` | GLM-lineage stage module and CUDA tree, GDN stage kernels, KV frame and geometry headers |
 | `model-families/`, `model_contracts/` | model geometry headers and authoritative checkpoint contracts |
 | `include/sparkpipe/` | public ABIs and family templates |
 | `schema/` | model-description and hardware-topology JSON schemas |
@@ -688,7 +666,7 @@ computing mode.
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai: public pages and the playground |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the USDC and USDT checkout (`buy.html`), the customer account (`account.html`) and the two-year planner (`two-year.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those
@@ -738,12 +716,43 @@ Hardware qualification requires CUDA, transport, numerical and service
 receipts from an exact committed revision. Host or simulator results cannot
 stand in for them.
 
+GitHub CI picks its lanes from the files a pull request or a push to `main`
+changes (`tools/ci_lanes.py`):
+
+- `light-tests` always runs, in about two minutes: the website and payment
+  tests, plus every test that scans the whole tree, from code size and
+  source comments to the source package gate. When Markdown outside the site
+  or anything under `docs/` changes, it also builds the host targets and runs
+  every test that can read Markdown: tests that name a `.md` file, `docs/`,
+  README or TECHDEBT, and tests that import a tool that does, directly or
+  through other tools (about three minutes more).
+- The engine lane (`compile-sm121a` and `host-tests`, over an hour) runs
+  only when a changed file is an engine path in `ENGINE_PATHS`: the source
+  directories, `tools/`, `tests/`, `deployment/`, `Makefile`, `*.mk` and the
+  workflow. It does not run for the site (`SITE_PATHS`), Markdown and `docs/`,
+  or repository files (`LIGHT_PATHS`: `LICENSE*`, `NOTICE`, git and GitHub
+  metadata, and the lane script and its test). A file outside every list runs
+  the engine lane to be safe.
+- `tests/test_ci_lanes.py` fails when a tracked file has no lane, when an
+  engine test or build rule starts to read a site or repository file, when a
+  Makefile rule uses Markdown, or when a whole-tree test is missing from
+  `light-tests`.
+- A new push to a pull request cancels its older run. `workflow_dispatch`
+  and a nightly run on `main` (18:00 UTC) run every lane, so anything the
+  lane rules miss still shows up within a day.
+
 ## License
 
-SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
-Copyright 2026 HYOR AI Tech Ltd. Third-party files kept in the tree and their
-licenses are listed in [`NOTICE`](NOTICE).
+SparkPipe is licensed under the [Functional Source License, Version 1.1, ALv2 Future License](LICENSE) (FSL-1.1-ALv2). Copyright 2026 HYOR AI Tech Ltd.
+- **Allowed:** use, change, redistribute and sell it for any purpose, commercial included, under the license and the [additional permission](LICENSE-PERMISSION.md).
+- **The one exception is a Fleet Rental Service:** a commercial product or service whose purpose is to give others the use of hardware that runs SparkPipe and that you operate, or general-purpose access to models it serves on that hardware, however it is priced.
+- **Still allowed, commercially:**
+  - running SparkPipe on your own hardware for your own work and products;
+  - building it into products you sell, including hardware your customers operate;
+  - professional services to a licensee.
+- **Two years later:** each version becomes available under the [Apache License, Version 2.0](LICENSE-APACHE-2.0) two years after we make it available.
+- **Earlier versions:** every version made available before the switch to the FSL stays under the Apache License, Version 2.0.
 
-Model weights, tokenizers and the stage packs built from them are not covered
-by the Apache License. They keep their publishers' licenses, some of which
-add conditions for large commercial deployments.
+Third-party files kept in the tree and their licenses are listed in [`NOTICE`](NOTICE). Contributions are welcome under the [Contributor License Agreement](CLA.md); see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Model weights, tokenizers and the stage packs built from them are not covered by either license. They keep their publishers' licenses, some of which add conditions for large commercial deployments.

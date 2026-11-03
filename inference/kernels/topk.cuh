@@ -15,7 +15,7 @@ static __device__ __forceinline__ float LmTopkScore(const float *scores, const u
 		? LmBf16ToFloat(logits_bf16[index])
 		: scores[index];
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SIGMOID )
-		return(1.0f / (1.0f + __expf(-value)));
+		return(SparkMathSigmoidFast(value));
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SQRT_SOFTPLUS )
 	{
 		float softplus = value > 20.0f ? value : log1pf(expf(value));
@@ -48,7 +48,9 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	uint32_t *keys = lm_topk_shared;
 	uint32_t *slots = lm_topk_shared + LM_TOPK_SMALL_LIMIT;
 	uint64_t base = (uint64_t)blockIdx.x * n;
-	uint32_t index,size,stride;
+	uint32_t index,size,stride,width = 2u;
+	while ( width < n && width < LM_TOPK_SMALL_LIMIT )
+		width <<= 1u;
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
 		keys[index] = index < n ? LmTopkKey(LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16,
@@ -89,17 +91,17 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 				keys[index] = 0u;
 		__syncthreads();
 	}
-	for (size = 2u; size <= LM_TOPK_SMALL_LIMIT; size <<= 1u)
+	for (size = 2u; size <= width; size <<= 1u)
 		for (stride = size >> 1u; stride > 0u; stride >>= 1u)
 		{
-			for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
+			for (index = threadIdx.x; index < width; index += THREADS)
 			{
 				uint32_t partner = index ^ stride;
 				if ( partner > index )
 				{
 					bool descending = ((index & size) == 0u);
-					bool swap = descending ? (keys[index] < keys[partner])
-						: (keys[index] > keys[partner]);
+					bool after = keys[index] < keys[partner] || (keys[index] == keys[partner] && slots[index] > slots[partner]);
+					bool swap = descending ? after : !after;
 					if ( swap )
 					{
 						uint32_t tk = keys[index],ts = slots[index];

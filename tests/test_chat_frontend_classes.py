@@ -38,11 +38,13 @@ def main():
     listed = json.loads(asyncio.run(frontend.list_models(None)).body)
     if sorted(entry["id"] for entry in listed["data"]) != ["fake", "fake-bulk"]:
         failures.append(f"/v1/models lists each model and its -bulk name: {listed}")
+    if any(entry.get("reasoning_efforts") != ["high"] for entry in listed["data"]):
+        failures.append(f"/v1/models advertises exactly the reasoning efforts a model accepts: {listed}")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS a request for <model>-bulk runs on that model's engine at bulk priority, below interactive requests and above the background curator, and /v1/models lists both names")
+    print("PASS a request for <model>-bulk runs on that model's engine at bulk priority, below interactive requests and above the background curator, and /v1/models lists both names with the reasoning efforts the model accepts")
     return 0
 
 

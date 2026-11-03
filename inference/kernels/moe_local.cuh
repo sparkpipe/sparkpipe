@@ -35,7 +35,7 @@ static __device__ __forceinline__ uint16_t LmSwigluPackedValue(uint16_t gate, ui
 {
 	const float g = fminf(LmBf16ToFloat(gate), limit);
 	const float u = fminf(fmaxf(LmBf16ToFloat(up), -limit), limit);
-	return LmFloatToBf16((g / (1.0f + expf(-g))) * u * weight);
+	return LmFloatToBf16(SparkMathSilu(g) * u * weight);
 }
 
 static __global__ void LmSwigluPackedKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, const float *__restrict__ weight,
@@ -54,7 +54,7 @@ static __global__ void LmGeluTanhPackedKernel(const uint16_t *__restrict__ gate,
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * width + element]);
-		const float activated = LmBf16ToFloat(LmFloatToBf16(0.5f * g * (1.0f + tanhf(0.7978845608028654f * (g + 0.044715f * g * g * g)))));
+		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathGeluTanhScaleFirst(g)));
 		output[(uint64_t)row * width + element] = LmFloatToBf16(activated * LmBf16ToFloat(up[(uint64_t)row * width + element]) * weight[row]);
 	}
 }

@@ -1,0 +1,26 @@
+loaded 8 layers
+loaded 16 layers
+loaded 24 layers
+loaded 32 layers
+loaded 40 layers
+loaded 48 layers
+loaded 56 layers
+loaded 64 layers
+weights converted to f32 in 9.9 s
+design variant a: 1099 teacher-forced positions in 23.5 s
+design variant a: 128 greedy tokens, 80.3 s total
+design variant b: 1099 teacher-forced positions in 22.4 s
+design variant b: 128 greedy tokens, 116.3 s total
+code variant a: 1799 teacher-forced positions in 37.4 s
+code variant a: 128 greedy tokens, 94.8 s total
+code variant b: 1799 teacher-forced positions in 37.2 s
+code variant b: 128 greedy tokens, 131.3 s total
+korean variant a: 699 teacher-forced positions in 14.5 s
+korean variant a: 128 greedy tokens, 70.9 s total
+korean variant b: 699 teacher-forced positions in 14.3 s
+korean variant b: 128 greedy tokens, 107.6 s total
+rules variant a: 2039 teacher-forced positions in 42.4 s
+rules variant a: 128 greedy tokens, 99.7 s total
+rules variant b: 2039 teacher-forced positions in 43.0 s
+rules variant b: 128 greedy tokens, 137.4 s total
+reference done in 848.1 s

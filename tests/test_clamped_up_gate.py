@@ -3,6 +3,8 @@ import pathlib
 import subprocess
 import tempfile
 
+from host_cuda_compiler import host_cuda_cxx
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def main():
@@ -63,13 +65,13 @@ int main(void)
 }
 '''
     if args.cuda:
-        prefix = '#include <cuda_runtime.h>\n' + prefix.replace('QUAL','__host__ __device__').replace('STORAGE','__device__ __managed__')
+        prefix = '#include <cuda_runtime.h>\n#include "inference/kernels/kernel_math.cuh"\n' + prefix.replace('QUAL','__host__ __device__').replace('STORAGE','__device__ __managed__')
         launch = 'LmClampedUpGateKernel<32><<<3,32>>>(input,output+1,49,10.0f); assert(cudaDeviceSynchronize() == cudaSuccess);'
-        compiler = ['/usr/local/cuda/bin/nvcc','-std=c++17','-arch=sm_121a']
+        compiler = ['/usr/local/cuda/bin/nvcc','-std=c++17','-arch=sm_121a','-I'+str(ROOT)]
     else:
-        prefix = '#include <stdint.h>\n#define __global__\n#define __launch_bounds__(a,b)\n#define __expf expf\nstatic struct { uint32_t x; } blockIdx,threadIdx;\n' + prefix.replace('QUAL','').replace('STORAGE','')
+        prefix = '#include "tests/host_cuda/lm_host_cuda.cuh"\n#include "inference/kernels/kernel_math.cuh"\nLmHostDim3 blockIdx,threadIdx,blockDim,gridDim;\n' + prefix.replace('QUAL','static').replace('STORAGE','')
         launch = 'for (blockIdx.x=0; blockIdx.x<3; blockIdx.x++) for (threadIdx.x=0; threadIdx.x<32; threadIdx.x++) LmClampedUpGateKernel<32>(input,output+1,49,10.0f);'
-        compiler = ['c++','-std=c++17']
+        compiler = [host_cuda_cxx(),'-std=c++17','-I'+str(ROOT),'-I'+str(ROOT / 'tests/host_cuda')]
     with tempfile.TemporaryDirectory() as directory:
         source = pathlib.Path(directory) / ('probe.cu' if args.cuda else 'probe.cpp')
         binary = pathlib.Path(directory) / 'probe'

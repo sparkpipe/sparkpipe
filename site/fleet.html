@@ -163,7 +163,7 @@ function render() {
 
 async function poll() {
   try {
-    const r = await fetch("/fleet/status", { cache: "no-store" });
+    const r = await fetch("/fleet/status", { cache: "no-store", headers: auth });
     if (r.ok) { status = await r.json(); render(); }
     else $("state").textContent = "Fleet status unavailable (" + r.status + ")";
   } catch (e) {

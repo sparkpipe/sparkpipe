@@ -8,7 +8,8 @@ Every GitHub workflow must:
 - install Python packages only with --require-hashes and --no-deps from a requirements file in which
   every line names one exact version and its sha256, so no transitive package resolves to whatever
   is newest on the index at run time;
-- grant the job token read-only repository access at the top level and never write-all.
+- grant the job token read-only repository access at the top level, never write access in any job's
+  permissions, and never write-all; a `container:` shorthand image is a container image too.
 
 Each rule is also checked against a workflow that breaks it, so a checker that stopped detecting a
 violation would fail here too.
@@ -22,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 USES = re.compile(r"^\s*(?:-\s+)?uses:\s*([^\s#]+)")
 IMAGE = re.compile(r"^\s*(?:-\s+)?image:\s*([^\s#]+)")
+CONTAINER = re.compile(r"^\s*(?:-\s+)?container:\s*([^\s#{]+)\s*(?:#.*)?$")
+PERMISSIONS = re.compile(r"^(\s*)permissions:\s*(?:#.*)?$")
 PINNED_ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 PINNED_IMAGE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 PIP_INSTALL = re.compile(r"\bpip3?\s+install\b")
@@ -78,10 +81,19 @@ def workflow_violations(name, text, root=ROOT):
     if re.search(r"permissions:\s*write-all", text):
         problems.append("%s: write-all permissions" % name)
     for number, line in enumerate(lines, 1):
+        match = PERMISSIONS.match(line)
+        if match is None or not match.group(1):
+            continue
+        for entry in lines[number:]:
+            if entry.strip() and len(entry) - len(entry.lstrip()) <= len(match.group(1)):
+                break
+            if entry.strip().endswith(": write"):
+                problems.append("%s:%d: a job's permissions grant write access: %s" % (name, number, entry.strip()))
+    for number, line in enumerate(lines, 1):
         match = USES.match(line)
         if match and not match.group(1).startswith("./") and PINNED_ACTION.match(match.group(1)) is None:
             problems.append("%s:%d: action %s is not pinned to a 40-hex commit SHA" % (name, number, match.group(1)))
-        match = IMAGE.match(line)
+        match = IMAGE.match(line) or CONTAINER.match(line)
         if match and PINNED_IMAGE.match(match.group(1)) is None:
             problems.append("%s:%d: image %s is not pinned by sha256 digest" % (name, number, match.group(1)))
     for line in logical_lines(text):
@@ -110,6 +122,8 @@ BAD_WORKFLOWS = {
     "missing lock file": "permissions:\n  contents: read\njobs:\n  a:\n    steps:\n      - run: python3 -m pip install --require-hashes --no-deps -r tools/ci/absent.txt\n",
     "no permissions block": "jobs:\n  a:\n    steps:\n      - run: make\n",
     "write permission": "permissions:\n  contents: write\njobs:\n  a:\n    steps:\n      - run: make\n",
+    "tag-pinned container shorthand": "permissions:\n  contents: read\njobs:\n  a:\n    container: nvidia/cuda:13.3.1-devel-ubuntu24.04\n",
+    "job write permission": "permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: write\n    steps:\n      - run: make\n",
 }
 
 
@@ -118,7 +132,7 @@ def main():
     for label, text in BAD_WORKFLOWS.items():
         if not workflow_violations(label, text):
             failures.append("the checker accepted a workflow with a %s" % label)
-    good = ("permissions:\n  contents: read\njobs:\n  a:\n    container:\n      image: x/y@sha256:" + "a" * 64 +
+    good = ("permissions:\n  contents: read\njobs:\n  a:\n    permissions:\n      contents: read\n    container:\n      image: x/y@sha256:" + "a" * 64 +
             "\n    steps:\n      - uses: actions/checkout@" + "b" * 40 +
             "\n      - run: python3 -m pip install --no-deps --require-hashes -r tools/ci/host-tests-requirements.txt\n")
     accepted = workflow_violations("good", good)

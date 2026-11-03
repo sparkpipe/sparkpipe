@@ -64,7 +64,7 @@ def main():
     refused = [{"tools": "lookup"}, {"tools": [{"type": "function"}]}, {"tools": [{"type": "retrieval"}]}, {"tool_choice": "required"},
                {"tool_choice": {"type": "function", "function": {"name": "lookup"}}}, {"max_tokens": "16"}, {"max_tokens": 1.5},
                {"max_completion_tokens": True}, {"max_tokens": 0}, {"stop": 5}, {"stop": ["t5", 6]}, {"stop": [""]}, {"chat_template_kwargs": ["thinking"]},
-               {"reasoning_effort": ["high"]}, {"reasoning_effort": "extreme"}, {"stream": "yes"}]
+               {"reasoning_effort": ["high"]}, {"reasoning_effort": "extreme"}, {"reasoning_effort": "minimal"}, {"stream": "yes"}]
     for extra in accepted:
         if outcome(frontend, model, extra) != 200:
             failures.append(f"{extra} is accepted (got {outcome(frontend, model, extra)})")
@@ -75,7 +75,7 @@ def main():
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print(f"PASS chat frontend request fields: {len(accepted)} well-typed requests are prepared; {len(refused)} malformed fields and unsupported tool_choice values are 400s, never a crash")
+    print(f"PASS chat frontend request fields: {len(accepted)} well-typed requests are prepared; {len(refused)} malformed fields and unsupported tool_choice values are 400s, never a crash, and a model without an off switch refuses reasoning_effort minimal")
 
 
 if __name__ == "__main__":
