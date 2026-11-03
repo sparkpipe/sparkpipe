@@ -11,6 +11,15 @@
              for every served token, the reference top-5, the reference
              logprob of the served token, the served logprob and the
              reference top-1/top-2 logit margin
+  gate-prompts  the Metal gate prompts (tools/gemma4_reference.py's set)
+             rendered with the full Hy4 chat turn (model-families/hy4/
+             chat_template.json, reasoning off) -> --out prompts.json
+  teacher    logits of every prompt position for the Metal gate: --prompts
+             prompts.json -> --out DIR/<name>.ref_<v>.logits for --variants
+             a,h. Variant b sums every matrix product in 1,024-wide chunks
+             last first, reverses the norms' and softmax sums and adds the
+             routed experts in descending order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
+             the second reference whose distance from a is the gate's floor
 
 The checkpoint ships no modeling code. The semantics follow config.json and
 the hy-v4 graph llama.cpp merged at 49c0dc82 (MIT, see NOTICE), which mirrors the vLLM
@@ -53,8 +62,12 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 GROUP = 32
 LOOKAHEAD = 8
+REVERSED = False
+CHUNK = 1024
 CHUNK = 32 << 20
 KINDS = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}
 
@@ -66,15 +79,29 @@ def bf16(values):
 
 
 def sigmoid(values):
-    return (1.0 / (1.0 + np.exp(-values))).astype(np.float32)
+    return (1.0 / (1.0 + device.exp(-values))).astype(np.float32)
 
 
 def silu(values):
     return (values * sigmoid(values)).astype(np.float32)
 
 
+def product(left, right):
+    if not REVERSED or left.shape[-1] <= CHUNK:
+        return left @ right
+    total = None
+    for first in reversed(range(0, left.shape[-1], CHUNK)):
+        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+        total = part if total is None else total + part
+    return total
+
+
+def reduce_sum(values, axis=-1, keepdims=True):
+    return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
+
+
 def rms_norm(values, weight, epsilon):
-    inverse = np.power((values * values).mean(axis=-1, keepdims=True) + np.float32(epsilon), np.float32(-0.5))
+    inverse = np.power(reduce_sum(values * values) / np.float32(values.shape[-1]) + np.float32(epsilon), np.float32(-0.5))
     return bf16(weight * bf16(values * inverse))
 
 
@@ -224,7 +251,7 @@ class Reference:
         rows = streams.shape[0]
         flat = streams.reshape(rows, -1)
         inverse = np.power((flat * flat).mean(axis=-1, keepdims=True) + np.float32(self.epsilon), np.float32(-0.5))
-        mixes = (flat * inverse) @ fn.T
+        mixes = product(flat * inverse, fn.T)
         pre = sigmoid(mixes[:, :self.hc] * scale[0] + base[:self.hc]) + np.float32(self.hc_epsilon)
         mixed = bf16(np.einsum("rs,rsd->rd", pre, streams))
         if not post:
@@ -236,8 +263,8 @@ class Reference:
         p = f"model.layers.{layer}.self_attn.indexer."
         c = self.checkpoint
         rows = normed.shape[0]
-        query = bf16(q_lora @ c.mxfp8(p + "wq_b", (self.index_heads * self.index_dim, self.q_lora)).T).reshape(rows, self.index_heads, self.index_dim)
-        key = bf16(normed @ c.mxfp8(p + "wk", (self.index_dim, self.hidden)).T)
+        query = bf16(product(q_lora, c.mxfp8(p + "wq_b", (self.index_heads * self.index_dim, self.q_lora)).T)).reshape(rows, self.index_heads, self.index_dim)
+        key = bf16(product(normed, c.mxfp8(p + "wk", (self.index_dim, self.hidden)).T))
         mean = key.mean(axis=-1, keepdims=True)
         centred = key - mean
         inverse = np.power((centred * centred).mean(axis=-1, keepdims=True) + np.float32(1e-6), np.float32(-0.5))
@@ -245,7 +272,7 @@ class Reference:
         nope = self.index_dim - self.rope_dim
         query[..., nope:] = self.rope(query[..., nope:], positions)
         key[:, nope:] = self.rope(key[:, nope:], positions)
-        weights = (normed @ c.bf16(p + "weights_proj.weight").T).astype(np.float32) * np.float32(1.0 / np.sqrt(self.index_heads * self.index_dim))
+        weights = product(normed, c.bf16(p + "weights_proj.weight").T).astype(np.float32) * np.float32(1.0 / np.sqrt(self.index_heads * self.index_dim))
         selections = []
         for first, count in spans:
             if count <= self.index_topk:
@@ -271,20 +298,20 @@ class Reference:
         p = f"model.layers.{layer}.self_attn."
         c = self.checkpoint
         rows = normed.shape[0]
-        q_lora = bf16(normed @ c.mxfp8(p + "q_a_proj", (self.q_lora, self.hidden)).T)
+        q_lora = bf16(product(normed, c.mxfp8(p + "q_a_proj", (self.q_lora, self.hidden)).T))
         self.note("q_lora_mean_square_min", (q_lora * q_lora).mean(axis=-1).min())
         q_lora = rms_norm(q_lora, c.bf16(p + "q_a_layernorm.weight"), self.lora_epsilon)
         if self.config["indexer_types"][layer] == "full":
             selections[:] = self.indexer_select(layer, normed, q_lora, positions, spans)
-        query = bf16(q_lora @ c.mxfp8(p + "q_b_proj", (self.heads * (self.nope + self.rope_dim), self.q_lora)).T)
+        query = bf16(product(q_lora, c.mxfp8(p + "q_b_proj", (self.heads * (self.nope + self.rope_dim), self.q_lora)).T))
         query = query.reshape(rows, self.heads, self.nope + self.rope_dim)
         query[..., self.nope:] = self.rope(query[..., self.nope:], positions)
-        kv = bf16(normed @ c.mxfp8(p + "kv_a_proj_with_mqa", (self.latent + self.rope_dim, self.hidden)).T)
+        kv = bf16(product(normed, c.mxfp8(p + "kv_a_proj_with_mqa", (self.latent + self.rope_dim, self.hidden)).T))
         latent = kv[:, :self.latent]
         self.note("kv_latent_mean_square_min", (latent * latent).mean(axis=-1).min())
         latent = rms_norm(latent, c.bf16(p + "kv_a_layernorm.weight"), self.lora_epsilon)
         key_rope = self.rope(kv[:, self.latent:], positions)
-        kv_b = bf16(latent @ c.mxfp8(p + "kv_b_proj", (self.heads * (self.nope + self.value), self.latent)).T)
+        kv_b = bf16(product(latent, c.mxfp8(p + "kv_b_proj", (self.heads * (self.nope + self.value), self.latent)).T))
         kv_b = kv_b.reshape(rows, self.heads, self.nope + self.value)
         key_nope, value = kv_b[..., :self.nope], kv_b[..., self.nope:]
         sinks = c.f32(p + "learnable_sink_param", (self.heads,))
@@ -296,29 +323,29 @@ class Reference:
                 allowed &= selected
             rope_scores = np.einsum("thd,sd->hts", query[window, :, self.nope:], key_rope[window], optimize=True)
             for head in range(self.heads):
-                scores = (query[window, head, :self.nope] @ key_nope[window, head].T + rope_scores[head]) * self.scale
+                scores = (product(query[window, head, :self.nope], key_nope[window, head].T) + rope_scores[head]) * self.scale
                 scores = np.where(allowed, scores, -np.inf)
                 peak = np.maximum(scores.max(axis=-1, keepdims=True), sinks[head])
-                weights = np.exp(scores - peak)
-                denominator = weights.sum(axis=-1, keepdims=True) + np.exp(sinks[head] - peak)
-                output[window, head] = bf16((weights @ value[window, head]) / denominator)
-        gate = bf16(sigmoid(bf16(normed @ c.bf16(p + "linear_gate.weight", (self.heads * self.value, self.hidden)).T)))
+                weights = device.exp(scores - peak)
+                denominator = reduce_sum(weights) + device.exp(sinks[head] - peak)
+                output[window, head] = bf16(product(weights, value[window, head]) / denominator)
+        gate = bf16(sigmoid(bf16(product(normed, c.bf16(p + "linear_gate.weight", (self.heads * self.value, self.hidden)).T))))
         gated = bf16(output.reshape(rows, -1) * gate)
-        return bf16(gated @ c.mxfp8(p + "o_proj", (self.hidden, self.heads * self.value)).T)
+        return bf16(product(gated, c.mxfp8(p + "o_proj", (self.hidden, self.heads * self.value)).T))
 
     def dense_mlp(self, layer, normed):
         p = f"model.layers.{layer}.mlp."
         c = self.checkpoint
         inter = self.config["intermediate_size"]
-        gate = bf16(normed @ c.mxfp8(p + "gate_proj", (inter, self.hidden)).T)
-        up = bf16(normed @ c.mxfp8(p + "up_proj", (inter, self.hidden)).T)
-        return bf16(bf16(bf16(silu(gate)) * up) @ c.mxfp8(p + "down_proj", (self.hidden, inter)).T)
+        gate = bf16(product(normed, c.mxfp8(p + "gate_proj", (inter, self.hidden)).T))
+        up = bf16(product(normed, c.mxfp8(p + "up_proj", (inter, self.hidden)).T))
+        return bf16(product(bf16(bf16(silu(gate)) * up), c.mxfp8(p + "down_proj", (self.hidden, inter)).T))
 
     def moe(self, layer, normed):
         p = f"model.layers.{layer}.mlp."
         c = self.checkpoint
         rows = normed.shape[0]
-        logits = normed @ c.bf16(p + "gate.weight", (self.experts, self.hidden)).T
+        logits = product(normed, c.bf16(p + "gate.weight", (self.experts, self.hidden)).T)
         scores = sigmoid(logits)
         selection = scores + c.f32(p + "gate.e_score_correction_bias", (self.experts,))
         chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
@@ -329,6 +356,7 @@ class Reference:
                    (p + "experts.down_proj", "F8_E4M3", (1, self.hidden, self.moe_inter)),
                    (p + "experts.down_proj_scale", "U8", (1, self.hidden, self.moe_inter // GROUP))]
         routed = np.zeros((rows, self.hidden), dtype=np.float32)
+        contributions = []
         limit = self.swiglu_limit
         for expert in range(self.experts):
             if expert + LOOKAHEAD < self.experts:
@@ -342,15 +370,17 @@ class Reference:
                 continue
             w = c.fp8(w_gate_up, s_gate_up)
             x = normed[token]
-            g = np.minimum(bf16(x @ w[:self.moe_inter].T), limit)
-            u = np.clip(bf16(x @ w[self.moe_inter:].T), -limit, limit)
+            g = np.minimum(bf16(product(x, w[:self.moe_inter].T)), limit)
+            u = np.clip(bf16(product(x, w[self.moe_inter:].T)), -limit, limit)
             del w
-            y = bf16(bf16(bf16(silu(g)) * u) @ c.fp8(w_down, s_down).T)
-            routed[token] += y * weights[token, slot][:, None]
+            y = bf16(product(bf16(bf16(silu(g)) * u), c.fp8(w_down, s_down).T))
+            contributions.append((token, y * weights[token, slot][:, None]))
+        for token, contribution in reversed(contributions) if REVERSED else contributions:
+            routed[token] += contribution
         shared = p + "shared_experts."
-        g = bf16(normed @ c.mxfp8(shared + "gate_proj", (self.moe_inter, self.hidden)).T)
-        u = bf16(normed @ c.mxfp8(shared + "up_proj", (self.moe_inter, self.hidden)).T)
-        s = bf16(bf16(bf16(silu(g)) * u) @ c.mxfp8(shared + "down_proj", (self.hidden, self.moe_inter)).T)
+        g = bf16(product(normed, c.mxfp8(shared + "gate_proj", (self.moe_inter, self.hidden)).T))
+        u = bf16(product(normed, c.mxfp8(shared + "up_proj", (self.moe_inter, self.hidden)).T))
+        s = bf16(product(bf16(bf16(silu(g)) * u), c.mxfp8(shared + "down_proj", (self.hidden, self.moe_inter)).T))
         return bf16(bf16(routed) + s)
 
     def forward(self, sequences, last_layer=None, dump_rows=None):
@@ -403,7 +433,7 @@ class Reference:
         parts = []
         for first in range(0, vocab, chunk):
             rows = self.checkpoint.bf16("lm_head.weight", None, first, min(chunk, vocab - first))
-            parts.append(normed @ rows.T)
+            parts.append(product(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 
@@ -507,9 +537,45 @@ def summary(args):
     print(f"stats {report.get('stats')} max_rss_gib {report.get('max_rss_gib')}")
 
 
+def teacher(args):
+    global REVERSED
+    variants = args.variants.split(",")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
+    reference = Reference(args.checkpoint, args.lora_epsilon)
+    prompts = json.loads(Path(args.prompts).read_text())["prompts"]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for label in variants:
+        REVERSED = label != "a"
+        device.select(label)
+        spans, _, normed = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        for prompt, (first, count) in zip(prompts, spans):
+            with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
+                for row in range(0, count - 1, 128):
+                    handle.write(np.ascontiguousarray(reference.logits(normed[first + row:first + min(row + 128, count - 1)]), dtype=np.float32).tobytes())
+            print(f"{prompt['name']}: {count - 1} positions, variant {label}", flush=True)
+
+
+def gate_prompts(args):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gemma4_reference
+    gemma4_reference.gate_prompts(args, ("plain_prefix", "user"), ("turn_suffix", "generation"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    g = sub.add_parser("gate-prompts")
+    g.add_argument("--checkpoint", required=True)
+    g.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/hy4/chat_template.json"))
+    g.add_argument("--out", required=True)
+    e = sub.add_parser("teacher")
+    e.add_argument("--checkpoint", required=True)
+    e.add_argument("--prompts", required=True)
+    e.add_argument("--variants", default="a,h")
+    e.add_argument("--lora-epsilon", type=float, default=1e-5)
+    e.add_argument("--out", required=True)
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     t = sub.add_parser("tokenize")
@@ -525,7 +591,7 @@ def main():
     s.add_argument("--dump", help="npz of the per-layer streams (bf16 bits) of each prompt's last prompt row and first served rows")
     s.add_argument("--last-layer", type=int, help="stop after this layer (debug: the logits are then not the model's)")
     args = parser.parse_args()
-    {"tokenize": tokenize, "score": score, "summary": summary}[args.command](args)
+    {"tokenize": tokenize, "score": score, "summary": summary, "teacher": teacher, "gate-prompts": gate_prompts}[args.command](args)
 
 
 if __name__ == "__main__":

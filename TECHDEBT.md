@@ -497,7 +497,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   4 and a TP4xPP4 deployment cannot hold 1/16 of the KV per node. Close it
   with the TP4xPP4 runtime above, proven by a TP4xPP4 fleet run with T1 parity
   in which each rank holds 1/4 of its group's latent KV and indexer keys.
-- KV pools resize by chunk inside the node reserve with resident demand
+- KV pools resize by chunk inside the node's KV limit with resident demand
   (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
   `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
   between two bindings in one process under the CUDA stub. Not yet proven on
@@ -1111,13 +1111,41 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   Max have no reasoning-off switch in their templates: the chat layer
   refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
   they take, and `/v1/models` lists every model's `reasoning_efforts`.
-- Every stage-runner lane, GLM Flash included, is sized for every resident
-  sequence at full length by default: `tools/stage_lane.py` sets
-  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
-  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
-  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
-  and it takes that pool as a page count. Size the physical pool from a byte
-  budget the lanes share and let paged admission share it.
+- The device KV pool grows on demand into what the resident model leaves
+  of the node ([`docs/LANES.md`](docs/LANES.md),
+  [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)),
+  in code and host tests only. Close it on the fleet: for glm-5.3-flash,
+  glm-5.3, deepseek-v4.1-flash, kimi-k3, qwen3.8-27b and gemma-4-31b, fill
+  KV with long prompts until the pool stops growing, record `/health`
+  `kv_capacity_tokens` and the minimum `MemAvailable` over the 16 nodes
+  (above the margin, no earlyoom kill), and see `release_compare` EXACT 6/6
+  against main. The renderer's projections (`kv_physical_page_capacity`
+  times the KV block) are 86.3M tokens for GLM-5.3 Flash, 9.6M for GLM-5.3,
+  354M for DeepSeek V4.1 Flash, 7.8M for K3, 24.6M for Qwen 3.8 27B and 1.8M
+  for Gemma 4 31B; none is measured.
+- The batch scheduler admits against an engine's maximum device pages (what
+  the model could hold alone on the node), not its pool's live capacity, and
+  the rendered physical capacity takes the model's `node_memory_bytes` from
+  `tools/stage_lane.py` as its footprint. Two engines on one node can so be
+  promised more pages together than the node holds; their pools then stall
+  and evict instead of growing. Close it by sending each rank's live pool
+  capacity to the scheduler and admitting against the smallest rank's,
+  proven by two co-resident engines filling KV with no `KV-PARK-FAILED`.
+- Every device KV page is a logical page, so a lane's host page tables
+  (page cache, arena, store index) now scale with the node budget's pages,
+  up to 2.86M pages for Ling 3.0 Flash, instead of with
+  `sequences * kv_pages`. Measure that host memory on the fleet, and allocate
+  those tables as the pool grows if it matters.
+- KV on disk still has per-lane maxima: `kv_backing_bytes` and
+  `kv_snapshot_bytes` in every record (2.45 TB over 19 lanes) and the
+  512 GiB `kv_partition_reserve_bytes` free-space floor. Owner decision
+  (2026-11-02): one node-wide 500 GB quota for the node's own KV (backing and
+  snapshots), shared by every lane, oldest first under the retention rule;
+  the pair partner's 500 GB mirror stays with the working-state code and is
+  not counted. Close it by replacing the three settings with that quota in
+  `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
+  by two lanes on one node whose combined KV stays under 500 GB while each
+  evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
   fleet swapping and pushes the owner's model out after each reply. Each key
@@ -1236,21 +1264,98 @@ and the multidev docs on 2026-09-28. Line numbers are in
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
-  gated-delta decay, the tanh GeLU and the softcap are there. Still a copy
-  per kernel or per backend:
-  - RMSNorm scales, rotary angles and rotation, the delta-rule cell update,
+  gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
+  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
+  `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
+  - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
+    value before the SiLU, and calling `SparkMathClampedGlu` reorders those
+    instructions (same values, different code), so it keeps its text until
+    a CUDA change with its own qualification takes the shared one;
+  - the gate-limited GLU (`SparkMathGateLimitedGlu`, K-EXAONE's last 16
+    layers: the gate clamped above before the SiLU, the up value to
+    `+-limit`) is Metal's; CUDA's `LmSiluMulGateLimitKernel` and
+    `LmSwigluPackedValue` (every MoE stage) compute the same values, but
+    calling the shared function loads the up value before the gate's clamp
+    and changes their PTX, so they keep their text the same way;
+  - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
+    Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;
-  - copies whose expression differs from the shared one, each a numerical
-    change that needs the affected model's gate: the experts' tanh GeLU in
-    `moe_local.cuh` computes `0.044715 * g * g * g`, while the shared one
-    (and PyTorch) cube first, so Gemma 4's dense and expert FFNs round
-    differently; the head-gate softplus uses `log1pf(__expf(x))`, the
-    gated delta `__logf(1 + __expf(x))`; the causal convolution's swish is
-    `x * sigmoid(x)` on CUDA and `x / (1 + exp(-x))` on Metal;
+  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
+    of the rotary terms, which the reference follows, while CUDA rotates in
+    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
+    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
+    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
+    to +3.48 / +3.86, so the two backends differ here until
+    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
+    qualification);
+  - expressions that differ inside a backend, each a numerical change that
+    needs the affected model's gate: the experts' tanh GeLU
+    (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
+    `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
+    cube first, so Gemma 4's dense and expert FFNs round differently; the
+    head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
+    gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
+    `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
+  - attention softmax: both backends rescale at every new maximum. A
+    Metal-only margin of 8 (from #1605, tried as 9daff83ca and reverted)
+    moved the running maximum only past it: Gemma 4 31B then passed the
+    paired test (+0.92 / +1.65 sigma), but Gemma 4 26B (+3.86 against A) and
+    Qwen3.8-27B (+3.79 against B) fell outside it and Muse Glimmer stayed
+    outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
+    (+3.37 against A) fail the paired test; the attention arithmetic that
+    takes all four through, on both backends, is still open;
+  - the residual norm: both backends take the statistic and the normed
+    value from the FP32 sum of residual and branch and store only the
+    residual rounded (CUDA's `LmFusedResidualRmsNormKernel` in the Gemma,
+    Qwen, Ling and GLM 5.2 stages, and Metal's `spark_rmsnorm_residual`
+    since it stopped rounding the sum first), where the publishers' eager
+    modules (and so the gate references) round the sum and normalise the
+    rounded value. Taking CUDA's order moved the paired test from +2.42 /
+    +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
+    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
+    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
+    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
+    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
+    which now fails against reference a although its CUDA stage uses the same
+    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
+    to the last digit. Both backends apply the gain with one rounding,
+    `bf16(x r w)`, where the publishers round `x r` first, and keep the
+    attention probabilities and the GQA gate in FP32 where the publishers
+    round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
+    Metal's output is 2.5e-3 of its norm from reference a against an a/b
+    floor of 8.3e-5, giving the reference those three roundings brings it
+    to 1.75e-3, and the rest is not located yet;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
-    others, Metal the precise functions everywhere, so the backends differ
-    by the intrinsic's error until one policy is chosen and measured;
+    others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
+    same hardware approximation: bitwise identical over the float range and
+    on every special value, up to 3.9e-6 relative from the exact value on
+    [-87, 10), denormals flushed. So Metal already computes the fast flavor
+    everywhere. Swapping the attention softmax to `fast::exp` changes only the
+    AIR intrinsic (`air.exp.f32` to `air.fast_exp.f32`) and with it how the
+    compiler schedules the arithmetic around it, and that alone moved the
+    paired test by 2 to 4 sigma: Gemma 4 31B +4.8 to +2.0, Muse Glimmer +3.37
+    to -1.3, MiMo +3.49 to +2.23 (all to passing), Gemma 4 26B with free
+    routing +0.85 to +5.1 and Qwen3.8-27B +2.0 to +4.0 (both to failing). The
+    paired test of the models near its limit is within reach of
+    reduction-order noise; the code keeps `exp`. The gate's floor now
+    carries that noise: reference variant h (`tools/reference_device_error.py`)
+    adds a GPU's measured exp and tanh error to variant b's reduction order,
+    because the floor of reduction order alone (a against b) failed the
+    reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
+    the models gated against a and b are being re-gated against a and h;
   Kernel bodies (the schedules) stay per backend.
+- Every family runs one schedule for all backends
+  ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
+  Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
+  have a Metal backend. Still open: the GLM 5.3 Full and A.X
+  K2 geometries stay in their `.cu` files until `LmRopePairing` and the
+  stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
+  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  the `D41_*` defines) rather than a geometry struct. The CUDA backends still
+  carry one copy of an operation per family: GQA attention with its gather,
+  split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed
+  experts in six families.
 - Add rank, island and link-class descriptors and derive collective
   decomposition from the link matrix instead of a configured backend.
 - Keep the host backend as a CI oracle for common policy, not only for
@@ -1258,16 +1363,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
   contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
   models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
   other model and no multi-Studio topology is.
-- Left out on purpose (2026-10-02): KV and weights share weightd but not one
-  budget. weightd maps KV device memory as KV pools that grow and shrink in
-  chunks (`runtime/spark_weightd_kv_pool.c`, driven from
-  `runtime/stage_kv_binding.c`) and weights through leases. The weight budget
-  is `device_bytes_max` minus the static `--kv-reserve-bytes` carve-out
-  (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
-  idle weight memory and the reverse. KV pages still enter the arena through
+- KV and weights share weightd's per-node ceiling in code
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)):
+  KV borrows what the attached weights' budgets leave of the ceiling
+  (`SparkWeightdKvLimit`), a KV grow reclaims cold weights
+  (`SparkWeightdKvMakeRoom`), and new weights release detached pools above
+  the reserve but never an owned one (`SparkWeightdServerReclaimCold`). Not
+  yet fleet-proven. Close it with a weightd release on all 16 nodes, the
+  production models switched through the controller with `release_compare`
+  EXACT 6/6 against the previous weightd, and `maxctx.sh` at native context
+  for Gemma 4 31B (262,144) and Laguna S 2.1, MiMo V2.6 Flash and MiMo V2.6
+  Pro (1,048,576): each lane starts, finds a needle near the end, and logs no
+  earlyoom kill or weightd refusal. Until then those four records stay at
+  32,768 positions and `tests/test_lane_records.py` bounds every record's
+  physical pages by the reserve; after the proof that rule becomes per model
+  (physical pages within the ceiling less the model's weights).
+- Left out on purpose (2026-10-02): KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
   API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
-  while `docs/INFERENCE_OS_DESIGN.md` requires one for both.
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both. weightd sizes KV
+  pools (`runtime/spark_weightd_kv_pool.c`, driven from
+  `runtime/stage_kv_binding.c`) and evicts expert leases by its own rules.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one
@@ -1368,12 +1484,104 @@ Metal backend and the single-Studio stage are in
 - The kernel library builds with Metal 4.0 and its prefill GEMM uses the
   Metal 4 tensor operations, so it loads only on Apple family 10 GPUs (M5).
   Another Studio generation needs its own qualified kernel set.
-- Two models have device stages, Qwen3.8-27B and Gemma 4 26B A4B; each is a
-  shape, a tensor list and a layer schedule over the device stage and layer
-  kinds (`inference/runner/device_stage_model.c`, `device_layers.c`), plus a
-  TP1 pack and its own gates. Next, one at a time and each merged before the
-  next starts: Gemma 4 31B, Muse Glimmer 30B, MiMo V2.6 Flash, Qwen 3.8
-  Flash Next.
+- A model larger than the Studio's memory (Laguna's eight TP8 packs on one
+  M5 Ultra) pages from the SSD, and the cyclic layer order defeats the
+  page cache: a decode step pages in about 130 GB, 15 s per token. Pinning
+  a fixed share of the layers resident (wired, or kept by `madvise`) and
+  streaming only the rest would read about the overflow per step; until
+  then a simulation decodes a sample of positions
+  (`--decode-positions`). A segmented pack now binds page spans and its
+  BF16 experts only their routes' experts; with the earlier 2 GiB windows
+  Solar Open 2's decode step read the whole 502 GB pack (about 110 s per
+  token at 4.6 GB/s). The FP4 routed experts bind one expert per launch in
+  a segmented pack (`SparkDeviceRoutedFfn`), so they page only their routes'
+  experts too.
+- Routed FP4 experts (MXFP4 in MiMo V2.6 Flash, NVFP4 in Qwen 3.8 Flash)
+  still take one GEMV per route in prefill, re-reading the expert for every
+  row: MiMo prefills at about 50 tokens per second, and its gate's B64 ladder
+  spends most of an hour in batched prefill. BF16 experts group their routes
+  by expert above 64 rows (`ExpertsGroupedFfn`); the FP4 formats need a
+  grouped GEMM with the block-scaled operand (CUDA dequantizes the tile to
+  BF16 before the MMA). The grouping also reads the step's routes back to the
+  host after a queue wait; a device-side sort and a grouped GEMM over an
+  offset table would drop that sync.
+- Device stages exist for the Gemma 4 family (Gemma 4 26B A4B and 31B, Muse
+  Glimmer 30B, Laguna S 2.1, K-EXAONE 2.0), Qwen 3.8 (27B BF16 and FP8, 3.8
+  Flash Next), MiMo V2.6 (Flash, Pro), Ling 3 (Ling 3.0 Flash and Fin,
+  Solar Open 2), HY4, GLM 5.3 Flash and the GLM 5.2 family (GLM 5.3 Full,
+  A.X K2). Each is its family's Metal backend placed on the model's
+  geometry at TP 1, 2, 4 or 8 (`model-families/<family>/device/`, over the
+  device stage and layer kinds in `inference/runner/device_stage_model.c`
+  and `device_layers.c`), plus its packs and gates; the models larger than
+  one Studio gate at TP8 on one Studio with the packs paged from the SSD.
+  Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
+  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash and A.X K2; the paired
+  test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
+  (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
+  (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
+  reference and Kimi K3 for its pack and reference. The Metal backends for
+  DeepSeek V4.1 Flash and Qwen 3.8 Max are in progress.
+- HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
+  `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
+  top-2,048 per rank and over the gathered candidates, the second KV pool
+  of 128-wide keys) is not built, so the stage refuses a row past position
+  2,047; below that the indexer keeps every key and attention is dense. The
+  latent KV slot stores the 512-wide latent a second time as the value (1,088
+  elements per slot where CUDA keeps 576), and the rope's inverse
+  frequencies come from a double-precision table where CUDA's kernel
+  computes `__powf`.
+- GLM 5.3 Flash on the Studio (`Glm5NextDevice<Glm53FlashDevice>`): the DSA
+  indexer (`index_q`, `index_k` with its LayerNorm, the pooled key scores
+  with the compressor gate and position embedding, the top 512 of 4-key
+  pools, the index key pool) is not built, so the stage refuses a row past
+  position 2,047, below which every pool is selected and attention is
+  dense. The rope-free latent slot stores the 512-wide latent twice, as the
+  key and as the value (CUDA keeps it once and reads it as both), and the
+  latent attention is not sharded by context across ranks: each rank
+  attends its own heads over the whole context. The MTP layer is not
+  packed.
+- K-EXAONE 2.0 on the Studio (`GemmaDevice<Kexaone2Device>`, TP8 paged from
+  the SSD) passes the gate's KL (0.91x / 0.68x of the floor) and top-1 (1.10x /
+  1.02x) tests and fails the paired test (+6.18 / +8.52 sigma). Its references
+  a and b differ only in the routed experts' FP32 summation order, so the
+  floor is tight: per-prompt KL means of 0.002 to 0.012 and medians of 1e-4 to
+  2e-3, against 0.15 to 0.43 means for Gemma 4 26B. Metal's means are as small
+  (0.003 to 0.010, top-1 agreement 0.97 to 0.99) and its median sits 10 to 35%
+  above the floor's on every prompt, which puts most positions above the floor
+  and the paired share far past 0.5.
+- GLM 5.3 Full on the Studio (`Glm52Device<Glm53FullDevice>`): the DSA
+  indexer is not built either (rows past position 2,047 refused) and the
+  MTP layer is not packed. The rope's inverse frequencies come from a
+  double-precision table, as the teacher's, where CUDA's kernels compute
+  `__powf` (about 1e-6 relative, 1e-3 rad by position 2,000). Its geometry
+  is the shared model constants plus a
+  Metal-side `Geometry` with the layer count and first routed layer, because
+  `Glm53FullGeometry` still lives in the CUDA module's `.cu`. A.X K2
+  (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
+  which the CUDA `Axk2Geometry` also takes its values from; its indexer
+  (64 heads, ReLU scores, half-split rope) is not built either.
+- Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
+  - the QSA indexer is not built, so the stage refuses contexts past 2,048
+    positions. Below 2,052 the indexer keeps every block and attention is
+    dense, so nothing is lost there; longer contexts need the index key pool,
+    the block-key and tail kernels, the score and top-512 selection and a
+    block mask in the attention kernels;
+  - speculation replays the n-gram conv window and token history for the
+    kept rows from the verify step's saved conv input; it is exact only if
+    a speculative run's tokens equal plain decoding's, which the gate checks
+    once the indexer lets speculation prompts run past 2,050 positions;
+  - route overrides (pinned routes) are refused for its experts;
+  - the NVFP4 experts take CUDA's skinny decode arithmetic at every row
+    count; CUDA switches to a BF16-dequantised GEMM once a step routes more
+    than 16 rows per expert (820 rows at TP1), so long prefill chunks differ
+    from CUDA by that operand rounding, and run slower than a grouped GEMM.
+- FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
+  skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) on the FP8 GEMV,
+  in passes of eight rows. Qwen3.8-27B FP8 beats its BF16 pack up to B4 (30.2
+  against 18.1 tok/s at B1, 90.7 against 68.5 at B4) but trails at B16 (123
+  against 230), where the BF16 row tiles run on the tensor operations, and
+  speculative verify frames gain less than on BF16. An FP8 row-tile kernel
+  on the tensor operations that keeps the per-chunk scale would close it.
 - The NaN check in the shared BF16 conversion (abce321a5) costs Gemma 4
   26B A4B's B1 decode about 0.9% on the Studio (91.5 to 91.6 tok/s against
   92.2 to 92.5 without it, interleaved runs), since every BF16 store now
@@ -1463,6 +1671,29 @@ Metal backend and the single-Studio stage are in
 One model holds a fleet at a time, and loading another takes about a
 minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
 items below.
+
+- Two lanes in two processes on one GPU stall each other. Each process's
+  collective waits spin on the GPU, and the GPU time-slices between
+  processes, so a 1024 x 7168 reduce-scatter round that takes 1.47 ms on one
+  lane takes 10.97 ms on each of two concurrent lanes, for the production
+  pipelined reduce-scatter and for pair-first alike. Under a per-user MPS
+  daemon the two lanes take 2.53 ms (pipelined) and 2.12 ms (pair-first)
+  per round, and one lane is unchanged at 1.47 ms (2026-10-26, 16 ranks,
+  interleaved plain and MPS arms, no AER). The mesh is not the cause: the
+  nodes logged no repairs and no completion errors. Fix by starting MPS with
+  each lane launch (runtime only; one client's fault ends every client of
+  that daemon) or by hosting the lanes in one process, and gate it with two
+  concurrent lanes of one model and with two co-resident models.
+
+- Pair-first all-gather wins wherever it applies. On link A with 16 ranks
+  (2026-10-26, two interleaved passes agreeing within 0.2%), a 7168-element
+  row all-gather per round went from 707 to 568 us at 32 rows (-20%), 2776
+  to 2108 us at 128 rows and 43276 to 32696 us at 2048 rows (-24%); at 16
+  rows it is not pipelined and both arms take 366 us. At the production slot
+  size a pipelined all-gather always has three or more chunks, so
+  `SparkTpMeshGatherPairFirst` picks pair-first at every size that gains.
+  K3 speculative decode never reaches it: a 256-row verify frame gathers
+  114,688 elements per rank, below the pipelining threshold.
 
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in

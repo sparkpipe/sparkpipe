@@ -35,6 +35,18 @@ def main():
         lane_config.record = original
     if "kv_partition_reserve_bytes" in document:
         failures.append("kv_partition_reserve_bytes is gone: the node KV quota in the ledger bounds the node's own KV on disk")
+    capped = stage_lane.record_arguments("glm-5.3-flash")
+    capped.kv_physical_pages_cap = 4096
+    stage_lane.check_arguments(stage_lane.MODELS[capped.model], capped)
+    if capped.kv_physical_pages != 4096 or capped.kv_logical_pages != lanes["glm-5.3-flash"]["kv_logical_pages"]:
+        failures.append(f"a kv_physical_pages_cap of 4096 rendered {capped.kv_physical_pages} physical and {capped.kv_logical_pages} logical pages")
+    capped = stage_lane.record_arguments("glm-5.3-flash")
+    capped.kv_physical_pages_cap = 1
+    try:
+        stage_lane.check_arguments(stage_lane.MODELS[capped.model], capped)
+        failures.append("a kv_physical_pages_cap below one sequence rendered")
+    except SystemExit:
+        pass
     for missing in sorted(set(swap) - set(lanes)):
         failures.append(f"{missing}: the swap controller serves it but deployment/lanes.json has no record")
     for extra in sorted(set(lanes) - set(swap)):
@@ -67,11 +79,13 @@ def main():
                 failures.append(f"{record_id}: {field} is gone; every lane shares the node KV quota")
         block = model.get("kv_block_tokens", stage_lane.KV_BLOCK_TOKENS)
         sequence_bytes = context // block * model["kv_page_bytes"]
-        physical_bytes = record["kv_physical_pages"] * model["kv_page_bytes"]
         if sequence_bytes > reserve:
             failures.append(f"{record_id}: one {context}-position sequence needs {sequence_bytes} KV bytes per rank, over the weightd KV reserve {reserve}")
-        if physical_bytes > reserve:
-            failures.append(f"{record_id}: {record['kv_physical_pages']} physical pages promise the scheduler {physical_bytes} bytes per rank, over the weightd KV reserve {reserve}")
+        if "kv_physical_pages" in record:
+            failures.append(f"{record_id}: kv_physical_pages is gone; the device KV pool grows to what the node budget leaves (kv_physical_pages_cap keeps room on purpose)")
+        cap = record.get("kv_physical_pages_cap")
+        if cap is not None and (not isinstance(cap, int) or cap < context // block):
+            failures.append(f"{record_id}: kv_physical_pages_cap {cap!r} must be a page count holding one {context}-position sequence")
         with tempfile.TemporaryDirectory() as directory:
             args = stage_lane.record_arguments(record_id)
             try:
@@ -79,6 +93,10 @@ def main():
             except SystemExit as error:
                 failures.append(f"{record_id}: does not render: {error}")
                 continue
+            limits = json.loads((pathlib.Path(directory) / "deployment.json").read_text())["runtime_limits"]
+            budget = min((document["weightd"]["device_bytes_max"] - model["node_memory_bytes"]) // model["kv_page_bytes"], stage_lane.KV_PHYSICAL_PAGES_MAX, cap or stage_lane.KV_PHYSICAL_PAGES_MAX)
+            if limits["kv_physical_page_capacity"] != budget or limits["kv_logical_page_capacity"] != max(record["kv_logical_pages"], budget):
+                failures.append(f"{record_id}: the device KV pool may hold {limits['kv_physical_page_capacity']} pages and the cache {limits['kv_logical_page_capacity']}, not the {budget} the node budget leaves and max(kv_logical_pages, {budget})")
             hub = json.loads((pathlib.Path(directory) / "model_resident.json").read_text())
             node = json.loads((pathlib.Path(directory) / "deployment.json").read_text())
             limits = node["runtime_limits"]
