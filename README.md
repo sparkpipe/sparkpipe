@@ -304,7 +304,12 @@ KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
 **Tiers.** KV device memory belongs to weightd, which keeps each engine's
-pool across an engine restart. Pages leaving the device park in a per-engine
+pool across an engine restart. KV and weights share weightd's per-node
+ceiling: KV always has its reserve and may borrow what the attached weights
+leave of the ceiling, reclaiming cold weights for it, so a model with small
+weights can hold a longer sequence than the reserve alone; new weights take
+back only pools no engine owns
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
