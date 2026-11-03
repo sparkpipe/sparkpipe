@@ -1,5 +1,6 @@
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/weight_codec.cuh"
+#include "sparkpipe/spark_glm52_model.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,7 +193,7 @@ int main(void)
 {
 	static const EbShape shapes[] =
 	{
-		{ "glm-5.3-full", 6144u, 256u, 128u },
+		{ "glm-5.3-full", SPARK_GLM52_MODEL_HIDDEN_DIMENSION, 256u, 128u },
 		{ "a.x-k2", 7168u, 256u, 128u },
 	};
 	for ( const EbShape &shape : shapes )

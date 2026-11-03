@@ -1,5 +1,7 @@
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/weight_codec.cuh"
+#include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_hy4_tp16_stage_model.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -126,8 +128,8 @@ static void DbRun(const DbShape &shape, const char *format)
 int main(void)
 {
 	static const DbShape bf16[] = { { "gemma-4-31b gate_up", 5376u, 2688u }, { "qwen-3.8 gate_up", 5120u, 2176u }, { "kimi-k3 o_proj", 4096u, 7168u } };
-	static const DbShape fp8[] = { { "glm-5.3-full o_proj", 1024u, 6144u }, { "glm-5.3-full dense gate_up", 6144u, 1536u }, { "glm-5.3-full index_q", 2048u, 4096u } };
-	static const DbShape mxfp8[] = { { "hy4 q_a", 6144u, 2048u } };
+	static const DbShape fp8[] = { { "glm-5.3-full o_proj", 1024u, SPARK_GLM52_MODEL_HIDDEN_DIMENSION }, { "glm-5.3-full dense gate_up", SPARK_GLM52_MODEL_HIDDEN_DIMENSION, 1536u }, { "glm-5.3-full index_q", 2048u, 4096u } };
+	static const DbShape mxfp8[] = { { "hy4 q_a", SPARK_HY4_TP16_STAGE_HIDDEN, 2048u } };
 	for ( const DbShape &shape : bf16 )
 		DbRun<LmBf16Format>(shape, "bf16");
 	for ( const DbShape &shape : fp8 )
