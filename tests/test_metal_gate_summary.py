@@ -56,17 +56,17 @@ def main():
         (work / "prompts.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "prompt_token_ids": tokens}]}))
         reference_a = noisy(base, 0.01, 11)
         write_logits(work / "a.logits", reference_a)
-        write_logits(work / "b.logits", noisy(base, 0.01, 2))
+        write_logits(work / "h.logits", noisy(base, 0.01, 2))
         write_logits(work / "exact.logits", reference_a)
         write_logits(work / "floorlike.logits", noisy(base, 0.01, 3))
         write_logits(work / "control.logits", noisy(reference_a, 0.5, 4))
-        rows = [compare(work, "a", "b", "floor", "a")]
+        rows = [compare(work, "a", "h", "floor", "a")]
         for name in ("exact", "floorlike", "control"):
-            rows.append(compare(work, "a", name, name, "b"))
-            rows.append(compare(work, "b", name, f"{name}_vs_b", "a"))
+            rows.append(compare(work, "a", name, name, "h"))
+            rows.append(compare(work, "h", name, f"{name}_vs_h", "a"))
         floor = summary.aggregate(rows, "floor")
         check("the synthetic floor agrees on every top-1, so the top-1 ratio divides by a zero floor", floor["top1_agreement"] == 1.0)
-        verdicts = {name: summary.verdict(summary.aggregate(rows, name), summary.aggregate(rows, f"{name}_vs_b"), floor)
+        verdicts = {name: summary.verdict(summary.aggregate(rows, name), summary.aggregate(rows, f"{name}_vs_h"), floor)
                     for name in ("exact", "floorlike", "control")}
         exact = verdicts["exact"]["reference_a"]
         check("a candidate identical to reference A passes both legs (paired -inf, ratios 0)",
@@ -75,7 +75,7 @@ def main():
         check("a candidate with floor-like noise passes both legs", verdicts["floorlike"]["pass"])
         control = verdicts["control"]["reference_a"]
         check("a corrupted control fails both legs (KL, top-1 and paired)",
-              not verdicts["control"]["pass"] and not verdicts["control"]["reference_b"]["pass"] and not control["kl_within_factor"] and
+              not verdicts["control"]["pass"] and not verdicts["control"]["reference_h"]["pass"] and not control["kl_within_factor"] and
               not control["top1_within_factor"] and not control["paired_within_sigma"])
         worse = dict(summary.aggregate(rows, "control"))
         worse["above_floor_blocks"] = [[128, 128] for _ in range(4)]

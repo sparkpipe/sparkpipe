@@ -29,6 +29,7 @@
 #include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
+#include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_stagepack.h"
 #include "sparkpipe/spark_stage_runner_model.h"
@@ -758,7 +759,7 @@ static __device__ void Glm5NextHcFinish(Glm5NextHcShared<ROWS> *shared, const fl
 	__syncthreads();
 	if ( warp < live )
 	{
-		const float inverse = rsqrtf(shared->mixes[warp][G5N_HC_MIX] / (float)G5N_HC_FLAT + G5N_EPS);
+		const float inverse = SparkMathRmsScale(shared->mixes[warp][G5N_HC_MIX], (float)G5N_HC_FLAT, G5N_EPS);
 		if ( lane < G5N_HC_MIX )
 		{
 			const float value = shared->mixes[warp][lane] * inverse;
