@@ -231,6 +231,7 @@ struct K3LayerBuffers
 	const uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
 	uint32_t *route_expert;
+	uint32_t *route_fault;
 	uint32_t *route_packed_row;
 	uint32_t *route_source_token;
 	float *route_weight;
@@ -251,17 +252,8 @@ struct K3LayerBuffers
 
 static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t *destination_bf16, float *destination_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t split, cudaStream_t stream)
 {
-	uint32_t first, count;
-	int32_t status = LM_LAUNCH_OK;
-	for ( first = 0u; first < rows && status == LM_LAUNCH_OK; first += count )
-	{
-		count = rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE;
-		status = (split != 0u ? LmSkinnyDenseSplit<LmBf16Format> : LmSkinnyDense<LmBf16Format>)(weight,source + (uint64_t)first * input_dimension,
-			destination_bf16 != 0 ? destination_bf16 + (uint64_t)first * output_dimension : (uint16_t *)0,
-			destination_f32 != 0 ? destination_f32 + (uint64_t)first * output_dimension : (float *)0,
-			count,input_dimension,output_dimension,0u,0u,stream);
-	}
-	return(status);
+	return((split != 0u ? LmSkinnyDenseSplit<LmBf16Format> : LmSkinnyDense<LmBf16Format>)(weight,source,destination_bf16,destination_f32,rows,input_dimension,
+		output_dimension,0u,0u,stream,1u));
 }
 
 template<class Format>
@@ -1040,7 +1032,7 @@ static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
 {
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
-		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,stream) != cudaSuccess )
+		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,b->route_fault,stream) != cudaSuccess )
 		return(LM_LAUNCH_ERR_LAUNCH);
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(

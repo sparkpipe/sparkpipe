@@ -246,6 +246,7 @@ typedef struct GlmBuffers
 	float *selection_scores;
 	float *gate_bottleneck;
 	uint32_t *route_expert;
+	uint32_t *route_fault;
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
@@ -463,29 +464,23 @@ template<class Format>
 static int32_t GlmSkinny(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows,
 	uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, cudaStream_t stream)
 {
-	const uint32_t stride = output_row_stride != 0u ? output_row_stride : output_dimension;
-	int32_t status = LM_LAUNCH_ERR_SHAPE;
-	for ( uint32_t first = 0u; first < rows; first += LM_SKINNY_ROWS_WIDE )
-	{
-		LmSkinnyArguments args;
-		memset(&args, 0, sizeof(args));
-		args.weight = (const uint8_t *)weight;
-		args.activation = activation + (uint64_t)first * input_dimension;
-		args.output_bf16 = output_bf16 != 0 ? output_bf16 + (uint64_t)first * stride : 0;
-		args.output_f32 = output_f32 != 0 ? output_f32 + (uint64_t)first * stride : 0;
-		args.scale = scale;
-		args.rows = rows - first < LM_SKINNY_ROWS_WIDE ? rows - first : LM_SKINNY_ROWS_WIDE;
-		args.input_dimension = input_dimension;
-		args.output_dimension = output_dimension;
-		args.output_row_stride = stride;
-		args.output_column_offset = output_column_offset;
-		status = LmSkinnyValidate<Format>(&args);
-		if ( status == LM_LAUNCH_OK )
-			status = LmSkinnyLaunchRows<Format>(&args, input_dimension / LmSkinnyFormat<Format>::kElements, stream);
-		if ( status != LM_LAUNCH_OK )
-			return status;
-	}
-	return status;
+	LmSkinnyArguments args;
+	int32_t status;
+	memset(&args, 0, sizeof(args));
+	args.weight = (const uint8_t *)weight;
+	args.activation = activation;
+	args.output_bf16 = output_bf16;
+	args.output_f32 = output_f32;
+	args.scale = scale;
+	args.rows = rows;
+	args.input_dimension = input_dimension;
+	args.output_dimension = output_dimension;
+	args.output_row_stride = output_row_stride != 0u ? output_row_stride : output_dimension;
+	args.output_column_offset = output_column_offset;
+	status = LmSkinnyValidate<Format>(&args, 1u);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	return LmSkinnyLaunchRows<Format>(&args, input_dimension / LmSkinnyFormat<Format>::kElements, stream);
 }
 
 static int32_t GlmLinearBf16(const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows, uint32_t input_dimension,
@@ -651,7 +646,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 			{q_a.weight, b->projection_local_bf16, 0, q_count, width, 0u, GlmLinearScale<S>(q_a, S::kHidden, q_count)},
 			{kv_a.weight, b->projection_local_bf16, 0, kv_count, width, query_max, GlmLinearScale<S>(kv_a, S::kHidden, kv_count)}};
 		status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream) :
-			b->row_exact != 0u ? LmSkinnyDenseMultiRowChunks<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream) : LM_LAUNCH_ERR_SHAPE;
+			b->row_exact != 0u ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream, 1u) : LM_LAUNCH_ERR_SHAPE;
 		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
 	}
@@ -865,37 +860,22 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 			0u, 0u, sms, stream);
 	if ( status != LM_LAUNCH_OK || GlmLaunched() != LM_LAUNCH_OK )
 		return status != LM_LAUNCH_OK ? status : LM_LAUNCH_ERR_LAUNCH;
+	if ( b->route_fault == 0 )
+		return LM_LAUNCH_ERR_SHAPE;
 	if constexpr ( S::kExpertGroups > 1u )
 	{
 		LM_LAUNCH((LmTopkSmallKernel<GLM_THREADS,S::kTopK,true,S::kExpertGroups,S::kTopGroups,LM_TOPK_SCORE_SIGMOID>), rows, GLM_THREADS,
 			2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream, b->router_logits, S::kExperts, b->route_expert, b->route_weight, b->weights->router_bias,
-			(const uint16_t *)0, S::kRoutedScale);
+			(const uint16_t *)0, S::kRoutedScale, b->route_fault);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			return LM_LAUNCH_ERR_LAUNCH;
 	}
 	else if ( LmTopkRouteLaunch<GLM_THREADS,S::kTopK,true,LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, S::kExperts, b->route_expert, b->route_weight,
-			b->weights->router_bias, 0, S::kRoutedScale, stream) != cudaSuccess )
+			b->weights->router_bias, 0, S::kRoutedScale, b->route_fault, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	status = LmRouteBuild<GLM_THREADS,S::kExperts>(b->route_expert, rows, packed_rows, S::kTopK, b->group_row_offset, b->route_packed_row,
 		b->route_source_token, b->expert_w1_rows, S::kHidden, GLM_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
 	return status != LM_LAUNCH_OK ? status : GlmLaunched();
-}
-
-template<class S>
-static int32_t GlmExpertsRows(const GlmBuffers *b, const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output, uint32_t rows,
-	uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
-{
-	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
-	for ( uint32_t first = 0u; first < rows; first += LM_SKINNY_ROWS )
-	{
-		const uint32_t count = rows - first < LM_SKINNY_ROWS ? rows - first : LM_SKINNY_ROWS;
-		const int32_t status = LmSkinnyExperts<Format>(weight, scale, packed != 0u ? activation : activation + (uint64_t)first * input_dimension, output,
-			b->route_expert + (uint64_t)first * S::kTopK, b->route_packed_row + (uint64_t)first * S::kTopK, count * S::kTopK, S::kTopK, packed,
-			input_dimension, output_dimension, stream);
-		if ( status != LM_LAUNCH_OK )
-			return status;
-	}
-	return GlmLaunched();
 }
 
 template<class S>
@@ -908,7 +888,8 @@ static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t pac
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<S::kExpertCodec>(b->expert_w1_scale, S::kExperts, b->expert_w1_rows, S::kHidden);
 	if ( b->row_exact != 0u )
-		return GlmExpertsRows<S>(b, b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, rows, 0u, S::kHidden, b->expert_w1_rows, stream);
+		return LmSkinnyGroupedExperts<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+			b->route_source_token, S::kExperts, packed_rows, 0u, S::kHidden, b->expert_w1_rows, stream, 1u);
 	if ( rows >= GLM_STREAM_EXPERT_ROWS )
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
@@ -943,8 +924,8 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<S::kExpertCodec>(b->expert_w2_scale, S::kExperts, S::kHidden, b->expert_intermediate);
 	if ( b->row_exact != 0u )
-		return GlmExpertsRows<S>(b, b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, rows, 1u, b->expert_intermediate, S::kHidden,
-			stream);
+		return LmSkinnyGroupedExperts<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset,
+			b->route_source_token, S::kExperts, packed_rows, 1u, b->expert_intermediate, S::kHidden, stream, 1u);
 	if ( rows >= GLM_STREAM_EXPERT_ROWS )
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset, 0,
@@ -1089,6 +1070,7 @@ struct GlmModel
 		float *topk_values;
 		uint32_t *topk_positions;
 		uint32_t *route_expert;
+		uint32_t *route_fault;
 		float *route_weight;
 		uint32_t *route_source;
 		uint32_t *route_packed;
@@ -1928,6 +1910,7 @@ struct GlmModel
 		b->selection_scores = state->selection_scores;
 		b->gate_bottleneck = state->gate_bottleneck;
 		b->route_expert = state->route_expert;
+		b->route_fault = state->route_fault;
 		b->route_weight = state->route_weight;
 		b->route_source_token = state->route_source;
 		b->route_packed_row = state->route_packed;
@@ -2331,6 +2314,7 @@ struct GlmModel
 	{
 		cudaStream_t stream = (cudaStream_t)stream_void;
 		const uint32_t rows = step->rows;
+		state->route_fault = step->route_fault;
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		const uint32_t ordered = exact == 0u && (step->last_rows_only != 0u || (rows != step->sequences && (FrameShape(step) == 0u || step->graph_key != 2u))) ? 1u : 0u;
 		frame->step = step;

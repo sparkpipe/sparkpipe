@@ -488,7 +488,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   4 and a TP4xPP4 deployment cannot hold 1/16 of the KV per node. Close it
   with the TP4xPP4 runtime above, proven by a TP4xPP4 fleet run with T1 parity
   in which each rank holds 1/4 of its group's latent KV and indexer keys.
-- KV pools resize by chunk inside the node reserve with resident demand
+- KV pools resize by chunk inside the node's KV limit with resident demand
   (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
   `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
   between two bindings in one process under the CUDA stub. Not yet proven on
@@ -943,25 +943,25 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
 - Speculation serves on Kimi K3, GLM 5.3 Full, DeepSeek V4.1 Flash, A.X K2,
-  K-EXAONE 2.0, Solar Open 2, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1, Muse
-  Glimmer 30B, MiMo V2.6 Pro and MiMo V2.6 Flash, whose adapters declare
+  K-EXAONE 2.0, Solar Open 2, Ling 3.0 Flash and Flash Fin, Hunyuan HY4
+  preview, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1, Muse Glimmer 30B, MiMo V2.6
+  Pro and Flash, and Qwen 3.8 Max, 27B and Flash, whose adapters declare
   `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash, HY4, Ling 3.0 Flash and Flash Fin, and
-    Qwen 3.8 Max, 27B and Flash, with recurrent and linear-attention state
+  - verify frames for GLM 5.3 Flash, with recurrent and linear-attention state
     restored to the accepted row through the binding's recurrent-state hook;
   - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
     head (F32 in the checkpoint) and the DFlash draft model it ships in
     `dflash/` are not packed or wired as drafters;
-  - verify frames on the glm52 stage run the decode regime (unordered waves of
-    up to 256 rows through the scatter attention path, projections as skinny
-    16-row chunks, routed experts through the per-route skinny kernel in 8-row
-    chunks), so they read each touched weight once per chunk. Measure GLM 5.3
-    Full and A.X K2 long-frame speculation against the earlier ordered-wave
-    numbers; if frames above about 64 rows lose throughput, the fix is a
-    grouped expert kernel whose per-route sums match the per-route kernel bit
-    for bit (the grouped skinny kernel's wide variant does not today), not a
-    return to the prefill path;
+  - FP8 projections in verify frames above 16 rows run no faster than the
+    16-row launches they replaced (0.97-1.10x, `tools/exact_dense_rows_bench.cu`):
+    every 16-row block decodes the FP8 weights again, and that decode, not
+    DRAM, bounds the kernel. bf16 projections run 2-3x faster and MXFP8
+    1.1-2.3x. A skinny variant that decodes each weight tile once into shared
+    memory for all row blocks of a frame, keeping the per-row sums, would help
+    GLM 5.3 Full and A.X K2 long frames;
+  - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
+    pack drops it, so Ling 3.0 verifies only context-lookup drafts;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
@@ -970,6 +970,7 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     every model that speculates; every verify-capable stage now reproduces
     one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
     `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_hy4_verify_frames.cu`, `tests/test_qwen38_verify_frames.cu`,
     `tests/test_mimo26_verify_frames.cu`, and the K3 and DeepSeek V4.1 Flash
     tests), so speculative output is judged EXACT against output without
     speculation.
@@ -1118,13 +1119,41 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   Max have no reasoning-off switch in their templates: the chat layer
   refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
   they take, and `/v1/models` lists every model's `reasoning_efforts`.
-- Every stage-runner lane, GLM Flash included, is sized for every resident
-  sequence at full length by default: `tools/stage_lane.py` sets
-  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
-  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
-  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
-  and it takes that pool as a page count. Size the physical pool from a byte
-  budget the lanes share and let paged admission share it.
+- The device KV pool grows on demand into what the resident model leaves
+  of the node ([`docs/LANES.md`](docs/LANES.md),
+  [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)),
+  in code and host tests only. Close it on the fleet: for glm-5.3-flash,
+  glm-5.3, deepseek-v4.1-flash, kimi-k3, qwen3.8-27b and gemma-4-31b, fill
+  KV with long prompts until the pool stops growing, record `/health`
+  `kv_capacity_tokens` and the minimum `MemAvailable` over the 16 nodes
+  (above the margin, no earlyoom kill), and see `release_compare` EXACT 6/6
+  against main. The renderer's projections (`kv_physical_page_capacity`
+  times the KV block) are 86.3M tokens for GLM-5.3 Flash, 9.6M for GLM-5.3,
+  354M for DeepSeek V4.1 Flash, 7.8M for K3, 24.6M for Qwen 3.8 27B and 1.8M
+  for Gemma 4 31B; none is measured.
+- The batch scheduler admits against an engine's maximum device pages (what
+  the model could hold alone on the node), not its pool's live capacity, and
+  the rendered physical capacity takes the model's `node_memory_bytes` from
+  `tools/stage_lane.py` as its footprint. Two engines on one node can so be
+  promised more pages together than the node holds; their pools then stall
+  and evict instead of growing. Close it by sending each rank's live pool
+  capacity to the scheduler and admitting against the smallest rank's,
+  proven by two co-resident engines filling KV with no `KV-PARK-FAILED`.
+- Every device KV page is a logical page, so a lane's host page tables
+  (page cache, arena, store index) now scale with the node budget's pages,
+  up to 2.86M pages for Ling 3.0 Flash, instead of with
+  `sequences * kv_pages`. Measure that host memory on the fleet, and allocate
+  those tables as the pool grows if it matters.
+- KV on disk still has per-lane maxima: `kv_backing_bytes` and
+  `kv_snapshot_bytes` in every record (2.45 TB over 19 lanes) and the
+  512 GiB `kv_partition_reserve_bytes` free-space floor. Owner decision
+  (2026-11-02): one node-wide 500 GB quota for the node's own KV (backing and
+  snapshots), shared by every lane, oldest first under the retention rule;
+  the pair partner's 500 GB mirror stays with the working-state code and is
+  not counted. Close it by replacing the three settings with that quota in
+  `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
+  by two lanes on one node whose combined KV stays under 500 GB while each
+  evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
   fleet swapping and pushes the owner's model out after each reply. Each key
@@ -1342,16 +1371,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
   contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
   models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
   other model and no multi-Studio topology is.
-- Left out on purpose (2026-10-02): KV and weights share weightd but not one
-  budget. weightd maps KV device memory as KV pools that grow and shrink in
-  chunks (`runtime/spark_weightd_kv_pool.c`, driven from
-  `runtime/stage_kv_binding.c`) and weights through leases. The weight budget
-  is `device_bytes_max` minus the static `--kv-reserve-bytes` carve-out
-  (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
-  idle weight memory and the reverse. KV pages still enter the arena through
+- KV and weights share weightd's per-node ceiling in code
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)):
+  KV borrows what the attached weights' budgets leave of the ceiling
+  (`SparkWeightdKvLimit`), a KV grow reclaims cold weights
+  (`SparkWeightdKvMakeRoom`), and new weights release detached pools above
+  the reserve but never an owned one (`SparkWeightdServerReclaimCold`). Not
+  yet fleet-proven. Close it with a weightd release on all 16 nodes, the
+  production models switched through the controller with `release_compare`
+  EXACT 6/6 against the previous weightd, and `maxctx.sh` at native context
+  for Gemma 4 31B (262,144) and Laguna S 2.1, MiMo V2.6 Flash and MiMo V2.6
+  Pro (1,048,576): each lane starts, finds a needle near the end, and logs no
+  earlyoom kill or weightd refusal. Until then those four records stay at
+  32,768 positions and `tests/test_lane_records.py` bounds every record's
+  physical pages by the reserve; after the proof that rule becomes per model
+  (physical pages within the ceiling less the model's weights).
+- Left out on purpose (2026-10-02): KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
   API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
-  while `docs/INFERENCE_OS_DESIGN.md` requires one for both.
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both. weightd sizes KV
+  pools (`runtime/spark_weightd_kv_pool.c`, driven from
+  `runtime/stage_kv_binding.c`) and evicts expert leases by its own rules.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one
