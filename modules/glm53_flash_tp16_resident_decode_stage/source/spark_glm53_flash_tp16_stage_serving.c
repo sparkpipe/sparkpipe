@@ -8,8 +8,14 @@
 #ifndef GLM53_FLASH_TP16_CONTRACT_SHA256
 #error "GLM53_FLASH_TP16_CONTRACT_SHA256 must identify the model contract"
 #endif
+#ifndef GLM53_FLASH_EXPERT_CODEC
+#error "GLM53_FLASH_EXPERT_CODEC must name the routed-expert weight codec of the packs this build serves"
+#endif
+#if !defined(GLM53_FLASH_ADAPTER_ID) || !defined(GLM53_FLASH_MODULE_TAG)
+#error "GLM53_FLASH_ADAPTER_ID and GLM53_FLASH_MODULE_TAG must name this build's adapter and KV label"
+#endif
 
-#define SPARK_GLM53_FLASH_TP16_ADAPTER_ID "glm53_flash-tp16"
+#define SPARK_GLM53_FLASH_TP16_ADAPTER_ID GLM53_FLASH_ADAPTER_ID
 #define SPARK_GLM53_FLASH_TP16_MODEL_ID "zai-org/GLM-5.3-Flash"
 #define SPARK_GLM53_FLASH_TP16_MODEL_REVISION "84c6a6aa9497188e15a635ba793b0f95a79b1033"
 #define SPARK_GLM53_FLASH_TP16_MAX_ROWS 4096u
@@ -73,7 +79,7 @@ static const SparkModelServingAdapterDescriptor Glm53FlashTp16ServingDescriptor 
 	.boundary_element_count = SPARK_GLM53_FLASH_TP16_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = GLM53_FLASH_EXPERT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
@@ -94,7 +100,7 @@ static const SparkStageServingModel Glm53FlashTp16StageServing =
 {
 	.descriptor = &Glm53FlashTp16ServingDescriptor,
 	.runner_model = SparkGlm53FlashTp16StageModel,
-	.module_tag = "glm53_flash_stage",
+	.module_tag = GLM53_FLASH_MODULE_TAG,
 	.tp_degree = SPARK_GLM53_FLASH_TP16_STAGE_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = Glm53FlashTp16ServingKvLayout,

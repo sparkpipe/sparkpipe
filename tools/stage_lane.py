@@ -378,12 +378,36 @@ K3 = {
     "kv_page_bytes": 24 * 64 * (512 + 64) * 2 // WORLD,
     "recurrent_bytes": 69 * (6 * 128 * 128 * 4 + 6 * (2 * 128 + 128) * 4 * 2),
 }
+GLM53_FULL_BF16 = {
+    **GLM53_FULL,
+    "swap_id": "glm-5.3-bf16",
+    "api_port": 8480,
+    "kv_label": "glm53_full_bf16_tp16_stage",
+    "node_memory_bytes": 100 << 30,
+    "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-bf16/tokenizer.json",
+    "pack": "sparkdata/glm53full.bf16.tp16/packs/glm53full.bf16.tp16-rank{rank}.glm52sp",
+    "adapter": "libglm53_full_bf16_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.glm53_full.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+}
+GLM53_FLASH_BF16 = {
+    **GLM53_FLASH,
+    "swap_id": "glm-5.3-flash-bf16",
+    "api_port": 8481,
+    "kv_label": "glm53_flash_bf16_stage",
+    "node_memory_bytes": 43 << 30,
+    "pack": "sparkdata/glm53flash.bf16.tp16/packs/glm53flash.bf16-official.tp16.rank{rank:x}.sp",
+    "adapter": "libglm53_flash_bf16_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.glm53_flash.stage_runner.linear_bf16.expert_bf16.kv_bf16",
+}
+
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
+    "glm53_flash_bf16": GLM53_FLASH_BF16,
     "glm53_full": GLM53_FULL,
+    "glm53_full_bf16": GLM53_FULL_BF16,
     "hy4": HY4,
     "k3": K3,
     "laguna": LAGUNA,

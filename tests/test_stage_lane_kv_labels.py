@@ -13,6 +13,12 @@ def main():
     for source in ROOT.glob("modules/*/source/*serving*.c"):
         for tag in re.findall(r'\.module_tag\s*=\s*"([^"]+)"', source.read_text()):
             tags[tag] = source.parent.parent.name
+    makefile = (ROOT / "Makefile").read_text()
+    recipes = dict(re.findall(r"^define (\w+)\n(.*?)^endef", makefile, re.M | re.S))
+    for name, arguments in re.findall(r"^\t\$\(call (\w+),(.*)\)\s*$", makefile, re.M):
+        position = re.search(r'_MODULE_TAG=\\"\$\((\d)\)\\"', recipes.get(name, ""))
+        if position is not None:
+            tags[arguments.split(",")[int(position.group(1)) - 1]] = name
     failures = []
     for name, model in stage_lane.MODELS.items():
         if model["kv_label"] not in tags:

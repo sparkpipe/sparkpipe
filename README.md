@@ -562,7 +562,9 @@ model's cached prefixes come back from the KV snapshot store.
 | Served name | Model | Family | Context |
 | --- | --- | --- | ---: |
 | `glm-5.3` | GLM 5.3 Full | `glm52` | 1M |
+| `glm-5.3-bf16` | GLM 5.3 Full at BF16 | `glm52` | 1M |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K |
+| `glm-5.3-flash-bf16` | GLM 5.3 Flash at BF16 | `glm5_next` | 128K |
 | `kimi-k3` | Kimi K3 | `k3` | 1M |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M |
 | `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K |

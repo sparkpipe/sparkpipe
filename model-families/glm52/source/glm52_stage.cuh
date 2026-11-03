@@ -130,8 +130,6 @@ struct Glm52Dimensions : GlmDefaults
 	static constexpr float kRoutedScale = SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
 	static uint32_t FullIndexer(uint32_t layer) { return SparkGlm52StagePackLayerHasFullIndexer(layer); }
 	static const SparkGlm52StagePackGeometry *PackGeometry(void) { return SparkGlm52StagePackGeometryGlm52(); }
-	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
-	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
 };
 
@@ -513,12 +511,17 @@ static int32_t GlmLinearBf16(const uint16_t *activation, const void *weight, uin
 
 template<class S>
 using GlmLinearFormat = typename LmWeightCodec<S::kLinearCodec>::Format;
+template<class S>
+static constexpr bool GlmLinearScaled = LmWeightCodec<S::kLinearCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE;
+template<class S>
+static constexpr bool GlmExpertScaled = LmWeightCodec<S::kExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE;
 
 template<class S>
 static GlmLinearWeight GlmLinearRows(GlmLinearWeight weight, uint32_t first_row, uint32_t input_dimension)
 {
 	weight.weight += (uint64_t)first_row * input_dimension * GlmLinearFormat<S>::kStoredBits / 8u;
-	weight.scale += (uint64_t)first_row * ((input_dimension + GlmLinearFormat<S>::kScaleGroup - 1u) / GlmLinearFormat<S>::kScaleGroup);
+	if ( GlmLinearScaled<S> )
+		weight.scale += (uint64_t)first_row * ((input_dimension + GlmLinearFormat<S>::kScaleGroup - 1u) / GlmLinearFormat<S>::kScaleGroup);
 	return weight;
 }
 
@@ -533,8 +536,8 @@ static int32_t GlmLinear(const uint16_t *activation, GlmLinearWeight weight, uin
 	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, cudaStream_t stream)
 {
 	const LmScaleTensor scale = GlmLinearScale<S>(weight, input_dimension, output_dimension);
-	if ( activation == 0 || weight.weight == 0 || weight.scale == 0 || output == 0 || rows == 0u || input_dimension == 0u || output_dimension == 0u ||
-		multiprocessors == 0u )
+	if ( activation == 0 || weight.weight == 0 || (GlmLinearScaled<S> && weight.scale == 0) || output == 0 || rows == 0u || input_dimension == 0u ||
+		output_dimension == 0u || multiprocessors == 0u )
 		return LM_LAUNCH_ERR_SHAPE;
 	if ( rows <= LM_SKINNY_ROWS_WIDE )
 		return GlmSkinny<GlmLinearFormat<S>>(weight.weight, scale, activation, output, 0, rows, input_dimension, output_dimension, output_row_stride,
@@ -1347,8 +1350,10 @@ struct GlmModel
 		if ( header->linear_weight_codec != S::kLinearCodec || header->expert_weight_codec != S::kExpertCodec ||
 			header->kv_cache_codec != SPARK_WEIGHT_CODEC_BF16 )
 		{
+			fprintf(stderr, "%s: pack %s carries codecs linear=%u expert=%u kv=%u; this build serves linear=%u expert=%u kv=%u\n", G::Tag(), path,
+				header->linear_weight_codec, header->expert_weight_codec, header->kv_cache_codec, S::kLinearCodec, S::kExpertCodec, SPARK_WEIGHT_CODEC_BF16);
 			fclose(file);
-			return PackFail(path, "codecs are not fp8 linear, fp8 experts, bf16 kv");
+			return PackFail(path, "its codecs are not the ones this build serves");
 		}
 		if ( ContractBytes(contract) == 0u || memcmp(header->contract_sha256, contract, sizeof(contract)) != 0 ||
 			header->model_revision[SPARK_GLM52_STAGEPACK_MODEL_REVISION_BYTES - 1u] != '\0' || strcmp(header->model_revision, G::Revision()) != 0 ||
@@ -1611,8 +1616,8 @@ struct GlmModel
 		SparkGlm52StagePackEntry scales = *entry;
 		scales.payload_offset = entry->scale_offset;
 		scales.payload_bytes = entry->scale_bytes;
-		if ( entry->weight_codec != S::kLinearCodec || entry->scale_bytes == 0u || Slice(lazy_pack, entry, &payload) != SPARK_STATUS_OK ||
-			Slice(lazy_pack, &scales, &scale) != SPARK_STATUS_OK )
+		if ( entry->weight_codec != S::kLinearCodec || (entry->scale_bytes != 0u) != GlmLinearScaled<S> || Slice(lazy_pack, entry, &payload) != SPARK_STATUS_OK ||
+			(GlmLinearScaled<S> && Slice(lazy_pack, &scales, &scale) != SPARK_STATUS_OK) )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		field->weight = (const uint8_t *)payload;
 		field->scale = (const float *)scale;
@@ -2099,9 +2104,9 @@ struct GlmModel
 				return status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR;
 			}
 			b.expert_w1_weight = w1;
-			b.expert_w1_scale = (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale;
+			b.expert_w1_scale = GlmExpertScaled<S> ? (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale : 0;
 			b.expert_w2_weight = w2;
-			b.expert_w2_scale = (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale;
+			b.expert_w2_scale = GlmExpertScaled<S> ? (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale : 0;
 			code = GlmMoeExperts<S>(&b, rows, packed, sms, stream);
 		}
 		if ( code != LM_LAUNCH_OK )
