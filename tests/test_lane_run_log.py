@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "r20261004a"
 TOOLS = {
-    "k3_lane.sh": {"K3_LANE": "3", "K3_WEIGHTD_SOCKET": "/run/weightd.sock", "K3_EXPERT_POOL_BYTES": "1", "K3_MEMORY_MAX": "10G",
+    "k3_lane.sh": {"K3_LANE": "3", "K3_WEIGHTD_SOCKET": "/run/weightd.sock", "K3_MEMORY_MAX": "10G",
                    "K3_STATE_BUDGET_BYTES": "1", "RUN": "K3_RUN_ID", "FIRMWARE": "K3_FIRMWARE"},
     "fleet_serve.sh": {"G5_API_HOST": "rtx5090", "RUN": "FLEET_RUN_ID", "FIRMWARE": "FLEET_FIRMWARE_UNUSED", "ARGS": ["glm53_release"]},
 }
@@ -79,6 +79,24 @@ class LaneRunLog(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual((len(copies), len(removals)), (16, 16))
                 self.assertTrue(any("rank15.log" in call for call in copies))
+
+    def test_k3_start_passes_only_an_explicit_expert_pool_cap(self):
+        for extra, wanted in (({}, None), ({"K3_EXPERT_POOL_CAP_BYTES": "4194304"}, "-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=4194304 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES")):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.lane(directory, "k3_lane.sh", ["start"], {"K3_RUN_ID": RUN_ID, **extra})
+                starts = [call for call in calls if call.startswith("ssh ") and "sparkpipe_model_residentd --deployment" in call]
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(starts), 16)
+                for call in starts:
+                    if wanted is None:
+                        self.assertNotIn("SPARK_WEIGHTD_EXPERT_POOL_BYTES", call)
+                    else:
+                        self.assertIn(wanted, call)
+        with tempfile.TemporaryDirectory() as directory:
+            result, calls = self.lane(directory, "k3_lane.sh", ["start"], {"K3_RUN_ID": RUN_ID, "K3_EXPERT_POOL_BYTES": "99568941440"})
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("K3_EXPERT_POOL_BYTES is gone", result.stderr)
+            self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

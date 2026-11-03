@@ -179,7 +179,7 @@ def wrapper_contract_gates(failures):
         "SPARK_QUEUE_RANK": "0",
         "SPARK_QUEUE_SIZE": "16",
         "K3_WEIGHTD_SOCKET": "/nonexistent/weightd.sock",
-        "K3_EXPERT_POOL_BYTES": "1",
+        "K3_EXPERT_POOL_CAP_BYTES": "1",
         "K3_SPINE_BUDGET_BYTES": "1",
         "HOME": "/nonexistent",
     }

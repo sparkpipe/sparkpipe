@@ -227,6 +227,7 @@ int main(int argument_count,char **arguments)
     SparkWeightdLazyAttachRequest request = {0};
     SparkWeightdLazyAttachResult attached = {0};
     SparkWeightdManifest manifest = {0};
+    SparkWeightdPoolPlan pool;
     SparkWeightdClient *client = 0;
     SparkWeightdExpertKey *keys = 0;
     struct stat pack;
@@ -239,7 +240,7 @@ int main(int argument_count,char **arguments)
     int shared = 0;
     char *filtered[24];
     int filtered_count = 0, index_argument;
-    uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology;
+    uint64_t layers = 45u,experts = 288u,seconds = 1800u,topology,cap = 0u;
     uint32_t first,index,count = 0u;
     int exit_status = 1;
     for ( index_argument = 0; index_argument < argument_count; index_argument++ )
@@ -328,9 +329,7 @@ int main(int argument_count,char **arguments)
          (argument_count > 8 && !parse_positive(arguments[8],UINT64_MAX / UINT64_C(1000000000),&seconds)) ||
          (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 &&
           !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"),
-             SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&request.expert_pool_bytes)) ||
-         (!identity_print &&
-          getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") == 0) )
+             SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&cap)) )
         goto usage;
     if ( strlen(arguments[2]) >= sizeof(request.pack_path) ||
          strlen(arguments[3]) != 64u ||
@@ -395,6 +394,9 @@ int main(int argument_count,char **arguments)
         fprintf(stderr,"weightd_warm: expert manifest failed status=%d\n",(int)status);
         goto done;
     }
+    if ( SparkWeightdManifestPoolPlan(&manifest,request.identity.arena_bytes,cap,&pool) != SPARK_STATUS_OK )
+        goto done;
+    request.expert_pool_bytes = pool.request_bytes;
     if ( wset_path == 0 )
         for (index=0u; index<manifest.group_count; index++)
             if ( manifest.groups[index].layer >= layers || manifest.groups[index].expert >= experts )
@@ -490,6 +492,7 @@ usage:
         "                           --shared (warm only an arena a lane already attached with this identity;\n"
         "                              the daemon refuses instead of loading another copy of the pack)\n"
         "                           --identity-print (print the derived identity and exit)\n"
-        "       finite SPARK_WEIGHTD_EXPERT_POOL_BYTES is required\n");
+        "       the pool is sized from PACK.experts as every engine sizes it; SPARK_WEIGHTD_EXPERT_POOL_BYTES,\n"
+        "       when set, is the lane's explicit expert pool cap and must match the engine's\n");
     return 2;
 }

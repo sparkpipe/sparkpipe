@@ -821,8 +821,7 @@ connects to a running weightd, lazily attaches a pack, then calls
 
 ```sh
 make build/mesh_register_attach_repro
-SPARK_WEIGHTD_EXPERT_POOL_BYTES=<bytes> \
-  build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY
+build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY
 ```
 
 `tools/mesh_attach_repro_run.sh` runs it against the shared weightd socket.
@@ -838,8 +837,11 @@ Arguments and environment:
 - `SHA256`: 64 characters, the pack identity digest.
 - `REVISION`: the identity revision.
 - `TOPOLOGY`: 1 to 65535.
-- `SPARK_WEIGHTD_EXPERT_POOL_BYTES`: required, 1 to 2^40-1. It becomes
-  `expert_pool_bytes` in the request.
+- `SPARK_WEIGHTD_EXPERT_POOL_BYTES`: optional, 1 to 2^40-1, the explicit
+  expert pool cap. The request's `expert_pool_bytes` is
+  `SparkWeightdManifestPoolPlan` of the loaded manifest and that cap (see
+  Pool sizing in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)); a cap
+  the plan refuses exits 2.
 - `SPARK_WEIGHTD_SPINE_BUDGET_BYTES` is parsed but has no effect:
   `SparkWeightdLazyAttachRequest` has no spine-budget field.
 
