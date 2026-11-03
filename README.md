@@ -309,7 +309,12 @@ ceiling: KV always has its reserve and may borrow what the attached weights
 leave of the ceiling, reclaiming cold weights for it, so a model with small
 weights can hold a longer sequence than the reserve alone; new weights take
 back only pools no engine owns
-([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)). Pages leaving the device park in a per-engine
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)).
+An engine's device KV pool attaches with one full-length sequence and grows
+on demand into what the resident model leaves of the node, stopping where
+`MemAvailable` would cross a margin above earlyoom's line; `/health`
+reports `kv_capacity_tokens` (what the smallest rank's pool holds now) and
+`kv_capacity_max_tokens` (the most it may grow to). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host

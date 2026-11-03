@@ -79,9 +79,10 @@ switch frees it. With no weights attached the limit is the reserve
 ([`docs/WEIGHTD_DESIGN.md`](WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)). The agent
 passes every `SPARK_WEIGHTD_*` variable in its own environment to weightd, so
 set the reserve in the agent unit's environment on every node. Pools resize
-inside the KV limit by chunk: an engine attaches with its full size when the
-limit has room and with at least its minimum (one full-length sequence)
-otherwise, waiting while idle engines give chunks back. An engine whose pool
+inside the KV limit by chunk: an engine attaches with its minimum (one
+full-length sequence), waiting while idle engines give chunks back, and grows
+on demand while the limit has room and `MemAvailable` stays above weightd's
+memory margin. An engine whose pool
 evicts or refuses for capacity grows it (`kv pool grew`), and weightd records
 the chunks it could not grant; an engine without that pressure for four 50 ms
 ticks sees those wanted chunks, vacates its top pages (discarding saved prefix
