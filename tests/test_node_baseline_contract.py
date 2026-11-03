@@ -48,7 +48,7 @@ class NodeBaselineContractTest(unittest.TestCase):
         self.assertIn("UsePAM no",lines)
 
     def test_earlyoom_policy_and_runtime_check_use_one_argument_string(self) -> None:
-        self.assertEqual(MODULE.EARLYOOM_ARGS,"-m 3 -s 100 -r 5 --avoid sshd|systemd|init")
+        self.assertEqual(MODULE.EARLYOOM_ARGS,"-m 2 -s 100 -r 5 --avoid sshd|systemd|init")
         self.assertEqual(MODULE.EARLYOOM_DEFAULT,f'EARLYOOM_ARGS="{MODULE.EARLYOOM_ARGS}"\n')
 
     def test_factory_boot_units_are_masked_including_the_boot_splash_wait(self) -> None:

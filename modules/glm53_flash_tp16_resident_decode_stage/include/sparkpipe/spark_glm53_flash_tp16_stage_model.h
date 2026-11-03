@@ -24,4 +24,20 @@ const SparkStageRunnerModelInterface *SparkGlm53FlashTp16StageModel(void);
 }
 #endif
 
+#ifdef __cplusplus
+#include "sparkpipe/spark_glm5_next_family.h"
+#include "sparkpipe/spark_weight_codec.h"
+
+template<uint32_t TP>
+struct Glm53FlashGeometry
+{
+	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static const char *Tag(void) { return "sparkpipe_glm53_flash"; }
+	static const char *WeightdModel(void) { return "glm5_next_stage"; }
+	static const char *WeightdRevision(void) { return "84c6a6aa9497188e15a635ba793b0f95a79b1033"; }
+	static const char *ReportTag(void) { return "GLM53_FLASH-STATE"; }
+};
+#endif
+
 #endif
