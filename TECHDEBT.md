@@ -1414,13 +1414,20 @@ and the multidev docs on 2026-09-28. Line numbers are in
     as the reference's `bf16(w bf16(x r))` does.
     Until then both backends normalised the FP32 sum and rounded the gain
     once everywhere, and `tools/glm52_reference.py` and
-    `tools/k3_reference.py` had copied that order. Still different from the
-    publishers: both backends keep the attention probabilities and the GQA
-    gate in FP32, where the publisher's eager attention rounds the
-    probabilities (its SDPA and flash paths round the unnormalised
-    exponentials instead, and the references differ: Ling, K-EXAONE and
-    Solar round the probabilities, MiMo, Laguna and Gemma keep them in
-    FP32). At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
+    `tools/k3_reference.py` had copied that order. The attention output
+    gate rounds its sigmoid to BF16 before it scales the output where the
+    publisher's code does (Qwen 3.5's `attn_output * torch.sigmoid(gate)`
+    on a BF16 gate, the Ling family's `sigmoid(g.float()).type_as(h)`):
+    Qwen 3.8 and Solar Open 2 now do, as the Gemma family already did.
+    Still different from the publishers: Kimi K3's MLA gate (the publisher
+    rounds the sigmoid) and its KDA gate (the publisher's
+    `FusedRMSNormGated` rounds `x r w sigmoid(g)` once, where both backends
+    round the norm and then the gate) keep their order until K3's reference
+    can be recomputed with them; and both backends keep the attention
+    probabilities in FP32, where the publisher's eager attention rounds them
+    (its SDPA and flash paths round the unnormalised exponentials instead,
+    and the references differ: Ling, K-EXAONE and Solar round the
+    probabilities, MiMo, Laguna and Gemma keep them in FP32). At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
     output was 2.5e-3 of its norm from reference a against an a/b floor of
     8.3e-5; giving the reference the backends' choice at the gain, the
     probabilities and the gate brought it to 1.75e-3, and the rest is not
