@@ -268,7 +268,7 @@ struct Probe
                         uint16_t own,partner;
                         std::memcpy(&own,inputs[rank].data()+(owner*(elements/degree)+i)*sizeof(own),sizeof(own));
                         std::memcpy(&partner,inputs[rank^1u].data()+(owner*(elements/degree)+i)*sizeof(partner),sizeof(partner));
-                        sum+=Float(Bf16(Float(own)+Float(partner)));
+                        sum+=Float(own)+Float(partner);
                     }
                     uint16_t bits=Bf16(sum);std::memcpy(expected_rank[owner].data()+i*sizeof(bits),&bits,sizeof(bits));
                 }
@@ -518,7 +518,7 @@ struct Probe
                 {
                     float total=0.0f;
                     if (gather!=0u) total=Float(wide_values[i/local][i%local]);
-                    else for (uint32_t pair=0u;pair<n;pair+=2u) total+=Float(Bf16(Float(wide_values[pair][rank*local+i])+Float(wide_values[pair+1u][rank*local+i])));
+                    else for (uint32_t pair=0u;pair<n;pair+=2u) total+=Float(wide_values[pair][rank*local+i])+Float(wide_values[pair+1u][rank*local+i]);
                     wide_want[rank][i]=Bf16(total);
                 }
             Setup(n,1u,1u,small,sums+1u);
