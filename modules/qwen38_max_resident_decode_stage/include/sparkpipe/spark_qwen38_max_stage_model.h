@@ -9,6 +9,7 @@ extern "C" {
 
 #define SPARK_QWEN38_MAX_STAGE_TP_DEGREE 16u
 #define SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS 64u
+#define SPARK_QWEN38_MAX_STAGE_VERIFY_ROWS 256u
 #define SPARK_QWEN38_MAX_STAGE_KV_HEADS 4u
 #define SPARK_QWEN38_MAX_STAGE_HEAD_DIM 256u
 #define SPARK_QWEN38_MAX_STAGE_KV_SLOT_BYTES (SPARK_QWEN38_MAX_STAGE_KV_HEADS * SPARK_QWEN38_MAX_STAGE_HEAD_DIM * 2u * 2u)
@@ -43,6 +44,7 @@ struct Qwen38MaxGeometry : QwenHybridDefaults
 	static constexpr uint32_t kRopeDim = 64u;
 	static constexpr float kRopeTheta = 10000000.0f;
 	static constexpr uint32_t kPageSlots = SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS;
+	static constexpr uint32_t kVerifyRows = SPARK_QWEN38_MAX_STAGE_VERIFY_ROWS;
 	static constexpr bool kRankHeads = true;
 	static constexpr bool kMoe = true;
 	static constexpr uint32_t kExperts = 512u;
