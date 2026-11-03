@@ -949,14 +949,10 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Speculation serves on Kimi K3, GLM 5.3 Full, DeepSeek V4.1 Flash, A.X K2,
-  K-EXAONE 2.0, Solar Open 2, Ling 3.0 Flash and Flash Fin, Hunyuan HY4
-  preview, Gemma 4 31B, Gemma 4 26B, Laguna S 2.1, Muse Glimmer 30B, MiMo V2.6
-  Pro and Flash, and Qwen 3.8 Max, 27B and Flash, whose adapters declare
-  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
+- Speculation serves on every model in the README model table, whose
+  adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash, with recurrent and linear-attention state
-    restored to the accepted row through the binding's recurrent-state hook;
+  - verify frames for Motif 3 once it serves;
   - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
     head (F32 in the checkpoint) and the DFlash draft model it ships in
     `dflash/` are not packed or wired as drafters;
