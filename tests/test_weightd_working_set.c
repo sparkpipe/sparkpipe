@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_sha256.h"
+#include "tests/test_stderr_capture.h"
 
 #define CHUNK (2u * 1024u * 1024u)
 #define TIMEOUT UINT64_C(10000000000)
@@ -1070,12 +1071,14 @@ static void check_shared_attach(void)
 	assert(SparkWeightdMapDestroy(shared_map) == SPARK_STATUS_OK);
 	assert(SparkWeightdMapDestroy(owner_map) == SPARK_STATUS_OK);
 
+	request.expert_pool_bytes = 0u;
 	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,"read-only",1) == 0);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,0u,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(pack == 0);
 	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,0u,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
 	assert(pack != 0 && pack->read_only == 1u && SparkWeightdMapReadOnly(pack->map) == 1u);
+	assert(pack->pool.request_bytes == owner_result.expert_pool_bytes && pack->attached.expert_pool_bytes == 66u * CHUNK);
 	assert(pack->attached.arena_generation == owner_result.arena_generation && pack->attached.loaded_from_pack == 0u);
 	assert(SparkWeightdMapBase(pack->map,&shared_base) == SPARK_STATUS_OK);
 	assert(cuda_stub_vmm_probe_write((CUdeviceptr)(uintptr_t)shared_base,scribble,sizeof(scribble)) == CUDA_ERROR_INVALID_VALUE);
@@ -1088,7 +1091,7 @@ static void check_shared_attach(void)
 	assert(SparkWeightdClientReclaimPack(sharer,request.identity.pack_sha256,&reclaim,TIMEOUT) == SPARK_STATUS_OK);
 	assert(reclaim.status == SPARK_STATUS_OK && reclaim.arena_count == 0u);
 	assert(setenv(SPARK_WEIGHTD_SHARE_ENV,SPARK_WEIGHTD_SHARE_READONLY,1) == 0);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,0u,66u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
 	assert(pack == 0);
 	assert(unsetenv(SPARK_WEIGHTD_SHARE_ENV) == 0);
 	SparkWeightdClientClose(sharer);
@@ -1139,30 +1142,29 @@ static void check_lazy_pack(const char *socket_path,const char *path,const char 
 	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
-	request.expert_pool_bytes = (2u * CHUNK);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,1u,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,1u,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(pack == 0);
 	snprintf(saved,sizeof(saved),"%s.saved",manifest_path);
 	assert(rename(manifest_path,saved) == 0);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_NOT_FOUND);
 	assert(pack == 0);
 	assert(rename(saved,manifest_path) == 0);
 	spark_stub_cuda_fail_next_alloc();
-	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,4u * CHUNK,TIMEOUT,reject_manifest,&checks,&pack) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,reject_manifest,&checks,&pack) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(pack == 0 && checks == 1u);
 	// Rejection must precede allocation: the injected failure remains pending.
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	assert(pack == 0);
 	memset(request.identity.pack_sha256,'b',64u);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_HASH_MISMATCH);
 	assert(pack == 0);
 	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	snprintf(request.identity.model,sizeof(request.identity.model),"manifest-race-test");
-	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,4u * CHUNK,TIMEOUT,change_manifest_after_parse,(void *)manifest_path,&pack) == SPARK_STATUS_HASH_MISMATCH);
+	assert(SparkWeightdLazyPackCreateChecked(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,change_manifest_after_parse,(void *)manifest_path,&pack) == SPARK_STATUS_HASH_MISMATCH);
 	assert(pack == 0);
 	assert(change_manifest_after_parse(0,(void *)manifest_path) == SPARK_STATUS_OK);
 	snprintf(request.identity.model,sizeof(request.identity.model),"lazy-pack-test");
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
 	assert(pack != 0 && pack->attached.resident_bytes == (4u * CHUNK));
 	assert(SparkWeightdLazyPackSlice(pack,512u,1u,&pointer) == SPARK_STATUS_OK);
 	assert(*(const uint8_t *)pointer == 255u);
@@ -1222,6 +1224,126 @@ static void check_budget_contract(SparkWeightdClient *client,const char *path)
 }
 
 
+#define POOL_PACK_BYTES ((6u * CHUNK) + 1024u)
+
+static void write_pool_fixture(const char *path,const char *manifest_path,uint32_t ranges)
+{
+	FILE *pack = fopen(path,"wb"),*manifest = fopen(manifest_path,"wb");
+	uint32_t header[4] = {SPARK_WEIGHTD_EXPERT_MANIFEST_MAGIC,2u,ranges,0u};
+	assert(pack != 0 && manifest != 0);
+	assert(ftruncate(fileno(pack),POOL_PACK_BYTES) == 0);
+	assert(fwrite(header,1u,sizeof(header),manifest) == sizeof(header));
+	if ( ranges != 0u )
+	{
+		write_range(pack,manifest,0u,0u,CHUNK - 32u);
+		write_range(pack,manifest,1u,0u,4u * CHUNK);
+		write_range(pack,manifest,2u,0u,(4u * CHUNK) + 64u);
+	}
+	assert(fclose(pack) == 0 && fclose(manifest) == 0);
+}
+
+static SparkStatus create_sized(const char *socket_path,SparkWeightdLazyAttachRequest *request,const char *model,uint64_t cap,
+    SparkWeightdLazyPack **pack,const char *expected_log)
+{
+	TestStderrCapture capture;
+	SparkStatus status;
+	char *text;
+	snprintf(request->identity.model,sizeof(request->identity.model),"%s",model);
+	assert(SparkWeightdIdentityPrepare(&request->identity) == SPARK_STATUS_OK);
+	TestStderrCaptureBegin(&capture);
+	status = SparkWeightdLazyPackCreate(socket_path,request,cap,8u * CHUNK,TIMEOUT,pack);
+	text = TestStderrCaptureEnd(&capture);
+	if ( strstr(text,expected_log) == 0 )
+	{
+		fprintf(stderr,"FAIL pool sizing for %s: stderr lacks \"%s\"\n",model,expected_log);
+		abort();
+	}
+	free(text);
+	return(status);
+}
+
+static void check_pool_sizing(void)
+{
+	char root[] = "/tmp/weightd-pool-size-XXXXXX",path[256],manifest[272],spine_path[256],spine_manifest[272],socket_path[256],receipt[280];
+	SparkWeightdServerConfig config = {0};
+	SparkWeightdLazyAttachRequest request = {0};
+	SparkWeightdLazyAttachResult probe;
+	SparkWeightdLazyPack *first = 0,*second = 0,*capped = 0;
+	SparkWeightdClient *client;
+	TestServer state = {0};
+	pthread_t thread;
+	const uint64_t exact = 3u * CHUNK,whole = POOL_PACK_BYTES + CHUNK,used = 7u * CHUNK;
+	assert(mkdtemp(root) != 0);
+	snprintf(path,sizeof(path),"%s/pack",root);
+	snprintf(manifest,sizeof(manifest),"%s.experts",path);
+	snprintf(spine_path,sizeof(spine_path),"%s/spine",root);
+	snprintf(spine_manifest,sizeof(spine_manifest),"%s.experts",spine_path);
+	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
+	write_pool_fixture(path,manifest,3u);
+	write_pool_fixture(spine_path,spine_manifest,0u);
+	config.socket_path = socket_path;
+	config.device_bytes_max = (16u * CHUNK);
+	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
+	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request.identity.arena_bytes = POOL_PACK_BYTES;
+	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
+
+	assert(create_sized(socket_path,&request,"pool-exact",0u,&first,"weightd pool exact=6291456 cap=none used=14680064 mode=whole-arena\n") == SPARK_STATUS_OK);
+	assert(first->pool.exact_bytes == exact && first->pool.cap_bytes == 0u && first->pool.whole_arena == 1u);
+	assert(first->pool.request_bytes == whole && first->pool.used_bytes == used);
+	assert(first->attached.expert_pool_bytes == whole && first->attached.loaded_from_pack == 1u);
+	assert(create_sized(socket_path,&request,"pool-exact",0u,&second,"weightd pool exact=6291456 cap=none used=14680064 mode=whole-arena\n") == SPARK_STATUS_OK);
+	assert(second->attached.arena_generation == first->attached.arena_generation && second->attached.refcount == 2u);
+	assert(SparkWeightdLazyPackDestroy(second) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackDestroy(first) == SPARK_STATUS_OK);
+
+	assert(create_sized(socket_path,&request,"pool-capped",2u * CHUNK,&capped,"weightd pool exact=6291456 cap=4194304 used=4194304 mode=slots\n") == SPARK_STATUS_OK);
+	assert(capped->pool.request_bytes == 2u * CHUNK && capped->pool.whole_arena == 0u);
+	assert(capped->attached.expert_pool_bytes == 2u * CHUNK && capped->attached.resident_bytes >= 2u * CHUNK);
+	assert(SparkWeightdLazyPackDestroy(capped) == SPARK_STATUS_OK);
+	capped = 0;
+
+	assert(create_sized(socket_path,&request,"pool-refused",4u * CHUNK,&capped,
+	    "weightd pool refused: cap=8388608 is larger than exact=6291456, the 2097152-byte chunks the pack's expert ranges touch; a larger cap only wastes memory\n") == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(capped == 0);
+	assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
+	memset(&probe,0,sizeof(probe));
+	request.expert_pool_bytes = 4u * CHUNK;
+	assert(SparkWeightdClientAttachLazyShared(client,&request,&probe,TIMEOUT) == SPARK_STATUS_NOT_FOUND);
+	request.expert_pool_bytes = 0u;
+	SparkWeightdClientClose(client);
+	assert(create_sized(socket_path,&request,"pool-ragged",CHUNK + 4096u,&capped,
+	    "weightd pool refused: cap=2101248 is not a whole number of 2097152-byte chunks (exact=6291456)\n") == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(capped == 0);
+
+	assert(SparkSha256File(spine_path,request.identity.pack_sha256) == SPARK_STATUS_OK);
+	snprintf(request.pack_path,sizeof(request.pack_path),"%s",spine_path);
+	assert(create_sized(socket_path,&request,"pool-spine-only",0u,&first,"weightd pool exact=2097152 cap=none used=2097152 mode=slots\n") == SPARK_STATUS_OK);
+	assert(first->pool.exact_bytes == CHUNK && first->pool.request_bytes == CHUNK && first->attached.expert_pool_bytes == CHUNK);
+	assert(SparkWeightdLazyPackDestroy(first) == SPARK_STATUS_OK);
+	assert(create_sized(socket_path,&request,"pool-spine-capped",2u * CHUNK,&first,
+	    "weightd pool refused: cap=4194304 is larger than exact=2097152") == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(first == 0);
+
+	__atomic_store_n(&state.stop,1,__ATOMIC_SEQ_CST);
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state.server);
+	assert(spark_stub_cuda_outstanding_allocs() == 0u);
+	for (uint32_t i=0u; i<2u; i++)
+	{
+		const char *name = i == 0u ? path : spine_path;
+		char wset[272];
+		snprintf(wset,sizeof(wset),"%s.wset",name);
+		(void)unlink(wset);
+		assert(snprintf(receipt,sizeof(receipt),"%s.verified",name) > 0);
+		(void)unlink(receipt);
+	}
+	assert(unlink(manifest) == 0 && unlink(path) == 0 && unlink(spine_manifest) == 0 && unlink(spine_path) == 0 && rmdir(root) == 0);
+}
+
+
 static void check_spine_residency_modes(const char *path,const char *manifest_path,const char *socket_path)
 {
 	uint32_t full;
@@ -1244,10 +1366,10 @@ static void check_spine_residency_modes(const char *path,const char *manifest_pa
 		assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 		assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 		snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
-		request.expert_pool_bytes = config.device_bytes_max;
 		assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
 		assert(pthread_create(&thread,0,run_server,&state) == 0);
-		assert(SparkWeightdLazyPackCreate(socket_path,&request,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+		assert(SparkWeightdLazyPackCreate(socket_path,&request,full ? 0u : 2u * CHUNK,4u * CHUNK,TIMEOUT,&pack) == SPARK_STATUS_OK);
+		assert(pack->attached.expert_pool_bytes == (full ? PACK_BYTES + CHUNK : 2u * CHUNK));
 		assert(pack->attached.resident_bytes == (full ? 4u * CHUNK : 2u * CHUNK));
 		assert(SparkWeightdManifestLoad(manifest_path,PACK_BYTES,&manifest) == SPARK_STATUS_OK);
 		for (uint32_t i=0u; i<manifest.spine_count; i++)
@@ -1327,6 +1449,7 @@ int main(int argc,char **argv)
 	check_pooled_attach();
 	check_shared_attach();
 	check_large_range_verification();
+	check_pool_sizing();
 	puts("PASS working-set IPC: all ranges, leases, rollback, scoped imports, 65-chunk exports, pooled single-alloc attach and read-only shared attach");
 	return(0);
 }

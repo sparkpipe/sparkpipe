@@ -225,10 +225,8 @@ config_rel="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["n
 pack_rel="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$config_rel")"
 revision="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model_revision","0"))' "$ROOT/runtime/$config_rel")"
 
-# the module and the warmer both require explicit finite pool/spine budgets
-# (qualified PR #1082 values: 24 GiB pool / 4 GiB spine; the shared daemon
-# enforces its own arena bounds on top)
-export SPARK_WEIGHTD_EXPERT_POOL_BYTES=25769803776
+# weightd sizes the expert pool from the pack; the module still needs a
+# finite spine budget (4 GiB, the qualified PR #1082 value)
 export SPARK_WEIGHTD_SPINE_BUDGET_BYTES=4294967296
 export SPARK_WEIGHTD_KV_RESERVE_BYTES=0
 
