@@ -67,8 +67,11 @@ int main(void)
 	cudaMalloc((void **)&d_values, (size_t)PROBE_ROWS * PROBE_K * sizeof(float));
 	cudaMalloc((void **)&d_indices, (size_t)PROBE_ROWS * PROBE_K * sizeof(uint32_t));
 	cudaMemcpy(d_logits, logits.data(), logits.size() * sizeof(float), cudaMemcpyHostToDevice);
+	uint32_t *d_fault = 0;
+	cudaMalloc((void **)&d_fault, sizeof(uint32_t));
+	cudaMemset(d_fault, 0, sizeof(uint32_t));
 	LmTopkSmallKernel<256u,PROBE_K,true,PROBE_GROUPS,PROBE_TOP_GROUPS,LM_TOPK_SCORE_SIGMOID><<<PROBE_ROWS,256u,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t)>>>(
-		d_logits, PROBE_EXPERTS, d_indices, d_values, (const float *)0, (const uint16_t *)0, 1.0f);
+		d_logits, PROBE_EXPERTS, d_indices, d_values, (const float *)0, (const uint16_t *)0, 1.0f, d_fault);
 	ProbeCheck(cudaDeviceSynchronize() == cudaSuccess, "the small top-k kernel runs");
 	std::vector<uint32_t> got((size_t)PROBE_ROWS * PROBE_K);
 	std::vector<float> values((size_t)PROBE_ROWS * PROBE_K);
