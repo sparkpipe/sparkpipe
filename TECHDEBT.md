@@ -1357,6 +1357,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
   gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
   the RMS scale, the residual add before a norm (`SparkMathResidualSum`),
+  the gain after a rounded norm (`SparkMathNormGainRounded`),
   the rotary rotation, the KDA layers' bounded decay
   (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
   `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
@@ -1400,22 +1401,30 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - the norms against the publishers: the residual add before a norm
     rounds to BF16 first on both backends (`SparkMathResidualSum` in CUDA's
     `LmFusedResidualRmsNormKernel` and Metal's `spark_rmsnorm_residual`), as
-    the publishers' eager `residual + hidden_states` does; until then both
-    normalised the FP32 sum and stored only the residual rounded. Still
-    different from the publishers: the Llama-style norms (Ling, Laguna,
-    K-EXAONE, Solar Open 2, GLM, MiMo) compute `weight * bf16(x r)`, rounding
-    twice, where both backends' fused norm rounds `bf16(x r w)` once (Gemma's
-    and Qwen 3.8's publishers round once too), and `tools/glm52_reference.py`
-    and `tools/k3_reference.py` take CUDA's single rounding; both backends
-    keep the attention probabilities and the GQA gate in FP32, where the
-    publisher's eager attention rounds the probabilities (its SDPA and flash
-    paths round the unnormalised exponentials instead, and the references
-    differ: Ling, K-EXAONE and Solar round the probabilities, MiMo, Laguna
-    and Gemma keep them in FP32). At Solar Open 2's layer 0 (GQA, no residual
-    add before it) Metal's output is 2.5e-3 of its norm from reference a
-    against an a/b floor of 8.3e-5; giving the reference the backends' choice
-    at those three points brings it to 1.75e-3, and the rest is not located
-    yet;
+    the publishers' eager `residual + hidden_states` does, and the gain
+    follows each publisher: Ling, Laguna, K-EXAONE, Solar Open 2, GLM 5.3,
+    A.X K2, Kimi K3 and Motif 3 round the normed value before the BF16 gain
+    (`weight * x.to(bf16)`, `SparkMathNormGainRounded`, `kNormRoundFirst`),
+    Gemma 4, Muse Glimmer, Qwen 3.8 and DeepSeek V4.1 Flash round once, and
+    MiMo, HY4 and GLM 5.3 Flash already ran the twice-rounding BF16 norm.
+    Motif 3's publisher keeps its q-lora norm in FP32 and multiplies it
+    into `wq_b` in FP32; both backends round that norm once to BF16
+    (`SparkDeviceLatentAttentionShape.query_norm_once`), and its
+    hyper-connection site does not round the normed streams before the mix
+    as the reference's `bf16(w bf16(x r))` does.
+    Until then both backends normalised the FP32 sum and rounded the gain
+    once everywhere, and `tools/glm52_reference.py` and
+    `tools/k3_reference.py` had copied that order. Still different from the
+    publishers: both backends keep the attention probabilities and the GQA
+    gate in FP32, where the publisher's eager attention rounds the
+    probabilities (its SDPA and flash paths round the unnormalised
+    exponentials instead, and the references differ: Ling, K-EXAONE and
+    Solar round the probabilities, MiMo, Laguna and Gemma keep them in
+    FP32). At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
+    output was 2.5e-3 of its norm from reference a against an a/b floor of
+    8.3e-5; giving the reference the backends' choice at the gain, the
+    probabilities and the gate brought it to 1.75e-3, and the rest is not
+    located yet;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
     same hardware approximation: bitwise identical over the float range and

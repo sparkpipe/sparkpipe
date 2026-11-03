@@ -391,7 +391,10 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   residual once and writes both the normed row and the new residual. The
   sum is rounded to BF16 before the statistic (`SparkMathResidualSum`), as
   the publishers' eager `residual + hidden_states` rounds it, so the norm
-  reads the residual it stores.
+  reads the residual it stores. `ROUND_FIRST` rounds the normed value
+  before the gain (`SparkMathNormGainRounded`), as a publisher's
+  `weight * x.to(bf16)` does; each geometry of the Gemma, Ling and GLM 5.2
+  families chooses it (`kNormRoundFirst`).
 - **Activation quantize.** `LmQuantiseRowsKernel` rounds each group scale
   to UE4M3 first and encodes the codes against that stored scale, so the
   consumer's `code * scale` is the nearest grid point. A nonzero group never
