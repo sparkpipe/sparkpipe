@@ -78,6 +78,14 @@ typedef struct VfBus
 	uint32_t hidden;
 } VfBus;
 
+static uint32_t *VfRouteFault(void)
+{
+	static uint32_t *word = 0;
+	if ( word == 0 && (cudaMalloc((void **)&word, sizeof(uint32_t)) != cudaSuccess || cudaMemset(word, 0, sizeof(uint32_t)) != cudaSuccess) )
+		word = 0;
+	return word;
+}
+
 static SparkStatus VfRound(void *context, void *stream, uint32_t operation, uint32_t stage, uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	const VfBus *bus = (const VfBus *)context;

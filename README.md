@@ -304,7 +304,17 @@ KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
 **Tiers.** KV device memory belongs to weightd, which keeps each engine's
-pool across an engine restart. Pages leaving the device park in a per-engine
+pool across an engine restart. KV and weights share weightd's per-node
+ceiling: KV always has its reserve and may borrow what the attached weights
+leave of the ceiling, reclaiming cold weights for it, so a model with small
+weights can hold a longer sequence than the reserve alone; new weights take
+back only pools no engine owns
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)).
+An engine's device KV pool attaches with one full-length sequence and grows
+on demand into what the resident model leaves of the node, stopping where
+`MemAvailable` would cross a margin above earlyoom's line; `/health`
+reports `kv_capacity_tokens` (what the smallest rank's pool holds now) and
+`kv_capacity_max_tokens` (the most it may grow to). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
@@ -430,6 +440,11 @@ over the kept rows; paged and sliding-window KV is addressed by position, so
 rows past the accepted ones are never read and the next decode overwrites
 them.
 
+**Rejected rows.** A verify frame never publishes cache blocks: the
+validator and the stage adapter refuse a verify submission whose lanes
+publish, because rows past the accepted ones are not part of the sequence
+and the stage captures recurrent state before `keep_rows` rolls it back.
+
 ## Determinism and evidence
 
 **Determinism.** Greedy decoding is bitwise reproducible from run to run:
@@ -445,6 +460,12 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+**Routing.** Every routing top-k kernel ranks a NaN or infinite router
+score below every finite one and never returns an out-of-range or repeated
+expert. A row with fewer finite scores than the experts it routes to raises
+the runner's route-fault word, and the runner fails that step with an
+error instead of serving its output.
 
 Greedy, sampled and logprob tokens come only from ids the tokenizer can
 decode. Several models pad their logits past their tokenizer: GLM-5.3 Full

@@ -85,6 +85,7 @@ static void MoeBuffers(K3LayerBuffers *b,uint32_t rank)
 	b->latent_full_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_ROUTED_EXPERT_HIDDEN);
 	b->router_logits = MoeAlloc<float>((uint64_t)MOE_ROWS * K3_EXPERTS);
 	b->route_expert = MoeAlloc<uint32_t>(MOE_PACKED);
+	b->route_fault = MoeAlloc<uint32_t>(1u);
 	b->route_weight = MoeAlloc<float>(MOE_PACKED);
 	b->route_packed_row = MoeAlloc<uint32_t>(MOE_PACKED);
 	b->route_source_token = MoeAlloc<uint32_t>(MOE_PACKED);

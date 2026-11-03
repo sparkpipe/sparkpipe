@@ -130,6 +130,8 @@ typedef struct ApiState
 	uint32_t health_missing_rank;
 	uint32_t health_degraded_rank;
 	uint32_t health_write_alert_rank;
+	uint64_t health_kv_capacity_tokens;
+	uint64_t health_kv_capacity_max_tokens;
 	uint32_t health_failed_status;
 	uint32_t health_live_requests;
 	volatile uint32_t bringup_attempts;
@@ -686,11 +688,28 @@ static uint32_t api_write_alert_rank(void)
 	return(UINT32_MAX);
 }
 
+static uint64_t api_kv_capacity_pages(void)
+{
+	SparkModelResidentStatusReport report;
+	uint64_t pages = UINT64_MAX;
+	uint32_t rank;
+	for (rank=0u; rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
+	{
+		if ( SparkModelBatchEngineGetRankStatus(S.engine,rank,&report) != SPARK_STATUS_OK )
+			break;
+		if ( report.generation != 0u && report.adapter_snapshot.kv_store.pool_physical_pages < pages )
+			pages = report.adapter_snapshot.kv_store.pool_physical_pages;
+	}
+	return(pages == UINT64_MAX ? 0u : pages);
+}
+
 static void api_publish_health(void)
 {
 	SparkModelBatchEngineView view;
 	if ( S.engine == 0 || SparkModelBatchEngineGetView(S.engine,&view) != SPARK_STATUS_OK )
 		return;
+	__atomic_store_n(&S.health_kv_capacity_tokens,api_kv_capacity_pages() * view.cache_block_token_count,__ATOMIC_RELEASE);
+	__atomic_store_n(&S.health_kv_capacity_max_tokens,(uint64_t)view.kv_physical_page_capacity * view.cache_block_token_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_rank_count,view.pipeline.rank_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_connected_rank_count,view.pipeline.connected_rank_count,__ATOMIC_RELEASE);
 	__atomic_store_n(&S.health_missing_rank,view.pipeline.first_disconnected_rank,__ATOMIC_RELEASE);
@@ -1833,7 +1852,7 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/health") == 0)
 	{
-		char b[448];
+		char b[640];
 		uint32_t ranks = __atomic_load_n(&S.health_rank_count, __ATOMIC_ACQUIRE);
 		uint32_t write_alert = __atomic_load_n(&S.health_write_alert_rank, __ATOMIC_ACQUIRE);
 		uint32_t connected = __atomic_load_n(&S.health_connected_rank_count, __ATOMIC_ACQUIRE);
@@ -1842,11 +1861,12 @@ static void *api_connection(void *arg)
 		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
 		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d}",
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d,\"kv_capacity_tokens\":%llu,\"kv_capacity_max_tokens\":%llu}",
 			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
 			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
 			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
-			write_alert != UINT32_MAX ? (int)write_alert : -1);
+			write_alert != UINT32_MAX ? (int)write_alert : -1, (unsigned long long)__atomic_load_n(&S.health_kv_capacity_tokens, __ATOMIC_ACQUIRE),
+			(unsigned long long)__atomic_load_n(&S.health_kv_capacity_max_tokens, __ATOMIC_ACQUIRE));
 		send_response(fd, degraded != 0u ? 503 : 200, b);
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)

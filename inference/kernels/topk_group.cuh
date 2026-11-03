@@ -4,12 +4,13 @@
 #include <stdint.h>
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/topk.cuh"
 #include "runtime/launch.h"
 
 template<uint32_t THREADS, uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
 __global__ __launch_bounds__(THREADS, 1)
 void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__restrict__ selection_bias, uint32_t *__restrict__ out_indices,
-	float *__restrict__ out_values, float scale)
+	float *__restrict__ out_values, float scale, uint32_t *__restrict__ fault)
 {
 	constexpr uint32_t PER_GROUP = EXPERTS / GROUPS, WARPS = THREADS / 32u;
 	static_assert(EXPERTS % GROUPS == 0u && PER_GROUP >= 2u && TOPK_GROUPS <= GROUPS && TOPK <= TOPK_GROUPS * PER_GROUP &&
@@ -18,8 +19,8 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 	__shared__ float selection[EXPERTS];
 	__shared__ float group_score[GROUPS];
 	__shared__ uint32_t group_open[GROUPS];
-	__shared__ float warp_value[WARPS];
-	__shared__ uint32_t warp_index[WARPS];
+	__shared__ uint32_t taken[EXPERTS];
+	__shared__ unsigned long long warp_best[WARPS];
 	__shared__ uint32_t chosen[TOPK];
 	const uint32_t row = blockIdx.x, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	for ( uint32_t expert = threadIdx.x; expert < EXPERTS; expert += THREADS )
@@ -27,6 +28,7 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 		const float value = SparkMathSigmoid(logits[(uint64_t)row * EXPERTS + expert]);
 		score[expert] = value;
 		selection[expert] = value + (selection_bias != 0 ? selection_bias[expert] : 0.0f);
+		taken[expert] = 0u;
 	}
 	__syncthreads();
 	if ( threadIdx.x < GROUPS )
@@ -59,42 +61,28 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 	__syncthreads();
 	for ( uint32_t pick = 0u; pick < TOPK; ++pick )
 	{
-		float value = -INFINITY;
-		uint32_t index = 0xffffffffu;
+		unsigned long long best = 0ull;
 		for ( uint32_t expert = threadIdx.x; expert < EXPERTS; expert += THREADS )
-			if ( group_open[expert / PER_GROUP] != 0u && (selection[expert] > value || (selection[expert] == value && expert < index)) )
+			if ( group_open[expert / PER_GROUP] != 0u && taken[expert] == 0u )
 			{
-				value = selection[expert];
-				index = expert;
+				const unsigned long long candidate = ((unsigned long long)LmTopkRouteKey(selection[expert] + 0.0f) << 32u) | (0xffffffffu - expert);
+				best = candidate > best ? candidate : best;
 			}
 		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
 		{
-			const float other_value = __shfl_xor_sync(0xffffffffu, value, offset);
-			const uint32_t other_index = __shfl_xor_sync(0xffffffffu, index, offset);
-			if ( other_value > value || (other_value == value && other_index < index) )
-			{
-				value = other_value;
-				index = other_index;
-			}
+			const unsigned long long other = __shfl_xor_sync(0xffffffffu, best, offset);
+			best = other > best ? other : best;
 		}
 		if ( lane == 0u )
-		{
-			warp_value[warp] = value;
-			warp_index[warp] = index;
-		}
+			warp_best[warp] = best;
 		__syncthreads();
 		if ( threadIdx.x == 0u )
 		{
-			value = warp_value[0];
-			index = warp_index[0];
 			for ( uint32_t other = 1u; other < WARPS; ++other )
-				if ( warp_value[other] > value || (warp_value[other] == value && warp_index[other] < index) )
-				{
-					value = warp_value[other];
-					index = warp_index[other];
-				}
-			chosen[pick] = index;
-			selection[index] = -INFINITY;
+				best = warp_best[other] > best ? warp_best[other] : best;
+			chosen[pick] = 0xffffffffu - (uint32_t)best;
+			taken[chosen[pick]] = 1u;
+			LmTopkRouteFault(fault, (uint32_t)(best >> 32u));
 		}
 		__syncthreads();
 	}
@@ -113,11 +101,11 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 
 template<uint32_t THREADS, uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
 static inline cudaError_t LmTopkGroupLimitedLaunch(uint32_t rows, const float *logits, const float *selection_bias, uint32_t *out_indices,
-	float *out_values, float scale, cudaStream_t stream)
+	float *out_values, float scale, uint32_t *fault, cudaStream_t stream)
 {
-	if ( rows == 0u || logits == 0 || out_indices == 0 || out_values == 0 )
+	if ( rows == 0u || logits == 0 || out_indices == 0 || out_values == 0 || fault == 0 )
 		return cudaErrorInvalidValue;
 	LM_LAUNCH((LmTopkGroupLimitedKernel<THREADS,EXPERTS,GROUPS,TOPK_GROUPS,TOPK>), rows, THREADS, 0, stream, logits, selection_bias, out_indices,
-		out_values, scale);
+		out_values, scale, fault);
 	return cudaPeekAtLastError();
 }
