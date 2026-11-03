@@ -885,23 +885,6 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 }
 
 template<class S>
-static int32_t GlmExpertsRows(const GlmBuffers *b, const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output, uint32_t rows,
-	uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
-{
-	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
-	for ( uint32_t first = 0u; first < rows; first += LM_SKINNY_ROWS )
-	{
-		const uint32_t count = rows - first < LM_SKINNY_ROWS ? rows - first : LM_SKINNY_ROWS;
-		const int32_t status = LmSkinnyExperts<Format>(weight, scale, packed != 0u ? activation : activation + (uint64_t)first * input_dimension, output,
-			b->route_expert + (uint64_t)first * S::kTopK, b->route_packed_row + (uint64_t)first * S::kTopK, count * S::kTopK, S::kTopK, packed,
-			input_dimension, output_dimension, stream);
-		if ( status != LM_LAUNCH_OK )
-			return status;
-	}
-	return GlmLaunched();
-}
-
-template<class S>
 static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
 	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
@@ -911,7 +894,8 @@ static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t pac
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<S::kExpertCodec>(b->expert_w1_scale, S::kExperts, b->expert_w1_rows, S::kHidden);
 	if ( b->row_exact != 0u )
-		return GlmExpertsRows<S>(b, b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, rows, 0u, S::kHidden, b->expert_w1_rows, stream);
+		return LmSkinnyGroupedExperts<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+			b->route_source_token, S::kExperts, packed_rows, 0u, S::kHidden, b->expert_w1_rows, stream, 1u);
 	if ( rows >= GLM_STREAM_EXPERT_ROWS )
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
@@ -946,8 +930,8 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<S::kExpertCodec>(b->expert_w2_scale, S::kExperts, S::kHidden, b->expert_intermediate);
 	if ( b->row_exact != 0u )
-		return GlmExpertsRows<S>(b, b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, rows, 1u, b->expert_intermediate, S::kHidden,
-			stream);
+		return LmSkinnyGroupedExperts<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset,
+			b->route_source_token, S::kExperts, packed_rows, 1u, b->expert_intermediate, S::kHidden, stream, 1u);
 	if ( rows >= GLM_STREAM_EXPERT_ROWS )
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset, 0,

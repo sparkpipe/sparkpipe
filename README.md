@@ -433,11 +433,14 @@ Every built speculation path can be selected individually, and none can be
 compiled out.
 
 **Verify frames.** The stage runner hands every verify frame to the model as
-a step with `commit == 0`. Such a step runs each row through the kernels a
-one-row decode uses (skinny projections in 16-row chunks, the decode's
-routed-expert kernel, the decode attention path) and leaves recurrent state
-for `keep_rows` to fold over the kept rows; paged and sliding-window KV is addressed by position, so rows past the
-accepted ones are never read and the next decode overwrites them.
+a step with `commit == 0`. Such a step runs each row through the arithmetic a
+one-row decode uses: skinny projections in 16-row chunks, the decode attention
+path, and one grouped expert launch per frame that reads each touched expert's
+weights once per batch of up to 16 of its routes and matches the decode's
+expert kernel bit for bit. Recurrent state is left for `keep_rows` to fold
+over the kept rows; paged and sliding-window KV is addressed by position, so
+rows past the accepted ones are never read and the next decode overwrites
+them.
 
 **Rejected rows.** A verify frame never publishes cache blocks: the
 validator and the stage adapter refuse a verify submission whose lanes
