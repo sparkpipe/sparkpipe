@@ -273,6 +273,7 @@ struct VfRig
 		step.commit = commit;
 		step.context = state->max_positions;
 		step.multiprocessors = multiprocessors;
+		step.route_fault = VfRouteFault();
 		step.host_positions = position.data();
 		step.host_sequence_of_row = sequence.data();
 		step.graph_key = M::GraphKey(state, &step);

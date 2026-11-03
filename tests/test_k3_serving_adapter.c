@@ -320,6 +320,58 @@ static SparkStatus TestK3ParseTaps(const char *text, SparkStageServingState *sta
 	return(status);
 }
 
+static int32_t TestK3VerifyPublishRefused(void)
+{
+	static const uint64_t positions[2] = { 40u, 41u };
+	static const uint32_t lane_of_row[2] = { 0u, 0u };
+	static const uint64_t sequences[2] = { 7u, 7u };
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lane;
+	SparkStatus status = SPARK_STATUS_OK;
+	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
+	uint32_t index, untouched = 1u;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.max_rows = 8u;
+	state.max_shared_rows = 8u;
+	state.runner_config.max_active_sequence_count = 4u;
+	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
+		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+	if ( TestK3Check(status == SPARK_STATUS_OK, "the verify buffers allocate") != 0 )
+		return(1);
+	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
+		memset((void *)TestK3Host(host[index]), 0xab, 9u * sizeof(uint32_t));
+	memset(&submission, 0, sizeof(submission));
+	memset(&lane, 0, sizeof(lane));
+	lane.resident_sequence_slot = 1u;
+	lane.sequence_position = 40u;
+	lane.context_token_count = 42u;
+	lane.flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	lane.cache_publish_token_count = 42u;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
+	submission.tokens_per_sequence = 2u;
+	submission.lanes = &lane;
+	submission.lane_count = 1u;
+	submission.active_sequence_count = 1u;
+	submission.row_count = 2u;
+	submission.row_positions = positions;
+	submission.row_lane_indices = lane_of_row;
+	submission.row_sequence_ids = sequences;
+	status = StageServingSubmit(&state, &submission);
+	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
+		for ( uint32_t word = 0u; word < 9u; word++ )
+			untouched &= TestK3Host(host[index])[word] == 0xababababu ? 1u : 0u;
+	failures += TestK3Check(status == SPARK_STATUS_INVALID_ARGUMENT && untouched != 0u,
+		"a verify frame with a publishing lane is refused before any row reaches the runner, so no recurrent state is captured ahead of keep_rows");
+	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
+		SparkMemoryBufferFree(host[index]);
+	return(failures);
+}
+
 static void TestK3ReleaseTaps(SparkStageServingState *state)
 {
 	StageServingTapClose(state);
@@ -474,6 +526,7 @@ int main(int argc, char **argv)
 	failures += TestK3ReleaseValidation();
 	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
+	failures += TestK3VerifyPublishRefused();
 	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )
