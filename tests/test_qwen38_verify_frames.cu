@@ -18,7 +18,7 @@
 #define VF_FILL_ROWS 16u
 #define VF_FFN 512u
 
-struct Small27b : Qwen38_27bGeometry
+struct Small27b : Qwen38_27bGeometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1024u;
@@ -30,7 +30,7 @@ struct Small27b : Qwen38_27bGeometry
 	static const char *Tag(void) { return "qwen3.8-27b"; }
 };
 
-struct SmallMax : Qwen38MaxGeometry
+struct SmallMax : Qwen38MaxGeometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1024u;
@@ -46,7 +46,7 @@ struct SmallMax : Qwen38MaxGeometry
 	static const char *Tag(void) { return "qwen3.8-max"; }
 };
 
-struct SmallFlash : Qwen38FlashGeometry
+struct SmallFlash : Qwen38FlashGeometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1280u;

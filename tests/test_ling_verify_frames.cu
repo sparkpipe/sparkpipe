@@ -17,7 +17,7 @@
 #define VF_FFN 256u
 #define VF_FILL_ROWS 16u
 
-struct SmallSolar : SolarOpen2Geometry
+struct SmallSolar : SolarOpen2Geometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1536u;
@@ -30,7 +30,7 @@ struct SmallSolar : SolarOpen2Geometry
 	static const char *Tag(void) { return "solar-open-2"; }
 };
 
-struct SmallLing3 : Ling3Geometry
+struct SmallLing3 : Ling3Geometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 2304u;
