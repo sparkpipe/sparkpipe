@@ -23,7 +23,7 @@
 #define VF_FILL_E2M1 3u
 #define VF_FILL_E8M0 4u
 
-struct SmallFlash : Mimo26FlashGeometry<1u>
+struct SmallFlash : Mimo26FlashGeometry<SPARK_MIMO26_FLASH_TP16_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kLayers = 6u;
 	static constexpr uint32_t kFullLayers = 2u;
@@ -32,7 +32,7 @@ struct SmallFlash : Mimo26FlashGeometry<1u>
 	static const char *Tag(void) { return "mimo-v2.6-flash"; }
 };
 
-struct SmallPro : Mimo26ProGeometry<1u>
+struct SmallPro : Mimo26ProGeometry<SPARK_MIMO26_PRO_TP16_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kLayers = 4u;
 	static constexpr uint32_t kFullLayers = 2u;
