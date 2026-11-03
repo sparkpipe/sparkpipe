@@ -574,9 +574,9 @@ model's cached prefixes come back from the KV snapshot store.
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | no |
 | `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | yes |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | no |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | no |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | yes |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | yes |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | yes |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | no |
 | `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | yes |
 | `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | yes |
 | `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | yes |

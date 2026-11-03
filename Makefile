@@ -656,6 +656,7 @@ PYTHON_TESTS := \
 	tests/test_hy4_verify_frames.py \
 	tests/test_exact_grouped_experts.py \
 	tests/test_exact_dense_rows.py \
+	tests/test_mimo26_verify_frames.py \
 	tests/test_glm52_pack_bf16_passthrough.py \
 	tests/test_glm52_pack_nvfp4_passthrough.py \
 	tests/test_glm53_contract.py \
@@ -1784,6 +1785,8 @@ build/exact_dense_rows_bench: tools/exact_dense_rows_bench.cu inference/kernels/
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/hy4/include -Imodules/hy4_tp16_resident_decode_stage/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
 build/exact_grouped_experts_bench: tools/exact_grouped_experts_bench.cu inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh model-families/glm52/include/sparkpipe/spark_glm52_model.h $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm52/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
+build/test_mimo26_verify_frames: tests/test_mimo26_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/mimo26/source/mimo26_stage.cuh $(wildcard modules/mimo26_flash_tp16_resident_decode_stage/source/*.cu modules/mimo26_pro_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/mimo26/include -Imodel-families/mimo26/source -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodules/mimo26_pro_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_mimo26_verify_frames (no nvcc on this host)"; fi
 
 build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_rope_parity (no nvcc on this host)"; fi

@@ -18,7 +18,7 @@ static void Require(int condition, const char *model, const char *what, uint32_t
 	vf_failures++;
 }
 
-static uint32_t Mix(uint32_t value)
+static __host__ __device__ uint32_t Mix(uint32_t value)
 {
 	value ^= value >> 16u;
 	value *= 0x7feb352du;
@@ -27,12 +27,12 @@ static uint32_t Mix(uint32_t value)
 	return value ^ (value >> 16u);
 }
 
-static float Uniform(uint32_t seed, uint32_t index)
+static __host__ __device__ float Uniform(uint32_t seed, uint32_t index)
 {
 	return (float)(Mix(seed * 0x9e3779b9u + index) >> 8u) / 8388608.0f - 1.0f;
 }
 
-static uint16_t Bf16(float value)
+static __host__ __device__ uint16_t Bf16(float value)
 {
 	uint32_t bits;
 	memcpy(&bits, &value, sizeof(bits));
