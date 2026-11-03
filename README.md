@@ -586,9 +586,9 @@ model's cached prefixes come back from the KV snapshot store.
 | `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
 | `solar-open-2` | Solar Open 2 | `solar_open2` | 256K | yes |
 | `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
-| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | no |
-| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | no |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | no |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`), from the lane records in
