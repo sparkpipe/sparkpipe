@@ -554,8 +554,14 @@ gets only the tail. Two collectives use it:
 
 - The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
   sends each partner the segments of the partner's parity over the pair link,
-  sums each pair there, rounds the pair sum to BF16, and sums the pair sums of
-  a segment (eight at 16 ranks) over the switch in fp32.
+  sums each pair there in fp32, and sends the fp32 pair sums of a segment
+  (eight at 16 ranks) over the switch, where they are summed in fp32 and
+  rounded once to BF16. Only the group publication carries fp32, so the
+  pipeline width is a quarter of a half payload in elements
+  (`SparkTpMeshPairFirstScatterWidth`). The result has the accuracy of the
+  plain reduce-scatter (fp32 accumulation, one rounding), but the order of the
+  additions is pairwise, so it can differ from the rank-order sum in the last
+  BF16 bit of a few elements.
 - The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
   each chunk over the switch to the sender's parity group; two rounds later
   every rank forwards the chunks it received to its partner over the pair
