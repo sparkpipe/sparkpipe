@@ -544,6 +544,38 @@ lane owner's client. Two operations then use PEER:
 - **Direct rounds.** Single-row direct rounds (below 49,152 values or below
   degree 4) keep their slot path.
 
+**Pair-first routes.** A route with the `pair_first` bit carries two payloads
+in one publication (`SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair)`). The
+group bytes go to every peer of the sender's parity, into the sender's own
+slot half. The pair bytes go to the partner (`rank ^ 1`) over the pair link,
+one piece per segment of the partner's parity, each into the slot half of the
+sender of the other parity (`SparkWeightdMeshPairFirstArea`). Every other peer
+gets only the tail. Two collectives use it:
+
+- The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
+  sends each partner the segments of the partner's parity over the pair link,
+  sums each pair there, rounds the pair sum to BF16, and sums the pair sums of
+  a segment (eight at 16 ranks) over the switch in fp32.
+- The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
+  each chunk over the switch to the sender's parity group; two rounds later
+  every rank forwards the chunks it received to its partner over the pair
+  link. It moves the same bytes as the plain all-gather and is exact.
+
+Both are pipelined: a rank publishes round r + 2 once round r has arrived, so
+two publications are in flight. At the edges of every pipelined collective the
+lag is zero: round 1 is published only after round 0 has arrived, and the
+last round only after the round before it has arrived
+(`SparkTpMeshPipelineEarly`, `SparkTpMeshPipelineLate`). A whole-slot round
+(direct sums, all-to-all, staged peer rounds) fills both halves of its slot, so
+a collective that publishes two rounds before its first arrival can overwrite,
+at a slower peer, a whole-slot round that peer has not read yet. Until
+2026-11-02 the pair-first rounds published rounds 0 and 1 back to back and
+their last round one arrival early; `tp_mesh_hardware_probe
+--pair-first-boundary` reproduces the overwrite on one GPU by delaying one
+tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
+every pipelined collective against whole-slot neighbours with an adversarially
+slow rank at 4, 8 and 16 ranks.
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
@@ -1431,16 +1463,19 @@ oldest created, not the least recently used). An arena is cold when its
 `refcount` is 0 and it holds no leases. When no cold arena is left it
 returns without a status, and the caller applies its own checks.
 
-- After reclaim, both attaches refuse a full arena table. The eager attach
+- After the byte reclaim, a full arena table frees its coldest cold arena
+  (`SparkWeightdServerReclaimArenaSlot`: least recently attached, then the
+  oldest generation), so a daemon that has served 16 models still loads a
+  17th. Both attaches refuse a table whose 16 arenas all hold an attach
+  reference or a lease, and print the reason. The eager attach
   also requires `resident_bytes + arena_bytes` to fit under
   `device_bytes_max`. The lazy attach is charged later, as
   `SparkWeightdPremapPool` or `SparkWeightdArenaChunkEnsure` commits memory,
   and each of those fails with `CAPACITY_EXCEEDED` when the budget is
   exceeded.
-- Reclaim is driven by bytes only. When the new arena's bytes fit, reclaim
-  frees nothing, so with `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas resident
-  a new arena fails with `CAPACITY_EXCEEDED` even when some of them are cold.
-  `RECLAIM` or `RECLAIM_PACK` frees those.
+- The byte reclaim frees nothing when the new arena's bytes fit; the slot
+  reclaim then frees one cold arena when the table is full. `RECLAIM` or
+  `RECLAIM_PACK` frees every cold arena, or one pack's.
 - An arena with an attach reference or a lease is never reclaimed. This is
   how the daemon holds the NO-2x constraint from the perf notes: it never
   frees a serving process's arena to make room. If a model update's new
@@ -2011,8 +2046,8 @@ Daemon limits that apply:
 - `SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX` (8): the ninth attach on the
   connection fails with `CAPACITY_EXCEEDED`.
 - A new arena fails with `CAPACITY_EXCEEDED` when the daemon already holds
-  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas, counting other clients' and
-  cold ones.
+  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas that all hold an attach
+  reference or a lease; a cold arena gives up its slot first.
 - The same pack listed under two model names loads two arenas, and the same
   pack and model listed twice fails with `DUPLICATE`.
 - `ENSURE` returns `UNSUPPORTED` (see `weightd_smoke`), so a run exits 1 at

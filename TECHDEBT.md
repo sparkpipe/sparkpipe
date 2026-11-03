@@ -370,6 +370,17 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Model residency and storage
 
+- Lazy expert pools are hand-set per lane record instead of sized from the
+  pack. Measured 2026-11-02 against each pack's expert manifest (2 MiB
+  chunks, identical on all 16 ranks): Kimi K3's experts occupy 43,200
+  chunks (90.60 GB) against a 99.57 GB pool, A.X K2 20,852 (43.73 GB)
+  against 55.83 GB, GLM 5.3 Full 22,383 (46.94 GB) against 55.83 GB, and
+  GLM 5.3 Flash 9,399 (19.71 GB) against 34.36 GB: 9-15 GB per node that
+  holds nothing, and 256 MB pools on models whose experts are resident.
+  On 2026-11-02 K3's cold start then ended with 1.3-1.8 GB available on
+  four nodes and earlyoom killed weightd or the engine. Size every pool
+  from its manifest's expert chunks, and keep a record value only as an
+  explicit cap for a lane that streams experts on purpose.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
@@ -1678,6 +1689,29 @@ Metal backend and the single-Studio stage are in
 One model holds a fleet at a time, and loading another takes about a
 minute (79 s for Kimi K3). Several models sharing a fleet's Sparks need the
 items below.
+
+- Two lanes in two processes on one GPU stall each other. Each process's
+  collective waits spin on the GPU, and the GPU time-slices between
+  processes, so a 1024 x 7168 reduce-scatter round that takes 1.47 ms on one
+  lane takes 10.97 ms on each of two concurrent lanes, for the production
+  pipelined reduce-scatter and for pair-first alike. Under a per-user MPS
+  daemon the two lanes take 2.53 ms (pipelined) and 2.12 ms (pair-first)
+  per round, and one lane is unchanged at 1.47 ms (2026-10-26, 16 ranks,
+  interleaved plain and MPS arms, no AER). The mesh is not the cause: the
+  nodes logged no repairs and no completion errors. Fix by starting MPS with
+  each lane launch (runtime only; one client's fault ends every client of
+  that daemon) or by hosting the lanes in one process, and gate it with two
+  concurrent lanes of one model and with two co-resident models.
+
+- Pair-first all-gather wins wherever it applies. On link A with 16 ranks
+  (2026-10-26, two interleaved passes agreeing within 0.2%), a 7168-element
+  row all-gather per round went from 707 to 568 us at 32 rows (-20%), 2776
+  to 2108 us at 128 rows and 43276 to 32696 us at 2048 rows (-24%); at 16
+  rows it is not pipelined and both arms take 366 us. At the production slot
+  size a pipelined all-gather always has three or more chunks, so
+  `SparkTpMeshGatherPairFirst` picks pair-first at every size that gains.
+  K3 speculative decode never reaches it: a 256-row verify frame gathers
+  114,688 elements per rank, below the pipelining threshold.
 
 - Lane-priority over-subscription policy: the explicit `EVICT` request
   enforces lane order (`SparkWeightdServerOnEvict` in

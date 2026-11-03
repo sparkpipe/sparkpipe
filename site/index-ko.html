@@ -28,7 +28,7 @@ h1 { max-width: 14em; }
     <span>플릿은 <b>한국</b>에</span>
     <span>데모 시간 <b data-start="demo">2026년 12월 1일</b>부터</span>
     <span>주 예약 <b data-start="weeks">2027년 1월 4일</b>부터</span>
-    <span>Kimi K3 · GLM 5.3 · 오픈 모델 18종 · <b>그리고 고객의 모델</b></span>
+    <span>Kimi K3 · GLM 5.3 · 오픈 모델 19종 · <b>그리고 고객의 모델</b></span>
   </div>
 </div>
 <header class="nav">
@@ -87,7 +87,7 @@ h1 { max-width: 14em; }
     <div><strong data-week="usd">$2,160</strong><span>플릿 전체 1주: <span data-week="hc">144</span> HC, 6일 가격에 7일, 시간당 약 <span data-week="effective">$12.86</span>, 부가가치세 별도</span></div>
     <div><strong>8 TB <em>캐시</em></strong><span>턴에서 턴으로, 주에서 주로 플릿에 남으며, 저장소와 모델을 위한 <span data-storage>4 TB</span> 저장공간이 함께 있습니다</span></div>
     <div><strong>기능</strong><span>저장소를 가져오고, 캐시를 갱신하고, 고객의 코드로 드래프트 모델을 학습시키고, 그날의 변경을 리뷰하고 테스트합니다</span></div>
-    <div><strong>18 <em>+ 고객 모델</em></strong><span>Kimi K3, GLM 5.3과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2, 그리고 고객에게만 표시되는 고객 자신의 모델</span></div>
+    <div><strong>19 <em>+ 고객 모델</em></strong><span>Kimi K3, GLM 5.3과 국산 K-EXAONE 2.0, A.X K2, Solar Open 2, Motif 3, 그리고 고객에게만 표시되는 고객 자신의 모델</span></div>
   </div>
 </section>
 
@@ -126,9 +126,9 @@ h1 { max-width: 14em; }
     <div class="defs">
       <div><p class="label">고객에게 고정</p><p>플릿 전체가 고객의 요청만 처리합니다. 공유 대기열도, 공유 캐시도 없고, 플릿 자체의 속도 외에는 속도 제한도 없습니다. 다음 주를 계속 예약하는 동안 다른 누구도 그 시간을 예약할 수 없습니다. 일이 많으면 플릿을 더 보유하세요. 낮용, 밤용, 병렬 리뷰용으로. 잠시 더 필요할 때는 같은 HC로 유휴 플릿을 시간 단위로 예약하세요.</p></div>
       <div><p class="label">남는 작업 상태</p><p>플릿에 8 TB의 캐시, 노드당 1 TB를 짝 노드에 미러링합니다. 요청은 가장 긴 캐시된 프리픽스를 자동으로 재사용하므로 슬롯을 관리할 필요가 없습니다. 다른 고객의 그 플릿 예약이 시작되거나 고객의 마지막 시간 후 24시간이 지나면 삭제됩니다. 플릿 밖 사본도, 백업도 없습니다. 보관소가 아니라 작업 공간으로 다루세요. 장애로 두 사본이 모두 사라지면, 캐시를 다시 구축하는 동안 플릿 24시간분을 적립해 드립니다.</p></div>
-      <div><p class="label">고객 저장공간</p><p>모든 플릿에 저장소, 데이터셋, 어댑터와 모델을 위한 <span data-storage>4 TB</span>, 노드당 500 GB를 캐시처럼 미러링합니다. 보유한 어느 플릿으로든 내보내고 복원할 수 있으며, 보존하려는 것은 매일 백업하세요.</p></div>
+      <div><p class="label">고객 저장공간</p><p>모든 플릿에 저장소, 데이터셋, 어댑터와 모델을 위한 <span data-storage>4 TB</span>, 노드당 500 GB를 캐시처럼 미러링합니다. Hugging Face, S3나 HTTPS 주소에서 모델, 데이터셋, 저장소를 바로 가져올 수 있습니다. 비행기 안 노트북에서 테라바이트 다운로드를 시작하면 나머지는 플릿이 합니다. 보유한 어느 플릿으로든 내보내고 복원할 수 있으며, 보존하려는 것은 매일 백업하세요.</p></div>
       <div><p class="label">고객의 도구</p><p>시니어 엔지니어가 가장 많이 쓰는 Claude Code, Codex, OpenCode를 명령 하나로 설정하고 릴리스마다 시험합니다. Anthropic이나 OpenAI API를 쓰는 다른 도구도 작동하며, 계정에서 하는 모든 일은 <span class="mono">sparkpipe</span> CLI로 할 수 있습니다.</p></div>
-      <div><p class="label">오픈 모델 18종</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash와 국산 K-EXAONE 2.0, A.X K2, Solar Open 2 등을 각 게시자의 라이선스에 따라 제공합니다. 메모리에 들어가면 여러 모델을 동시에 적재해 두며, 다른 모델을 적재하는 데는 20~80초가 걸립니다. <a href="fleets-ko.html">플릿 목록</a>에 모든 모델의 실측 속도가 있습니다.</p></div>
+      <div><p class="label">오픈 모델 19종</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash와 국산 K-EXAONE 2.0, A.X K2, Solar Open 2, Motif 3 등을 각 게시자의 라이선스에 따라 제공합니다. 메모리에 들어가면 여러 모델을 동시에 적재해 두며, 다른 모델을 적재하는 데는 20~80초가 걸립니다. <a href="fleets-ko.html">플릿 목록</a>에 모든 모델의 실측 속도가 있습니다.</p></div>
       <div><p class="label">한국에서만</p><p>요청과 데이터는 저희가 한국에서 운영하는 장비에서만 처리되며, 다른 AI 서비스로 보내지 않습니다. 한국은 <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU 적정성 결정</a>과 영국의 적정성 결정을 받았으므로, 유럽의 개인정보는 별도의 이전 계약 없이 고객의 플릿으로 올 수 있습니다. 계약 상대방은 한국법을 따르는 한국 회사입니다.</p></div>
     </div>
   </div>
@@ -144,12 +144,13 @@ h1 { max-width: 14em; }
     <p class="prose">기능은 저희가 만들어 고객이 보유한 플릿에서 실행하는 소프트웨어입니다. 계정, API 또는 CLI에서 시작하거나 예약하세요. 설정은 기능이 스스로 합니다. 처음 실행하는 기능이 저장소를 가져옵니다. 결과는 고객 저장공간과 아침 보고서에 남고, 기능이 만든 것은 고객의 것입니다. 기능은 계속 늘어납니다.</p>
     <div class="fns">
       <div class="fn"><p class="label">고객의 상태</p><dl>
-        <dt>저장소 가져오기</dt><dd>저장소를 복제하거나 동기화하고, 푸시를 따라가며, 파일, 심볼, 이력을 지도로 만듭니다.</dd>
+        <dt>다운로드</dt><dd>Hugging Face, S3, HTTPS에서 모델, 데이터셋, 저장소를 플릿의 노드에 나누어 고객 저장공간으로 바로 받고, 모든 파일을 검증하며, 받은 모델을 바로 패킹할 수 있습니다. 토큰은 고객의 컴퓨터에 남습니다. 다운로드할 때마다 함께 보내며, 플릿은 그 다운로드가 실행되는 동안에만 보관합니다.</dd>
+        <dt>저장소 가져오기</dt><dd>git 원격 저장소로 푸시를 받으며(고객의 git 호스트 토큰은 필요 없음), 파일, 심볼, 이력을 지도로 만듭니다.</dd>
         <dt>캐시 구축과 갱신</dt><dd>가장 적게 바뀌는 부분부터 프리필하고, 푸시마다 바뀐 부분만 다시 계산합니다.</dd>
         <dt>미리 프리필</dt><dd>지정한 브랜치와 모듈을 웜 상태로 두고, 턴 사이에 다음에 쓸 만한 것을 프리필합니다.</dd>
         <dt>세션 이어가기</dt><dd>어제의 에이전트 세션을 웜 상태로 두어, 멈춘 곳에서 이어갑니다.</dd>
         <dt>내보내기와 복원</dt><dd>저장공간, 캐시 스냅숏, 드래프트 모델과 어댑터를 보유한 어느 플릿으로든 옮깁니다.</dd>
-        <dt>매일 백업</dt><dd>지정한 저장공간 경로를 고객의 버킷이나 서버로 매일, 바뀐 부분만 복사합니다.</dd>
+        <dt>매일 백업</dt><dd>고객의 컴퓨터에서 예약된 명령 하나가 그날 바뀐 부분을 고객 자신의 자격 증명으로 고객의 디스크나 버킷에 가져옵니다.</dd>
       </dl></div>
       <div class="fn"><p class="label">문제 찾기</p><dl>
         <dt>그날의 변경 리뷰</dt><dd>변경마다 diff만이 아니라 코드베이스 전체에 비추어 리뷰하고, 발견마다 테스트로 확인합니다.</dd>
@@ -314,11 +315,11 @@ curl $OPENAI_BASE_URL/chat/completions \
 <section id="technology" class="sec">
   <div class="sec-rail">
     <p class="label">09 기술</p>
-    <p class="label">오픈 소스</p>
+    <p class="label">소스 공개</p>
   </div>
   <div class="sec-body">
     <h2>작은 상자 16대, 프런티어 모델 하나.</h2>
-    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 플릿의 노드 16대에 나누어, 각 노드는 자기 몫인 16분의 1만 읽고, 부분 결과를 100 Gb/s RDMA 메시로 16~38마이크로초 만에 합칩니다. 엔진은 C와 CUDA로 처음부터 작성했으며 Apache 2.0 라이선스로 공개합니다.</p>
+    <p class="prose">대형 모델의 디코딩 속도는 가중치를 얼마나 빨리 읽느냐로 정해집니다. SparkPipe는 모든 가중치와 모든 캐시 항목을 플릿의 노드 16대에 나누어, 각 노드는 자기 몫인 16분의 1만 읽고, 부분 결과를 100 Gb/s RDMA 메시로 16~38마이크로초 만에 합칩니다. 엔진은 C와 CUDA로 처음부터 작성했으며, 소스는 추가 허락을 붙인 Functional Source License로 공개합니다. 상업적 이용을 포함해 무엇에든 쓸 수 있지만, 플릿을 빌려주거나 그 위에서 실행하는 추론을 판매할 수는 없습니다. 각 버전은 공개 2년 후 Apache 2.0이 됩니다.</p>
     <figure class="screen" role="img" aria-label="플릿의 애니메이션 도해: 스위치 하나와 노드 쌍 직결 링크로 연결된 DGX Spark 노드 16대. 디코드 단계마다 각 노드가 모델의 16분의 1을 읽고, 노드들이 부분 결과를 주고받아 토큰 하나가 나옵니다.">
       <div class="screen-bar"><span><b>플릿 1</b> · DGX Spark 16대 · 한국</span><span id="phase">각 노드가 가중치의 1/16을 읽습니다</span></div>
       <canvas id="fleet-canvas" width="1600" height="700"></canvas>

@@ -558,6 +558,88 @@ static void SparkTestReclaimPackIsScopedToOnePack(void)
     printf("pack-scoped reclaim frees only the named pack's cold arenas green\n");
 }
 
+static void SparkTestFullArenaTableFreesTheColdestIdleArena(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_arena_table.sock";
+    char pack_paths[SPARK_WEIGHTD_ARENA_COUNT_MAX + 1u][96];
+    char digests[SPARK_WEIGHTD_ARENA_COUNT_MAX + 1u][SPARK_SHA256_HEX_BYTES];
+    SparkWeightdAttachRequest requests[SPARK_WEIGHTD_ARENA_COUNT_MAX + 1u];
+    uint64_t generations[SPARK_WEIGHTD_ARENA_COUNT_MAX + 1u];
+    SparkWeightdIdentity identity;
+    SparkWeightdAttachResult result;
+    SparkWeightdDetachResult detach;
+    SparkTestServerThread thread_context;
+    pthread_t thread_handle;
+    SparkWeightdClient *lanes[2] = {0, 0};
+    SparkWeightdClient *lane;
+    SparkWeightdClient *probe = 0;
+    TestStderrCapture capture;
+    char *text;
+    uint32_t index;
+
+    spark_stub_cuda_reset_faults();
+    for (index = 0u; index <= SPARK_WEIGHTD_ARENA_COUNT_MAX; index++)
+    {
+        (void)snprintf(pack_paths[index], sizeof(pack_paths[index]), "/tmp/spark_weightd_test_arena_table_%02u.spack", index);
+        SparkTestWritePack(pack_paths[index], 700u + index, 65536ull, digests[index]);
+        SparkTestMakeIdentity(&identity, "arena-table", "rev", 4u, 0x700ull + index, digests[index], 65536ull);
+        SparkTestMakeRequest(&requests[index], &identity, pack_paths[index]);
+    }
+    SparkTestStartServer(&thread_context, &thread_handle, socket_path,
+        65536ull * (SPARK_WEIGHTD_ARENA_COUNT_MAX + 1u));
+    SparkTestConnect(&lanes[0], socket_path, 0ull);
+    SparkTestConnect(&lanes[1], socket_path, 0ull);
+    SparkTestConnect(&probe, socket_path, 0ull);
+    for (index = 0u; index < SPARK_WEIGHTD_ARENA_COUNT_MAX; index++)
+    {
+        SparkTestAttach(lanes[index / SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX], &requests[index], &result);
+        assert(result.status == SPARK_STATUS_OK && result.arena_count == index + 1u);
+        generations[index] = result.arena_generation;
+    }
+    TestStderrCaptureBegin(&capture);
+    SparkTestAttach(probe, &requests[SPARK_WEIGHTD_ARENA_COUNT_MAX], &result);
+    text = TestStderrCaptureEnd(&capture);
+    assert(result.status == SPARK_STATUS_CAPACITY_EXCEEDED);
+    assert(result.arena_count == SPARK_WEIGHTD_ARENA_COUNT_MAX);
+    assert(strstr(text, "weightd attach refused: model=arena-table") != 0 &&
+        strstr(text, "16 of 16 arenas held by attached or leased packs") != 0);
+    free(text);
+    for (index = 0u; index < SPARK_WEIGHTD_ARENA_COUNT_MAX; index++)
+    {
+        assert(SparkWeightdClientDetach(lanes[index / SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX], generations[index], &detach,
+            SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+        assert(detach.status == SPARK_STATUS_OK && detach.refcount == 0u);
+    }
+    lane = lanes[0];
+    SparkTestAttach(lane, &requests[3], &result);
+    assert(result.status == SPARK_STATUS_OK && result.loaded_from_pack == 0u &&
+        result.arena_generation == generations[3]);
+    assert(SparkWeightdClientDetach(lane, generations[3], &detach,
+        SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    SparkTestAttach(probe, &requests[SPARK_WEIGHTD_ARENA_COUNT_MAX], &result);
+    assert(result.status == SPARK_STATUS_OK && result.loaded_from_pack == 1u);
+    assert(result.arena_count == SPARK_WEIGHTD_ARENA_COUNT_MAX);
+    SparkTestAttach(lane, &requests[3], &result);
+    assert(result.status == SPARK_STATUS_OK && result.loaded_from_pack == 0u &&
+        result.arena_generation == generations[3]);
+    SparkTestAttach(lane, &requests[1], &result);
+    assert(result.status == SPARK_STATUS_OK && result.loaded_from_pack == 0u &&
+        result.arena_generation == generations[1]);
+    SparkTestAttach(lane, &requests[0], &result);
+    assert(result.status == SPARK_STATUS_OK && result.loaded_from_pack == 1u &&
+        result.arena_generation != generations[0]);
+    assert(result.arena_count == SPARK_WEIGHTD_ARENA_COUNT_MAX);
+
+    SparkWeightdClientClose(lanes[0]);
+    SparkWeightdClientClose(lanes[1]);
+    SparkWeightdClientClose(probe);
+    SparkTestStopServer(&thread_context, thread_handle);
+    for (index = 0u; index <= SPARK_WEIGHTD_ARENA_COUNT_MAX; index++)
+        (void)remove(pack_paths[index]);
+    (void)remove(socket_path);
+    printf("full arena table frees the coldest idle arena and refuses with a reason while all are held green\n");
+}
+
 static void SparkTestExpectConnectionClosed(const char *socket_path,
     const void *frame,
     size_t frame_bytes)
@@ -1560,6 +1642,7 @@ int main(void)
     SparkTestSharedRefcountAndConsumerDeath();
     SparkTestStopAttachStartNeverHoldsTwoArenas();
     SparkTestReclaimPackIsScopedToOnePack();
+    SparkTestFullArenaTableFreesTheColdestIdleArena();
     SparkTestServedAbiVersions();
     SparkTestMeshStatus();
     SparkTestFailClosedPaths();

@@ -730,10 +730,16 @@ changes (`tools/ci_lanes.py`):
 
 ## License
 
-SparkPipe is licensed under the [Apache License, Version 2.0](LICENSE).
-Copyright 2026 HYOR AI Tech Ltd. Third-party files kept in the tree and their
-licenses are listed in [`NOTICE`](NOTICE).
+SparkPipe is licensed under the [Functional Source License, Version 1.1, ALv2 Future License](LICENSE) (FSL-1.1-ALv2). Copyright 2026 HYOR AI Tech Ltd.
+- **Allowed:** use, change, redistribute and sell it for any purpose, commercial included, under the license and the [additional permission](LICENSE-PERMISSION.md).
+- **The one exception is a Fleet Rental Service:** a commercial product or service whose purpose is to give others the use of hardware that runs SparkPipe and that you operate, or general-purpose access to models it serves on that hardware, however it is priced.
+- **Still allowed, commercially:**
+  - running SparkPipe on your own hardware for your own work and products;
+  - building it into products you sell, including hardware your customers operate;
+  - professional services to a licensee.
+- **Two years later:** each version becomes available under the [Apache License, Version 2.0](LICENSE-APACHE-2.0) two years after we make it available.
+- **Earlier versions:** every version made available before the switch to the FSL stays under the Apache License, Version 2.0.
 
-Model weights, tokenizers and the stage packs built from them are not covered
-by the Apache License. They keep their publishers' licenses, some of which
-add conditions for large commercial deployments.
+Third-party files kept in the tree and their licenses are listed in [`NOTICE`](NOTICE). Contributions are welcome under the [Contributor License Agreement](CLA.md); see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Model weights, tokenizers and the stage packs built from them are not covered by either license. They keep their publishers' licenses, some of which add conditions for large commercial deployments.
