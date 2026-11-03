@@ -368,6 +368,7 @@ struct VfRig
 			rank->step.commit = commit;
 			rank->step.context = VF_PAGES * G::kPageSlots;
 			rank->step.multiprocessors = multiprocessors;
+			rank->step.route_fault = VfRouteFault();
 			if ( cudaMemcpyAsync(rank->hidden, input.data(), input.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, rank->stream) != cudaSuccess ||
 				cudaMemcpyAsync(rank->positions, position.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, rank->stream) != cudaSuccess ||
 				cudaMemcpyAsync(rank->sequence_of_row, sequence.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, rank->stream) != cudaSuccess ||
