@@ -7,6 +7,7 @@
 #define SPARK_WEIGHTD_MANIFEST_TABLE_BYTES_MAX (32ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX 32u
 #define SPARK_WEIGHTD_RANGES_PER_EXPERT_MAX 16u
+#define SPARK_WEIGHTD_EXPERT_CHUNK_BYTES (2ull * 1024ull * 1024ull)
 
 typedef struct SparkWeightdRange
 {
@@ -45,6 +46,15 @@ typedef struct SparkWeightdManifest
 	uint64_t spine_allocation_bytes;
 } SparkWeightdManifest;
 
+typedef struct SparkWeightdPoolPlan
+{
+	uint64_t exact_bytes;
+	uint64_t cap_bytes;
+	uint64_t request_bytes;
+	uint64_t used_bytes;
+	uint32_t whole_arena;
+} SparkWeightdPoolPlan;
+
 #define SPARK_WEIGHTD_MANIFEST_RANGE_TABLE_BYTES (sizeof(SparkWeightdRange) + sizeof(SparkWeightdRangeGroup) + sizeof(SparkWeightdSpan) + SPARK_WEIGHTD_MANIFEST_GROUP_STATE_BYTES_MAX)
 
 #if !defined(__cplusplus)
@@ -65,6 +75,9 @@ void SparkWeightdManifestDestroy(SparkWeightdManifest *manifest);
 const SparkWeightdRangeGroup *SparkWeightdManifestFind(const SparkWeightdManifest *manifest,uint32_t layer,uint32_t expert);
 
 SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,uint64_t offset,uint64_t bytes,uint64_t *compact_offset);
+SparkStatus SparkWeightdManifestPoolBytes(const SparkWeightdManifest *manifest,uint64_t chunk_bytes,uint64_t *bytes_out);
+SparkStatus SparkWeightdManifestPoolPlan(const SparkWeightdManifest *manifest,uint64_t arena_bytes,uint64_t cap_bytes,SparkWeightdPoolPlan *plan);
+SparkStatus SparkWeightdPackPoolPlan(const char *pack_path,uint64_t arena_bytes,uint64_t cap_bytes,SparkWeightdPoolPlan *plan);
 
 #ifdef __cplusplus
 }

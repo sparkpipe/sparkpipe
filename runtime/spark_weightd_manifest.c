@@ -254,3 +254,122 @@ SparkStatus SparkWeightdManifestSpineSlice(const SparkWeightdManifest *manifest,
 	}
 	SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 }
+
+typedef struct ChunkSpan
+{
+	uint64_t first;
+	uint64_t last;
+} ChunkSpan;
+
+static int32_t compare_chunk_span(const void *a,const void *b)
+{
+	const ChunkSpan *left = a,*right = b;
+	return(left->first < right->first ? -1 : left->first > right->first);
+}
+
+SparkStatus SparkWeightdManifestPoolBytes(const SparkWeightdManifest *manifest,uint64_t chunk_bytes,uint64_t *bytes_out)
+{
+	const SparkWeightdRange *range;
+	ChunkSpan *spans;
+	uint64_t count = 0u,next = 0u,first;
+	uint32_t i;
+	if ( bytes_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*bytes_out = 0u;
+	if ( manifest == 0 || chunk_bytes == 0u || (manifest->range_count != 0u && manifest->ranges == 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( manifest->range_count == 0u )
+	{
+		*bytes_out = chunk_bytes;
+		return(SPARK_STATUS_OK);
+	}
+	spans = calloc(manifest->range_count,sizeof(*spans));
+	if ( spans == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (i=0u; i<manifest->range_count; i++)
+	{
+		range = &manifest->ranges[i];
+		if ( range->bytes == 0u || range->bytes > (UINT64_MAX - range->offset) )
+		{
+			free(spans);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		spans[i].first = (range->offset / chunk_bytes);
+		spans[i].last = ((range->offset + range->bytes - 1u) / chunk_bytes);
+	}
+	qsort(spans,manifest->range_count,sizeof(*spans),compare_chunk_span);
+	for (i=0u; i<manifest->range_count; i++)
+	{
+		first = spans[i].first < next ? next : spans[i].first;
+		if ( spans[i].last >= first )
+		{
+			count += (spans[i].last - first + 1u);
+			next = (spans[i].last + 1u);
+		}
+	}
+	free(spans);
+	if ( count > (UINT64_MAX / chunk_bytes) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	*bytes_out = (count * chunk_bytes);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdManifestPoolPlan(const SparkWeightdManifest *manifest,uint64_t arena_bytes,uint64_t cap_bytes,SparkWeightdPoolPlan *plan)
+{
+	const uint64_t chunk = SPARK_WEIGHTD_EXPERT_CHUNK_BYTES;
+	char cap[24];
+	SparkStatus status;
+	if ( plan == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(plan,0,sizeof(*plan));
+	if ( manifest == 0 || arena_bytes == 0u || arena_bytes > (UINT64_MAX - chunk) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkWeightdManifestPoolBytes(manifest,chunk,&plan->exact_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( cap_bytes > plan->exact_bytes )
+	{
+		fprintf(stderr,"weightd pool refused: cap=%llu is larger than exact=%llu, the %llu-byte chunks the pack's expert ranges touch; a larger cap only wastes memory\n",
+		    (unsigned long long)cap_bytes,(unsigned long long)plan->exact_bytes,(unsigned long long)chunk);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( (cap_bytes % chunk) != 0u )
+	{
+		fprintf(stderr,"weightd pool refused: cap=%llu is not a whole number of %llu-byte chunks (exact=%llu)\n",
+		    (unsigned long long)cap_bytes,(unsigned long long)chunk,(unsigned long long)plan->exact_bytes);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	plan->cap_bytes = cap_bytes;
+	plan->request_bytes = cap_bytes != 0u ? cap_bytes : (manifest->range_count != 0u ? (arena_bytes + chunk) : plan->exact_bytes);
+	plan->whole_arena = plan->request_bytes > arena_bytes ? 1u : 0u;
+	plan->used_bytes = plan->whole_arena != 0u ? (((arena_bytes + chunk - 1u) / chunk) * chunk) : plan->request_bytes;
+	if ( cap_bytes != 0u )
+		(void)snprintf(cap,sizeof(cap),"%llu",(unsigned long long)cap_bytes);
+	else
+		(void)snprintf(cap,sizeof(cap),"none");
+	fprintf(stderr,"weightd pool exact=%llu cap=%s used=%llu mode=%s\n",(unsigned long long)plan->exact_bytes,cap,
+	    (unsigned long long)plan->used_bytes,plan->whole_arena != 0u ? "whole-arena" : "slots");
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdPackPoolPlan(const char *pack_path,uint64_t arena_bytes,uint64_t cap_bytes,SparkWeightdPoolPlan *plan)
+{
+	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
+	SparkWeightdManifest manifest;
+	SparkStatus status;
+	if ( plan == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(plan,0,sizeof(*plan));
+	if ( pack_path == 0 || pack_path[0] == 0 || strlen(pack_path) >= SPARK_WEIGHTD_PATH_BYTES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)snprintf(path,sizeof(path),"%s.experts",pack_path);
+	status = SparkWeightdManifestLoad(path,arena_bytes,&manifest);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"weightd pool refused: %s status=%d; the pool is sized from the pack's expert manifest\n",path,(int)status);
+		SPARK_RETURN(status);
+	}
+	status = SparkWeightdManifestPoolPlan(&manifest,arena_bytes,cap_bytes,plan);
+	SparkWeightdManifestDestroy(&manifest);
+	SPARK_RETURN(status);
+}

@@ -370,17 +370,23 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Model residency and storage
 
-- Lazy expert pools are hand-set per lane record instead of sized from the
-  pack. Measured 2026-11-02 against each pack's expert manifest (2 MiB
-  chunks, identical on all 16 ranks): Kimi K3's experts occupy 43,200
-  chunks (90.60 GB) against a 99.57 GB pool, A.X K2 20,852 (43.73 GB)
-  against 55.83 GB, GLM 5.3 Full 22,383 (46.94 GB) against 55.83 GB, and
-  GLM 5.3 Flash 9,399 (19.71 GB) against 34.36 GB: 9-15 GB per node that
-  holds nothing, and 256 MB pools on models whose experts are resident.
-  On 2026-11-02 K3's cold start then ended with 1.3-1.8 GB available on
-  four nodes and earlyoom killed weightd or the engine. Size every pool
-  from its manifest's expert chunks, and keep a record value only as an
-  explicit cap for a lane that streams experts on purpose.
+- Expert pools were hand-set per lane record until #1725, and the Kimi K3
+  value was wrong in the costly direction. Measured 2026-11-02: every K3 rank
+  pack is 100,255,758,720 bytes, above the record's 99,568,941,440-byte pool,
+  so weightd built a 47,478-slot pool (99.57 GB) and every engine loaded its
+  own 9.85 GB spine beside it (`WD-SPINE-PRIVATE`): 109.4 GB per node, about
+  9.16 GB more than the whole arena (47,806 chunks, 100.26 GB) that holds
+  every expert chunk with the spine shared. That is where K3's cold start
+  ended with 1.3-1.8 GB available on four nodes and earlyoom killed weightd
+  or the engine. The GLM 5.3 (52 GiB), GLM 5.3 Flash (32 GiB) and A.X K2
+  (52 GiB) pools sat above their packs, so weightd already mapped those
+  whole arenas and wasted nothing; the 256 MB pools of spine-only models held
+  128 slots they never used. Pools are now planned from each pack's
+  `PACK.experts` ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md#pool-sizing)):
+  the whole arena without a cap, one slot for a pack without expert ranges,
+  and `expert_pool_cap_bytes` only for a lane that streams experts on
+  purpose. Open until #1725's fleet gate shows K3 in whole-arena mode on all
+  16 nodes with the 9.16 GB returned.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
