@@ -42,12 +42,15 @@ static void *SparkTestServerThreadMain(void *raw_context)
 
 static void SparkTestStartServer(SparkTestServerThread *thread_context,
     pthread_t *thread_handle,
-    const char *socket_path)
+    const char *socket_path,
+    uint64_t ceiling_bytes,
+    uint64_t kv_reserve_bytes)
 {
     SparkWeightdServerConfig config;
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
-    config.device_bytes_max = SPARK_TEST_CEILING_BYTES;
+    config.device_bytes_max = ceiling_bytes;
+    config.kv_reserve_bytes = kv_reserve_bytes;
     assert(SparkWeightdServerCreate(&config, &thread_context->server) ==
         SPARK_STATUS_OK);
     thread_context->stop = 0;
@@ -221,6 +224,56 @@ static void SparkTestAcquireReadRelease(SparkWeightdClient *client,const SparkWe
 	assert(SparkWeightdClientRelease(client,attached->arena_generation,result.lease_identifier,&released,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkTestKvAttach(SparkWeightdClient *client,uint64_t bytes,SparkWeightdKvPoolGrant *grant)
+{
+    SparkWeightdKvPoolRequest request;
+    memset(&request,0,sizeof(request));
+    memset(request.key,0x5A,sizeof(request.key));
+    request.device_bytes = bytes;
+    request.minimum_bytes = bytes;
+    request.chunk_bytes = SPARK_TEST_CHUNK_BYTES;
+    request.label = "kv-lend-lazy";
+    return(SparkWeightdClientKvPoolAttach(client,&request,grant,SPARK_TEST_TIMEOUT_NS));
+}
+
+static void SparkTestLazyKvLending(const SparkWeightdIdentity *first,const char *first_path,const SparkWeightdIdentity *second,const char *second_path)
+{
+    static const char *const socket_path = "/tmp/spark_weightd_expert_kv_lend.sock";
+    SparkTestServerThread server;
+    pthread_t server_thread;
+    SparkWeightdHelloResult hello;
+    SparkWeightdLazyAttachResult attach;
+    SparkWeightdKvPoolGrant grant;
+    SparkWeightdClient *weights,*kv;
+    uint32_t index;
+
+    (void)unlink(socket_path);
+    SparkTestStartServer(&server,&server_thread,socket_path,8u * SPARK_TEST_CHUNK_BYTES,SPARK_TEST_CHUNK_BYTES);
+    assert(SparkWeightdClientConnect(socket_path,&weights,&hello) == SPARK_STATUS_OK && hello.status == SPARK_STATUS_OK);
+    assert(SparkWeightdClientConnect(socket_path,&kv,&hello) == SPARK_STATUS_OK && hello.status == SPARK_STATUS_OK);
+    SparkTestLazyAttach(weights,first,first_path,3u * SPARK_TEST_CHUNK_BYTES,&attach);
+    assert(attach.status == SPARK_STATUS_OK && attach.resident_bytes == SPARK_TEST_ARENA_BYTES);
+    assert(SparkTestKvAttach(kv,5u * SPARK_TEST_CHUNK_BYTES,&grant) == SPARK_STATUS_OK && grant.chunk_count == 5u);
+    assert(SparkWeightdServerKvCommittedBytes(server.server) == 5u * SPARK_TEST_CHUNK_BYTES);
+    if (grant.metadata_fd >= 0)
+        (void)close(grant.metadata_fd);
+    SparkWeightdClientClose(kv);
+    for (index = 0u; index < 500u; index++)
+    {
+        SparkTestLazyAttach(weights,second,second_path,5u * SPARK_TEST_CHUNK_BYTES,&attach);
+        if (attach.status == SPARK_STATUS_OK)
+            break;
+        assert(attach.status == SPARK_STATUS_CAPACITY_EXCEEDED);
+        usleep(2000u);
+    }
+    assert(attach.status == SPARK_STATUS_OK && attach.arena_count == 2u && attach.resident_bytes == 2u * SPARK_TEST_ARENA_BYTES);
+    assert(SparkWeightdServerKvCommittedBytes(server.server) == 0u && SparkWeightdServerKvPoolCount(server.server) == 0u);
+    SparkWeightdClientClose(weights);
+    SparkTestStopServer(&server,server_thread);
+    (void)unlink(socket_path);
+    printf("weightd kv lending beside a premapped expert pool: the KV limit counts the arena's one allocation, and a lazy attach whose pool fits the ceiling less the reserve but not beside a lent KV pool waits while the pool is owned and releases it once detached\n");
+}
+
 int main(void)
 {
     static const char *const socket_path = "/tmp/spark_weightd_expert_test.sock";
@@ -254,7 +307,7 @@ int main(void)
     SparkTestMakeIdentity(&identity_c, "poc-model-c", hex_c,
         SPARK_TEST_ARENA_BYTES);
 
-    SparkTestStartServer(&server, &server_thread, socket_path);
+    SparkTestStartServer(&server, &server_thread, socket_path, SPARK_TEST_CEILING_BYTES, 0ull);
     memset(&hello, 0, sizeof(hello));
     assert(SparkWeightdClientConnect(socket_path, &client, &hello) ==
         SPARK_STATUS_OK);
@@ -328,6 +381,7 @@ int main(void)
 
     SparkWeightdClientClose(client);
     SparkTestStopServer(&server, server_thread);
+    SparkTestLazyKvLending(&identity_b,"/tmp/spark_weightd_expert_b.bin",&identity_c,"/tmp/spark_weightd_expert_c.bin");
 
     printf("weightd v2 lazy-expert lease regression PASS\n");
     return 0;

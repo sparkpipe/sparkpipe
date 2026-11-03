@@ -544,6 +544,38 @@ lane owner's client. Two operations then use PEER:
 - **Direct rounds.** Single-row direct rounds (below 49,152 values or below
   degree 4) keep their slot path.
 
+**Pair-first routes.** A route with the `pair_first` bit carries two payloads
+in one publication (`SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair)`). The
+group bytes go to every peer of the sender's parity, into the sender's own
+slot half. The pair bytes go to the partner (`rank ^ 1`) over the pair link,
+one piece per segment of the partner's parity, each into the slot half of the
+sender of the other parity (`SparkWeightdMeshPairFirstArea`). Every other peer
+gets only the tail. Two collectives use it:
+
+- The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
+  sends each partner the segments of the partner's parity over the pair link,
+  sums each pair there, rounds the pair sum to BF16, and sums the pair sums of
+  a segment (eight at 16 ranks) over the switch in fp32.
+- The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
+  each chunk over the switch to the sender's parity group; two rounds later
+  every rank forwards the chunks it received to its partner over the pair
+  link. It moves the same bytes as the plain all-gather and is exact.
+
+Both are pipelined: a rank publishes round r + 2 once round r has arrived, so
+two publications are in flight. At the edges of every pipelined collective the
+lag is zero: round 1 is published only after round 0 has arrived, and the
+last round only after the round before it has arrived
+(`SparkTpMeshPipelineEarly`, `SparkTpMeshPipelineLate`). A whole-slot round
+(direct sums, all-to-all, staged peer rounds) fills both halves of its slot, so
+a collective that publishes two rounds before its first arrival can overwrite,
+at a slower peer, a whole-slot round that peer has not read yet. Until
+2026-11-02 the pair-first rounds published rounds 0 and 1 back to back and
+their last round one arrival early; `tp_mesh_hardware_probe
+--pair-first-boundary` reproduces the overwrite on one GPU by delaying one
+tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
+every pipelined collective against whole-slot neighbours with an adversarially
+slow rank at 4, 8 and 16 ranks.
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
@@ -878,8 +910,10 @@ record's optional `expert_pool_cap_bytes` renders it into the lane's launch
 environment and warm command ([LANES.md](LANES.md)); without a cap the
 variable is not set, and a set but empty or zero value is refused.
 
-On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above its
-device budget. A pool larger than the pack becomes one allocation for the
+On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above
+`device_bytes_max` less the KV reserve with `INVALID_ARGUMENT`; a pool that
+fits there but not beside lent KV is a capacity question, answered by reclaim
+(see [KV pools and the shared budget](#kv-pools-and-the-shared-budget)). A pool larger than the pack becomes one allocation for the
 whole arena whose chunks are never evicted (`SparkWeightdPremapPool`, logged
 as "pool single-alloc"). A pool no larger than the pack becomes a slot pool
 (`SparkWeightdCreateSlots`, logged as "pool slots"): the attach allocates
@@ -1565,12 +1599,18 @@ the arena.
 
 `SparkWeightdServerReclaimCold` runs before a new arena is created: in
 `SparkWeightdServerAttachCold` with the arena bytes, and in
-`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. While
-the resident bytes exceed `device_bytes_max`, or the needed bytes do not fit
-in what remains, it frees the cold arena with the lowest `generation` (the
-oldest created, not the least recently used). An arena is cold when its
-`refcount` is 0 and it holds no leases. When no cold arena is left it
-returns without a status, and the caller applies its own checks.
+`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. The
+arena ceiling is `device_bytes_max` less the larger of the KV reserve and
+the committed KV bytes (`SparkWeightdArenaCeiling`). While the resident bytes
+exceed it, or the needed bytes do not fit in what remains, reclaim first
+releases detached KV pools above the reserve, oldest detached first
+(`reason=arena_needs_room`), then calls
+`SparkWeightdServerReclaimColdWeights`: free slots of cold slot pools, then
+the coldest cold arena (least recently attached, then the oldest
+generation), whose cold expert groups go first and the arena itself only if
+that is not enough. An arena is cold when its `refcount` is 0 and it holds no
+leases. When nothing cold is left it returns without a status, and the
+caller applies its own checks.
 
 - After the byte reclaim, a full arena table frees its coldest cold arena
   (`SparkWeightdServerReclaimArenaSlot`: least recently attached, then the
@@ -1617,6 +1657,83 @@ returns without a status, and the caller applies its own checks.
   The failed-attach paths free an arena that the same request created.
   `SparkWeightdServerDestroy` closes every connection, which releases its
   leases and attach references, before it frees the remaining arenas.
+
+### KV pools and the shared budget
+
+Engines that use the common KV binding map their KV device memory from
+weightd KV pools (`KV_POOL_ATTACH`, `KV_POOL_RESIZE`, `KV_POOL_STATUS`,
+`KV_POOL_EXPORT`, `KV_POOL_DROP`, and `KV_SHARED_ATTACH` for shared prefix
+windows). Pools are made of `chunk_bytes` VMM chunks and grow and shrink by
+chunk; `kv_committed_bytes` counts every granted chunk. KV and weights share
+one budget, `device_bytes_max`, under these rules
+(`runtime/spark_weightd.c`):
+
+- **KV limit** (`SparkWeightdKvLimit`). With no arena attached it is
+  `--kv-reserve-bytes`. While arenas are attached it is `device_bytes_max`
+  less their full budgets (`SparkWeightdArenaFullBytes`: an eager arena's
+  bytes, a premapped lazy arena's one allocation, any other lazy arena's
+  preload plus its expert pool), and never below the reserve. A model whose
+  weights are small lends KV the rest of the ceiling, so one native-length
+  sequence fits where the reserve alone could not. A model whose budget
+  leaves less than the reserve keeps the reserve.
+  Without a reserve the limit is 0 and every pool is refused.
+- **What a grow gets** (`SparkWeightdKvFreeBytes`). The smallest of the
+  limit less the committed KV, the device bytes that neither weights nor KV
+  hold, and the node's `MemAvailable` less the memory margin. A pool
+  attaches with its minimum (one full-length sequence for an engine) and
+  grows on demand, chunk by chunk, as its engine asks (`KV_POOL_RESIZE`); it
+  never fills the node at attach, so a model swap or a second engine finds
+  the room an idle pool would otherwise hold. Chunks a grow cannot get are
+  recorded as `wanted_chunks`, which other pools see as
+  `reclaim_wanted_bytes` and give back by shrinking.
+- **Memory margin** (`SparkWeightdKvMemoryMargin`). The Sparks share one
+  unified memory between the CPU and the GPU, so every KV chunk lowers
+  `MemAvailable`. A grow stops where `MemAvailable` would fall below the
+  margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (2) percent of `MemTotal` plus
+  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB), both compile-time
+  constants. The 2 % is the fleet's earlyoom line (`earlyoom -m 2`, set by the
+  owner on all 16 nodes on 2026-11-02; [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)
+  records it from PR #1719): earlyoom sends SIGTERM below 2 % and SIGKILL
+  below 1 %, so KV growth must
+  never reach it. The 4 GiB is headroom for what grows after a KV grant
+  without asking weightd: the KV snapshot writer's staging, page cache
+  writeback and API request bursts. It is chosen, not measured; the fleet
+  gate records the minimum `MemAvailable` under full KV. weightd reads
+  `MemTotal` from `/proc/meminfo` at start (`weightd kv memory
+  margin_bytes=` in its log; 6,864,027,484 bytes on a 119.6 GiB Spark) and
+  `MemAvailable` at every grow. When the file gives neither, every grow is
+  refused. Tests point `SparkWeightdServerConfig.meminfo_path` at a
+  fabricated file; the daemon itself always reads `/proc/meminfo`.
+- **Making room for KV** (`SparkWeightdKvMakeRoom`). A grow first releases
+  detached pools, oldest first (`reason=evicted_detached`), never the pool
+  that grows. If the room is still short and the grow passes the reserve, it
+  reclaims cold weights with `SparkWeightdServerReclaimColdWeights` for
+  exactly the bytes above the larger of the reserve and the committed KV.
+  It never releases a pool there: a pool being created has no owner yet and
+  must not be mistaken for a detached one.
+- **Making room for weights**. Weight arenas grow only under the arena
+  ceiling, so lent KV is never overwritten by a load. When new weights need
+  room, detached KV pools above the reserve go first (see reclaim above). A
+  pool an engine owns is never taken: the attach is refused with the reason,
+  and the swap controller's `KV_POOL_DROP` of the stopped model frees it at a
+  switch.
+- **Logs**. `kv pool attached`, `kv pool resized` and `kv shared pool
+  attached` carry `kv_committed`, `kv_reserve` and `kv_limit`, and the
+  attach also `margin_bytes`. Every grow logs `weightd kv capacity` with the
+  chunks before and after, `mem_available` and `margin_bytes`; a grow short
+  of its target logs `weightd kv capacity refused` with
+  `reason=kv_limit|ceiling|memory_margin|allocation_failed`, once per pool
+  until the reason or the chunk count changes. The engine logs
+  `kv capacity pages=<now>/<max> tokens=<max tokens> margin_bytes=<m>
+  event=attach|grew|refused` from its binding. A refused
+  pool prints its minimum, the limit, the reserve and the attached arenas'
+  budget against the ceiling; a refused weight attach prints the bytes it
+  needs, the resident bytes, the arena ceiling, the arena table and
+  `kv_committed`/`kv_reserve` held by KV pools.
+
+The IPC ABI is unchanged: grants and status replies still report
+`kv_reserve_bytes` and `kv_committed_bytes`, so engines built before lending
+work against a lending daemon, and the limit appears only in the daemon log.
 
 ### Chunk export (fd tier)
 
