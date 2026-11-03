@@ -231,6 +231,7 @@ struct K3LayerBuffers
 	const uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
 	uint32_t *route_expert;
+	uint32_t *route_fault;
 	uint32_t *route_packed_row;
 	uint32_t *route_source_token;
 	float *route_weight;
@@ -1040,7 +1041,7 @@ static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
 {
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
-		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,stream) != cudaSuccess )
+		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,b->route_fault,stream) != cudaSuccess )
 		return(LM_LAUNCH_ERR_LAUNCH);
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
