@@ -18,7 +18,7 @@
 #define VF_OTHER_PREFIX 100u
 #define VF_FFN 256u
 
-struct Small31b : Gemma4_31bGeometry<1u>
+struct Small31b : Gemma4_31bGeometry<SPARK_GEMMA4_31B_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 512u;
@@ -31,7 +31,7 @@ struct Small31b : Gemma4_31bGeometry<1u>
 	static const char *Tag(void) { return "gemma4-31b"; }
 };
 
-struct Small26b : Gemma4_26bGeometry<1u>
+struct Small26b : Gemma4_26bGeometry<SPARK_GEMMA4_26B_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 512u;
@@ -47,7 +47,7 @@ struct Small26b : Gemma4_26bGeometry<1u>
 	static const char *Tag(void) { return "gemma4-26b"; }
 };
 
-struct SmallMuse : MuseGlimmerGeometry<1u>
+struct SmallMuse : MuseGlimmerGeometry<SPARK_MUSE_TP16_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 512u;
@@ -60,7 +60,7 @@ struct SmallMuse : MuseGlimmerGeometry<1u>
 	static const char *Tag(void) { return "muse-glimmer"; }
 };
 
-struct SmallLaguna : LagunaGeometry<1u>
+struct SmallLaguna : LagunaGeometry<SPARK_LAGUNA_TP16_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 512u;
@@ -76,7 +76,7 @@ struct SmallLaguna : LagunaGeometry<1u>
 	static const char *Tag(void) { return "laguna"; }
 };
 
-struct SmallKexaone : Kexaone2Geometry<1u>
+struct SmallKexaone : Kexaone2Geometry<SPARK_KEXAONE2_TP16_STAGE_TP_DEGREE>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 512u;
