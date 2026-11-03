@@ -850,6 +850,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	b->sequence_row_indices = in->sequence_row_indices;
 	b->kda_state_index = in->kda_state_index;
 	b->route_expert = in->route_expert;
+	b->route_fault = in->route_fault;
 	b->route_packed_row = in->route_packed_row;
 	b->route_source_token = in->route_source_token;
 	b->route_weight = in->route_weight;
