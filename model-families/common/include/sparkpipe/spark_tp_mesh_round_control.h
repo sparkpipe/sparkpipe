@@ -119,6 +119,17 @@ static inline uint64_t SparkTpMeshPipelineChunks(uint64_t local_elements,uint64_
     return chunk == 0u || local_elements == 0u ? 0u : (local_elements - 1u) / chunk + 1u;
 }
 
+static inline uint64_t SparkTpMeshPairFirstScatterWidth(uint64_t half_payload_bytes)
+{
+    return half_payload_bytes / sizeof(float);
+}
+
+static inline uint64_t SparkTpMeshPairFirstScatterChunks(uint64_t segment,uint64_t half_payload_bytes)
+{
+    const uint64_t width = SparkTpMeshPairFirstScatterWidth(half_payload_bytes);
+    return width == 0u || segment == 0u ? 0u : (segment - 1u) / width + 1u;
+}
+
 #define SPARK_TP_MESH_PIPELINE_LEAD 1u
 #define SPARK_TP_MESH_PIPELINE_NONE UINT64_MAX
 

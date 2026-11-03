@@ -901,7 +901,7 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
             SparkTpMeshPipelineChunks(elements / implementation->tp_degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
             SparkTpMeshScatterChunks(elements,implementation->tp_degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
         if ( (slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) != 0u )
-            chunks += 2u;
+            chunks = SparkTpMeshPairFirstScatterChunks(elements / implementation->tp_degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) + 2u;
         phases = 1u;
     }
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )

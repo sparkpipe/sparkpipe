@@ -268,7 +268,7 @@ struct Probe
                         uint16_t own,partner;
                         std::memcpy(&own,inputs[rank].data()+(owner*(elements/degree)+i)*sizeof(own),sizeof(own));
                         std::memcpy(&partner,inputs[rank^1u].data()+(owner*(elements/degree)+i)*sizeof(partner),sizeof(partner));
-                        sum+=Float(Bf16(Float(own)+Float(partner)));
+                        sum+=Float(own)+Float(partner);
                     }
                     uint16_t bits=Bf16(sum);std::memcpy(expected_rank[owner].data()+i*sizeof(bits),&bits,sizeof(bits));
                 }
@@ -373,7 +373,7 @@ struct Probe
                 uint64_t advances=rows==1u && SparkTpMeshDirectPipelined(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)!=0u ?
                     SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+
                         ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u && SparkTpMeshGatherPairFirst(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS : 0u) :
-                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? 2u : 0u) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? SparkTpMeshPairFirstScatterChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u : SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq-seq_base[rank]==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
@@ -561,7 +561,7 @@ struct Probe
                 for (uint64_t i=0u;i<count;i++)
                 {
                     float pair_sum=0.0f,plain_sum=0.0f;
-                    for (uint32_t rank=0u;rank<n;rank+=2u) pair_sum+=Float(Bf16(Float(values[rank][i])+Float(values[rank+1u][i])));
+                    for (uint32_t rank=0u;rank<n;rank+=2u) pair_sum+=Float(values[rank][i])+Float(values[rank+1u][i]);
                     for (uint32_t rank=0u;rank<n;rank++) plain_sum+=Float(values[rank][i]);
                     pair_want[i]=Bf16(pair_sum);plain_want[i]=Bf16(plain_sum);differ+=pair_want[i]!=plain_want[i] ? 1u : 0u;
                 }
@@ -608,7 +608,7 @@ struct Probe
                 {
                     float total=0.0f;
                     if (gather!=0u) total=Float(wide_values[i/local][i%local]);
-                    else for (uint32_t pair=0u;pair<n;pair+=2u) total+=Float(Bf16(Float(wide_values[pair][rank*local+i])+Float(wide_values[pair+1u][rank*local+i])));
+                    else for (uint32_t pair=0u;pair<n;pair+=2u) total+=Float(wide_values[pair][rank*local+i])+Float(wide_values[pair+1u][rank*local+i]);
                     wide_want[rank][i]=Bf16(total);
                 }
             Setup(n,1u,1u,small,sums+1u);
