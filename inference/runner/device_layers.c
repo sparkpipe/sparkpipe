@@ -1233,7 +1233,7 @@ static SparkStatus RoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, c
 	const SparkGemvParams first = ExpertsRouted(routes,shape->top_k,hidden,hidden,up != 0 ? inter : 2u * inter,2u * inter);
 	const SparkGemvParams second = ExpertsRouted(routes,1u,inter,inter,hidden,hidden);
 	SparkStatus status;
-	if ( scratch->sorted.bytes != 0u && SparkDeviceSegmented(gate->values.range) != 0u )
+	if ( scratch->sorted.bytes != 0u && ((rows > SPARK_OPS_DECODE_MAX_ROWS && stage->step_exact == 0u) || SparkDeviceSegmented(gate->values.range) != 0u) )
 		return(RoutedFfnGrouped(stage,queue,shape,act_qdq,rows,gate,up,down,poly,scratch,input));
 	status = RoutedLinear(stage,queue,gate,input,scratch->gate_up,scratch->experts,shape->experts,&first);
 	if ( status == SPARK_STATUS_OK && up != 0 )
