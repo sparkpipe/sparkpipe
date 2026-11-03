@@ -9,6 +9,7 @@ extern "C" {
 
 #define SPARK_LING3_STAGE_TP_DEGREE 16u
 #define SPARK_LING3_STAGE_PAGE_SLOTS 64u
+#define SPARK_LING3_STAGE_VERIFY_ROWS 256u
 #define SPARK_LING3_STAGE_HIDDEN 2560u
 #define SPARK_LING3_STAGE_LAYERS 42u
 #define SPARK_LING3_STAGE_PERIOD 6u
@@ -54,6 +55,7 @@ struct Ling3Geometry : LingDefaults
 	static constexpr uint32_t kMoeInter = 768u;
 	static constexpr uint32_t kSharedInter = 768u;
 	static constexpr uint32_t kSharedRows = (kSharedInter / TP + 63u) / 64u * 64u;
+	static constexpr uint32_t kVerifyRows = SPARK_LING3_STAGE_VERIFY_ROWS;
 	static constexpr float kRouteScale = 2.5f;
 	static constexpr uint32_t kPageSlots = SPARK_LING3_STAGE_PAGE_SLOTS;
 	static float RoutedLimit(uint32_t layer) { return layer >= 35u ? 4.0f : 0.0f; }
