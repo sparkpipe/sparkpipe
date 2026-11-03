@@ -11,6 +11,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_kv_shard.h"
+#include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_row_layout.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
@@ -18,6 +19,7 @@
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_manifest.h"
+#include "sparkpipe/spark_glm52_family.h"
 #include "sparkpipe/spark_glm52_stagepack.h"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/attn_prefill.cuh"
@@ -134,26 +136,6 @@ struct Glm52Dimensions : GlmDefaults
 	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
 };
-
-static inline void GlmYarnFrequencies(float *table, uint32_t rope, float theta, float factor, float beta_fast, float beta_slow, uint32_t original_positions)
-{
-	const double pi = 3.14159265358979323846;
-	double low = floor((double)rope * log((double)original_positions / ((double)beta_fast * 2.0 * pi)) / (2.0 * log((double)theta)));
-	double high = ceil((double)rope * log((double)original_positions / ((double)beta_slow * 2.0 * pi)) / (2.0 * log((double)theta)));
-	low = low > 0.0 ? low : 0.0;
-	high = high < (double)(rope - 1u) ? high : (double)(rope - 1u);
-	if ( low == high )
-		high += 0.001;
-	for ( uint32_t index = 0u; index < rope / 2u; index++ )
-	{
-		const float frequency = powf(theta, (float)(2u * index) / (float)rope);
-		const float extrapolation = 1.0f / frequency, interpolation = 1.0f / (factor * frequency);
-		float ramp = ((float)index - (float)low) / ((float)high - (float)low);
-		ramp = ramp < 0.0f ? 0.0f : ramp > 1.0f ? 1.0f : ramp;
-		const float extrapolation_factor = 1.0f - ramp;
-		table[index] = interpolation * (1.0f - extrapolation_factor) + extrapolation * extrapolation_factor;
-	}
-}
 
 static_assert(LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS == GLM_SPLIT_PARTITIONS, "split-partials sizing matches the kernel's partition cap");
 
@@ -380,7 +362,7 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 		total += value * value;
 	}
 	total = LmBlockSum<GLM_THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)S::kQueryA) + epsilon);
+	scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
 	for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
 		query_row[index] = LmFloatToBf16(query[index] * scale * LmScalarToFloat(query_norm[index]));
 	if constexpr ( S::kQueryConcat )
@@ -399,7 +381,7 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 			total += value * value;
 	}
 	total = LmBlockSum<GLM_THREADS>(total, reduction);
-	scale = rsqrtf((total / (float)S::kLatent) + epsilon);
+	scale = SparkMathRmsScale(total, (float)S::kLatent, epsilon);
 	for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
 		slot_out[(uint64_t)row * S::kSlot + index] = index < S::kLatent ? LmFloatToBf16(latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
 			LmFloatToBf16(latent[index]);
@@ -1128,6 +1110,20 @@ struct GlmModel
 		uint64_t gather_waves;
 	};
 
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+		uint32_t ordered;
+		uint32_t first;
+		GlmRegime regime;
+		GlmWave wave;
+		uint16_t *hidden;
+		const uint32_t *positions;
+		const uint32_t *slots;
+		GlmBuffers b;
+	};
+
 	static uint32_t Units(uint64_t bytes)
 	{
 		return (uint32_t)((bytes + S::kUnitBytes - 1u) / S::kUnitBytes);
@@ -1739,7 +1735,7 @@ struct GlmModel
 		if constexpr ( S::kRopeTable )
 		{
 			float frequencies[S::kRope / 2u];
-			GlmYarnFrequencies(frequencies, S::kRope, S::kRopeTheta, S::kRopeFactor, S::kRopeBetaFast, S::kRopeBetaSlow, S::kRopeOriginalPositions);
+			SparkRopeYarnRampTable(frequencies, S::kRope, S::kRopeTheta, S::kRopeFactor, S::kRopeBetaFast, S::kRopeBetaSlow, S::kRopeOriginalPositions);
 			if ( cudaMalloc((void **)&state->rope_table, sizeof(frequencies)) != cudaSuccess ||
 				cudaMemcpy(state->rope_table, frequencies, sizeof(frequencies), cudaMemcpyHostToDevice) != cudaSuccess )
 			{
@@ -2025,17 +2021,17 @@ struct GlmModel
 		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u, state->row_normed, state->normed);
 	}
 
-	static SparkStatus Layer(State *state, const GlmWave *wave, uint32_t layer, uint16_t *hidden, const uint32_t *positions, const uint32_t *slots,
-		uint32_t sms, cudaStream_t stream)
+	static SparkStatus Attention(State *state, Frame &frame, uint32_t layer)
 	{
-		const uint32_t rows = wave->rows, packed = rows * S::kTopK, sharded = RowSharded(wave);
-		const uint32_t last = layer + 1u == S::kLayers ? 1u : 0u;
-		GlmBuffers b;
+		const GlmWave *wave = &frame.wave;
+		const uint32_t rows = wave->rows, sharded = RowSharded(wave), sms = frame.step->multiprocessors;
+		cudaStream_t stream = frame.stream;
+		GlmBuffers *b = &frame.b;
 		SparkStatus status;
 		int32_t code;
-		BindLayer(state, wave, layer, hidden, positions, slots, &b);
-		b.prenormed = sharded != 0u && layer != 0u ? 1u : 0u;
-		code = GlmAttentionProject<S>(&b, rows, sms, stream);
+		BindLayer(state, wave, layer, frame.hidden, frame.positions, frame.slots, b);
+		b->prenormed = sharded != 0u && layer != 0u ? 1u : 0u;
+		code = GlmAttentionProject<S>(b, rows, sms, stream);
 		if ( code != LM_LAUNCH_OK )
 			return Fail("attention projection", layer, code);
 		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, GlmProjectionSliceWidth<S>(state->tp_degree),
@@ -2045,28 +2041,28 @@ struct GlmModel
 		if ( wave->gather != 0u )
 		{
 			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			code = GlmShardGatherPre<S>(&b, rows, wave->context, layer, sms, stream);
+			code = GlmShardGatherPre<S>(b, rows, wave->context, layer, sms, stream);
 			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("gather pre", layer, code);
-			status = GatherExchange(state, wave, &b, layer, stream);
+			status = GatherExchange(state, wave, b, layer, stream);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			code = GlmShardGatherPost<S>(&b, rows, wave->context, sms, stream);
+			code = GlmShardGatherPost<S>(b, rows, wave->context, sms, stream);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("gather post", layer, code);
 		}
 		else
 		{
 			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-			code = GlmShardScatterPre<S>(&b, rows, wave->context, layer, sms, stream);
+			code = GlmShardScatterPre<S>(b, rows, wave->context, layer, sms, stream);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter pre", layer, code);
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
 				GlmShardIndexing<S>(layer, wave->context) != 0u ? wave->indexing_units : wave->query_units, 0u, state->shard_send, state->shard_received);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			code = GlmShardScatterMid<S>(&b, rows, wave->context, layer, stream);
+			code = GlmShardScatterMid<S>(b, rows, wave->context, layer, stream);
 			RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter mid", layer, code);
@@ -2074,43 +2070,74 @@ struct GlmModel
 				state->shard_partials_received);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			code = GlmShardScatterPost<S>(&b, rows, sms, stream);
+			code = GlmShardScatterPost<S>(b, rows, sms, stream);
 			if ( code != LM_LAUNCH_OK )
 				return Fail("scatter post", layer, code);
 		}
-		status = sharded != 0u ? RowShard(state, wave, layer, state->attention_out, state->layers[layer].post_norm, 1u, state->layers[layer].post_gate_down,
-			state->layers[layer].post_gate_up, stream) :
-			Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->attention_out, state->attention_out);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		b.prenormed = sharded;
-		if ( layer < S::kFirstRouted )
-			code = GlmDenseMlp<S>(&b, rows, sms, stream);
-		else
-		{
-			const void *w1 = 0, *w2 = 0;
-			code = GlmMoeRoute<S>(&b, rows, packed, sms, stream);
-			if ( code != LM_LAUNCH_OK )
-				return Fail("moe route", layer, code);
-			status = state->services->expert_weights(state->services->context, layer, state->group_offset, packed, &w1, &w2);
-			if ( status != SPARK_STATUS_OK || w1 == 0 || w2 == 0 )
-			{
-				fprintf(stderr, "%s: expert weights for layer %u are not available status=%d\n", G::Tag(), layer, (int)status);
-				return status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR;
-			}
-			b.expert_w1_weight = w1;
-			b.expert_w1_scale = (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale;
-			b.expert_w2_weight = w2;
-			b.expert_w2_scale = (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale;
-			code = GlmMoeExperts<S>(&b, rows, packed, sms, stream);
-		}
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AttentionResidual(State *state, Frame &frame, uint32_t layer)
+	{
+		const GlmWave *wave = &frame.wave;
+		return RowSharded(wave) != 0u ? RowShard(state, wave, layer, state->attention_out, state->layers[layer].post_norm, 1u,
+			state->layers[layer].post_gate_down, state->layers[layer].post_gate_up, frame.stream) :
+			Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, wave->rows, 0u, state->attention_out, state->attention_out);
+	}
+
+	static SparkStatus DenseMlp(State *state, Frame &frame, uint32_t layer)
+	{
+		int32_t code;
+		frame.b.prenormed = RowSharded(&frame.wave);
+		code = GlmDenseMlp<S>(&frame.b, frame.wave.rows, frame.step->multiprocessors, frame.stream);
 		if ( code != LM_LAUNCH_OK )
 			return Fail("mlp", layer, code);
-		status = sharded != 0u ? RowShard(state, wave, layer, hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm, last == 0u ? 1u : 0u,
-			last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up, stream) : Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, hidden, hidden);
-		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus RoutedMlp(State *state, Frame &frame, uint32_t layer)
+	{
+		const uint32_t rows = frame.wave.rows, packed = rows * S::kTopK, sms = frame.step->multiprocessors;
+		cudaStream_t stream = frame.stream;
+		GlmBuffers *b = &frame.b;
+		const void *w1 = 0, *w2 = 0;
+		SparkStatus status;
+		int32_t code;
+		b->prenormed = RowSharded(&frame.wave);
+		code = GlmMoeRoute<S>(b, rows, packed, sms, stream);
+		if ( code != LM_LAUNCH_OK )
+			return Fail("moe route", layer, code);
+		status = state->services->expert_weights(state->services->context, layer, state->group_offset, packed, &w1, &w2);
+		if ( status != SPARK_STATUS_OK || w1 == 0 || w2 == 0 )
+		{
+			fprintf(stderr, "%s: expert weights for layer %u are not available status=%d\n", G::Tag(), layer, (int)status);
+			return status != SPARK_STATUS_OK ? status : SPARK_STATUS_INTERNAL_ERROR;
+		}
+		b->expert_w1_weight = w1;
+		b->expert_w1_scale = (const uint8_t *)w1 - state->w1_offset[layer] + state->layers[layer].up_gate_scale;
+		b->expert_w2_weight = w2;
+		b->expert_w2_scale = (const uint8_t *)w2 - state->w2_offset[layer] + state->layers[layer].down_scale;
+		code = GlmMoeExperts<S>(b, rows, packed, sms, stream);
+		if ( code != LM_LAUNCH_OK )
+			return Fail("mlp", layer, code);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus MlpResidual(State *state, Frame &frame, uint32_t layer)
+	{
+		const GlmWave *wave = &frame.wave;
+		const uint32_t last = layer + 1u == S::kLayers ? 1u : 0u;
+		return RowSharded(wave) != 0u ? RowShard(state, wave, layer, frame.hidden, last != 0u ? state->final_norm : state->layers[layer + 1u].attn_norm,
+			last == 0u ? 1u : 0u, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_down, last != 0u ? 0 : state->layers[layer + 1u].attn_gate_up,
+			frame.stream) : Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, wave->rows, 0u, frame.hidden, frame.hidden);
+	}
+
+	static SparkStatus LayerDone(State *state, Frame &frame, uint32_t layer)
+	{
+		(void)frame;
+		if ( state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, layer);
-		return status;
+		return SPARK_STATUS_OK;
 	}
 
 	static uint32_t GatherCheaper(const State *state, const GlmWave *wave)
@@ -2152,12 +2179,14 @@ struct GlmModel
 		ScatterSizes(state, wave->rows, &wave->query_units, &wave->indexing_units, &wave->partial_units, &wave->candidate_offset);
 	}
 
-	static SparkStatus Wave(State *state, const GlmWave *wave, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus WaveBegin(State *state, Frame &frame)
 	{
+		const GlmWave *wave = &frame.wave;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = wave->rows;
 		uint16_t *hidden;
 		const uint32_t *positions, *slots;
-		SparkStatus status = SPARK_STATUS_OK;
 		if ( wave->ordered != 0u )
 		{
 			hidden = state->hidden;
@@ -2200,10 +2229,20 @@ struct GlmModel
 		}
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			return Fail("wave metadata", 0u, LM_LAUNCH_ERR_LAUNCH);
-		for ( uint32_t layer = 0u; layer < S::kLayers && status == SPARK_STATUS_OK; layer++ )
-			status = Layer(state, wave, layer, hidden, positions, slots, step->multiprocessors, stream);
-		if ( status != SPARK_STATUS_OK )
-			return status;
+		frame.hidden = hidden;
+		frame.positions = positions;
+		frame.slots = slots;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus WaveEnd(State *state, Frame &frame)
+	{
+		const GlmWave *wave = &frame.wave;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
+		const uint32_t rows = wave->rows;
+		uint16_t *hidden = frame.hidden;
+		SparkStatus status;
 		if ( wave->gather != 0u )
 		{
 			if ( LmRowDigestFinishLaunch(state->digest, GLM_DIGESTS, state->digest + GLM_DIGESTS, stream) != cudaSuccess )
@@ -2247,15 +2286,16 @@ struct GlmModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
 	{
-		State *state = (State *)model;
 		cudaStream_t stream = (cudaStream_t)stream_void;
 		const uint32_t rows = step->rows;
 		const uint32_t ordered = step->last_rows_only != 0u || (rows != step->sequences && (FrameShape(step) == 0u || step->graph_key != 2u)) ? 1u : 0u;
-		GlmRegime regime;
-		GlmWave wave;
-		SparkStatus status = SPARK_STATUS_OK;
+		frame->step = step;
+		frame->stream = stream;
+		frame->ordered = ordered;
+		frame->first = 0u;
+		memset(&frame->wave, 0, sizeof(frame->wave));
 		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->positions == 0 ||
 			step->sequence_of_row == 0 || (ordered != 0u && (step->host_positions == 0 || step->host_sequence_of_row == 0)) )
 		{
@@ -2276,33 +2316,48 @@ struct GlmModel
 				cudaMemcpyAsync(state->positions, state->host_positions, (size_t)rows * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess ||
 				cudaMemcpyAsync(state->wave_slots, state->host_slots, (size_t)rows * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-			regime.positions = state->host_positions;
-			regime.max_positions = state->max_positions;
+			frame->regime.positions = state->host_positions;
+			frame->regime.max_positions = state->max_positions;
 		}
-		for ( uint32_t first = 0u; first < rows && status == SPARK_STATUS_OK; first += wave.rows )
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus NextWave(State *state, Frame &frame, bool *more)
+	{
+		const uint32_t rows = frame.step->rows;
+		GlmWave *wave = &frame.wave;
+		frame.first += wave->rows;
+		*more = frame.first < rows;
+		if ( !*more )
+			return SPARK_STATUS_OK;
+		memset(wave, 0, sizeof(*wave));
+		wave->first = frame.first;
+		wave->ordered = frame.ordered;
+		if ( frame.ordered != 0u )
 		{
-			memset(&wave, 0, sizeof(wave));
-			wave.first = first;
-			wave.ordered = ordered;
-			if ( ordered != 0u )
-			{
-				wave.rows = SparkRowLayoutPackedSpanWaveRowCount(first, rows, state->host_slots, SelectionRegime, &regime, state->max_rows, 1u);
-				if ( wave.rows <= LM_SKINNY_ROWS )
-					wave.rows = SparkRowLayoutPackedSpanWaveRowCount(first, rows, state->host_slots, RowRegime, &regime, state->max_rows, 1u);
-			}
-			else
-				wave.rows = rows - first < state->scatter_rows ? rows - first : state->scatter_rows;
-			if ( wave.rows == 0u )
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-			Measure(state, &wave, state->host_positions);
-			status = Wave(state, &wave, step, stream);
+			wave->rows = SparkRowLayoutPackedSpanWaveRowCount(frame.first, rows, state->host_slots, SelectionRegime, &frame.regime, state->max_rows, 1u);
+			if ( wave->rows <= LM_SKINNY_ROWS )
+				wave->rows = SparkRowLayoutPackedSpanWaveRowCount(frame.first, rows, state->host_slots, RowRegime, &frame.regime, state->max_rows, 1u);
 		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
+		else
+			wave->rows = rows - frame.first < state->scatter_rows ? rows - frame.first : state->scatter_rows;
+		if ( wave->rows == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		Measure(state, wave, state->host_positions);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus End(State *state, Frame &frame)
+	{
 		state->steps++;
-		if ( ordered != 0u && cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( frame.ordered != 0u && cudaStreamSynchronize(frame.stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return GlmSchedule<G, GlmModel>::Step((State *)model, step, stream);
 	}
 
 	static uint32_t FrameShape(const SparkStageRunnerStep *step)

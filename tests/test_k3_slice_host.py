@@ -72,7 +72,7 @@ def main():
         build = subprocess.run(
             [host_cuda_cxx(), "-std=c++17", "-O1", f"-I{ROOT}/tests/host_cuda/shim",
              f"-I{ROOT}", f"-I{ROOT}/tests/host_cuda",
-             f"-I{ROOT}/model-families/common/include", f"-I{ROOT}/include",
+             f"-I{ROOT}/model-families/common/include", f"-I{ROOT}/model-families/k3/include", f"-I{ROOT}/include",
              "-x", "c++", str(SOURCE), "-o", str(binary)],
             capture_output=True, text=True)
         if build.returncode != 0:
