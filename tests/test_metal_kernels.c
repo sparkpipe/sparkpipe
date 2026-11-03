@@ -4479,10 +4479,13 @@ static void TestAttnRes(uint32_t rows, uint32_t sources)
 	SparkAttnResParams params;
 	Check clean, corrupted, mix_clean, mix_corrupted;
 	char shape[64];
-	uint32_t pass, row, source, i;
+	uint32_t pass, row, source, i, strongest = 0u;
 	FillBf16(bv,bank_elements,3.0);
 	FillBf16(pv,(uint64_t)rows * DIM,1.5);
 	FillBf16(wv,DIM,0.05);
+	for ( i = 1u; i < DIM; i++ )
+		if ( fabs(Bf16(wv[i])) > fabs(Bf16(wv[strongest])) )
+			strongest = i;
 	memset(&params,0,sizeof(params));
 	params.rows = rows;
 	params.sources = sources;
@@ -4492,7 +4495,7 @@ static void TestAttnRes(uint32_t rows, uint32_t sources)
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted, *mix_check = pass == 0u ? &mix_clean : &mix_corrupted;
-		const uint64_t poke = (uint64_t)(rows - 1u) * DIM + 11u;
+		const uint64_t poke = (uint64_t)(rows - 1u) * DIM + strongest;
 		const uint16_t saved = pv[poke];
 		float device_scores[STRIDE];
 		memset(check,0,sizeof(*check));
