@@ -151,7 +151,9 @@ attached consumer is cold, and the next attach that needs room frees the oldest
 cold arena (`SparkWeightdServerReclaimCold`). `weightd_warm SOCKET --reclaim`
 frees every cold arena on the daemon, including other developers' warmed
 arenas, so do not use it on the shared daemon without checking whose they are.
-A daemon holds at most 16 arenas (`SPARK_WEIGHTD_ARENA_COUNT_MAX`). A
+A daemon holds at most 16 arenas (`SPARK_WEIGHTD_ARENA_COUNT_MAX`); a 17th
+pack frees the coldest cold arena, and is refused only while all 16 are
+attached or leased. A
 graph-mode GLM job needs its whole pack pinned, so on W it must budget the full
 pack; a partial `.wset` only serves eager mode.
 
