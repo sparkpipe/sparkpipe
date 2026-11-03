@@ -39,6 +39,7 @@ SparkStatus SparkNamedPackOpen(const char *path, uint32_t magic, uint32_t versio
 void SparkNamedPackClose(SparkNamedPack *pack);
 SparkStatus SparkNamedPackEntryLoad(const SparkNamedPack *pack, const char *name, SparkNamedPackEntry *entry);
 SparkStatus SparkNamedPackConfigU32(const SparkNamedPack *pack, const char *key, uint32_t *value);
+SparkStatus SparkNamedPackFormatU32(const SparkNamedPack *pack, const char *key, uint32_t *value);
 SparkStatus SparkNamedPackTensorFieldU32(const SparkNamedPack *pack, const char *name, const char *object,
 	const char *field, uint32_t *value);
 
