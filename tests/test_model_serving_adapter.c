@@ -1048,6 +1048,16 @@ static void TestVerifySubmission(void)
 	submission.cache_block_identities = &verify_identity;
 	memset(&verify_identity,0x42,sizeof(verify_identity));
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
+	lanes[1].flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH;
+	lanes[1].cache_publish_token_count = 10u;
+	memset(&lanes[1].cache_publish_identity,0x24,sizeof(lanes[1].cache_publish_identity));
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[1].flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	lanes[1].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	lanes[1].cache_publish_token_count = 0u;
+	memset(&lanes[1].cache_publish_identity,0,sizeof(lanes[1].cache_publish_identity));
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	lanes[0].cache_block_identity_count = 0u;
 	lanes[1].cache_block_identity_first = 0u;
 	submission.cache_block_identity_count = 0u;

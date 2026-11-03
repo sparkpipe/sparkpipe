@@ -15,7 +15,8 @@ references them from its page tables like any other page.
   prefix private.
 - **Opting in.** The node operator gives weightd
   `--kv-shared-window-bytes N` (or `SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES`).
-  The bytes are carved from the KV reserve, and each layout key gets a
+  The bytes come out of the node's KV limit (the reserve plus what the
+  attached weights leave of the ceiling), and each layout key gets a
   window of that size.
   - Without the flag, every binding logs
     `kv shared prefix off: weightd has no shared window` and keeps its
