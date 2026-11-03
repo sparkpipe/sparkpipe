@@ -82,6 +82,26 @@ static inline void SparkRopePlanBuildYarnInvFrequency(
 	}
 }
 
+static inline void SparkRopeYarnRampTable(float *table, uint32_t rope, float theta, float factor, float beta_fast, float beta_slow, uint32_t original_positions)
+{
+	const double pi = 3.14159265358979323846;
+	double low = floor((double)rope * log((double)original_positions / ((double)beta_fast * 2.0 * pi)) / (2.0 * log((double)theta)));
+	double high = ceil((double)rope * log((double)original_positions / ((double)beta_slow * 2.0 * pi)) / (2.0 * log((double)theta)));
+	low = low > 0.0 ? low : 0.0;
+	high = high < (double)(rope - 1u) ? high : (double)(rope - 1u);
+	if ( low == high )
+		high += 0.001;
+	for ( uint32_t index = 0u; index < rope / 2u; index++ )
+	{
+		const float frequency = powf(theta, (float)(2u * index) / (float)rope);
+		const float extrapolation = 1.0f / frequency, interpolation = 1.0f / (factor * frequency);
+		float ramp = ((float)index - (float)low) / ((float)high - (float)low);
+		ramp = ramp < 0.0f ? 0.0f : ramp > 1.0f ? 1.0f : ramp;
+		const float extrapolation_factor = 1.0f - ramp;
+		table[index] = interpolation * (1.0f - extrapolation_factor) + extrapolation * extrapolation_factor;
+	}
+}
+
 static inline uint32_t SparkRopePlanYarnTableIsValid(
 	const SparkRopePlanDomain *domain,
 	const float *inv_freq)
