@@ -146,7 +146,7 @@ struct QwenDevice
 		attention->rope_theta = G::kRopeTheta;
 		attention->epsilon = QH_EPSILON;
 		attention->scale = (float)(1.0 / sqrt((double)G::kHeadDim));
-		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID;
+		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID_BF16;
 	}
 
 	static uint64_t Max(uint64_t a, uint64_t b)

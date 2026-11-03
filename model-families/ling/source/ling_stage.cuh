@@ -424,7 +424,7 @@ struct LingModel
 		if ( LmGqaShardMergeLaunch<G::kGqaHeadDim>(state->attn_received, partial_stride, degree, G::kGqaHeads, state->tp_rank, state->gqa_merged, rows,
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmOutputGateKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gqa_merged, state->gqa_gate, S::kGqaRankWidth);
+		LM_LAUNCH((LmOutputGateKernel<LG_THREADS,true>), rows, LG_THREADS, 0, stream, state->gqa_merged, state->gqa_gate, S::kGqaRankWidth);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->gqa_out, state->gqa_merged, state->partial, rows, S::kGqaRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

@@ -109,7 +109,7 @@ struct LingDevice
 		state->gqa_shape.epsilon = G::kNormEpsilon;
 		state->gqa_shape.scale = L::kGqa ? 1.0f / sqrtf((float)G::kGqaHeadDim) : 0.0f;
 		state->gqa_shape.qk_plain = 1u;
-		state->gqa_shape.output_gate = SPARK_ATTENTION_GATE_SIGMOID;
+		state->gqa_shape.output_gate = SPARK_ATTENTION_GATE_SIGMOID_BF16;
 		state->gqa_shape.gate_projection = 1u;
 		state->gqa_shape.tensor_prefix = "gqa";
 		memset(experts, 0, sizeof(*experts));

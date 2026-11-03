@@ -443,7 +443,7 @@ void LmLowRankGateApplyKernel(uint16_t *__restrict__ rows_bf16, const float *__r
 	rows_bf16[(uint64_t)row * dimension + index] = LmFloatToBf16(LmBf16ToFloat(rows_bf16[(uint64_t)row * dimension + index]) * SparkMathSigmoidFast(gate));
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, bool ROUND_GATE = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t dimension)
 {
@@ -454,7 +454,7 @@ void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__re
 		float gate = LmBf16ToFloat(gate_bf16[base + index]);
 		float value = LmBf16ToFloat(output_bf16[base + index]);
 		output_bf16[base + index] =
-			LmFloatToBf16(value * SparkMathSigmoidFast(gate));
+			LmFloatToBf16(value * (ROUND_GATE ? SparkMathRoundBf16(SparkMathSigmoid(gate)) : SparkMathSigmoidFast(gate)));
 	}
 }
 

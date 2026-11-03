@@ -712,7 +712,7 @@ struct QwenHybridModel
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmSliceColumnsKernel<QH_THREADS><<<dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream>>>(state->attn_gate, state->merged_gate,
 			S::kQWidth, state->tp_rank * state->attn_width, state->attn_width);
-		LM_LAUNCH((LmOutputGateKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
+		LM_LAUNCH((LmOutputGateKernel<QH_THREADS,true>), rows, QH_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(state, layer->out_weight, layer->out_scale, state->merged, state->partial, rows, state->attn_width, G::kHidden, Exact(step), sms,
 				stream) != LM_LAUNCH_OK )

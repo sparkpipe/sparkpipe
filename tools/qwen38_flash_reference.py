@@ -380,7 +380,7 @@ class Reference:
                 weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
                 weights = weights / reduce_sum(weights, keepdims=True)
                 out = bf16(matmul(weights, v[first:first + count, head // group]))
-                gated[first:first + count, head] = bf16(out * sigmoid(gq[first:first + count, head, self.head_dim:]))
+                gated[first:first + count, head] = bf16(out * bf16(sigmoid(gq[first:first + count, head, self.head_dim:])))
         return self.linear(gated.reshape(rows, -1), c.bf16(p + "o_proj.weight"))
 
     def moe(self, layer, x):

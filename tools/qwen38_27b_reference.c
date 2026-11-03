@@ -558,7 +558,7 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 			for ( uint32_t d = 0u; d < REF_HEAD_DIM; d++ )
 			{
 				const float g = gq[(uint64_t)row * 2u * REF_Q + head * 2u * REF_HEAD_DIM + REF_HEAD_DIM + d];
-				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d]) * Sigmoid(g));
+				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d]) * RoundBf16(Sigmoid(g)));
 			}
 		free(scores);
 		free(out);
