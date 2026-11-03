@@ -114,6 +114,7 @@ ASSET_SOURCES.update({
     "/etc/systemd/system/ds4-switched-fabric.timer": ("tools/devcycle/fleet/ds4-switched-fabric.timer",0o644),
     "/etc/systemd/system/ds4-direct-pair-fabric.service": ("tools/devcycle/fleet/ds4-direct-pair-fabric.service",0o644),
     "/etc/systemd/system/ds4-direct-pair-fabric.timer": ("tools/devcycle/fleet/ds4-direct-pair-fabric.timer",0o644),
+    "/etc/systemd/system/ds4-direct-pair-fabric.service.d/link-b.conf": ("tools/devcycle/fleet/ds4-direct-pair-fabric-link-b.conf",0o644),
     "/usr/local/sbin/ds4-switched-fabric-apply": ("tools/devcycle/fleet/ds4_switched_fabric_apply.sh",0o755),
     "/usr/local/sbin/ds4-direct-pair-fabric-apply": ("tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh",0o755),
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
