@@ -30,53 +30,19 @@
 #include "inference/kernels/topk_group.cuh"
 #include "runtime/gemm.cuh"
 
-#define LG_THREADS 256u
-#define LG_EPSILON 1e-6f
-#define LG_PACK_ALIGNMENT 128u
-#define LING_ATTENTION_MLA 0u
-#define LING_ATTENTION_GQA 1u
+#include "sparkpipe/spark_ling_family.h"
 
-struct LingDefaults
-{
-	static constexpr uint32_t kKdaRank = 0u;
-	static constexpr uint32_t kMlaHeads = 0u;
-	static constexpr uint32_t kNope = 0u;
-	static constexpr uint32_t kRope = 0u;
-	static constexpr uint32_t kValueDim = 0u;
-	static constexpr uint32_t kLatent = 0u;
-	static constexpr float kRopeTheta = 0.0f;
-	static constexpr uint32_t kGqaHeads = 0u;
-	static constexpr uint32_t kGqaKvHeads = 0u;
-	static constexpr uint32_t kGqaHeadDim = 0u;
-	static constexpr uint32_t kVerifyRows = 0u;
-	static float RoutedLimit(uint32_t layer) { (void)layer; return 0.0f; }
-	static float SharedLimit(uint32_t layer) { (void)layer; return 0.0f; }
-};
+#define LG_THREADS 256u
 
 template<class G>
-struct LingShape
+struct LingShape : LingLayout<G>
 {
-	static constexpr bool kGqa = G::kAttention == LING_ATTENTION_GQA;
-	static constexpr uint32_t kAttnLayers = G::kLayers / G::kPeriod;
-	static constexpr uint32_t kKdaLayers = G::kLayers - kAttnLayers;
-	static constexpr uint32_t kKdaRankHeads = G::kKdaHeads / G::kTpDegree;
-	static constexpr uint32_t kKdaWidth = kKdaRankHeads * G::kKdaDim;
-	static constexpr uint32_t kKdaChannels = 3u * kKdaWidth;
-	static constexpr uint32_t kMlaRankHeads = G::kMlaHeads / G::kTpDegree;
-	static constexpr uint32_t kQkDim = G::kNope + G::kRope;
 	static constexpr uint32_t kRecord = LM_LATENT_SHARD_RECORD_FLOATS(G::kLatent);
-	static constexpr uint32_t kGqaWidth = G::kGqaHeads * G::kGqaHeadDim;
-	static constexpr uint32_t kGqaKvWidth = G::kGqaKvHeads * G::kGqaHeadDim;
-	static constexpr uint32_t kGqaFused = kGqaWidth + 2u * kGqaKvWidth;
-	static constexpr uint32_t kGqaRankFused = kGqaFused / G::kTpDegree;
-	static constexpr uint32_t kGqaRankWidth = kGqaWidth / G::kTpDegree;
-	static constexpr uint32_t kSlot = kGqa ? 2u * kGqaKvWidth : G::kLatent + G::kRope;
-	using Kv = LmKvGeometry<kSlot * 2u, G::kPageSlots, true>;
-	static_assert(G::kKdaHeads % G::kTpDegree == 0u && G::kMlaHeads % G::kTpDegree == 0u && G::kExperts % G::kTpDegree == 0u,
-		"heads and experts split evenly over the ranks");
-	static_assert(kMlaRankHeads * kSlot <= G::kHidden, "a rank's packed queries fit one collective row");
-	static_assert(!kGqa || (G::kMlaHeads == 0u && G::kGqaHeads % G::kTpDegree == 0u && kGqaFused % G::kTpDegree == 0u &&
-		kGqaRankFused <= G::kHidden && kGqaRankWidth % G::kGqaHeadDim == 0u), "a GQA rank owns whole query heads and its fused rows fit one collective row");
+	using Kv = LmKvGeometry<LingLayout<G>::kSlot * 2u, G::kPageSlots, true>;
+	static_assert(LingLayout<G>::kMlaRankHeads * LingLayout<G>::kSlot <= G::kHidden, "a rank's packed queries fit one collective row");
+	static_assert(!LingLayout<G>::kGqa || (G::kMlaHeads == 0u && G::kGqaHeads % G::kTpDegree == 0u && LingLayout<G>::kGqaFused % G::kTpDegree == 0u &&
+		LingLayout<G>::kGqaRankFused <= G::kHidden && LingLayout<G>::kGqaRankWidth % G::kGqaHeadDim == 0u),
+		"a GQA rank owns whole query heads and its fused rows fit one collective row");
 	static_assert(G::kKdaRank % 64u == 0u, "the low-rank decay and gate projections stream in 64-column steps");
 };
 
@@ -246,6 +212,13 @@ struct LingModel
 {
 	using S = LingShape<G>;
 	using State = LingState<G>;
+	using Layer = LingLayer;
+
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+	};
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -315,8 +288,11 @@ struct LingModel
 		return state->replay_write_gate + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaRankHeads;
 	}
 
-	static SparkStatus Kda(State *state, const LingLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Kda(State *state, const Frame &frame, const LingLayer &entry)
 	{
+		const LingLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sequences = step->sequences, sms = step->multiprocessors;
 		uint8_t *state_pool = state->kda_state + (uint64_t)layer->recurrent_index * state->slots * state->kda_state_bytes;
 		uint16_t *window = state->kda_window + (uint64_t)layer->recurrent_index * state->slots * (state->kda_window_bytes / sizeof(uint16_t));
@@ -471,16 +447,22 @@ struct LingModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Attention(State *state, const LingLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Attention(State *state, const Frame &frame, const LingLayer &entry)
 	{
+		const LingLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		if constexpr ( S::kGqa )
 			return Gqa(state, layer, step, stream);
 		else
 			return Mla(state, layer, step, stream);
 	}
 
-	static SparkStatus Dense(State *state, const LingLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Dense(State *state, const Frame &frame, const LingLayer &entry)
 	{
+		const LingLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors;
 		if ( Linear(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * state->ffn_rows, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -491,8 +473,11 @@ struct LingModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Moe(State *state, const LingLayer *layer, uint32_t index, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Experts(State *state, const Frame &frame, const LingLayer &entry, uint32_t index)
 	{
+		const LingLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * G::kTopK;
 		const float routed_limit = G::RoutedLimit(index), shared_limit = G::SharedLimit(index);
 		LmLocalExpertRoutes expert_routes;
@@ -539,38 +524,66 @@ struct LingModel
 		return Launched();
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static const LingLayer &LayerOf(State *state, uint32_t index)
 	{
-		State *state = (State *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
+		return state->layers[index];
+	}
+
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
+	{
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const LingLayer *layer = &state->layers[index];
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, index == 0u ? (const uint16_t *)0 : state->partial, layer->input_norm, index == 0u ? (uint16_t *)0 : hidden,
-				state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			status = index % G::kPeriod == G::kPhase ? Attention(state, layer, step, stream) : Kda(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
-				hidden, state->partial, layer->post_norm, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
-			status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : Moe(state, layer, index, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(hidden, state->partial, hidden, rows, G::kHidden);
+		frame->step = step;
+		frame->stream = (cudaStream_t)stream;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
+	{
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AddRmsNorm(State *state, const Frame &frame, const float *weight)
+	{
+		uint16_t *hidden = frame.step->hidden_bf16;
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+			hidden, state->partial, weight, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame)
+	{
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+	}
+
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		(void)frame;
+		if ( state->services->layer_done != 0 )
+			state->services->layer_done(state->services->context, index);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus AddRows(State *state, const Frame &frame)
+	{
+		uint16_t *hidden = frame.step->hidden_bf16;
+		LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), frame.step->rows), LG_THREADS, 0, frame.stream>>>(hidden, state->partial, hidden,
+			frame.step->rows, G::kHidden);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Check(State *state, const Frame &frame)
+	{
+		(void)state;
+		(void)frame;
 		return Launched();
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return LingSchedule<G, LingModel>::Step((State *)model, step, stream);
 	}
 
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)

@@ -32,3 +32,10 @@ static inline float SparkGroupMax(float value, threadgroup float *scratch, uint 
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	return total;
 }
+
+template <bool MX>
+static inline float SparkFp8Block(constant SparkGemvParams &p, device const uchar *scale, ulong row, uint k)
+{
+	return(MX ? SparkMathUe8m0ToFloat(scale[row * p.scale_stride + k / SPARK_MXFP8_GROUP]) :
+		((device const float *)scale)[row * p.scale_stride + k / SPARK_FP8_SCALE_K]);
+}
