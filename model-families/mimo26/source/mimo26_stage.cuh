@@ -27,35 +27,18 @@
 #include "inference/kernels/topk_group.cuh"
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
+#include "sparkpipe/spark_mimo26_family.h"
 
 #define MM_THREADS 256u
-#define MM_PACK_ALIGNMENT 128u
 #define MM_FP8_GROUP 128u
 
 template<class G>
-struct MimoShape
+struct MimoShape : MimoLayout<G>
 {
-	static constexpr uint32_t kRankHeads = G::kHeads / G::kTpDegree;
-	static constexpr uint32_t kQuery = G::kHeads * G::kHeadDim;
-	static constexpr uint32_t kSlidingKey = G::kSlidingKvHeads * G::kHeadDim;
-	static constexpr uint32_t kSlidingValue = G::kSlidingKvHeads * G::kValueDim;
-	static constexpr uint32_t kSlidingFused = kQuery + kSlidingKey + kSlidingValue;
-	static constexpr uint32_t kFullKey = G::kFullKvHeads * G::kHeadDim;
-	static constexpr uint32_t kFullValue = G::kFullKvHeads * G::kValueDim;
-	static constexpr uint32_t kFullFused = kQuery + kFullKey + kFullValue;
-	static constexpr uint32_t kMaxFused = kSlidingFused > kFullFused ? kSlidingFused : kFullFused;
-	static constexpr uint32_t kMaxKey = kSlidingKey > kFullKey ? kSlidingKey : kFullKey;
-	static constexpr uint32_t kMaxValue = kSlidingValue > kFullValue ? kSlidingValue : kFullValue;
-	static constexpr uint32_t kRankWidth = kRankHeads * G::kValueDim;
-	static constexpr uint32_t kSlidingLayers = G::kLayers - G::kFullLayers;
-	static constexpr uint32_t kDenseRows = G::kDenseInter / G::kTpDegree;
 	using SlidingKv = LmKvGeometry<G::kSlidingKvHeads * (G::kHeadDim + G::kValueDim) * 2u, G::kPageSlots, true>;
 	using FullKv = LmKvGeometry<G::kFullKvHeads * (G::kHeadDim + G::kValueDim) * 2u, G::kPageSlots, true>;
-	static_assert(G::kHeads % G::kTpDegree == 0u && G::kLocalExperts * G::kTpDegree == G::kExperts, "heads and experts split evenly over the ranks");
-	static_assert(kSlidingFused % G::kTpDegree == 0u && kFullFused % G::kTpDegree == 0u, "the fused q|k|v rows split evenly over the ranks");
-	static_assert(kMaxFused / G::kTpDegree <= G::kHidden, "a rank's fused rows fit one collective row");
-	static_assert(G::kHidden % MM_FP8_GROUP == 0u && kDenseRows % MM_FP8_GROUP == 0u, "FP8 inputs are whole 128-wide scale groups");
-	static_assert(G::kRopeDim % 2u == 0u && G::kRopeDim <= G::kHeadDim, "the rotary part is whole pairs inside a head");
+	static_assert(MimoLayout<G>::kMaxFused / G::kTpDegree <= G::kHidden, "a rank's fused rows fit one collective row");
+	static_assert(G::kHidden % MM_FP8_GROUP == 0u && MimoLayout<G>::kDenseRows % MM_FP8_GROUP == 0u, "FP8 inputs are whole 128-wide scale groups");
 	static_assert(G::kHidden % 32u == 0u && G::kMoeInter % 32u == 0u, "MXFP4 inputs are whole 32-wide scale groups");
 	static_assert(LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G::kLocalExperts,
 		"a 16-row verify chunk keeps its routes within the grouped skinny expert kernel");
@@ -205,6 +188,13 @@ struct MimoModel
 {
 	using S = MimoShape<G>;
 	using State = MimoState<G>;
+	using Layer = MimoLayer;
+
+	struct Frame
+	{
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+	};
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -231,7 +221,7 @@ struct MimoModel
 			RowExact(step), step->multiprocessors, stream);
 	}
 
-	static int32_t Experts(const LmLocalExpertRoutes &routes, const MimoScaled &weight, const uint16_t *activation, uint16_t *output, uint32_t down,
+	static int32_t ExpertProjection(const LmLocalExpertRoutes &routes, const MimoScaled &weight, const uint16_t *activation, uint16_t *output, uint32_t down,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
 		const LmScaleTensor scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_MXFP4_E2M1>(weight.scale, G::kLocalExperts, output_dimension,
@@ -259,8 +249,11 @@ struct MimoModel
 	}
 
 	template<bool FULL>
-	static SparkStatus Attention(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Attention(State *state, const Frame &frame, const MimoLayer &entry)
 	{
+		const MimoLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		using Kv = typename std::conditional<FULL, typename S::FullKv, typename S::SlidingKv>::type;
 		constexpr uint32_t KVH = FULL ? G::kFullKvHeads : G::kSlidingKvHeads;
 		constexpr uint32_t KW = FULL ? S::kFullKey : S::kSlidingKey, VW = FULL ? S::kFullValue : S::kSlidingValue;
@@ -305,8 +298,11 @@ struct MimoModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Dense(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Dense(State *state, const Frame &frame, const MimoLayer &entry)
 	{
+		const MimoLayer *layer = &entry;
+		const SparkStageRunnerStep *step = frame.step;
+		cudaStream_t stream = frame.stream;
 		const uint32_t rows = step->rows;
 		if ( Fp8(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * S::kDenseRows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -318,7 +314,7 @@ struct MimoModel
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Moe(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus ExpertRows(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
 	{
 		const uint32_t routes = rows * G::kTopK;
 		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
@@ -343,25 +339,26 @@ struct MimoModel
 		expert_routes.local_experts = G::kLocalExperts;
 		expert_routes.multiprocessors = step->multiprocessors;
 		if ( Launched() != SPARK_STATUS_OK ||
-			Experts(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
-			Experts(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
+			ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
+			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		MimoSwigluKernel<<<dim3(Blocks(G::kMoeInter), routes), MM_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, G::kMoeInter,
 			state->expert_act, G::kMoeInter);
 		if ( Launched() != SPARK_STATUS_OK ||
-			Experts(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
+			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		MimoMoeCombineKernel<<<dim3(Blocks(G::kHidden), rows), MM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
 			state->route_expert, state->route_weight, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
 	}
 
-	static SparkStatus MoeRows(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Experts(State *state, const Frame &frame, const MimoLayer &entry)
 	{
+		const SparkStageRunnerStep *step = frame.step;
 		const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
 		SparkStatus status = SPARK_STATUS_OK;
 		for ( uint32_t first = 0u; first < step->rows && status == SPARK_STATUS_OK; first += chunk )
-			status = Moe(state, layer, step, first, step->rows - first < chunk ? step->rows - first : chunk, stream);
+			status = ExpertRows(state, &entry, step, first, step->rows - first < chunk ? step->rows - first : chunk, frame.stream);
 		return status;
 	}
 
@@ -371,40 +368,47 @@ struct MimoModel
 		return Launched();
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static const MimoLayer &LayerOf(State *state, uint32_t index)
 	{
-		State *state = (State *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
-		const uint32_t rows = step->rows;
-		uint16_t *hidden = step->hidden_bf16;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots )
+		return state->layers[index];
+	}
+
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
+	{
+		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const MimoLayer *layer = &state->layers[index];
-			Norm(hidden, layer->input_norm, state->normed, rows, stream);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK )
-				status = layer->full != 0u ? Attention<true>(state, layer, step, stream) : Attention<false>(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status == SPARK_STATUS_OK )
-				status = Residual(state, hidden, rows, stream);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			Norm(hidden, layer->post_attn_norm, state->normed, rows, stream);
-			status = Launched();
-			if ( status == SPARK_STATUS_OK )
-				status = index < G::kDenseLayers ? Dense(state, layer, step, stream) : MoeRows(state, layer, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial, state->partial);
-			if ( status == SPARK_STATUS_OK )
-				status = Residual(state, hidden, rows, stream);
-			if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
-				state->services->layer_done(state->services->context, index);
-		}
-		return status;
+		frame->step = step;
+		frame->stream = (cudaStream_t)stream;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus RmsNorm(State *state, const Frame &frame, const uint16_t *weight)
+	{
+		Norm(frame.step->hidden_bf16, weight, state->normed, frame.step->rows, frame.stream);
+		return Launched();
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame)
+	{
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+	}
+
+	static SparkStatus AddResidual(State *state, const Frame &frame)
+	{
+		return Residual(state, frame.step->hidden_bf16, frame.step->rows, frame.stream);
+	}
+
+	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
+	{
+		(void)frame;
+		if ( state->services->layer_done != 0 )
+			state->services->layer_done(state->services->context, index);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return MimoSchedule<G, MimoModel>::Step((State *)model, step, stream);
 	}
 
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base)
