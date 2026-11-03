@@ -536,7 +536,7 @@ struct Probe
     }
     void PairAllReduce()
     {
-        const uint32_t width=6144u,saved=routes;
+        const uint32_t width=8192u,saved=routes;
         routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR_FIRST;
         for (uint32_t n:{4u,8u,16u})
             for (uint32_t rows_count:{2048u,4096u})
