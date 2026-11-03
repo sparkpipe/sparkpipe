@@ -17,10 +17,10 @@
 #define VF_FFN 256u
 #define VF_FILL_ROWS 16u
 
-static_assert(SolarOpen2Geometry::kVerifyRows == VF_MAX_FRAME && Ling3Geometry::kVerifyRows == VF_MAX_FRAME,
+static_assert(SolarOpen2Geometry<1u>::kVerifyRows == VF_MAX_FRAME && Ling3Geometry<1u>::kVerifyRows == VF_MAX_FRAME,
 	"the test frames reach the verify rows Solar Open 2 and Ling 3.0 serve");
 
-struct SmallSolar : SolarOpen2Geometry
+struct SmallSolar : SolarOpen2Geometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1536u;
@@ -33,7 +33,7 @@ struct SmallSolar : SolarOpen2Geometry
 	static const char *Tag(void) { return "solar-open-2"; }
 };
 
-struct SmallLing3 : Ling3Geometry
+struct SmallLing3 : Ling3Geometry<1u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 2304u;

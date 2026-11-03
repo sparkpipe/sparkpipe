@@ -34,3 +34,14 @@ kernel void spark_test_bf16_sweep(constant uint &unused [[buffer(0)]], device at
 			SparkTestNote(counts,firsts,3u,bits);
 	}
 }
+
+kernel void spark_test_weight_decode(constant uint &unused [[buffer(0)]], device float *out [[buffer(1)]], uint code [[thread_position_in_grid]])
+{
+	if ( code < 256u )
+	{
+		out[code] = SparkMathE4m3ToFloat(code);
+		out[256u + code] = SparkMathUe4m3ToFloat(code);
+		out[512u + code] = SparkMathUe8m0ToFloat(code);
+		out[768u + code] = SparkMathE2m1ToFloat(code & 15u);
+	}
+}
