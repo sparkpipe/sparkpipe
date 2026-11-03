@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
+#include "sparkpipe/spark_weightd_lease_sets.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
 #include "sparkpipe/spark_tp_mesh_register.h"
@@ -26,6 +27,8 @@
 #define STAGE_RUNNER_GRAPH_KEYS 2u
 #define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
+#define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
+#define STAGE_RUNNER_LEASE_SETS 2u
 #define STAGE_RUNNER_ROUND_MARKS 512u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
@@ -221,13 +224,6 @@ static SparkStatus StageRunnerCombineU64Max(void *combine_context,
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-enum
-{
-	SPARK_STAGE_LEASE_ACQUIRED = 1u,
-	SPARK_STAGE_LEASE_BEGUN = 2u,
-	SPARK_STAGE_LEASE_RECORDED = 3u
-};
-
 typedef struct SparkStageRunnerState
 {
 	const SparkStageRunnerModelInterface *model_interface;
@@ -239,9 +235,12 @@ typedef struct SparkStageRunnerState
 	int device_collective_created;
 	uint32_t device_collective_deferred;
 	SparkWeightdLazyPack *lazy_pack;
-	uint32_t lease_slots;
-	uint64_t *lease_identifier;
-	uint32_t *lease_phase;
+	SparkWeightdLeaseSets *lease_sets;
+	uint32_t lease_ahead;
+	uint64_t lease_ns;
+	uint64_t lease_wait_ns;
+	uint32_t lease_calls;
+	uint32_t lease_ahead_layers;
 	SparkWeightdExpertKey *lease_keys;
 	void *lease_address;
 	const void *resident_base;
@@ -611,43 +610,16 @@ static void StageRunnerFailService(void *context, SparkStatus status)
 		state->tp_collective_failed = 1u;
 }
 
-static SparkStatus SparkStageRunnerReleaseOneLease(SparkStageRunnerState *state, uint32_t index)
-{
-	SparkStatus status;
-	if ( state->lease_identifier[index] == 0u )
-		return(state->lease_phase[index] == 0u ? SPARK_STATUS_OK : SPARK_STATUS_VALIDATION_FAILED);
-	if ( state->lazy_pack == 0 || state->lazy_pack->map == 0 ||
-		state->lease_phase[index] < SPARK_STAGE_LEASE_ACQUIRED || state->lease_phase[index] > SPARK_STAGE_LEASE_RECORDED )
-		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( state->lease_phase[index] == SPARK_STAGE_LEASE_BEGUN )
-	{
-		status = SparkWeightdMapRecordCompletion(state->lazy_pack->map,state->lease_identifier[index],state->stream);
-		if ( status != SPARK_STATUS_OK )
-			return(status);
-		state->lease_phase[index] = SPARK_STAGE_LEASE_RECORDED;
-	}
-	status = SparkWeightdMapRelease(state->lazy_pack->map,state->lease_identifier[index],SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
-	if ( status == SPARK_STATUS_OK )
-	{
-		state->lease_identifier[index] = 0u;
-		state->lease_phase[index] = 0u;
-	}
-	return(status);
-}
-
 static SparkStatus SparkStageRunnerReleaseLease(SparkStageRunnerState *state)
 {
-	SparkStatus status,result = SPARK_STATUS_OK;
-	uint32_t index;
-	for (index=0u; index<state->lease_slots; index++)
-	{
-		status = SparkStageRunnerReleaseOneLease(state, index);
-		if ( status != SPARK_STATUS_OK && result == SPARK_STATUS_OK )
-			result = status;
-	}
-	if ( result == SPARK_STATUS_OK )
+	SparkStatus status;
+	if ( state->lease_sets == 0 )
+		return SPARK_STATUS_OK;
+	status = SparkWeightdLeaseSetsReleaseAll(state->lease_sets, state->lazy_pack != 0 ? state->lazy_pack->map : 0,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK )
 		state->lease_address = 0;
-	return(result);
+	return status;
 }
 
 static SparkStatus StageRunnerLeaseTensorBase(SparkStageRunnerState *state,
@@ -664,13 +636,26 @@ static SparkStatus StageRunnerLeaseTensorBase(SparkStageRunnerState *state,
 	return SPARK_STATUS_OK;
 }
 
+static uint64_t StageRunnerNowNs(void);
+
+static void StageRunnerLeaseTiming(SparkStageRunnerState *state, uint64_t started, uint64_t waited, uint32_t ahead)
+{
+	if ( state->layer_marks == 0u )
+		return;
+	state->lease_ns += StageRunnerNowNs() - started;
+	state->lease_wait_ns += waited;
+	state->lease_calls++;
+	state->lease_ahead_layers += ahead;
+}
+
 static SparkStatus StageRunnerExpertWeightsService(void *context, uint32_t layer,
 	const uint32_t *group_row_offset_device, uint32_t routed_rows, const void **w1, const void **w2)
 {
 	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
 	SparkWeightdMap *map;
 	SparkWeightdExpertKey *keys;
-	uint32_t count = 0u,first,chunk,index;
+	uint64_t started;
+	uint32_t count = 0u;
 	cudaError_t error;
 	SparkStatus status;
 	if ( state == 0 || state->lazy_pack == 0 || w1 == 0 || w2 == 0 || group_row_offset_device == 0 ||
@@ -685,6 +670,7 @@ static SparkStatus StageRunnerExpertWeightsService(void *context, uint32_t layer
 		*w2 = (const uint8_t *)state->resident_base + state->geometry.expert_w2_offset[layer];
 		return SPARK_STATUS_OK;
 	}
+	started = StageRunnerNowNs();
 	error = cudaStreamSynchronize(state->stream);
 	if ( error != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -704,36 +690,56 @@ static SparkStatus StageRunnerExpertWeightsService(void *context, uint32_t layer
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	SparkStageRunnerStrayAccount(state, keys, count);
-	for (first=0u,index=0u; first<count; first+=chunk,index++)
-	{
-		chunk = count - first < SPARK_WEIGHTD_LEASE_GROUPS_MAX ? count - first : SPARK_WEIGHTD_LEASE_GROUPS_MAX;
-		if ( index >= state->lease_slots )
-		{
-			(void)SparkStageRunnerReleaseLease(state);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		status = SparkWeightdMapAcquire(map, keys + first, chunk,
-			&state->lease_identifier[index], SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
-		if ( state->lease_identifier[index] != 0u )
-			state->lease_phase[index] = SPARK_STAGE_LEASE_ACQUIRED;
-		if ( status == SPARK_STATUS_OK && state->lease_identifier[index] == 0u )
-			status = SPARK_STATUS_VALIDATION_FAILED;
-		if ( status == SPARK_STATUS_OK )
-			status = SparkWeightdMapBeginUse(map, state->lease_identifier[index], &state->lease_address);
-		if ( status == SPARK_STATUS_OK )
-			state->lease_phase[index] = SPARK_STAGE_LEASE_BEGUN;
-		if ( status != SPARK_STATUS_OK )
-		{
-			(void)SparkStageRunnerReleaseLease(state);
-			SPARK_FAIL(status);
-		}
-	}
+	status = SparkWeightdLeaseSetsAcquire(state->lease_sets, map, 0u, keys, count,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, &state->lease_address);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	*w1 = (const uint8_t *)state->lease_address + state->geometry.expert_w1_offset[layer];
 	*w2 = (const uint8_t *)state->lease_address + state->geometry.expert_w2_offset[layer];
+	StageRunnerLeaseTiming(state, started, 0u, 0u);
 	return SPARK_STATUS_OK;
 }
 
-static uint64_t StageRunnerNowNs(void);
+static SparkStatus StageRunnerExpertWeightsAheadService(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2)
+{
+	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
+	SparkWeightdExpertKey *keys;
+	uint64_t started, waited;
+	uint32_t expert, set;
+	SparkStatus status;
+	if ( state == 0 || state->lazy_pack == 0 || state->lazy_pack->map == 0 || w1 == 0 || w2 == 0 ||
+		state->geometry.experts == 0u || layer >= state->geometry.total_layers )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->resident != 0u )
+	{
+		*w1 = (const uint8_t *)state->resident_base + state->geometry.expert_w1_offset[layer];
+		*w2 = (const uint8_t *)state->resident_base + state->geometry.expert_w2_offset[layer];
+		return SPARK_STATUS_OK;
+	}
+	if ( state->lease_ahead == 0u || routed_rows < STAGE_RUNNER_LEASE_AHEAD_ROUTES * state->geometry.experts )
+		return SPARK_STATUS_PENDING;
+	started = StageRunnerNowNs();
+	set = layer % STAGE_RUNNER_LEASE_SETS;
+	status = SparkWeightdLeaseSetsRelease(state->lease_sets, state->lazy_pack->map, set,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	waited = StageRunnerNowNs() - started;
+	keys = state->lease_keys;
+	for ( expert = 0u; expert < state->geometry.experts; ++expert )
+	{
+		keys[expert].layer = layer;
+		keys[expert].expert = expert;
+	}
+	status = SparkWeightdLeaseSetsAcquire(state->lease_sets, state->lazy_pack->map, set, keys, state->geometry.experts,
+		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, &state->lease_address);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	*w1 = (const uint8_t *)state->lease_address + state->geometry.expert_w1_offset[layer];
+	*w2 = (const uint8_t *)state->lease_address + state->geometry.expert_w2_offset[layer];
+	StageRunnerLeaseTiming(state, started, waited, 1u);
+	return SPARK_STATUS_OK;
+}
 
 static void StageRunnerLayerMark(SparkStageRunnerState *state, uint32_t index)
 {
@@ -752,13 +758,17 @@ static void StageRunnerLayerDoneService(void *context, uint32_t layer)
 {
 	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
 	SparkStatus status;
+	uint32_t set;
 	if ( state != 0 && layer < state->geometry.total_layers )
 		StageRunnerLayerMark(state, layer + 1u);
-	if ( state == 0 || state->resident != 0u || state->lease_slots == 0u )
+	if ( state == 0 || state->resident != 0u || state->lease_sets == 0 )
 		return;
-	status = SparkStageRunnerReleaseLease(state);
-	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
-		fprintf(stderr,"sparkpipe_stage_runner: lease release failed status=%d (retained for recovery)\n",(int)status);
+	for ( set = 0u; set < STAGE_RUNNER_LEASE_SETS; ++set )
+	{
+		status = SparkWeightdLeaseSetsRecord(state->lease_sets, state->lazy_pack->map, set);
+		if ( status != SPARK_STATUS_OK )
+			fprintf(stderr,"sparkpipe_stage_runner: lease completion record failed set=%u status=%d (retained for recovery)\n",set,(int)status);
+	}
 }
 
 static SparkStatus StageRunnerSeedIndices(SparkStageRunnerState *state,
@@ -931,20 +941,46 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus StageRunnerLeaseRecord(void *context, SparkWeightdMap *map, uint64_t identifier)
+{
+	return SparkWeightdMapRecordCompletion(map, identifier, ((SparkStageRunnerState *)context)->stream);
+}
+
+static SparkStatus StageRunnerLeaseAheadGate(SparkStageRunnerState *state)
+{
+	const uint32_t routes = STAGE_RUNNER_LEASE_AHEAD_ROUTES * state->geometry.experts;
+	uint64_t widest, pool_chunks;
+	SparkStatus status = SparkWeightdLeaseSetsFit(&state->lazy_pack->manifest, &state->lazy_pack->attached, state->geometry.total_layers,
+		STAGE_RUNNER_LEASE_SETS, &widest, &pool_chunks);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	state->lease_ahead = widest <= pool_chunks ? 1u : 0u;
+	if ( pool_chunks == UINT64_MAX )
+		fprintf(stderr, "STAGE-LEASE-AHEAD on: a wave with at least %u routes leases each layer's experts before its router; two layers hold %llu chunks of a whole-arena pool\n",
+			routes, (unsigned long long)widest);
+	else
+		fprintf(stderr, "STAGE-LEASE-AHEAD %s: a wave with at least %u routes %s; two layers hold %llu chunks, the pool %llu\n",
+			state->lease_ahead != 0u ? "on" : "off", routes,
+			state->lease_ahead != 0u ? "leases each layer's experts before its router" : "leases routed experts after the router because two whole layers do not fit the pool",
+			(unsigned long long)widest, (unsigned long long)pool_chunks);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerCreateLeases(SparkStageRunnerState *state)
 {
+	SparkStatus status;
 	if ( state->geometry.experts == 0u )
 		return SPARK_STATUS_OK;
-	if ( state->geometry.expert_w1_offset == 0 || state->geometry.expert_w2_offset == 0 )
+	if ( state->geometry.expert_w1_offset == 0 || state->geometry.expert_w2_offset == 0 || state->lazy_pack == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state->lease_slots = (state->geometry.experts + 1u + SPARK_WEIGHTD_LEASE_GROUPS_MAX - 1u) / SPARK_WEIGHTD_LEASE_GROUPS_MAX;
-	state->lease_identifier = (uint64_t *)calloc(state->lease_slots, sizeof(uint64_t));
-	state->lease_phase = (uint32_t *)calloc(state->lease_slots, sizeof(uint32_t));
+	status = SparkWeightdLeaseSetsCreate(STAGE_RUNNER_LEASE_SETS, state->geometry.experts + 1u, StageRunnerLeaseRecord, state, &state->lease_sets);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	state->lease_keys = (SparkWeightdExpertKey *)calloc(state->geometry.experts + 1u, sizeof(SparkWeightdExpertKey));
 	state->group_offset_host = (uint32_t *)malloc((state->geometry.experts + 1u) * sizeof(uint32_t));
-	if ( state->lease_identifier == 0 || state->lease_phase == 0 || state->lease_keys == 0 || state->group_offset_host == 0 )
+	if ( state->lease_keys == 0 || state->group_offset_host == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return SPARK_STATUS_OK;
+	return StageRunnerLeaseAheadGate(state);
 }
 
 static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state);
@@ -1035,6 +1071,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->services.published = StageRunnerPublishedService;
 	state->services.fail = StageRunnerFailService;
 	state->services.expert_weights = StageRunnerExpertWeightsService;
+	state->services.expert_weights_ahead = StageRunnerExpertWeightsAheadService;
 	state->services.layer_done = StageRunnerLayerDoneService;
 	state->services.row_state = StageRunnerRowStateService;
 	request.configuration = configuration;
@@ -1396,8 +1433,10 @@ static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank
 		if ( starved == 0u || state->layer_lag_ms[index] < state->layer_lag_ms[starved] )
 			starved = index;
 	}
-	fprintf(stderr, "STAGE-LAYER-MARKS rank=%u waves=%u layers=%u gpu_span_ms=%.1f host_span_ms=%.1f starved=%u:%.1f top",
+	fprintf(stderr, "STAGE-LAYER-MARKS rank=%u waves=%u layers=%u gpu_span_ms=%.1f host_span_ms=%.1f lease_ms=%.1f lease_wait_ms=%.1f leases=%u ahead_layers=%u starved=%u:%.1f top",
 		rank, state->layer_waves, last, state->layer_span_ms[0] / state->layer_waves, state->layer_span_ms[1] / state->layer_waves,
+		(double)state->lease_ns / 1e6 / state->layer_waves, (double)state->lease_wait_ns / 1e6 / state->layer_waves,
+		state->lease_calls / state->layer_waves, state->lease_ahead_layers / state->layer_waves,
 		starved - 1u, state->layer_lag_ms[starved] / state->layer_waves);
 	for ( order = 0u; order < 4u && top[order] != 0u; ++order )
 		fprintf(stderr, " %u:%.1f/%.1f/%.1f", top[order] - 1u, state->layer_gpu_ms[top[order]] / state->layer_waves,
@@ -1504,6 +1543,11 @@ static SparkStatus StageRunnerLaneExpertWeights(void *context, uint32_t layer, c
 	uint32_t routed_rows, const void **w1, const void **w2)
 {
 	return StageRunnerExpertWeightsService(((StageRunnerLane *)context)->state, layer, group_row_offset_device, routed_rows, w1, w2);
+}
+
+static SparkStatus StageRunnerLaneExpertWeightsAhead(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2)
+{
+	return StageRunnerExpertWeightsAheadService(((StageRunnerLane *)context)->state, layer, routed_rows, w1, w2);
 }
 
 static uint32_t StageRunnerLanePublished(void *context)
@@ -1723,6 +1767,7 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 		lane->services.published = StageRunnerLanePublished;
 		lane->services.fail = StageRunnerLaneFail;
 		lane->services.expert_weights = StageRunnerLaneExpertWeights;
+		lane->services.expert_weights_ahead = StageRunnerLaneExpertWeightsAhead;
 		lane->services.layer_done = StageRunnerLaneLayerDone;
 		lane->services.row_state = StageRunnerLaneRowState;
 		if ( cudaStreamCreateWithPriority(&lane->stream, cudaStreamNonBlocking, index != 0u ? least : greatest + 1 < least ? greatest + 1 : greatest) != cudaSuccess ||
@@ -2812,8 +2857,10 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 			return;
 		state->device_collective_created = 0;
 	}
-	if ( state->lease_slots != 0u && SparkStageRunnerReleaseLease(state) != SPARK_STATUS_OK )
+	if ( state->lease_sets != 0 && (SparkStageRunnerReleaseLease(state) != SPARK_STATUS_OK ||
+		SparkWeightdLeaseSetsDestroy(state->lease_sets) != SPARK_STATUS_OK) )
 		return;
+	state->lease_sets = 0;
 	if ( state->lazy_pack != 0 )
 	{
 		if ( SparkWeightdLazyPackDestroy(state->lazy_pack) != SPARK_STATUS_OK )
@@ -2833,8 +2880,6 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	free(state->layer_gpu_ms);
 	free(state->layer_enqueue_ms);
 	free(state->layer_lag_ms);
-	free(state->lease_identifier);
-	free(state->lease_phase);
 	free(state->lease_keys);
 	free(state->group_offset_host);
 	cudaFree(state->distribution_rows);

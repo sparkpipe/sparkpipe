@@ -20,6 +20,7 @@ SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,voi
 SparkStatus SparkWeightdMapBase(const SparkWeightdMap *map,void **address);
 SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream);
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
+SparkStatus SparkWeightdMapReleaseCompleted(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 
 SparkStatus SparkWeightdMapPool(const SparkWeightdMap *map,const void **address);
 SparkStatus SparkWeightdMapResident(SparkWeightdMap *map,uint64_t timeout,uint32_t *resident);

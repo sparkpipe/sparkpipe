@@ -143,6 +143,10 @@ arenas:
   move, so a graph never forces the whole expert set to stay resident.
   Pinning every expert is a separate resident mode, selected explicitly and
   reported with its memory cost.
+- A wide prefill wave does not wait for its router to lease experts: when
+  two layers fit the pool it leases each layer's experts whole, ahead of the
+  router, while the GPU is at most two layers behind; narrower waves lease the
+  experts their router picked.
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:

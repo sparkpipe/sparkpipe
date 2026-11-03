@@ -32,6 +32,7 @@ typedef struct SparkStageRunnerServices
 	void (*fail)(void *context, SparkStatus status);
 	SparkStatus (*expert_weights)(void *context, uint32_t layer, const uint32_t *group_row_offset_device,
 		uint32_t routed_rows, const void **w1, const void **w2);
+	SparkStatus (*expert_weights_ahead)(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2);
 	void (*layer_done)(void *context, uint32_t layer);
 	void (*row_state)(void *context, uint32_t layer, uint32_t phase);
 } SparkStageRunnerServices;

@@ -327,9 +327,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
   stream gets no hidden states for the deferred span, only for the waves
   after it, so a drafter that builds its context from taps drafts without
-  the span. The waves after the span (up to 2,048 tokens) lease the experts
-  of every layer from weightd one layer at a time with no read-ahead, about
-  36 s a wave at 1M context.
+  the span. The waves after the span (up to 2,048 tokens) took about 36 s a
+  wave at 1M context while every routed layer synchronized the stream, read
+  the router back and only then leased its experts. They now lease each
+  layer's experts ahead of the router, two layers deep, whenever two layers
+  fit the pool (`STAGE-LEASE-AHEAD`, docs/WEIGHTD_DESIGN.md), and a resident
+  K3 (every group present in a whole-arena pool, as #1725 makes it) takes no
+  lease and no per-layer synchronization. Neither has a fleet measurement
+  yet: compare the tail-wave time and the K3 1M answer time with main.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
