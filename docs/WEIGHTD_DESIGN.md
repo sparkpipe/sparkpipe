@@ -544,6 +544,44 @@ lane owner's client. Two operations then use PEER:
 - **Direct rounds.** Single-row direct rounds (below 49,152 values or below
   degree 4) keep their slot path.
 
+**Pair-first routes.** A route with the `pair_first` bit carries two payloads
+in one publication (`SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair)`). The
+group bytes go to every peer of the sender's parity, into the sender's own
+slot half. The pair bytes go to the partner (`rank ^ 1`) over the pair link,
+one piece per segment of the partner's parity, each into the slot half of the
+sender of the other parity (`SparkWeightdMeshPairFirstArea`). Every other peer
+gets only the tail. Two collectives use it:
+
+- The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
+  sends each partner the segments of the partner's parity over the pair link,
+  sums each pair there in fp32, and sends the fp32 pair sums of a segment
+  (eight at 16 ranks) over the switch, where they are summed in fp32 and
+  rounded once to BF16. Only the group publication carries fp32, so the
+  pipeline width is a quarter of a half payload in elements
+  (`SparkTpMeshPairFirstScatterWidth`). The result has the accuracy of the
+  plain reduce-scatter (fp32 accumulation, one rounding), but the order of the
+  additions is pairwise, so it can differ from the rank-order sum in the last
+  BF16 bit of a few elements.
+- The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
+  each chunk over the switch to the sender's parity group; two rounds later
+  every rank forwards the chunks it received to its partner over the pair
+  link. It moves the same bytes as the plain all-gather and is exact.
+
+Both are pipelined: a rank publishes round r + 2 once round r has arrived, so
+two publications are in flight. At the edges of every pipelined collective the
+lag is zero: round 1 is published only after round 0 has arrived, and the
+last round only after the round before it has arrived
+(`SparkTpMeshPipelineEarly`, `SparkTpMeshPipelineLate`). A whole-slot round
+(direct sums, all-to-all, staged peer rounds) fills both halves of its slot, so
+a collective that publishes two rounds before its first arrival can overwrite,
+at a slower peer, a whole-slot round that peer has not read yet. Until
+2026-11-02 the pair-first rounds published rounds 0 and 1 back to back and
+their last round one arrival early; `tp_mesh_hardware_probe
+--pair-first-boundary` reproduces the overwrite on one GPU by delaying one
+tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
+every pipelined collective against whole-slot neighbours with an adversarially
+slow rank at 4, 8 and 16 ranks.
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
@@ -881,8 +919,7 @@ variable is not set, and a set but empty or zero value is refused.
 On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above
 `device_bytes_max` less the KV reserve with `INVALID_ARGUMENT`; a pool that
 fits there but not beside lent KV is a capacity question, answered by reclaim
-(see [KV pools and the shared budget](#kv-pools-and-the-shared-budget)). A
-whole-arena pool counts as its one allocation in the KV limit. A pool larger becomes one allocation for the
+(see [KV pools and the shared budget](#kv-pools-and-the-shared-budget)). A pool larger than the pack becomes one allocation for the
 whole arena whose chunks are never evicted (`SparkWeightdPremapPool`, logged
 as "pool single-alloc"). A pool no larger than the pack becomes a slot pool
 (`SparkWeightdCreateSlots`, logged as "pool slots"): the attach allocates
@@ -931,6 +968,48 @@ declare the same pool or gets `INVALID_ARGUMENT`.
   one monotonic deadline; expiry returns `BUSY` and keeps the identifier for
   explicit cleanup. Calls are serialized on the creating CUDA context, and
   callers join every using stream before recording completion.
+
+### The common runner's expert leases
+
+`inference/runner/stage_runner.cu` gives a stage three ways to reach a routed
+layer's experts:
+
+- Resident: once weightd reports every group present in a fixed pool
+  (`STAGE-RESIDENT`), both services return pointers into the pool and take no
+  lease and no stream synchronization.
+- Routed (`expert_weights`): the model's router has run; the service
+  synchronizes the stream, releases every held lease, reads the routed
+  groups back and leases those (plus expert 0 when the layer's tensor base
+  needs it) into lease set 0.
+- Ahead of the router (`expert_weights_ahead`): a wave with at least
+  `STAGE_RUNNER_LEASE_AHEAD_ROUTES` (4) routes per expert, where nearly every
+  expert is routed anyway (about e^-4 of them are not), leases all of layer
+  L's experts into set `L % 2` without waiting for the router. It first
+  releases what that set held, layer L-2, with
+  `SparkWeightdLeaseSetsRelease`. That waits for the event `layer_done`
+  recorded after layer L-2's last kernel, which keeps the host at most two
+  layers ahead of the GPU. A narrower wave gets `PENDING` and the model
+  leases routed experts after the router instead. Every `layer_done` records
+  completion for the begun leases of both sets; no release happens there.
+  A wave leased ahead never reads its routes back, so the stray-expert counts
+  (`stray_working_set_path`) cover only waves leased after the router.
+
+Holding two layers at once needs the pool to fit them. At lease creation the
+runner asks `SparkWeightdLeaseSetsFit` for the largest number of chunks two
+consecutive layers touch and logs `STAGE-LEASE-AHEAD on|off: … two layers
+hold <chunks> chunks, the pool <chunks>` (or `of a whole-arena pool`). When
+they do not fit, every wave leases routed experts after the router. With
+layer marks on, `STAGE-LAYER-MARKS` adds `lease_ms`, `lease_wait_ms` (time
+spent waiting for the reused set's events), `leases` and `ahead_layers` per
+wave.
+
+Kimi K3 calls `expert_weights_ahead` first in every routed layer and falls
+back to the routed service only on `PENDING`; the stream synchronization it
+used to make before every lease is now made only for the routed service. Its
+pair path takes one lease per layer on the first pair stream; the layer's
+last round makes the main stream wait for both pair streams, so the event
+`layer_done` records on the main stream follows every kernel that read the
+layer's experts.
 
 ### Pack-scoped reclaim
 
@@ -1286,6 +1365,10 @@ The wire format, validation and limits are under "Manifest format
   between spans, so it can exceed `spine_bytes`. For a private spine,
   `SparkWeightdLazyPackCreate` allocates it plus 255 bytes and rounds the
   base up to 256, so a slice keeps its pack alignment in device memory.
+- `SparkWeightdManifestLayerChunks(manifest, chunk_bytes, first_layer,
+  layer_count, &chunks)` counts the distinct `chunk_bytes`-aligned chunks that
+  the expert ranges of layers `first_layer .. first_layer + layer_count - 1`
+  touch; layers with no ranges count 0.
 
 ### `spark_weightd_map.h`
 
@@ -1362,10 +1445,54 @@ slot's event on `stream`. No work may use the lease after this call.
   error leaves the slot retiring, which blocks new acquires; call
   `SparkWeightdMapRelease` again.
 
+`SparkWeightdMapReleaseCompleted` releases a recorded lease once its event
+has completed. It is the release for a lease whose GPU work may still run:
+
+- It accepts only a recorded lease (`INVALID_ARGUMENT` for an acquired or
+  begun one; `NOT_FOUND` for an unknown identifier) and a non-zero
+  `timeout`.
+- It calls `SparkWeightdMapRelease` with the time left, and while that
+  returns `BUSY` for the not-ready event it sleeps 20 µs (`nanosleep`, no
+  spinning) and tries again, until `now + timeout` passes. On expiry it logs
+  `MAP-RELEASE-WAIT-EXPIRED id=… waited_ns=…` and returns `BUSY`, and the
+  lease stays held with its mappings and daemon pins. An event error returns
+  `IO_ERROR`; any other status from the release is returned as it is.
+
 `SparkWeightdMapDestroy` returns `BUSY` while any slot is not empty, and the
 map stays usable. Otherwise it marks the map failed and frees everything. If
 a CUDA call fails it returns `IO_ERROR`, and from then on the map accepts
 only another `SparkWeightdMapDestroy`.
+
+### `spark_weightd_lease_sets.h`
+
+A fixed number of lease sets, each able to hold the keys of one layer
+(`keys_max`, split into leases of at most 512 keys). The common runner uses
+two: a wave whose experts are leased a whole layer at a time ahead of the
+router keeps layer L in set `L % 2` while layer L-1's set may still be in use
+on the GPU. The module names no device API: `SparkWeightdLeaseSetsCreate`
+takes a `record` callback that records a begun lease's completion where the
+caller's kernels run (the runner records on its stream with
+`SparkWeightdMapRecordCompletion`).
+
+- `SparkWeightdLeaseSetsAcquire` refuses a set that still holds leases
+  (`INVALID_ARGUMENT`), acquires and begins every lease and returns the map
+  base. If any step fails it releases what it took (recording begun leases
+  first) and returns the status.
+- `SparkWeightdLeaseSetsRecord` records completion for every begun lease of
+  the set through `record`. The runner calls it from `layer_done`, after the
+  last kernel that reads the layer's experts is ordered on its stream. A
+  record failure is returned and the lease stays begun.
+- `SparkWeightdLeaseSetsRelease` releases a set under one deadline: a begun
+  lease is recorded first, a recorded lease goes through
+  `SparkWeightdMapReleaseCompleted`, an acquired one through
+  `SparkWeightdMapRelease`. A lease whose wait expires stays in the set and
+  the call returns `BUSY`. `SparkWeightdLeaseSetsReleaseAll` does every set.
+- `SparkWeightdLeaseSetsDestroy` returns `BUSY` while a set holds a lease.
+- `SparkWeightdLeaseSetsFit` returns, for `set_count` consecutive layers,
+  the largest number of distinct chunks their expert ranges touch
+  (`SparkWeightdManifestLayerChunks`) and the pool's chunks (`UINT64_MAX`
+  for a whole-arena pool). Holding that many layers at once fits only when
+  the first is at most the second.
 
 ### `spark_weightd_worker.h`
 

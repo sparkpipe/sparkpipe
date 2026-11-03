@@ -35,8 +35,8 @@
  "models": [
   {
    "id": "glm-5.3",
-   "kv_label": "glm53_full_tp16_stage",
-   "node_memory_bytes": 61203283968,
+   "kv_label": "glm53_full_bf16_tp16_stage",
+   "node_memory_bytes": 107374182400,
    "node_reclaim": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh ready {run_id}",
@@ -47,22 +47,9 @@
    "node_warm": "cd $HOME/stage-lanes/glm53_full/lane6/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.glm52sp) $(cut -c1-64 packs/pack.sha256) 935644c05e76fc198714f4cca449fd8b970ff6d7 16 --family glm52 --shared 78 256 1800 > warm.log 2>&1"
   },
   {
-   "id": "glm-5.3-bf16",
-   "kv_label": "glm53_full_bf16_tp16_stage",
-   "node_memory_bytes": 107374182400,
-   "node_reclaim": "$HOME/stage-lanes/glm53_full_bf16/lane6/root/lane.sh reclaim",
-   "node_start": "$HOME/stage-lanes/glm53_full_bf16/lane6/root/lane.sh start {run_id}",
-   "node_ready": "$HOME/stage-lanes/glm53_full_bf16/lane6/root/lane.sh ready {run_id}",
-   "node_stop": "$HOME/stage-lanes/glm53_full_bf16/lane6/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-glm53-full-bf16-api 2>/dev/null; systemctl --user is-active -q kv-glm53-full-bf16-api || systemd-run --user --unit=kv-glm53-full-bf16-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_full_bf16-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_full_bf16-kv-api/runtime --port 8480 >> /srv/workspace/sparkpipe/logs/glm53_full_bf16-kv-api.log 2>&1' >/dev/null",
-   "api_stop": "systemctl --user stop kv-glm53-full-bf16-api 2>/dev/null; systemctl --user reset-failed kv-glm53-full-bf16-api 2>/dev/null; true",
-   "health": "http://127.0.0.1:8480/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_full_bf16/lane6/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.glm52sp) $(cut -c1-64 packs/pack.sha256) 304b8051cfb2b260b61ce0cbe330e02a98e73639 16 --family glm52 --shared 78 256 1800 > warm.log 2>&1"
-  },
-  {
    "id": "glm-5.3-flash",
-   "kv_label": "glm53_flash_stage",
-   "node_memory_bytes": 26843545600,
+   "kv_label": "glm53_flash_bf16_stage",
+   "node_memory_bytes": 46170898432,
    "node_reclaim": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/glm53_flash/lane0/root/lane.sh ready {run_id}",
@@ -71,19 +58,6 @@
    "api_stop": "systemctl --user stop kv-glm53-flash-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8476/health",
    "node_warm": "cd $HOME/stage-lanes/glm53_flash/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.sp) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1"
-  },
-  {
-   "id": "glm-5.3-flash-bf16",
-   "kv_label": "glm53_flash_bf16_stage",
-   "node_memory_bytes": 46170898432,
-   "node_reclaim": "$HOME/stage-lanes/glm53_flash_bf16/lane0/root/lane.sh reclaim",
-   "node_start": "$HOME/stage-lanes/glm53_flash_bf16/lane0/root/lane.sh start {run_id}",
-   "node_ready": "$HOME/stage-lanes/glm53_flash_bf16/lane0/root/lane.sh ready {run_id}",
-   "node_stop": "$HOME/stage-lanes/glm53_flash_bf16/lane0/root/lane.sh stop",
-   "api_start": "systemctl --user reset-failed kv-glm53-flash-bf16-api 2>/dev/null; systemctl --user is-active -q kv-glm53-flash-bf16-api || systemd-run --user --unit=kv-glm53-flash-bf16-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/glm53_flash_bf16-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/glm53_flash_bf16-kv-api/runtime --port 8481 >> /srv/workspace/sparkpipe/logs/glm53_flash_bf16-kv-api.log 2>&1' >/dev/null",
-   "api_stop": "systemctl --user stop kv-glm53-flash-bf16-api 2>/dev/null; systemctl --user reset-failed kv-glm53-flash-bf16-api 2>/dev/null; true",
-   "health": "http://127.0.0.1:8481/health",
-   "node_warm": "cd $HOME/stage-lanes/glm53_flash_bf16/lane0/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.sp) $(cut -c1-64 packs/pack.sha256) 84c6a6aa9497188e15a635ba793b0f95a79b1033 16 --shared > warm.log 2>&1"
   },
   {
    "id": "kimi-k3",

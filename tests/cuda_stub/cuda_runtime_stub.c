@@ -460,11 +460,23 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
 }
 
 static uint32_t cuda_stub_event_pending;
+static uint32_t cuda_stub_event_pending_queries;
+static uint32_t cuda_stub_event_queries;
 static uint32_t cuda_stub_event_record_failure;
 
 void spark_stub_cuda_event_pending(uint32_t pending)
 {
     cuda_stub_event_pending = pending;
+}
+
+void spark_stub_cuda_event_pending_queries(uint32_t queries)
+{
+    cuda_stub_event_pending_queries = queries;
+}
+
+uint32_t spark_stub_cuda_event_queries(void)
+{
+    return cuda_stub_event_queries;
 }
 
 void spark_stub_cuda_event_record_failure(uint32_t failure)
@@ -482,8 +494,14 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
 
 cudaError_t cudaEventQuery(cudaEvent_t event)
 {
+    cuda_stub_event_queries++;
     if (event != 0 && cuda_stub_event_pending != 0u)
         return cudaErrorNotReady;
+    if (event != 0 && cuda_stub_event_pending_queries != 0u)
+    {
+        cuda_stub_event_pending_queries--;
+        return cudaErrorNotReady;
+    }
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
