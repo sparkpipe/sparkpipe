@@ -304,7 +304,17 @@ KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
 **Tiers.** KV device memory belongs to weightd, which keeps each engine's
-pool across an engine restart. Pages leaving the device park in a per-engine
+pool across an engine restart. KV and weights share weightd's per-node
+ceiling: KV always has its reserve and may borrow what the attached weights
+leave of the ceiling, reclaiming cold weights for it, so a model with small
+weights can hold a longer sequence than the reserve alone; new weights take
+back only pools no engine owns
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)).
+An engine's device KV pool attaches with one full-length sequence and grows
+on demand into what the resident model leaves of the node, stopping where
+`MemAvailable` would cross a margin above earlyoom's line; `/health`
+reports `kv_capacity_tokens` (what the smallest rank's pool holds now) and
+`kv_capacity_max_tokens` (the most it may grow to). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
@@ -419,6 +429,22 @@ speculative run emits the same tokens as a B1 run without speculation.
 Every built speculation path can be selected individually, and none can be
 compiled out.
 
+**Verify frames.** The stage runner hands every verify frame to the model as
+a step with `commit == 0`. Such a step runs each row through the arithmetic a
+one-row decode uses: one skinny launch per projection for the whole frame, in
+16-row blocks that read each weight once per frame and keep the decode's
+per-row sums; the decode attention path; and one grouped expert launch per
+frame that reads each touched expert's weights once per batch of up to 16 of
+its routes and matches the decode's expert kernel bit for bit. Recurrent state is left for `keep_rows` to fold
+over the kept rows; paged and sliding-window KV is addressed by position, so
+rows past the accepted ones are never read and the next decode overwrites
+them.
+
+**Rejected rows.** A verify frame never publishes cache blocks: the
+validator and the stage adapter refuse a verify submission whose lanes
+publish, because rows past the accepted ones are not part of the sequence
+and the stage captures recurrent state before `keep_rows` rolls it back.
+
 ## Determinism and evidence
 
 **Determinism.** Greedy decoding is bitwise reproducible from run to run:
@@ -434,6 +460,12 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+**Routing.** Every routing top-k kernel ranks a NaN or infinite router
+score below every finite one and never returns an out-of-range or repeated
+expert. A row with fewer finite scores than the experts it routes to raises
+the runner's route-fault word, and the runner fails that step with an
+error instead of serving its output.
 
 Greedy, sampled and logprob tokens come only from ids the tokenizer can
 decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
@@ -547,35 +579,36 @@ while the swap controller (`tools/serving/model_swap.py`) loads it, and the
 model's cached prefixes come back from the KV snapshot store.
 
 | Served name | Model | Family | Context | Speculation |
-| --- | --- | --- | ---: | --- |
+| --- | --- | --- | ---: | :---: |
 | `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | yes |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
 | `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | yes |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | no |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | no |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | no |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | no |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | no |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | no |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | no |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | no |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | yes |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | yes |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | yes |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | yes |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | yes |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | yes |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | yes |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | yes |
 | `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K | yes |
 | `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
 | `solar-open-2` | Solar Open 2 | `solar_open2` | 256K | yes |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | no |
-| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | no |
-| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | no |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | no |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`), from the lane records in
   `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
   to them.
-- **Speculation** says whether the model's serving adapter verifies drafted
-  tokens (`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`), so that
-  lookup drafts and drafter models reach it; the other models decode one token
-  per step.
+- **Speculation** is yes where the serving adapter verifies drafts
+  (`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`): drafts copied
+  from the request's own context, up to 255 per frame, and on Kimi K3 also the
+  DFlash2 drafter on the hub. Every row of a verify frame is bit-identical to
+  decoding that row alone.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.

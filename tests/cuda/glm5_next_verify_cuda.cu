@@ -338,6 +338,8 @@ static void FrameOpen(Frame *frame, const Probe *probe)
 	frame->step.sequences = 1u;
 	frame->step.context = PROBE_CONTEXT;
 	frame->step.multiprocessors = probe->sms;
+	CUDA(cudaMalloc((void **)&frame->step.route_fault, sizeof(uint32_t)));
+	CUDA(cudaMemset(frame->step.route_fault, 0, sizeof(uint32_t)));
 	frame->step.every_row_hidden = 1u;
 }
 

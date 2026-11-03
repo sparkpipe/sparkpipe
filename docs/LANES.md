@@ -16,7 +16,7 @@ whether the fleet still matches.
 | `sequences`, `rows`, `shared_rows` | resident sequences, rows per wave, rows of the shared prefill half |
 | `context_tokens` | positions one sequence may hold; `kv_pages` is this over the model's KV block (64 tokens, DSV4.1 256) |
 | `context_reason` | required while `context_tokens` is below the contract maximum: what holds it there |
-| `kv_physical_pages` | pages the scheduler may reserve; weightd must be able to back them |
+| `kv_physical_pages_cap` | optional: keeps the device KV pool below this many pages, for a lane that must leave room on purpose (co-resident sets). Without it the device pool may grow to what the node budget leaves the model: `(weightd device_bytes_max - node_memory_bytes) / kv_page_bytes`, at most 4,194,302 pages (the pool metadata bound). The rendered `kv_physical_page_capacity` is that number and the rendered logical capacity is the larger of it and `kv_logical_pages` |
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
 | `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
@@ -36,9 +36,13 @@ weightd runs with.
 - every swap-controller model has exactly one record;
 - `context_tokens` is the contract maximum, or lower with a
   `context_reason`, never higher;
-- one full-length sequence fits the weightd KV reserve, and so do the
-  physical pages: the scheduler is never promised pages weightd cannot back.
-  A model whose native maximum does not fit stays lower with its reason;
+- one full-length sequence fits the weightd KV reserve. A model whose
+  native maximum does not fit stays lower with its reason;
+- no record carries `kv_physical_pages`; a `kv_physical_pages_cap` holds
+  at least one full-length sequence, and the rendered physical capacity is
+  the node budget's (or the cap). The pool attaches with one sequence and
+  grows on demand, so the scheduler's physical capacity is the most the
+  model can hold alone on the node, not a reservation;
 - the record renders: physical pages hold one sequence, logical pages hold
   every resident sequence at full length, the backing holds the parked
   pages, recurrent checkpoint memory holds two per sequence plus two;

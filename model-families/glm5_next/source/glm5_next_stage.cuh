@@ -223,6 +223,7 @@ struct Glm5NextLayerBuffers
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
+	uint32_t *route_fault;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix_w1;
 	uint32_t *group_tile_prefix_w2;
@@ -284,7 +285,7 @@ static int32_t Glm5NextSkinny(const Glm5NextLayerBuffers *b, const void *weight,
 	args.rows = rows;
 	args.input_dimension = input_dimension;
 	args.output_dimension = output_dimension;
-	return LmSkinnyLaunchRowChunks<LmBf16Format>(&args, stream);
+	return LmSkinnyLaunch<LmBf16Format>(&args, stream, 1u);
 }
 
 static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation,
@@ -292,7 +293,7 @@ static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinny
 {
 	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
 		return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
-	return LmSkinnyDenseMultiRowChunks<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
+	return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream, 1u);
 }
 
 static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows,
@@ -1136,7 +1137,7 @@ static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( LmTopkRouteLaunch<G5N_THREADS, G5N_TOP_K, true, LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, G5N_EXPERTS, b->route_expert,
-		b->route_weight, w->router_correction, 0, G5N_ROUTED_SCALE, stream) != cudaSuccess )
+		b->route_weight, w->router_correction, 0, G5N_ROUTED_SCALE, b->route_fault, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	status = LmRouteBuild<G5N_THREADS, G5N_EXPERTS>(b->route_expert, rows, packed_rows, G5N_TOP_K, b->group_row_offset, b->route_packed_row,
 		b->route_source_token, b->expert_w1_rows, G5N_HIDDEN, G5N_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
