@@ -285,7 +285,7 @@ static int32_t Glm5NextSkinny(const Glm5NextLayerBuffers *b, const void *weight,
 	args.rows = rows;
 	args.input_dimension = input_dimension;
 	args.output_dimension = output_dimension;
-	return LmSkinnyLaunchRowChunks<LmBf16Format>(&args, stream);
+	return LmSkinnyLaunch<LmBf16Format>(&args, stream, 1u);
 }
 
 static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation,
@@ -293,7 +293,7 @@ static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinny
 {
 	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
 		return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
-	return LmSkinnyDenseMultiRowChunks<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
+	return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream, 1u);
 }
 
 static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows,
