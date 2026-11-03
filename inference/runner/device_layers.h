@@ -106,6 +106,7 @@ typedef struct SparkDeviceLatentAttentionShape
 	uint32_t head_gate;
 	uint32_t query_lora;
 	uint32_t norm_bf16;
+	uint32_t query_norm_once;
 	uint32_t sinks;
 	const char *tensor_prefix;
 	uint32_t query_concat;
@@ -184,6 +185,7 @@ typedef struct SparkDeviceAttentionShape
 	float yarn_beta_fast;
 	float yarn_beta_slow;
 	uint32_t head_gate;
+	uint32_t norm_round_first;
 	const char *tensor_prefix;
 } SparkDeviceAttentionShape;
 

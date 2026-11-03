@@ -82,6 +82,7 @@ struct LingDevice
 		shape->pack_alignment = LG_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
 		shape->projection = P::kProjection;
+		shape->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		memset(delta, 0, sizeof(*delta));
 		delta->heads = L::kKdaRankHeads;
 		delta->dimension = G::kKdaDim;

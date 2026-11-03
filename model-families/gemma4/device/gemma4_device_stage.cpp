@@ -86,6 +86,7 @@ struct GemmaDevice
 		shape->pack_alignment = GEMMA_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
 		shape->post_epsilon = G::kPostEpsilon;
+		shape->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		shape->tied_head = G::kUntiedHead ? 0u : 1u;
 		shape->logit_softcap = G::kLogitSoftcap;
 		shape->logit_scale = G::kLogitScale;
@@ -130,6 +131,7 @@ struct GemmaDevice
 		full->yarn_beta_fast = G::kYarnBetaFast;
 		full->yarn_beta_slow = G::kYarnBetaSlow;
 		sliding->head_gate = full->head_gate = G::kHeadGate ? 1u : 0u;
+		sliding->norm_round_first = full->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		memset(experts, 0, sizeof(*experts));
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;

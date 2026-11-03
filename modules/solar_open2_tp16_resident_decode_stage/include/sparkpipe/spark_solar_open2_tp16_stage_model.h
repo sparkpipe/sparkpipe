@@ -40,6 +40,7 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr uint32_t kPhase = 0u;
 	static constexpr uint32_t kDenseLayers = 0u;
 	static constexpr float kNormEpsilon = 1e-5f;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr uint32_t kKdaHeads = 64u;
 	static constexpr uint32_t kKdaDim = 128u;
 	static constexpr uint32_t kKdaRank = 128u;

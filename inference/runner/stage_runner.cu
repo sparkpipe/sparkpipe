@@ -1333,9 +1333,15 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 		cudaMemcpyAsync(state->output_token, state->output_token_host, (uint64_t)dispatch->row_count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) != cudaSuccess )
 		return SPARK_STATUS_IO_ERROR;
 	LmStageRowsGatherKernel<<<count, LM_STAGE_HEAD_THREADS, 0, stream>>>(state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
-	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
+	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u && state->geometry.head_norm_round_first != 0u )
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float,true>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+	else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
+	else if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_round_first != 0u )
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t,true>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
+			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
 	else if ( state->geometry.head_prenormed == 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
@@ -1548,6 +1554,7 @@ static SparkStatus StageRunnerHeadRows(SparkStageRunnerState *state, const uint1
 	head.hidden = state->geometry.hidden;
 	head.epsilon = state->geometry.rms_epsilon;
 	head.norm_f32 = state->geometry.head_norm_f32;
+	head.norm_round_first = state->geometry.head_norm_round_first;
 	head.prenormed = state->geometry.head_prenormed;
 	head.vocab_slice_rows = state->head_output_rows;
 	head.rank_offset = state->tp_rank * state->vocab_slice_rows;

@@ -84,6 +84,11 @@ SPARK_MATH_FN float SparkMathResidualSum(float hidden, float branch)
 	return(SparkMathRoundBf16(hidden + branch));
 }
 
+SPARK_MATH_FN float SparkMathNormGainRounded(float normed, float gain)
+{
+	return(SparkMathRoundBf16(normed) * gain);
+}
+
 SPARK_MATH_FN float SparkMathExp2Fast(float value)
 {
 #if defined(__CUDA_ARCH__)

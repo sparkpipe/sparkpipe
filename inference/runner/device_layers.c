@@ -354,6 +354,7 @@ static void AttentionRopeParams(const SparkDeviceAttentionShape *shape, SparkHea
 	params->rope_dimension = rotate != 0u ? shape->rope_dimension : 0u;
 	params->epsilon = shape->epsilon;
 	params->has_weight = weighted;
+	params->round_first = shape->norm_round_first;
 	params->rope_rounded_terms = shape->rope_rounded_terms;
 	params->multiply = multiply;
 	params->scale = shape->rope_scale != 0.0f ? shape->rope_scale : 1.0f;
@@ -662,6 +663,7 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 		norm.dimension = shape->query_lora;
 		norm.input_stride = norm.output_stride = query_input;
 		norm.epsilon = shape->epsilon;
+		norm.round_first = shape->query_norm_once != 0u ? 0u : stage->shape->norm_round_first;
 		if ( status == SPARK_STATUS_OK )
 			status = shape->norm_bf16 != 0u ? SparkOpsRmsNormBf16(stage->ops,queue,raw,weights->query_norm,scratch->query_lora,&norm) :
 				SparkOpsRmsNormResidual(stage->ops,queue,raw,0,weights->query_norm,scratch->query_lora,&norm);
@@ -690,6 +692,7 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	norm.dimension = shape->latent;
 	norm.input_stride = norm.output_stride = slot;
 	norm.epsilon = shape->epsilon;
+	norm.round_first = stage->shape->norm_round_first;
 	if ( status == SPARK_STATUS_OK )
 		status = shape->norm_bf16 != 0u ? SparkOpsRmsNormBf16(stage->ops,queue,scratch->kv,weights->kv_norm,scratch->kv,&norm) :
 			SparkOpsRmsNormResidual(stage->ops,queue,scratch->kv,0,weights->kv_norm,scratch->kv,&norm);
@@ -1304,6 +1307,7 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	norm.dimension = hidden;
 	norm.input_stride = norm.output_stride = hidden;
 	norm.epsilon = shape->epsilon;
+	norm.round_first = stage->shape->norm_round_first;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormResidual(stage->ops,queue,tensors->hidden,0,weights->input_norm,scratch->normed,&norm);
 	if ( status == SPARK_STATUS_OK )
@@ -1391,6 +1395,7 @@ SparkStatus SparkDeviceResidualNorm(SparkDeviceStage *stage, SparkDeviceQueue *q
 	params.has_addend = addend != 0 ? 1u : 0u;
 	params.write_sum = addend != 0 ? 1u : 0u;
 	params.epsilon = stage->shape->epsilon;
+	params.round_first = stage->shape->norm_round_first;
 	return(SparkOpsRmsNormResidual(stage->ops,queue,tensors->hidden,addend,weight,normed,&params));
 }
 

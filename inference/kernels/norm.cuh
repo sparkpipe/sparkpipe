@@ -52,7 +52,7 @@ static __device__ float LmBlockMax(float value, float *shared)
 	return(value);
 }
 
-template<uint32_t THREADS, class Weight>
+template<uint32_t THREADS, class Weight, bool ROUND_FIRST = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
@@ -79,8 +79,8 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	{
 		if ( residual_out_bf16 != 0 )
 			residual_out_bf16[base + index] = LmFloatToBf16(row[index]);
-		output_bf16[base + index] =
-			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
+		output_bf16[base + index] = LmFloatToBf16(ROUND_FIRST ? SparkMathNormGainRounded(row[index] * scale, LmScalarToFloat(weight[index])) :
+			row[index] * scale * LmScalarToFloat(weight[index]));
 	}
 }
 
@@ -217,7 +217,7 @@ void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_
 #define LM_GATE_SOFTPLUS 1u
 #define LM_GATE_SILU 2u
 
-template<uint32_t THREADS, class Weight = uint16_t>
+template<uint32_t THREADS, class Weight = uint16_t, bool ROUND_FIRST = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon, float head_multiply)
 {
@@ -239,7 +239,7 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
 		if ( weight_bf16 != 0 )
-			value *= LmScalarToFloat(weight_bf16[index]);
+			value = ROUND_FIRST ? SparkMathNormGainRounded(value, LmScalarToFloat(weight_bf16[index])) : value * LmScalarToFloat(weight_bf16[index]);
 		rounded = LmBf16ToFloat(LmFloatToBf16(value));
 		output_bf16[base + index] = LmFloatToBf16(rounded * head_multiply);
 	}

@@ -350,7 +350,7 @@ struct LingModel
 			state->mla_q, step->positions, S::kMlaRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		LingRopeQueryPackKernel<<<dim3(rows, S::kMlaRankHeads), LG_THREADS, 0, stream>>>(state->mla_latent_query, state->mla_q, state->mla_query,
 			S::kMlaRankHeads, G::kLatent, G::kNope, G::kRope);
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), rows, LG_THREADS, (G::kLatent + 8u) * sizeof(float), stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float,G::kNormRoundFirst>), rows, LG_THREADS, (G::kLatent + 8u) * sizeof(float), stream,
 			state->mla_kv, (const uint16_t *)0, layer->mla_kv_norm, (uint16_t *)0, state->mla_kv, G::kLatent, S::kSlot, G::kNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), LG_THREADS, 0, stream,
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
@@ -525,7 +525,7 @@ struct LingModel
 
 	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float,G::kNormRoundFirst>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
 			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -533,7 +533,7 @@ struct LingModel
 	static SparkStatus AddRmsNorm(State *state, const Frame &frame, const float *weight)
 	{
 		uint16_t *hidden = frame.step->hidden_bf16;
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float,G::kNormRoundFirst>), frame.step->rows, LG_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
 			hidden, state->partial, weight, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -772,6 +772,7 @@ struct LingModel
 		geometry->kv_shard.grain = 1u;
 		geometry->recurrent_bytes = RecurrentBytes(state);
 		geometry->head_norm_f32 = 1u;
+		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
 			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
 			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )

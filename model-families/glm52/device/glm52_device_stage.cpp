@@ -102,6 +102,7 @@ struct Glm52Device
 		shape->epsilon = kEpsilon;
 		shape->projection = P::kProjection;
 		shape->prenormed_head = 1u;
+		shape->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		memset(attention, 0, sizeof(*attention));
 		attention->heads = G::kHeads;
 		attention->nope = kNope;
@@ -370,6 +371,7 @@ struct Glm52Device
 		norm.input_stride = norm.output_stride = kHidden;
 		norm.has_addend = 1u;
 		norm.epsilon = kEpsilon;
+		norm.round_first = state->stage.shape->norm_round_first;
 		return SparkOpsRmsNormResidual(state->stage.ops, frame.queue, frame.t.hidden, &state->partial, state->head_norm, frame.t.hidden, &norm);
 	}
 
@@ -438,6 +440,7 @@ struct Glm53FullDevice
 		static constexpr uint32_t kExpertInter = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
 		static constexpr uint32_t kDenseInter = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION;
 		static constexpr float kRmsEpsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
+		static constexpr bool kNormRoundFirst = true;
 		static constexpr float kRopeTheta = SPARK_GLM52_MODEL_ROPE_THETA;
 		static constexpr float kQkScale = SPARK_GLM52_MODEL_QK_SCALE;
 		static constexpr float kRoutedScale = SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;

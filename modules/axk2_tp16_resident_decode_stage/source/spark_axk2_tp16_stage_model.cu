@@ -36,6 +36,7 @@ struct Axk2Geometry : GlmDefaults
 	static constexpr uint32_t kExpertInter = Axk2Dimensions::kExpertInter;
 	static constexpr uint32_t kDenseInter = Axk2Dimensions::kDenseInter;
 	static constexpr float kRmsEpsilon = Axk2Dimensions::kRmsEpsilon;
+	static constexpr bool kNormRoundFirst = Axk2Dimensions::kNormRoundFirst;
 	static constexpr float kIndexEpsilon = 1e-06f;
 	static constexpr float kIndexScale = 0.0883883476f;
 	static constexpr float kRopeTheta = Axk2Dimensions::kRopeTheta;

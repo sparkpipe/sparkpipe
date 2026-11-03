@@ -217,7 +217,7 @@ static void TestGather(void)
 	SparkDeviceFree(&out);
 }
 
-static void TestRmsNormResidual(uint32_t rows)
+static void TestRmsNormResidual(uint32_t rows, uint32_t round_first)
 {
 	enum { DIM = 5120 };
 	SparkDeviceBuffer hidden, addend, weight, out;
@@ -234,7 +234,7 @@ static void TestRmsNormResidual(uint32_t rows)
 	FillBf16(h,(uint64_t)rows * DIM,2.0);
 	FillBf16(a,(uint64_t)rows * DIM,1.0);
 	for ( i = 0u; i < DIM; i++ )
-		w[i] = (float)(1.0 + 0.3 * Normal());
+		w[i] = round_first != 0u ? Bf16(ToBf16((float)(1.0 + 0.3 * Normal()))) : (float)(1.0 + 0.3 * Normal());
 	memcpy(original,h,(size_t)rows * DIM * 2u);
 	memset(&params,0,sizeof(params));
 	params.rows = rows;
@@ -243,6 +243,7 @@ static void TestRmsNormResidual(uint32_t rows)
 	params.has_addend = 1u;
 	params.write_sum = 1u;
 	params.epsilon = 1e-6f;
+	params.round_first = round_first;
 	memset(&sums,0,sizeof(sums));
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
@@ -268,13 +269,24 @@ static void TestRmsNormResidual(uint32_t rows)
 			const double scale_error = Gamma(DIM) + FUNCTION_ERROR;
 			for ( i = 0u; i < DIM; i++ )
 			{
-				const double y = x[i] * scale * w[i];
-				Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 4.0 * UNIT_F32) * fabs(y));
+				if ( round_first != 0u )
+				{
+					const double inner = RoundBf16(x[i] * scale), inner_slack = FlipSlack(x[i] * scale,scale_error + 4.0 * UNIT_F32);
+					const double y = RoundBf16(inner * w[i]);
+					Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,inner_slack != 0.0 ? fabs(w[i]) * inner_slack + 2.0 * UNIT_BF16 * fabs(y) : 0.0);
+				}
+				else
+				{
+					const double y = x[i] * scale * w[i];
+					Observe(check,Bf16(o[(uint64_t)row * DIM + i]),y,UNIT_BF16 * fabs(y) + (1.0 + UNIT_BF16) * (scale_error + 4.0 * UNIT_F32) * fabs(y));
+				}
 			}
 		}
 	}
-	snprintf(shape,sizeof(shape),"rows %u, dim 5120, residual written",rows);
-	Report("rmsnorm_residual",shape,&clean,&corrupted,"u|y| + (1+u)(gamma_5120 + 16 eps32 + 4 eps32)|y| on the rounded sum, u = 2^-8, eps32 = 2^-24");
+	snprintf(shape,sizeof(shape),"rows %u, dim 5120, residual written%s",rows,round_first != 0u ? ", rounded before the gain" : "");
+	Report("rmsnorm_residual",shape,&clean,&corrupted,round_first != 0u ?
+		"bf16(bf16(x r) w) exactly, except where x r lies within (gamma_5120 + 16 eps32 + 4 eps32)|x r| of a bf16 midpoint" :
+		"u|y| + (1+u)(gamma_5120 + 16 eps32 + 4 eps32)|y| on the rounded sum, u = 2^-8, eps32 = 2^-24");
 	if ( sums.bad != 0u )
 	{
 		printf("FAIL rmsnorm_residual: the written residual is not bf16(hidden + addend) at %llu elements\n",(unsigned long long)sums.bad);
@@ -438,6 +450,7 @@ typedef struct RopeCase
 	uint32_t interleaved;
 	uint32_t output_head_stride;
 	uint32_t plain;
+	uint32_t round_first;
 } RopeCase;
 
 static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const RopeCase *c, const char *label)
@@ -456,7 +469,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	uint32_t pass, row, head, i;
 	FillBf16(x,(uint64_t)rows * STRIDE,1.0);
 	for ( i = 0u; i < HEAD; i++ )
-		w[i] = (float)(1.0 + 0.25 * Normal());
+		w[i] = c->round_first != 0u ? Bf16(ToBf16((float)(1.0 + 0.25 * Normal()))) : (float)(1.0 + 0.25 * Normal());
 	for ( row = 0u; row < rows; row++ )
 		pos[row] = row == 0u ? 262143u : (uint32_t)(NextRandom() % 8192u);
 	memset(&params,0,sizeof(params));
@@ -473,6 +486,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	params.rope_dimension = ROPE;
 	params.epsilon = 1e-6f;
 	params.has_weight = c->weighted;
+	params.round_first = c->round_first;
 	params.rope_rounded_terms = c->rounded;
 	params.scale = (float)c->scale;
 	params.multiply = (float)c->multiply;
@@ -500,8 +514,11 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 				for ( i = 0u; i < HEAD; i++ )
 				{
 					const double gain = c->weighted != 0u ? w[i] : 1.0, multiply = params.multiply;
-					const double first = RoundBf16(Bf16(v[i]) * scale * gain);
-					const double first_slack = FlipSlack(Bf16(v[i]) * scale * gain,Gamma(HEAD) + FUNCTION_ERROR + 3.0 * UNIT_F32);
+					const double inner = RoundBf16(Bf16(v[i]) * scale), inner_slack = FlipSlack(Bf16(v[i]) * scale,Gamma(HEAD) + FUNCTION_ERROR + 3.0 * UNIT_F32);
+					const uint32_t round_first = c->round_first != 0u && c->weighted != 0u;
+					const double first = round_first != 0u ? RoundBf16(inner * gain) : RoundBf16(Bf16(v[i]) * scale * gain);
+					const double first_slack = round_first != 0u ? (inner_slack != 0.0 ? fabs(gain) * inner_slack + 2.0 * UNIT_BF16 * fabs(first) : 0.0) :
+						FlipSlack(Bf16(v[i]) * scale * gain,Gamma(HEAD) + FUNCTION_ERROR + 3.0 * UNIT_F32);
 					normed[i] = multiply != 0.0 ? RoundBf16(first * multiply) : first;
 					slack[i] = multiply != 0.0 ? fabs(multiply) * first_slack + FlipSlack(first * multiply,2.0 * UNIT_F32) +
 						(first_slack != 0.0 ? UNIT_BF16 * fabs(normed[i]) : 0.0) : first_slack;
@@ -549,7 +566,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 
 static void TestHeadRope(uint32_t rows, uint32_t heads, uint32_t offset, uint32_t head_stride, const char *label)
 {
-	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0, 0.0, 0u, 0u, 0u };
+	static const RopeCase qwen = { 256u, 64u, 32u, 10000000.0, 1u, 0u, 0.0, 0.0, 0u, 0u, 0u, 0u };
 	char text[96];
 	snprintf(text,sizeof(text),"%s, rope 64, theta 1e7",label);
 	TestHeadRopeCase(rows,heads,offset,head_stride,&qwen,text);
@@ -5574,8 +5591,9 @@ int main(int argc, char **argv)
 	TestHeadGateElements(3u,8u,0u);
 	TestHeadGateElements(5u,1u,1u);
 	TestLinearRoutedSkip(3u);
-	TestRmsNormResidual(1u);
-	TestRmsNormResidual(64u);
+	TestRmsNormResidual(1u,0u);
+	TestRmsNormResidual(64u,0u);
+	TestRmsNormResidual(3u,1u);
 	TestRmsNormGate(1u,0u,0u);
 	TestRmsNormGate(33u,0u,0u);
 	TestRmsNormGate(3u,1u,0u);
@@ -5584,23 +5602,27 @@ int main(int argc, char **argv)
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
-		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u },
-			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0, 0.0, 0u, 0u, 0u }, yarn = { 128u, 64u, 32u, 500000.0, 1u, 1u, 1.4852030263919618, 0.0, 0u, 0u, 0u },
-			plain = { 128u, 64u, 32u, 500000.0, 1u, 0u, 1.4852030263919618, 0.0, 0u, 0u, 0u };
+		static const RopeCase sliding = { 256u, 256u, 128u, 10000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u, 0u }, full = { 512u, 512u, 64u, 1000000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u, 0u },
+			value = { 512u, 0u, 0u, 1.0, 0u, 0u, 0.0, 0.0, 0u, 0u, 0u, 0u }, yarn = { 128u, 64u, 32u, 500000.0, 1u, 1u, 1.4852030263919618, 0.0, 0u, 0u, 0u, 0u },
+			plain = { 128u, 64u, 32u, 500000.0, 1u, 0u, 1.4852030263919618, 0.0, 0u, 0u, 0u, 0u };
 		TestHeadRopeCase(3u,16u,0u,256u,&sliding,"16 heads x 256, whole-head rope with bf16 terms, theta 1e4");
 		TestHeadRopeCase(2u,2u,8192u,512u,&full,"2 heads x 512, 64 of 256 pairs rotated, bf16 terms, theta 1e6");
 		TestHeadRopeCase(3u,10u,0u,128u,&yarn,"10 heads x 128, 64 dims rotated, bf16 terms of cos and sin times 1.485");
 		TestHeadRopeCase(3u,10u,0u,128u,&plain,"10 heads x 128, 64 dims rotated in FP32, cos and sin times 1.485");
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
 		{
-			static const RopeCase latent = { 64u, 64u, 32u, 6000000.0, 0u, 0u, 0.0, 0.0, 1u, 576u, 1u };
+			static const RopeCase latent = { 64u, 64u, 32u, 6000000.0, 0u, 0u, 0.0, 0.0, 1u, 576u, 1u, 0u };
 			TestHeadRopeCase(3u,8u,128u,192u,&latent,"8 heads, 64 interleaved dims of 192-wide heads into 576-wide rows, plain, theta 6e6");
 		}
 	}
 	{
-		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 0.0, 3.87, 0u, 0u, 0u }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 0.0, 3.87, 0u, 0u, 0u };
+		static const RopeCase sliding = { 128u, 128u, 64u, 500000.0, 0u, 1u, 0.0, 3.87, 0u, 0u, 0u, 0u }, full = { 128u, 0u, 0u, 1.0, 0u, 0u, 0.0, 3.87, 0u, 0u, 0u, 0u };
 		TestHeadRopeCase(3u,32u,0u,128u,&sliding,"32 heads x 128, weightless, times 3.87, bf16-term rope, theta 5e5");
 		TestHeadRopeCase(2u,32u,0u,128u,&full,"32 heads x 128, weightless, times 3.87, no rope");
+	}
+	{
+		static const RopeCase rounded = { 128u, 64u, 32u, 500000.0, 1u, 1u, 0.0, 0.0, 0u, 0u, 0u, 1u };
+		TestHeadRopeCase(3u,16u,0u,128u,&rounded,"16 heads x 128, bf16(bf16(x r) w) with a BF16 gain, 64 dims rotated with bf16 terms");
 	}
 	TestRmsNormWeightless(1u);
 	TestRmsNormWeightless(9u);

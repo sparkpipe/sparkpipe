@@ -253,10 +253,11 @@ struct MotifStage
 			0u, 0u, multiprocessors, stream);
 	}
 
+	template<bool ROUND_FIRST>
 	static int32_t Norm(const uint16_t *input, const float *weight, uint16_t *output, uint32_t rows, uint32_t dimension, uint32_t stride,
 		cudaStream_t stream)
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<MO_THREADS, float>), rows, MO_THREADS, (dimension + 8u) * sizeof(float), stream, input,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<MO_THREADS, float, ROUND_FIRST>), rows, MO_THREADS, (dimension + 8u) * sizeof(float), stream, input,
 			(const uint16_t *)0, weight, (uint16_t *)0, output, dimension, stride, MO_EPS);
 		return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 	}
@@ -297,7 +298,7 @@ struct MotifStage
 				attention ? w->hc_attn_base : w->hc_ffn_base, state->hc_mixes, state->hc_pre, state->hc_post, state->hc_comb, state->collapsed,
 				state->snapshot, rows, frame.stream) != cudaSuccess )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "hc site", layer);
-		return Check(Norm(state->collapsed, attention ? w->attn_norm : w->ffn_norm, state->normed, rows, MO_HIDDEN, MO_HIDDEN, frame.stream), "norm", layer);
+		return Check(Norm<true>(state->collapsed, attention ? w->attn_norm : w->ffn_norm, state->normed, rows, MO_HIDDEN, MO_HIDDEN, frame.stream), "norm", layer);
 	}
 
 	static SparkStatus Attention(State *state, Frame &frame, uint32_t layer, bool window)
@@ -313,7 +314,7 @@ struct MotifStage
 		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		status = Check(Linear(w->q_a, state->normed, state->q_c, rows, MO_HIDDEN, MO_QA, sms, stream), "q_a", layer);
 		if ( status == SPARK_STATUS_OK )
-			status = Check(Norm(state->q_c, w->q_norm, state->q_c, rows, MO_QA, MO_QA, stream), "q norm", layer);
+			status = Check(Norm<false>(state->q_c, w->q_norm, state->q_c, rows, MO_QA, MO_QA, stream), "q norm", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Check(Linear(w->q_b, state->q_c, state->q, rows, MO_QA, kHeads * MO_HEAD, sms, stream), "q_b", layer);
 		if ( status == SPARK_STATUS_OK )
@@ -323,7 +324,7 @@ struct MotifStage
 		if ( status == SPARK_STATUS_OK )
 			status = Check(Linear(w->kv_a, state->normed, state->slot, rows, MO_HIDDEN, MO_SLOT, sms, stream), "kv_a", layer);
 		if ( status == SPARK_STATUS_OK )
-			status = Check(Norm(state->slot, w->kv_norm, state->slot, rows, MO_LATENT, MO_SLOT, stream), "kv norm", layer);
+			status = Check(Norm<true>(state->slot, w->kv_norm, state->slot, rows, MO_LATENT, MO_SLOT, stream), "kv norm", layer);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS>), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q, step->positions, kHeads, MO_HEAD, MO_ROPE, theta,
@@ -630,6 +631,7 @@ struct MotifStage
 		geometry->kv_shard.rank = state->tp_rank;
 		geometry->kv_shard.grain = 1u;
 		geometry->head_norm_f32 = 1u;
+		geometry->head_norm_round_first = 1u;
 		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
 			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
 			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )

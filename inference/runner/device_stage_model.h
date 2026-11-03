@@ -60,6 +60,7 @@ typedef struct SparkDeviceStageShape
 	uint32_t embed_alias_row;
 	uint32_t projection;
 	uint32_t prenormed_head;
+	uint32_t norm_round_first;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u

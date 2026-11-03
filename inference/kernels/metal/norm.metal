@@ -28,7 +28,7 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 			if ( p.write_sum != 0u )
 				x[i] = SparkMathFloatToBf16(value);
 		}
-		y[i] = SparkMathFloatToBf16(p.weightless != 0u ? value * scale : value * scale * weight[i]);
+		y[i] = SparkMathFloatToBf16(p.weightless != 0u ? value * scale : p.round_first != 0u ? SparkMathNormGainRounded(value * scale, weight[i]) : value * scale * weight[i]);
 	}
 }
 
@@ -49,7 +49,7 @@ kernel void spark_rmsnorm_bf16(constant SparkNormParams &p [[buffer(0)]], device
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	const float scale = SparkMathRmsScale(total, float(p.dimension), p.epsilon);
 	for ( uint i = tid; i < p.dimension; i += threads )
-		y[i] = SparkMathFloatToBf16(SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * scale) * SparkMathBf16ToFloat(weight[i]));
+		y[i] = SparkMathFloatToBf16(SparkMathNormGainRounded(SparkMathBf16ToFloat(x[i]) * scale, SparkMathBf16ToFloat(weight[i])));
 }
 
 kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
@@ -108,7 +108,8 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 	const float scale = p.plain != 0u ? 1.0f : SparkMathRmsScale(total, float(p.head_dimension), p.epsilon);
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
-		const float value = SparkMathRoundBf16(p.has_weight != 0u ? SparkMathBf16ToFloat(x[i]) * scale * weight[i] : SparkMathBf16ToFloat(x[i]) * scale);
+		const float scaled = SparkMathBf16ToFloat(x[i]) * scale;
+		const float value = SparkMathRoundBf16(p.has_weight == 0u ? scaled : p.round_first != 0u ? SparkMathNormGainRounded(scaled, weight[i]) : scaled * weight[i]);
 		normed[i] = p.multiply != 0.0f ? SparkMathRoundBf16(value * p.multiply) : value;
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);

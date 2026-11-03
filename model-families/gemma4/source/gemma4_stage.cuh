@@ -396,9 +396,9 @@ struct GemmaModel
 		GemmaGatherRowsKernel<<<dim3(Blocks(FUSED), rows), GM_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, local_rows, degree);
 		GemmaSplitKernel<<<dim3(Blocks(QW + 2u * KVW), rows), GM_THREADS, 0, stream>>>(state->attn_full, state->query, state->key, state->value, FUSED,
 			QW, KVW, FULL && G::kKeyIsValue ? 1u : 0u);
-		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float>), dim3(HEADS,rows), GM_THREADS, 0, stream,
+		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), dim3(HEADS,rows), GM_THREADS, 0, stream,
 			state->query, G::kQkNormWeighted ? layer->q_norm : (const float *)0, state->query, rows, HEADS, HD, G::kNormEpsilon, G::kQueryMultiply);
-		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float>), dim3(KVH,rows), GM_THREADS, 0, stream,
+		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), dim3(KVH,rows), GM_THREADS, 0, stream,
 			state->key, G::kQkNormWeighted ? layer->k_norm : (const float *)0, state->key, rows, KVH, HD, G::kNormEpsilon, 1.0f);
 		if constexpr ( G::kValueNorm )
 			LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float>), dim3(KVH,rows), GM_THREADS, 0, stream,
@@ -492,7 +492,7 @@ struct GemmaModel
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 			hidden, (const uint16_t *)0, layer->pre_ff_norm_2, (uint16_t *)0, state->moe_normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		ExpertRoutes(state, step, rows, &expert_routes);
 		if ( Launched() != SPARK_STATUS_OK ||
@@ -601,7 +601,7 @@ struct GemmaModel
 
 	static SparkStatus RmsNorm(State *state, const Frame &frame, const float *weight)
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
 			frame.step->hidden_bf16, (const uint16_t *)0, weight, (uint16_t *)0, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -609,7 +609,7 @@ struct GemmaModel
 	static SparkStatus AddRmsNorm(State *state, const Frame &frame, GemmaBranch branch, const float *weight)
 	{
 		uint16_t *hidden = frame.step->hidden_bf16;
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), frame.step->rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), frame.stream,
 			BranchRows(state, frame, branch), hidden, weight, hidden, state->normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -829,6 +829,7 @@ struct GemmaModel
 		geometry->kv_shard.rank = state->tp_rank;
 		geometry->kv_shard.grain = 1u;
 		geometry->head_norm_f32 = 1u;
+		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		geometry->logit_softcap = G::kLogitSoftcap;
 		geometry->logit_scale = G::kLogitScale;
 		if constexpr ( G::kEmbedAliasCount != 0u )

@@ -68,6 +68,7 @@ typedef struct SparkNormParams
 	uint32_t write_sum;
 	float epsilon;
 	uint32_t weightless;
+	uint32_t round_first;
 } SparkNormParams;
 
 #define SPARK_ATTNRES_MAX_SOURCES 16u
@@ -153,6 +154,7 @@ typedef struct SparkHeadRopeParams
 	float scale;
 	uint32_t interleaved;
 	uint32_t output_head_stride;
+	uint32_t round_first;
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
 

@@ -58,6 +58,7 @@ struct MuseGlimmerGeometry : GemmaDefaults
 	static constexpr uint32_t kPageSlots = SPARK_MUSE_TP16_STAGE_PAGE_SLOTS;
 	static constexpr bool kEmbedNorm = true;
 	static constexpr float kNormEpsilon = 1e-5f;
+	static constexpr bool kNormRoundFirst = false;
 	static constexpr float kPostEpsilon = 1e-8f;
 	static constexpr bool kQkNormWeighted = false;
 	static constexpr float kQueryMultiply = 3.87f;

@@ -64,6 +64,7 @@ struct Gemma4_26bGeometry : GemmaDefaults
 	static const char *Name(void) { return "gemma4-26b-a4b"; }
 	static const char *ReportTag(void) { return "GEMMA4_26B-STATE"; }
 	static constexpr float kNormEpsilon = 1e-6f;
+	static constexpr bool kNormRoundFirst = false;
 	static constexpr float kPostEpsilon = 1e-6f;
 	static constexpr bool kQkNormWeighted = true;
 	static constexpr float kQueryMultiply = 1.0f;

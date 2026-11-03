@@ -17,10 +17,10 @@ The rounding points follow the CUDA stage (model-families/glm52/source/
 glm52_stage.cuh): FP8 projections are e4m3 x the FP32 block scale taken in
 FP32 (the skinny kernels' arithmetic), kv_b is bf16(e4m3 x scale) as the CUDA
 pack decodes it, and
-  norms      the residual sum rounded first, v = bf16(hidden + residual), as
-             the publisher's eager add (and so CUDA's fused norm), normed =
-             bf16(v r w) with the BF16 gain; the q_a and kv_a norms
-             bf16(x r w)
+  norms      the publisher's: the residual sum rounded first, v =
+             bf16(hidden + residual), then normed = bf16(bf16(v r) w) with
+             the BF16 gain (weight * x.to(bf16)); the q_a and kv_a norms
+             bf16(bf16(x r) w)
   MLA        q_a -> norm -> q_b (192 nope + 64 rope per head), kv_a -> the
              512 latent norm plus the 64-wide rope key; interleaved rope at
              theta 8e6 on the pairs (2i, 2i+1), each rotated value rounded
@@ -138,12 +138,12 @@ class Reference:
     def scale_of(self, values):
         return np.power(base.reduce_sum(values * values) / np.float32(values.shape[-1]) + self.epsilon, np.float32(-0.5))
 
-    def norm_once(self, values, gain):
-        return base.bf16(values * self.scale_of(values) * gain)
+    def norm(self, values, gain):
+        return base.bf16(base.bf16(values * self.scale_of(values)) * gain)
 
     def residual_norm(self, residual, addend, gain):
         total = base.bf16(residual + addend)
-        return total, base.bf16(total * self.scale_of(total) * gain)
+        return total, self.norm(total, gain)
 
     def norm_gate(self, normed, prefix):
         if self.model["gate_rank"] == 0:
@@ -172,12 +172,12 @@ class Reference:
     def mla(self, normed, positions, weights):
         rows, heads = normed.shape[0], self.heads
         raw = self.linear(normed, weights["q_a"])
-        compressed = self.norm_once(raw, weights["q_norm"])
+        compressed = self.norm(raw, weights["q_norm"])
         if self.query_gate:
             compressed = np.concatenate([compressed, raw], axis=-1)
         q = self.linear(compressed, weights["q_b"]).reshape(rows, heads, self.nope + self.rope_dim + self.query_gate)
         kv = self.linear(normed, weights["kv_a"])
-        latent = self.norm_once(kv[:, :self.latent], weights["kv_norm"])
+        latent = self.norm(kv[:, :self.latent], weights["kv_norm"])
         key_rope = self.rope(kv[:, None, self.latent:], positions)[:, 0, :]
         query_rope = self.rope(q[..., self.nope:self.nope + self.rope_dim], positions)
         causal = positions[None, :] <= positions[:, None]

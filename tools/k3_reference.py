@@ -20,8 +20,8 @@ The rounding points follow the CUDA stage (inference/llms/kimi_k3/layer.cuh):
              bf16(sum p v); the bank keeps the running partial at every
              twelfth layer, and the partial takes each branch as bf16(p + b)
              (set at a block boundary)
-  norms      bf16(x r w) with the gain widened, eps 1e-5 (1e-6 for q_a and
-             the kv latent)
+  norms      bf16(bf16(x r) w), the publisher's KimiRMSNorm (weight *
+             x.to(bf16)), eps 1e-5 (1e-6 for q_a and the kv latent)
   KDA        q/k/v projections, the causal conv with FP32 weights and SiLU
              on the unrounded sum, q and k L2-normalised per head (eps 1e-5)
              and rounded, then normalised again inside the rule (eps 1e-6, q
@@ -110,7 +110,7 @@ class Reference:
         return np.power(base.reduce_sum(values * values) / np.float32(values.shape[-1]) + np.float32(epsilon), np.float32(-0.5))
 
     def norm(self, values, gain, epsilon=1e-5):
-        return base.bf16(values * self.scale_of(values, epsilon) * gain)
+        return base.bf16(base.bf16(values * self.scale_of(values, epsilon)) * gain)
 
     def linear(self, values, weight):
         return base.bf16(base.matmul(values, weight.T))

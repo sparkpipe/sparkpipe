@@ -150,6 +150,7 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	geometry->kv_shard.grain = 1u;
 	geometry->recurrent_bytes = SparkDeviceStageRecurrentBytes(stage);
 	geometry->head_norm_f32 = 1u;
+	geometry->head_norm_round_first = shape->norm_round_first;
 	geometry->head_prenormed = shape->prenormed_head != 0u ? 1u : 0u;
 	status = SparkDeviceStageEntry(stage,"embed","bf16",&geometry->embed_offset,&geometry->embed_bytes,&embed_rows);
 	if ( status == SPARK_STATUS_OK && shape->prenormed_head == 0u )
