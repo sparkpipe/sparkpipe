@@ -110,8 +110,8 @@
   },
   {
    "id": "qwen3.8-flash",
-   "kv_label": "qwen38_flash_stage",
-   "node_memory_bytes": 15032385536,
+   "kv_label": "qwen38_flash_bf16_stage",
+   "node_memory_bytes": 30064771072,
    "node_reclaim": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh reclaim",
    "node_start": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh start {run_id}",
    "node_ready": "$HOME/stage-lanes/qwen38_flash/lane13/root/lane.sh ready {run_id}",

@@ -756,7 +756,7 @@ const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void)
 
 struct Qwen38FlashDevice
 {
-	using Geometry = Qwen38FlashGeometry<1u>;
+	using Geometry = Qwen38FlashGeometry<1u, SPARK_WEIGHT_CODEC_NVFP4_E2M1, SPARK_WEIGHT_CODEC_FP8_E4M3>;
 	static constexpr const char *kTag = "sparkpipe_qwen38_flash_device";
 	static constexpr const char *kName = "qwen3.8-flash";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
