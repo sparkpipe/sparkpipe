@@ -1,7 +1,11 @@
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
 #include "qwen38_hybrid_stage.cuh"
 
-using Qwen38FlashStage = Qwen38FlashGeometry<SPARK_QWEN38_FLASH_STAGE_TP_DEGREE>;
+#if !defined(QWEN38_FLASH_EXPERT_CODEC) || !defined(QWEN38_FLASH_PLE_TABLE_CODEC)
+#error "QWEN38_FLASH_EXPERT_CODEC and QWEN38_FLASH_PLE_TABLE_CODEC must name the routed-expert and PLE table codecs of the packs this build serves"
+#endif
+
+using Qwen38FlashStage = Qwen38FlashGeometry<SPARK_QWEN38_FLASH_STAGE_TP_DEGREE, QWEN38_FLASH_EXPERT_CODEC, QWEN38_FLASH_PLE_TABLE_CODEC>;
 
 static_assert(QwenHybridShape<Qwen38FlashStage>::Kv::kSlotBytes == SPARK_QWEN38_FLASH_STAGE_KV_SLOT_BYTES, "a KV slot is [K: 2 x 256][V: 2 x 256] bf16");
 static_assert(QwenHybridShape<Qwen38FlashStage>::kQkvWidth == SPARK_QWEN38_FLASH_STAGE_QKV_WIDTH, "the attention projection is query|gate, key, value");
