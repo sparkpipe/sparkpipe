@@ -582,6 +582,27 @@ tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
 every pipelined collective against whole-slot neighbours with an adversarially
 slow rank at 4, 8 and 16 ranks.
 
+**Pair-first all-reduce.** `SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`
+runs the pair-first reduce-scatter into a share buffer the collective
+allocates when its peer routes attach (the configured maximum rows times the
+width over the degree, for an even degree of 4 or more), then the pair-first
+all-gather from that buffer into the output, so it also runs in place. It
+takes exactly the sizes both phases take (`SparkTpMeshAllReducePairFirst`:
+rank segments of whole 8-byte words above 131,096 values) on a hardware-wait
+collective with peer routes, and refuses anything else, an unpaired degree or
+a spinning collective included, with `INVALID_ARGUMENT` before it consumes a
+round; it cannot be split into begin and finish.
+`SparkTpDeviceCollectiveSupportsPairAllReduce` answers the same question for a
+caller, which picks the operation; the collective never falls back.
+Precision: the reduce-scatter phase keeps each pair sum in fp32 through the
+group sum and rounds once, as the plain all-reduce does, but in pairwise
+order rather than the plain all-reduce's rank order, so a few elements can
+differ in their last BF16 bit (TECHDEBT, mesh collectives). The stage runner uses it for
+prefill dispatches only (README, Invariants) and logs the rule once per
+collective (`TP-SUM-SELECTION ... pair_allreduce_from_rows=<rows>`) and the
+count per prefill wave (`TP-ROUND rank=<r> rows=<n> pair_allreduce=<n>
+allreduce=<n>`, totals in `STAGE-STEP-TIMING`).
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112

@@ -23,6 +23,36 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Mesh collectives
 
+- Prefill sums go pair-first (2026-11-02, unproven on the fleet). The stage
+  runner turns a family's BF16 all-reduce into the pair-first all-reduce
+  (`SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`, chosen by
+  `StageRunnerSumOperation` in `inference/runner/stage_runner.cu`) when the
+  dispatch is a prefill and not a verify, the round is not split into begin
+  and finish, and the collective takes the size: an even degree of 4 or more
+  with peer routes and rank segments above 131,096 values (342 rows or more
+  at 6,144 wide and 16 ranks). Both prefill lanes of a wave (#1707) share the
+  runner's one collective, and each lane carries its own dispatch's rule.
+  Every model on the stage runner gets it, K3's own all-reduce rounds
+  included; decode, verify frames, graph-captured steps (16 rows or fewer)
+  and smaller waves keep the plain all-reduce bit for bit. Pair sums stay in
+  fp32 through the group sum (#1740), so a prefill sum has the plain
+  all-reduce's one BF16 rounding but adds pairs first. On one GPU with an
+  emulated transport (`tp_mesh_hardware_probe --pair-allreduce`) the result
+  equals that pairwise fp32 reference element for element at 4, 8 and 16
+  ranks and 2,048 and 4,096 rows of 6,144. On the fleet (2026-11-03), with
+  pair sums still rounded to BF16, the teacher-forced score against the
+  plain all-reduce moved 0.01-0.10 nats per token (GLM 5.3 Flash and
+  DeepSeek V4.1 Flash about 0.10, Solar Open 2 0.05, K-EXAONE 2.0 0.02,
+  Qwen 3.8 27B 0.01) against a same-build floor of exactly 0; the fp32
+  version is still to be scored, and what remains after it is the order
+  question below. Open: fleet timing against the plain
+  all-reduce (`mesh_round_bench` operation 7 against 1), and the A/B on
+  glm-5.3-flash, glm-5.3, deepseek-v4.1-flash, k-exaone-2.0 and solar-open-2
+  (decode EXACT, prefill NLL and top-1 within the same-build noise floor,
+  LONG_CHARS 200000 prefill faster, no WD-TRANSFER-STUCK), run with the
+  pipelined-boundary fix underneath and rerunning the 2026-11-02 GLM
+  long-prompt gate that failed without it.
+
 - Every hardware-wait round still crosses weightd's CPU relay once: the GPU
   publishes its payload and doorbell cell, and weightd's doorbell sweep
   (`SparkWeightdMeshDoorbellSweep`, `node/weightd_mesh.c`) posts the RDMA
@@ -91,7 +121,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
-- **Pair-first sums are not bit-identical to the rank-order sum.** The pair-first reduce-scatter (K3's paired prefill waves, op 6) now keeps pair sums in fp32 (accuracy equal to the plain reduce-scatter), but adds pairs first, so the last BF16 bit of a few elements can differ from the rank-order sum the other algorithms use. That breaks the README invariant that switching algorithm never changes a result bit. Fix: make the pairwise fp32 order canonical for every sum algorithm (direct, reduce-scatter, all-reduce), a one-time ulp-level change on every model, or keep pair-first off where bit identity with other algorithms matters. Owner decision.
 - Left out on purpose (2026-10-02): decode communication is not overlapped
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other

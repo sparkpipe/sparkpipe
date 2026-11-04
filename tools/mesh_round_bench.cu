@@ -112,7 +112,8 @@ int main(int count,char **arguments)
     bench_require(degree >= 2u && degree <= 16u && rank < degree && rows >= 1u && row_elements >= 4u &&
         rounds >= 1u && reps >= 1u && reps <= BENCH_MAX_REPS &&
         (operation == 0u || operation == 1u || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ||
-         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16),"arguments");
+         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 ||
+         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16),"arguments");
     const size_t local_elements = (size_t)rows * row_elements;
     const size_t output_elements = operation == 0u ? local_elements * degree :
         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 ?
@@ -210,7 +211,8 @@ int main(int count,char **arguments)
             }
             else
                 for (uint32_t peer = 0u; peer < degree; peer++)
-                    expected += bench_value(peer,(uint32_t)(operation == 1u ? i : rank * output_elements + i));
+                    expected += bench_value(peer,(uint32_t)(operation == 1u || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 ?
+                        i : rank * output_elements + i));
             bad += host[i] != bench_bf16(expected) ? 1u : 0u;
         }
         free(host);
