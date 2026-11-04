@@ -98,7 +98,15 @@ LiteLLM serve the same contexts.
 
 `push` writes one record's rendered files to the nodes and the hub, keeps
 every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
-not touch binaries, packs or KV, so a lane restart picks the change up.
+not touch binaries, packs or KV, so a lane restart picks the change up. That
+includes a pack switch, such as a precision change: `lane.sh start` takes the
+expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
+from the `.sha256` beside the pack `config/adapter.json` names, and the spine
+budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
+describe the pack the lane was first staged with. A configured pack without
+its sidecar refuses to start. `lane.sh pack` prints the configured pack, and
+the swap controller's weight-warm commands warm `$(./lane.sh pack)` rather
+than the link the lane was staged with.
 
 `SPARK_LANES=<file>` renders, audits or pushes from another copy of the
 records, which is how a gate tries a raised record before it is committed.
