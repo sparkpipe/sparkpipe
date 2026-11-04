@@ -32,9 +32,13 @@ The rounding points follow the CUDA stage (inference/llms/kimi_k3/layer.cuh):
   MLA        q_a -> norm -> q_b (128 nope + 64 unrotated per head); kv_a ->
              the 512 latent norm and the 64 raw values; the query absorbed
              per head through kv_b's key rows (rounded); softmax((q_l . k_l +
-             q_r . k_r) x 0.0722) in FP32 over every earlier position; the
-             latent output rounded; kv_b's value rows; bf16(v sigmoid(g));
-             o_proj
+             q_r . k_r) x 0.0722) over every earlier position in the
+             publishers' flash form: weights w = exp(s - m) in FP32 with m
+             the row's maximum (one max per row, the reference's single-tile
+             model of the kernels' per-tile running maxima), the latent
+             multiplied by bf16(w) in FP32, that product divided by the sum
+             of the FP32 weights and rounded; kv_b's value rows;
+             bf16(v sigmoid(g)); o_proj
   MLP        SiTU: bf16(4 tanh(g/4) sigmoid(g) x 25 tanh(u/25)); layer 0
              dense; the rest the two fused shared experts plus top 16 of 896
              by sigmoid(z) + bias, weights renormalised, the experts in the
@@ -178,9 +182,9 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :self.nope], kv_b[head, :self.nope]))
             scores = (base.matmul(query, latent.T) + base.matmul(q[:, head, self.nope:], tail.T)) * np.float32(0.07216878365)
             scores = np.where(causal, scores, -np.inf)
-            probabilities = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            probabilities = probabilities / base.reduce_sum(probabilities)
-            attended = base.bf16(base.matmul(probabilities, latent))
+            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
+            total = base.reduce_sum(weights)
+            attended = base.bf16(base.matmul(base.bf16(weights), latent) / total)
             value = base.bf16(base.matmul(attended, kv_b[head, self.nope:].T))
             output[:, head, :] = base.bf16(value * base.sigmoid(gate[:, head, :]))
         return self.linear(output.reshape(rows, heads * self.value), self.bf16(a + "o_proj.weight", (self.hidden, heads * self.value)))

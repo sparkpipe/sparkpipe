@@ -49,8 +49,12 @@ block, otherwise the Gemma 4 dense text model. Weights are read from the BF16
 checkpoint one layer (one expert) at a time and all prompts go through each
 layer together. Values are rounded to bf16 where the publisher's eager
 PyTorch code rounds: norms in f32 then cast, projections in bf16, elementwise
-bf16 products, rotary cos/sin in bf16. The attention softmax and P.V run in
-f32 (SDPA/flash), logits are computed in f32.
+bf16 products, rotary cos/sin in bf16. The attention takes the publishers'
+flash form: weights w = exp(s - m) in f32 with m the row's maximum over its
+visible keys (one max per row, the reference's single-tile model of the
+kernels' per-tile running maxima), the values multiplied by bf16(w) in f32,
+that product divided by the sum of the f32 weights and rounded to bf16;
+logits are computed in f32.
 
 Gemma 4 (transformers modeling_gemma4.py): embeddings scaled by
 bf16(sqrt(hidden)); RMSNorm multiplies by w; q/k norms weighted, v norm
@@ -227,8 +231,8 @@ class Reference:
             scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= reduce_sum(weights, keepdims=True)
-            output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
+            total = reduce_sum(weights, keepdims=True)
+            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head // group, :]) / total)
         return output.reshape(rows, -1)
 
     def attention(self, layer, normed, positions):

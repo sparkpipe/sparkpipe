@@ -25,9 +25,14 @@ pack decodes it, and
              512 latent norm plus the 64-wide rope key; interleaved rope at
              theta 8e6 on the pairs (2i, 2i+1), each rotated value rounded
              once; the query absorbed per head through kv_b's key rows
-             (rounded); softmax((q_l . k_l + q_r . k_r) / 16) in FP32 over
-             every earlier position (below 2,048 keys the indexer keeps them
-             all); the latent output rounded; kv_b's value rows; o_proj
+             (rounded); softmax((q_l . k_l + q_r . k_r) / 16) over every
+             earlier position (below 2,048 keys the indexer keeps them all)
+             in the publishers' flash form: weights w = exp(s - m) in FP32
+             with m the row's maximum (one max per row, the reference's
+             single-tile model of the kernels' per-tile running maxima), the
+             latent multiplied by bf16(w) in FP32, that product divided by
+             the sum of the FP32 weights and rounded; kv_b's value rows;
+             o_proj
   MLP        bf16(silu(g) u) rounded once; layers 0-2 dense, the rest the
              shared expert plus top 8 of 256 by sigmoid(z) +
              e_score_correction_bias, weights renormalised and scaled by
@@ -187,9 +192,9 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :self.nope], key_up))
             scores = (base.matmul(query, latent.T) + base.matmul(query_rope[:, head, :], key_rope.T)) * self.scale
             scores = np.where(causal, scores, -np.inf)
-            probabilities = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            probabilities = probabilities / base.reduce_sum(probabilities)
-            attended = base.bf16(base.matmul(probabilities, latent))
+            exponentials = device.exp(scores - scores.max(axis=-1, keepdims=True))
+            total = base.reduce_sum(exponentials)
+            attended = base.bf16(base.matmul(base.bf16(exponentials), latent) / total)
             output[:, head, :] = base.bf16(base.matmul(attended, value_up.T))
             if self.query_gate:
                 output[:, head, :] = base.bf16(output[:, head, :] * base.sigmoid(q[:, head, self.nope + self.rope_dim:]))

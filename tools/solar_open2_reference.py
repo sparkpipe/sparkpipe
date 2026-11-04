@@ -25,7 +25,11 @@ fast path calls (model_contracts/references/fla_kda_gate.py):
   S <- S + k v'^T, o = S^T q; o rounded to bf16, then RMSNorm(o) * w *
   sigmoid(g_b(g_a(x))) in f32 and o_proj.
   GQA: 64 query heads over 8 KV heads, no rope, no qk norm, causal
-  softmax(QK^T / sqrt(128)) in f32 with bf16 probabilities, output times
+  softmax(QK^T / sqrt(128)) in the publishers' flash form: weights w =
+  exp(s - m) in f32 with m the row's maximum over its visible keys (one max
+  per row, the reference's single-tile model of the kernels' per-tile
+  running maxima), the values multiplied by bf16(w) in f32, that product
+  divided by the sum of the f32 weights and rounded to bf16; output times
   bf16 sigmoid(g_proj(x)), o_proj.
   MoE: f32 router logits, sigmoid scores, e_score_correction_bias for
   selection only, one group, top-8, weights renormalized (+1e-20), scale 1;
@@ -151,8 +155,8 @@ class Reference(ling3_reference.Reference):
             scores = matmul(q[:, head, :], k[:, head // group, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / reduce_sum(weights))
-            output[:, head, :] = bf16(matmul(weights, v[:, head // group, :]))
+            total = reduce_sum(weights)
+            output[:, head, :] = bf16(matmul(bf16(weights), v[:, head // group, :]) / total)
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads * dim, self.hidden)))
         output = bf16(output.reshape(rows, heads * dim) * gate)
         return self.output(output, a + "o_proj.weight", self.hidden, heads * dim)

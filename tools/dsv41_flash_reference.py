@@ -60,7 +60,13 @@ everything else is FP32.
              a row at p attends its window keys max(0, p - 127)..p and its
              owner layer's compressed keys 0..(p + 1) / ratio - 1,
              softmax(q.k / sqrt(512)) with the head's sink in the
-             denominator, bf16, inverse rope, qdq8, wo_a per output group,
+             denominator, in the publishers' flash form: weights w = exp(s -
+             m) in FP32 with m the row's maximum over its visible keys, the
+             sink excluded as sparse_attn excludes it (one max per row, the
+             reference's single-tile model of the kernels' per-tile running
+             maxima), the keys (the values) multiplied by bf16(w) in FP32,
+             that product divided by the sum of the FP32 weights plus
+             exp(sink - m), bf16, inverse rope, qdq8, wo_a per output group,
              qdq8, wo_b
   MoE        router z = normed . gate (FP32), s = sqrt(softplus(z)), the top
              6 of s + bias (ties to the lower index), weights s / (tree sum +
@@ -513,10 +519,10 @@ class Reference:
             keys = np.concatenate([key, extra], axis=0)
         scores = base.matmul(query.transpose(1, 0, 2), keys.T) * scale
         scores = np.where(allowed[None], scores, np.float32(-np.inf))
-        top = np.maximum(scores.max(axis=-1, keepdims=True), sinks[:, None, None])
+        top = scores.max(axis=-1, keepdims=True)
         weights = device.exp(scores - top)
         total = base.reduce_sum(weights) + device.exp(sinks[:, None, None] - top)
-        return (base.matmul(weights, keys) / total).transpose(1, 0, 2)
+        return (base.matmul(base.bf16(weights), keys) / total).transpose(1, 0, 2)
 
     def attention(self, layer, normed, positions, bounds, compressed):
         a = f"layers.{layer}.attn."

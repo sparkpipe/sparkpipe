@@ -39,10 +39,15 @@ modeling_mimo_v2.py in the checkpoint directory), never from SparkPipe code:
   scale, the rope products and the SwiGLU products round to bf16 as the
   modeling code does; rope on the first int(192 * 0.334) = 64 dims of each
   head (rotate_half on those 64), cos/sin in bf16, theta 1e7 full / 1e4 SWA
-- attention scores, the softmax and the probabilities stay f32 (the eager
-  path would round scores and probabilities to bf16; flash kernels do not);
-  SWA keys j with i - 128 < j <= i; SWA layers append the per-head sink
-  logit to the softmax and drop it from the output
+- attention scores stay f32 (the eager path would round them to bf16; flash
+  kernels do not) and the softmax takes the publishers' flash form: weights
+  w = exp(s - m) in f32 with m the row's maximum over its visible keys, the
+  sink excluded (one max per row, the reference's single-tile model of the
+  kernels' per-tile running maxima), the values multiplied by bf16(w) in
+  f32, that product divided by the sum of the f32 weights and rounded to
+  bf16; SWA keys j with i - 128 < j <= i; SWA layers append the per-head
+  sink logit to the denominator as exp(sink - m) and drop it from the
+  output
 - router: f32 logits, sigmoid, top-8 by sigmoid + e_score_correction_bias,
   weights = chosen sigmoid / (sum + 1e-20); expert outputs (bf16) combine
   in f32; logits f32 from the bf16 final norm and the untied bf16 lm_head
@@ -242,13 +247,11 @@ class Reference:
                 scores = matmul(q[:, head, :], k[:, head // group, :].T) * self.scaling
                 scores = np.where(visible, scores, -np.inf)
                 top = scores.max(axis=-1, keepdims=True)
-                if sinks is not None:
-                    top = np.maximum(top, sinks[head])
                 weights = device.exp(scores - top)
                 total = reduce_sum(weights, keepdims=True)
                 if sinks is not None:
                     total = total + device.exp(sinks[head] - top)
-                output[first:first + count, head, :] = bf16(matmul(weights / total, v[:, head // group, :]))
+                output[first:first + count, head, :] = bf16(matmul(bf16(weights), v[:, head // group, :]) / total)
         return bf16(matmul(output.reshape(normed.shape[0], -1), self.checkpoint.bf16(a + "o_proj.weight").T))
 
     @staticmethod

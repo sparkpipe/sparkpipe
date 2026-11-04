@@ -538,6 +538,7 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 		const uint32_t kv = (uint32_t)head / (REF_HEADS / REF_KV_HEADS);
 		float *scores = (float *)malloc((size_t)rows * length * sizeof(float));
 		float *out = (float *)malloc((size_t)rows * REF_HEAD_DIM * sizeof(float));
+		float *totals = (float *)malloc((size_t)rows * sizeof(float));
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)length,(int)REF_HEAD_DIM,1.0f / 16.0f,query + head * REF_HEAD_DIM,(int)REF_Q,
 			keys + kv * REF_HEAD_DIM,(int)REF_KV,0.0f,scores,(int)length);
 		for ( uint32_t row = 0u; row < rows; row++ )
@@ -548,9 +549,9 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 				best = line[j] > best ? line[j] : best;
 			for ( uint32_t j = 0u; j < length; j++ )
 				line[j] = j < visible ? (float)RefExp((double)(line[j] - best)) : 0.0f;
-			const float total = RefSum(variant,line,visible,1u);
+			totals[row] = RefSum(variant,line,visible,1u);
 			for ( uint32_t j = 0u; j < visible; j++ )
-				line[j] /= total;
+				line[j] = RoundBf16(line[j]);
 		}
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,(int)rows,(int)REF_HEAD_DIM,(int)length,1.0f,scores,(int)length,
 			values + kv * REF_HEAD_DIM,(int)REF_KV,0.0f,out,(int)REF_HEAD_DIM);
@@ -558,10 +559,11 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 			for ( uint32_t d = 0u; d < REF_HEAD_DIM; d++ )
 			{
 				const float g = gq[(uint64_t)row * 2u * REF_Q + head * 2u * REF_HEAD_DIM + REF_HEAD_DIM + d];
-				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d]) * RoundBf16(Sigmoid(g)));
+				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d] / totals[row]) * RoundBf16(Sigmoid(g)));
 			}
 		free(scores);
 		free(out);
+		free(totals);
 	});
 	RefLinearRows(variant,gated,rows,REF_Q,layer->o,REF_HIDDEN,partial);
 	free(gq);

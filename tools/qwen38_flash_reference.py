@@ -35,9 +35,13 @@ read from the checkpoint directly. R() is a round to bf16.
   with dilation 3 (oldest tap first) of the group-normed gated rows, R'd and
   swished; residual = R(residual + R(gated + conv))
 - GDN as tools/qwen38_27b_reference.c, with the sigmoid output gate
-- attention as tools/qwen38_27b_reference.c (2 KV heads); the indexer keeps
-  every block below 2,052 positions, so it is not modelled and longer prompts
-  are refused
+- attention as tools/qwen38_27b_reference.c (2 KV heads), in the publishers'
+  flash form: weights w = exp(s - m) in FP32 with m the row's maximum over
+  its visible keys (one max per row, the reference's single-tile model of
+  the kernels' per-tile running maxima), the values multiplied by R(w) in
+  FP32, that product divided by the sum of the FP32 weights and R'd; the
+  indexer keeps every block below 2,052 positions, so it is not modelled and
+  longer prompts are refused
 - MoE: router logits R(x @ router), FP32 softmax, top-10 (ties to the lower
   expert), weights p / (sum + 1e-20); each route R(R(silu(gate) x up x
   weight) @ down); the routes in pick order plus the shared expert R(R(R(silu
@@ -378,8 +382,8 @@ class Reference:
                 scores = (query[:, head] @ key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
                 scores = np.where(visible, scores, -np.inf)
                 weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
-                weights = weights / reduce_sum(weights, keepdims=True)
-                out = bf16(matmul(weights, v[first:first + count, head // group]))
+                total = reduce_sum(weights, keepdims=True)
+                out = bf16(matmul(bf16(weights), v[first:first + count, head // group]) / total)
                 gated[first:first + count, head] = bf16(out * bf16(sigmoid(gq[first:first + count, head, self.head_dim:])))
         return self.linear(gated.reshape(rows, -1), c.bf16(p + "o_proj.weight"))
 

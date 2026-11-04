@@ -34,10 +34,12 @@ score + bias, weights the unbiased scores normalized (+1e-20) times 2.5 in
 f32, each routed expert's bf16 output times its f32 weight cast to bf16 and
 added in ascending expert order, plus the shared expert. Layers 62..77 clamp
 the gate above at 7 before SiLU and the up projection to +-7 on every MLP.
-Projections round to bf16; the attention softmax runs in f32 and its
-probabilities round to bf16 before they weight the values, as the
-publisher's eager attention (softmax in f32, then .to(bf16)) and flash
-attention do; the final logits are f32. Every matrix product accumulates in
+Projections round to bf16; the attention takes the publishers' flash form:
+weights w = exp(s - m) in f32 with m the row's maximum over its visible keys
+(one max per row, the reference's single-tile model of the kernels' per-tile
+running maxima), the values multiplied by bf16(w), that product divided in
+f32 by the sum of the f32 weights and rounded to bf16; the final logits are
+f32. Every matrix product accumulates in
 f64 before it is rounded, so a prompt's numbers do not depend on the other
 prompts in the run or on how many served tokens follow (BLAS picks its
 summation order by matrix shape, and f32 order noise rounded to bf16 over 78
@@ -166,8 +168,8 @@ class Reference:
             scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
-            output[:, head, :] = bf16(product(weights, value[:, head // group, :]))
+            total = weights.sum(axis=-1, keepdims=True)
+            output[:, head, :] = bf16(product(bf16(weights), value[:, head // group, :]) / total)
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
 
     def swiglu(self, gate, up, limit):

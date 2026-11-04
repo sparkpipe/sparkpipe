@@ -34,8 +34,14 @@ deployment; accumulations are f32.
   hc post    stream_s += post_s * branch output (f32, then bf16)
   attention  MLA (q lora 2048, kv lora 512, nope 192, rope 64, value 256),
              interleaved rope pairs (2i, 2i+1), theta 1e7, scale 1/sqrt(256),
-             learned per-head sink logit in the softmax denominator,
-             elementwise sigmoid gate (linear_gate of the normed input) on the
+             learned per-head sink logit in the softmax denominator, in the
+             publishers' flash form: weights w = exp(s - m) in f32 with m
+             the row's maximum over its attended keys, the sink excluded
+             (one max per row, the reference's single-tile model of the
+             kernels' per-tile running maxima), the values multiplied by
+             bf16(w) in f32, that product divided by the sum of the f32
+             weights plus exp(sink - m) and rounded to bf16; elementwise
+             sigmoid gate (linear_gate of the normed input) on the
              64 x 256 head outputs before o_proj
   indexer    layers with indexer_types "full": q = wq_b(normed q lora), k =
              LayerNorm(wk(x)) (eps 1e-6, as vLLM hy_v4), rope on the last 64 of 128;
@@ -325,10 +331,10 @@ class Reference:
             for head in range(self.heads):
                 scores = (product(query[window, head, :self.nope], key_nope[window, head].T) + rope_scores[head]) * self.scale
                 scores = np.where(allowed, scores, -np.inf)
-                peak = np.maximum(scores.max(axis=-1, keepdims=True), sinks[head])
+                peak = scores.max(axis=-1, keepdims=True)
                 weights = device.exp(scores - peak)
                 denominator = reduce_sum(weights) + device.exp(sinks[head] - peak)
-                output[window, head] = bf16(product(weights, value[window, head]) / denominator)
+                output[window, head] = bf16(product(bf16(weights), value[window, head]) / denominator)
         gate = bf16(sigmoid(bf16(product(normed, c.bf16(p + "linear_gate.weight", (self.heads * self.value, self.hidden)).T))))
         gated = bf16(output.reshape(rows, -1) * gate)
         return bf16(product(gated, c.mxfp8(p + "o_proj", (self.hidden, self.heads * self.value)).T))

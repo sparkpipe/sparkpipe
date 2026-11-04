@@ -35,9 +35,13 @@ bf16 multiplies each head before o_proj; layer 0 is a dense SwiGLU, layers
 1..47 a sigmoid router (bf16 logits widened to f32, top-10 on score + bias,
 weights the unbiased scores normalized and cast to bf16), routed experts
 summed in bf16 in ascending expert order, times 2.5, plus the shared expert.
-Projections round to bf16; the attention softmax and the final logits are
-f32. Every prompt goes through one layer at a time, so each layer's weights
-are read once per run.
+Projections round to bf16; the attention takes the publishers' flash form:
+weights w = exp(s - m) in f32 with m the row's maximum over its visible keys
+(one max per row, the reference's single-tile model of the kernels' per-tile
+running maxima), the values multiplied by bf16(w) in f32, that product
+divided by the sum of the f32 weights and rounded to bf16; the final logits
+are f32. Every prompt goes through one layer at a time, so each layer's
+weights are read once per run.
 """
 
 import argparse
@@ -196,8 +200,8 @@ class Reference:
             scores = (query[:, head, :] @ key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(weights @ value[:, head // group, :])
+            total = weights.sum(axis=-1, keepdims=True)
+            output[:, head, :] = bf16((bf16(weights) @ value[:, head // group, :]) / total)
         gate = bf16(softplus(self.linear(normed, p + "g_proj.weight")))
         output = bf16(output * gate[:, :, None])
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
