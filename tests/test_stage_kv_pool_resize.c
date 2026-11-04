@@ -97,10 +97,9 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->backing_directory = engine->backing;
-	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;
-	configuration->snapshot_maximum_bytes = 1ull << 26;
-	configuration->partition_reserve_bytes = 1ull << 20;
+	configuration->ledger_path = "/tmp/sparkpipe-kv-pool-resize-ledger";
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
@@ -259,6 +258,22 @@ static uint64_t CommittedChunks(void)
 	return(SparkWeightdServerKvCommittedBytes(TestKvServer) / TEST_CHUNK_BYTES);
 }
 
+static void TestPoolAtMinimumParksEveryPage(void)
+{
+	TestPoolView a;
+	uint32_t round;
+	assert(SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration) == SPARK_STATUS_OK);
+	for (round=0u; round<2u * TEST_LOGICAL; round++)
+	{
+		EnginePublish(&ENGINE_A,(uint8_t)(0x10u + round));
+		SleepMs(2u);
+	}
+	a = EngineView(&ENGINE_A);
+	assert(a.chunks == TEST_MINIMUM_CHUNKS && a.grows == 0u && a.pages < TEST_PHYSICAL);
+	assert(ENGINE_A.binding.arena.park_backing_full_count == 0u && ENGINE_A.binding.arena.park_failure_count == 0u);
+	printf("pool held at its minimum: a node reserve of only the minimum chunks never lets the pool grow, so every page past one sequence's parks, and the derived backing holds every logical page the minimum leaves out\n");
+}
+
 static void TestLayoutAndAttach(void)
 {
 	TestPoolView a;
@@ -349,6 +364,11 @@ static void TestVacatedPagesStillServe(void)
 
 int main(void)
 {
+	TestKvServerStart((uint64_t)TEST_MINIMUM_CHUNKS * TEST_CHUNK_BYTES);
+	EngineConfigure(&ENGINE_A,"kvpoolm");
+	TestPoolAtMinimumParksEveryPage();
+	EngineClose(&ENGINE_A);
+	TestKvServerFinish();
 	TestKvServerStart((uint64_t)TEST_POOL_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvpoola");
 	EngineConfigure(&ENGINE_B,"kvpoolb");

@@ -34,9 +34,8 @@ SESSION_BLOCK_BASE = 18432
 MAX_ROWS = 4096
 MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
-DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
-DEFAULT_KV_PARTITION_RESERVE_BYTES = 512 << 30
 KV_BLOCK_TOKENS = 64
+KV_BACKING_IN_FLIGHT_PAGES = 2
 KV_POOL_METADATA_BYTES_MAX = 256 << 20
 KV_POOL_SEAL_BYTES = 72
 KV_RESIDENT_RECORD_BYTES = 64
@@ -479,8 +478,6 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "kv_snapshot_maximum_bytes": args.kv_snapshot_bytes,
-            "kv_partition_reserve_bytes": args.kv_partition_reserve_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
         })
     result = {
@@ -598,12 +595,14 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         weightd_socket=record["weightd_socket"], sequences=record["sequences"], rows=record["rows"],
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
-        kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
-        kv_partition_reserve_bytes=document["kv_partition_reserve_bytes"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
+
+
+def kv_backing_bytes(logical_pages: int, sequence_pages: int, page_bytes: int) -> int:
+    return (logical_pages - sequence_pages + KV_BACKING_IN_FLIGHT_PAGES) * page_bytes
 
 
 def kv_physical_pages(model: dict, page_bytes: int, cap: int | None) -> int:
@@ -632,9 +631,7 @@ def check_arguments(model: dict, args) -> None:
     if args.kv_logical_pages < args.sequences * args.kv_pages:
         raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
     states = (2 * args.sequences + 2) * model["recurrent_bytes"]
-    minimum = (args.kv_logical_pages - args.kv_physical_pages + 2) * model["kv_page_bytes"] + states
-    if args.kv_backing_bytes < minimum:
-        raise SystemExit(f"kv-backing-bytes {args.kv_backing_bytes} cannot hold the spilled pages and the recurrent checkpoints a page store may keep beside them; it needs {minimum}")
+    args.kv_backing_bytes = kv_backing_bytes(args.kv_logical_pages, args.kv_pages, model["kv_page_bytes"])
     if args.state_memory_bytes is None:
         args.state_memory_bytes = 2 * states
     if model["recurrent_bytes"] and args.state_memory_bytes < states:
@@ -672,10 +669,6 @@ def main() -> int:
     parser.add_argument("--kv-physical-pages-cap", type=int, default=None,
                         help="keep the device KV pool below this many pages; by default it may grow to what the node budget leaves the model")
     parser.add_argument("--kv-logical-pages", type=int, default=None)
-    parser.add_argument("--kv-backing-bytes", type=int, default=8 << 30)
-    parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
-    parser.add_argument("--kv-partition-reserve-bytes", type=int, default=DEFAULT_KV_PARTITION_RESERVE_BYTES,
-                        help="free bytes every KV snapshot store leaves on kv_partition; stores evict their oldest files to keep it")
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
     parser.add_argument("--state-memory-bytes", type=int, default=None,
                         help="per-rank memory for recurrent-state records; default twice the two per sequence plus two the KV binding needs")
