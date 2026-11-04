@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 
+import base64
 import contextlib
+import hashlib
+import hmac
+import http.client
 import http.server
 import io
 import json
 import shutil
+import socket
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -110,23 +116,105 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        self.server.seen.append(({name: self.headers.get(name) for name in ("Authorization", "X-SparkPipe-Fleet", "X-SparkPipe-Account")}, self.headers.get_all("X-SparkPipe-Account"), body))
-        if body.get("stream"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.end_headers()
-            for chunk in ({"choices": [{"index": 0, "delta": {"content": "hi"}}]}, {"choices": [], "usage": {"prompt_tokens": 50, "completion_tokens": 1}}):
-                self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
-            self.wfile.write(b"data: [DONE]\n\n")
-            return
-        data = json.dumps({"choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 5}}).encode()
-        self.send_response(200)
+    def record(self, body):
+        self.server.calls.append({"method": self.command, "path": self.path, "items": list(self.headers.items()), "body": body if len(body) < 1 << 20 else (len(body), hashlib.sha256(body).hexdigest())})
+
+    def answer(self, status, data):
+        raw = json.dumps(data).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Hub", "1")
         self.end_headers()
-        self.wfile.write(data)
+        if self.command != "HEAD":
+            self.wfile.write(raw)
+
+    def events(self, chunks):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk)
+            self.wfile.flush()
+            time.sleep(0.01)
+
+    def generic(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        self.record(body)
+        fleet = self.headers.get("X-SparkPipe-Fleet")
+        if self.path == "/v1/chat/completions":
+            data = json.loads(body)
+            self.server.seen.append(({name: self.headers.get(name) for name in ("Authorization", "X-SparkPipe-Fleet", "X-SparkPipe-Account")}, self.headers.get_all("X-SparkPipe-Account"), data))
+            if data.get("stream"):
+                chunks = ({"choices": [{"index": 0, "delta": {"content": "hi"}}]}, {"choices": [], "usage": {"prompt_tokens": 50, "completion_tokens": 1}, "sparkpipe": {"fleet": fleet}})
+                return self.events([b"data: " + json.dumps(chunk).encode() + b"\n\n" for chunk in chunks] + [b"data: [DONE]\n\n"])
+            return self.answer(200, {"model": data.get("model"), "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 5}, "sparkpipe": {"fleet": fleet}})
+        if self.path == "/v1/models/resident" and self.command == "PUT" and self.headers.get("X-SparkPipe-Allow-Swap") != "1":
+            return self.answer(409, {"type": "error", "error": {"type": "model_not_loaded", "message": "kimi-k3 is resident"}})
+        if self.path == "/v1/messages" and body and json.loads(body).get("stream"):
+            return self.events([f"event: {name}\ndata: {json.dumps({'type': name})}\n\n".encode() for name in ("message_start", "content_block_delta", "message_delta", "message_stop")])
+        self.answer(200, {"method": self.command, "path": self.path, "fleet": fleet})
+
+    def do_GET(self):
+        if (self.headers.get("Upgrade") or "").lower() != "websocket":
+            return self.generic()
+        self.record(b"")
+        accept = base64.b64encode(hashlib.sha1((self.headers["Sec-WebSocket-Key"] + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        self.wfile.write(f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n".encode())
+        while True:
+            data = self.connection.recv(65536)
+            if not data:
+                break
+            self.connection.sendall(b"echo:" + data)
+        self.close_connection = True
+
+    do_POST = do_PUT = do_DELETE = do_HEAD = generic
+
+
+class Receiver(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        self.server.posts.append(({name.lower(): value for name, value in self.headers.items()}, body))
+        failing = self.server.fail > 0
+        self.server.fail -= 1
+        self.send_response(500 if failing else 200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def websocket(port, key, extra=""):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.sendall(("GET /v1/responses HTTP/1.1\r\nHost: sparkpipe.ai\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+                  f"Sec-WebSocket-Version: 13\r\nAuthorization: Bearer {key}\r\nX-SparkPipe-Account: ACFAKE\r\n{extra}\r\n").encode())
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        head += chunk
+    return sock, head
+
+
+def hub(port, path, body, key=POOL_KEY):
+    status, _, raw = call(port, "POST", path, body, {"Authorization": f"Bearer {key}"})
+    return status, json.loads(raw)
+
+
+def notices(app, account, kind=None):
+    return [n for n in app.book.market.notices if n["account"] == account and (kind is None or n["type"] == kind)]
+
+
+def until(test, seconds=10):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if test():
+            return True
+        time.sleep(0.05)
+    return test()
 
 
 def check_units(failures):
@@ -137,11 +225,13 @@ def check_units(failures):
     conf = (ROOT / "deployment" / "vps" / "sparkpipe-pay.conf").read_text()
     if '<Location "/availability.txt">' not in conf or 'ProxyPass "http://127.0.0.1:18090/availability.txt"' not in conf:
         failures.append("Apache does not map https://sparkpipe.ai/availability.txt to the live service")
+    if 'ProxyPass "http://127.0.0.1:18090/" retry=0 timeout=900 flushpackets=on upgrade=websocket' not in conf or 'ProxyPass "http://127.0.0.1:18091/" retry=0 timeout=900 flushpackets=on upgrade=websocket' not in conf:
+        failures.append("Apache does not pass the WebSocket upgrade of /v1/responses through to the live service and the sandbox")
 
 
 def live_flows(failures, work):
     mailbox = tp.serve(tp.FakeSMTP, mail=[])
-    upstream = tp.serve(FakeUpstream, seen=[])
+    upstream = tp.serve(FakeUpstream, seen=[], calls=[])
     server, app, port = live(work, "live", mailbox, upstream)
     m = app.market
     try:
@@ -149,6 +239,9 @@ def live_flows(failures, work):
         state = weeks_and_hours(failures, app, m, port)
         waitlist(failures, app, m, port, mailbox, state)
         gateway(failures, app, m, port, upstream, state)
+        passthrough(failures, app, m, port, upstream, state)
+        key_options(failures, app, m, port, upstream, state)
+        usage(failures, app, m, port, state)
         holders_and_maintenance(failures, app, m, port, state)
         deadline(failures, app, m, mailbox, state)
         replay = sp.Book(app.cfg.path("ledger.jsonl"))
@@ -210,7 +303,7 @@ def weeks_and_hours(failures, app, m, port):
     m.book_weeks(H, {"fleet": "F3", "weeks": 3})
     if refused(lambda: m.quote_weeks(H, {"fleet": "F3", "weeks": 50})) != (409, "too_far") or m.quote_weeks(H, {"fleet": "F3", "weeks": 49})["first"] != slot(kst(2027, 2, 1)):
         failures.append("an extension is not contiguous, or reaches past 52 Weeks after the current Week")
-    if m.view(H)["pinned"] != [{"fleet": "F3", "weeks": 4, "through": slot(kst(2027, 2, 1)), "deadline": slot(kst(2027, 1, 31)), "canExtend": True}]:
+    if m.view(H)["pinned"] != [{"fleet": "F3", "weeks": 4, "through": slot(kst(2027, 2, 1)), "deadline": slot(kst(2027, 1, 31)), "canExtend": True, "autoExtend": 0}]:
         failures.append(f"the account's pinned Fleets: {m.view(H)['pinned']}")
     if refused(lambda: m.book_weeks(C, {"fleet": "F3", "weeks": 1}))[0] != 409 or refused(lambda: m.book_weeks(C, {"fleet": "F1", "weeks": 1})) != (409, "not_weekly"):
         failures.append("another customer books a Week of a pinned Fleet, or the Demo Fleet is booked by the Week")
@@ -281,22 +374,25 @@ def waitlist(failures, app, m, port, mailbox, state):
 def gateway(failures, app, m, port, upstream, state):
     H, C, D = state["H"], state["C"], state["D"]
     NOW[0] = kst(2027, 1, 6, 13, 30)
-    keys = {who: m.create_key(who, "test")["key"] for who in (H, C, D)}
-    if chat(port, keys[D], {})[0] != 403 or chat(port, keys[D], {})[1]["error"]["code"] != "no_fleet" or call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[D]}"})[0] != 403:
+    keys = {who: m.create_key(who, {"note": "test"})["key"] for who in (H, C, D)}
+    state["keys"] = keys
+    if chat(port, keys[D], {})[0] != 403 or chat(port, keys[D], {})[1]["error"]["code"] != "fleet_not_held" or call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[D]}"})[0] != 403:
         failures.append("the gateway serves an account that holds no Fleet")
-    if chat(port, "sk-hc-wrong", {})[0] != 401 or chat(port, keys[C], {})[1].get("error", {}).get("code") != "fleet_required" or chat(port, keys[C], {"sparkpipe": {"fleet": "F3"}})[1].get("error", {}).get("code") != "fleet_not_held":
+    if chat(port, "sk-hc-wrong", {})[0] != 401 or chat(port, keys[C], {}) != (409, {"error": {"message": "This account holds F1, F4 now: name one in the X-SparkPipe-Fleet header.", "type": "invalid_request_error", "code": "fleet_required"}}) or chat(port, keys[C], {"sparkpipe": {"fleet": "F3"}})[1].get("error", {}).get("code") != "fleet_not_held":
         failures.append("the gateway does not make an account holding two Fleets name one it holds")
     seen = len(upstream.seen)
-    status, answer = chat(port, keys[C], {"sparkpipe": {"fleet": "F4"}}, {"X-SparkPipe-Account": "ACFAKE", "X-SparkPipe-Fleet": "F9"})
+    if chat(port, keys[C], {"sparkpipe": {"fleet": "F4"}}, {"X-SparkPipe-Fleet": "F9"})[1].get("error", {}).get("code") != "fleet_not_held" or chat(port, keys[C], {"sparkpipe": {"fleet": "F9"}}, {"X-SparkPipe-Fleet": "F4"})[0] != 200:
+        failures.append("the X-SparkPipe-Fleet header does not come before the body's sparkpipe.fleet")
+    status, answer = chat(port, keys[C], {"sparkpipe": {"fleet": "F4"}}, {"X-SparkPipe-Account": "ACFAKE"})
     headers, accounts, body = upstream.seen[-1] if len(upstream.seen) > seen else ({}, [], {})
     if status != 200 or answer.get("sparkpipe", {}).get("fleet") != "F4" or headers != {"Authorization": f"Bearer {POOL_KEY}", "X-SparkPipe-Fleet": "F4", "X-SparkPipe-Account": C} or accounts != [C] or "sparkpipe" in body:
         failures.append(f"the gateway does not forward a holder with its Fleet and account, or forwards the customer's own copies: {status} {headers} {accounts} {body}")
     status, answer = chat(port, keys[H], {})
     if status != 200 or upstream.seen[-1][0]["X-SparkPipe-Fleet"] != "F3" or upstream.seen[-1][0]["X-SparkPipe-Account"] != H:
         failures.append(f"a Week holder is not forwarded to its pinned Fleet: {status} {answer}")
-    status, _, raw = call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[C]}"})
-    if status != 200 or "kimi-k3" not in [model["id"] for model in json.loads(raw)["data"]]:
-        failures.append("a holder cannot list the models")
+    status, _, raw = call(port, "GET", "/v1/models", headers={"Authorization": f"Bearer {keys[C]}", "X-SparkPipe-Fleet": "F4"})
+    if status != 200 or json.loads(raw) != {"method": "GET", "path": "/v1/models", "fleet": "F4"}:
+        failures.append("a holder's model listing does not come from the hub of the Fleet it names")
     before, seen = balance(app, C), len(upstream.seen)
     for extra in ({"fleet": "F1", "priority": 2}, {"bid": 2}, ["F1"], {"fleet": 1}):
         status, answer = chat(port, keys[C], {"sparkpipe": extra})
@@ -308,8 +404,238 @@ def gateway(failures, app, m, port, upstream, state):
     events = [line[6:] for line in raw.decode().splitlines() if line.startswith("data: ")]
     if status != 200 or events[-1] != "[DONE]" or json.loads(events[-2])["sparkpipe"]["fleet"] != "F3":
         failures.append(f"a streamed request is not passed through: {events}")
-    if chat(port, keys[C], {"model": "gpt-9", "sparkpipe": {"fleet": "F4"}})[0] != 404:
-        failures.append("a model that is not listed is forwarded")
+    if chat(port, keys[C], {"model": "gpt-9"}, {"X-SparkPipe-Fleet": "F4"}) != (200, {"model": "gpt-9", "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 5}, "sparkpipe": {"fleet": "F4"}}):
+        failures.append("a model name the hub's alias table resolves does not reach the hub, or the X-SparkPipe-Fleet header does not choose the Fleet")
+
+
+HUB_CALLS = [
+    ("POST", "/v1/messages", {"model": "kimi-k3+core", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}),
+    ("POST", "/v1/messages/count_tokens", {"model": "kimi-k3", "messages": []}),
+    ("POST", "/v1/responses", {"model": "kimi-k3", "input": "hi"}),
+    ("GET", "/v1/responses/resp_1", None),
+    ("GET", "/v1/models", None),
+    ("GET", "/v1/codex/models", None),
+    ("HEAD", "/api/hello", None),
+    ("POST", "/v1/tokenize", {"text": "hi"}),
+    ("POST", "/v1/detokenize", {"tokens": [1]}),
+    ("DELETE", "/v1/requests/r_7Q2", None),
+    ("GET", "/v1/batches", None), ("POST", "/v1/batches", {"input": "jobs.jsonl"}), ("GET", "/v1/batches/b_1", None), ("DELETE", "/v1/batches/b_1", None),
+    ("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+    ("GET", "/v1/state", None),
+    ("POST", "/v1/cache/warm", {"format": "anthropic"}),
+    ("GET", "/v1/cache/pins", None), ("POST", "/v1/cache/pins", {"pack": "core"}), ("DELETE", "/v1/cache/pins/pin_1", None),
+    ("DELETE", "/v1/cache?storage=true", None),
+    ("GET", "/v1/models/resident", None), ("GET", "/v1/models/aliases", None), ("PUT", "/v1/models/aliases", {"claude-*": "kimi-k3"}),
+    ("GET", "/v1/packs", None), ("POST", "/v1/packs", {"name": "core"}), ("GET", "/v1/packs/core", None), ("DELETE", "/v1/packs/core", None), ("POST", "/v1/packs/core/refresh", {}),
+    ("GET", "/v1/repos", None), ("POST", "/v1/repos", {"name": "main"}), ("DELETE", "/v1/repos/main", None),
+    ("GET", "/git/main.git/info/refs?service=git-receive-pack", None),
+    ("GET", "/v1/storage?prefix=models/", None), ("PUT", "/v1/storage/models/x/config.json", {"a": 1}), ("GET", "/v1/storage/models/x/config.json", None), ("DELETE", "/v1/storage/models/x/config.json", None),
+    ("GET", "/v1/storage/changes?since=2027-01-05T00:00:00Z", None),
+    ("POST", "/v1/export", {"paths": ["models/"]}), ("POST", "/v1/restore", {"path": "exports/a.tar"}),
+    ("POST", "/v1/fetch", {"source": "hf://org/model@main", "to": "models/x/"}), ("GET", "/v1/fetch/f_1", None), ("DELETE", "/v1/fetch/f_1", None), ("POST", "/v1/fetch/f_1/resume", {}),
+    ("GET", "/v1/functions", None), ("POST", "/v1/functions/review/runs", {}), ("GET", "/v1/runs", None), ("GET", "/v1/runs/run_1", None), ("GET", "/v1/runs/run_1/log", None), ("DELETE", "/v1/runs/run_1", None),
+    ("GET", "/v1/schedules", None), ("PUT", "/v1/schedules", {"function": "review", "cron": "0 2 * * *", "tz": "Asia/Seoul"}), ("DELETE", "/v1/schedules", None), ("GET", "/v1/reports/2027-01-06", None),
+    ("GET", "/v1/drafters", None), ("PUT", "/v1/drafters/active", {"drafter": "acct-1"}),
+    ("GET", "/v1/custom-models", None), ("POST", "/v1/custom-models", {"name": "mine"}), ("DELETE", "/v1/custom-models/cm_1", None),
+]
+
+
+def raw_call(port, method, path, body=None, headers=None, chunks=None):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=60)
+    try:
+        if chunks is not None:
+            connection.request(method, path, body=iter(chunks), headers=dict(headers or {}, **{"Transfer-Encoding": "chunked"}), encode_chunked=True)
+        else:
+            connection.request(method, path, body=body, headers=headers or {})
+        response = connection.getresponse()
+        return response.status, {name.lower(): value for name, value in response.getheaders()}, response.read()
+    finally:
+        connection.close()
+
+
+def basic(key):
+    return {"Authorization": "Basic " + base64.b64encode(f"git:{key}".encode()).decode()}
+
+
+def sent(call, name):
+    return [value for key, value in call["items"] if key.lower() == name]
+
+
+def passthrough(failures, app, m, port, upstream, state):
+    H, C, D, keys = state["H"], state["C"], state["D"], state["keys"]
+    record = m.key_account(keys[H])
+    forged = {"X-SparkPipe-Account": "ACFAKE", "X-SparkPipe-Key": "KYFAKE", "X-SparkPipe-Allow-Swap": "1", "X-SparkPipe-Public": "0", "anthropic-version": "2023-06-01", "X-SparkPipe-Priority": "background", "Cookie": "other=1"}
+    for n, (method, path, body) in enumerate(HUB_CALLS):
+        raw = None if body is None else json.dumps(body).encode()
+        auth = basic(keys[H]) if path.startswith("/git/") else {"Authorization": f"Bearer {keys[H]}"} if n % 2 else {"X-Api-Key": keys[H]}
+        before = len(upstream.calls)
+        status, headers, answer = raw_call(port, method, path, raw, dict(forged, **auth))
+        got = upstream.calls[before] if len(upstream.calls) == before + 1 else {}
+        expect = {"authorization": f"Bearer {POOL_KEY}", "x-sparkpipe-account": H, "x-sparkpipe-fleet": "F3", "x-sparkpipe-key": record["key"], "x-sparkpipe-allow-swap": "0", "x-sparkpipe-public": "1",
+                  "x-sparkpipe-priority": "background", "anthropic-version": "2023-06-01"}
+        if (got.get("method"), got.get("path"), got.get("body")) != (method, path, raw or b"") or any(sent(got, name) != [value] for name, value in expect.items()) or sent(got, "x-api-key") or sent(got, "cookie"):
+            failures.append(f"{method} {path} does not reach the hub unchanged with the gateway's own account, fleet, key and swap headers: {got}")
+        if status != 200 or headers.get("x-hub") != "1" or answer != (b"" if method == "HEAD" else json.dumps({"method": method, "path": path, "fleet": "F3"}).encode()):
+            failures.append(f"the hub's answer to {method} {path} does not come back unchanged: {status} {headers} {answer[:200]!r}")
+    before = len(upstream.calls)
+    for method, path, body in HUB_CALLS + [("POST", "/v1/chat/completions", {"model": "kimi-k3", "messages": [{"role": "user", "content": "hi"}]}), ("POST", "/v1/state/move", {"from": "F3", "to": "F4"})]:
+        status, _, answer = raw_call(port, method, path, None if body is None else json.dumps(body).encode(), basic(keys[D]) if path.startswith("/git/") else {"X-Api-Key": keys[D]})
+        if status != 403 or (method != "HEAD" and "fleet_not_held" not in answer.decode()):
+            failures.append(f"{method} {path} is not refused to an account that holds no Fleet: {status} {answer[:200]!r}")
+    status, _, answer = raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": keys[D]})
+    if json.loads(answer) != {"type": "error", "error": {"type": "fleet_not_held", "message": "This account holds no Fleet now. Book an Hour or a Week to send requests."}}:
+        failures.append(f"a refusal on /v1/messages does not use Anthropic's error body: {answer!r}")
+    for method, path in (("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/v1/storage/../sparkpipe/status"), ("GET", "/v1/storage/%2e%2e/%2E%2E/sparkpipe/status"), ("GET", "/v1/members"), ("GET", "/v1/audit"), ("GET", "/git/../v1/sparkpipe/status")):
+        status, _, _ = raw_call(port, method, path, b"{}" if method == "POST" else None, {"Authorization": f"Bearer {keys[H]}"})
+        if status != 404:
+            failures.append(f"{method} {path}, which is not in the API, is not refused: {status}")
+    if len(upstream.calls) != before:
+        failures.append(f"a refused request reaches the hub: {upstream.calls[before:]}")
+    status, headers, _ = raw_call(port, "GET", "/git/main.git/info/refs?service=git-receive-pack")
+    if status != 401 or headers.get("www-authenticate") != 'Basic realm="SparkPipe"' or len(upstream.calls) != before:
+        failures.append(f"git without credentials is not asked for the key with Basic authentication: {status} {headers}")
+    big = bytes(range(256)) * (sp.BODY_LIMIT // 256)
+    status, _, _ = raw_call(port, "PUT", "/v1/storage/models/x/part-1", big, {"Authorization": f"Bearer {keys[H]}", "Content-Range": f"bytes 0-{len(big) - 1}/*"})
+    got = upstream.calls[-1]
+    if status != 200 or got["path"] != "/v1/storage/models/x/part-1" or got["body"] != (len(big), hashlib.sha256(big).hexdigest()) or sent(got, "content-range") != [f"bytes 0-{len(big) - 1}/*"]:
+        failures.append(f"a 32 MiB storage chunk does not reach the hub whole: {status} {got['path']} {got['body'] if isinstance(got['body'], tuple) else len(got['body'])}")
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    connection.putrequest("PUT", "/v1/storage/models/x/part-2")
+    connection.putheader("Authorization", f"Bearer {keys[H]}")
+    connection.putheader("Content-Length", str(sp.BODY_LIMIT + 1))
+    connection.endheaders()
+    status = connection.getresponse().status
+    connection.close()
+    if status != 413 or upstream.calls[-1]["path"] != "/v1/storage/models/x/part-1":
+        failures.append(f"a body over 32 MiB is not refused before it reaches the hub: {status}")
+    status, _, _ = raw_call(port, "POST", "/git/main.git/git-receive-pack", headers=dict(basic(keys[H]), **{"Content-Type": "application/x-git-receive-pack-request"}), chunks=[b"0032want ", b"abc", b"\x00" * 70000])
+    got = upstream.calls[-1]
+    if status != 200 or got["path"] != "/git/main.git/git-receive-pack" or got["body"] != b"0032want abc" + b"\x00" * 70000 or sent(got, "content-length") != [str(70012)] or sent(got, "transfer-encoding"):
+        failures.append(f"a chunked git push does not reach the hub as one body: {status} {got['path']} {len(got['body'])}")
+    status, headers, answer = raw_call(port, "POST", "/v1/messages", json.dumps({"model": "kimi-k3", "stream": True, "messages": []}).encode(), {"X-Api-Key": keys[H]})
+    if status != 200 or headers.get("content-type") != "text/event-stream" or [line[7:] for line in answer.decode().splitlines() if line.startswith("event: ")] != ["message_start", "content_block_delta", "message_delta", "message_stop"]:
+        failures.append(f"a Messages stream does not pass through: {status} {headers} {answer!r}")
+    status, _, answer = raw_call(port, "PUT", "/v1/models/resident", json.dumps({"models": ["glm-5.3"]}).encode(), {"Authorization": f"Bearer {keys[H]}"})
+    if status != 409 or json.loads(answer)["error"]["type"] != "model_not_loaded":
+        failures.append(f"the hub's refusal of a swap from a key without allow_swap does not come back unchanged: {status} {answer!r}")
+    sock, head = websocket(port, keys[H])
+    got = upstream.calls[-1]
+    sock.sendall(b"frame-1")
+    echoed = sock.recv(100)
+    sock.close()
+    if not head.startswith(b"HTTP/1.1 101") or echoed != b"echo:frame-1" or got["path"] != "/v1/responses" or [sent(got, name) for name in ("x-sparkpipe-account", "x-sparkpipe-fleet", "authorization", "sec-websocket-key")] != [[H], ["F3"], [f"Bearer {POOL_KEY}"], ["dGhlIHNhbXBsZSBub25jZQ=="]]:
+        failures.append(f"the WebSocket transport of /v1/responses does not reach the hub with the account and fleet: {head!r} {echoed!r} {got}")
+    sock, head = websocket(port, keys[D])
+    sock.close()
+    if not head.startswith(b"HTTP/1.0 403"):
+        failures.append(f"a WebSocket from an account that holds no Fleet is not refused: {head!r}")
+    status, _, answer = raw_call(port, "POST", "/v1/state/move", json.dumps({"from": "F4", "to": "F1"}).encode(), {"X-Api-Key": keys[C]})
+    moved = upstream.calls[-1]
+    refusal = raw_call(port, "POST", "/v1/state/move", json.dumps({"from": "F4", "to": "F3"}).encode(), {"X-Api-Key": keys[C]})
+    if status != 200 or sent(moved, "x-sparkpipe-fleet") != ["F4"] or moved["path"] != "/v1/state/move" or refusal[0] != 403:
+        failures.append(f"moving working state does not go to the source Fleet with both Fleets held: {status} {moved} {refusal}")
+    session = client(app, port, C)
+    status, answer = session("GET", "/v1/state", headers={"X-SparkPipe-Fleet": "F4"})
+    got = upstream.calls[-1]
+    if status != 200 or [sent(got, name) for name in ("x-sparkpipe-account", "x-sparkpipe-fleet", "x-sparkpipe-key", "x-sparkpipe-allow-swap")] != [[C], ["F4"], ["session"], ["1"]] or sent(got, "cookie"):
+        failures.append(f"the account session does not reach the hub as the account with allow_swap: {status} {got}")
+    session.origin = "https://evil.example"
+    if session("PUT", "/v1/models/resident", {"models": []}, headers={"X-SparkPipe-Fleet": "F4"})[0] != 403 or upstream.calls[-1] is not got:
+        failures.append("a cross-site request with the account's cookie reaches the hub")
+
+
+def key_options(failures, app, m, port, upstream, state):
+    H, C, keys = state["H"], state["C"], state["keys"]
+    owner = client(app, port, H)
+    made = lambda body, who=owner: who("POST", "/v1/keys", body)
+    status, narrow = made({"scopes": ["inference"], "note": "ci"})
+    if status != 200 or narrow["scopes"] != ["inference"] or not narrow["key"].startswith("sk-hc-") or narrow["note"] != "ci":
+        failures.append(f"a key with scopes is not created: {status} {narrow}")
+        return
+    if raw_call(port, "GET", "/v1/storage", headers={"X-Api-Key": narrow["key"]})[0] != 403 or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": narrow["key"]})[0] != 200 or raw_call(port, "GET", "/v1/requests", headers={"X-Api-Key": narrow["key"]})[0] != 403:
+        failures.append("a key's scopes are not enforced")
+    for scope, path in (("state", "/v1/state"), ("storage", "/v1/repos"), ("functions", "/v1/runs"), ("models", "/v1/custom-models"), ("inference", "/mcp")):
+        found = made({"scopes": [scope]})[1]["key"]
+        other = next(p for s_, p in (("state", "/v1/state"), ("storage", "/v1/repos"), ("functions", "/v1/runs"), ("models", "/v1/custom-models"), ("inference", "/mcp")) if s_ != scope)
+        if raw_call(port, "GET" if path != "/mcp" else "POST", path, b"{}" if path == "/mcp" else None, {"X-Api-Key": found})[0] != 200 or raw_call(port, "GET" if other != "/mcp" else "POST", other, b"{}" if other == "/mcp" else None, {"X-Api-Key": found})[0] != 403:
+            failures.append(f"the {scope} scope does not open {path} alone")
+    pinned = made({"fleet": "F4"}, client(app, port, C))[1]["key"]
+    raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": pinned, "X-SparkPipe-Fleet": "F1"})
+    if sent(upstream.calls[-1], "x-sparkpipe-fleet") != ["F4"]:
+        failures.append("a key with a fleet does not send every request to that Fleet")
+    elsewhere = made({"fleet": "F3"}, client(app, port, C))[1]["key"]
+    if raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": elsewhere})[0] != 403:
+        failures.append("a key limited to a Fleet the account does not hold reaches the hub")
+    swapper = made({"allow_swap": True})[1]
+    status, _, _ = raw_call(port, "PUT", "/v1/models/resident", b"{}", {"X-Api-Key": swapper["key"]})
+    if status != 200 or sent(upstream.calls[-1], "x-sparkpipe-allow-swap") != ["1"] or swapper["allow_swap"] is not True:
+        failures.append(f"a key with allow_swap does not tell the hub: {status}")
+    walled = made({"ips": ["203.0.113.0/24", "2001:db8::/32"]})[1]
+    if walled["ips"] != ["203.0.113.0/24", "2001:db8::/32"] or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": walled["key"]})[0] != 403 or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": walled["key"], "X-Forwarded-For": "203.0.113.9, 198.51.100.1"})[0] != 403:
+        failures.append("a key's IP allowlist admits an address outside it, or trusts anything but the address the proxy added")
+    if raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": walled["key"], "X-Forwarded-For": "198.51.100.1, 203.0.113.9"})[0] != 200 or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": walled["key"], "X-Forwarded-For": "2001:db8::7"})[0] != 200:
+        failures.append("a key's IP allowlist refuses an address inside it")
+    background = made({"priority": "background"})[1]["key"]
+    raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": background})
+    first = sent(upstream.calls[-1], "x-sparkpipe-priority")
+    raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": background, "X-SparkPipe-Priority": "interactive"})
+    if first != ["background"] or sent(upstream.calls[-1], "x-sparkpipe-priority") != ["interactive"]:
+        failures.append("a key's default priority is not sent, or overrides the request's own")
+    for bad in ({"scopes": ["root"]}, {"scopes": []}, {"fleet": "F9"}, {"expires": "2020-01-01T00:00:00Z"}, {"expires": "soon"}, {"ips": ["300.1.1.1"]}, {"ips": "10.0.0.0/8"}, {"allow_swap": "yes"}, {"priority": "urgent"}, {"note": "a\nb"}):
+        status, answer = made(bad)
+        if status != 400 or answer["error"]["code"] != "invalid_request":
+            failures.append(f"a bad key option is accepted: {bad} {status} {answer}")
+    listed = raw_call(port, "GET", "/v1/keys", headers={"X-Api-Key": keys[H]})
+    ids = [k["id"] for k in json.loads(listed[2])["data"]]
+    if listed[0] != 200 or swapper["id"] not in ids or any("hash" in k or k.get("key", "").startswith("sk-") for k in json.loads(listed[2])["data"]) or raw_call(port, "GET", "/v1/keys", headers={"X-Api-Key": narrow["key"]})[0] != 403:
+        failures.append(f"keys are not listed to account:read, without secrets: {listed}")
+    if raw_call(port, "POST", "/v1/keys", b"{}", {"X-Api-Key": keys[H]})[0] != 403 or raw_call(port, "DELETE", f"/v1/keys/{narrow['id']}", headers={"X-Api-Key": keys[H]})[0] != 403:
+        failures.append("an API key creates or revokes keys")
+    if owner("DELETE", f"/v1/keys/{narrow['id']}")[1] != {"id": narrow["id"], "revoked": True} or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": narrow["key"]})[0] != 401:
+        failures.append("a revoked key still works")
+    page = owner("POST", "/market/keys", {"note": "page", "scopes": ["inference", "state"], "fleet": "F3"})[1]
+    shown = next(k for k in owner("GET", "/market/state")[1]["account"]["keys"] if k["key"] == page["id"])
+    if (shown["scopes"], shown["fleet"], shown["note"]) != (["inference", "state"], "F3", "page"):
+        failures.append(f"the account page does not create keys with options: {shown}")
+
+
+def usage(failures, app, m, port, state):
+    H, C, keys = state["H"], state["C"], state["keys"]
+    key_id = m.key_account(keys[H])["key"]
+    moment = m.now()
+    base = {"account": H, "fleet": "F3", "model": "kimi-k3", "key": key_id, "api": "messages", "session": "s-1"}
+    records = [dict(base, request=f"r_{n}", at=market.stamp(moment - timedelta(minutes=n)), prompt_tokens=1000 * (n + 1), cached_tokens=900 * (n + 1), prefill_tokens=100 * (n + 1), output_tokens=50,
+                    decode_tps=15.0 + n, cold_prefill_ms_estimate=5000 * (n + 1), prefill_ms=200, status=200) for n in range(3)]
+    records[0].update(prompt="the customer's secret prompt", messages=[{"role": "user", "content": "the customer's secret prompt"}], reply="the secret reply")
+    other = dict(base, account=C, fleet="F4", request="r_c", at=market.stamp(moment), prompt_tokens=10)
+    status, found = hub(port, "/hub/requests", {"records": records + [other, {"request": "r_x", "fleet": "F3", "at": market.stamp(moment)}, dict(base, request="r_old", at=market.stamp(moment - timedelta(days=400)))]})
+    if status != 200 or found["accepted"] != 4 or found["duplicates"] != 0 or [r["index"] for r in found["refused"]] != [4, 5]:
+        failures.append(f"the hub's usage records are not taken in, with refusals for incomplete or year-old ones: {status} {found}")
+    if hub(port, "/hub/requests", {"records": records})[1] != {"accepted": 0, "duplicates": 3, "refused": []} or hub(port, "/hub/requests", {"records": records}, "wrong")[0] != 401:
+        failures.append("a resent usage record is stored twice, or a wrong upstream key is accepted")
+    owner = client(app, port, H)
+    status, listed = owner("GET", f"/v1/requests?since={market.stamp(moment - timedelta(hours=1))}")
+    text = json.dumps(listed)
+    if status != 200 or [r["request"] for r in listed["data"]] != ["r_2", "r_1", "r_0"] or "secret" in text or any({"prompt", "messages", "reply"} & set(r) for r in listed["data"]) or "r_c" in text:
+        failures.append(f"GET /v1/requests does not list the account's own records without prompts or replies: {status} {text[:400]}")
+    elif listed["totals"] != {"prompt_tokens": 6000, "cached_tokens": 5400, "prefill_tokens": 600, "output_tokens": 150, "prefill_ms": 600, "cold_prefill_ms_estimate": 30000, "requests": 3,
+                              "prefill_avoided_ms": 30000, "cached_share": 0.9, "decode_tps": round(150 / (50 / 15 + 50 / 16 + 50 / 17), 2)}:
+        failures.append(f"the usage records do not sum into the stats: {listed['totals']}")
+    page = owner("GET", "/v1/requests?limit=2")[1]
+    rest = owner("GET", f"/v1/requests?limit=2&after={page['next']}")[1]
+    if [r["request"] for r in page["data"]] != ["r_2", "r_1"] or not page["has_more"] or [r["request"] for r in rest["data"]] != ["r_0"] or rest["has_more"] or rest["totals"]["requests"] != 3:
+        failures.append(f"usage records do not page: {page} {rest}")
+    by_key = raw_call(port, "GET", f"/v1/requests?key={key_id}&model=kimi-k3", headers={"X-Api-Key": keys[H]})
+    if by_key[0] != 200 or json.loads(by_key[2])["totals"]["requests"] != 3 or owner("GET", "/v1/requests?key=KYNONE")[1]["data"] != [] or owner("GET", "/v1/requests?since=2027-01-01&until=2027-01-02")[1]["data"] != []:
+        failures.append(f"usage records are not filtered by key, model and window: {by_key}")
+    if client(app, port, C)("GET", "/v1/requests")[1]["totals"]["requests"] != 1 or owner("GET", "/v1/requests?since=2027-01-06&until=2026-01-06")[0] != 400 or owner("GET", "/v1/requests?limit=0")[0] != 400:
+        failures.append("another account's records are shown, or a bad window or limit is accepted")
+    day = moment.strftime("%Y-%m-%d")
+    app.usage.prune(moment + timedelta(days=366))
+    kept = (Path(app.cfg.path("requests")) / f"{day}.jsonl").exists()
+    app.usage.prune(moment + timedelta(days=367))
+    if not kept or (Path(app.cfg.path("requests")) / f"{day}.jsonl").exists() or app.usage.query(H, moment - timedelta(days=1), moment + timedelta(days=1), {}):
+        failures.append("usage records are not kept for a year and then deleted")
 
 
 def holders_and_maintenance(failures, app, m, port, state):
@@ -391,7 +717,7 @@ def allocation_flows(failures, work):
         first = order_lot(app, L1, 200, "26000", "5720000")
         third = order_lot(app, L3, 100, "26000", "2860000")
         app.market.credit(L2, Decimal(100), "a")
-        key = m.create_key(S, "s")["key"]
+        key = m.create_key(S, {"note": "s"})["key"]
         m.book_weeks(S, {"fleet": "F3", "weeks": 52})
         for who, lock in ((X, 3200), (Y, 600), (Z, 144)):
             m.join(who, {"lock": lock})
@@ -412,7 +738,7 @@ def allocation_flows(failures, work):
         m.tick()
         app.mails.join()
         view = m.view(S)
-        if balance(app, Q) != 0 or balance(app, S) != 0 or not view["lots"][0]["expired"] or m.held(S, NOW[0]) != ["F3"] or m.gateway(key, None)[1] != "F3" or view["bookings"][0]["state"] != "live":
+        if balance(app, Q) != 0 or balance(app, S) != 0 or not view["lots"][0]["expired"] or m.held(S, NOW[0]) != ["F3"] or m.admit(S, m.key_account(key), None) != "F3" or view["bookings"][0]["state"] != "live":
             failures.append(f"HC lapses 12 months after issue, but HC spent on a Week that runs past it must not: {view['bookings']} {m.held(S, NOW[0])}")
         refunds = {who: [r["refund"] for r in app.book.market.refunds[who]] for who in (L1, L2, L3)}
         expect = {L1: [{"order": first, "processor": "toss", "currency": "KRW", "amount": "5720000"}], L2: [None], L3: [{"order": third, "processor": "toss", "currency": "KRW", "amount": "2860000"}]}
@@ -424,6 +750,276 @@ def allocation_flows(failures, work):
     finally:
         server.shutdown()
         mailbox.shutdown()
+
+
+def bearer_flows(failures, app, m, port, mailbox):
+    P = person(app, "pilot", 2000)
+    cli = tp.Client(port)
+    status, _ = cli("POST", "/code", {"email": "pilot@example.com"})
+    status, signed = cli("POST", "/verify", {"email": "pilot@example.com", "code": tp.last_code(mailbox, "pilot@example.com"), "bearer": True, "device": "laptop"})
+    token = signed.get("session", "")
+    if status != 200 or not token.startswith("sps-") or cli.cookie is not None or signed["email"] != "pilot@example.com":
+        failures.append(f"a CLI sign-in does not return a bearer session without a cookie: {status} {signed}")
+        return P
+    auth = {"Authorization": f"Bearer {token}"}
+    booked = cli("POST", "/market/book-weeks", {"fleet": "F4", "weeks": 1}, headers=auth)
+    joined = cli("POST", "/market/waitlist", {"lock": 144}, headers=auth)
+    shown = cli("GET", "/market/state", headers=auth)[1]["account"]
+    if booked[0] != 200 or booked[1]["first"] != slot(kst(2027, 1, 4)) or joined[1] != {"locked": "144.000000", "position": 1} or shown["email"] != "pilot@example.com" or [s_["device"] for s_ in shown["sessions"]] != ["laptop"]:
+        failures.append(f"the CLI does not book a Week and join the waitlist with a bearer session: {booked} {joined}")
+    cli("POST", "/market/waitlist/leave", {}, headers=auth)
+    if cli("POST", "/market/book-weeks", {"fleet": "F4", "weeks": 1}, headers={"Authorization": "Bearer sps-wrong"})[0] != 401 or cli("GET", "/market/state", headers={"Authorization": "Bearer sps-wrong"})[1]["account"] is not None:
+        failures.append("a wrong bearer session is accepted")
+    second = tp.Client(port)
+    second("POST", "/code", {"email": "pilot@example.com"})
+    other = second("POST", "/verify", {"email": "pilot@example.com", "code": tp.last_code(mailbox, "pilot@example.com"), "bearer": True, "device": "desktop"})[1]["session"]
+    if cli("POST", "/signout", {}, headers=auth)[0] != 200 or cli("GET", "/market/state", headers=auth)[1]["account"] is not None or cli("POST", "/market/waitlist", {"lock": 144}, headers=auth)[0] != 401:
+        failures.append("signing out does not end the bearer session")
+    found = second("GET", "/market/state", headers={"Authorization": f"Bearer {other}"})[1]["account"]["sessions"]
+    if [s_["device"] for s_ in found] != ["desktop"] or second("POST", "/market/sessions/revoke", {"id": found[0]["id"]}, headers={"Authorization": f"Bearer {other}"})[0] != 200 or second("GET", "/market/state", headers={"Authorization": f"Bearer {other}"})[1]["account"] is not None:
+        failures.append("an account cannot see and revoke its own bearer sessions")
+    third = tp.Client(port)
+    third("POST", "/code", {"email": "pilot@example.com"})
+    late = third("POST", "/verify", {"email": "pilot@example.com", "code": tp.last_code(mailbox, "pilot@example.com"), "bearer": True})[1]["session"]
+    saved = NOW[0]
+    NOW[0] = saved + timedelta(days=89)
+    alive = third("GET", "/market/state", headers={"Authorization": f"Bearer {late}"})[1]["account"] is not None
+    NOW[0] = saved + timedelta(days=90, seconds=1)
+    if not alive or third("GET", "/market/state", headers={"Authorization": f"Bearer {late}"})[1]["account"] is not None:
+        failures.append("a bearer session does not last 90 days and then end")
+    NOW[0] = saved
+    return P
+
+
+def through(app, account, fleet):
+    return max((b["ends"] for b in app.book.market.bookings.values() if b["account"] == account and b["fleet"] == fleet and b["kind"] == "week"), default=None)
+
+
+def extension_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    upstream = tp.serve(FakeUpstream, seen=[], calls=[])
+    server, app, port = live(work, "extension", mailbox, upstream)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 1, 12)
+        P = bearer_flows(failures, app, m, port, mailbox)
+        app.market.credit(P, Decimal(8000), "year")
+        owner = client(app, port, P)
+        if owner("PUT", "/market/auto-extend", {"fleet": "F5", "weeks_ahead": 4}) != (409, {"error": "Auto-extend keeps Weeks you hold: book a Week of Fleet 5 first.", "reason": "not_pinned"}) or owner("PUT", "/market/auto-extend", {"fleet": "F4", "weeks_ahead": 53})[0] != 400:
+            failures.append("auto-extend is set on a Fleet the account holds no Week of, or beyond 52 Weeks")
+        spent = balance(app, P)
+        status, setting = owner("PUT", "/market/auto-extend", {"fleet": "F4", "weeks_ahead": 4})
+        if status != 200 or setting != {"fleet": "F4", "weeks_ahead": 4, "through": slot(kst(2027, 2, 1))} or m.view(P)["pinned"][0]["autoExtend"] != 4:
+            failures.append(f"auto-extend does not book the Weeks ahead at once: {status} {setting}")
+        drift = []
+        for week in range(52):
+            NOW[0] = kst(2027, 1, 1, 12) + market.WEEK * (week + 1)
+            m.tick()
+            if through(app, P, "F4") != market.week_start(NOW[0]) + 5 * market.WEEK:
+                drift.append((market.kst_text(NOW[0]), through(app, P, "F4")))
+        autos = [b for b in app.book.market.bookings.values() if b["account"] == P and b.get("auto")]
+        if drift or len(autos) != 53 or any(b["weeks"] != 1 for b in autos[1:]) or {b["discount"] for b in autos[1:]} != {"0.05"} or notices(app, P, "booking.deadline"):
+            failures.append(f"auto-extend does not keep 4 Weeks booked ahead across a year, one Week at a time at the discount for the Weeks held: {drift[:3]} {len(autos)} {[(b['weeks'], b['discount']) for b in autos[:3]]}")
+        if spent - balance(app, P) != sum(Decimal(b["hc"]) for b in autos) or len(notices(app, P, "booking.confirmed")) != 54:
+            failures.append("auto-extended Weeks are not paid from the account's HC, or not confirmed")
+        S = person(app, "short", 200)
+        m.book_weeks(S, {"fleet": "F5", "weeks": 1})
+        first = through(app, S, "F5")
+        found = client(app, port, S)("PUT", "/market/auto-extend", {"fleet": "F5", "weeks_ahead": 2})
+        warned = notices(app, S, "booking.deadline")
+        data = warned[0]["data"] if warned else {}
+        if found[1].get("through") != slot(first) or len(warned) != 1 or (data.get("early"), data.get("hc_needed"), data.get("price"), data.get("balance")) != (True, "88.000000", "144.000000", "56.000000") or market.stamp_time(warned[0]["now"]) >= first - market.DAY - 48 * market.HOUR:
+            failures.append(f"a short balance does not send booking.deadline early with the HC needed: {found} {warned}")
+        m.tick()
+        if len(notices(app, S, "booking.deadline")) != 1:
+            failures.append("the early warning repeats while the balance stays short")
+        app.mails.join()
+        if not any(rcpt == ["short@example.com"] and mail["Subject"] == "Auto-extend on Fleet 5 needs 88.000000 more HC" for rcpt, mail in mailbox.mail):
+            failures.append("the early warning is not emailed to the account")
+        app.market.credit(S, Decimal(100), "top up")
+        m.tick()
+        if through(app, S, "F5") != first + market.WEEK:
+            failures.append("auto-extend does not book once the balance is topped up")
+        R = person(app, "ender", 300)
+        m.book_weeks(R, {"fleet": "F3", "weeks": 1})
+        client(app, port, R)("PUT", "/market/auto-extend", {"fleet": "F3", "weeks_ahead": 1})
+        app.book.append("hc_debit", {"account": R, "hc": market.text_hc(balance(app, R)), "reason": "test", "ref": "test", "now": market.stamp(m.now())})
+        NOW[0] += market.WEEK
+        m.tick()
+        warned = [n["data"].get("early") for n in notices(app, R, "booking.deadline")]
+        NOW[0] += 3 * market.WEEK
+        m.tick()
+        if (R, "F3") in app.book.market.extend or warned != [True, None]:
+            failures.append("auto-extend does not stop once the pin it keeps has lapsed")
+        time_based_keys(failures, app, m, port, upstream, P)
+        tunnel_end(failures, app, m, port)
+    finally:
+        server.shutdown()
+        upstream.shutdown()
+        mailbox.shutdown()
+
+
+def time_based_keys(failures, app, m, port, upstream, P):
+    owner = client(app, port, P)
+    expiring = owner("POST", "/v1/keys", {"expires": market.stamp(m.now() + market.HOUR)})[1]
+    works = raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": expiring["key"]})[0]
+    NOW[0] += 2 * market.HOUR
+    if works != 200 or raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": expiring["key"]})[0] != 401:
+        failures.append("a key works after its expiry, or not before it")
+    old = owner("POST", "/v1/keys", {"scopes": ["inference", "storage"], "fleet": "F4", "allow_swap": True, "ips": ["127.0.0.1/32"], "priority": "background", "note": "ci"})[1]
+    status, new = owner("POST", f"/v1/keys/{old['id']}/rotate")
+    same = all(new.get(name) == old[name] for name in ("scopes", "fleet", "allow_swap", "ips", "priority", "note"))
+    before = [raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": key})[0] for key in (old["key"], new.get("key"))]
+    if status != 200 or not same or new["replaces"] != old["id"] or new["retires"] != market.stamp(m.now() + market.HOUR) or before != [200, 200] or owner("POST", f"/v1/keys/{old['id']}/rotate")[0] != 409:
+        failures.append(f"a rotated key does not keep its options, or the old key stops before an hour: {status} {new} {before}")
+    NOW[0] += market.HOUR - timedelta(seconds=1)
+    still = raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": old["key"]})[0]
+    NOW[0] += timedelta(seconds=1)
+    after = [raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": key})[0] for key in (old["key"], new["key"])]
+    if still != 200 or after != [401, 200]:
+        failures.append(f"the old key of a rotation is not valid for exactly an hour: {still} {after}")
+
+
+def tunnel_end(failures, app, m, port):
+    Q = person(app, "quick", 10)
+    start = market.slot_time(market.slot_text(m.now())) + market.HOUR
+    m.book_hours(Q, {"fleet": "F1", "start": slot(start), "hours": 1})
+    key = m.create_key(Q, {})["key"]
+    NOW[0] = start + timedelta(minutes=30)
+    saved, sp.TUNNEL_CHECK = sp.TUNNEL_CHECK, 0.2
+    try:
+        sock, head = websocket(port, key)
+        sock.sendall(b"ping")
+        first = sock.recv(100)
+        NOW[0] = start + market.HOUR
+        sock.settimeout(5)
+        try:
+            closed = sock.recv(100) == b""
+        except OSError:
+            closed = False
+        sock.close()
+    finally:
+        sp.TUNNEL_CHECK = saved
+    if not head.startswith(b"HTTP/1.1 101") or first != b"echo:ping" or not closed:
+        failures.append(f"a WebSocket stays open after the account stops holding the Fleet: {head[:40]!r} {first!r} {closed}")
+
+
+def signed(secret, headers, body):
+    stamp, _, given = (headers.get("x-sparkpipe-signature") or "").partition(",v1=")
+    moment = stamp[2:] if stamp.startswith("t=") else ""
+    return moment.isdigit() and abs(int(moment) - time.time()) < 300 and hmac.compare_digest(given, hmac.new(secret.encode(), moment.encode() + b"." + body, hashlib.sha256).hexdigest())
+
+
+def notice_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    good, slack, flaky = (tp.serve(Receiver, posts=[], fail=fail) for fail in (0, 0, 2))
+    saved = sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS
+    sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS = ("https", "http"), lambda text: True, (0.05,) * 7
+    server, app, port = live(work, "notices", mailbox)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 6, 12)
+        W, O = person(app, "watcher", 1000), person(app, "other", 1000)
+        owner = client(app, port, W)
+        url = lambda receiver: f"http://127.0.0.1:{receiver.server_address[1]}/hook"
+        status, everything = owner("PUT", "/v1/webhooks", {"url": url(good), "events": ["*"], "secret": "s" * 24})
+        status2, chat_hook = owner("PUT", "/v1/webhooks", {"url": url(slack), "events": ["booking.confirmed"], "slack": True})
+        status3, retried = owner("PUT", "/v1/webhooks", {"url": url(flaky), "events": ["booking.confirmed", "working_state.lost"], "secret": "f" * 24})
+        if [status, status2, status3] != [200, 200, 200] or "secret" in everything or not chat_hook.get("secret", "").startswith("whsec_") or everything["hint"] != "ssss":
+            failures.append(f"webhooks are not set with a given or generated secret: {everything} {chat_hook} {retried}")
+            return
+        listed = owner("GET", "/v1/webhooks")[1]
+        if [h.get("url") or h.get("email") for h in listed["data"]] != sorted([url(good), url(slack), url(flaky)], key=lambda u: [everything, chat_hook, retried][[url(good), url(slack), url(flaky)].index(u)]["id"]) + ["watcher@example.com"] or "secret" in json.dumps(listed) or listed["events"] != list(market.EVENTS):
+            failures.append(f"the webhook list shows secrets, or not the default email notices: {listed}")
+        m.book_hours(W, {"fleet": "F1", "start": slot(kst(2027, 1, 6, 14)), "hours": 1})
+        m.join(O, {"lock": 200})
+        m.join(W, {"lock": 300})
+        m.join(O, {"lock": 200})
+        NOW[0] = kst(2027, 1, 10)
+        m.tick()
+        mine = next(b for b in app.book.market.bookings.values() if b["account"] == W and b["source"] == "waitlist")
+        m.schedule_maintenance(mine["fleet"], "2027-01-18")
+        NOW[0] = kst(2027, 1, 18, 3)
+        m.tick()
+        deadline = mine["ends"] - market.DAY
+        NOW[0] = deadline - 49 * market.HOUR
+        m.tick()
+        early = len(notices(app, W, "booking.deadline"))
+        NOW[0] = deadline - 47 * market.HOUR
+        m.tick()
+        NOW[0] = deadline - 7 * market.HOUR
+        m.tick()
+        NOW[0] = deadline - 5 * market.HOUR
+        m.tick()
+        m.tick()
+        hours = [n["data"]["hours"] for n in notices(app, W, "booking.deadline")]
+        if early or hours != [48, 6] or notices(app, W, "booking.deadline")[0]["data"]["deadline"] != slot(deadline):
+            failures.append(f"booking.deadline does not fire once 48 hours and once 6 hours before the Sunday deadline: {early} {hours}")
+        pair_loss(failures, app, m, port, W, O, mine["fleet"])
+        events = [{"id": f"e{n}", "account": W, "fleet": mine["fleet"], "type": kind, "data": {"run": "run_1", "function": "review"}} for n, kind in enumerate(market.HUB_EVENTS)]
+        status, answer = hub(port, "/hub/events", {"events": events})
+        again = hub(port, "/hub/events", {"events": events[:1] + [{"id": "x", "account": W, "fleet": "F1", "type": "booking.confirmed"}]})[1]
+        if status != 200 or any(item.get("duplicate") is not False for item in answer["events"]) or again["events"][0] != {"id": "e0", "duplicate": True} or again["events"][1].get("reason") != "invalid_request" or hub(port, "/hub/events", {"events": events}, "wrong")[0] != 401:
+            failures.append(f"the hub's events are not taken in once each, with only the hub's event types and the upstream key: {answer} {again}")
+        types = lambda receiver: {json.loads(body).get("type") for _, body in receiver.posts}
+        if not until(lambda: types(good) >= set(market.EVENTS)):
+            failures.append(f"not every event of §13 reaches the webhook: {set(market.EVENTS) - types(good)}")
+        bad = [(headers.get("x-sparkpipe-event"), body[:80]) for headers, body in good.posts if not signed("s" * 24, headers, body) or headers.get("x-sparkpipe-event") != json.loads(body)["type"]]
+        if bad or {json.loads(body)["account"] for _, body in good.posts} != {W}:
+            failures.append(f"webhook deliveries are not signed with HMAC-SHA256 in X-SparkPipe-Signature, or carry other accounts: {bad[:3]}")
+        sample = next(json.loads(body) for _, body in good.posts if json.loads(body)["type"] == "working_state.lost")
+        if set(sample) != {"id", "type", "created", "account", "summary", "data"} or sample["data"]["contexts"] != ["conv-a", "conv-b"] or sample["data"]["hc"] != "24.000000":
+            failures.append(f"a webhook body is not the event with its data: {sample}")
+        until(lambda: len(slack.posts) >= 1 and len(flaky.posts) >= 4)
+        if [json.loads(body) for _, body in slack.posts] != [{"text": "Booked Fleet 1: 1 hours from 2027-01-06 14:00 KST"}] or not all(signed(chat_hook["secret"], headers, body) for headers, body in slack.posts):
+            failures.append(f"a Slack-compatible webhook does not get the event's text, signed: {slack.posts}")
+        delivered = [json.loads(body)["type"] for headers, body in flaky.posts]
+        if len(flaky.posts) != 4 or sorted(set(delivered)) != ["booking.confirmed", "working_state.lost"] or not all(signed("f" * 24, headers, body) for headers, body in flaky.posts):
+            failures.append(f"a failed delivery is not retried until it succeeds: {delivered}")
+        app.mails.join()
+        subjects = sorted(" ".join(mail["Subject"].split()) for rcpt, mail in mailbox.mail if rcpt == ["watcher@example.com"])
+        expect = ["Book the next Week of Fleet 4 by " + market.kst_text(deadline)] * 2 + ["SparkPipe Fleet 4 is yours from 2027-01-11", "SparkPipe Fleet 4 lost part of your working state: 24.000000 HC credited", "SparkPipe credited 3.000000 HC for maintenance on Fleet 4",
+                  "SparkPipe maintenance on Fleet 4, 2027-01-18 00:00 KST"]
+        if mine["fleet"] != "F4" or subjects != sorted(expect):
+            failures.append(f"the default email notices are not booking.deadline, fleet.allocated, downtime.credited and working_state.lost: {subjects}")
+        status, quiet = owner("PUT", "/v1/webhooks", {"email": "watcher@example.com", "events": []})
+        listed = owner("GET", "/v1/webhooks")[1]["data"]
+        if status != 200 or quiet.get("email") != "watcher@example.com" or any(h.get("default") for h in listed) or m.targets(W, "booking.deadline") != [everything["id"]]:
+            failures.append(f"email notices cannot be turned off: {quiet} {listed}")
+        if owner("PUT", "/v1/webhooks", {"email": "someone@else.example", "events": ["booking.deadline"]})[0] != 400 or owner("PUT", "/v1/webhooks", {"url": url(good), "events": ["nope"]})[0] != 400:
+            failures.append("notices go to another address than the account's, or to an unknown event")
+        if owner("DELETE", f"/v1/webhooks/{retried['id']}")[1] != {"id": retried["id"], "deleted": True} or retried["id"] in m.targets(W, "working_state.lost") or retried["id"] in app.notifier.secrets():
+            failures.append("a deleted webhook keeps its secret or its events")
+        if raw_call(port, "PUT", "/v1/webhooks", json.dumps({"url": url(good), "events": ["*"]}).encode(), {"X-Api-Key": m.create_key(W, {})["key"]})[0] != 403:
+            failures.append("an API key manages webhooks")
+        outcomes = [json.loads(line) for line in Path(app.cfg.path("deliveries.jsonl")).read_text().splitlines()]
+        if {o["outcome"] for o in outcomes} != {"delivered"} or sum(o["attempts"] for o in outcomes if o["target"] == retried["id"]) != 4 or {o["attempts"] for o in outcomes if o["target"] != retried["id"]} != {1}:
+            failures.append(f"webhook outcomes are not recorded: {[o for o in outcomes if o['target'] == retried['id']]}")
+    finally:
+        server.shutdown()
+        for receiver in (good, slack, flaky):
+            receiver.shutdown()
+        mailbox.shutdown()
+        sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS = saved
+
+
+def pair_loss(failures, app, m, port, W, O, fleet):
+    before = balance(app, W)
+    report = {"fleet": fleet, "event": "loss-1", "account": W, "pair": ["sparkg", "sparkh"], "contexts": ["conv-a", "conv-b"], "storage": ["models/x/"], "run": "run_rebuild"}
+    status, found = hub(port, "/hub/pair-loss", report)
+    lots = [lot for lot in app.book.market.lots[W] if lot["source"] == "rebuild"]
+    if status != 200 or found["hc"] != "24.000000" or balance(app, W) - before != 24 or [lot["ref"] for lot in lots] != [f"{fleet}:loss-1"] or found["duplicate"]:
+        failures.append(f"a pair-loss report does not credit 24 hours of the Fleet at its Rate at once: {status} {found}")
+    again = hub(port, "/hub/pair-loss", report)[1]
+    if not again.get("duplicate") or again["lot"] != found["lot"] or balance(app, W) - before != 24 or len(notices(app, W, "working_state.lost")) != 1:
+        failures.append(f"the same pair-loss event is credited twice: {again}")
+    lost = notices(app, W, "working_state.lost")[0]["data"]
+    if (lost["contexts"], lost["storage"], lost["hc"], lost["run"]) != (["conv-a", "conv-b"], ["models/x/"], "24.000000", "run_rebuild"):
+        failures.append(f"working_state.lost does not say what was lost, the credit and the rebuild run: {lost}")
+    refusals = [hub(port, "/hub/pair-loss", dict(report, event="loss-2"), "wrong")[0], hub(port, "/hub/pair-loss", dict(report, event="loss-3", account=O))[0], hub(port, "/hub/pair-loss", dict(report, event="loss-4", fleet="F9"))[0],
+                hub(port, "/hub/pair-loss", dict(report, event="loss-5", at="2099-01-01T00:00:00Z"))[0], hub(port, "/hub/pair-loss", {"fleet": fleet, "account": W})[0]]
+    if refusals != [401, 409, 404, 400, 400] or balance(app, W) - before != 24:
+        failures.append(f"a pair-loss report is credited with a wrong key, for an account that did not hold the Fleet, an unknown Fleet, a future time or no event: {refusals}")
 
 
 def sandbox_flows(failures, work):
@@ -455,6 +1051,9 @@ def sandbox_flows(failures, work):
         status, answer = chat(port, key, {"max_tokens": 6})
         if status != 200 or not answer["choices"][0]["message"]["content"].startswith("Sandbox reply from SparkPipe F1") or answer["sparkpipe"]["fleet"] != "F1":
             failures.append(f"the sandbox does not simulate replies for a holder: {status} {answer}")
+        status, _, raw = raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": key})
+        if status != 503 or json.loads(raw)["error"]["type"] != "closed":
+            failures.append(f"the sandbox claims to serve a path it does not simulate: {status} {raw!r}")
         held = user("GET", "/market/state")[1]["account"]
     finally:
         server.shutdown()
@@ -479,6 +1078,8 @@ def main():
         site(work)
         live_flows(failures, work)
         allocation_flows(failures, work)
+        extension_flows(failures, work)
+        notice_flows(failures, work)
         sandbox_flows(failures, work)
     finally:
         shutil.rmtree(work)
@@ -486,7 +1087,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway forwards only holders, with X-SparkPipe-Fleet and X-SparkPipe-Account and no customer copies; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies and reset; and the ledger replays")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend across a year with an early warning on a short balance; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies and reset; and the ledger replays")
     return 0
 
 
