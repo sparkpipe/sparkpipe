@@ -57,6 +57,7 @@ static void SparkWeightdSignal(int signal_number)
 }
 
 static char weightd_kv_purge_root[SPARK_KV_SNAPSHOT_PATH_BYTES];
+static SparkKvLedger weightd_kv_ledger;
 
 static void SparkWeightdKvPurgeOnce(void)
 {
@@ -65,12 +66,15 @@ static void SparkWeightdKvPurgeOnce(void)
     SparkStatus status;
     if (clock_gettime(CLOCK_REALTIME, &now) != 0)
         return;
-    status = SparkKvSnapshotPurgeTree(weightd_kv_purge_root, (uint64_t)now.tv_sec, &result);
-    if (status != SPARK_STATUS_OK || result.deleted_files != 0u || result.failed_unlinks != 0u)
-        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu\n",
-            weightd_kv_purge_root, SparkStatusToString(status), result.stores, result.busy_stores,
+    SparkKvLedgerUsage usage;
+    status = SparkKvSnapshotPurgeTree(&weightd_kv_ledger, weightd_kv_purge_root, (uint64_t)now.tv_sec, &result);
+    memset(&usage, 0, sizeof(usage));
+    (void)SparkKvLedgerSample(&weightd_kv_ledger, &usage);
+    if (status != SPARK_STATUS_OK || result.deleted_files != 0u || result.failed_unlinks != 0u || result.uncounted_stores != 0u)
+        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u uncounted=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu node_used=%llu of %llu\n",
+            weightd_kv_purge_root, SparkStatusToString(status), result.stores, result.busy_stores, result.uncounted_stores,
             (unsigned long long)result.deleted_files, (unsigned long long)result.deleted_bytes, result.failed_unlinks,
-            (unsigned long long)SPARK_KV_RETENTION_SECONDS);
+            (unsigned long long)SPARK_KV_RETENTION_SECONDS, (unsigned long long)usage.used_bytes, (unsigned long long)usage.quota_bytes);
 }
 
 static void *SparkWeightdKvPurgeThread(void *argument)
@@ -101,6 +105,19 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
         return SPARK_STATUS_NOT_FOUND;
     }
     memcpy(weightd_kv_purge_root, owner->pw_dir, strlen(owner->pw_dir) + 1u);
+    {
+        char ledger_path[SPARK_KV_LEDGER_DIRECTORY_BYTES];
+        SparkStatus status = SparkKvLedgerDefaultPath(ledger_path, sizeof(ledger_path));
+        if (status == SPARK_STATUS_OK)
+            status = SparkKvLedgerOpen(&weightd_kv_ledger, ledger_path, SPARK_KV_NODE_QUOTA_BYTES);
+        if (status != SPARK_STATUS_OK)
+        {
+            fprintf(stderr, "weightd kv purge: the node KV ledger does not open (status=%s); startup failed\n", SparkStatusToString(status));
+            return status;
+        }
+        fprintf(stderr, "weightd kv ledger %s: node quota %llu bytes for the node's own KV on disk, shared by every lane\n", ledger_path,
+            (unsigned long long)SPARK_KV_NODE_QUOTA_BYTES);
+    }
     if (pthread_create(&purge_thread, 0, SparkWeightdKvPurgeThread, 0) != 0)
     {
         fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");

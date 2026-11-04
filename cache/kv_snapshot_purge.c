@@ -5,13 +5,31 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
+
+#define SPARK_KV_PURGE_BUCKET_SECONDS UINT64_C(60)
+#define SPARK_KV_PURGE_BUCKETS 4096u
+
+typedef void (*SparkKvSnapshotPurgeVisitor)(void *context,const char *path,const char *name,const struct stat *info);
+
+typedef struct SparkKvSnapshotPurgeTally
+{
+	SparkKvSnapshotPurgeResult *result;
+	uint64_t now_seconds;
+	uint64_t remaining_bytes;
+	uint64_t oldest_seconds;
+	uint64_t freed_bytes;
+	uint32_t cutoff_bucket;
+	uint64_t *bucket_bytes;
+} SparkKvSnapshotPurgeTally;
 
 static uint32_t SparkKvSnapshotPurgeEndsWith(const char *name,const char *suffix)
 {
@@ -38,7 +56,7 @@ uint32_t SparkKvSnapshotIsShardName(const char *name)
 	return(name != 0 && name[0] != '\0' && name[1] != '\0' && name[2] == '\0' && strchr(digits,name[0]) != 0 && strchr(digits,name[1]) != 0 ? 1u : 0u);
 }
 
-static void SparkKvSnapshotPurgeFiles(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+static void SparkKvSnapshotPurgeVisitFiles(const char *directory,SparkKvSnapshotPurgeVisitor visitor,void *context)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
@@ -52,30 +70,39 @@ static void SparkKvSnapshotPurgeFiles(const char *directory,uint64_t now_seconds
 			continue;
 		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )
 			continue;
-		if ( lstat(path,&info) != 0 || !S_ISREG(info.st_mode) )
-			continue;
-		if ( SparkKvSnapshotPurgeIsTemporary(item->d_name) == 0u && (uint64_t)info.st_mtime + SPARK_KV_RETENTION_SECONDS > now_seconds )
-			continue;
-		if ( unlink(path) != 0 )
-		{
-			result->failed_unlinks++;
-			continue;
-		}
-		result->deleted_files++;
-		result->deleted_bytes += (uint64_t)info.st_size;
+		if ( lstat(path,&info) == 0 && S_ISREG(info.st_mode) )
+			visitor(context,path,item->d_name,&info);
 	}
 	(void)closedir(listing);
 }
 
-SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+static SparkStatus SparkKvSnapshotPurgeVisit(const char *directory,SparkKvSnapshotPurgeVisitor visitor,void *context)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
 	struct stat info;
-	DIR *listing;
-	int lock = -1;
-	if ( directory == 0 || result == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	DIR *listing = opendir(directory);
+	if ( listing == 0 )
+		SPARK_FAIL(errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR);
+	while ( (item = readdir(listing)) != 0 )
+	{
+		if ( SparkKvSnapshotIsShardName(item->d_name) == 0u )
+			continue;
+		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )
+			continue;
+		if ( lstat(path,&info) == 0 && S_ISDIR(info.st_mode) )
+			SparkKvSnapshotPurgeVisitFiles(path,visitor,context);
+	}
+	(void)closedir(listing);
+	SparkKvSnapshotPurgeVisitFiles(directory,visitor,context);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvSnapshotPurgeLock(const char *directory,int *lock_out)
+{
+	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
+	int lock;
+	*lock_out = -1;
 	if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,SPARK_KV_SNAPSHOT_LOCK_NAME) >= sizeof(path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	lock = open(path,O_RDWR | O_CLOEXEC | O_NOFOLLOW);
@@ -86,34 +113,141 @@ SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_sec
 		(void)close(lock);
 		if ( errno != EWOULDBLOCK )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		result->busy_stores++;
-		return(SPARK_STATUS_OK);
+		return(SPARK_STATUS_BUSY);
 	}
-	listing = opendir(directory);
-	if ( listing == 0 )
-	{
-		if ( lock >= 0 )
-			(void)close(lock);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	result->stores++;
-	while ( (item = readdir(listing)) != 0 )
-	{
-		if ( SparkKvSnapshotIsShardName(item->d_name) == 0u )
-			continue;
-		if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,item->d_name) >= sizeof(path) )
-			continue;
-		if ( lstat(path,&info) == 0 && S_ISDIR(info.st_mode) )
-			SparkKvSnapshotPurgeFiles(path,now_seconds,result);
-	}
-	(void)closedir(listing);
-	SparkKvSnapshotPurgeFiles(directory,now_seconds,result);
-	if ( lock >= 0 )
-		(void)close(lock);
+	*lock_out = lock;
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,uint32_t depth,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+static void SparkKvSnapshotPurgeKeep(SparkKvSnapshotPurgeTally *tally,const struct stat *info)
+{
+	tally->remaining_bytes += (uint64_t)info->st_size;
+	if ( (uint64_t)info->st_mtime < tally->oldest_seconds )
+		tally->oldest_seconds = (uint64_t)info->st_mtime;
+}
+
+static void SparkKvSnapshotPurgeUnlink(SparkKvSnapshotPurgeTally *tally,const char *path,const struct stat *info)
+{
+	if ( unlink(path) != 0 )
+	{
+		tally->result->failed_unlinks++;
+		SparkKvSnapshotPurgeKeep(tally,info);
+		return;
+	}
+	tally->result->deleted_files++;
+	tally->result->deleted_bytes += (uint64_t)info->st_size;
+	tally->freed_bytes += (uint64_t)info->st_size;
+}
+
+static void SparkKvSnapshotPurgeExpired(void *context,const char *path,const char *name,const struct stat *info)
+{
+	SparkKvSnapshotPurgeTally *tally = (SparkKvSnapshotPurgeTally *)context;
+	if ( SparkKvSnapshotPurgeIsTemporary(name) == 0u && (uint64_t)info->st_mtime + SPARK_KV_RETENTION_SECONDS > tally->now_seconds )
+		SparkKvSnapshotPurgeKeep(tally,info);
+	else
+		SparkKvSnapshotPurgeUnlink(tally,path,info);
+}
+
+static uint32_t SparkKvSnapshotPurgeBucket(const SparkKvSnapshotPurgeTally *tally,const struct stat *info)
+{
+	uint64_t age = tally->now_seconds > (uint64_t)info->st_mtime ? tally->now_seconds - (uint64_t)info->st_mtime : 0u;
+	age /= SPARK_KV_PURGE_BUCKET_SECONDS;
+	return(age >= SPARK_KV_PURGE_BUCKETS ? SPARK_KV_PURGE_BUCKETS - 1u : (uint32_t)age);
+}
+
+static void SparkKvSnapshotPurgeCount(void *context,const char *path,const char *name,const struct stat *info)
+{
+	SparkKvSnapshotPurgeTally *tally = (SparkKvSnapshotPurgeTally *)context;
+	(void)path;
+	if ( SparkKvSnapshotPurgeIsTemporary(name) == 0u )
+		tally->bucket_bytes[SparkKvSnapshotPurgeBucket(tally,info)] += (uint64_t)info->st_size;
+}
+
+static void SparkKvSnapshotPurgeCut(void *context,const char *path,const char *name,const struct stat *info)
+{
+	SparkKvSnapshotPurgeTally *tally = (SparkKvSnapshotPurgeTally *)context;
+	if ( SparkKvSnapshotPurgeIsTemporary(name) != 0u || SparkKvSnapshotPurgeBucket(tally,info) >= tally->cutoff_bucket )
+		SparkKvSnapshotPurgeUnlink(tally,path,info);
+	else
+		SparkKvSnapshotPurgeKeep(tally,info);
+}
+
+static uint64_t SparkKvSnapshotPurgeWallSeconds(void)
+{
+	struct timespec now;
+	return(clock_gettime(CLOCK_REALTIME,&now) == 0 ? (uint64_t)now.tv_sec : 0u);
+}
+
+SparkStatus SparkKvSnapshotPurgeOldest(SparkKvLedger *ledger,const char *directory,uint64_t needed_bytes,uint64_t *freed_bytes)
+{
+	SparkKvSnapshotPurgeResult result;
+	SparkKvSnapshotPurgeTally tally;
+	uint64_t sum = 0u;
+	uint32_t bucket;
+	SparkStatus status;
+	int lock;
+	if ( ledger == 0 || directory == 0 || freed_bytes == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*freed_bytes = 0u;
+	status = SparkKvSnapshotPurgeLock(directory,&lock);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&result,0,sizeof(result));
+	memset(&tally,0,sizeof(tally));
+	tally.result = &result;
+	tally.now_seconds = SparkKvSnapshotPurgeWallSeconds();
+	tally.oldest_seconds = SPARK_KV_LEDGER_NO_OLDEST;
+	tally.bucket_bytes = (uint64_t *)calloc(SPARK_KV_PURGE_BUCKETS,sizeof(uint64_t));
+	status = tally.bucket_bytes != 0 ? SparkKvSnapshotPurgeVisit(directory,SparkKvSnapshotPurgeCount,&tally) : SPARK_STATUS_CAPACITY_EXCEEDED;
+	for (bucket=SPARK_KV_PURGE_BUCKETS; status == SPARK_STATUS_OK && bucket != 0u && sum < needed_bytes; bucket--)
+		sum += tally.bucket_bytes[bucket - 1u];
+	tally.cutoff_bucket = bucket;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotPurgeVisit(directory,SparkKvSnapshotPurgeCut,&tally);
+	free(tally.bucket_bytes);
+	if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_NOT_FOUND )
+		(void)SparkKvLedgerRecord(ledger,directory,tally.remaining_bytes,tally.freed_bytes != 0u ? tally.oldest_seconds : SPARK_KV_LEDGER_NO_OLDEST);
+	if ( lock >= 0 )
+		(void)close(lock);
+	*freed_bytes = tally.freed_bytes;
+	if ( status == SPARK_STATUS_OK )
+		fprintf(stderr,"kv snapshot store %s was closed and held the node's oldest KV: deleted files=%llu bytes=%llu for the %llu-byte node quota shortfall\n",directory,
+			(unsigned long long)result.deleted_files,(unsigned long long)result.deleted_bytes,(unsigned long long)needed_bytes);
+	return(status);
+}
+
+SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+{
+	SparkKvSnapshotPurgeTally tally;
+	SparkStatus status;
+	int lock;
+	if ( ledger == 0 || directory == 0 || result == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkKvSnapshotPurgeLock(directory,&lock);
+	if ( status == SPARK_STATUS_BUSY )
+	{
+		result->busy_stores++;
+		return(SPARK_STATUS_OK);
+	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&tally,0,sizeof(tally));
+	tally.result = result;
+	tally.now_seconds = now_seconds;
+	tally.oldest_seconds = SPARK_KV_LEDGER_NO_OLDEST;
+	status = SparkKvSnapshotPurgeVisit(directory,SparkKvSnapshotPurgeExpired,&tally);
+	if ( status == SPARK_STATUS_OK )
+	{
+		result->stores++;
+		if ( SparkKvLedgerRecord(ledger,directory,tally.remaining_bytes,tally.oldest_seconds) != SPARK_STATUS_OK )
+			result->uncounted_stores++;
+	}
+	if ( lock >= 0 )
+		(void)close(lock);
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkKvSnapshotPurgeWalk(SparkKvLedger *ledger,const char *directory,dev_t device,uint32_t depth,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
@@ -122,7 +256,7 @@ static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,u
 	SparkStatus status = SPARK_STATUS_OK;
 	DIR *listing;
 	if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,SPARK_KV_SNAPSHOT_LOCK_NAME) < sizeof(path) && lstat(path,&info) == 0 )
-		SPARK_RETURN(SparkKvSnapshotPurgeDirectory(directory,now_seconds,result));
+		SPARK_RETURN(SparkKvSnapshotPurgeDirectory(ledger,directory,now_seconds,result));
 	listing = opendir(directory);
 	if ( listing == 0 )
 		return(errno == EACCES || errno == ENOENT ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
@@ -140,22 +274,23 @@ static SparkStatus SparkKvSnapshotPurgeWalk(const char *directory,dev_t device,u
 			continue;
 		if ( lstat(path,&info) != 0 || !S_ISDIR(info.st_mode) || info.st_dev != device )
 			continue;
-		if ( SparkKvSnapshotPurgeWalk(path,device,depth + 1u,now_seconds,result) != SPARK_STATUS_OK )
+		if ( SparkKvSnapshotPurgeWalk(ledger,path,device,depth + 1u,now_seconds,result) != SPARK_STATUS_OK )
 			status = SPARK_STATUS_IO_ERROR;
 	}
 	(void)closedir(listing);
-	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(directory,now_seconds,result) != SPARK_STATUS_OK )
+	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(ledger,directory,now_seconds,result) != SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
 {
 	struct stat info;
-	if ( root == 0 || root[0] != '/' || result == 0 )
+	if ( ledger == 0 || root == 0 || root[0] != '/' || result == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result,0,sizeof(*result));
 	if ( lstat(root,&info) != 0 || !S_ISDIR(info.st_mode) )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	SPARK_RETURN(SparkKvSnapshotPurgeWalk(root,info.st_dev,0u,now_seconds,result));
+	SparkKvLedgerForgetMissing(ledger);
+	SPARK_RETURN(SparkKvSnapshotPurgeWalk(ledger,root,info.st_dev,0u,now_seconds,result));
 }

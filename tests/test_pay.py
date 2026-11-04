@@ -57,6 +57,52 @@ def check_units(failures):
         failures.append("the accepted terms are not just the Korean and English Customer Agreement")
 
 
+SURFACE = [
+    ("POST", "/v1/messages", "inference"), ("POST", "/v1/messages/count_tokens", "inference"), ("POST", "/v1/responses", "inference"), ("GET", "/v1/responses", "inference"), ("POST", "/v1/chat/completions", "inference"),
+    ("GET", "/v1/models", "inference"), ("GET", "/v1/codex/models", "inference"), ("HEAD", "/api/hello", "inference"), ("POST", "/v1/tokenize", "inference"), ("POST", "/v1/detokenize", "inference"),
+    ("DELETE", "/v1/requests/r_1", "inference"), ("POST", "/v1/batches", "inference"), ("DELETE", "/v1/batches/b_1", "inference"), ("POST", "/mcp", "inference"),
+    ("GET", "/v1/state", "state"), ("POST", "/v1/state/move", "state"), ("POST", "/v1/cache/warm", "state"), ("POST", "/v1/cache/pins", "state"), ("DELETE", "/v1/cache/pins/p_1", "state"), ("DELETE", "/v1/cache", "state"),
+    ("GET", "/v1/models/resident", "state"), ("PUT", "/v1/models/resident", "models"), ("GET", "/v1/models/aliases", "state"), ("PUT", "/v1/models/aliases", "models"),
+    ("POST", "/v1/packs", "state"), ("DELETE", "/v1/packs/core", "state"), ("POST", "/v1/packs/core/refresh", "state"),
+    ("POST", "/v1/repos", "storage"), ("DELETE", "/v1/repos/main", "storage"), ("POST", "/git/main.git/git-receive-pack", "storage"), ("GET", "/git/main.git/info/refs", "storage"),
+    ("GET", "/v1/storage", "storage"), ("PUT", "/v1/storage/a/b.bin", "storage"), ("GET", "/v1/storage/changes", "storage"), ("POST", "/v1/export", "storage"), ("POST", "/v1/restore", "storage"),
+    ("POST", "/v1/fetch", "storage"), ("DELETE", "/v1/fetch/f_1", "storage"), ("POST", "/v1/fetch/f_1/resume", "storage"),
+    ("GET", "/v1/functions", "functions"), ("POST", "/v1/functions/review/runs", "functions"), ("GET", "/v1/runs/r_1/log", "functions"), ("DELETE", "/v1/runs/r_1", "functions"), ("PUT", "/v1/schedules", "functions"), ("GET", "/v1/reports/2027-01-05", "functions"),
+    ("GET", "/v1/drafters", "state"), ("PUT", "/v1/drafters/active", "models"), ("POST", "/v1/custom-models", "models"), ("DELETE", "/v1/custom-models/m_1", "models"),
+]
+
+
+def check_gateway_units(failures):
+    for method, path, scope in SURFACE:
+        if sp.hub_scope(method, path) != scope:
+            failures.append(f"{method} {path} of the Fleet API is not passed to the hub under the {scope} scope: {sp.hub_scope(method, path)}")
+    for method, path in (("GET", "/v1/requests"), ("GET", "/v1/keys"), ("PUT", "/v1/webhooks"), ("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/health"), ("GET", "/market/state"), ("POST", "/hub/pair-loss"), ("GET", "/v1/members"), ("GET", "/v1/audit")):
+        if sp.hub_scope(method, path) is not None:
+            failures.append(f"{method} {path} is passed to the hub")
+    headers = lambda **found: {name.replace("_", "-"): value for name, value in found.items()}
+    cases = [(headers(Authorization="Bearer sk-hc-a"), "sk-hc-a"), (headers(**{"X-Api-Key": "sk-hc-b"}), "sk-hc-b"), (headers(Authorization="Basic " + base64.b64encode(b"git:sk-hc-c").decode()), "sk-hc-c"),
+             (headers(Authorization="bearer sps-d"), "sps-d"), (headers(Authorization="Basic !!"), ""), ({}, "")]
+    for given, expect in cases:
+        if sp.credential(given) != expect:
+            failures.append(f"the key is not read from {given}: {sp.credential(given)!r}")
+    for address, public in (("127.0.0.1", False), ("10.1.2.3", False), ("172.16.0.1", False), ("192.168.1.1", False), ("169.254.169.254", False), ("100.64.0.1", False), ("0.0.0.0", False), ("::1", False), ("fe80::1%en0", False), ("fc00::1", False), ("224.0.0.1", False), ("8.8.8.8", True), ("2606:4700::1111", True)):
+        if sp.allowed_address(address) != public:
+            failures.append(f"a webhook to {address} is {'refused' if public else 'allowed'}")
+    for url in ("https://127.0.0.1/hook", "https://localhost/hook", "https://10.0.0.8:8443/x"):
+        try:
+            sp.webhook_address(url, "sparkpipe.ai")
+            failures.append(f"a webhook to {url} is allowed")
+        except sp.Refusal as error:
+            if error.reason != "webhook_address":
+                failures.append(f"a webhook to {url} is refused for the wrong reason: {error}")
+    body = b'{"type":"booking.deadline"}'
+    found = sp.webhook_signature("whsec_x", 1700000000, body)
+    if found != "t=1700000000,v1=" + hmac.new(b"whsec_x", b"1700000000." + body, hashlib.sha256).hexdigest():
+        failures.append(f"the webhook signature is not HMAC-SHA256 of the time and the body: {found}")
+    if sp.time_field("2027-01-05", "since") != datetime(2027, 1, 5, tzinfo=timezone.utc) or sp.time_field("2027-01-05T09:00:00Z", "since").hour != 9 or sp.time_field(None, "since") is not None:
+        failures.append("usage windows do not take dates and UTC times")
+
+
 class FakeCoinPayments(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -316,6 +362,66 @@ def started(cfg):
     server = sp.start(cfg, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, Client(server.server_address[1], origin="https://sparkpipe.ai")
+
+
+def mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
+def check_torn_files(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-torn-"))
+    try:
+        site_copy(work)
+        data = work / "data"
+        for folder in ("notices", "deliveries", "requests/ACX"):
+            (data / folder).mkdir(parents=True)
+        notice = {"notice": "NTA", "account": "ACX", "type": "booking.confirmed", "data": {}, "summary": "s", "text": "t", "targets": [], "now": "2027-01-05T09:00:00Z", "once": "first"}
+        whole = lambda **changes: json.dumps(dict(notice, **changes)) + "\n"
+        today = sp.clock().strftime("%Y-%m-%d")
+        notices, deliveries, usage = data / "notices" / "2027-01-05.jsonl", data / "deliveries" / f"{today}.jsonl", data / "requests" / "ACX" / "2027-01-05.jsonl"
+        notices.write_text(whole() + '{"notice": "NTB", "acc' + whole(notice="NTC", once="third") + whole(notice="NTD", once="fourth") + '{"notice": "NTG", "once": "to')
+        deliveries.write_text(f'{{"notice": "NTA", "target": "WH1", "attempts": 1, "outcome": "delivered", "at": "{today}T00:00:00Z"}}\n{{"notice": "NT')
+        usage.write_text('{"request": "r1", "account": "ACX", "fleet": "F1", "at": "2027-01-05T09:00:00Z"}\nnot json\n{"request": "r2", "acc')
+        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(data), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
+        logged = io.StringIO()
+        with contextlib.redirect_stderr(logged):
+            try:
+                server = sp.start(cfg, port=0)
+            except ValueError as error:
+                failures.append(f"a torn or garbled line in the notices, deliveries or usage records stops the service from starting: {error}")
+                return
+            app = server.app
+            seen = [n["notice"] for n in app.notices.items()]
+            once = [app.notices.sent(key) for key in ("first", "third", "fourth", "to")]
+            app.notices.add(dict(notice, notice="NTE", once="fifth"))
+            app.notifier.finish({"notice": "NTE"}, "WH1", 0, "delivered")
+            added = app.usage.add([{"request": "r3", "account": "ACX", "fleet": "F1", "at": "2027-01-05T10:00:00Z"}])
+            listed = [r["request"] for r in app.usage.query("ACX", datetime(2027, 1, 5, tzinfo=timezone.utc), datetime(2027, 1, 6, tzinfo=timezone.utc), {})]
+            server.server_close()
+            again = sp.App(cfg, sp.Book(cfg.path("ledger.jsonl")))
+            reread = ([n["notice"] for n in again.notices.items()], sorted(again.notifier.known), again.notices.sent("fifth"))
+        if seen != ["NTA", "NTD"] or once != [True, False, True, False] or "skipped a line that does not parse" not in logged.getvalue():
+            failures.append(f"a garbled line is not skipped and logged, or a torn last line is read: {seen} {once} {logged.getvalue()[:300]!r}")
+        if not all(path.read_bytes().endswith(b"}\n") for path in (notices, deliveries, usage)) or "cut a torn last line" not in logged.getvalue():
+            failures.append("a torn last line is not cut before the next record is appended")
+        if reread != (["NTA", "NTD", "NTE"], [("NTA", "WH1"), ("NTE", "WH1")], True) or added != 1 or listed != ["r1", "r3"]:
+            failures.append(f"records appended after a torn line do not read back after a restart: {reread} {added} {listed}")
+        modes = {str(path.relative_to(data)): mode(path) for path in [data / "notices", data / "deliveries", data / "requests", data / "requests" / "ACX", notices, deliveries, usage]}
+        if set(modes.values()) - {0o700, 0o600} or any(mode(path) != 0o600 for path in (notices, deliveries, usage)):
+            failures.append(f"notices, deliveries and usage records are readable by other users: { {name: oct(value) for name, value in modes.items()} }")
+        fresh = data / "notices" / "2027-01-06.jsonl"
+        again.notices.add(dict(notice, notice="NTF", now="2027-01-06T09:00:00Z"))
+        again.usage.add([{"request": "r4", "account": "ACY", "fleet": "F1", "at": "2027-01-06T10:00:00Z"}])
+        if mode(fresh) != 0o600 or mode(data / "requests" / "ACY") != 0o700 or mode(data / "requests" / "ACY" / "2027-01-06.jsonl") != 0o600:
+            failures.append("new notice and usage files are not created 0600 in folders 0700")
+        (data / "ledger.jsonl").write_text(chain(LEGACY) + '{"seq": 10, "at"')
+        try:
+            sp.Book(cfg.path("ledger.jsonl"))
+            failures.append("a ledger with a torn last line is accepted")
+        except ValueError:
+            pass
+    finally:
+        shutil.rmtree(work)
 
 
 def check_legacy(failures):
@@ -985,6 +1091,8 @@ def swift_flows(failures, cfg, app, buyer, mailbox):
 def main():
     failures = []
     check_units(failures)
+    check_gateway_units(failures)
+    check_torn_files(failures)
     check_legacy(failures)
     check_service(failures)
     check_toss(failures)
@@ -993,7 +1101,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
+    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 

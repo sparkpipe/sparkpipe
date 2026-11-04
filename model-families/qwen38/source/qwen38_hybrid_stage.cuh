@@ -740,7 +740,8 @@ struct QwenHybridModel
 	{
 		const uint32_t sms = step->multiprocessors, routes = rows * G::kTopK, exact = Exact(step);
 		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
-		const LmScaleTensor w2_scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w2_scale, G::kLocalExperts, G::kHidden, G::kMoeInter);
+		using ExpertFormat = typename LmWeightCodec<G::kExpertCodec>::Format;
+		const LmScaleTensor w2_scale = LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w2_scale, G::kLocalExperts, G::kHidden, G::kMoeInter);
 		const LmLocalExpertRoutes expert_routes = ExpertRoutes(state, rows, routes, sms);
 		int32_t launch;
 		if ( Project<LmBf16Format>(layer->moe_router, 0, normed, state->router_logits, rows, G::kHidden, G::kExperts, exact, sms, stream) != LM_LAUNCH_OK )
@@ -756,18 +757,18 @@ struct QwenHybridModel
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-		launch = LmLocalExpertsUp<LmNvfp4>(expert_routes, layer->moe_w1,
-			LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
+		launch = LmLocalExpertsUp<ExpertFormat>(expert_routes, layer->moe_w1,
+			LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
 			state->expert_gate, G::kHidden, G::kMoeInter, stream, exact);
 		if ( launch == LM_LAUNCH_OK )
-			launch = LmLocalExpertsUp<LmNvfp4>(expert_routes, layer->moe_w3,
-				LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_NVFP4_E2M1>(layer->moe_w3_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
+			launch = LmLocalExpertsUp<ExpertFormat>(expert_routes, layer->moe_w3,
+				LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w3_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
 				state->expert_up, G::kHidden, G::kMoeInter, stream, exact);
 		if ( launch != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), QH_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
 			state->packed_weight, state->expert_act, G::kMoeInter, INFINITY);
-		launch = LmLocalExpertsDown<LmNvfp4>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
+		launch = LmLocalExpertsDown<ExpertFormat>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
 			stream, exact);
 		if ( launch != LM_LAUNCH_OK ||
 			Project<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, exact, sms, stream) !=
@@ -891,8 +892,12 @@ struct QwenHybridModel
 			state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory,
 			state->ple_multipliers, state->ple_vocab_sizes, state->ple_offsets, state->ple_ids, rows, G::kPleOrders, G::kPleHeadsPerOrder,
 			(int32_t)G::kPleEos, (int32_t)G::kPleEos, 1u);
-		LmNgramGatherScaledKernel<<<dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream>>>(state->ple_ids, state->ple_table, state->ple_table_scale,
-			state->ple_embed, state->ple_table_first, state->ple_table_rows, S::kPleColumns, G::kPleHeadDim);
+		if constexpr ( G::kPleTableCodec == SPARK_WEIGHT_CODEC_BF16 )
+			LmNgramGatherBf16Kernel<<<dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream>>>(state->ple_ids, (const uint16_t *)state->ple_table,
+				state->ple_embed, state->ple_table_first, state->ple_table_rows, S::kPleColumns, G::kPleHeadDim);
+		else
+			LmNgramGatherScaledKernel<<<dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream>>>(state->ple_ids, state->ple_table, state->ple_table_scale,
+				state->ple_embed, state->ple_table_first, state->ple_table_rows, S::kPleColumns, G::kPleHeadDim);
 		status = Launched();
 		if ( status == SPARK_STATUS_OK )
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->ple_embed, state->ple_embed);
@@ -1382,11 +1387,13 @@ struct QwenHybridModel
 	{
 		char scale_name[SPARK_NAMED_PACK_MAX_NAME_BYTES];
 		snprintf(scale_name, sizeof(scale_name), "%s.scale", name);
-		SparkStatus status = Bind(state, lazy_pack, index, name, "nvfp4_e2m1", field,
-			SparkWeightCodecPayloadBytes(SPARK_WEIGHT_CODEC_NVFP4_E2M1, G::kLocalExperts * rows, columns));
-		if ( status == SPARK_STATUS_OK )
+		constexpr bool scaled = LmWeightCodec<G::kExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE;
+		SparkStatus status = Bind(state, lazy_pack, index, name, scaled ? "nvfp4_e2m1" : "bf16", field,
+			SparkWeightCodecPayloadBytes(G::kExpertCodec, G::kLocalExperts * rows, columns));
+		*scale_field = 0;
+		if ( scaled && status == SPARK_STATUS_OK )
 			status = Bind(state, lazy_pack, index, scale_name, "ue4m3_f32_global", scale_field,
-				SparkWeightCodecScaleBytes(SPARK_WEIGHT_CODEC_NVFP4_E2M1, G::kLocalExperts, rows, columns));
+				SparkWeightCodecScaleBytes(G::kExpertCodec, G::kLocalExperts, rows, columns));
 		return status;
 	}
 
@@ -1403,10 +1410,20 @@ struct QwenHybridModel
 			status = Bind(state, lazy_pack, index, "ple_norm_conv", "f32", &state->ple_norm_conv, S::kResidual);
 		if ( status == SPARK_STATUS_OK )
 			status = Bind(state, lazy_pack, index, "ple_conv", "bf16", &state->ple_conv_weight, (uint64_t)S::kResidual * G::kPleConv);
-		if ( status == SPARK_STATUS_OK )
-			status = Bind(state, lazy_pack, index, "ple_table", "fp8_e4m3", &state->ple_table, (uint64_t)state->ple_table_rows * G::kPleHeadDim);
-		if ( status == SPARK_STATUS_OK )
-			status = Bind(state, lazy_pack, index, "ple_table_scale", "f32", &state->ple_table_scale, 1u);
+		if constexpr ( G::kPleTableCodec == SPARK_WEIGHT_CODEC_BF16 )
+		{
+			state->ple_table_scale = 0;
+			if ( status == SPARK_STATUS_OK )
+				status = Bind(state, lazy_pack, index, "ple_table", "bf16", &state->ple_table, (uint64_t)state->ple_table_rows * G::kPleHeadDim * 2u);
+		}
+		else
+		{
+			static_assert(G::kPleTableCodec == SPARK_WEIGHT_CODEC_FP8_E4M3, "the PLE table is fp8 with one scale or bf16");
+			if ( status == SPARK_STATUS_OK )
+				status = Bind(state, lazy_pack, index, "ple_table", "fp8_e4m3", &state->ple_table, (uint64_t)state->ple_table_rows * G::kPleHeadDim);
+			if ( status == SPARK_STATUS_OK )
+				status = Bind(state, lazy_pack, index, "ple_table_scale", "f32", &state->ple_table_scale, 1u);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = Bind(state, lazy_pack, index, "ple_multipliers", "i64", &state->ple_multipliers, G::kPleOrders + 1u);
 		if ( status == SPARK_STATUS_OK )
@@ -1505,8 +1522,9 @@ struct QwenHybridModel
 				if ( status == SPARK_STATUS_OK )
 					status = Bind(state, lazy_pack, index, name, "bf16", &layer->hc_inject[part], (uint64_t)G::kStreams * S::kResidual);
 			}
-			if ( status == SPARK_STATUS_OK && S::kPle && index == G::kPleLayer )
-				status = BindPle(state, lazy_pack, index);
+			if constexpr ( S::kPle )
+				if ( status == SPARK_STATUS_OK && index == G::kPleLayer )
+					status = BindPle(state, lazy_pack, index);
 			if ( status == SPARK_STATUS_OK && attention_layer )
 			{
 				status = Bind(state, lazy_pack, index, "attn_q_norm", "f32", &layer->q_norm, G::kHeadDim);

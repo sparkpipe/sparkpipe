@@ -55,6 +55,7 @@ typedef struct StageRunnerLane
 	uint32_t group_rounds;
 	uint32_t holding;
 	uint32_t finished;
+	uint32_t sum_flags;
 	SparkStatus status;
 } StageRunnerLane;
 
@@ -249,6 +250,11 @@ typedef struct SparkStageRunnerState
 	uint32_t tp_rank;
 	uint32_t tp_degree;
 	uint64_t tp_next_ordinal;
+	uint32_t sum_flags;
+	uint32_t wave_pair_sums;
+	uint32_t wave_plain_sums;
+	uint64_t timing_pair_sums;
+	uint64_t timing_plain_sums;
 	uint32_t tp_collective_failed;
 	uint32_t copy_failed;
 	uint32_t rows;
@@ -295,6 +301,7 @@ typedef struct SparkStageRunnerState
 	uint32_t deferred_first;
 	uint32_t deferred_slot;
 	uint32_t deferred_active;
+	uint32_t deferred_flags;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
 	uint32_t *recurrent_index;
@@ -536,19 +543,60 @@ static SparkStatus StageRunnerTakeFailure(SparkStageRunnerState *state)
 	return status;
 }
 
+static uint32_t StageRunnerSumOperation(SparkStageRunnerState *state, uint32_t flags, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements)
+{
+	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL &&
+		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
+		SparkTpDeviceCollectiveSupportsPairAllReduce(&state->device_collective, rows, row_elements) != 0u ?
+		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 : operation;
+}
+
+static void StageRunnerCountSum(SparkStageRunnerState *state, uint32_t operation)
+{
+	state->wave_pair_sums += operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 ? 1u : 0u;
+	state->wave_plain_sums += operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ? 1u : 0u;
+}
+
+static void StageRunnerSumReport(SparkStageRunnerState *state, uint32_t flags, uint32_t rows)
+{
+	if ( (flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u )
+		fprintf(stderr, "TP-ROUND rank=%u rows=%u pair_allreduce=%u allreduce=%u\n", state->tp_rank, rows,
+			state->wave_pair_sums, state->wave_plain_sums);
+	state->timing_pair_sums += state->wave_pair_sums;
+	state->timing_plain_sums += state->wave_plain_sums;
+	state->wave_pair_sums = 0u;
+	state->wave_plain_sums = 0u;
+}
+
+static void StageRunnerSumSelection(SparkStageRunnerState *state, uint32_t max_rows)
+{
+	uint32_t rows = 1u;
+	while ( rows <= max_rows && SparkTpDeviceCollectiveSupportsPairAllReduce(&state->device_collective, rows, 0u) == 0u )
+		++rows;
+	fprintf(stderr, "TP-SUM-SELECTION rank=%u degree=%u rule=prefill-not-verify pair_allreduce_from_rows=%u max_rows=%u\n",
+		state->tp_rank, state->tp_degree, rows <= max_rows ? rows : 0u, max_rows);
+}
+
 static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, cudaStream_t stream,
 	const uint16_t *device_values, uint32_t rows)
 {
 	SparkTpDeviceCollectiveSubmission submission;
+	SparkStatus status;
+	uint32_t operation;
 	if ( state->device_collective_created == 0 )
 		return state->tp_degree > 1u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_OK;
+	operation = StageRunnerSumOperation(state, state->sum_flags, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+		SPARK_STAGE_RUNNER_ROUND_ALL, rows, 0u);
 	StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
 		rows, device_values, (void *)device_values, state->tp_next_ordinal++);
-	return SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission,
-		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
+	status = SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+	if ( status == SPARK_STATUS_OK )
+		StageRunnerCountSum(state, operation);
+	return status;
 }
 
-static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, void *stream_void, uint32_t operation, uint32_t stage,
+static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	SparkTpDeviceCollectiveSubmission submission;
@@ -558,6 +606,7 @@ static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, void *stre
 		state->tp_collective_failed = 1u;
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
+	operation = StageRunnerSumOperation(state, flags, operation, stage, rows, row_elements);
 	if ( stage == SPARK_STAGE_RUNNER_ROUND_FINISH )
 		status = SparkTpDeviceCollectiveFinish(&state->device_collective);
 	else
@@ -571,20 +620,21 @@ static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, void *stre
 	}
 	if ( status != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
+	else if ( stage != SPARK_STAGE_RUNNER_ROUND_FINISH )
+		StageRunnerCountSum(state, operation);
 	return status;
 }
 
-static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uint32_t operation, uint32_t stage,
+static SparkStatus StageRunnerMarkedRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
-	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
 	const uint32_t mark = state->layer_marks != 0u && state->round_marks < STAGE_RUNNER_ROUND_MARKS ? 1u : 0u;
 	SparkStatus status;
 	if ( state->layer_marks != 0u && mark == 0u )
 		state->round_unmarked++;
 	if ( mark != 0u && cudaEventRecord(state->round_event[2u * state->round_marks], (cudaStream_t)stream_void) != cudaSuccess )
 		state->layer_marks = 0u;
-	status = StageRunnerMeshRound(state, stream_void, operation, stage, rows, row_elements, local, full);
+	status = StageRunnerMeshRound(state, flags, stream_void, operation, stage, rows, row_elements, local, full);
 	if ( mark != 0u && state->layer_marks != 0u )
 	{
 		if ( cudaEventRecord(state->round_event[2u * state->round_marks + 1u], (cudaStream_t)stream_void) != cudaSuccess )
@@ -593,6 +643,13 @@ static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uin
 			state->round_layer[state->round_marks++] = state->layer_mark_last + 1u;
 	}
 	return status;
+}
+
+static SparkStatus StageRunnerRoundService(void *context, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	SparkStageRunnerState *state = (SparkStageRunnerState *)context;
+	return StageRunnerMarkedRound(state, state->sum_flags, stream_void, operation, stage, rows, row_elements, local, full);
 }
 
 static uint32_t StageRunnerPublishedService(void *context)
@@ -866,6 +923,8 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(&state->device_collective,
 			(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr, 0u,0u,0u,0u);
+	if ( status == SPARK_STATUS_OK )
+		StageRunnerSumSelection(state, device_config.max_active_sequence_count);
 	return status;
 }
 
@@ -1644,7 +1703,7 @@ static SparkStatus StageRunnerLaneRound(void *context, void *stream_void, uint32
 		cudaStreamWaitEvent(state->stream, lane->ready, 0u) != cudaSuccess) )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = StageRunnerRoundService(state, state->stream, operation, stage, rows, row_elements, local, full);
+		status = StageRunnerMarkedRound(state, lane->sum_flags, state->stream, operation, stage, rows, row_elements, local, full);
 	lane->holding = status == SPARK_STATUS_OK && stage == SPARK_STAGE_RUNNER_ROUND_BEGIN ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && lane->holding == 0u && (cudaEventRecord(lane->landed, state->stream) != cudaSuccess ||
 		cudaStreamWaitEvent(lane->stream, lane->landed, 0u) != cudaSuccess) )
@@ -1801,7 +1860,8 @@ static uint32_t StageRunnerLanesSplit(const SparkStageRunnerState *state, const 
 	return first;
 }
 
-static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const SparkStageRunnerStep *in, uint32_t first, cudaStream_t stream)
+static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const SparkStageRunnerStep *in, uint32_t first, uint32_t flags,
+	cudaStream_t stream)
 {
 	StageRunnerLanes *lanes = &state->lanes;
 	StageRunnerLane *a = &lanes->lane[0], *b = &lanes->lane[1];
@@ -1821,6 +1881,8 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 		cudaEventRecord(lanes->fork, stream) != cudaSuccess ||
 		cudaStreamWaitEvent(a->stream, lanes->fork, 0u) != cudaSuccess || cudaStreamWaitEvent(b->stream, lanes->fork, 0u) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	a->sum_flags = flags;
+	b->sum_flags = flags;
 	a->step = *in;
 	a->step.rows = first;
 	a->step.context_length = a->context_length;
@@ -1883,15 +1945,15 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 	return status;
 }
 
-static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const SparkStageRunner *runner,
-	const SparkStageRunnerStep *in, cudaStream_t stream)
+static SparkStatus StageRunnerStepRun(SparkStageRunnerState *state, const SparkStageRunner *runner,
+	const SparkStageRunnerStep *in, uint32_t flags, cudaStream_t stream)
 {
 	SparkStatus status = runner->owns_embedding != 0u ? StageRunnerEmbed(state, runner, in->rows, stream) : SPARK_STATUS_OK;
 	uint32_t first;
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	first = StageRunnerLanesSplit(state, in);
-	status = first != 0u ? StageRunnerLanesStep(state, in, first, stream) : state->model_interface->step(state->model, in, stream);
+	status = first != 0u ? StageRunnerLanesStep(state, in, first, flags, stream) : state->model_interface->step(state->model, in, stream);
 	if ( status != SPARK_STATUS_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: %s step failed status=%d\n", state->model_interface->tag, (int)status); return status; }
 	if ( state->tap_slab_device != 0 && state->tap_final_entry != UINT32_MAX )
@@ -1905,6 +1967,16 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 	if ( runner->owns_final_head != 0u && state->head_weight != 0 )
 		return StageRunnerHeadArgmax(state, in, stream);
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const SparkStageRunner *runner,
+	const SparkStageRunnerStep *in, uint32_t flags, cudaStream_t stream)
+{
+	SparkStatus status;
+	state->sum_flags = flags;
+	status = StageRunnerStepRun(state, runner, in, flags, stream);
+	state->sum_flags = 0u;
+	return status;
 }
 
 static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows)
@@ -2006,7 +2078,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		error = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
 		if ( error == cudaSuccess )
 		{
-			status = StageRunnerStepBody(state, runner, in, stream);
+			status = StageRunnerStepBody(state, runner, in, 0u, stream);
 			error = cudaStreamEndCapture(stream, &graph);
 		}
 		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK && error == cudaSuccess ? 1u : 0u) != cudaSuccess && error == cudaSuccess )
@@ -2105,8 +2177,9 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 		state->timing_arrival_mark.first_arrival_ns = state->timing_wait.first_arrival_ns;
 		memcpy(state->timing_arrival_mark.peer_arrival_ns, state->timing_wait.peer_arrival_ns, sizeof(state->timing_wait.peer_arrival_ns));
 	}
-	fprintf(stderr, "STAGE-STEP-TIMING rank=%u steps=%llu graph_steps=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
+	fprintf(stderr, "STAGE-STEP-TIMING rank=%u steps=%llu graph_steps=%llu pair_allreduce=%llu allreduce=%llu submit_us=%llu graph_us=%llu source_wait_us=%llu peer_wait_us=%llu copy_us=%llu combine_us=%llu\n",
 		rank, (unsigned long long)steps, (unsigned long long)state->timing_graph_steps,
+		(unsigned long long)state->timing_pair_sums, (unsigned long long)state->timing_plain_sums,
 		(unsigned long long)(state->timing_submit_ns / steps / 1000u),
 		(unsigned long long)(state->timing_graph_steps != 0u ? state->timing_graph_ns / state->timing_graph_steps / 1000u : 0u),
 		(unsigned long long)(state->timing_wait.source_wait_ns / steps / 1000u),
@@ -2117,6 +2190,8 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 		state->model_interface->report(state->model, rank);
 	state->timing_steps = 0u;
 	state->timing_graph_steps = 0u;
+	state->timing_pair_sums = 0u;
+	state->timing_plain_sums = 0u;
 	state->timing_submit_ns = 0u;
 	state->timing_graph_ns = 0u;
 	state->timing_wait.source_wait_ns = 0u;
@@ -2126,7 +2201,7 @@ static void StageRunnerTiming(SparkStageRunnerState *state, uint32_t rank, uint6
 }
 
 static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStageRunner *runner,
-	const SparkStageRunnerStep *in, cudaStream_t stream)
+	const SparkStageRunnerStep *in, uint32_t flags, cudaStream_t stream)
 {
 	const uint32_t rows = in->rows;
 	SparkStageRunnerStep identity;
@@ -2148,9 +2223,9 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	{
 		SparkStageRunnerStep eager = *in;
 		eager.graph_key = 0u;
-		return StageRunnerStepBody(state, runner, &eager, stream);
+		return StageRunnerStepBody(state, runner, &eager, flags, stream);
 	}
-	return StageRunnerStepBody(state, runner, in, stream);
+	return StageRunnerStepBody(state, runner, in, flags, stream);
 }
 
 static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const SparkStageRunner *runner,
@@ -2240,6 +2315,7 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 	if ( state->deferred_active == 0u )
 	{
 		state->deferred_active = 1u;
+		state->deferred_flags = dispatch->flags;
 		state->deferred_first = dispatch->host_positions[0];
 		state->deferred_count = 0u;
 		state->deferred_slot = dispatch->host_sequence_of_row[0];
@@ -2299,7 +2375,10 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.state_target = state->deferred_slot;
 	request.multiprocessors = state->multiprocessors;
 	request.route_fault = state->route_fault;
+	state->sum_flags = state->deferred_flags;
 	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
+	state->sum_flags = 0u;
+	StageRunnerSumReport(state, state->deferred_flags, state->deferred_count);
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
 	if ( status != SPARK_STATUS_OK )
@@ -2471,6 +2550,8 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	phase_marks[0] = submit_started;
+	state->wave_pair_sums = 0u;
+	state->wave_plain_sums = 0u;
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
 	phase_marks[1] = StageRunnerNowNs();
@@ -2501,7 +2582,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 			if ( dispatch->distribution_count != 0u )
 				current.distribution_positions = chain_positions;
 		}
-		exchange_status = StageRunnerStep(state, runner, &in, stream);
+		exchange_status = StageRunnerStep(state, runner, &in, dispatch->flags, stream);
 		if ( exchange_status == SPARK_STATUS_OK && state->tap_slab_device != 0 && steps > 1u &&
 			cudaMemcpyAsync(state->tap_chain_device + (uint64_t)step * rows * state->tap_plan.row_stride_elements, state->tap_slab_device,
 				(uint64_t)rows * state->tap_plan.row_stride_elements * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
@@ -2516,6 +2597,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		if ( exchange_status != SPARK_STATUS_OK )
 			return exchange_status;
 	}
+	StageRunnerSumReport(state, dispatch->flags, rows);
 	exchange_status = StageRunnerTakeFailure(state);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;

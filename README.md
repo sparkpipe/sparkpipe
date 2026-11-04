@@ -192,8 +192,13 @@ call from degree, datatype, payload bytes and a measured crossover profile:
 | Bandwidth-bound sums | reduce-scatter + all-gather over slice routes | 1.875 × payload |
 | Prefill, large batches | pair sum over the direct link, then an 8-way switched exchange | 3.5 × payload |
 
-**Invariants.** Every algorithm sums peers in the same fixed order, so
-switching algorithm never changes a result bit. A collective carries its
+**Invariants.** Decode and verify sums add the peers in one fixed order, so
+switching algorithm never changes a decode result bit. A prefill wave large
+enough for the pair-first all-reduce keeps each pair's sum in fp32 and rounds
+once, as the plain sum does, but adds pairs first, so a few elements can
+differ in their last bit; it is judged by accuracy rather than by token
+identity. The stage runner, not the model, picks it, from
+the dispatch that issued the round. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
@@ -331,14 +336,21 @@ The snapshot store spreads its files over 256 subdirectories by prefix
 identity, so one store holds tens of millions of page files; a single ext4
 directory without `large_dir` stops near 1.8 million. Linking a page to its
 parent and its orphans costs one hash chain, not a scan of the index, and the
-startup scan reads the shards on eight threads. Each store has a byte budget
-(`kv_snapshot_bytes` in [`deployment/lanes.json`](deployment/lanes.json):
-256 GiB per rank for K3, GLM-5.3 Full, GLM-5.3 Flash and DeepSeek V4.1 Flash,
-64 GiB for the other models). Every store also keeps the node's
-`kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
-write it evicts its oldest files until the partition holds the reserve plus
-the new file, and refuses the write when nothing is left to evict, so KV never
-fills the system drive. A write the store cannot complete is logged with the step
+startup scan reads the shards on eight threads. The node's own KV on disk,
+every lane's snapshot store and every lane's spill backing, shares one
+node-wide quota of 500 GB (`SPARK_KV_NODE_QUOTA_BYTES`) kept in a ledger file
+in the user's home, `~/.sparkpipe-kv-ledger`. No lane has a maximum of its
+own. A write that would take the node past the quota evicts the node's oldest
+snapshot file first, whichever lane holds it: the lane's own, another running
+lane's (asked through the ledger, freed within a second), or a stopped lane's
+(deleted directly). A write is refused only when nothing evictable is left,
+for example while spill backings hold the quota. A running lane's backing
+holds every logical page past the one sequence its pool's minimum keeps
+resident (15 to 96 GiB per lane at today's lane records), because a pool that
+other lanes hold at its minimum parks everything else. weightd's purge records
+stopped lanes' stores in the ledger every minute and deletes files unused for
+24 hours. The pair partner's working-state mirror is not counted
+([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). A write the store cannot complete is logged with the step
 that failed and its errno. The cache then drops that entry's saved mark and,
 after an I/O error, saves the entry again, so one failed write never leaves a
 chain that cannot restore.

@@ -147,7 +147,8 @@ h1 { max-width: 15ch; }
         <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your token stays on your machine: it comes with each download, and the fleet holds it only while that download runs.</dd>
         <dt>Ingest a repository</dt><dd>Takes your pushes as a git remote, with no token for your git host, and maps files, symbols and history.</dd>
         <dt>Build and refresh the cache</dt><dd>Prefills the parts that change least first; after each push it recomputes only what changed.</dd>
-        <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm, and prefills the likely next ones between your turns.</dd>
+        <dt>Anticipate tomorrow</dt><dd>Each night, builds and warms the contexts of up to 500K tokens that tomorrow's sessions are most likely to need, from your commits, your code's structure and the files your sessions used, within the budget you set. Run it on approval or automatically; the morning report shows what it built and how often it was used.</dd>
+        <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm now, and re-warms them after any interruption.</dd>
         <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
         <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
         <dt>Daily backup</dt><dd>One scheduled command on your own machine pulls the day's changes to your disk or bucket, with your own credentials.</dd>

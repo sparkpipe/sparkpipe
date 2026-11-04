@@ -1128,7 +1128,7 @@ static void SparkTestDaemonProcessTermPath(void)
     }
     {
         FILE *err_file = fopen(stderr_path, "r");
-        char err_text[512];
+        char err_text[8192];
         size_t err_bytes;
         assert(err_file != 0);
         err_bytes = fread(err_text, 1u, sizeof(err_text) - 1u, err_file);

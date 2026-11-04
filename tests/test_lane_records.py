@@ -33,9 +33,8 @@ def main():
         pass
     finally:
         lane_config.record = original
-    partition_reserve = document.get("kv_partition_reserve_bytes", 0)
-    if not isinstance(partition_reserve, int) or not 1 << 30 <= partition_reserve < 1 << 42:
-        failures.append(f"kv_partition_reserve_bytes {partition_reserve!r}: every node needs a finite reserve the KV snapshot stores keep free")
+    if "kv_partition_reserve_bytes" in document:
+        failures.append("kv_partition_reserve_bytes is gone: the node KV quota in the ledger bounds the node's own KV on disk")
     capped = stage_lane.record_arguments("glm-5.3-flash")
     capped.kv_physical_pages_cap = 4096
     stage_lane.check_arguments(stage_lane.MODELS[capped.model], capped)
@@ -80,6 +79,9 @@ def main():
             failures.append(f"{record_id}: serves {context} of the contract's {native} positions without a context_reason")
         elif context == native and reason:
             failures.append(f"{record_id}: serves the contract maximum, so context_reason must go")
+        for field in ("kv_backing_bytes", "kv_snapshot_bytes"):
+            if field in record:
+                failures.append(f"{record_id}: {field} is gone; every lane shares the node KV quota")
         block = model.get("kv_block_tokens", stage_lane.KV_BLOCK_TOKENS)
         sequence_bytes = context // block * model["kv_page_bytes"]
         if sequence_bytes > reserve:
@@ -102,6 +104,12 @@ def main():
                 failures.append(f"{record_id}: the device KV pool may hold {limits['kv_physical_page_capacity']} pages and the cache {limits['kv_logical_page_capacity']}, not the {budget} the node budget leaves and max(kv_logical_pages, {budget})")
             hub = json.loads((pathlib.Path(directory) / "model_resident.json").read_text())
             node = json.loads((pathlib.Path(directory) / "deployment.json").read_text())
+            limits = node["runtime_limits"]
+            need = stage_lane.kv_backing_bytes(limits["kv_logical_page_capacity"], record["context_tokens"] // model.get("kv_block_tokens", stage_lane.KV_BLOCK_TOKENS), model["kv_page_bytes"])
+            for rank in node["nodes"]:
+                if "kv_snapshot_maximum_bytes" in rank or "kv_partition_reserve_bytes" in rank or rank["kv_backing_maximum_bytes"] != need:
+                    failures.append(f"{record_id}: rank {rank['rank_index']} renders a per-lane snapshot cap, a partition reserve or a {rank['kv_backing_maximum_bytes']}-byte backing instead of the {need} bytes its spilled pages need")
+                    break
             if "tokenizer" in node or "draft_server" in node or hub["tokenizer"]["sha256"] != record["tokenizer_sha256"]:
                 failures.append(f"{record_id}: the tokenizer and draft server belong to the hub model_resident.json only")
             prefix = record.get("text_prompt_prefix_token_ids")
@@ -119,6 +127,8 @@ def main():
             failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
+        if record_id in chat and chat[record_id].get("sequences") != record.get("sequences"):
+            failures.append(f"{record_id}: deployment/hub/chat_frontend.json sequences {chat[record_id].get('sequences')} differs from the lane's {record.get('sequences')}")
         label = f"{context // 1048576}M" if context % 1048576 == 0 else f"{context // 1024}K"
         if readme.get(record_id) != label:
             failures.append(f"{record_id}: README.md's model table lists context {readme.get(record_id)} where the engine serves {label}")
@@ -126,7 +136,7 @@ def main():
         print("FAILED: " + line)
     if failures:
         return 1
-    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
+    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer (context and sequences) and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
     return 0
 
 
