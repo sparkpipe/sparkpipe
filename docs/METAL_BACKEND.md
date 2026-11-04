@@ -682,10 +682,12 @@ its floors, and a candidate passes when all three hold:
 The orderings are only exchangeable when the three variants sit about equally
 far apart, so the receipt lists all six floors (`multi_floor.floors`, mean KL
 and top-1 per ordered pair). For Solar Open 2 they do: A to B 0.078 and 0.084
-nats, B to H 0.076, A to H 0.076 and 0.083. Motif 3 at TP8 passes at +2.77
-standard errors (KL 1.08, 1.03 and 1.02 times the floors against A, B and H),
-its required controls fail at +36 and +59, and the one-layer probe fails too,
-at +5.3.
+nats, B to H 0.076, A to H 0.076 and 0.083. Solar's Metal run passes at +2.18
+standard errors (KL 1.01, 1.09 and 1.13 times the floors against A, B and H)
+and its required controls fail at +25 and +118. Motif 3 at TP8 fails at
++3.71 (KL 1.09, 1.06 and 1.03 times), where the two-leg rule passes it; its
+required controls fail at +39 and +60 and the one-layer probe at +7.1. Its
+remaining differences from its reference are in TECHDEBT.
 
 `tools/pack_tensor_control.py` writes APFS clones of the pack with tensors
 corrupted, and the gate runs each through the same teacher-forced pass:

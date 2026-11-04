@@ -1411,7 +1411,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
     into `wq_b` in FP32; both backends round that norm once to BF16
     (`SparkDeviceLatentAttentionShape.query_norm_once`), and its
     hyper-connection site does not round the normed streams before the mix
-    as the reference's `bf16(w bf16(x r))` does.
+    as the reference's `bf16(w bf16(x r))` does. Its reference also rounds
+    the attention probabilities to BF16 before the value product, as the
+    publisher's eager attention does, where Metal keeps them in FP32. The
+    multi-floor gate fails Motif at TP8 at +3.71 standard errors after the
+    norm changes (+2.77 before), with Metal's KL 1.03 to 1.09 times the
+    floors. Metal's paired excess is +0.017 for Solar Open 2 and +0.025
+    for Motif, which suggests one systematic difference remains.
     Until then both backends normalised the FP32 sum and rounded the gain
     once everywhere, and `tools/glm52_reference.py` and
     `tools/k3_reference.py` had copied that order. The attention output
