@@ -9,9 +9,10 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 14u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 15u
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
+#define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
 
@@ -103,6 +104,8 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t logprobs;
 	uint64_t deadline_ns;
 	uint32_t drafts_disabled;
+	uint32_t stop_token_count;
+	const uint32_t *stop_token_ids;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
@@ -121,6 +124,7 @@ typedef struct SparkModelBatchEngineView
 	uint32_t kv_logical_page_capacity;
 	uint32_t failed_status;
 	uint32_t context_limit;
+	uint32_t cache_block_token_count;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
 	uint64_t cancelled_request_count;

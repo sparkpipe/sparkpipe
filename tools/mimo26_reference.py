@@ -13,6 +13,17 @@
             served model) and --prompts -> --out report.json with, per served
             token, the reference top-5, the reference logprob of the served
             token, the served logprob and the reference top-1/top-2 margin
+  teacher   teacher-forced FP32 logits for every position but the last of
+            each prompt (--prompts prompts.json) to
+            <out>/<name>.ref_<variant>.logits for each of --variants: a sums
+            in numpy's order, b splits every matmul's inner dimension into
+            1,024-wide chunks summed last chunk first, reverses every other
+            reduction and combines the experts in descending order, so a
+            against b is the noise of FP32 reduction order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py):
+            a against h is the Metal gate's floor
+  gate-prompts, spec-prompts   the Metal gate and speculation prompts
+            (tools/gemma4_reference.py's sources and cuts) in MiMo's chat
+            framing -> --out prompts.json
 
 Built from the checkpoint and the publisher's semantics only (config.json,
 modeling_mimo_v2.py in the checkpoint directory), never from SparkPipe code:
@@ -46,6 +57,8 @@ from pathlib import Path
 
 import numpy as np
 
+import reference_device_error as device
+
 BLOCK = 128
 GROUP = 32
 DTYPES = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}
@@ -55,6 +68,24 @@ def bf16(values):
     bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
     rounded = (bits + 0x7FFF + ((bits >> 16) & 1)) & 0xFFFF0000
     return rounded.astype(np.uint32).view(np.float32)
+
+
+REVERSED = False
+CHUNK = 1024
+
+
+def reduce_sum(values, axis=-1, keepdims=False):
+    return np.flip(values, axis=axis).sum(axis=axis, keepdims=keepdims) if REVERSED else values.sum(axis=axis, keepdims=keepdims)
+
+
+def matmul(left, right, chunk=CHUNK):
+    if not REVERSED or left.shape[-1] <= chunk:
+        return left @ right
+    total = None
+    for first in reversed(range(0, left.shape[-1], chunk)):
+        part = left[..., first:first + chunk] @ right[first:first + chunk]
+        total = part if total is None else total + part
+    return total
 
 
 def e4m3_table():
@@ -125,7 +156,8 @@ class Checkpoint:
 
 
 def rms(values, weight, epsilon):
-    normed = bf16(values * np.power((values * values).mean(axis=-1, keepdims=True) + np.float32(epsilon), np.float32(-0.5)))
+    mean = reduce_sum(values * values, keepdims=True) / np.float32(values.shape[-1])
+    normed = bf16(values * np.power(mean + np.float32(epsilon), np.float32(-0.5)))
     return bf16(weight * normed)
 
 
@@ -180,7 +212,7 @@ class Reference:
         parts = ([], [], [])
         for s in range(t):
             grid = np.repeat(np.repeat(scale[s * blocks:(s + 1) * blocks], BLOCK, axis=0)[:segment], BLOCK, axis=1)
-            projected = bf16(normed @ (E4M3[np.asarray(weight[s * segment:(s + 1) * segment])] * grid).T)
+            projected = bf16(matmul(normed, (E4M3[np.asarray(weight[s * segment:(s + 1) * segment])] * grid).T))
             parts[0].append(projected[:, :q_rows])
             parts[1].append(projected[:, q_rows:q_rows + k_rows])
             parts[2].append(projected[:, q_rows + k_rows:])
@@ -206,46 +238,46 @@ class Reference:
             if swa:
                 visible &= positions[None, :] > positions[:, None] - self.window
             for head in range(self.heads):
-                scores = (q[:, head, :] @ k[:, head // group, :].T) * self.scaling
+                scores = matmul(q[:, head, :], k[:, head // group, :].T) * self.scaling
                 scores = np.where(visible, scores, -np.inf)
                 top = scores.max(axis=-1, keepdims=True)
                 if sinks is not None:
                     top = np.maximum(top, sinks[head])
-                weights = np.exp(scores - top)
-                total = weights.sum(axis=-1, keepdims=True)
+                weights = device.exp(scores - top)
+                total = reduce_sum(weights, keepdims=True)
                 if sinks is not None:
-                    total = total + np.exp(sinks[head] - top)
-                output[first:first + count, head, :] = bf16((weights / total) @ v[:, head // group, :])
-        return bf16(output.reshape(normed.shape[0], -1) @ self.checkpoint.bf16(a + "o_proj.weight").T)
+                    total = total + device.exp(sinks[head] - top)
+                output[first:first + count, head, :] = bf16(matmul(weights / total, v[:, head // group, :]))
+        return bf16(matmul(output.reshape(normed.shape[0], -1), self.checkpoint.bf16(a + "o_proj.weight").T))
 
     @staticmethod
     def swiglu(gate, up):
-        return bf16(bf16(gate / (np.float32(1.0) + np.exp(-gate))) * up)
+        return bf16(bf16(gate / (np.float32(1.0) + device.exp(-gate))) * up)
 
     def dense(self, layer, normed):
         m = f"model.layers.{layer}.mlp."
-        gate = bf16(normed @ self.checkpoint.fp8(m + "gate_proj").T)
-        up = bf16(normed @ self.checkpoint.fp8(m + "up_proj").T)
-        return bf16(self.swiglu(gate, up) @ self.checkpoint.fp8(m + "down_proj").T)
+        gate = bf16(matmul(normed, self.checkpoint.fp8(m + "gate_proj").T))
+        up = bf16(matmul(normed, self.checkpoint.fp8(m + "up_proj").T))
+        return bf16(matmul(self.swiglu(gate, up), self.checkpoint.fp8(m + "down_proj").T))
 
     def moe(self, layer, normed):
         m = f"model.layers.{layer}.mlp."
-        logits = normed @ self.checkpoint.bf16(m + "gate.weight").T
-        scores = np.float32(1.0) / (np.float32(1.0) + np.exp(-logits))
+        logits = matmul(normed, self.checkpoint.bf16(m + "gate.weight").T)
+        scores = np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))
         choice = scores + self.checkpoint.f32(m + "gate.e_score_correction_bias")[None, :]
         chosen = np.argsort(-choice, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
-        weights = weights / (weights.sum(axis=-1, keepdims=True) + np.float32(1e-20))
+        weights = weights / (reduce_sum(weights, keepdims=True) + np.float32(1e-20))
         output = np.zeros(normed.shape, dtype=np.float32)
-        experts = np.unique(chosen)
+        experts = np.unique(chosen)[::-1] if REVERSED else np.unique(chosen)
 
         def run(expert):
             tokens, slots = np.nonzero(chosen == expert)
             e = f"{m}experts.{expert}."
             x = normed[tokens]
-            gate = bf16(x @ self.checkpoint.mxfp4(e + "gate_proj").T)
-            up = bf16(x @ self.checkpoint.mxfp4(e + "up_proj").T)
-            y = bf16(self.swiglu(gate, up) @ self.checkpoint.mxfp4(e + "down_proj").T)
+            gate = bf16(matmul(x, self.checkpoint.mxfp4(e + "gate_proj").T))
+            up = bf16(matmul(x, self.checkpoint.mxfp4(e + "up_proj").T))
+            y = bf16(matmul(self.swiglu(gate, up), self.checkpoint.mxfp4(e + "down_proj").T))
             return tokens, y * weights[tokens, slots][:, None]
 
         with ThreadPoolExecutor(self.threads) as pool:
@@ -278,7 +310,7 @@ class Reference:
         head = self.checkpoint.raw("lm_head.weight", "BF16")
         parts = []
         for first in range(0, head.shape[0], chunk):
-            parts.append(normed @ (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32).T)
+            parts.append(matmul(normed, (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32).T))
         return np.concatenate(parts, axis=-1)
 
 
@@ -360,11 +392,39 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+def teacher(args):
+    global REVERSED
+    variants = args.variants.split(",")
+    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b and h")
+    reference = Reference(args.checkpoint, args.threads)
+    prompts = json.loads(Path(args.prompts).read_text())["prompts"]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    for label in variants:
+        REVERSED = label != "a"
+        device.select(label)
+        normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        for prompt, (first, count) in zip(prompts, spans):
+            with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
+                for row in range(0, count - 1, 128):
+                    last = min(row + 128, count - 1)
+                    handle.write(np.ascontiguousarray(reference.logits(normed[first + row:first + last]), dtype=np.float32).tobytes())
+            print(f"{prompt['name']}: {count - 1} positions, variant {label}", flush=True)
+
+
+def prompt_set(args):
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gemma4_reference
+    (gemma4_reference.gate_prompts if args.mode == "gate-prompts" else gemma4_reference.spec_prompts)(args)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("mode", choices=("tokenize", "score"))
+    parser.add_argument("mode", choices=("tokenize", "score", "teacher", "gate-prompts", "spec-prompts"))
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--prompts", required=True)
+    parser.add_argument("--prompts")
+    parser.add_argument("--variants", default="a,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/mimo26/chat_template.json"))
     parser.add_argument("--answers-out")
@@ -372,8 +432,14 @@ def main():
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
-    if args.mode == "tokenize":
+    if args.mode in ("gate-prompts", "spec-prompts"):
+        prompt_set(args)
+    elif not args.prompts:
+        parser.error(f"{args.mode} needs --prompts")
+    elif args.mode == "tokenize":
         tokenize(args)
+    elif args.mode == "teacher":
+        teacher(args)
     else:
         if not args.capture:
             parser.error("score needs --capture")

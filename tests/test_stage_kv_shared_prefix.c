@@ -91,6 +91,7 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;
 	configuration->snapshot_maximum_bytes = 1ull << 26;
+	configuration->partition_reserve_bytes = 1ull << 20;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;

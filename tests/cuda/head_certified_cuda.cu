@@ -133,6 +133,73 @@ static void ProbeShape(uint32_t vocabulary, uint32_t hidden, uint32_t rows, uint
 	cudaFree(scores);
 }
 
+static void ProbeOutputVocabulary(uint32_t vocabulary, uint32_t valid, uint32_t hidden, uint32_t rows, uint32_t seed)
+{
+	uint16_t *head = ProbeAllocate<uint16_t>((uint64_t)vocabulary * hidden);
+	uint16_t *input = ProbeAllocate<uint16_t>((uint64_t)rows * hidden);
+	uint8_t *payload = ProbeAllocate<uint8_t>((uint64_t)vocabulary * hidden);
+	float *scale = ProbeAllocate<float>((uint64_t)vocabulary * hidden / 32u);
+	float *norm = ProbeAllocate<float>((uint64_t)vocabulary * hidden / 32u);
+	uint8_t *scratch = ProbeAllocate<uint8_t>(SparkHeadCertifiedFp8ScratchBytes(vocabulary, hidden) * rows);
+	uint32_t *candidates = ProbeAllocate<uint32_t>((uint64_t)vocabulary * rows);
+	uint32_t *counts = ProbeAllocate<uint32_t>(rows);
+	uint32_t *tokens = ProbeAllocate<uint32_t>(rows);
+	float *scores = ProbeAllocate<float>(rows);
+	const uint32_t offset = 7000u;
+	for ( uint64_t index = 0u; index < (uint64_t)vocabulary * hidden; ++index )
+		head[index] = ProbeBf16(ProbeUniform(((uint64_t)seed << 40u) + index) * 0.05f);
+	for ( uint64_t index = 0u; index < (uint64_t)rows * hidden; ++index )
+		input[index] = ProbeBf16(ProbeUniform(((uint64_t)(seed + 7u) << 40u) + index) * 4.0f);
+	for ( uint32_t candidate = valid; candidate < vocabulary; ++candidate )
+		for ( uint32_t element = 0u; element < hidden; ++element )
+			head[(uint64_t)candidate * hidden + element] = ProbeBf16(ProbeFloat(input[element]) >= 0.0f ? 0.5f : -0.5f);
+	if ( SparkLmHostLaunchHeadCertifiedFp8Quantize(0, head, payload, scale, norm, vocabulary, hidden) != cudaSuccess ||
+		SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(0, input, head, payload, scale, norm, scratch, candidates, counts, tokens, scores,
+			offset, rows, vocabulary, hidden) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess || tokens[0] < valid + offset )
+	{
+		fprintf(stderr, "FAIL vocab=%u valid=%u: the planted rows past the output vocabulary do not win the unclipped head (token %u)\n", vocabulary, valid, tokens[0]);
+		++probe_failures;
+		return;
+	}
+	if ( SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(0, input, head, payload, scale, norm, scratch, candidates, counts, tokens, scores,
+			offset, rows, valid, hidden) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
+	{
+		fprintf(stderr, "FAIL vocab=%u valid=%u: clipped certified head launch failed\n", vocabulary, valid);
+		++probe_failures;
+		return;
+	}
+	for ( uint32_t row = 0u; row < rows; ++row )
+	{
+		double best = -1.0e300;
+		uint32_t best_token = 0u;
+		for ( uint32_t candidate = 0u; candidate < valid; ++candidate )
+		{
+			double total = 0.0;
+			for ( uint32_t element = 0u; element < hidden; ++element )
+				total += (double)ProbeFloat(input[(uint64_t)row * hidden + element]) * (double)ProbeFloat(head[(uint64_t)candidate * hidden + element]);
+			if ( total > best )
+			{
+				best = total;
+				best_token = candidate;
+			}
+		}
+		const bool ok = tokens[row] == best_token + offset && fabs((double)scores[row] - best) <= 1.0e-4 * fmax(1.0, fabs(best));
+		printf("%s vocab=%u valid=%u row=%u exact=%u clipped=%u\n", ok ? "ok" : "FAIL", vocabulary, valid, row, best_token + offset, tokens[row]);
+		if ( !ok )
+			++probe_failures;
+	}
+	cudaFree(head);
+	cudaFree(input);
+	cudaFree(payload);
+	cudaFree(scale);
+	cudaFree(norm);
+	cudaFree(scratch);
+	cudaFree(candidates);
+	cudaFree(counts);
+	cudaFree(tokens);
+	cudaFree(scores);
+}
+
 int main(void)
 {
 	ProbeShape(4096u, 5120u, 3u, 1u);
@@ -141,6 +208,8 @@ int main(void)
 	ProbeShape(3000u, 6656u, 4u, 4u);
 	ProbeShape(16384u, 5376u, 2u, 5u);
 	ProbeShape(2048u, 768u, 5u, 6u);
+	ProbeOutputVocabulary(9680u, 9656u, 5120u, 3u, 7u);
+	ProbeOutputVocabulary(9536u, 8635u, 2816u, 4u, 8u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL head_certified_cuda: %d failures\n", probe_failures);

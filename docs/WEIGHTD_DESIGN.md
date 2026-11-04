@@ -544,6 +544,44 @@ lane owner's client. Two operations then use PEER:
 - **Direct rounds.** Single-row direct rounds (below 49,152 values or below
   degree 4) keep their slot path.
 
+**Pair-first routes.** A route with the `pair_first` bit carries two payloads
+in one publication (`SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(group,pair)`). The
+group bytes go to every peer of the sender's parity, into the sender's own
+slot half. The pair bytes go to the partner (`rank ^ 1`) over the pair link,
+one piece per segment of the partner's parity, each into the slot half of the
+sender of the other parity (`SparkWeightdMeshPairFirstArea`). Every other peer
+gets only the tail. Two collectives use it:
+
+- The pair-first reduce-scatter (`SparkTpMeshHardwarePairFirstScatterRound`)
+  sends each partner the segments of the partner's parity over the pair link,
+  sums each pair there in fp32, and sends the fp32 pair sums of a segment
+  (eight at 16 ranks) over the switch, where they are summed in fp32 and
+  rounded once to BF16. Only the group publication carries fp32, so the
+  pipeline width is a quarter of a half payload in elements
+  (`SparkTpMeshPairFirstScatterWidth`). The result has the accuracy of the
+  plain reduce-scatter (fp32 accumulation, one rounding), but the order of the
+  additions is pairwise, so it can differ from the rank-order sum in the last
+  BF16 bit of a few elements.
+- The pair-first all-gather (`SparkTpMeshHardwarePairFirstGatherRound`) sends
+  each chunk over the switch to the sender's parity group; two rounds later
+  every rank forwards the chunks it received to its partner over the pair
+  link. It moves the same bytes as the plain all-gather and is exact.
+
+Both are pipelined: a rank publishes round r + 2 once round r has arrived, so
+two publications are in flight. At the edges of every pipelined collective the
+lag is zero: round 1 is published only after round 0 has arrived, and the
+last round only after the round before it has arrived
+(`SparkTpMeshPipelineEarly`, `SparkTpMeshPipelineLate`). A whole-slot round
+(direct sums, all-to-all, staged peer rounds) fills both halves of its slot, so
+a collective that publishes two rounds before its first arrival can overwrite,
+at a slower peer, a whole-slot round that peer has not read yet. Until
+2026-11-02 the pair-first rounds published rounds 0 and 1 back to back and
+their last round one arrival early; `tp_mesh_hardware_probe
+--pair-first-boundary` reproduces the overwrite on one GPU by delaying one
+tail to one rank, and `test_tp_mesh_pipeline_boundaries` checks the schedule of
+every pipelined collective against whole-slot neighbours with an adversarially
+slow rank at 4, 8 and 16 ranks.
+
 **Round counts (TP16, arithmetic).**
 
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
@@ -830,14 +868,64 @@ outside the daemon:
 
 ### Pool sizing
 
-Every lazy attach declares `expert_pool_bytes`. The daemon rejects 0,
-`UINT64_MAX` and values above its device budget. A pool larger than the pack
-becomes one allocation for the whole arena whose chunks are never evicted
-(`SparkWeightdPremapPool`, logged as "pool single-alloc"). A pool no larger
-than the pack becomes a slot pool (`SparkWeightdCreateSlots`, logged as "pool
-slots"): the attach allocates `expert_pool_bytes / chunk_bytes` physical
-chunks up front and refuses with `CAPACITY_EXCEEDED` when they do not fit, so
-a pool that cannot be held fails at attach instead of mid-request.
+Every lazy attach sends `expert_pool_bytes`, and no person picks that number.
+Each client derives it from the pack's `PACK.experts` and the lane's optional
+cap with `SparkWeightdManifestPoolPlan` (`runtime/spark_weightd_manifest.c`):
+`SparkWeightdLazyPackCreate` (the common runner and every module's extra
+packs), `weightd_warm`, the configured lazy path of `SparkWeightdAttachPack`
+and the probes under `tools/`. Two engines that attach one pack with the same
+cap therefore send the same pool, which a shared arena requires (below). The
+daemon does not size pools; it keeps validating what it is sent.
+
+- The exact pool, `SparkWeightdManifestPoolBytes(manifest, chunk_bytes,
+  &bytes)`, is the number of distinct `chunk_bytes`-aligned chunks of the pack
+  that any expert range touches, times `chunk_bytes`. A manifest without
+  ranges gives one chunk, the smallest slot pool the daemon accepts. Clients
+  use `SPARK_WEIGHTD_EXPERT_CHUNK_BYTES` (2 MiB), the constant the daemon
+  sizes arena chunks with (`SparkWeightdVmmReserve` takes the larger of it and
+  the device's VMM granularity, 2 MiB on GB10). A lazy pack whose daemon
+  reports another chunk size is refused with `ABI_MISMATCH`.
+- Without a cap, a pack with expert ranges requests the arena bytes plus one
+  chunk. weightd then maps the whole arena in one allocation, preloads the
+  spine into it and never evicts. That is the least memory that holds every
+  expert chunk: a slot pool of the exact size would need the spine beside it
+  as each engine's private copy (`WD-SPINE-PRIVATE`), which costs at least as
+  much because chunks holding both spine and expert bytes are counted twice,
+  and it would give up the fixed pool the common runner needs before it
+  captures decode graphs (`StageRunnerCheckResident`, `STAGE-RESIDENT`). On
+  2026-11-02 every Kimi K3 rank pack was 100,255,758,720 bytes (47,806
+  chunks, 100.26 GB): 43,200 chunks hold expert bytes (90.60 GB) and the
+  spine is 9.85 GB, so the exact slot pool plus a private spine would be
+  0.19 GB larger than the whole arena. The hand-set 99,568,941,440-byte pool
+  it replaced sat below the pack: 47,478 slots plus the private spine, 109.4
+  GB, about 9.16 GB more than the whole arena.
+- Without a cap, a pack without expert ranges requests one chunk: a one-slot
+  pool, with the spine as the engine's private copy.
+- An explicit cap, for a lane that streams experts on purpose, is the request:
+  a slot pool of cap / chunk chunks. A cap larger than the exact pool is
+  refused before any attach (`weightd pool refused: cap=<cap> is larger than
+  exact=<exact>, ...`); a larger cap only wastes memory. A cap that is not a
+  whole number of chunks is refused too.
+- Every plan logs `weightd pool exact=<bytes> cap=<bytes|none> used=<bytes>
+  mode=whole-arena|slots`, where `used` is what weightd commits for the pool:
+  the arena rounded up to whole chunks in whole-arena mode, the request
+  otherwise.
+
+`SPARK_WEIGHTD_EXPERT_POOL_BYTES` carries the cap and nothing else. A lane
+record's optional `expert_pool_cap_bytes` renders it into the lane's launch
+environment and warm command ([LANES.md](LANES.md)); without a cap the
+variable is not set, and a set but empty or zero value is refused.
+
+On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above
+`device_bytes_max` less the KV reserve with `INVALID_ARGUMENT`; a pool that
+fits there but not beside lent KV is a capacity question, answered by reclaim
+(see [KV pools and the shared budget](#kv-pools-and-the-shared-budget)). A pool larger than the pack becomes one allocation for the
+whole arena whose chunks are never evicted (`SparkWeightdPremapPool`, logged
+as "pool single-alloc"). A pool no larger than the pack becomes a slot pool
+(`SparkWeightdCreateSlots`, logged as "pool slots"): the attach allocates
+`expert_pool_bytes / chunk_bytes` physical chunks up front and refuses with
+`CAPACITY_EXCEEDED` when they do not fit, so a pool that cannot be held fails
+at attach instead of mid-request.
 Acquisitions load chunks on demand into free slots and evict the least
 recently used unpinned groups to stay inside the pool
 (`SparkWeightdAcquireBudget`); an eviction unmaps the chunk and returns its
@@ -846,11 +934,7 @@ this order: free slots of every cold arena, least recently used arena first,
 then the least recently used groups of the coldest arena, whose slots are
 released as they free. Such an arena stays registered with what it still
 holds, and the next attach refills its pool to full size or is refused. A later attach to an existing arena must
-declare the same pool or gets `INVALID_ARGUMENT`. The old 8 GiB default was
-deleted in 13c1113. Consumers set `SPARK_WEIGHTD_EXPERT_POOL_BYTES` explicitly,
-and the GLM module refuses to start without it. The fleet agent passes
-34359738368 (32 GiB), which is larger than the GLM rank pack, so production
-pools the whole pack.
+declare the same pool or gets `INVALID_ARGUMENT`.
 
 ### Leases and consumer mapping
 
@@ -885,6 +969,48 @@ pools the whole pack.
   explicit cleanup. Calls are serialized on the creating CUDA context, and
   callers join every using stream before recording completion.
 
+### The common runner's expert leases
+
+`inference/runner/stage_runner.cu` gives a stage three ways to reach a routed
+layer's experts:
+
+- Resident: once weightd reports every group present in a fixed pool
+  (`STAGE-RESIDENT`), both services return pointers into the pool and take no
+  lease and no stream synchronization.
+- Routed (`expert_weights`): the model's router has run; the service
+  synchronizes the stream, releases every held lease, reads the routed
+  groups back and leases those (plus expert 0 when the layer's tensor base
+  needs it) into lease set 0.
+- Ahead of the router (`expert_weights_ahead`): a wave with at least
+  `STAGE_RUNNER_LEASE_AHEAD_ROUTES` (4) routes per expert, where nearly every
+  expert is routed anyway (about e^-4 of them are not), leases all of layer
+  L's experts into set `L % 2` without waiting for the router. It first
+  releases what that set held, layer L-2, with
+  `SparkWeightdLeaseSetsRelease`. That waits for the event `layer_done`
+  recorded after layer L-2's last kernel, which keeps the host at most two
+  layers ahead of the GPU. A narrower wave gets `PENDING` and the model
+  leases routed experts after the router instead. Every `layer_done` records
+  completion for the begun leases of both sets; no release happens there.
+  A wave leased ahead never reads its routes back, so the stray-expert counts
+  (`stray_working_set_path`) cover only waves leased after the router.
+
+Holding two layers at once needs the pool to fit them. At lease creation the
+runner asks `SparkWeightdLeaseSetsFit` for the largest number of chunks two
+consecutive layers touch and logs `STAGE-LEASE-AHEAD on|off: … two layers
+hold <chunks> chunks, the pool <chunks>` (or `of a whole-arena pool`). When
+they do not fit, every wave leases routed experts after the router. With
+layer marks on, `STAGE-LAYER-MARKS` adds `lease_ms`, `lease_wait_ms` (time
+spent waiting for the reused set's events), `leases` and `ahead_layers` per
+wave.
+
+Kimi K3 calls `expert_weights_ahead` first in every routed layer and falls
+back to the routed service only on `PENDING`; the stream synchronization it
+used to make before every lease is now made only for the routed service. Its
+pair path takes one lease per layer on the first pair stream; the layer's
+last round makes the main stream wait for both pair streams, so the event
+`layer_done` records on the main stream follows every kernel that read the
+layer's experts.
+
 ### Pack-scoped reclaim
 
 `weightd_warm SOCKET --reclaim` (IPC `RECLAIM`) frees every cold arena on the
@@ -917,7 +1043,7 @@ would pay a full cold load.
 
 Arenas are keyed by the whole identity (model, revision, topology, geometry,
 pack SHA-256, arena bytes), so two lazy attaches with equal identities, equal
-manifests and equal `expert_pool_bytes` already map one arena. What a
+manifests and equal `expert_pool_bytes` (the same cap, or none) already map one arena. What a
 development root of the production model lacked:
 
 1. Nothing stopped a dev attach whose identity differed by one field (for
@@ -953,7 +1079,7 @@ Unset or empty keeps today's private attach. Any other value is refused
 What a sharer must match: the owner's `model_revision`, topology and pack (a
 symlink to the production rank pack with the same `.sha256` and `.experts` is
 enough, since the identity carries the SHA and not the path), and the owner's
-`SPARK_WEIGHTD_EXPERT_POOL_BYTES` (34359738368 in production).
+cap: none in production, so both size the pool from the same manifest.
 
 Memory: the sharer adds only its residentd (KV, workspaces, CUDA context; no
 spine copy on a pooled arena). A GLM
@@ -1079,8 +1205,10 @@ the `weightd` member.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION`
   override the slice's model and revision. The slice's `pack_sha256` takes
   precedence over `SPARK_WEIGHTD_PACK_SHA256`.
-- With `SPARK_WEIGHTD_ATTACH_LAZY` set it sends a lazy attach with
-  `expert_pool_bytes` = pack bytes + 2 MiB and maps nothing. Any failure on
+- With `SPARK_WEIGHTD_ATTACH_LAZY` set it sends a lazy attach with the pool
+  `SparkWeightdPackPoolPlan` derives from `PACK.experts` without a cap (see
+  Pool sizing: pack bytes + 2 MiB when the pack has expert ranges) and maps
+  nothing. Any failure on
   that path returns `INVALID_ARGUMENT`; the reason is `no_daemon` for a failed
   connect, otherwise the name of the failed exchange status or of the
   daemon's result status. `SparkWeightdAttachImportMap` uses whole-arena
@@ -1103,14 +1231,19 @@ exist only on the lazy path (per-chunk imports and
 ### `spark_weightd_lazy_pack.h`
 
 `SparkWeightdLazyPackCreate` and `SparkWeightdLazyPackCreateChecked` are
-startup calls. They connect, attach lazily (or shared, see "Read-only arena
-sharing"), parse `<pack>.experts`, create the consumer map, place the spine
-and start a worker thread. A missing or invalid manifest fails the call like
-any other failure.
+startup calls. They connect, parse `<pack>.experts`, size the pool from it
+and the `pool_cap` argument (`SparkWeightdManifestPoolPlan`, see Pool sizing;
+0 means no cap), attach lazily with that pool (or shared, see "Read-only arena
+sharing"), create the consumer map, place the spine and start a worker thread.
+A missing or invalid manifest fails the call like any other failure, before
+the attach. The plan is kept in `pack->pool`.
 
 Every input is explicit:
 
-- `expert_pool_bytes` of 0 is `INVALID_ARGUMENT` before any connect.
+- The request's `expert_pool_bytes` must be 0: the pack sizes the pool. Any
+  other value is `INVALID_ARGUMENT` before any connect, with a stderr line.
+- A cap above the exact pool, or not a whole number of chunks, is
+  `INVALID_ARGUMENT` before the attach.
 - The identity must pass `SparkWeightdIdentityPrepare`.
 - A missing pack is `NOT_FOUND`. The pack must be a regular file whose size
   equals `identity.arena_bytes`, otherwise `IO_ERROR`. A relative `pack_path`
@@ -1232,6 +1365,10 @@ The wire format, validation and limits are under "Manifest format
   between spans, so it can exceed `spine_bytes`. For a private spine,
   `SparkWeightdLazyPackCreate` allocates it plus 255 bytes and rounds the
   base up to 256, so a slice keeps its pack alignment in device memory.
+- `SparkWeightdManifestLayerChunks(manifest, chunk_bytes, first_layer,
+  layer_count, &chunks)` counts the distinct `chunk_bytes`-aligned chunks that
+  the expert ranges of layers `first_layer .. first_layer + layer_count - 1`
+  touch; layers with no ranges count 0.
 
 ### `spark_weightd_map.h`
 
@@ -1308,10 +1445,54 @@ slot's event on `stream`. No work may use the lease after this call.
   error leaves the slot retiring, which blocks new acquires; call
   `SparkWeightdMapRelease` again.
 
+`SparkWeightdMapReleaseCompleted` releases a recorded lease once its event
+has completed. It is the release for a lease whose GPU work may still run:
+
+- It accepts only a recorded lease (`INVALID_ARGUMENT` for an acquired or
+  begun one; `NOT_FOUND` for an unknown identifier) and a non-zero
+  `timeout`.
+- It calls `SparkWeightdMapRelease` with the time left, and while that
+  returns `BUSY` for the not-ready event it sleeps 20 µs (`nanosleep`, no
+  spinning) and tries again, until `now + timeout` passes. On expiry it logs
+  `MAP-RELEASE-WAIT-EXPIRED id=… waited_ns=…` and returns `BUSY`, and the
+  lease stays held with its mappings and daemon pins. An event error returns
+  `IO_ERROR`; any other status from the release is returned as it is.
+
 `SparkWeightdMapDestroy` returns `BUSY` while any slot is not empty, and the
 map stays usable. Otherwise it marks the map failed and frees everything. If
 a CUDA call fails it returns `IO_ERROR`, and from then on the map accepts
 only another `SparkWeightdMapDestroy`.
+
+### `spark_weightd_lease_sets.h`
+
+A fixed number of lease sets, each able to hold the keys of one layer
+(`keys_max`, split into leases of at most 512 keys). The common runner uses
+two: a wave whose experts are leased a whole layer at a time ahead of the
+router keeps layer L in set `L % 2` while layer L-1's set may still be in use
+on the GPU. The module names no device API: `SparkWeightdLeaseSetsCreate`
+takes a `record` callback that records a begun lease's completion where the
+caller's kernels run (the runner records on its stream with
+`SparkWeightdMapRecordCompletion`).
+
+- `SparkWeightdLeaseSetsAcquire` refuses a set that still holds leases
+  (`INVALID_ARGUMENT`), acquires and begins every lease and returns the map
+  base. If any step fails it releases what it took (recording begun leases
+  first) and returns the status.
+- `SparkWeightdLeaseSetsRecord` records completion for every begun lease of
+  the set through `record`. The runner calls it from `layer_done`, after the
+  last kernel that reads the layer's experts is ordered on its stream. A
+  record failure is returned and the lease stays begun.
+- `SparkWeightdLeaseSetsRelease` releases a set under one deadline: a begun
+  lease is recorded first, a recorded lease goes through
+  `SparkWeightdMapReleaseCompleted`, an acquired one through
+  `SparkWeightdMapRelease`. A lease whose wait expires stays in the set and
+  the call returns `BUSY`. `SparkWeightdLeaseSetsReleaseAll` does every set.
+- `SparkWeightdLeaseSetsDestroy` returns `BUSY` while a set holds a lease.
+- `SparkWeightdLeaseSetsFit` returns, for `set_count` consecutive layers,
+  the largest number of distinct chunks their expert ranges touch
+  (`SparkWeightdManifestLayerChunks`) and the pool's chunks (`UINT64_MAX`
+  for a whole-arena pool). Holding that many layers at once fits only when
+  the first is at most the second.
 
 ### `spark_weightd_worker.h`
 
@@ -1424,23 +1605,32 @@ the arena.
 
 `SparkWeightdServerReclaimCold` runs before a new arena is created: in
 `SparkWeightdServerAttachCold` with the arena bytes, and in
-`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. While
-the resident bytes exceed `device_bytes_max`, or the needed bytes do not fit
-in what remains, it frees the cold arena with the lowest `generation` (the
-oldest created, not the least recently used). An arena is cold when its
-`refcount` is 0 and it holds no leases. When no cold arena is left it
-returns without a status, and the caller applies its own checks.
+`SparkWeightdServerAttachLazy` with the declared `expert_pool_bytes`. The
+arena ceiling is `device_bytes_max` less the larger of the KV reserve and
+the committed KV bytes (`SparkWeightdArenaCeiling`). While the resident bytes
+exceed it, or the needed bytes do not fit in what remains, reclaim first
+releases detached KV pools above the reserve, oldest detached first
+(`reason=arena_needs_room`), then calls
+`SparkWeightdServerReclaimColdWeights`: free slots of cold slot pools, then
+the coldest cold arena (least recently attached, then the oldest
+generation), whose cold expert groups go first and the arena itself only if
+that is not enough. An arena is cold when its `refcount` is 0 and it holds no
+leases. When nothing cold is left it returns without a status, and the
+caller applies its own checks.
 
-- After reclaim, both attaches refuse a full arena table. The eager attach
+- After the byte reclaim, a full arena table frees its coldest cold arena
+  (`SparkWeightdServerReclaimArenaSlot`: least recently attached, then the
+  oldest generation), so a daemon that has served 16 models still loads a
+  17th. Both attaches refuse a table whose 16 arenas all hold an attach
+  reference or a lease, and print the reason. The eager attach
   also requires `resident_bytes + arena_bytes` to fit under
   `device_bytes_max`. The lazy attach is charged later, as
   `SparkWeightdPremapPool` or `SparkWeightdArenaChunkEnsure` commits memory,
   and each of those fails with `CAPACITY_EXCEEDED` when the budget is
   exceeded.
-- Reclaim is driven by bytes only. When the new arena's bytes fit, reclaim
-  frees nothing, so with `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas resident
-  a new arena fails with `CAPACITY_EXCEEDED` even when some of them are cold.
-  `RECLAIM` or `RECLAIM_PACK` frees those.
+- The byte reclaim frees nothing when the new arena's bytes fit; the slot
+  reclaim then frees one cold arena when the table is full. `RECLAIM` or
+  `RECLAIM_PACK` frees every cold arena, or one pack's.
 - An arena with an attach reference or a lease is never reclaimed. This is
   how the daemon holds the NO-2x constraint from the perf notes: it never
   frees a serving process's arena to make room. If a model update's new
@@ -1473,6 +1663,83 @@ returns without a status, and the caller applies its own checks.
   The failed-attach paths free an arena that the same request created.
   `SparkWeightdServerDestroy` closes every connection, which releases its
   leases and attach references, before it frees the remaining arenas.
+
+### KV pools and the shared budget
+
+Engines that use the common KV binding map their KV device memory from
+weightd KV pools (`KV_POOL_ATTACH`, `KV_POOL_RESIZE`, `KV_POOL_STATUS`,
+`KV_POOL_EXPORT`, `KV_POOL_DROP`, and `KV_SHARED_ATTACH` for shared prefix
+windows). Pools are made of `chunk_bytes` VMM chunks and grow and shrink by
+chunk; `kv_committed_bytes` counts every granted chunk. KV and weights share
+one budget, `device_bytes_max`, under these rules
+(`runtime/spark_weightd.c`):
+
+- **KV limit** (`SparkWeightdKvLimit`). With no arena attached it is
+  `--kv-reserve-bytes`. While arenas are attached it is `device_bytes_max`
+  less their full budgets (`SparkWeightdArenaFullBytes`: an eager arena's
+  bytes, a premapped lazy arena's one allocation, any other lazy arena's
+  preload plus its expert pool), and never below the reserve. A model whose
+  weights are small lends KV the rest of the ceiling, so one native-length
+  sequence fits where the reserve alone could not. A model whose budget
+  leaves less than the reserve keeps the reserve.
+  Without a reserve the limit is 0 and every pool is refused.
+- **What a grow gets** (`SparkWeightdKvFreeBytes`). The smallest of the
+  limit less the committed KV, the device bytes that neither weights nor KV
+  hold, and the node's `MemAvailable` less the memory margin. A pool
+  attaches with its minimum (one full-length sequence for an engine) and
+  grows on demand, chunk by chunk, as its engine asks (`KV_POOL_RESIZE`); it
+  never fills the node at attach, so a model swap or a second engine finds
+  the room an idle pool would otherwise hold. Chunks a grow cannot get are
+  recorded as `wanted_chunks`, which other pools see as
+  `reclaim_wanted_bytes` and give back by shrinking.
+- **Memory margin** (`SparkWeightdKvMemoryMargin`). The Sparks share one
+  unified memory between the CPU and the GPU, so every KV chunk lowers
+  `MemAvailable`. A grow stops where `MemAvailable` would fall below the
+  margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (2) percent of `MemTotal` plus
+  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB), both compile-time
+  constants. The 2 % is the fleet's earlyoom line (`earlyoom -m 2`, set by the
+  owner on all 16 nodes on 2026-11-02; [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)
+  records it from PR #1719): earlyoom sends SIGTERM below 2 % and SIGKILL
+  below 1 %, so KV growth must
+  never reach it. The 4 GiB is headroom for what grows after a KV grant
+  without asking weightd: the KV snapshot writer's staging, page cache
+  writeback and API request bursts. It is chosen, not measured; the fleet
+  gate records the minimum `MemAvailable` under full KV. weightd reads
+  `MemTotal` from `/proc/meminfo` at start (`weightd kv memory
+  margin_bytes=` in its log; 6,864,027,484 bytes on a 119.6 GiB Spark) and
+  `MemAvailable` at every grow. When the file gives neither, every grow is
+  refused. Tests point `SparkWeightdServerConfig.meminfo_path` at a
+  fabricated file; the daemon itself always reads `/proc/meminfo`.
+- **Making room for KV** (`SparkWeightdKvMakeRoom`). A grow first releases
+  detached pools, oldest first (`reason=evicted_detached`), never the pool
+  that grows. If the room is still short and the grow passes the reserve, it
+  reclaims cold weights with `SparkWeightdServerReclaimColdWeights` for
+  exactly the bytes above the larger of the reserve and the committed KV.
+  It never releases a pool there: a pool being created has no owner yet and
+  must not be mistaken for a detached one.
+- **Making room for weights**. Weight arenas grow only under the arena
+  ceiling, so lent KV is never overwritten by a load. When new weights need
+  room, detached KV pools above the reserve go first (see reclaim above). A
+  pool an engine owns is never taken: the attach is refused with the reason,
+  and the swap controller's `KV_POOL_DROP` of the stopped model frees it at a
+  switch.
+- **Logs**. `kv pool attached`, `kv pool resized` and `kv shared pool
+  attached` carry `kv_committed`, `kv_reserve` and `kv_limit`, and the
+  attach also `margin_bytes`. Every grow logs `weightd kv capacity` with the
+  chunks before and after, `mem_available` and `margin_bytes`; a grow short
+  of its target logs `weightd kv capacity refused` with
+  `reason=kv_limit|ceiling|memory_margin|allocation_failed`, once per pool
+  until the reason or the chunk count changes. The engine logs
+  `kv capacity pages=<now>/<max> tokens=<max tokens> margin_bytes=<m>
+  event=attach|grew|refused` from its binding. A refused
+  pool prints its minimum, the limit, the reserve and the attached arenas'
+  budget against the ceiling; a refused weight attach prints the bytes it
+  needs, the resident bytes, the arena ceiling, the arena table and
+  `kv_committed`/`kv_reserve` held by KV pools.
+
+The IPC ABI is unchanged: grants and status replies still report
+`kv_reserve_bytes` and `kv_committed_bytes`, so engines built before lending
+work against a lending daemon, and the limit appears only in the daemon log.
 
 ### Chunk export (fd tier)
 
@@ -1729,10 +1996,12 @@ arguments may remain, counting the program name.
 
 Warm mode:
 
-- `SPARK_WEIGHTD_EXPERT_POOL_BYTES` is required except with `--identity-print`.
-  It must be a positive decimal no larger than
-  `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT`, and it becomes `expert_pool_bytes`.
-  Set it to the pool the resident will declare.
+- The pool comes from `PACK.experts` through `SparkWeightdManifestPoolPlan`,
+  exactly as the resident computes it, so the warmed arena is the one the
+  resident attaches. `SPARK_WEIGHTD_EXPERT_POOL_BYTES`, when set, is the cap
+  and must be the resident's: a positive decimal no larger than
+  `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (otherwise usage, exit 2), at most
+  the exact pool and a whole number of chunks (otherwise exit 1).
 - SHA256 must be 64 hex digits. The tool accepts upper-case digits, but the
   attach identity check accepts only lowercase, so an upper-case SHA256 fails
   the attach (exit 1). The tool does not hash the pack; the daemon verifies it
@@ -1804,8 +2073,9 @@ result equals the identity that family's resident sends:
     attaches through `SparkWeightdAttachMappedPack`, and `weightd_warm` always
     creates a lazy arena. An eager attach to a lazy arena returns
     `INVALID_ARGUMENT`. With `SPARK_WEIGHTD_ATTACH_LAZY` set, the helper makes
-    a lazy attach with a pool of pack size + 2 MiB, which succeeds only when
-    the warm run declared that pool. The helper's import map then needs
+    a lazy attach with the pool sized from `PACK.experts` without a cap (see
+    Pool sizing), the pool an uncapped warm run sends too. The helper's import
+    map then needs
     whole-arena `EXPORT`, which rejects lazy arenas (see Leases and consumer
     mapping).
 
@@ -1885,9 +2155,9 @@ Environment for `load` and `unload`:
   tool hashes the whole pack. Set to an empty value, the attach fails.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION` replace
   MODEL and REVISION when they are non-empty.
-- A non-empty `SPARK_WEIGHTD_ATTACH_LAZY` switches to a lazy attach with a pool
-  of pack size + 2 MiB. `PACK.experts` is then required and `cold` always
-  prints 0.
+- A non-empty `SPARK_WEIGHTD_ATTACH_LAZY` switches to a lazy attach with the
+  pool sized from `PACK.experts` without a cap (see Pool sizing). `PACK.experts`
+  is then required and `cold` always prints 0.
 - `SPARK_WEIGHTDCTL_TIMEOUT_NS` is the attach timeout in nanoseconds. The
   default is 300 s; an empty, non-numeric or 0 value also gives the default.
 
@@ -1919,7 +2189,7 @@ weightd_lazy_consumer SOCKET PACK pressure
 - `consumer F` runs these steps:
   1. Initialize CUDA and hash PACK.
   2. Create a `SparkWeightdLazyPack` with model `lazy-consumer-probe`,
-     `arena_bytes` 8 MiB and a pool of three chunks.
+     `arena_bytes` 8 MiB and a cap of three chunks (the exact pool is four).
   3. Check that the daemon's chunk size is 2 MiB.
   4. Acquire experts F and F+1 in one lease.
   5. Start an 8 KiB device-to-host copy from each expert and record
@@ -1953,18 +2223,21 @@ run.
 ### weightd_smoke
 
 ```
-weightd_smoke PACK MODEL REVISION POOL_MIB TOUCHES
+weightd_smoke PACK MODEL REVISION CAP_MIB TOUCHES
 ```
 
-Lazily attaches PACK with a pool of POOL_MIB MiB. It then sends TOUCHES legacy
+Lazily attaches PACK with the pool `SparkWeightdPackPoolPlan` sizes from
+`PACK.experts` and a cap of CAP_MIB MiB (0: no cap; see Pool sizing). It then
+sends TOUCHES legacy
 single-expert `ENSURE` requests for layer 0, spread evenly over expert ids 0 to
 `expert_count - 1`, detaches, and prints
-`SMOKE experts=… touches=… ensure_ns=… pool_mib=…`.
+`SMOKE experts=… touches=… ensure_ns=… pool_mib=…`, where `pool_mib` is the
+cap argument.
 
 - The socket comes from `SPARK_WEIGHTD_SOCKET` only. The tool does not read
   `SPARK_WEIGHTD_ATTACH`.
-- The digest comes from `PACK.sha256`. The tool never reads `PACK.experts`,
-  but the daemon needs a version 2 one for the lazy attach.
+- The digest comes from `PACK.sha256`. The pool comes from `PACK.experts`,
+  which the daemon also needs for the lazy attach.
 - The identity is MODEL, REVISION, topology 16, geometry fingerprint
   `0x504F4355` and `arena_bytes` = pack size.
 - The daemon answers every `ENSURE` with `UNSUPPORTED` (see Leases and
@@ -1977,16 +2250,17 @@ single-expert `ENSURE` requests for layer 0, spread evenly over expert ids 0 to
 Exit codes:
 
 - 0: success.
-- 1: connect failure, invalid identity (including an unreadable pack), attach
-  failure or ensure failure.
-- 2: usage error, unset socket variable, zero or non-numeric POOL_MIB or
-  TOUCHES, missing or malformed `PACK.sha256`, or an argument too long for its
-  field.
+- 1: connect failure, invalid identity (including an unreadable pack), a pool
+  the plan refuses (missing manifest, or a cap above the exact pool or not a
+  whole number of chunks), attach failure or ensure failure.
+- 2: usage error, unset socket variable, non-numeric CAP_MIB, zero or
+  non-numeric TOUCHES, missing or malformed `PACK.sha256`, or an argument too
+  long for its field.
 
 ### weightd_loadall
 
 ```
-weightd_loadall ROSTER POOL_MIB TOUCHES
+weightd_loadall ROSTER CAP_MIB TOUCHES
 ```
 
 Each ROSTER line is `<pack-path> <model>`, split at the first space. Trailing
@@ -1998,7 +2272,8 @@ lines without a space or with an empty field, and lines whose pack path is
 
 On one connection it lazily attaches every arm with the identity: revision
 `loadall`, topology 16, geometry `0x504F4355`, `arena_bytes` = pack size,
-digest from `PACK.sha256`, and the same pool of POOL_MIB MiB for every arm. It
+digest from `PACK.sha256`, and each arm's pool sized from its `PACK.experts`
+with the same cap of CAP_MIB MiB (0: no cap; see Pool sizing). It
 then sends TOUCHES `ENSURE` requests per arm, spread the same way as in
 `weightd_smoke`, and prints
 `LOADALL arms=… touches=… cold_faults=… ensure_ns=…`. It never detaches.
@@ -2011,8 +2286,8 @@ Daemon limits that apply:
 - `SPARK_WEIGHTD_ATTACHES_PER_CONNECTION_MAX` (8): the ninth attach on the
   connection fails with `CAPACITY_EXCEEDED`.
 - A new arena fails with `CAPACITY_EXCEEDED` when the daemon already holds
-  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas, counting other clients' and
-  cold ones.
+  `SPARK_WEIGHTD_ARENA_COUNT_MAX` (16) arenas that all hold an attach
+  reference or a lease; a cold arena gives up its slot first.
 - The same pack listed under two model names loads two arenas, and the same
   pack and model listed twice fails with `DUPLICATE`.
 - `ENSURE` returns `UNSUPPORTED` (see `weightd_smoke`), so a run exits 1 at
@@ -2021,10 +2296,10 @@ Daemon limits that apply:
 Exit codes:
 
 - 0: success.
-- 1: connect failure, missing or malformed `PACK.sha256`, invalid identity,
-  attach failure or ensure failure.
-- 2: usage error, unset `SPARK_WEIGHTD_SOCKET`, zero or non-numeric POOL_MIB
-  or TOUCHES, or an unreadable roster or one with no accepted line.
+- 1: connect failure, missing or malformed `PACK.sha256`, invalid identity, a
+  pool the plan refuses, attach failure or ensure failure.
+- 2: usage error, unset `SPARK_WEIGHTD_SOCKET`, non-numeric CAP_MIB, zero or
+  non-numeric TOUCHES, or an unreadable roster or one with no accepted line.
 
 ### weightd_expert_segments
 

@@ -8,8 +8,14 @@
 #ifndef QWEN38_FLASH_CONTRACT_SHA256
 #error "QWEN38_FLASH_CONTRACT_SHA256 must identify the model contract"
 #endif
+#ifndef QWEN38_FLASH_EXPERT_CODEC
+#error "QWEN38_FLASH_EXPERT_CODEC must name the routed-expert weight codec of the packs this build serves"
+#endif
+#if !defined(QWEN38_FLASH_ADAPTER_ID) || !defined(QWEN38_FLASH_MODULE_TAG)
+#error "QWEN38_FLASH_ADAPTER_ID and QWEN38_FLASH_MODULE_TAG must name this build's adapter and KV label"
+#endif
 
-#define SPARK_QWEN38_FLASH_TP16_ADAPTER_ID "qwen38_flash-tp16"
+#define SPARK_QWEN38_FLASH_TP16_ADAPTER_ID QWEN38_FLASH_ADAPTER_ID
 #define SPARK_QWEN38_FLASH_TP16_MODEL_ID "Qwen/Qwen3.8-Flash-Next"
 #define SPARK_QWEN38_FLASH_TP16_MAX_ROWS 2048u
 #define SPARK_QWEN38_FLASH_TP16_LAYERS SPARK_QWEN38_FLASH_STAGE_LAYERS
@@ -68,26 +74,28 @@ static const SparkModelServingAdapterDescriptor Qwen38FlashServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
 	.stage_count = SPARK_QWEN38_FLASH_STAGE_TP_DEGREE,
 	.layer_count = SPARK_QWEN38_FLASH_TP16_LAYERS,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_QWEN38_FLASH_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1,
+	.expert_weight_codec = QWEN38_FLASH_EXPERT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_input_row_count = SPARK_QWEN38_FLASH_TP16_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_output_token_count = SPARK_QWEN38_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_QWEN38_FLASH_TP16_CHAIN_TOKENS - 1u,
+	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_QWEN38_FLASH_STAGE_PAGE_SLOTS,
 	.parallel_group_size = 0u,
 	.cache_checkpoint_token_count = SPARK_QWEN38_FLASH_TP16_CHECKPOINT_TOKENS,
+	.max_verify_row_count = SPARK_QWEN38_FLASH_STAGE_VERIFY_ROWS,
 };
 
 #undef Q
@@ -96,7 +104,7 @@ static const SparkStageServingModel Qwen38FlashStageServing =
 {
 	.descriptor = &Qwen38FlashServingDescriptor,
 	.runner_model = SparkQwen38FlashStageModel,
-	.module_tag = "qwen38_flash_stage",
+	.module_tag = QWEN38_FLASH_MODULE_TAG,
 	.tp_degree = SPARK_QWEN38_FLASH_STAGE_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = Qwen38FlashServingKvLayout,

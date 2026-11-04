@@ -35,7 +35,12 @@ MAX_ROWS = 4096
 MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 DEFAULT_KV_SNAPSHOT_BYTES = 8 << 30
+DEFAULT_KV_PARTITION_RESERVE_BYTES = 512 << 30
 KV_BLOCK_TOKENS = 64
+KV_POOL_METADATA_BYTES_MAX = 256 << 20
+KV_POOL_SEAL_BYTES = 72
+KV_RESIDENT_RECORD_BYTES = 64
+KV_PHYSICAL_PAGES_MAX = (KV_POOL_METADATA_BYTES_MAX - KV_POOL_SEAL_BYTES) // KV_RESIDENT_RECORD_BYTES
 
 QWEN38_27B = {
     "swap_id": "qwen3.8-27b",
@@ -102,13 +107,13 @@ QWEN38_FLASH = {
     **QWEN38_27B,
     "swap_id": "qwen3.8-flash",
     "api_port": 8465,
-    "kv_label": "qwen38_flash_stage",
-    "node_memory_bytes": 14 << 30,
+    "kv_label": "qwen38_flash_bf16_stage",
+    "node_memory_bytes": 28 << 30,
     "tokenizer_json": "/mnt/model-warm/qwen3.8-flash-next-nvfp4-nvidia/tokenizer.json",
-    "pack": "sparkdata/qwen38_flash.nvfp4.tp16/qwen38_flash.tp16.rank{rank:02d}.pack",
-    "adapter": "libqwen38_flash_tp16_serving_adapter.so",
+    "pack": "sparkdata/qwen38_flash.bf16.tp16/qwen38_flash.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_flash_bf16_tp16_serving_adapter.so",
     "program": "qwen38_flash",
-    "node_target": "cuda.sm121.qwen38_flash.stage_runner.linear_bf16.expert_nvfp4.kv_bf16",
+    "node_target": "cuda.sm121.qwen38_flash.stage_runner.linear_bf16.expert_bf16.kv_bf16",
     "contract": "model_contracts/qwen4_flash_authoritative.json",
     "hidden": 2560,
     "kv_page_bytes": (12 * 64 * 2048 + 12 * 16 * 256) // WORLD,
@@ -475,6 +480,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
             "kv_snapshot_maximum_bytes": args.kv_snapshot_bytes,
+            "kv_partition_reserve_bytes": args.kv_partition_reserve_bytes,
             "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
         })
     result = {
@@ -494,6 +500,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
+            "output_vocabulary": model["tokenizer_vocabulary"],
         },
         "chat_template": chat_template(model),
         "nodes": nodes,
@@ -539,7 +546,7 @@ def expert_warm(model: dict, root: str) -> dict:
     if warm is None:
         return {}
     revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
-    return {"node_warm": (f"cd {root} && SPARK_WEIGHTD_EXPERT_POOL_BYTES=$(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1 | cut -d= -f2) "
+    return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
                           f"./bin/weightd_warm /tmp/spark_weightd.sock $(readlink -f packs/*.pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
                           f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
 
@@ -575,7 +582,8 @@ def lane_records() -> dict:
 
 
 def record_arguments(swap_id: str) -> argparse.Namespace:
-    records = lane_records()["lanes"]
+    document = lane_records()
+    records = document["lanes"]
     if swap_id not in records:
         raise SystemExit(f"{LANES} has no lane record {swap_id}; known: {', '.join(sorted(records))}")
     record = records[swap_id]
@@ -589,12 +597,21 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         record=swap_id, model=record["model"], lane=record["lane"], runtime_root=record["runtime_root"],
         weightd_socket=record["weightd_socket"], sequences=record["sequences"], rows=record["rows"],
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
-        kv_physical_pages=record["kv_physical_pages"], kv_logical_pages=record["kv_logical_pages"],
+        kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         kv_backing_bytes=record["kv_backing_bytes"], kv_snapshot_bytes=record["kv_snapshot_bytes"],
+        kv_partition_reserve_bytes=document["kv_partition_reserve_bytes"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
+
+
+def kv_physical_pages(model: dict, page_bytes: int, cap: int | None) -> int:
+    lendable = lane_records()["weightd"]["device_bytes_max"] - model["node_memory_bytes"]
+    pages = min(max(lendable, 0) // page_bytes, KV_PHYSICAL_PAGES_MAX)
+    if cap is not None and not 1 <= cap:
+        raise SystemExit(f"kv_physical_pages_cap {cap!r} must be a positive page count")
+    return pages if cap is None else min(pages, cap)
 
 
 def render(value: dict) -> str:
@@ -608,10 +625,10 @@ def check_arguments(model: dict, args) -> None:
         raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
     if args.shared_rows is not None and not 1 <= args.shared_rows < args.rows:
         raise SystemExit("shared rows must be within 1..rows-1")
-    args.kv_physical_pages = args.kv_physical_pages or args.sequences * args.kv_pages
-    args.kv_logical_pages = args.kv_logical_pages or args.kv_physical_pages
-    if args.kv_physical_pages < args.kv_pages or args.kv_logical_pages < args.kv_physical_pages:
-        raise SystemExit("physical pages must hold one sequence and logical pages must cover the physical pages")
+    args.kv_physical_pages = kv_physical_pages(model, model["kv_page_bytes"], args.kv_physical_pages_cap)
+    if args.kv_physical_pages < args.kv_pages:
+        raise SystemExit(f"the node budget holds {args.kv_physical_pages} device KV pages, fewer than one sequence's {args.kv_pages}")
+    args.kv_logical_pages = max(args.kv_logical_pages or args.sequences * args.kv_pages, args.kv_physical_pages)
     if args.kv_logical_pages < args.sequences * args.kv_pages:
         raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
     states = (2 * args.sequences + 2) * model["recurrent_bytes"]
@@ -640,7 +657,7 @@ def write_lane(args, output_dir: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     parser.add_argument("--record", default=None,
                         help=f"render the production lane of this swap id from {LANES.relative_to(ROOT) if LANES.is_relative_to(ROOT) else LANES}; no other lane flag applies")
     parser.add_argument("--model", choices=sorted(MODELS))
@@ -652,10 +669,13 @@ def main() -> int:
     parser.add_argument("--rows", type=int, default=1024)
     parser.add_argument("--shared-rows", type=int, default=None)
     parser.add_argument("--kv-pages", type=int, default=64)
-    parser.add_argument("--kv-physical-pages", type=int, default=None)
+    parser.add_argument("--kv-physical-pages-cap", type=int, default=None,
+                        help="keep the device KV pool below this many pages; by default it may grow to what the node budget leaves the model")
     parser.add_argument("--kv-logical-pages", type=int, default=None)
     parser.add_argument("--kv-backing-bytes", type=int, default=8 << 30)
     parser.add_argument("--kv-snapshot-bytes", type=int, default=DEFAULT_KV_SNAPSHOT_BYTES)
+    parser.add_argument("--kv-partition-reserve-bytes", type=int, default=DEFAULT_KV_PARTITION_RESERVE_BYTES,
+                        help="free bytes every KV snapshot store leaves on kv_partition; stores evict their oldest files to keep it")
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
     parser.add_argument("--state-memory-bytes", type=int, default=None,
                         help="per-rank memory for recurrent-state records; default twice the two per sequence plus two the KV binding needs")

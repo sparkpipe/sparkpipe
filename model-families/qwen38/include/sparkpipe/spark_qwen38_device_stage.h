@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void);
+const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void);
 
 #ifdef __cplusplus
 }

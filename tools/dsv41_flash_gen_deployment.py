@@ -177,6 +177,7 @@ def resident_deployment() -> dict:
             "resident_sequence_capacity": RESIDENT_SEQUENCE_CAPACITY,
             "kv_logical_page_capacity": page_capacity,
             "kv_physical_page_capacity": page_capacity,
+            "output_vocabulary": 129280,
         },
         "nodes": nodes,
         "tokenizer": dict(TOKENIZER),

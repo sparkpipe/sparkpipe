@@ -84,7 +84,7 @@ window in which every stream decodes, both repeats:
 - Arms:
   - "No speculation" sends `"speculation": false`. Batches of two or more
     never speculate.
-  - GLM 5.3 Flash does not speculate, so its two B1 rows are one arm.
+  - GLM 5.3 Flash did not speculate when this ran, so its two B1 rows are one arm.
   - GLM 5.3 Full streams 221 token events for each 256-token answer.
 - Overlap: one owner request (a 32K-token turn) reached DeepSeek V4.1 Flash
   near the end of its second B8 arm. The first DeepSeek V4.1 Flash run
@@ -104,6 +104,19 @@ window in which every stream decodes, both repeats:
 
 GLM 5.3 Full's 8K prefill takes 6.9 s against a network floor of about 2.9 s:
 42% of the floor that binds first at TP16.
+
+GLM 5.3 Flash and DSV4.1 prefill in 2,048-row waves (2026-11-01, main firmware 51f316949, 16 Sparks):
+
+| 131K-token needle | 1,024-row waves | 2,048-row waves |
+| --- | ---: | ---: |
+| GLM 5.3 Flash (126,448 tokens) | 134.7 s | 110.8 s (1,141 tok/s) |
+| DSV4.1 1017 (130,819 tokens) | 85.0 s | 81.8 s (1,599 tok/s) |
+
+The outputs do not change. On both models, the two wave sizes give the same greedy tokens and the same top-5 logprobs on six chat prompts, alone and behind a 40,000-character document that spans several waves.
+
+GLM 5.3 Flash's second prefill lane now starts each DSA layer as soon as the first lane has written its cache rows (2026-11-01, 16 Sparks, interleaved A B A B on one hold): a 108,324-token prompt prefills in 82.7 and 82.8 s instead of 93.0 and 93.3 s (1,309 instead of 1,163 tok/s). The greedy tokens and top-5 logprobs are identical on the same six prompts and on the long prompt's answer. GLM 5.3 Full, whose lanes now also run the leader at the higher stream priority, prefills a 108,328-token prompt in 121.0 and 121.4 s against 124.1 s, also with identical outputs.
+
+GLM 5.3 Flash then prefills in 4,096-row waves, two 2,048-row lanes (2026-11-01, same method): the 108,324-token prompt takes 79.8 and 80.4 s instead of 82.7 and 82.9 s (1,353 tok/s), with identical tokens and logprobs. Each lane reads every expert weight once per wave, so twice the rows per wave halves those reads per token.
 
 ### Floors
 

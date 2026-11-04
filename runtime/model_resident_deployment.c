@@ -47,16 +47,16 @@ static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 {
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
 	"resident_sequence_capacity","kv_logical_page_capacity",
-	"kv_physical_page_capacity","max_sequence_positions","max_shared_input_rows",
+	"kv_physical_page_capacity","output_vocabulary","max_sequence_positions","max_shared_input_rows",
 	"streamed_prefill_min_tokens"
 };
-#define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 6u
+#define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
 {
 	"rank_index","stage_index","runtime_root","node_target","transport_host",
 	"adapter_configuration_path","kv_backing_directory",
 	"kv_backing_maximum_bytes","control_endpoint","kv_partition",
-	"kv_snapshot_directory","kv_snapshot_maximum_bytes"
+	"kv_snapshot_directory","kv_snapshot_maximum_bytes","kv_partition_reserve_bytes"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_NODE_REQUIRED_MEMBER_COUNT 10u
 static const char *const SparkModelResidentDeploymentUnixMembers[] =
@@ -158,15 +158,19 @@ static SparkStatus SparkModelResidentDeploymentOptionalDirectory(
 	const SparkJsonDocument *document,
 	int32_t object,
 	char **directory,
-	uint64_t *maximum_bytes)
+	uint64_t *maximum_bytes,
+	uint64_t *reserve_bytes)
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	*directory = 0;
 	*maximum_bytes = 0u;
+	*reserve_bytes = 0u;
 	if ( SparkModelResidentDeploymentMember(document,object,"kv_snapshot_directory") >= 0 )
 		status = SparkModelResidentDeploymentNullableString(document,object,"kv_snapshot_directory",directory);
 	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"kv_snapshot_maximum_bytes") >= 0 )
 		status = SparkModelResidentDeploymentUnsigned64(document,object,"kv_snapshot_maximum_bytes",maximum_bytes);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(document,object,"kv_partition_reserve_bytes") >= 0 )
+		status = SparkModelResidentDeploymentUnsigned64(document,object,"kv_partition_reserve_bytes",reserve_bytes);
 	SPARK_RETURN(status);
 }
 
@@ -240,7 +244,7 @@ static SparkStatus SparkModelResidentDeploymentParseNode(
 			"kv_partition",&node->kv_partition);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentOptionalDirectory(document,object,
-			&node->kv_snapshot_directory,&node->kv_snapshot_maximum_bytes);
+			&node->kv_snapshot_directory,&node->kv_snapshot_maximum_bytes,&node->kv_partition_reserve_bytes);
 	endpoint = status == SPARK_STATUS_OK ? SparkModelResidentDeploymentMember(document,object,"control_endpoint") : -1;
 	if ( status == SPARK_STATUS_OK && !SparkJsonTokenIsType(document,endpoint,SPARK_JSON_TOKEN_OBJECT) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -359,6 +363,10 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,
 			"kv_physical_page_capacity",&limits->kv_physical_page_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"output_vocabulary",&limits->output_vocabulary);
+	if ( status == SPARK_STATUS_OK && limits->output_vocabulary == 0u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
 	SPARK_RETURN(status);
 }
 
@@ -769,6 +777,8 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( deployment->tokenizer_asset_path != 0 && !SparkPathIsNormalized(deployment->tokenizer_asset_path,false) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	if ( deployment->tokenizer_vocabulary_size != 0u && deployment->runtime_limits.output_vocabulary != deployment->tokenizer_vocabulary_size )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	memset(ranks,0,sizeof(ranks));
 	memset(stages,0,sizeof(stages));
 	if ( deployment->runtime_limits.max_inflight_submission_count == 0u || deployment->runtime_limits.max_inflight_submission_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INFLIGHT_SUBMISSION_COUNT || deployment->runtime_limits.max_active_sequence_count == 0u || deployment->runtime_limits.max_active_sequence_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || deployment->runtime_limits.max_input_row_count < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.max_input_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || deployment->runtime_limits.resident_sequence_capacity < deployment->runtime_limits.max_active_sequence_count || deployment->runtime_limits.resident_sequence_capacity > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT )
@@ -797,7 +807,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		node = &deployment->nodes[index];
 		if ( node->rank_index >= deployment->node_count || node->stage_index >= deployment->node_count || ranks[node->rank_index] != 0u || stages[node->stage_index] != 0u )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		if ( !SparkPathIsNormalized(node->runtime_root,true) || SparkModelResidentDeploymentHasText(node->node_target) == 0u || SparkModelResidentDeploymentHasText(node->transport_host) == 0u || !SparkPathIsNormalized(node->adapter_configuration_path,false) || node->kv_backing_directory == 0 || !SparkPathIsNormalized(node->kv_backing_directory,true) || node->kv_partition == 0 || !SparkPathIsNormalized(node->kv_partition,true) || (node->kv_snapshot_directory == 0) != (node->kv_snapshot_maximum_bytes == 0u) || (node->kv_snapshot_directory != 0 && !SparkPathIsNormalized(node->kv_snapshot_directory,true)) || SparkModelResidentEndpointValidate(&node->control_endpoint) != SPARK_STATUS_OK )
+		if ( !SparkPathIsNormalized(node->runtime_root,true) || SparkModelResidentDeploymentHasText(node->node_target) == 0u || SparkModelResidentDeploymentHasText(node->transport_host) == 0u || !SparkPathIsNormalized(node->adapter_configuration_path,false) || node->kv_backing_directory == 0 || !SparkPathIsNormalized(node->kv_backing_directory,true) || node->kv_partition == 0 || !SparkPathIsNormalized(node->kv_partition,true) || (node->kv_snapshot_directory == 0) != (node->kv_snapshot_maximum_bytes == 0u) || (node->kv_snapshot_directory == 0) != (node->kv_partition_reserve_bytes == 0u) || (node->kv_snapshot_directory != 0 && !SparkPathIsNormalized(node->kv_snapshot_directory,true)) || SparkModelResidentEndpointValidate(&node->control_endpoint) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		if ( strcmp(node->transport_host,"0.0.0.0") == 0 || strcmp(node->transport_host,"::") == 0 || strcmp(node->transport_host,"*") == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

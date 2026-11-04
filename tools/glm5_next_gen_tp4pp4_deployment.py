@@ -112,6 +112,7 @@ def resident_deployment():
             "resident_sequence_capacity": 16,
             "kv_logical_page_capacity": page_capacity,
             "kv_physical_page_capacity": page_capacity,
+            "output_vocabulary": 154856,
         },
         "nodes": nodes,
     }

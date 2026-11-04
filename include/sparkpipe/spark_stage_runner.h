@@ -53,7 +53,7 @@ typedef struct SparkStageRunnerWeights
 {
 	const char *socket_path;
 	char pack_sha256[SPARK_STAGE_RUNNER_DIGEST_HEX + 1u];
-	uint64_t expert_pool_bytes;
+	uint64_t expert_pool_cap_bytes;
 	uint64_t spine_budget_bytes;
 } SparkStageRunnerWeights;
 
@@ -96,6 +96,7 @@ typedef struct SparkStageRunnerConfiguration
 	uint32_t linear_weight_codec;
 	uint32_t max_shared_row_count;
 	uint32_t head_row_capacity;
+	uint32_t output_vocabulary;
 	SparkStageRunnerStreamedPrefillConfig streamed_prefill;
 } SparkStageRunnerConfiguration;
 
