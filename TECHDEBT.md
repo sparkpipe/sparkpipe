@@ -23,6 +23,36 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Mesh collectives
 
+- Prefill sums go pair-first (2026-11-02, unproven on the fleet). The stage
+  runner turns a family's BF16 all-reduce into the pair-first all-reduce
+  (`SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`, chosen by
+  `StageRunnerSumOperation` in `inference/runner/stage_runner.cu`) when the
+  dispatch is a prefill and not a verify, the round is not split into begin
+  and finish, and the collective takes the size: an even degree of 4 or more
+  with peer routes and rank segments above 131,096 values (342 rows or more
+  at 6,144 wide and 16 ranks). Both prefill lanes of a wave (#1707) share the
+  runner's one collective, and each lane carries its own dispatch's rule.
+  Every model on the stage runner gets it, K3's own all-reduce rounds
+  included; decode, verify frames, graph-captured steps (16 rows or fewer)
+  and smaller waves keep the plain all-reduce bit for bit. Pair sums stay in
+  fp32 through the group sum (#1740), so a prefill sum has the plain
+  all-reduce's one BF16 rounding but adds pairs first. On one GPU with an
+  emulated transport (`tp_mesh_hardware_probe --pair-allreduce`) the result
+  equals that pairwise fp32 reference element for element at 4, 8 and 16
+  ranks and 2,048 and 4,096 rows of 6,144. On the fleet (2026-11-03), with
+  pair sums still rounded to BF16, the teacher-forced score against the
+  plain all-reduce moved 0.01-0.10 nats per token (GLM 5.3 Flash and
+  DeepSeek V4.1 Flash about 0.10, Solar Open 2 0.05, K-EXAONE 2.0 0.02,
+  Qwen 3.8 27B 0.01) against a same-build floor of exactly 0; the fp32
+  version is still to be scored, and what remains after it is the order
+  question below. Open: fleet timing against the plain
+  all-reduce (`mesh_round_bench` operation 7 against 1), and the A/B on
+  glm-5.3-flash, glm-5.3, deepseek-v4.1-flash, k-exaone-2.0 and solar-open-2
+  (decode EXACT, prefill NLL and top-1 within the same-build noise floor,
+  LONG_CHARS 200000 prefill faster, no WD-TRANSFER-STUCK), run with the
+  pipelined-boundary fix underneath and rerunning the 2026-11-02 GLM
+  long-prompt gate that failed without it.
+
 - Every hardware-wait round still crosses weightd's CPU relay once: the GPU
   publishes its payload and doorbell cell, and weightd's doorbell sweep
   (`SparkWeightdMeshDoorbellSweep`, `node/weightd_mesh.c`) posts the RDMA
@@ -326,13 +356,24 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
   stream gets no hidden states for the deferred span, only for the waves
   after it, so a drafter that builds its context from taps drafts without
-  the span. The waves after the span (up to 2,048 tokens) lease the experts
-  of every layer from weightd one layer at a time with no read-ahead, about
-  36 s a wave at 1M context.
+  the span. The waves after the span (up to 2,048 tokens) took about 36 s a
+  wave at 1M context while every routed layer synchronized the stream, read
+  the router back and only then leased its experts. They now lease each
+  layer's experts ahead of the router, two layers deep, whenever two layers
+  fit the pool (`STAGE-LEASE-AHEAD`, docs/WEIGHTD_DESIGN.md), and a resident
+  K3 (every group present in a whole-arena pool, as #1725 makes it) takes no
+  lease and no per-layer synchronization. Neither has a fleet measurement
+  yet: compare the tail-wave time and the K3 1M answer time with main.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
   2.0 s of a 3.6 s wave.
+- DSV4.1's landing path attends 4 heads per block on tensor cores, padded to
+  32 query slots, so 7 of every 8 slots repeat work: 1.3x the scalar kernel
+  where 64 heads get 7.5-9.4x (docs/KERNEL_PLAYBOOK.md, Latent shard
+  attention). A kernel that unions a block's rows' selected keys, the way GLM
+  5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
+  paths must move together because they agree bit for bit.
 
 ## Placement beyond TP16
 
@@ -370,17 +411,23 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Model residency and storage
 
-- Lazy expert pools are hand-set per lane record instead of sized from the
-  pack. Measured 2026-11-02 against each pack's expert manifest (2 MiB
-  chunks, identical on all 16 ranks): Kimi K3's experts occupy 43,200
-  chunks (90.60 GB) against a 99.57 GB pool, A.X K2 20,852 (43.73 GB)
-  against 55.83 GB, GLM 5.3 Full 22,383 (46.94 GB) against 55.83 GB, and
-  GLM 5.3 Flash 9,399 (19.71 GB) against 34.36 GB: 9-15 GB per node that
-  holds nothing, and 256 MB pools on models whose experts are resident.
-  On 2026-11-02 K3's cold start then ended with 1.3-1.8 GB available on
-  four nodes and earlyoom killed weightd or the engine. Size every pool
-  from its manifest's expert chunks, and keep a record value only as an
-  explicit cap for a lane that streams experts on purpose.
+- Expert pools were hand-set per lane record until #1725, and the Kimi K3
+  value was wrong in the costly direction. Measured 2026-11-02: every K3 rank
+  pack is 100,255,758,720 bytes, above the record's 99,568,941,440-byte pool,
+  so weightd built a 47,478-slot pool (99.57 GB) and every engine loaded its
+  own 9.85 GB spine beside it (`WD-SPINE-PRIVATE`): 109.4 GB per node, about
+  9.16 GB more than the whole arena (47,806 chunks, 100.26 GB) that holds
+  every expert chunk with the spine shared. That is where K3's cold start
+  ended with 1.3-1.8 GB available on four nodes and earlyoom killed weightd
+  or the engine. The GLM 5.3 (52 GiB), GLM 5.3 Flash (32 GiB) and A.X K2
+  (52 GiB) pools sat above their packs, so weightd already mapped those
+  whole arenas and wasted nothing; the 256 MB pools of spine-only models held
+  128 slots they never used. Pools are now planned from each pack's
+  `PACK.experts` ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md#pool-sizing)):
+  the whole arena without a cap, one slot for a pack without expert ranges,
+  and `expert_pool_cap_bytes` only for a lane that streams experts on
+  purpose. Open until #1725's fleet gate shows K3 in whole-arena mode on all
+  16 nodes with the 9.16 GB returned.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
@@ -425,15 +472,33 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - Enforce the internal NVMe tiers as validated directories with byte budgets
   on the existing root filesystem (owner 2026-10-03: no repartitioning). KV
   has its tier: each deployment node names its `kv_partition`, residentd
-  refuses KV directories off it, and `kv_backing_maximum_bytes` and
-  `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
-  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
-  evicts its oldest files before a write that would take the partition below
-  it. The active model shard tier (1 TB) has no named directory, byte budget or
-  startup check, so a shard copy can still take the partition below the
-  reserve; the KV stores give the space back only on their next write, and an
-  idle model's store keeps its files until the 24-hour expiry.
+  refuses KV directories off it, and the node's own KV on disk shares one
+  500 GB quota in the node ledger
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). The ledger counts only
+  KV, not free space: the active model shard tier (1 TB), user scratch and the
+  pair mirror have no ledger of their own, so a partition that holds less
+  free space than the quota fails KV writes with `ENOSPC` (refused, never
+  partial). Close it with a startup check per tier that the partition can
+  hold every tier's quota at once.
+- A running lane reserves its whole worst-case spill backing in the node KV
+  quota (logical pages less one sequence, 15 to 96 GiB per lane), although the
+  file is sparse and a lane whose pool grows parks little. Two follow-ups:
+  - the ledger should count backing pages as they park, not the maximum, so
+    the reservation does not evict snapshot files it never needs;
+  - the arena parks before the pool grows (`SparkStageKvBindingPoolTick` grows
+    after it sees evictions), so a long fill writes pages to NVMe while device
+    memory is free; growing before parking, when weightd has unlent chunks,
+    keeps those pages resident.
+- The node KV quota is in code and host tests only
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). Close it on the fleet:
+  two lanes on one node fill the 500 GB, the ledger's `used_bytes` stays at or
+  under the quota, the lane holding the oldest files frees them for the other
+  (`freed ... of the ... bytes the node KV quota asked`), a stopped lane's
+  oldest files are deleted for a running one (`was closed and held the node's
+  oldest KV`), and no lane logs `refused a ... file for the node KV quota`
+  while snapshot files remain. Eviction is oldest first to the minute for a
+  stopped lane (its files are cut by one-minute age buckets) and exact for a
+  running one.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -488,7 +553,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   4 and a TP4xPP4 deployment cannot hold 1/16 of the KV per node. Close it
   with the TP4xPP4 runtime above, proven by a TP4xPP4 fleet run with T1 parity
   in which each rank holds 1/4 of its group's latent KV and indexer keys.
-- KV pools resize by chunk inside the node reserve with resident demand
+- KV pools resize by chunk inside the node's KV limit with resident demand
   (`runtime/stage_kv_binding.c` pool policy, weightd `KV_POOL_RESIZE`/
   `KV_POOL_STATUS`), and `tests/test_stage_kv_pool_resize.c` moves chunks
   between two bindings in one process under the CUDA stub. Not yet proven on
@@ -605,14 +670,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
   to its parent and its orphans through one hash chain instead of a scan of
   the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
-  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  the shards on eight threads; and shares the node KV quota. A lenovo7
   bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
-  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
-  per rank for the four core models and 64 GiB for the others. Not yet proven
+  431 MB index and 4.53 million in 7.6 s with 952 MB. Every lane now shares
+  the node's 500 GB quota instead of a budget of its own. Not yet proven
   on the fleet: a K3 store past 8 GiB that restores an older 500K
   conversation with `cached_tokens` covering it and tokens equal to an
   uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
-  in under 15 s; a store at its budget that keeps the newest conversations
+  in under 15 s; a node at its quota that keeps the newest conversations
   whole while older ones go tip-first; and the first open that removes the
   previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
@@ -942,24 +1007,51 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+- Speculation serves on every model in the README model table, whose
   adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
-    Flash's recurrent state restored to the accepted row through the
-    binding's recurrent-state hook;
+  - verify frames for Motif 3 once it serves;
+  - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
+    head (F32 in the checkpoint) and the DFlash draft model it ships in
+    `dflash/` are not packed or wired as drafters;
+  - FP8 projections in verify frames above 16 rows run no faster than the
+    16-row launches they replaced (0.97-1.10x, `tools/exact_dense_rows_bench.cu`):
+    every 16-row block decodes the FP8 weights again, and that decode, not
+    DRAM, bounds the kernel. bf16 projections run 2-3x faster and MXFP8
+    1.1-2.3x. A skinny variant that decodes each weight tile once into shared
+    memory for all row blocks of a frame, keeping the per-row sums, would help
+    GLM 5.3 Full and A.X K2 long frames;
+  - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
+    pack drops it, so Ling 3.0 verifies only context-lookup drafts;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
     so shared verify frames run eager;
-  - multi-row verify numerics differ from a 1-row decode by the reordering
-    floor, so speculative output is judged against the floor like batched
-    output. Add the accuracy gate as excess over the floor for edit-style
-    requests, and show that plain prompts with no matches lose no speed
-    beyond noise.
+  - show that plain prompts with no matches lose no speed beyond noise on
+    every model that speculates; every verify-capable stage now reproduces
+    one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_hy4_verify_frames.cu`, `tests/test_qwen38_verify_frames.cu`,
+    `tests/test_mimo26_verify_frames.cu`, and the K3 and DeepSeek V4.1 Flash
+    tests), so speculative output is judged EXACT against output without
+    speculation.
 
 ## Packaging and provenance
 
+- Lanes below the precision the README promises (publisher precision whenever
+  it fits one fleet). None of them has an accuracy-equivalence result, so none
+  may stay below it:
+  - GLM 5.3 Full at BF16 serves 786,432 positions, not the model's 1,048,576:
+    its 98 GB of weights a rank leave a 1M-position sequence's KV minimum
+    (6.5 GB) outside weightd's 6.9 GB memory margin. The FP8 build serves 1M;
+    a per-request FP8 option (the per-request precision item) or a second
+    fleet would serve both.
+  - Qwen 3.8 Max serves a vetted NVFP4 build because the vendor's FP8 experts
+    (about 170 GB per rank) do not fit one fleet; it moves to FP8 once two
+    fleets serve it as two pipeline stages.
+  - Each switch is gated on next-token accuracy and NLL over natural text
+    (coord `sprint-1102/nllkit`) against the lane it replaces, plus decode and
+    prefill speed.
 - License follow-ups (2026-10-18; the code is Apache-2.0 and NOTICE covers
   every third-party file kept in the tree):
   - The HY4 reference tools and module were first written against
@@ -1110,13 +1202,41 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   Max have no reasoning-off switch in their templates: the chat layer
   refuses `reasoning_effort: minimal` for them with a 400 naming the efforts
   they take, and `/v1/models` lists every model's `reasoning_efforts`.
-- Every stage-runner lane, GLM Flash included, is sized for every resident
-  sequence at full length by default: `tools/stage_lane.py` sets
-  `kv_physical_pages` to `sequences * kv_pages` (each sequence's
-  `max_sequence_positions` is `kv_pages` pages) unless `--kv-physical-pages`
-  (`STAGE_KV_PHYSICAL_PAGES` in `tools/stage_lane.sh`) names a smaller pool,
-  and it takes that pool as a page count. Size the physical pool from a byte
-  budget the lanes share and let paged admission share it.
+- The device KV pool grows on demand into what the resident model leaves
+  of the node ([`docs/LANES.md`](docs/LANES.md),
+  [`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)),
+  in code and host tests only. Close it on the fleet: for glm-5.3-flash,
+  glm-5.3, deepseek-v4.1-flash, kimi-k3, qwen3.8-27b and gemma-4-31b, fill
+  KV with long prompts until the pool stops growing, record `/health`
+  `kv_capacity_tokens` and the minimum `MemAvailable` over the 16 nodes
+  (above the margin, no earlyoom kill), and see `release_compare` EXACT 6/6
+  against main. The renderer's projections (`kv_physical_page_capacity`
+  times the KV block) are 86.3M tokens for GLM-5.3 Flash, 9.6M for GLM-5.3,
+  354M for DeepSeek V4.1 Flash, 7.8M for K3, 24.6M for Qwen 3.8 27B and 1.8M
+  for Gemma 4 31B; none is measured.
+- The batch scheduler admits against an engine's maximum device pages (what
+  the model could hold alone on the node), not its pool's live capacity, and
+  the rendered physical capacity takes the model's `node_memory_bytes` from
+  `tools/stage_lane.py` as its footprint. Two engines on one node can so be
+  promised more pages together than the node holds; their pools then stall
+  and evict instead of growing. Close it by sending each rank's live pool
+  capacity to the scheduler and admitting against the smallest rank's,
+  proven by two co-resident engines filling KV with no `KV-PARK-FAILED`.
+- Every device KV page is a logical page, so a lane's host page tables
+  (page cache, arena, store index) now scale with the node budget's pages,
+  up to 2.86M pages for Ling 3.0 Flash, instead of with
+  `sequences * kv_pages`. Measure that host memory on the fleet, and allocate
+  those tables as the pool grows if it matters.
+- KV on disk still has per-lane maxima: `kv_backing_bytes` and
+  `kv_snapshot_bytes` in every record (2.45 TB over 19 lanes) and the
+  512 GiB `kv_partition_reserve_bytes` free-space floor. Owner decision
+  (2026-11-02): one node-wide 500 GB quota for the node's own KV (backing and
+  snapshots), shared by every lane, oldest first under the retention rule;
+  the pair partner's 500 GB mirror stays with the working-state code and is
+  not counted. Close it by replacing the three settings with that quota in
+  `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
+  by two lanes on one node whose combined KV stays under 500 GB while each
+  evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
   fleet swapping and pushes the owner's model out after each reply. Each key
@@ -1336,16 +1456,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
   contract, every kernel Qwen3.8-27B and Gemma 4 26B A4B use, and those two
   models end to end ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)); no
   other model and no multi-Studio topology is.
-- Left out on purpose (2026-10-02): KV and weights share weightd but not one
-  budget. weightd maps KV device memory as KV pools that grow and shrink in
-  chunks (`runtime/spark_weightd_kv_pool.c`, driven from
-  `runtime/stage_kv_binding.c`) and weights through leases. The weight budget
-  is `device_bytes_max` minus the static `--kv-reserve-bytes` carve-out
-  (`node/weightd.c`, `runtime/spark_weightd.c`), so KV pressure cannot reclaim
-  idle weight memory and the reverse. KV pages still enter the arena through
+- KV and weights share weightd's per-node ceiling in code
+  ([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)):
+  KV borrows what the attached weights' budgets leave of the ceiling
+  (`SparkWeightdKvLimit`), a KV grow reclaims cold weights
+  (`SparkWeightdKvMakeRoom`), and new weights release detached pools above
+  the reserve but never an owned one (`SparkWeightdServerReclaimCold`). Not
+  yet fleet-proven. Close it with a weightd release on all 16 nodes, the
+  production models switched through the controller with `release_compare`
+  EXACT 6/6 against the previous weightd, and `maxctx.sh` at native context
+  for Gemma 4 31B (262,144) and Laguna S 2.1, MiMo V2.6 Flash and MiMo V2.6
+  Pro (1,048,576): each lane starts, finds a needle near the end, and logs no
+  earlyoom kill or weightd refusal. Until then those four records stay at
+  32,768 positions and `tests/test_lane_records.py` bounds every record's
+  physical pages by the reserve; after the proof that rule becomes per model
+  (physical pages within the ceiling less the model's weights).
+- Left out on purpose (2026-10-02): KV pages still enter the arena through
   `SparkKvCacheArenaMarkBlockResident` (`cache/kv_cache.c`), and the device
   API (`include/sparkpipe/spark_device.h`) has no `make_resident`/`evict`,
-  while `docs/INFERENCE_OS_DESIGN.md` requires one for both.
+  while `docs/INFERENCE_OS_DESIGN.md` requires one for both. weightd sizes KV
+  pools (`runtime/spark_weightd_kv_pool.c`, driven from
+  `runtime/stage_kv_binding.c`) and evicts expert leases by its own rules.
   Close it by building `make_resident`/`evict` in the device layer and moving
   KV pool sizing and weightd lease eviction onto it, proven on the fleet by a
   run where KV growth and expert demand both resolve through that one

@@ -53,7 +53,7 @@ typedef struct SparkStageRunnerWeights
 {
 	const char *socket_path;
 	char pack_sha256[SPARK_STAGE_RUNNER_DIGEST_HEX + 1u];
-	uint64_t expert_pool_bytes;
+	uint64_t expert_pool_cap_bytes;
 	uint64_t spine_budget_bytes;
 } SparkStageRunnerWeights;
 

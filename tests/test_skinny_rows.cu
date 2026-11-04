@@ -95,7 +95,7 @@ template<class Format>
 static int32_t Launch(const Weights &w, const uint16_t *activation, void *output, uint32_t f32, uint32_t rows)
 {
 	LmSkinnyArguments args = Arguments<Format>(w, activation, output, f32, rows);
-	return rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<Format>(&args, 0) : LmSkinnyLaunchRowChunks<Format>(&args, 0);
+	return LmSkinnyLaunch<Format>(&args, 0, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u);
 }
 
 template<class Format>
@@ -157,8 +157,7 @@ static uint32_t DenseCase(const char *name, uint32_t element_bytes, uint32_t f32
 			LmSkinnyDenseTarget targets[2] = { Target<Format>(first, (uint16_t *)pair_first), Target<Format>(second, (uint16_t *)pair_second) };
 			CUDA(cudaMemset(pair_first, 0xa5, (size_t)MAX_ROWS * first_output * 2u));
 			CUDA(cudaMemset(pair_second, 0xa5, (size_t)MAX_ROWS * second_output * 2u));
-			REQUIRE((rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<Format>(targets, 2u, activation, rows, input, 0) :
-				LmSkinnyDenseMultiRowChunks<Format>(targets, 2u, activation, rows, input, 0)) == LM_LAUNCH_OK);
+			REQUIRE(LmSkinnyDenseMulti<Format>(targets, 2u, activation, rows, input, 0, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u) == LM_LAUNCH_OK);
 			differing += memcmp(Host(pair_first, (size_t)rows * first_output * 2u).data(), reference_pair_first.data(), (size_t)rows * first_output * 2u) != 0 ? 1u : 0u;
 			differing += memcmp(Host(pair_second, (size_t)rows * second_output * 2u).data(), reference_pair_second.data(), (size_t)rows * second_output * 2u) != 0 ? 1u : 0u;
 		}
@@ -277,6 +276,6 @@ int main(void)
 		printf("FAIL skinny rows: %u cases give multi-row outputs that differ from one-row launches\n", failures);
 		return 1;
 	}
-	printf("PASS skinny rows: every row of a multi-row or row-chunked launch is the same bits as a one-row launch of that row\n");
+	printf("PASS skinny rows: every row of a multi-row or frame launch is the same bits as a one-row launch of that row\n");
 	return 0;
 }

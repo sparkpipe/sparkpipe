@@ -418,7 +418,7 @@ struct MotifStage
 		LmLocalExpertRoutes expert_routes;
 		SparkStatus status = Check(LinearFloat(w->router, state->normed, state->router_logits, rows, MO_HIDDEN, MO_EXPERTS, sms, stream), "router", layer);
 		if ( status == SPARK_STATUS_OK && LmTopkGroupLimitedLaunch<MO_THREADS, MO_EXPERTS, 1u, 1u, MO_TOP_K>(rows, state->router_logits, w->expert_bias,
-				state->route_expert, state->route_weight, SPARK_MOTIF_MODEL_MOE_ROUTED_SCALE, stream) != cudaSuccess )
+				state->route_expert, state->route_weight, SPARK_MOTIF_MODEL_MOE_ROUTED_SCALE, step->route_fault, stream) != cudaSuccess )
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "router top-k", layer);
 		if ( status != SPARK_STATUS_OK )
 			return status;

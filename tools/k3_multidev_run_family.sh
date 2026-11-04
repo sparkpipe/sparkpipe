@@ -28,7 +28,8 @@
 #                              daemon; this wrapper never starts one).
 #                              Defaults to the fleet shared unit:
 #                              /tmp/spark_weightd.sock
-#   K3_EXPERT_POOL_BYTES       bounded routed-expert pool (calculator:
+#   K3_EXPERT_POOL_CAP_BYTES   explicit routed-expert pool cap: a dev root
+#                              streams experts on purpose (calculator:
 #                              tools/devcycle/lane_budget_calc.py)
 #   K3_SPINE_BUDGET_BYTES      bounded full-resolution spine budget
 # Optional environment
@@ -101,7 +102,7 @@ SOCKET="${K3_WEIGHTD_SOCKET:-${SPARK_WEIGHTD_SOCKET:-/tmp/spark_weightd.sock}}"
 [ -S "$SOCKET" ] || fail "shared weightd socket $SOCKET is not a live socket; \
 the operator must establish the shared daemon (never start one by hand)"
 
-for value in K3_EXPERT_POOL_BYTES K3_SPINE_BUDGET_BYTES K3_KV_BACKING_BYTES; do
+for value in K3_EXPERT_POOL_CAP_BYTES K3_SPINE_BUDGET_BYTES K3_KV_BACKING_BYTES; do
   eval "text=\${$value:-}"
   # shellcheck disable=SC2154  # assigned by the eval above
   case "$text" in
@@ -229,7 +230,7 @@ print(f"k3 preload: {len(local)} of {len(pairs)} keys are stage "
       f"{sys.argv[3]}-local")
 PYW
   SHA_HEX="$(cat "$ROOT/packs/pack.sha256")"
-  SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_BYTES" \
+  SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_CAP_BYTES" \
     "$ROOT/bin/weightd_warm" "$SOCKET" "$PRIVATE_PACK" "$SHA_HEX" x 4 \
     --family k3 --wset "$ROOT/preload.wset" 300 > "$ROOT/warm.log" 2>&1 ||
     { cat "$ROOT/warm.log" >&2; fail "working set warm failed"; }
@@ -249,14 +250,14 @@ export SPARK_WEIGHTD_LANE="$LANE"
 # first-launch find #10). The world map stays in $MESH_RANKS for the
 # node-order contract above.
 export SPARK_TP_MESH_RANKS="$((STAGE * 4)),$((STAGE * 4 + 1)),$((STAGE * 4 + 2)),$((STAGE * 4 + 3))"
-export SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_BYTES"
+export SPARK_WEIGHTD_EXPERT_POOL_BYTES="$K3_EXPERT_POOL_CAP_BYTES"
 export SPARK_WEIGHTD_SPINE_BUDGET_BYTES="$K3_SPINE_BUDGET_BYTES"
 # Pinned CUDA environment for shared-lane smoke (template hard rule).
 export CUDA_MODULE_LOADING=LAZY
 export CUDA_MODULE_DATA_LOADING=LAZY
 export CUDA_DEVICE_MAX_CONNECTIONS=32
 echo "k3-$FAMILY-lane$LANE: rank=$RANK host=$HOST stage=$STAGE tp=$TP_RANK \
-pack=$PRIVATE_PACK pool=${K3_EXPERT_POOL_BYTES}B spine=${K3_SPINE_BUDGET_BYTES}B \
+pack=$PRIVATE_PACK pool_cap=${K3_EXPERT_POOL_CAP_BYTES}B spine=${K3_SPINE_BUDGET_BYTES}B \
 socket=$SOCKET"
 exec "$ROOT/bin/sparkpipe_model_residentd" \
   --deployment "$ROOT/deployment.json" \

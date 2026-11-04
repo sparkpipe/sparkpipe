@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_cxx.h"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/cell_mma.cuh"
 #include "inference/kernels/cell_pack.cuh"
 #include "inference/kernels/index_score.cuh"
@@ -278,8 +279,7 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<LmBf16Format>(&args, stream) :
-			LmSkinnyLaunchRowChunks<LmBf16Format>(&args, stream);
+		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
@@ -307,8 +307,7 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyLaunch<LmMxfp8>(&args, stream) :
-			LmSkinnyLaunchRowChunks<LmMxfp8>(&args, stream);
+		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
@@ -335,8 +334,7 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 	{
 		const LmSkinnyDenseTarget targets[2] = { D41Target(first, first_destination, input_dimension, first_dimension),
 			D41Target(second, second_destination, input_dimension, second_dimension) };
-		const int32_t status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream) :
-			LmSkinnyDenseMultiRowChunks<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream);
+		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
@@ -700,7 +698,7 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 		if ( LmKvShardGatherViewInitialize<Geometry>(&view, state->latent_views[cache].pages, shard,
 				state->landing + (uint64_t)source * state->landing_stride[landing], state->gather_plan + state->slots, state->gather_plan + 2u * state->slots) != 0 ||
 			LmKvShardGatherViewWindow(&view, 0u, state->landing_keys[landing]) != 0 ||
-			LmLatentShardPartialHeadsLaunch<Geometry,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
+			LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
 				(uint64_t)rows * D41_LOCAL_HEADS * D41_HEAD_DIM, D41_LOCAL_HEADS, D41_LOCAL_HEADS, step->sequence_of_row, length, bound, state->selected,
 				D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_received + (uint64_t)source * stride, stride,
 				D41_LOCAL_HEADS, 1u, rows, stream, state->split_selected, state->split_offsets, 1u) != cudaSuccess )
@@ -714,7 +712,7 @@ static SparkStatus D41Partials(D41ModelState *state, uint32_t index, const Spark
 	const uint32_t *length, uint64_t query_rank_stride, uint32_t record_heads, uint32_t record_copies, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index);
-	if ( LmLatentShardPartialHeadsLaunch<Geometry,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_gathered,
+	if ( LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_gathered,
 		query_rank_stride, D41_LOCAL_HEADS, D41_HEADS, step->sequence_of_row, length, bound, state->selected,
 		D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_send, D41DestinationStride(rows, record_heads), record_heads,
 		record_copies, rows, stream) != cudaSuccess )
@@ -869,7 +867,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	SparkStatus status;
 	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, stream) != cudaSuccess )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 &&
 		(cudaStreamSynchronize(stream) != cudaSuccess ||
@@ -1955,8 +1953,7 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 	if ( strlen(state->engram_path) >= sizeof(request.pack_path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.pack_path, state->engram_path, strlen(state->engram_path) + 1u);
-	request.expert_pool_bytes = configuration->weights.expert_pool_bytes;
-	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, state->engram_bytes + 255u,
+	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, 0u, state->engram_bytes + 255u,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
 }
 

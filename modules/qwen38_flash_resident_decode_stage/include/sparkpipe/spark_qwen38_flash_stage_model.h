@@ -9,6 +9,7 @@ extern "C" {
 
 #define SPARK_QWEN38_FLASH_STAGE_TP_DEGREE 16u
 #define SPARK_QWEN38_FLASH_STAGE_PAGE_SLOTS 64u
+#define SPARK_QWEN38_FLASH_STAGE_VERIFY_ROWS 256u
 #define SPARK_QWEN38_FLASH_STAGE_KV_HEADS 2u
 #define SPARK_QWEN38_FLASH_STAGE_HEAD_DIM 256u
 #define SPARK_QWEN38_FLASH_STAGE_KV_SLOT_BYTES (SPARK_QWEN38_FLASH_STAGE_KV_HEADS * SPARK_QWEN38_FLASH_STAGE_HEAD_DIM * 2u * 2u)
@@ -29,10 +30,12 @@ const SparkStageRunnerModelInterface *SparkQwen38FlashStageModel(void);
 #ifdef __cplusplus
 #include "sparkpipe/spark_qwen38_family.h"
 
-template<uint32_t TP>
+template<uint32_t TP, uint32_t EXPERT_CODEC, uint32_t PLE_TABLE_CODEC>
 struct Qwen38FlashGeometry : QwenHybridDefaults
 {
 	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kExpertCodec = EXPERT_CODEC;
+	static constexpr uint32_t kPleTableCodec = PLE_TABLE_CODEC;
 	static constexpr uint32_t kHidden = SPARK_QWEN38_FLASH_STAGE_HIDDEN;
 	static constexpr uint32_t kLayers = SPARK_QWEN38_FLASH_STAGE_LAYERS;
 	static constexpr uint32_t kVocab = 248320u;
@@ -46,6 +49,7 @@ struct Qwen38FlashGeometry : QwenHybridDefaults
 	static constexpr uint32_t kRopeDim = 64u;
 	static constexpr float kRopeTheta = 10000000.0f;
 	static constexpr uint32_t kPageSlots = SPARK_QWEN38_FLASH_STAGE_PAGE_SLOTS;
+	static constexpr uint32_t kVerifyRows = SPARK_QWEN38_FLASH_STAGE_VERIFY_ROWS;
 	static constexpr bool kRankHeads = false;
 	static constexpr bool kMoe = true;
 	static constexpr uint32_t kExperts = 512u;

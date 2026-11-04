@@ -17,6 +17,7 @@ extern "C" {
 #define SPARK_GLM53_FLASH_TP16_STAGE_KV_SLOT_BYTES SPARK_GLM5_NEXT_MODEL_KV_SLOT_BYTES
 #define SPARK_GLM53_FLASH_TP16_STAGE_INDEX_SLOT_BYTES (SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION * 2u)
 #define SPARK_GLM53_FLASH_TP16_STAGE_INDEX_DIMENSION SPARK_GLM5_NEXT_MODEL_INDEX_PACKED_TOKEN_DIMENSION
+#define SPARK_GLM53_FLASH_TP16_VERIFY_ROWS 256u
 
 const SparkStageRunnerModelInterface *SparkGlm53FlashTp16StageModel(void);
 
@@ -28,11 +29,12 @@ const SparkStageRunnerModelInterface *SparkGlm53FlashTp16StageModel(void);
 #include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_weight_codec.h"
 
-template<uint32_t TP>
+template<uint32_t TP, uint32_t EXPERT_CODEC>
 struct Glm53FlashGeometry
 {
 	static constexpr uint32_t kTpDegree = TP;
-	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
+	static constexpr uint32_t kExpertCodec = EXPERT_CODEC;
+	static constexpr uint32_t kVerifyRows = SPARK_GLM53_FLASH_TP16_VERIFY_ROWS;
 	static const char *Tag(void) { return "sparkpipe_glm53_flash"; }
 	static const char *WeightdModel(void) { return "glm5_next_stage"; }
 	static const char *WeightdRevision(void) { return "84c6a6aa9497188e15a635ba793b0f95a79b1033"; }

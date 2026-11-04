@@ -26,7 +26,7 @@ def run_setup(home, states):
     log.write_text("")
     environment = dict(os.environ, PATH=f"{home / 'bin'}:{os.environ['PATH']}", FAKE_HOME=str(home),
                        STAGE_MODEL="glm53_full", STAGE_LANE="3", STAGE_FIRMWARE=str(home / "firmware"), STAGE_WEIGHTD_SOCKET="/unused",
-                       STAGE_EXPERT_POOL_BYTES="1", STAGE_MEMORY_MAX="1G")
+                       STAGE_MEMORY_MAX="1G")
     result = subprocess.run(["bash", str(ROOT / "tools" / "stage_lane.sh"), "setup"], env=environment,
                             capture_output=True, text=True, timeout=300)
     commands = [line.split(" ", 1)[1] for line in log.read_text().splitlines()]

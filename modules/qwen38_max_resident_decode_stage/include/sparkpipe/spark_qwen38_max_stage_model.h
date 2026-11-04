@@ -2,6 +2,7 @@
 #define SPARKPIPE_SPARK_QWEN38_MAX_STAGE_MODEL_H
 
 #include "sparkpipe/spark_stage_runner_model.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,6 +10,7 @@ extern "C" {
 
 #define SPARK_QWEN38_MAX_STAGE_TP_DEGREE 16u
 #define SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS 64u
+#define SPARK_QWEN38_MAX_STAGE_VERIFY_ROWS 256u
 #define SPARK_QWEN38_MAX_STAGE_KV_HEADS 4u
 #define SPARK_QWEN38_MAX_STAGE_HEAD_DIM 256u
 #define SPARK_QWEN38_MAX_STAGE_KV_SLOT_BYTES (SPARK_QWEN38_MAX_STAGE_KV_HEADS * SPARK_QWEN38_MAX_STAGE_HEAD_DIM * 2u * 2u)
@@ -30,6 +32,7 @@ template<uint32_t TP>
 struct Qwen38MaxGeometry : QwenHybridDefaults
 {
 	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_NVFP4_E2M1;
 	static constexpr uint32_t kHidden = SPARK_QWEN38_MAX_STAGE_HIDDEN;
 	static constexpr uint32_t kLayers = SPARK_QWEN38_MAX_STAGE_LAYERS;
 	static constexpr uint32_t kVocab = 248320u;
@@ -43,6 +46,7 @@ struct Qwen38MaxGeometry : QwenHybridDefaults
 	static constexpr uint32_t kRopeDim = 64u;
 	static constexpr float kRopeTheta = 10000000.0f;
 	static constexpr uint32_t kPageSlots = SPARK_QWEN38_MAX_STAGE_PAGE_SLOTS;
+	static constexpr uint32_t kVerifyRows = SPARK_QWEN38_MAX_STAGE_VERIFY_ROWS;
 	static constexpr bool kRankHeads = true;
 	static constexpr bool kMoe = true;
 	static constexpr uint32_t kExperts = 512u;

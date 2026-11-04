@@ -491,7 +491,7 @@ struct Glm5NextDevice
 template<uint32_t TP>
 struct Glm53FlashDevice
 {
-	using Geometry = Glm53FlashGeometry<TP>;
+	using Geometry = Glm53FlashGeometry<TP, SPARK_WEIGHT_CODEC_FP8_E4M3>;
 	static constexpr const char *kTag = "sparkpipe_glm53_flash_device";
 	static constexpr const char *kName = "glm-5.3-flash";
 	static constexpr uint32_t kProjection = SPARK_PROJECTION_GEMV;

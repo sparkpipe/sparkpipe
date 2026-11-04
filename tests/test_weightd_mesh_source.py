@@ -65,8 +65,14 @@ uint64_t SparkWeightdServerResidentBytes(const SparkWeightdServer *server)
 { (void)server; return 0u; }
 const char *SparkStatusToString(SparkStatus status)
 { (void)status; return "test-status"; }
-SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
-{ (void)root; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+{ (void)ledger; (void)root; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkKvLedgerDefaultPath(char *path,uint32_t capacity)
+{ (void)snprintf(path,capacity,"/tmp/test-kv-ledger"); return SPARK_STATUS_OK; }
+SparkStatus SparkKvLedgerOpen(SparkKvLedger *ledger,const char *path,uint64_t quota_bytes)
+{ (void)ledger; (void)path; (void)quota_bytes; return SPARK_STATUS_OK; }
+SparkStatus SparkKvLedgerSample(SparkKvLedger *ledger,SparkKvLedgerUsage *usage)
+{ (void)ledger; memset(usage,0,sizeof(*usage)); return SPARK_STATUS_OK; }
 ''', encoding="utf-8")
     subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-D_GNU_SOURCE",
                     "-pthread", "-I.", "-Iinclude", str(fixture), "-o", str(binary)],

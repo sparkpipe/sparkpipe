@@ -176,6 +176,15 @@ static void TestOutputVocabulary(void)
 	puts("test_model_resident_deployment: runtime_limits.output_vocabulary is required and nonzero, and a deployment with a tokenizer must name exactly the tokenizer's vocabulary");
 }
 
+static void TestNodeKvQuotaReplacesLaneMaxima(void)
+{
+	const char *plain = "tests/fixtures/model_resident_deployment.json";
+	TestOutputVocabularyVariant(plain,"\"kv_partition\": \"/\",","\"kv_partition\": \"/\",",SPARK_STATUS_OK,32000u);
+	TestOutputVocabularyVariant(plain,"\"kv_partition\": \"/\",","\"kv_partition\": \"/\", \"kv_partition_reserve_bytes\": 549755813888,",SPARK_STATUS_SCHEMA_ERROR,0u);
+	TestOutputVocabularyVariant(plain,"\"kv_partition\": \"/\",","\"kv_partition\": \"/\", \"kv_snapshot_maximum_bytes\": 68719476736,",SPARK_STATUS_SCHEMA_ERROR,0u);
+	puts("test_model_resident_deployment: a node naming kv_partition_reserve_bytes or kv_snapshot_maximum_bytes is refused; the node KV quota replaces the partition floor and the per-lane snapshot cap");
+}
+
 static void TestSharedInputRows(void)
 {
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 2",SPARK_STATUS_OK,0u,2u);
@@ -743,6 +752,7 @@ int main(int argc,char **argv)
 	TestSequencePositions();
 	TestSharedInputRows();
 	TestOutputVocabulary();
+	TestNodeKvQuotaReplacesLaneMaxima();
 	TestDraftServer();
 	TestGlm5NextDeploymentServesText();
 	SparkModelResidentDeploymentReset(&deployment);
