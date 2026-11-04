@@ -24,6 +24,7 @@ TEMPLATE = (
     "{% endif %}{%- endfor %}"
     "{%- if add_generation_prompt %}<|im_start|>assistant\n<think>{% endif %}"
 )
+CODEX_INSTRUCTIONS = "You are a coding agent in the Codex CLI."
 CORPUS = ["hello world, the weather in Paris is sunny today", "read the file a.txt and list the directory", "call the tool with path and pattern",
           "user assistant system tool think reply answer question", "The answer is 42. Let me check the file first."] * 20
 
@@ -133,8 +134,11 @@ class Controller:
         self.status = {"active": active, "state": "idle", "target": None, "wanted": None,
                        "models": [{"id": model_id, "active": model_id == active} for model_id in models]}
         self.activations = []
+        self.fail = False
 
     async def get_status(self, request):
+        if self.fail:
+            return web.Response(status=502, text="Cannot connect to host 127.0.0.1:8440 ssl:default [Connect call failed]")
         return web.json_response(self.status)
 
 
@@ -172,10 +176,11 @@ class Harness:
         if not keys.exists():
             self.key_id, self.key = api_keys.create(keys, 0, "harness")
             self.swap_id, self.swap_key = api_keys.create(keys, 0, "swapper", allow_swap=True)
-            (self.tmp / "keys.json").write_text(json.dumps({"key": self.key, "swap_key": self.swap_key, "key_id": self.key_id}))
+            self.gateway_id, self.gateway_key = api_keys.create(keys, 0, "gateway", gateway=True)
+            (self.tmp / "keys.json").write_text(json.dumps({"key": self.key, "swap_key": self.swap_key, "key_id": self.key_id, "gateway_key": self.gateway_key}))
         else:
             saved = json.loads((self.tmp / "keys.json").read_text())
-            self.key, self.swap_key, self.key_id = saved["key"], saved["swap_key"], saved["key_id"]
+            self.key, self.swap_key, self.key_id, self.gateway_key = saved["key"], saved["swap_key"], saved["key_id"], saved["gateway_key"]
         config = {"models": [model_spec(model_id, engine_base, self.sequences) for model_id in self.model_ids],
                   "public": {"header": HEADER, "keys_file": "api_keys.json", "models": list(self.model_ids)}}
         if self.control:
@@ -184,7 +189,9 @@ class Harness:
             token.chmod(0o600)
             config.update(controller_token_file="controller-token", control={"status_url": control_base + "/status"})
         if self.replay_store:
-            config["replay"] = {"store": "state/replay.sqlite", "budget_bytes": 1 << 26}
+            config["replay"] = {"directory": "state/replay", "budget_bytes": 1 << 26, "directive": "working-state/directive"}
+        (self.tmp / "codex_instructions.md").write_text(CODEX_INSTRUCTIONS)
+        config["codex"] = {"instructions_file": "codex_instructions.md"}
         self.frontend = chat_frontend.Frontend(config, self.tmp)
         self.front_runner, self.base = await serve(chat_frontend.build(self.frontend))
         self.session = aiohttp.ClientSession()
@@ -195,12 +202,21 @@ class Harness:
         await self.front_runner.cleanup()
         await self.engine_runner.cleanup()
         await self.control_runner.cleanup()
-        self.frontend.replay.db.close()
+        self.frontend.replay.close()
 
-    def headers(self, swap=False, **extra):
-        headers = {HEADER: "1", "Authorization": "Bearer " + (self.swap_key if swap else self.key)}
+    def headers(self, swap=False, account=None, **extra):
+        if account is not None:
+            headers = {HEADER: "1", "Authorization": "Bearer " + self.gateway_key, "X-SparkPipe-Account": account, "X-SparkPipe-Fleet": "F1",
+                       "X-SparkPipe-Allow-Swap": "1" if swap else "0"}
+        else:
+            headers = {HEADER: "1", "Authorization": "Bearer " + (self.swap_key if swap else self.key)}
         headers.update(extra)
         return headers
+
+    def directive(self, wiped, held_until):
+        path = self.tmp / "working-state" / "directive"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"sparkpipe-working-state 1\nwiped {int(wiped)}\nheld_until {int(held_until)}\n")
 
     async def post(self, path, body, **headers):
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:

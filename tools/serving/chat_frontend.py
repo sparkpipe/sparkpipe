@@ -14,7 +14,7 @@ import sys
 import time
 import uuid
 from array import array
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 import aiohttp
@@ -45,13 +45,14 @@ def read_token(path):
 
 
 class RequestError(Exception):
-    def __init__(self, status, code, message, retry_after=None, details=None):
+    def __init__(self, status, code, message, retry_after=None, details=None, overflow=None):
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
         self.retry_after = retry_after
         self.details = details
+        self.overflow = overflow
 
 
 def load_sibling(name):
@@ -63,27 +64,137 @@ def load_sibling(name):
 
 chat_replay = load_sibling("chat_replay")
 chat_shapes = load_sibling("chat_shapes")
+working_state = load_sibling("working_state")
 chat_shapes.RequestError = RequestError
+chat_shapes.chat_replay = chat_replay
 KEEPALIVE_SECONDS = 10.0
 BUSY_WAIT_SECONDS = 60.0
 BUSY_RETRY_AFTER_SECONDS = 5
 RESIDENCY_CACHE_SECONDS = 1.0
 CACHE_BLOCK_TOKENS = 64
 INTERACTIVE_RESERVE = 2
+FAIR_SHARE = 0.75
 PRIORITY_HEADER = "X-SparkPipe-Priority"
 FLEET_HEADER = "X-SparkPipe-Fleet"
+ACCOUNT_HEADER = "X-SparkPipe-Account"
+MEMBER_HEADER = "X-SparkPipe-Key"
+ALLOW_SWAP_HEADER = "X-SparkPipe-Allow-Swap"
+ALLOW_SWAP_VALUES = frozenset({"1", "true"})
+HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+FLEET_VALUE = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REQUEST_CLASS_HEADER = "x-claude-code-request-class"
 BACKGROUND_CLASSES = frozenset({"compaction", "auxiliary"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
 AGENT_HEADERS = ("x-claude-code-agent-id", "x-parent-session-id")
 DEFAULT_ALIASES = {"claude-*": None, "gpt-*": None}
+ALIAS_TABLE_SIZE = 64
+ALIAS_PATTERN_LENGTH = 128
+ALIAS_STARS = 4
 PACK_SEPARATOR = "+"
-REPLAY_SENTINEL = "SPARKPIPE-REPLAY"
+REPLAY_SENTINEL = "\ue000SPARKPIPE-REPLAY-{}\ue001"
+REPLAY_MARK = re.compile("\ue000SPARKPIPE-REPLAY-([0-9]+)\ue001")
+GENERATION_PROBE = "\ue000SPARKPIPE-PROBE\ue001"
+GENERATION_CACHE = 64
+DIRECTIVE_CHECK_SECONDS = 1.0
+EXPIRY_SWEEP_SECONDS = 60.0
 OWN_SCOPE = "own"
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
     return json.dumps(value, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+
+
+def clean_header(value, pattern=HEADER_VALUE):
+    return value if isinstance(value, str) and pattern.fullmatch(value) is not None else None
+
+
+def glob_match(pattern, name):
+    pieces = pattern.split("*")
+    if len(pieces) == 1:
+        return pattern == name
+    head, tail = pieces[0], pieces[-1]
+    if len(name) < len(head) + len(tail) or not name.startswith(head) or not name.endswith(tail):
+        return False
+    at, end = len(head), len(name) - len(tail)
+    for piece in pieces[1:-1]:
+        found = name.find(piece, at, end)
+        if found < 0:
+            return False
+        at = found + len(piece)
+    return True
+
+
+def template_spans(pieces):
+    spans, offset = [], 0
+    for text, special in pieces:
+        spans.append((offset, offset + len(text), special))
+        offset += len(text)
+    return spans
+
+
+def find_in(spans, text, needle, begin, limit):
+    for start, end, special in spans:
+        if start >= limit:
+            break
+        if special and end > begin:
+            found = text.find(needle, max(start, begin), min(end, limit))
+            if found >= 0:
+                return found
+    return -1
+
+
+def rfind_in(spans, text, needle, floor, before):
+    for start, end, special in reversed(spans):
+        if special and start < before:
+            found = text.rfind(needle, max(start, floor), min(end, before))
+            if found >= 0:
+                return found
+    return -1
+
+
+def encode_span(model, pieces, begin, end):
+    ids, offset = [], 0
+    for text, special in pieces:
+        low, high = max(begin, offset), min(end, offset + len(text))
+        if low < high:
+            ids.extend(model.renderer.cache.encode(text[low - offset:high - offset], special, model.context_tokens))
+        offset += len(text)
+    return ids
+
+
+def message_handles(message):
+    return list(message.get(chat_shapes.HANDLES) or []) + [call["id"] for call in message.get("tool_calls") or [] if isinstance(call, dict) and isinstance(call.get("id"), str)]
+
+
+def without_handles(messages):
+    return [{key: value for key, value in message.items() if key != chat_shapes.HANDLES} for message in messages]
+
+
+EFFORT_ORDER = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+EFFORT_DESCRIPTIONS = {"none": "No reasoning", "minimal": "Minimal reasoning", "low": "Fast responses with lighter reasoning",
+                       "medium": "Balanced speed and reasoning depth", "high": "Deeper reasoning for complex problems",
+                       "xhigh": "Extra reasoning depth", "max": "The most reasoning the model does"}
+CODEX_TRUNCATION = {"mode": "tokens", "limit": 10000}
+
+
+def effort_order(efforts):
+    return sorted(efforts, key=lambda effort: (EFFORT_ORDER.index(effort) if effort in EFFORT_ORDER else len(EFFORT_ORDER), effort))
+
+
+def codex_entry(model, index, resident, instructions):
+    efforts = effort_order(model.reasoning_effort)
+    default = "medium" if "medium" in efforts else (efforts[len(efforts) // 2] if efforts else None)
+    return {"slug": model.id, "display_name": model.id, "description": "resident on this fleet" if resident else "offered on this fleet; loads on request",
+            "default_reasoning_level": default,
+            "supported_reasoning_levels": [{"effort": effort, "description": EFFORT_DESCRIPTIONS.get(effort, effort)} for effort in efforts],
+            "shell_type": "unified_exec", "visibility": "list", "supported_in_api": True, "priority": index, "support_verbosity": False,
+            "truncation_policy": dict(CODEX_TRUNCATION), "experimental_supported_tools": [], "apply_patch_tool_type": "freeform",
+            "context_window": model.context_tokens, "max_context_window": model.context_tokens,
+            "input_modalities": ["text", "image"] if model.images else ["text"], "base_instructions": instructions}
+
+
+def replayed_tokens(plan):
+    return (plan.get("replay") or {}).get("replayed", 0)
 
 
 def raise_exception(message):
@@ -99,7 +210,7 @@ def error_body(code, message):
 
 
 def error_headers(error):
-    retry_after = error.retry_after if error.retry_after is not None else (5 if error.status == 503 else None)
+    retry_after = error.retry_after if error.retry_after is not None else (5 if error.status == 503 else BUSY_RETRY_AFTER_SECONDS if error.status == 429 else None)
     headers = {} if retry_after is None else {"Retry-After": str(retry_after)}
     if error.status == 429:
         headers["x-should-retry"] = "true"
@@ -122,41 +233,86 @@ def responses_error_response(error):
     return web.json_response(chat_shapes.openai_error_body(error), status=error.status, headers=error_headers(error))
 
 
+class Waiter:
+    def __init__(self, priority, scope, member, order, future):
+        self.priority, self.scope, self.member, self.order, self.future = priority, scope, member, order, future
+
+
 class SequenceGate:
     def __init__(self, sequences):
         self.sequences = sequences
         self.used = 0
-        self.waiting_interactive = 0
-        self.condition = asyncio.Condition()
+        self.held = Counter()
+        self.held_members = Counter()
+        self.waiters = []
+        self.arrivals = 0
 
     def limit(self, priority):
         return self.sequences if priority >= INTERACTIVE_PRIORITY else max(1, self.sequences - INTERACTIVE_RESERVE)
 
-    def free(self, priority):
-        return self.used < self.limit(priority) and (priority >= INTERACTIVE_PRIORITY or self.waiting_interactive == 0)
+    def share(self):
+        return max(1, int(self.sequences * FAIR_SHARE))
 
-    async def acquire(self, priority, timeout):
-        async with self.condition:
-            interactive = priority >= INTERACTIVE_PRIORITY
-            self.waiting_interactive += interactive
-            try:
-                if timeout is None:
-                    await self.condition.wait_for(lambda: self.free(priority))
-                else:
-                    await asyncio.wait_for(self.condition.wait_for(lambda: self.free(priority)), timeout)
-            except asyncio.TimeoutError:
-                raise RequestError(429, "busy", f"all {self.sequences} sequences were in use for {timeout:g} s", retry_after=BUSY_RETRY_AFTER_SECONDS)
-            finally:
-                self.waiting_interactive -= interactive
-            self.used += 1
+    def capped(self, waiter, pool):
+        if self.held[waiter.scope] >= self.share() and any(other.scope != waiter.scope for other in pool):
+            return True
+        member = (waiter.scope, waiter.member)
+        return (waiter.member is not None and self.held_members[member] >= self.share() and
+                any(other.scope == waiter.scope and other.member != waiter.member for other in pool))
 
-    async def release(self):
-        async with self.condition:
-            self.used -= 1
-            self.condition.notify_all()
+    def grant(self):
+        while True:
+            ready = [waiter for waiter in self.waiters if self.used < self.limit(waiter.priority)]
+            if not ready:
+                return
+            pool = [waiter for waiter in ready if waiter.priority >= INTERACTIVE_PRIORITY] or ready
+            fair = [waiter for waiter in pool if not self.capped(waiter, pool)] or pool
+            chosen = min(fair, key=lambda waiter: (self.held[waiter.scope], self.held_members[(waiter.scope, waiter.member)], waiter.order))
+            self.waiters.remove(chosen)
+            self.take(chosen.scope, chosen.member)
+            chosen.future.set_result(True)
+
+    def take(self, scope, member):
+        self.used += 1
+        self.held[scope] += 1
+        self.held_members[(scope, member)] += 1
+
+    async def acquire(self, priority, timeout, scope=OWN_SCOPE, member=None):
+        self.arrivals += 1
+        waiter = Waiter(priority, scope, member, self.arrivals, asyncio.get_running_loop().create_future())
+        self.waiters.append(waiter)
+        self.grant()
+        try:
+            await asyncio.wait_for(asyncio.shield(waiter.future), timeout)
+        except asyncio.TimeoutError:
+            if waiter.future.done():
+                return
+            self.waiters.remove(waiter)
+            self.grant()
+            raise RequestError(429, "busy", f"all {self.sequences} sequences were in use for {timeout:g} s", retry_after=BUSY_RETRY_AFTER_SECONDS)
+        except asyncio.CancelledError:
+            if waiter.future.done():
+                self.free(scope, member)
+            else:
+                self.waiters.remove(waiter)
+                waiter.future.cancel()
+                self.grant()
+            raise
+
+    def free(self, scope, member):
+        self.used -= 1
+        for counter, name in ((self.held, scope), (self.held_members, (scope, member))):
+            counter[name] -= 1
+            if counter[name] <= 0:
+                del counter[name]
+        self.grant()
+
+    async def release(self, scope=OWN_SCOPE, member=None):
+        self.free(scope, member)
 
     def state(self):
-        return {"sequences": self.sequences, "in_use": self.used, "waiting_interactive": self.waiting_interactive}
+        return {"sequences": self.sequences, "in_use": self.used, "waiting_interactive": sum(waiter.priority >= INTERACTIVE_PRIORITY for waiter in self.waiters),
+                "waiting": len(self.waiters), "scopes": len(self.held)}
 
 
 async def heartbeat(events, interval):
@@ -477,9 +633,9 @@ class TemplateRenderer:
         self.vocabulary = vocabulary
         self.cache = PieceCache(vocabulary, TEMPLATE_PIECE_CACHE_BYTES)
 
-    def render_text(self, messages, tools, context):
+    def render_text(self, messages, tools, context, generation=True):
         try:
-            return self.template.render(messages=messages, tools=tools or None, add_generation_prompt=True, **context)
+            return self.template.render(messages=messages, tools=tools or None, add_generation_prompt=generation, **context)
         except jinja2.exceptions.TemplateError as error:
             raise RequestError(400, "invalid_messages", f"the chat template refused the request: {error}")
         except Exception as error:
@@ -493,6 +649,11 @@ class TemplateRenderer:
         if not carried:
             return text, [(text, True)]
         return text, uncarry([(self.render_text(marked_messages, marked_tools, context), True)], carried, text)
+
+    def generation_text(self, messages, tools, kwargs):
+        context = dict(self.template_tokens)
+        context.update(kwargs)
+        return self.render_text(messages, tools, context, False), self.render_text(messages, tools, context)
 
     def render(self, messages, tools, kwargs, room):
         return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
@@ -510,9 +671,9 @@ class SegmentRenderer:
         self.vocabulary = vocabulary
         self.cache = PieceCache(vocabulary, PIECE_CACHE_BYTES)
 
-    def segments(self, messages, tools, kwargs):
+    def segments(self, messages, tools, kwargs, generation=True):
         try:
-            return self.function(messages, tools or None, add_generation_prompt=True, **kwargs)
+            return self.function(messages, tools or None, add_generation_prompt=generation, **kwargs)
         except Exception as error:
             raise RequestError(400, "invalid_messages", f"the chat renderer refused the request: {type(error).__name__}: {error}")
 
@@ -525,6 +686,9 @@ class SegmentRenderer:
             return text, [(segment.text, segment.allow_special) for segment in segments]
         marked = self.segments(marked_messages, marked_tools, kwargs)
         return text, uncarry([(segment.text, segment.allow_special) for segment in marked], carried, text)
+
+    def generation_text(self, messages, tools, kwargs):
+        return tuple("".join(segment.text for segment in self.segments(messages, tools, kwargs, generation)) for generation in (False, True))
 
     def render(self, messages, tools, kwargs, room):
         return encode_pieces(self.cache, *self.pieces(messages, tools, kwargs), room)
@@ -639,6 +803,8 @@ class Model:
         self.content_markers = list(spec.get("content_markers", []))
         self.end_markers = list(spec.get("end_markers", []))
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
+        self.stop_strings = list(spec["stop_tokens"])
+        self.openings = OrderedDict()
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
         sequences = spec.get("sequences")
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
@@ -663,6 +829,23 @@ class Model:
         context = dict(self.template_defaults)
         context.update(kwargs)
         return self.renderer.render(messages, tools, context, self.context_tokens - 1)
+
+    def generation_prompt(self, tools, kwargs):
+        key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
+        if key in self.openings:
+            self.openings.move_to_end(key)
+            return self.openings[key]
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        try:
+            bare, full = self.renderer.generation_text([{"role": "user", "content": GENERATION_PROBE}], tools, context)
+            opening = full[len(bare):] if full.startswith(bare) and len(full) > len(bare) else None
+        except RequestError:
+            opening = None
+        self.openings[key] = opening
+        while len(self.openings) > GENERATION_CACHE:
+            self.openings.popitem(last=False)
+        return opening
 
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
@@ -769,11 +952,10 @@ def canonical_citations(messages, wrapper):
 
 
 PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
-                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/api/hello"})
+                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"})
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
-PUBLIC_KEY_CONCURRENCY = 4
 PUBLIC_BODY_BYTES_PER_TOKEN = 16
 PUBLIC_BODY_OVERHEAD_BYTES = 1 << 20
 PUBLIC_BODY_MIN_BYTES = 32 << 20
@@ -1357,6 +1539,11 @@ class Frontend:
     control = None
     replay = None
     residency_cache = None
+    residency_task = None
+    control_error = None
+    directive = None
+    expiry_task = None
+    codex_instructions = None
 
     def __init__(self, config, base):
         self.models = {}
@@ -1384,14 +1571,22 @@ class Frontend:
             if not isinstance(models, list) or not set(models) <= set(self.models):
                 raise SystemExit(f"chat_frontend: public models must be served models; served: {sorted(self.models)}")
             self.public_header, self.public_keys, self.public_models = public["header"], PublicKeys(base / public["keys_file"]), frozenset(models)
-        self.public_inflight = {}
         self.public_prefixes = {}
         replay = config.get("replay") or {}
-        if not isinstance(replay, dict) or set(replay) - {"store", "budget_bytes"}:
-            raise SystemExit("chat_frontend: replay takes store (the working-state file of the replay store) and budget_bytes")
-        self.replay = chat_replay.ReplayStore(base / replay["store"] if replay.get("store") else None,
+        if not isinstance(replay, dict) or set(replay) - {"directory", "budget_bytes", "directive"}:
+            raise SystemExit("chat_frontend: replay takes directory (the replay store's working-state directory), budget_bytes and directive "
+                             "(the working-state directive the controller writes on this host)")
+        self.replay = chat_replay.ReplayStore(base / replay["directory"] if replay.get("directory") else None,
                                               int(replay.get("budget_bytes", chat_replay.DEFAULT_BUDGET_BYTES)))
+        self.directive = base / replay["directive"] if replay.get("directive") else None
+        codex = config.get("codex") or {}
+        if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
+            raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
+        self.codex_instructions = (base / codex["instructions_file"]).read_text() if codex.get("instructions_file") else None
+        self.directive_state = None
         self.residency_cache = None
+        self.residency_task = None
+        self.control_error = None
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
@@ -1412,11 +1607,38 @@ class Frontend:
         self.prune_task = None
         if self.memory is not None and self.memory.chat_list:
             self.prune_task = asyncio.create_task(self.memory.prune_loop())
+        self.expire_working_state(time.time(), True)
+        self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
-        if self.prune_task is not None:
-            self.prune_task.cancel()
+        for task in (self.prune_task, self.expiry_task):
+            if task is not None:
+                task.cancel()
         await self.session.close()
+
+    def expire_working_state(self, now, sweep):
+        wiped, held_until = working_state.read_directive(self.directive) if self.directive is not None else (0, 0)
+        changed = (wiped, held_until) != self.directive_state
+        self.directive_state = (wiped, held_until)
+        if not (changed or sweep):
+            return 0
+        try:
+            dropped = self.replay.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return 0
+        if dropped:
+            print(json.dumps({"event": "replay_expired", "dropped": dropped, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
+        return dropped
+
+    async def expiry_loop(self):
+        swept = time.monotonic()
+        while True:
+            await asyncio.sleep(DIRECTIVE_CHECK_SECONDS)
+            sweep = time.monotonic() - swept >= EXPIRY_SWEEP_SECONDS
+            if sweep:
+                swept = time.monotonic()
+            self.expire_working_state(time.time(), sweep)
 
     def model_for(self, body):
         name = body.get("model")
@@ -1431,34 +1653,68 @@ class Frontend:
     def scope_of(self, key, headers):
         if key is None:
             return OWN_SCOPE
-        account = headers.get("X-SparkPipe-Account") if key.get("gateway") is True else None
-        return "account:" + account if account else "key:" + str(key.get("id"))
+        if key.get("gateway") is not True:
+            return "key:" + str(key.get("id"))
+        account = headers.get(ACCOUNT_HEADER)
+        if account is None:
+            raise RequestError(400, "account_required", f"a gateway key must name the market account in {ACCOUNT_HEADER}")
+        if not working_state.valid_account(account) or account == working_state.OWN_ACCOUNT:
+            raise RequestError(400, "invalid_account", f"{ACCOUNT_HEADER} must be a market account id: 1 to 64 letters, digits, - or _")
+        return "account:" + account
 
-    def may_swap(self, key, headers):
-        if key is None or key.get("allow_swap") is True:
-            return True
-        return key.get("gateway") is True and headers.get("X-SparkPipe-Allow-Swap", "").strip().lower() == "true"
-
-    async def residency(self):
-        if self.control is None:
+    @staticmethod
+    def member_of(key, headers):
+        if key is None:
             return None
-        now = time.monotonic()
-        if self.residency_cache is not None and now - self.residency_cache[0] < RESIDENCY_CACHE_SECONDS:
-            return self.residency_cache[1]
+        if key.get("gateway") is True:
+            return clean_header(headers.get(MEMBER_HEADER))
+        return key.get("id")
+
+    @staticmethod
+    def may_swap(key, headers):
+        if key is None:
+            return True
+        if key.get("gateway") is True:
+            return (headers.get(ALLOW_SWAP_HEADER) or "").strip().lower() in ALLOW_SWAP_VALUES
+        return key.get("allow_swap") is True
+
+    def control_failed(self, error):
+        text = f"{type(error).__name__}: {error}"
+        if text != self.control_error:
+            print(json.dumps({"event": "control_unavailable", "error": text, "fallback": self.residency_cache is not None}), file=sys.stderr, flush=True)
+        self.control_error = text
+
+    async def read_residency(self):
         try:
             async with self.session.get(self.control["status_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 status = await response.json(content_type=None)
-        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
-            raise RequestError(503, "control_unavailable", f"the fleet controller did not say which models are resident: {error}")
-        if not isinstance(status, dict):
-            raise RequestError(503, "control_unavailable", "the fleet controller status is not an object")
+                if response.status != 200 or not isinstance(status, dict):
+                    raise ValueError(f"the controller answered {response.status} with {type(status).__name__}")
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as error:
+            self.control_failed(error)
+            if self.residency_cache is None:
+                raise RequestError(503, "control_unavailable", "the fleet controller is not answering; try again shortly")
+            self.residency_cache = (time.monotonic(), self.residency_cache[1])
+            return self.residency_cache[1]
+        if self.control_error is not None:
+            print(json.dumps({"event": "control_restored", "after": self.control_error}), file=sys.stderr, flush=True)
+            self.control_error = None
         resident = [entry["id"] for entry in status.get("models") or [] if isinstance(entry, dict) and entry.get("active") is True and entry.get("id") in self.models]
         if status.get("active") in resident:
             resident.remove(status["active"])
             resident.insert(0, status["active"])
         view = {"resident": resident, "state": status.get("state"), "target": status.get("target")}
-        self.residency_cache = (now, view)
+        self.residency_cache = (time.monotonic(), view)
         return view
+
+    async def residency(self):
+        if self.control is None:
+            return None
+        if self.residency_cache is not None and time.monotonic() - self.residency_cache[0] < RESIDENCY_CACHE_SECONDS:
+            return self.residency_cache[1]
+        if self.residency_task is None or self.residency_task.done():
+            self.residency_task = asyncio.ensure_future(self.read_residency())
+        return await asyncio.shield(self.residency_task)
 
     async def resident_ids(self):
         view = await self.residency()
@@ -1474,7 +1730,7 @@ class Frontend:
             return True, table[name]
         best = None
         for pattern, target in table.items():
-            if "*" in pattern and re.fullmatch(".*".join(re.escape(piece) for piece in pattern.split("*")), name, re.S):
+            if "*" in pattern and glob_match(pattern, name):
                 literal = len(pattern) - pattern.count("*")
                 if best is None or literal > best[0]:
                     best = (literal, target)
@@ -1482,6 +1738,8 @@ class Frontend:
 
     async def resolve_model(self, name, key, scope, aliased=False):
         allowed = self.public_models if key is not None else frozenset(self.models)
+        if isinstance(name, str) and len(name) > ALIAS_PATTERN_LENGTH:
+            raise RequestError(404, "model_not_found", f"a model name has at most {ALIAS_PATTERN_LENGTH} characters; served: {sorted(allowed)}")
         if isinstance(name, str) and PACK_SEPARATOR in name:
             base, _, pack = name.partition(PACK_SEPARATOR)
             await self.resolve_model(base, key, scope, aliased)
@@ -1531,56 +1789,79 @@ class Frontend:
 
     @staticmethod
     def affinity(headers, fallback=None):
-        session = next((headers[name] for name in AFFINITY_HEADERS if headers.get(name)), None) or fallback
-        agent = next((headers[name] for name in AGENT_HEADERS if headers.get(name)), None)
+        session = next((clean_header(headers.get(name)) for name in AFFINITY_HEADERS if clean_header(headers.get(name))), None) or clean_header(fallback)
+        agent = next((clean_header(headers.get(name)) for name in AGENT_HEADERS if clean_header(headers.get(name))), None)
         return session, agent
 
-    def replay_tail(self, model, messages, index, tools, kwargs):
-        marked = list(messages[:index]) + [{"role": "assistant", "content": REPLAY_SENTINEL}] + list(messages[index + 1:])
+    def replay_render(self, model, messages, tools, kwargs, scope):
+        found = []
+        for index, message in enumerate(messages):
+            if message.get("role") == "assistant":
+                tokens = self.replay.find(scope, model.id, message_handles(message), chat_replay.view_digest(model.id, message))
+                if tokens is not None:
+                    found.append((index, tokens))
+        if not found:
+            return None
+        opening = model.generation_prompt(tools, kwargs)
+        anchor = max((control for control in model.vocabulary.control_strings() if control and opening and opening.startswith(control)), key=len, default=None)
+        if anchor is None:
+            return None
+        marked = without_handles(messages)
+        for number, (index, _) in enumerate(found):
+            marked[index] = {"role": "assistant", "content": REPLAY_SENTINEL.format(number)}
+            if messages[index].get("tool_calls"):
+                marked[index]["tool_calls"] = messages[index]["tool_calls"]
         context = dict(model.template_defaults)
         context.update(kwargs)
         try:
-            _, pieces = model.renderer.pieces(normalize_messages(marked), tools, context)
+            text, pieces = model.renderer.pieces(marked, tools, context)
         except RequestError:
             return None
-        found, ids, texts = False, [], []
-        for text, special in pieces:
-            if not found:
-                if REPLAY_SENTINEL not in text:
-                    continue
-                text, found = text[text.index(REPLAY_SENTINEL) + len(REPLAY_SENTINEL):], True
-            if REPLAY_SENTINEL in text:
-                return None
-            ids.extend(model.vocabulary.encode(text, special))
-            texts.append(text)
-        return (ids, "".join(texts)) if found else None
-
-    def replay_render(self, model, messages, tools, kwargs, scope):
-        chain = chat_replay.Chain(model.id, tools, kwargs)
-        digests = chain.digests(messages)
-        replay = {"chain": chain, "digests": digests, "replayed": 0}
-        for index in range(len(messages) - 1, -1, -1):
-            if messages[index].get("role") != "assistant":
-                continue
-            key = self.replay.find(scope, digests[index])
-            context = self.replay.context(key) if key is not None else None
-            tail = self.replay_tail(model, messages, index, tools, kwargs) if context is not None else None
-            if tail is None:
-                continue
-            head, after = chat_replay.splice(context, tail[0], set(model.stop_token_ids))
-            replay.update(text=tail[1], ids=head + after, parent=key, keep=len(head), replayed=len(head), turn=index)
-            return replay
-        return replay
-
-    def replay_record(self, model, plan, assistant, result):
-        replay = plan.get("replay")
-        if replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
+        spans = template_spans(pieces)
+        marks = [(match.start(), match.end(), int(match.group(1))) for match in REPLAY_MARK.finditer(text)]
+        if [number for _, _, number in marks] != list(range(len(found))):
             return None
-        digests = replay["digests"]
-        digest = replay["chain"].step(digests[-1] if digests else replay["chain"].base, assistant)
-        prompt = plan["engine_body"]["prompt_token_ids"]
-        keep = replay.get("keep", 0)
-        return self.replay.put(plan["scope"], digest, model.id, replay.get("parent"), keep, list(prompt[keep:]) + list(result["token_ids"]))
+        regions, floor = [], 0
+        for number, (_, tokens) in enumerate(found):
+            at, after, _ = marks[number]
+            limit = marks[number + 1][0] if number + 1 < len(marks) else len(text)
+            start = rfind_in(spans, text, anchor, floor, at)
+            close = min((position for position in (find_in(spans, text, stop, after, limit) for stop in model.stop_strings) if position >= 0),
+                        default=-1) if start >= 0 else -1
+            header = text[start:at]
+            if close < 0 or not (opening.startswith(header) or header.startswith(opening)):
+                return None
+            regions.append((start, close, tokens))
+            floor = close
+        stops = set(model.stop_token_ids)
+        ids = encode_span(model, pieces, 0, regions[0][0])
+        replayed = 0
+        for number, (start, close, tokens) in enumerate(regions):
+            ids.extend(model.vocabulary.encode(opening, True))
+            ids.extend(tokens)
+            following = encode_span(model, pieces, close, regions[number + 1][0] if number + 1 < len(regions) else len(text))
+            head, rest = chat_replay.splice(ids, following, stops)
+            replayed = len(head)
+            ids = head + rest
+        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions)}
+
+    def replay_record(self, model, plan, assistant, result, handles, turn=None):
+        if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
+            return None
+        try:
+            return self.replay.put(plan["scope"], model.id, chat_replay.view_digest(model.id, assistant), list(plan.get("forced_ids", [])) + list(result["token_ids"]),
+                                   handles, turn)
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
+                  file=sys.stderr, flush=True)
+            return None
+
+    def store_safely(self, plan, action, *arguments):
+        try:
+            action(*arguments)
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
+                  file=sys.stderr, flush=True)
 
     def request_record(self, model, plan, result, usage, started, headers):
         timing = plan["timing"]
@@ -1588,14 +1869,17 @@ class Frontend:
         completion = usage["completion"]
         prefill_ms = round((first - admitted) * 1000) if first else None
         if prefill_ms is not None and self.replay is not None:
-            self.replay.observe_prefill(model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
-        rate = self.replay.prefill_rate(model.id, usage["prompt"]) if self.replay is not None else None
+            self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
+        try:
+            rate = self.replay.prefill_rate(model.id, usage["prompt"]) if self.replay is not None else None
+        except chat_replay.STORE_ERRORS:
+            rate = None
         engine = result.get("usage") or {}
         drafted = engine.get("draft_tokens")
         session, agent = plan.get("affinity") or (None, None)
-        return {"request": plan["request_id"], "fleet": headers.get(FLEET_HEADER), "model": model.id, "pack": None,
+        return {"request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": None,
                 "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"], "prefill_tokens": usage["prompt"] - usage["cached"],
-                "replayed_tokens": plan["replay"]["replayed"] if plan.get("replay") else 0,
+                "replayed_tokens": replayed_tokens(plan),
                 "queue_ms": round((admitted - started) * 1000), "prefill_ms": prefill_ms, "ttft_ms": round((first - started) * 1000) if first else None,
                 "output_tokens": completion, "decode_tps": round((completion - 1) / (last - first), 2) if first and last and last > first and completion > 1 else None,
                 "draft_accept": round(engine.get("accepted_draft_tokens", 0) / drafted, 3) if isinstance(drafted, int) and drafted > 0 else None,
@@ -1605,10 +1889,11 @@ class Frontend:
 
     def early_headers(self, model, plan, headers):
         shown = {"X-SparkPipe-Request": plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
-                 "X-SparkPipe-Replayed-Tokens": str(plan["replay"]["replayed"] if plan.get("replay") else 0),
+                 "X-SparkPipe-Replayed-Tokens": str(replayed_tokens(plan)),
                  "X-SparkPipe-Queue-Ms": str(round((plan["timing"].get("admitted", plan["timing"]["arrived"]) - plan["timing"]["arrived"]) * 1000))}
-        if headers.get(FLEET_HEADER):
-            shown["X-SparkPipe-Fleet"] = headers[FLEET_HEADER]
+        fleet = clean_header(headers.get(FLEET_HEADER), FLEET_VALUE)
+        if fleet:
+            shown["X-SparkPipe-Fleet"] = fleet
         return shown
 
     def normalized_usage(self, plan, result, reasoning_tokens=0):
@@ -1700,23 +1985,36 @@ class Frontend:
     async def site_root(self, request):
         raise web.HTTPFound("/site/fleet.html")
 
-    async def list_models(self, request):
-        created = int(time.time())
-        key = request.get("public_key") if request is not None else None
+    async def shown_models(self, key):
         try:
             resident = await self.resident_ids()
         except RequestError:
             resident = []
         shown = sorted((model for model in self.models.values() if key is None or model.id in self.public_models),
                        key=lambda model: resident.index(model.id) if model.id in resident else len(resident))
+        return shown, resident
+
+    async def list_models(self, request):
+        created = int(time.time())
+        key = request.get("public_key") if request is not None else None
+        try:
+            scope = self.scope_of(key, request.headers) if key is not None else OWN_SCOPE
+        except RequestError as error:
+            return error_response(error)
+        shown, resident = await self.shown_models(key)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created))
         data = [{"id": name, "object": "model", "type": "model", "display_name": name, "created": created, "created_at": stamp, "owned_by": "sparkpipe",
-                 "max_model_len": model.context_tokens, "context_window": model.context_tokens, "reasoning_efforts": sorted(model.reasoning_effort),
-                 "resident": model.id in resident}
+                 "max_model_len": model.context_tokens, "context_window": model.context_tokens, "max_output_tokens": model.max_output_tokens,
+                 "sequences": model.sequences.sequences, "reasoning_efforts": effort_order(model.reasoning_effort), "resident": model.id in resident}
                 for model in shown for name in (model.id, model.id + BULK_SUFFIX)]
-        scope = self.scope_of(key, request.headers) if key is not None else OWN_SCOPE
         return web.json_response({"object": "list", "data": data, "has_more": False, "first_id": data[0]["id"] if data else None,
                                   "last_id": data[-1]["id"] if data else None, "aliases": self.alias_table(scope), "packs": [], "custom_models": []})
+
+    async def codex_models(self, request):
+        if self.codex_instructions is None:
+            return error_response(RequestError(404, "not_found", "this chat layer has no Codex catalogue; set codex.instructions_file"))
+        shown, resident = await self.shown_models(request.get("public_key"))
+        return web.json_response({"models": [codex_entry(model, index, model.id in resident, self.codex_instructions) for index, model in enumerate(shown)]})
 
     def prefix_ledger(self, model):
         if self.prefixes is None:
@@ -1798,9 +2096,8 @@ class Frontend:
                 messages, tools = normalize_messages(session.messages), session.tools
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
         replay = self.replay_render(model, messages, tools, kwargs, scope) if scope is not None and session is None else None
-        plan = self.finish_plan(model, body, messages, tools, kwargs, session, (replay["text"], replay["ids"]) if replay and "ids" in replay else None)
-        if replay is not None:
-            plan.update(replay=replay, scope=scope)
+        plan = self.finish_plan(model, body, messages, tools, kwargs, session, (replay["text"], replay["ids"]) if replay is not None else None)
+        plan.update(replay=replay, scope=scope if session is None else None)
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
         trace.update(seen_tokens=seen, seen_of=seen_of)
@@ -1812,7 +2109,8 @@ class Frontend:
     def finish_plan(self, model, body, messages, tools, kwargs, session, rendered=None):
         prompt, prompt_ids = model.render(messages, tools, kwargs) if rendered is None else rendered
         if len(prompt_ids) >= model.context_tokens:
-            raise RequestError(400, "context_length_exceeded", f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}")
+            raise RequestError(400, chat_shapes.OVERFLOW_CODE, f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}",
+                               overflow=(len(prompt_ids), model.context_tokens - 1))
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
@@ -2184,32 +2482,24 @@ class Frontend:
         except json.JSONDecodeError:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         public = request.get("public_key")
-        scope = self.scope_of(public, request.headers) if public is not None else None
         if not isinstance(body, dict):
             return web.json_response(error_body("invalid_json", "the request body must be a JSON object"), status=400)
         try:
+            scope = self.scope_of(public, request.headers) if public is not None else None
             model, bulk = await self.resolve_model(body.get("model"), public, scope or OWN_SCOPE)
             await self.admit_model(model, public, request.headers)
-            if public is not None and self.public_inflight.get(public["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
-                raise RequestError(429, "rate_limited", f"this key already has {PUBLIC_KEY_CONCURRENCY} requests running; wait for one to finish")
             plan = self.plan(model, body, None if public is not None else request.headers, scope)
             if "engine_body" in plan:
                 plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public)
         except RequestError as error:
             return error_response(error)
         self.stamp(plan, started, request.headers)
+        plan["gate"] = (scope or OWN_SCOPE, self.member_of(public, request.headers))
         if public is not None:
             plan["trace"]["key"] = public["id"]
             plan["public_key"] = public
-            plan["public_cached"] = max(self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0],
-                                        (plan.get("replay") or {}).get("replayed", 0))
-            self.public_inflight[public["id"]] = self.public_inflight.get(public["id"], 0) + 1
-            try:
-                return await self.admitted(request, model, body, plan, started, self.answer, error_response)
-            finally:
-                self.public_inflight[public["id"]] -= 1
-                if self.public_inflight[public["id"]] == 0:
-                    del self.public_inflight[public["id"]]
+            plan["public_cached"] = max(self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
+            return await self.admitted(request, model, body, plan, started, self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
             try:
@@ -2232,20 +2522,22 @@ class Frontend:
         plan["affinity"] = self.affinity(headers, affinity)
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
+        scope, member = plan.get("gate", (OWN_SCOPE, None))
         try:
-            await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None)
+            await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None,
+                                          scope, member)
         except RequestError as error:
             return failed(error)
         plan["timing"]["admitted"] = time.monotonic()
         try:
             return await answer(request, model, body, plan, started)
         finally:
-            await model.sequences.release()
+            await model.sequences.release(scope, member)
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
         if assistant is not None:
-            self.replay_record(model, plan, assistant, result)
+            self.replay_record(model, plan, assistant, result, message_handles(assistant))
         record = self.request_record(model, plan, result, usage, started, headers)
         print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
               file=sys.stderr, flush=True)
@@ -2263,7 +2555,12 @@ class Frontend:
     def responses_input(self, translated, scope):
         previous = []
         if translated["previous_response_id"] is not None:
-            previous = self.replay.response_messages(scope, translated["previous_response_id"])
+            try:
+                previous = self.replay.response_messages(scope, translated["previous_response_id"])
+            except chat_replay.STORE_ERRORS as error:
+                print(json.dumps({"event": "replay_store_failed", "action": "previous_response", "error": f"{type(error).__name__}: {error}"}),
+                      file=sys.stderr, flush=True)
+                raise RequestError(503, "store_unavailable", "the stored responses could not be read; try again")
             if previous is None:
                 raise RequestError(400, "previous_response_not_found", f"there is no stored response {translated['previous_response_id']!r} for this account")
         system = [{"role": "system", "content": translated["instructions"]}] if translated["instructions"] else []
@@ -2309,22 +2606,25 @@ class Frontend:
         if effort is not None:
             kwargs.update(model.reasoning_effort[effort])
         replay = self.replay_render(model, messages, tools, kwargs, scope)
-        text, ids = (replay["text"], replay["ids"]) if "ids" in replay else model.render(messages, tools, kwargs)
-        opening = ""
+        messages = without_handles(messages)
+        text, ids = (replay["text"], replay["ids"]) if replay is not None else model.render(messages, tools, kwargs)
+        forced_ids = []
         if forced:
             reasoning = model.reasoning
             opening = (reasoning.get("close", reasoning["end"]) if text.rstrip().endswith(reasoning["start"].rstrip()) else "") + model.tool_calls["start"]
-            text, ids = text + opening, list(ids) + model.vocabulary.encode(opening, True)
+            forced_ids = model.vocabulary.encode(opening, True)
+            text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
         body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
         plan = self.finish_plan(model, body, messages, tools, kwargs, None, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key)
-        plan.update(scope=scope, replay=replay, trace={"shape": "harness", "tools": len(tools or []), "replayed": replay["replayed"]})
+        plan.update(scope=scope, replay=replay, forced_ids=forced_ids, gate=(scope, self.member_of(key, headers)),
+                    trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})})
         if key is not None:
             plan["public_key"] = key
-            plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replay["replayed"])
+            plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replayed_tokens(plan))
         return plan
 
     async def messages(self, request):
@@ -2338,24 +2638,12 @@ class Frontend:
         try:
             body, translated, model, bulk, key, scope = await self.translate(request, shape)
             await self.admit_model(model, key, request.headers)
-            limited = key is not None and key.get("gateway") is not True
-            if limited and self.public_inflight.get(key["id"], 0) >= PUBLIC_KEY_CONCURRENCY:
-                raise RequestError(429, "busy", f"this key already has {PUBLIC_KEY_CONCURRENCY} requests running; wait for one to finish",
-                                   retry_after=BUSY_RETRY_AFTER_SECONDS)
             plan = self.harness_plan(model, translated, scope, request.headers, key, bulk)
         except RequestError as error:
             return failed(error)
         self.stamp(plan, started, request.headers, translated.get("affinity"))
         plan.update(shape=shape, translated=translated, request_body=body)
-        if limited:
-            self.public_inflight[key["id"]] = self.public_inflight.get(key["id"], 0) + 1
-        try:
-            return await self.admitted(request, model, body, plan, started, self.harness_answer, failed)
-        finally:
-            if limited:
-                self.public_inflight[key["id"]] -= 1
-                if self.public_inflight[key["id"]] == 0:
-                    del self.public_inflight[key["id"]]
+        return await self.admitted(request, model, body, plan, started, self.harness_answer, failed)
 
     def responses_echo(self, body, translated):
         echo = {key: body.get(key) for key in ("instructions", "previous_response_id", "temperature", "top_p", "max_output_tokens", "metadata", "user")}
@@ -2431,10 +2719,10 @@ class Frontend:
         frames = close(record) if stream else None
         reply = None if stream else whole(record)
         assistant = turn.assistant()
-        self.replay_record(model, plan, assistant, result)
+        self.replay_record(model, plan, assistant, result, message_handles(assistant), turn.turn)
         if shape == "responses" and translated["store"]:
             own = translated["messages"][translated["stored_from"]:] + [assistant]
-            self.replay.put_response(plan["scope"], turn.id, translated["previous_response_id"], model.id, own)
+            self.store_safely(plan, self.replay.put_response, plan["scope"], turn.id, translated["previous_response_id"], model.id, own)
         print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
               file=sys.stderr, flush=True)
         self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
@@ -2457,8 +2745,8 @@ class Frontend:
 
     async def tokenize(self, request):
         key = request.get("public_key")
-        scope = self.scope_of(key, request.headers)
         try:
+            scope = self.scope_of(key, request.headers)
             body = await self.read_body(request)
             model, _ = await self.resolve_model(body.get("model"), key, scope)
             if isinstance(body.get("text"), str):
@@ -2467,7 +2755,7 @@ class Frontend:
                 messages = normalize_messages(body["messages"])
                 tools = body.get("tools") or None
                 replay = self.replay_render(model, messages, tools, {}, scope)
-                ids = replay["ids"] if "ids" in replay else model.render(messages, tools, {})[1]
+                ids = replay["ids"] if replay is not None else model.render(without_handles(messages), tools, {})[1]
             else:
                 raise RequestError(400, "invalid_request", "send text, or messages (and tools) to render with the chat template")
         except RequestError as error:
@@ -2495,9 +2783,9 @@ class Frontend:
         return web.Response(status=200)
 
     async def get_aliases(self, request):
-        scope = self.scope_of(request.get("public_key"), request.headers)
-        table = self.alias_table(scope)
         try:
+            scope = self.scope_of(request.get("public_key"), request.headers)
+            table = self.alias_table(scope)
             resident = await self.resident_ids()
         except RequestError as error:
             return error_response(error)
@@ -2505,18 +2793,42 @@ class Frontend:
 
     async def put_aliases(self, request):
         key = request.get("public_key")
-        scope = self.scope_of(key, request.headers)
         try:
+            scope = self.scope_of(key, request.headers)
             table = await self.read_body(request)
+            if len(table) > ALIAS_TABLE_SIZE:
+                raise RequestError(400, "invalid_request", f"an alias table has at most {ALIAS_TABLE_SIZE} entries")
             for pattern, target in table.items():
-                if not pattern or (target is not None and not isinstance(target, str)):
+                if not pattern or len(pattern) > ALIAS_PATTERN_LENGTH or pattern.count("*") > ALIAS_STARS:
+                    raise RequestError(400, "invalid_request", f"an alias is 1 to {ALIAS_PATTERN_LENGTH} characters with at most {ALIAS_STARS} *")
+                if target is not None and (not isinstance(target, str) or len(target) > ALIAS_PATTERN_LENGTH):
                     raise RequestError(400, "invalid_request", "aliases map a name or a pattern with * to a model name, or to null for the first resident model")
                 if target is not None and target.partition(PACK_SEPARATOR)[0] not in (self.public_models if key is not None else self.models):
                     raise RequestError(400, "invalid_request", f"alias {pattern!r} names {target!r}, which is not a model served here")
+            self.replay.set_aliases(scope, table)
         except RequestError as error:
             return error_response(error)
-        self.replay.set_aliases(scope, table)
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_store_failed", "action": "set_aliases", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return error_response(RequestError(503, "store_unavailable", "the alias table could not be saved; try again"))
         return web.json_response({"aliases": table})
+
+    async def delete_cache(self, request):
+        key = request.get("public_key")
+        try:
+            scope = self.scope_of(key, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        if request.query.get("storage") not in (None, "false", "true"):
+            return error_response(RequestError(400, "invalid_request", "storage is true or false"))
+        deleted = self.replay.forget(scope)
+        if key is not None:
+            for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
+                del self.public_prefixes[name]
+        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted}), file=sys.stderr, flush=True)
+        return web.json_response({"deleted": ["replay_store", "aliases", "stored_responses"],
+                                  "not_deleted": ["engine_cache"] + (["storage"] if request.query.get("storage") == "true" else []),
+                                  "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
 
     async def reply_text(self, request, model, body, text):
         identifier = "chatcmpl-" + uuid.uuid4().hex
@@ -2714,6 +3026,8 @@ def build(frontend):
     app.router.add_post("/v1/detokenize", frontend.detokenize)
     app.router.add_get("/v1/models/aliases", frontend.get_aliases)
     app.router.add_put("/v1/models/aliases", frontend.put_aliases)
+    app.router.add_get("/v1/codex/models", frontend.codex_models)
+    app.router.add_delete("/v1/cache", frontend.delete_cache)
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)

@@ -1,32 +1,46 @@
 import hashlib
 import json
 import math
+import os
+import re
+import secrets
 import sqlite3
 import time
 from array import array
-from collections import OrderedDict
 from pathlib import Path
 
-CONTEXT_CACHE_BYTES = 256 << 20
 DEFAULT_BUDGET_BYTES = 4 << 30
-VERSION = "sparkpipe-replay-1"
+VERSION = "sparkpipe-replay-2"
+SIGNATURE_PREFIX = "sp1."
+HANDLE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+SCOPE = re.compile(r"(own|key:[A-Za-z0-9_-]{1,64}|account:[A-Za-z0-9][A-Za-z0-9_-]{0,63})")
+SCOPE_FILE = re.compile(r"(own|key-[A-Za-z0-9_-]{1,64}|account-[A-Za-z0-9][A-Za-z0-9_-]{0,63})\.sqlite")
+PREFILL_FILE = "prefill.sqlite"
+SIDE_FILES = ("-wal", "-shm", "-journal")
+EVICT_BATCH = 64
+TOUCH_SECONDS = 60.0
 PREFILL_BUCKETS_PER_OCTAVE = 4
 PREFILL_NEAREST_BUCKETS = 2
 PREFILL_COLD_SHARE = 0.9
 PREFILL_MIN_TOKENS = 512
 PREFILL_WEIGHT = 0.25
+STORE_ERRORS = (sqlite3.Error, OSError)
 
 SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS turns (key TEXT PRIMARY KEY, scope TEXT NOT NULL, model TEXT NOT NULL, parent TEXT, keep INTEGER NOT NULL, "
-    "tokens BLOB NOT NULL, length INTEGER NOT NULL, used REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, model TEXT NOT NULL, view BLOB NOT NULL, tokens BLOB NOT NULL, "
+    "bytes INTEGER NOT NULL, used REAL NOT NULL)",
     "CREATE INDEX IF NOT EXISTS turns_used ON turns (used)",
-    "CREATE INDEX IF NOT EXISTS turns_scope ON turns (scope)",
-    "CREATE TABLE IF NOT EXISTS responses (scope TEXT NOT NULL, id TEXT NOT NULL, parent TEXT, model TEXT NOT NULL, messages TEXT NOT NULL, "
-    "created REAL NOT NULL, PRIMARY KEY (scope, id))",
-    "CREATE TABLE IF NOT EXISTS aliases (scope TEXT PRIMARY KEY, aliases TEXT NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS prefill (model TEXT NOT NULL, bucket INTEGER NOT NULL, ms_per_token REAL NOT NULL, samples INTEGER NOT NULL, "
-    "PRIMARY KEY (model, bucket))",
+    "CREATE INDEX IF NOT EXISTS turns_view ON turns (model, view)",
+    "CREATE TABLE IF NOT EXISTS handles (handle TEXT PRIMARY KEY, turn TEXT NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS handles_turn ON handles (turn)",
+    "CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, parent TEXT, model TEXT NOT NULL, messages TEXT NOT NULL, "
+    "bytes INTEGER NOT NULL, used REAL NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS responses_used ON responses (used)",
+    "CREATE TABLE IF NOT EXISTS aliases (one INTEGER PRIMARY KEY CHECK (one = 1), aliases TEXT NOT NULL, bytes INTEGER NOT NULL, used REAL NOT NULL)",
 )
+PREFILL_SCHEMA = ("CREATE TABLE IF NOT EXISTS prefill (model TEXT NOT NULL, bucket INTEGER NOT NULL, ms_per_token REAL NOT NULL, "
+                  "samples INTEGER NOT NULL, PRIMARY KEY (model, bucket))",)
+TABLES = ("turns", "responses", "aliases")
 
 
 def canonical(value):
@@ -52,32 +66,21 @@ def assistant_text(content):
     return content.strip() if isinstance(content, str) else canonical(content)
 
 
-def message_view(message):
-    role = message.get("role")
-    content = message.get("content")
-    if role == "assistant":
-        return {"role": role, "content": assistant_text(content), "tool_calls": [call_view(call) for call in message.get("tool_calls") or []]}
-    view = {"role": role, "content": content if content is not None else ""}
-    for key in ("tool_call_id", "name"):
-        if message.get(key) is not None:
-            view[key] = message[key]
-    return view
+def view_digest(model_id, message):
+    view = [VERSION, model_id, assistant_text(message.get("content")), [call_view(call) for call in message.get("tool_calls") or []]]
+    return hashlib.sha256(canonical(view).encode()).digest()
 
 
-class Chain:
-    def __init__(self, model_id, tools, kwargs):
-        self.base = hashlib.sha256(canonical([VERSION, model_id, tools or [], kwargs or {}]).encode()).digest()
+def new_turn():
+    return secrets.token_hex(12)
 
-    @staticmethod
-    def step(digest, message):
-        return hashlib.sha256(digest + hashlib.sha256(canonical(message_view(message)).encode()).digest()).digest()
 
-    def digests(self, messages):
-        digest, result = self.base, []
-        for message in messages:
-            digest = self.step(digest, message)
-            result.append(digest)
-        return result
+def turn_signature(turn, index):
+    return f"{SIGNATURE_PREFIX}{turn}.{index}"
+
+
+def valid_handle(value):
+    return isinstance(value, str) and HANDLE.fullmatch(value) is not None
 
 
 def splice(context, after, stops):
@@ -92,152 +95,280 @@ def bucket_of(tokens):
     return int(math.floor(math.log2(max(tokens, 1)) * PREFILL_BUCKETS_PER_OCTAVE))
 
 
-class ReplayStore:
-    def __init__(self, path=None, budget_bytes=DEFAULT_BUDGET_BYTES, context_cache_bytes=CONTEXT_CACHE_BYTES):
+def scope_file(scope):
+    if not isinstance(scope, str) or SCOPE.fullmatch(scope) is None:
+        raise ValueError(f"{scope!r} is not a replay scope")
+    return scope.replace(":", "-", 1) + ".sqlite"
+
+
+def file_scope(name):
+    if SCOPE_FILE.fullmatch(name) is None:
+        return None
+    stem = name[:-len(".sqlite")]
+    return stem if stem == "own" else stem.replace("-", ":", 1)
+
+
+def private_file(path):
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.close(descriptor)
+    os.chmod(path, 0o600)
+
+
+def private_sides(path):
+    for suffix in SIDE_FILES:
+        side = Path(str(path) + suffix)
+        if side.exists():
+            os.chmod(side, 0o600)
+
+
+def unlink_all(path):
+    for target in [Path(path)] + [Path(str(path) + suffix) for suffix in SIDE_FILES]:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def connect(path, schema):
+    if path is not None:
+        private_file(path)
+    db = sqlite3.connect(str(path) if path is not None else ":memory:", isolation_level=None, check_same_thread=False)
+    db.execute("PRAGMA secure_delete=ON")
+    if path is not None:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=NORMAL")
+    for statement in schema:
+        db.execute(statement)
+    if path is not None:
+        private_sides(path)
+    return db
+
+
+class ScopeStore:
+    def __init__(self, path):
         self.path = path
-        if path:
-            Path(path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path) if path else ":memory:", isolation_level=None, check_same_thread=False)
-        if path:
-            self.db.execute("PRAGMA journal_mode=WAL")
-            self.db.execute("PRAGMA synchronous=NORMAL")
-        for statement in SCHEMA:
-            self.db.execute(statement)
+        self.db = connect(path, SCHEMA)
+        self.bytes = sum(self.db.execute(f"SELECT COALESCE(SUM(bytes), 0) FROM {table}").fetchone()[0] for table in TABLES)
+
+    def oldest(self):
+        rows = [self.db.execute(f"SELECT MIN(used) FROM {table}").fetchone()[0] for table in ("turns", "responses")]
+        rows = [row for row in rows if row is not None]
+        return min(rows) if rows else None
+
+    def empty(self):
+        return all(self.db.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is None for table in TABLES)
+
+    def touch(self, table, column, value, now):
+        try:
+            self.db.execute(f"UPDATE {table} SET used = ? WHERE {column} = ? AND used < ?", (now, value, now - TOUCH_SECONDS))
+        except sqlite3.Error:
+            pass
+
+    def find(self, model_id, handles, view, now):
+        for handle in handles:
+            row = self.db.execute("SELECT turns.id, turns.model, turns.view, turns.tokens FROM handles JOIN turns ON turns.id = handles.turn "
+                                  "WHERE handles.handle = ?", (handle,)).fetchone()
+            if row is not None and row[1] == model_id and row[2] == view:
+                self.touch("turns", "id", row[0], now)
+                return row[3]
+        row = self.db.execute("SELECT id, tokens FROM turns WHERE model = ? AND view = ? ORDER BY used DESC LIMIT 1", (model_id, view)).fetchone()
+        if row is None:
+            return None
+        self.touch("turns", "id", row[0], now)
+        return row[1]
+
+    def put(self, turn, model_id, view, blob, handles, now):
+        size = len(blob) + sum(len(handle) for handle in handles)
+        old = self.db.execute("SELECT bytes FROM turns WHERE id = ?", (turn,)).fetchone()
+        self.db.execute("BEGIN")
+        try:
+            self.db.execute("INSERT OR REPLACE INTO turns (id, model, view, tokens, bytes, used) VALUES (?, ?, ?, ?, ?, ?)",
+                            (turn, model_id, view, blob, size, now))
+            self.db.executemany("INSERT OR REPLACE INTO handles (handle, turn) VALUES (?, ?)", [(handle, turn) for handle in handles])
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        self.bytes += size - (old[0] if old else 0)
+
+    def drop_turns(self, condition, parameters=()):
+        rows = self.db.execute(f"SELECT id, bytes FROM turns WHERE {condition}", parameters).fetchall()
+        for turn, size in rows:
+            self.db.execute("DELETE FROM handles WHERE turn = ?", (turn,))
+            self.db.execute("DELETE FROM turns WHERE id = ?", (turn,))
+            self.bytes -= size
+        return len(rows)
+
+    def drop_rows(self, table, condition, parameters=()):
+        size = self.db.execute(f"SELECT COALESCE(SUM(bytes), 0), COUNT(*) FROM {table} WHERE {condition}", parameters).fetchone()
+        self.db.execute(f"DELETE FROM {table} WHERE {condition}", parameters)
+        self.bytes -= size[0]
+        return size[1]
+
+    def evict_one(self):
+        turn = self.db.execute("SELECT id, used FROM turns ORDER BY used LIMIT 1").fetchone()
+        response = self.db.execute("SELECT id, used FROM responses ORDER BY used LIMIT 1").fetchone()
+        if turn is None and response is None:
+            return False
+        if response is None or (turn is not None and turn[1] <= response[1]):
+            self.drop_turns("id IN (SELECT id FROM turns ORDER BY used LIMIT ?)", (EVICT_BATCH,))
+        else:
+            self.drop_rows("responses", "id IN (SELECT id FROM responses ORDER BY used LIMIT ?)", (EVICT_BATCH,))
+        return True
+
+    def expire(self, rule):
+        self.db.create_function("sparkpipe_expired", 1, rule, deterministic=True)
+        dropped = self.drop_turns("sparkpipe_expired(used)")
+        for table in ("responses", "aliases"):
+            dropped += self.drop_rows(table, "sparkpipe_expired(used)")
+        return dropped
+
+    def checkpoint(self):
+        if self.path is not None:
+            self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def close(self):
+        self.db.close()
+
+
+class ReplayStore:
+    def __init__(self, directory=None, budget_bytes=DEFAULT_BUDGET_BYTES):
+        self.directory = Path(directory) if directory is not None else None
         self.budget = int(budget_bytes)
-        self.bytes = self.db.execute("SELECT COALESCE(SUM(LENGTH(tokens)), 0) FROM turns").fetchone()[0]
-        self.contexts = OrderedDict()
-        self.context_bytes = 0
-        self.context_budget = int(context_cache_bytes)
+        self.scopes = {}
+        if self.directory is not None:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(self.directory, 0o700)
+            for path in sorted(self.directory.iterdir()):
+                scope = file_scope(path.name)
+                if scope is not None:
+                    self.scopes[scope] = ScopeStore(path)
+        self.prefill = connect(self.directory / PREFILL_FILE if self.directory is not None else None, PREFILL_SCHEMA)
 
-    def key(self, scope, digest):
-        return hashlib.sha256(scope.encode() + b"\0" + digest).hexdigest()
+    @property
+    def bytes(self):
+        return sum(store.bytes for store in self.scopes.values())
 
-    def find(self, scope, digest):
-        key = self.key(scope, digest)
-        if key in self.contexts:
-            return key
-        row = self.db.execute("SELECT 1 FROM turns WHERE key = ? AND scope = ?", (key, scope)).fetchone()
-        return key if row else None
+    def store(self, scope, create=False):
+        store = self.scopes.get(scope)
+        if store is None and create:
+            name = scope_file(scope)
+            store = self.scopes[scope] = ScopeStore(self.directory / name if self.directory is not None else None)
+        return store
 
-    def remember(self, key, tokens):
-        old = self.contexts.pop(key, None)
-        if old is not None:
-            self.context_bytes -= old.itemsize * len(old)
-        size = tokens.itemsize * len(tokens)
-        if size > self.context_budget:
-            return
-        self.contexts[key] = tokens
-        self.context_bytes += size
-        while self.context_bytes > self.context_budget:
-            _, dropped = self.contexts.popitem(last=False)
-            self.context_bytes -= dropped.itemsize * len(dropped)
-
-    def context(self, key):
-        cached = self.contexts.get(key)
-        if cached is not None:
-            self.contexts.move_to_end(key)
-            return cached
-        rows, cursor, base = [], key, None
-        while cursor is not None:
-            if cursor in self.contexts:
-                base = array("I", self.contexts[cursor])
-                break
-            row = self.db.execute("SELECT parent, keep, tokens FROM turns WHERE key = ?", (cursor,)).fetchone()
-            if row is None:
-                return None
-            rows.append(row)
-            cursor = row[0]
-        tokens = base if base is not None else array("I")
-        for _, keep, blob in reversed(rows):
-            if keep > len(tokens):
-                return None
-            del tokens[keep:]
-            piece = array("I")
-            piece.frombytes(blob)
-            tokens.extend(piece)
-        self.remember(key, tokens)
+    def find(self, scope, model_id, handles, view):
+        store = self.store(scope)
+        if store is None:
+            return None
+        blob = store.find(model_id, [handle for handle in handles if valid_handle(handle)], view, time.time())
+        if blob is None:
+            return None
+        tokens = array("I")
+        tokens.frombytes(blob)
         return tokens
 
-    def put(self, scope, digest, model_id, parent, keep, tokens):
-        key = self.key(scope, digest)
-        blob = array("I", tokens).tobytes()
-        now = time.time()
-        old = self.db.execute("SELECT LENGTH(tokens) FROM turns WHERE key = ?", (key,)).fetchone()
-        self.db.execute("INSERT OR REPLACE INTO turns (key, scope, model, parent, keep, tokens, length, used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (key, scope, model_id, parent, int(keep), blob, len(tokens) + int(keep), now))
-        self.bytes += len(blob) - (old[0] if old else 0)
-        if parent is not None:
-            self.db.execute("WITH RECURSIVE chain(k) AS (SELECT ? UNION SELECT turns.parent FROM turns JOIN chain ON turns.key = chain.k "
-                            "WHERE turns.parent IS NOT NULL) UPDATE turns SET used = ? WHERE key IN chain", (parent, now))
-        self.contexts.pop(key, None)
+    def put(self, scope, model_id, view, tokens, handles, turn=None):
+        turn = turn or new_turn()
+        handles = sorted({handle for handle in handles if valid_handle(handle)})
+        self.store(scope, True).put(turn, model_id, view, array("I", tokens).tobytes(), handles, time.time())
         self.evict()
-        return key
+        return turn
 
     def evict(self):
         while self.bytes > self.budget:
-            rows = self.db.execute("SELECT key, LENGTH(tokens) FROM turns ORDER BY used LIMIT 64").fetchall()
-            if not rows:
-                self.bytes = 0
+            candidates = [(oldest, scope) for oldest, scope in ((store.oldest(), scope) for scope, store in self.scopes.items()) if oldest is not None]
+            if not candidates:
                 return
-            for key, size in rows:
-                self.db.execute("DELETE FROM turns WHERE key = ?", (key,))
-                dropped = self.contexts.pop(key, None)
-                if dropped is not None:
-                    self.context_bytes -= dropped.itemsize * len(dropped)
-                self.bytes -= size
-                if self.bytes <= self.budget:
-                    return
+            self.scopes[min(candidates)[1]].evict_one()
 
     def turns(self, scope=None):
-        if scope is None:
-            return self.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-        return self.db.execute("SELECT COUNT(*) FROM turns WHERE scope = ?", (scope,)).fetchone()[0]
-
-    def clear(self, scope=None):
-        tables = ("turns", "responses", "aliases")
-        for table in tables:
-            if scope is None:
-                self.db.execute(f"DELETE FROM {table}")
-            else:
-                self.db.execute(f"DELETE FROM {table} WHERE scope = ?", (scope,))
-        self.contexts.clear()
-        self.context_bytes = 0
-        self.bytes = self.db.execute("SELECT COALESCE(SUM(LENGTH(tokens)), 0) FROM turns").fetchone()[0]
+        stores = self.scopes.values() if scope is None else [self.scopes[scope]] if scope in self.scopes else []
+        return sum(store.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] for store in stores)
 
     def put_response(self, scope, response_id, parent, model_id, messages):
-        self.db.execute("INSERT OR REPLACE INTO responses (scope, id, parent, model, messages, created) VALUES (?, ?, ?, ?, ?, ?)",
-                        (scope, response_id, parent, model_id, json.dumps(messages, ensure_ascii=False), time.time()))
+        text = json.dumps(messages, ensure_ascii=False)
+        size = len(text.encode()) + len(response_id)
+        store = self.store(scope, True)
+        old = store.db.execute("SELECT bytes FROM responses WHERE id = ?", (response_id,)).fetchone()
+        store.db.execute("INSERT OR REPLACE INTO responses (id, parent, model, messages, bytes, used) VALUES (?, ?, ?, ?, ?, ?)",
+                         (response_id, parent, model_id, text, size, time.time()))
+        store.bytes += size - (old[0] if old else 0)
+        self.evict()
 
     def response_messages(self, scope, response_id):
-        chain, cursor = [], response_id
+        store = self.store(scope)
+        if store is None:
+            return None
+        chain, cursor, seen, now = [], response_id, set(), time.time()
         while cursor is not None:
-            row = self.db.execute("SELECT parent, messages FROM responses WHERE scope = ? AND id = ?", (scope, cursor)).fetchone()
+            if cursor in seen:
+                return None
+            seen.add(cursor)
+            row = store.db.execute("SELECT parent, messages FROM responses WHERE id = ?", (cursor,)).fetchone()
             if row is None:
                 return None
+            store.touch("responses", "id", cursor, now)
             chain.append(json.loads(row[1]))
             cursor = row[0]
         return [message for messages in reversed(chain) for message in messages]
 
     def aliases(self, scope):
-        row = self.db.execute("SELECT aliases FROM aliases WHERE scope = ?", (scope,)).fetchone()
-        return json.loads(row[0]) if row else None
+        store = self.store(scope)
+        row = store.db.execute("SELECT aliases FROM aliases WHERE one = 1").fetchone() if store is not None else None
+        if row is None:
+            return None
+        store.touch("aliases", "one", 1, time.time())
+        return json.loads(row[0])
 
     def set_aliases(self, scope, table):
-        self.db.execute("INSERT OR REPLACE INTO aliases (scope, aliases) VALUES (?, ?)", (scope, json.dumps(table, ensure_ascii=False)))
+        text = json.dumps(table, ensure_ascii=False)
+        store = self.store(scope, True)
+        old = store.db.execute("SELECT bytes FROM aliases WHERE one = 1").fetchone()
+        store.db.execute("INSERT OR REPLACE INTO aliases (one, aliases, bytes, used) VALUES (1, ?, ?, ?)", (text, len(text.encode()), time.time()))
+        store.bytes += len(text.encode()) - (old[0] if old else 0)
+
+    def forget(self, scope):
+        store = self.scopes.pop(scope, None)
+        if store is None:
+            return False
+        store.close()
+        if store.path is not None:
+            unlink_all(store.path)
+        return True
+
+    def clear(self, scope=None):
+        for name in [scope] if scope is not None else list(self.scopes):
+            self.forget(name)
+
+    def expire(self, rule):
+        total = 0
+        for scope, store in list(self.scopes.items()):
+            dropped = store.expire(rule)
+            total += dropped
+            if store.empty():
+                self.forget(scope)
+            elif dropped:
+                store.checkpoint()
+        return total
 
     def observe_prefill(self, model_id, prompt_tokens, prefill_tokens, prefill_ms):
         if prompt_tokens < PREFILL_MIN_TOKENS or prefill_tokens < PREFILL_COLD_SHARE * prompt_tokens or prefill_ms <= 0:
             return
         bucket = bucket_of(prompt_tokens)
         rate = prefill_ms / prefill_tokens
-        row = self.db.execute("SELECT ms_per_token, samples FROM prefill WHERE model = ? AND bucket = ?", (model_id, bucket)).fetchone()
+        row = self.prefill.execute("SELECT ms_per_token, samples FROM prefill WHERE model = ? AND bucket = ?", (model_id, bucket)).fetchone()
         if row is not None:
             rate = row[0] + PREFILL_WEIGHT * (rate - row[0])
-        self.db.execute("INSERT OR REPLACE INTO prefill (model, bucket, ms_per_token, samples) VALUES (?, ?, ?, ?)",
-                        (model_id, bucket, rate, (row[1] if row else 0) + 1))
+        self.prefill.execute("INSERT OR REPLACE INTO prefill (model, bucket, ms_per_token, samples) VALUES (?, ?, ?, ?)",
+                             (model_id, bucket, rate, (row[1] if row else 0) + 1))
 
     def prefill_rate(self, model_id, prompt_tokens):
         bucket = bucket_of(prompt_tokens)
-        row = self.db.execute("SELECT ms_per_token FROM prefill WHERE model = ? AND bucket BETWEEN ? AND ? ORDER BY ABS(bucket - ?) LIMIT 1",
-                              (model_id, bucket - PREFILL_NEAREST_BUCKETS, bucket + PREFILL_NEAREST_BUCKETS, bucket)).fetchone()
+        row = self.prefill.execute("SELECT ms_per_token FROM prefill WHERE model = ? AND bucket BETWEEN ? AND ? ORDER BY ABS(bucket - ?) LIMIT 1",
+                                   (model_id, bucket - PREFILL_NEAREST_BUCKETS, bucket + PREFILL_NEAREST_BUCKETS, bucket)).fetchone()
         return row[0] if row else None
+
+    def close(self):
+        for store in self.scopes.values():
+            store.close()
+        self.prefill.close()

@@ -148,6 +148,23 @@ async def run(tmp, check):
         await harness.post("/v1/responses", request([user("later")], stream=False), **{"X-SparkPipe-Priority": "background"})
         check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "X-SparkPipe-Priority background runs the request at background priority")
 
+        interleaved = [user("Look around"),
+                       {"type": "reasoning", "id": "rs_x1", "summary": [{"type": "summary_text", "text": "First I say what I do."}]},
+                       {"type": "message", "role": "assistant", "id": "msg_x1", "content": [{"type": "output_text", "text": "Listing the files."}]},
+                       {"type": "reasoning", "id": "rs_x2", "summary": [{"type": "summary_text", "text": "Now the call."}]},
+                       {"type": "function_call", "id": "fc_x1", "call_id": "call_x1", "name": "shell", "arguments": "{\"command\": [\"ls\"]}"},
+                       {"type": "function_call_output", "call_id": "call_x1", "output": "a.txt"}]
+        engine.reply(ANSWER)
+        status, _, text = await harness.post("/v1/responses", request(interleaved, stream=False))
+        prompt = harness.prompt_text()
+        turn = prompt[prompt.index("<|im_start|>user\nLook around"):]
+        check(status == 200 and turn.count("<|im_start|>assistant\n") == 2 and turn.count("<tool_call>shell") == 1 and "Listing the files." in turn,
+              f"a turn of reasoning, message, reasoning and function call keeps every item as one assistant turn with its call once: {turn[:400]}")
+        translated = chat_frontend.chat_shapes.responses_request(request(interleaved))["input_messages"]
+        check([message["role"] for message in translated] == ["user", "assistant", "tool"] and translated[1]["tool_calls"][0]["id"] == "call_x1" and
+              set(translated[1][chat_frontend.chat_shapes.HANDLES]) == {"rs_x1", "msg_x1", "rs_x2", "fc_x1", "call_x1"},
+              f"every item of the turn is kept, with its handles: {translated}")
+
 
 def main():
     check = fixture.Checks("test_chat_frontend_responses")
@@ -160,7 +177,8 @@ def main():
                  "ends with response.completed carrying usage and the sparkpipe object; a function call round trip, with or without the reasoning item, and a "
                  "previous_response_id chain replay the generated tokens so the next prompt matches the cache to the end of the previous reply; store false keeps "
                  "replay but no response; instructions and developer messages render as system turns in place; custom tools round trip; unknown fields and tools "
-                 "are ignored; 409 model_not_loaded and gpt-* aliases; comment lines keep a long prefill open")
+                 "are ignored; 409 model_not_loaded and gpt-* aliases; comment lines keep a long prefill open; a turn of reasoning, message, reasoning and "
+                 "function call keeps every item as one assistant turn")
 
 
 if __name__ == "__main__":

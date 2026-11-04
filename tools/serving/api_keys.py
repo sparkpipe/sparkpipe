@@ -33,7 +33,9 @@ def store(path, document):
     os.replace(temporary, path)
 
 
-def create(path, days, note, allow_swap=False):
+def create(path, days, note, gateway=False, allow_swap=False):
+    if gateway and allow_swap:
+        raise ValueError("a gateway key forwards each account's allow_swap in X-SparkPipe-Allow-Swap and has none of its own")
     document = load(path)
     key = PREFIX + secrets.token_urlsafe(32)
     identifier = "k_" + secrets.token_hex(4)
@@ -41,7 +43,8 @@ def create(path, days, note, allow_swap=False):
         identifier = "k_" + secrets.token_hex(4)
     now = int(time.time())
     document["keys"].append({"id": identifier, "sha256": hashlib.sha256(key.encode()).hexdigest(), "created": now,
-                             "expires": now + days * 86400 if days else None, "revoked": False, "note": note, "allow_swap": allow_swap})
+                             "expires": now + days * 86400 if days else None, "revoked": False, "note": note, "gateway": gateway,
+                             "allow_swap": allow_swap})
     store(path, document)
     return identifier, key
 
@@ -63,13 +66,17 @@ def main():
     made = commands.add_parser("create", help="make a key and print it once")
     made.add_argument("--days", type=int, default=0, help="days until the key expires; 0 never expires")
     made.add_argument("--note", default="")
+    made.add_argument("--gateway", action="store_true", help="the market gateway's key: its requests name their account in X-SparkPipe-Account")
     made.add_argument("--allow-swap", action="store_true", help="let the key ask for a model that would unload a resident one")
     gone = commands.add_parser("revoke", help="refuse a key from now on")
     gone.add_argument("id")
     commands.add_parser("list", help="show every key's id, dates and state, never the key")
     arguments = parser.parse_args()
     if arguments.command == "create":
-        identifier, key = create(arguments.file, arguments.days, arguments.note, arguments.allow_swap)
+        try:
+            identifier, key = create(arguments.file, arguments.days, arguments.note, arguments.gateway, arguments.allow_swap)
+        except ValueError as error:
+            raise SystemExit(f"api_keys: {error}")
         print(f"{identifier} {key}")
         print("The key is shown only now; the file keeps its SHA-256.", file=sys.stderr)
     elif arguments.command == "revoke":
@@ -80,7 +87,8 @@ def main():
         for entry in load(arguments.file)["keys"]:
             expires = time.strftime("%Y-%m-%d", time.gmtime(entry["expires"])) if entry.get("expires") else "never"
             print(entry["id"], time.strftime("%Y-%m-%d", time.gmtime(entry["created"])), "expires", expires,
-                  "revoked" if entry.get("revoked") else "active", *(["allow_swap"] if entry.get("allow_swap") is True else []), entry.get("note", ""))
+                  "revoked" if entry.get("revoked") else "active", *(["gateway"] if entry.get("gateway") is True else []),
+                  *(["allow_swap"] if entry.get("allow_swap") is True else []), entry.get("note", ""))
 
 
 if __name__ == "__main__":

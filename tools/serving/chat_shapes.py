@@ -1,20 +1,24 @@
 import json
+import re
 import time
 import uuid
 
 RequestError = None
+chat_replay = None
 
 ANTHROPIC_TYPES = {400: "invalid_request_error", 401: "authentication_error", 403: "permission_error", 404: "not_found_error",
                    409: "invalid_request_error", 411: "invalid_request_error", 413: "request_too_large", 429: "rate_limit_error",
                    500: "api_error", 502: "api_error", 503: "overloaded_error", 504: "api_error", 529: "overloaded_error"}
 CONTRACT_CODES = frozenset({"fleet_required", "fleet_not_held", "model_not_loaded", "image_not_supported", "context_too_long", "busy",
                             "invalid_request", "invalid_key", "upstream_error"})
-CONTRACT_RENAMES = {"context_length_exceeded": "context_too_long", "invalid_api_key": "invalid_key", "rate_limited": "busy"}
+CONTRACT_RENAMES = {"invalid_api_key": "invalid_key", "rate_limited": "busy"}
+OVERFLOW_CODE = "context_length_exceeded"
 EMPTY_SCHEMA = {"type": "object", "properties": {}}
 CUSTOM_INPUT = "input"
 BUDGET_EFFORTS = ((4096, "low"), (16384, "medium"))
 EFFORT_FALLBACKS = {"max": ("high",), "xhigh": ("high",), "minimal": ("minimal", "low"), "none": ("minimal", "low")}
-SIGNATURE_PREFIX = "sp1."
+HANDLES = "replay_handles"
+AFFINITY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 def handle(prefix):
@@ -34,6 +38,9 @@ def contract_code(code):
 
 
 def anthropic_error_body(error):
+    overflow = getattr(error, "overflow", None)
+    if overflow is not None:
+        return {"type": "error", "error": {"type": "invalid_request_error", "message": f"prompt is too long: {overflow[0]} tokens > {overflow[1]} maximum"}}
     code = contract_code(error.code)
     kind = code if code in CONTRACT_CODES else ANTHROPIC_TYPES.get(error.status, "api_error" if error.status >= 500 else "invalid_request_error")
     detail = {"type": kind, "message": error.message}
@@ -89,8 +96,15 @@ def text_only(content, where):
     return "\n\n".join(texts)
 
 
+def block_source(block, kind):
+    source = block.get("source")
+    if not isinstance(source, dict):
+        raise invalid(f"an {kind} block needs a source object")
+    return source
+
+
 def image_part(block, request):
-    source = block.get("source") or {}
+    source = block_source(block, "image")
     request["images"] = True
     if source.get("type") == "base64":
         return {"type": "image_url", "image_url": {"url": f"data:{source.get('media_type', 'image/png')};base64,{source.get('data', '')}"}}
@@ -115,13 +129,15 @@ def tool_result_content(content, request):
 
 
 def assistant_from_blocks(content):
-    texts, reasoning, calls = [], [], []
+    texts, reasoning, calls, handles = [], [], [], []
     for block in block_list(content, "assistant content"):
         kind = block.get("type")
         if kind == "text":
             texts.append(str(block.get("text") or ""))
         elif kind == "thinking":
             reasoning.append(str(block.get("thinking") or ""))
+            if isinstance(block.get("signature"), str):
+                handles.append(block["signature"])
         elif kind == "redacted_thinking":
             continue
         elif kind == "tool_use":
@@ -131,6 +147,7 @@ def assistant_from_blocks(content):
             if not isinstance(arguments, dict) or not isinstance(block.get("name"), str) or not isinstance(block.get("id"), str):
                 raise invalid("a tool_use block needs a string id, a string name and an object input")
             calls.append({"id": block["id"], "type": "function", "function": {"name": block["name"], "arguments": arguments}})
+            handles.append(block["id"])
         else:
             raise invalid(f"assistant content takes text, thinking and tool_use blocks, not {kind!r}")
     message = {"role": "assistant", "content": "".join(texts)}
@@ -138,6 +155,8 @@ def assistant_from_blocks(content):
         message["reasoning_content"] = "".join(reasoning)
     if calls:
         message["tool_calls"] = calls
+    if handles:
+        message[HANDLES] = handles
     return message
 
 
@@ -157,7 +176,7 @@ def user_from_blocks(content, request):
         elif kind == "image":
             parts.append(image_part(block, request))
         elif kind == "document":
-            source = block.get("source") or {}
+            source = block_source(block, "document")
             if source.get("type") != "text":
                 raise invalid("a document block is accepted with a text source only")
             parts.append({"type": "text", "text": str(source.get("data") or "")})
@@ -310,7 +329,10 @@ def reasoning_text(item):
 
 class Turn:
     def __init__(self):
-        self.texts, self.reasoning, self.calls = [], [], []
+        self.texts, self.reasoning, self.calls, self.handles = [], [], [], []
+
+    def handle(self, *values):
+        self.handles.extend(value for value in values if isinstance(value, str))
 
     def message(self):
         message = {"role": "assistant", "content": "".join(self.texts)}
@@ -318,6 +340,8 @@ class Turn:
             message["reasoning_content"] = "\n\n".join(self.reasoning)
         if self.calls:
             message["tool_calls"] = self.calls
+        if self.handles:
+            message[HANDLES] = self.handles
         return message
 
 
@@ -339,24 +363,25 @@ def responses_messages(items, request):
             if role == "assistant":
                 turn = turn or Turn()
                 turn.texts.append(responses_text(item.get("content"), request, "an assistant message"))
+                turn.handle(item.get("id"))
                 continue
             if role not in ("user", "system", "developer"):
                 raise invalid("message roles must be user, assistant, system or developer")
             flush()
             out.append({"role": role, "content": responses_text(item.get("content"), request, f"a {role} message")})
         elif kind == "reasoning":
-            if turn is not None and (turn.texts or turn.calls):
-                flush()
             turn = turn or Turn()
             text = reasoning_text(item)
             if text:
                 turn.reasoning.append(text)
+            turn.handle(item.get("id"), item.get("encrypted_content"))
         elif kind in ("function_call", "custom_tool_call"):
             if not isinstance(item.get("call_id"), str) or not isinstance(item.get("name"), str):
                 raise invalid(f"a {kind} item needs a string call_id and name")
             arguments = call_arguments(item.get("arguments")) if kind == "function_call" else {CUSTOM_INPUT: str(item.get("input") or "")}
             turn = turn or Turn()
             turn.calls.append({"id": item["call_id"], "type": "function", "function": {"name": item["name"], "arguments": arguments}})
+            turn.handle(item.get("id"), item["call_id"])
         elif kind in ("function_call_output", "custom_tool_call_output"):
             flush()
             if not isinstance(item.get("call_id"), str):
@@ -408,6 +433,10 @@ def responses_tool_choice(choice):
     raise invalid("tool_choice must be auto, none, required or a function by name")
 
 
+def clean_affinity(value):
+    return value if isinstance(value, str) and AFFINITY.fullmatch(value) is not None else None
+
+
 def responses_request(body):
     if not isinstance(body.get("model"), str) or not body["model"]:
         raise invalid("model must be a string")
@@ -443,18 +472,20 @@ def responses_request(body):
                    tools=tools, custom_tools=custom, tool_choice=responses_tool_choice(body.get("tool_choice")),
                    effort=reasoning.get("effort"), thinking=None, budget=None, max_tokens=limit, stops=[], sampling=sampling(body),
                    stream=bool(body.get("stream")), previous_response_id=previous, store=body.get("store") is not False,
-                   affinity=body.get("prompt_cache_key") if isinstance(body.get("prompt_cache_key"), str) else None)
+                   affinity=clean_affinity(body.get("prompt_cache_key")))
     return request
 
 
 class MessagesTurn:
     def __init__(self, model_name, prompt_tokens):
         self.id = handle("msg_")
+        self.turn = chat_replay.new_turn()
         self.model_name = model_name
         self.prompt_tokens = prompt_tokens
         self.blocks = []
         self.current = None
         self.pending = ""
+        self.signatures = 0
 
     def start(self):
         usage = {"input_tokens": self.prompt_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
@@ -485,7 +516,8 @@ class MessagesTurn:
         if block is None:
             return
         if block["type"] == "thinking":
-            block["signature"] = handle(SIGNATURE_PREFIX)
+            block["signature"] = chat_replay.turn_signature(self.turn, self.signatures)
+            self.signatures += 1
             self.delta({"type": "signature_delta", "signature": block["signature"]}, frames)
         frames.append(sse("content_block_stop", {"type": "content_block_stop", "index": len(self.blocks) - 1}))
 
@@ -553,6 +585,8 @@ def anthropic_stop(result, stop_marker):
 class ResponsesTurn:
     def __init__(self, model_name, request, echo):
         self.id = handle("resp_")
+        self.turn = chat_replay.new_turn()
+        self.signatures = 0
         self.model_name = model_name
         self.created = int(time.time())
         self.custom = request["custom_tools"]
@@ -604,7 +638,8 @@ class ResponsesTurn:
         index = len(self.items) - 1
         if item["type"] == "reasoning":
             text = item["summary"][0]["text"]
-            item["encrypted_content"] = handle(SIGNATURE_PREFIX)
+            item["encrypted_content"] = chat_replay.turn_signature(self.turn, self.signatures)
+            self.signatures += 1
             frames.append(self.frame("response.reasoning_summary_text.done", {"item_id": item["id"], "output_index": index, "summary_index": 0, "text": text}))
             frames.append(self.frame("response.reasoning_summary_part.done", {"item_id": item["id"], "output_index": index, "summary_index": 0,
                                                                                "part": {"type": "summary_text", "text": text}}))
@@ -674,8 +709,8 @@ class ResponsesTurn:
         return self.response("incomplete" if incomplete else "completed", usage, telemetry, incomplete=incomplete)
 
     def assistant(self):
-        scratch = {"images": False}
-        return responses_messages(self.items, scratch)[0] if self.items else {"role": "assistant", "content": ""}
+        messages = responses_messages(self.items, {"images": False})
+        return messages[0] if messages else {"role": "assistant", "content": ""}
 
 
 def responses_usage(usage):

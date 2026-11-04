@@ -1108,8 +1108,12 @@
   }
  },
  "replay": {
-  "store": "/srv/workspace/sparkpipe/replay/replay.sqlite",
-  "budget_bytes": 8589934592
+  "directory": "/srv/workspace/sparkpipe/replay",
+  "budget_bytes": 8589934592,
+  "directive": "/home/spec/sparkdata/working-state/directive"
+ },
+ "codex": {
+  "instructions_file": "codex_instructions.md"
  },
  "client": {
   "citation_wrapper": {

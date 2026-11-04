@@ -576,6 +576,8 @@ Errors use each API shape's own error body, with these `type` or `code` values:
 - `image_not_supported`, `context_too_long`, `busy`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
+`context_too_long` is sent in each shape's native form, so the harnesses compact on their own: on Messages, 400 `invalid_request_error` with the message `prompt is too long: N tokens > M maximum`; on Responses and chat completions, 400 with code `context_length_exceeded`.
+
 ## 18. Build order and acceptance tests
 
 Owners are components, so the work splits into parallel sessions with no shared files. `docs/FLEET_API_ISSUES.md` breaks it into issues with sizes, dependencies and done-when tests.
