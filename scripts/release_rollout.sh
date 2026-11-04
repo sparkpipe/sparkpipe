@@ -93,22 +93,14 @@ case "$step" in
     for id in $MODELS; do [ -s "$FW/$(field $id fwlib)" ] || { echo "MISSING $FW/$(field $id fwlib)"; exit 1; }; hub "test -s $APIB/$(field $id fwlib)" || { echo "MISSING hub $APIB/$(field $id fwlib)"; exit 1; }; done
     hub "test -x $APIB/sparkpipe_model_api && test -x $APIB/sparkpipe_tokenize_prompt && cat ~/release/core/WEIGHTSD_BIN" | grep -q "$OLD_WD" || { echo "hub core weightd is not $OLD_WD"; exit 1; }
     echo "weightd running: $(running_wd)"
-    T=$(mktemp -d); for id in $MODELS; do python3 "$KIT/../tools/lane_config.py" render "$id" "$T/$id" > /dev/null || { echo "PRECHECK-FAILED render $id"; exit 1; }; done
-    python3 - "$T" > "$STATE/packs" <<'PACKS' || { echo "PRECHECK-FAILED no pack list"; exit 1; }
-import glob, json, os, sys
-for path in sorted(glob.glob(os.path.join(sys.argv[1], "*", "adapter.*.json"))):
-    pack = json.load(open(path)).get("stage_pack_path")
-    if pack:
-        print(path.rsplit(".", 2)[-2], pack)
-PACKS
-    rm -rf "$T"
+    python3 "$KIT/../tools/release_packs.py" $MODELS > "$STATE/packs" || { echo "PRECHECK-FAILED no pack list"; exit 1; }
     missing=0
     for r in $(seq 0 15); do
-      h=spark${HEX:$r:1}; packs=$(awk -v h=$h '$1 == h {print $2}' "$STATE/packs" | sort -u | tr '\n' ' ')
+      h=spark${HEX:$r:1}; packs=$(awk -v h=$h '$1 == h {print $2 "|" $3}' "$STATE/packs" | sort -u | tr '\n' ' ')
       [ -n "$packs" ] || { echo "PRECHECK-FAILED no lane names a pack on $h"; missing=1; continue; }
-      node $r "for p in $packs; do test -s \$p -a -s \$p.sha256 -a -s \$p.experts || echo MISSING \$p; done" | sed "s/^/$h: /" | grep MISSING && missing=1
+      node $r "for e in $packs; do p=\${e%|*}; d=\${e#*|}; test -s \$p -a -s \$d -a -s \$p.experts || echo MISSING \$p; done" | sed "s/^/$h: /" | grep MISSING && missing=1
     done
-    [ "$missing" = 0 ] || { echo "PRECHECK-FAILED a configured pack, its .sha256 or its .experts is missing"; exit 1; }
+    [ "$missing" = 0 ] || { echo "PRECHECK-FAILED a configured pack, its digest or its .experts is missing"; exit 1; }
     echo "configured packs present with sidecar and manifest: $(wc -l < "$STATE/packs") rank packs"
     hub_space || exit 1
     hub "mkdir -p $RD/kit $BK" && scp -q "$KIT/../tools/release_capture.py" "$KIT/../tools/release_compare.py" "$KIT/../tools/rollover_golden_compare.py" "$KIT/../tools/rollover_k3_golden.py" "$KIT/../tools/rollover_lp_capture.py" rtx5090:$RD/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$RD/kit/prompt_source.c
