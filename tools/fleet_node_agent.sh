@@ -522,12 +522,16 @@ start_root() {
     sha16 "$rr/stages/stage_000/model_driver.so" > "$rr/.driver_sha_at_boot" 2>/dev/null
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     note_root "$name" "" ""
+    if [ -n "${G5_EXPERT_POOL_BYTES:-}" ]; then
+        note_root "$name" failed-start "G5_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and G5_EXPERT_POOL_CAP_BYTES is the optional explicit cap"
+        return 1
+    fi
     if [ "$RC_LAYOUT" = 1 ]; then
         start_layout_root "$name" "$rr" || return 1
     else
         env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
             ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
-            SPARK_WEIGHTD_EXPERT_POOL_BYTES="${G5_EXPERT_POOL_BYTES:-34359738368}" \
+            ${G5_EXPERT_POOL_CAP_BYTES:+SPARK_WEIGHTD_EXPERT_POOL_BYTES=$G5_EXPERT_POOL_CAP_BYTES} \
             LD_LIBRARY_PATH="$rr/lib" nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_residentd \
             --deployment model_resident.json --rank-index "$RANK" \
             > residentd.log 2>&1 < /dev/null &

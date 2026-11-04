@@ -466,6 +466,7 @@ SparkStatus K3Streamed::Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	b.cache_shard.pages = dispatch->mla_cache[0];
+	b.route_fault = request->route_fault;
 	return K3StreamedStates(this, request->state_target, 0u, stream);
 }
 

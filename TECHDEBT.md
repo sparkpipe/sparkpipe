@@ -357,9 +357,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
   stream gets no hidden states for the deferred span, only for the waves
   after it, so a drafter that builds its context from taps drafts without
-  the span. The waves after the span (up to 2,048 tokens) lease the experts
-  of every layer from weightd one layer at a time with no read-ahead, about
-  36 s a wave at 1M context.
+  the span. The waves after the span (up to 2,048 tokens) took about 36 s a
+  wave at 1M context while every routed layer synchronized the stream, read
+  the router back and only then leased its experts. They now lease each
+  layer's experts ahead of the router, two layers deep, whenever two layers
+  fit the pool (`STAGE-LEASE-AHEAD`, docs/WEIGHTD_DESIGN.md), and a resident
+  K3 (every group present in a whole-arena pool, as #1725 makes it) takes no
+  lease and no per-layer synchronization. Neither has a fleet measurement
+  yet: compare the tail-wave time and the K3 1M answer time with main.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
@@ -401,17 +406,23 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Model residency and storage
 
-- Lazy expert pools are hand-set per lane record instead of sized from the
-  pack. Measured 2026-11-02 against each pack's expert manifest (2 MiB
-  chunks, identical on all 16 ranks): Kimi K3's experts occupy 43,200
-  chunks (90.60 GB) against a 99.57 GB pool, A.X K2 20,852 (43.73 GB)
-  against 55.83 GB, GLM 5.3 Full 22,383 (46.94 GB) against 55.83 GB, and
-  GLM 5.3 Flash 9,399 (19.71 GB) against 34.36 GB: 9-15 GB per node that
-  holds nothing, and 256 MB pools on models whose experts are resident.
-  On 2026-11-02 K3's cold start then ended with 1.3-1.8 GB available on
-  four nodes and earlyoom killed weightd or the engine. Size every pool
-  from its manifest's expert chunks, and keep a record value only as an
-  explicit cap for a lane that streams experts on purpose.
+- Expert pools were hand-set per lane record until #1725, and the Kimi K3
+  value was wrong in the costly direction. Measured 2026-11-02: every K3 rank
+  pack is 100,255,758,720 bytes, above the record's 99,568,941,440-byte pool,
+  so weightd built a 47,478-slot pool (99.57 GB) and every engine loaded its
+  own 9.85 GB spine beside it (`WD-SPINE-PRIVATE`): 109.4 GB per node, about
+  9.16 GB more than the whole arena (47,806 chunks, 100.26 GB) that holds
+  every expert chunk with the spine shared. That is where K3's cold start
+  ended with 1.3-1.8 GB available on four nodes and earlyoom killed weightd
+  or the engine. The GLM 5.3 (52 GiB), GLM 5.3 Flash (32 GiB) and A.X K2
+  (52 GiB) pools sat above their packs, so weightd already mapped those
+  whole arenas and wasted nothing; the 256 MB pools of spine-only models held
+  128 slots they never used. Pools are now planned from each pack's
+  `PACK.experts` ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md#pool-sizing)):
+  the whole arena without a cap, one slot for a pack without expert ranges,
+  and `expert_pool_cap_bytes` only for a lane that streams experts on
+  purpose. Open until #1725's fleet gate shows K3 in whole-arena mode on all
+  16 nodes with the 9.16 GB returned.
 - Store the replicated spine losslessly compressed (DFloat11 idea, Zhang et
   al. 2025, `LeanModels/DFloat11`): BF16 sign and mantissa stay raw and the
   8-bit exponent is Huffman-coded, so the spine shrinks to about 70% while
@@ -973,21 +984,34 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+- Speculation serves on every model in the README model table, whose
   adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
-    Flash's recurrent state restored to the accepted row through the
-    binding's recurrent-state hook;
+  - verify frames for Motif 3 once it serves;
+  - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
+    head (F32 in the checkpoint) and the DFlash draft model it ships in
+    `dflash/` are not packed or wired as drafters;
+  - FP8 projections in verify frames above 16 rows run no faster than the
+    16-row launches they replaced (0.97-1.10x, `tools/exact_dense_rows_bench.cu`):
+    every 16-row block decodes the FP8 weights again, and that decode, not
+    DRAM, bounds the kernel. bf16 projections run 2-3x faster and MXFP8
+    1.1-2.3x. A skinny variant that decodes each weight tile once into shared
+    memory for all row blocks of a frame, keeping the per-row sums, would help
+    GLM 5.3 Full and A.X K2 long frames;
+  - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
+    pack drops it, so Ling 3.0 verifies only context-lookup drafts;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
     so shared verify frames run eager;
-  - multi-row verify numerics differ from a 1-row decode by the reordering
-    floor, so speculative output is judged against the floor like batched
-    output. Add the accuracy gate as excess over the floor for edit-style
-    requests, and show that plain prompts with no matches lose no speed
-    beyond noise.
+  - show that plain prompts with no matches lose no speed beyond noise on
+    every model that speculates; every verify-capable stage now reproduces
+    one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_hy4_verify_frames.cu`, `tests/test_qwen38_verify_frames.cu`,
+    `tests/test_mimo26_verify_frames.cu`, and the K3 and DeepSeek V4.1 Flash
+    tests), so speculative output is judged EXACT against output without
+    speculation.
 
 ## Packaging and provenance
 

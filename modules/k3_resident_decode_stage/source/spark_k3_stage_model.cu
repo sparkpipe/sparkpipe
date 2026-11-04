@@ -772,10 +772,14 @@ static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_v
 	SparkStatus status;
 	if ( state == 0 || buffers == 0 || layer >= K3_LAYERS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	status = state->services->expert_weights(state->services->context, layer, buffers->group_row_offset,
-		state->rows * K3_TOP_K, &w1, &w2);
+	status = state->services->expert_weights_ahead(state->services->context, layer, state->rows * K3_TOP_K, &w1, &w2);
+	if ( status == SPARK_STATUS_PENDING )
+	{
+		if ( cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		status = state->services->expert_weights(state->services->context, layer, buffers->group_row_offset,
+			state->rows * K3_TOP_K, &w1, &w2);
+	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	buffers->expert_w1_weight = w1;
@@ -1059,6 +1063,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 		in.gather_first = first;
 	}
 	in.route_expert = state->route_expert;
+	in.route_fault = step->route_fault;
 	in.route_packed_row = state->route_packed_row;
 	in.route_source_token = state->route_source_token;
 	in.route_weight = state->route_weight;

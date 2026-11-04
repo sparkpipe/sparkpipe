@@ -111,7 +111,6 @@ static SparkStatus SparkK3ProbeInitialize(InitFunction init, ModelFunction model
 	config.weights.socket_path = settings->socket;
 	if ( settings->digest != 0 )
 		snprintf(config.weights.pack_sha256, sizeof(config.weights.pack_sha256), "%s", settings->digest);
-	config.weights.expert_pool_bytes = settings->pool;
 	config.weights.spine_budget_bytes = settings->pool;
 	config.descriptor_bytes = (uint32_t)sizeof(config);
 	config.stage_index = 0u;

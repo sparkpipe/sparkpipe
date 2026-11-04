@@ -108,7 +108,14 @@ cap.
   else in flight) feeds a table of frame cost per row bucket and context
   bucket (verify frames, and clean single-lane prefill waves as a prior), and
   the chain's per-token and single-step cost per context bucket. Missing cells
-  interpolate in rows and borrow the nearest context bucket.
+  interpolate in rows and borrow the nearest context bucket. Beyond the
+  measured sizes a cost scales the nearest one by (rows + 8) / (rows measured
+  + 8); a straight line through the two smallest sizes could price a frame
+  below zero. A cell not measured for 64 frames of its context bucket is
+  stale: the price is the lower of the estimate over all cells and the one
+  over fresh cells only, so a size priced during a slow stretch is tried again
+  once its fresh neighbours say it is cheaper, and the next measurement
+  replaces a stale cell instead of averaging into it.
 - Decision: among 1-16, 20, 24, ..., 255 and the feasible maximum, the frame
   with the most expected tokens per nanosecond, only if it beats the chain by
   5%. A class with no evidence gets one probe frame of up to 16 drafts.

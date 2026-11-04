@@ -183,7 +183,7 @@ class FleetAgentMultiRoot(unittest.TestCase):
                    TEST_ROOTS=roots, TEST_MEM=str(self.mem), TEST_UPTIME=str(self.uptime), TEST_LOG_DIR=str(self.home),
                    PATH=str(self.bin) + os.pathsep + os.environ["PATH"])
         for key in ("FLEET_AGENT_ROOTS_FILE", "FLEET_AGENT_HEADROOM_GIB",
-                    "G5_LAUNCH_BLOCKING", "G5_EXPERT_POOL_BYTES"):
+                    "G5_LAUNCH_BLOCKING", "G5_EXPERT_POOL_CAP_BYTES", "G5_EXPERT_POOL_BYTES"):
             env.pop(key, None)
         return subprocess.run(["bash", "-c", PRELUDE + body], env=env, capture_output=True,
                               text=True, cwd=str(self.home), timeout=120)
@@ -216,7 +216,7 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         pid, args, env = self.launch(self.prod)
         self.assertEqual(pid, prod_pid)
         self.assertEqual(args, ["--deployment", "model_resident.json", "--rank-index", "10"])
-        self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "34359738368")
+        self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "<unset>")
         self.assertEqual(os.readlink(self.prod / "config" / "stage.json"), "stage_10.json")
         pid, args, env = self.launch(self.dev)
         self.assertEqual(pid, dev_pid)
@@ -234,6 +234,22 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         self.assertIn("--unit=sp-agent-dev-l4", units[0])
         self.assertIn("-p MemoryMax=40G -p MemorySwapMax=0", units[0])
         self.assertIn("--working-directory=" + str(self.dev), units[0])
+
+    def test_production_root_passes_only_an_explicit_expert_pool_cap(self):
+        result = self.run_agent(f'''
+G5_EXPERT_POOL_CAP_BYTES=4294967296
+start_root {PROD} && wait_ready {PROD} || exit 4
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.launch(self.prod)[2]["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "4294967296")
+        (self.prod / "launch.txt").unlink()
+        result = self.run_agent(f'''
+G5_EXPERT_POOL_BYTES=34359738368
+start_root {DEV} && exit 5
+exit 0
+''')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse((self.dev / "launch.txt").exists())
 
     def test_lower_pid_dev_residentd_never_recycles_production(self):
         prod_pid, dev_pid = self.start_both()
