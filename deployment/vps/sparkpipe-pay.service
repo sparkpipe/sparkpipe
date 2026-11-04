@@ -10,6 +10,7 @@ EnvironmentFile=/etc/sparkpipe-pay/env
 ExecStart=/usr/bin/python3 /opt/sparkpipe-pay/sparkpipe_pay.py serve
 Restart=on-failure
 RestartSec=5
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

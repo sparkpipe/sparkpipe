@@ -33,7 +33,8 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello`, WebSocket `/v1/responses` |
 | Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/models/resident`, `GET/PUT /v1/models/aliases` |
 | Usage records | `GET /v1/requests` |
-| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` |
+| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh`, `POST/GET /v1/packs/trees` |
+| Anticipator | `GET/PUT /v1/anticipator`, `GET /v1/anticipator/plan`, `POST /v1/anticipator/plan/approve`, `PUT /v1/anticipator/focus`, `GET /v1/anticipator/report` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, git over HTTPS at `/git/{repo}.git` |
 | Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `GET /v1/storage/changes`, `POST /v1/export`, `POST /v1/restore` |
 | Fetch | `POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
@@ -293,9 +294,13 @@ A fleet keeps as many models resident as fit in its memory. Kimi K3 (1.56 TB) fi
   - `PUT /v1/models/aliases {"claude-haiku-*": "glm-5.3-flash", "claude-*": "glm-5.3+core", "gpt-*": "glm-5.3+core"}` maps names that clients send by themselves.
   - The default table maps `claude-*` and `gpt-*` to the first resident model.
 
-## 5. Context packs
+## 5. Context packs and the anticipator
 
 A pack is a snapshot of a repository rendered into one deterministic text block. The fleet places it first in every prompt that names the pack's alias: before the client's own system prompt. Every session, subagent and Function then shares one warm prefix that already holds the code. The agent reads less and searches less, and none of it is prefilled twice.
+
+Precomputed context only saves time when a real request starts with exactly those tokens. Claude Code, Codex and OpenCode begin every prompt with their own system prompt and the conversation, and the files arrive later through tool calls. So the fleet controls what a prompt starts with by placing a pack first. The anticipator (§5.3) decides which packs to build and keep warm, and §5.4 says how a session lands on one.
+
+### 5.1 Packs
 
 - **Build.** `POST /v1/packs {"name": "core", "repo": "main", "include": ["src/**", "include/**"], "exclude": [...], "budget_tokens": 400000}`.
   - Files come from an ingested repository (§6). They are ordered by how rarely they changed in the last 90 days, least-changed first, with ties broken by path.
@@ -308,6 +313,113 @@ A pack is a snapshot of a repository rendered into one deterministic text block.
   - The new version is prefilled at low priority, and the alias moves to it only once it is warm. No request ever waits for a rebuild.
 - **Session affinity.** A conversation that started on version A keeps version A, matched by its prompt prefix and by `x-claude-code-session-id` when present, because switching it would invalidate the conversation's whole cache. New sessions get the newest warm version. Old versions are dropped when no session has used them for 24 hours.
 - **Cost.** A pack makes every prompt longer, so decode slows a little: K3 runs at 16.2 tok/s at 8K, 15.1 at 73K and 12.0–12.4 at 1M (`PERFORMANCE_STATUS.md:36-38,65-81`). The budget is the customer's choice. Gate D records what a pack saves on a real task list, for the Customer Zero report.
+
+### 5.2 Pack trees
+
+A pack tree shares one stored prefix across many packs. Each level is a contiguous run of files:
+
+| Level | What it holds | Changes |
+| --- | --- | --- |
+| Root | Specs, frozen headers and interfaces, project instructions (`AGENTS.md`, `CLAUDE.md`), the files every task needs | Monthly |
+| Trunk | One subsystem's headers, types, tables and utilities | Weekly |
+| Leaf | A working set: a module or module pair, its tests and the recent diff | Daily |
+
+A leaf pack is root, trunk and leaf rendered one after another, named `<tree>/<leaf>` (for example `kimi-k3+core/net-crypto`).
+
+- **Stored once.** The prefix cache is hash-chained in 64-token blocks, so every leaf of a tree reuses the stored root and trunk; only each leaf's own tail is extra.
+- **Aligned to resume points.** Each level ends on the model's resume boundary: 16,384 tokens for K3 and 4,096 for GLM 5.3 Flash (`docs/CHAT_MEMORY.md`), and any 64-token block for models that resume anywhere. The builder pads a level with a fixed separator up to the boundary, so moving from one leaf to another never recomputes the shared part.
+- **Budget.** `max_leaf_tokens` caps a whole leaf pack (default 400K, up to the model's window).
+- **API.**
+  - `POST /v1/packs/trees {"name": "core", "repo": "main", "root": [...], "trunks": {...}, "leaves": "auto" | {...}}` defines a tree. Leaves can be named by the customer, proposed by the anticipator, or both.
+  - `GET /v1/packs/trees/{name}` lists its levels, versions, tokens and warm state.
+
+### 5.3 The anticipator
+
+Every night, the anticipator chooses which leaves to build and keep warm for the next working day, within the budgets the customer sets. It explains each choice, and it measures the next day whether its choices were used.
+
+**Evidence.** Each source can be switched off:
+1. **Structure.** The include and import graph and the directory layout, from the repository index (§6).
+2. **History.** Files changed together over the last 90 days, the day's commits, and branches with recent pushes.
+3. **Sessions.** Which files the account's sessions read, edited or searched in the last 7 days, and which packs they started on.
+   - This is taken from the paths in tool calls that the chat layer already sees, never from file contents.
+   - It is kept as working state on the fleet and deleted with it.
+4. **Hints.** What the customer says tomorrow is about: `sparkpipe anticipate focus src/consensus/** "allocator migration"`, a task list file, or pinned leaves.
+
+**Planning.**
+- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf.
+- **Score.** Each candidate is scored as:
+  - the expected uses tomorrow (recent sessions on those files, decayed by age, raised by hints)
+  - × the prefill time a use would save (its tokens at the model's measured cold prefill rate)
+  - − the night's prefill time to build it
+  - − the cache it takes.
+- **Selection.** The plan is chosen greedily by score per gigabyte of new cache, counting shared roots and trunks once, until the night's compute budget or the cache budget runs out.
+- **Output.** Every planned leaf lists its files, the signals behind it, its expected uses and its build time.
+
+**When it runs.**
+- It runs in the night window, only in time the fleet is not serving interactive requests.
+- It runs after any Function that unloads the model (drafter training), so the cache is built for the model that serves in the morning.
+- It finishes before the window ends.
+- Cache is per model, so it builds for the account's main resident model unless told otherwise.
+
+**Scale.** These are estimated from our measurements, not yet measured as a whole:
+- **Build rate.** K3 prefills about 460–590 tokens per second at long context, so a 14-hour night builds about 25 million tokens of new context. That is about 50 unshared 500K-token contexts, and many more when leaves share a root and trunks.
+- **Storage.** K3's cache takes about 1.9 KB per token per node, so 500 GB per node holds about 260 million tokens.
+- **Payoff.** A 500K-token context costs about 18 minutes to prefill cold, against 3–6 seconds warm.
+
+### 5.4 Starting a session on a pack
+
+Three ways, each per project directory:
+1. **Named.** `sparkpipe setup claude-code --pack core/net-crypto` writes the project's settings, so every session started there uses that leaf (Claude Code `.claude/settings.local.json`, a Codex profile, OpenCode's project `opencode.json`).
+2. **Automatic.** The alias `<model>+auto` lets the chat layer pick a leaf at a session's first request. It matches:
+   - the working directory and git branch, which Claude Code and Codex include in their first prompt;
+   - the files the first prompt names.
+
+   The pick is fixed for the whole session, shown in the response telemetry (`pack`) and the status line, and recorded as session evidence. When no leaf matches well enough, the session starts without a pack.
+3. **None.** The plain model name.
+
+The fleet never changes the prefix of a running conversation, and never removes files from a client's messages, even when they are already in the pack. Rewriting the client's history would break token-exact replay (§3.2) and surprise the agent. Instead:
+- The pack header lists its files and commit.
+- The MCP tool `pack_info` (§10) answers the same question, so the agent can skip reading what it already has, and reads the current version of any file changed since.
+
+### 5.5 During the day
+
+After each push, the leaves that contain changed files are rebuilt from the first changed file, starting at the resume boundary before it. This happens at background priority, between interactive turns.
+- New sessions get the new version once it is warm.
+- Running sessions keep theirs (§5.1).
+- Daytime refresh uses only sequences that interactive use leaves free.
+
+### 5.6 Controls
+
+| Setting | Values | Default |
+| --- | --- | --- |
+| `mode` | `off`; `plan` (plan only, build what the customer approves); `auto` (build within budget) | `auto` |
+| `window` | Local start and end time, and time zone | 19:00–09:00, account time zone |
+| `max_hours` | Prefill hours a night | All idle time in the window |
+| `cache_share` | Share of the fleet's cache that anticipated leaves may use | 50% |
+| `max_leaf_tokens` | Largest leaf pack | 400,000 |
+| `signals` | `structure`, `history`, `sessions`, `hints`, each on or off | All on |
+| `exclude` | Paths never put in a pack | `.gitignore`, `.env*`, keys and certificates, vendored and generated files |
+| `model` | Model the cache is built for | The main resident model |
+
+API and CLI:
+- `GET/PUT /v1/anticipator` holds the settings.
+- `GET /v1/anticipator/plan` shows tonight's plan with reasons.
+- `POST /v1/anticipator/plan/approve` approves all of it or chosen leaves, in `plan` mode.
+- `PUT /v1/anticipator/focus` gives hints for the next day.
+- `GET /v1/anticipator/report?date=` shows the results.
+- `sparkpipe anticipate status | plan | approve | focus | report | off | auto`.
+- Pins (§4.3) keep any leaf warm regardless of score.
+
+### 5.7 Does it work
+
+Every morning report includes:
+- what the anticipator built and why;
+- how yesterday went: sessions started, the share that started on an anticipated leaf, the share of those sessions' first-turn tokens served from it, and the prefill time avoided (from telemetry, §3.6);
+- the leaves that were built but never used, and the hours they took.
+
+In `auto` mode, a leaf unused for three nights loses score.
+
+The acceptance test is Gate D2 (§18). It is published in the Customer Zero report whatever the result, so customers see the measured value, not a promise.
 
 ## 6. Storage and repositories
 
@@ -395,7 +507,8 @@ A Function is software we build and run for the account on a fleet it holds. It 
 | --- | --- | --- |
 | Ingest a repository | Clone and follow a repository, and map its files, symbols and history (§6) | Storage |
 | Build and refresh the cache | Build and refresh packs, warm them, and pin them if asked (§5) | Packs, warm |
-| Prefill ahead | Warm the named branches' packs, and re-warm after a handover or release | Warm |
+| Anticipate tomorrow | Build and warm the leaves the next day's sessions are most likely to need, within the customer's budgets, and report how they were used (§5.3) | Pack trees, warm |
+| Prefill ahead | Warm named leaves now, and re-warm after a handover or release | Warm |
 | Resume sessions | Re-warm the last prompts of recent sessions from the usage records, after a release or restart | Warm |
 | Export and restore | §6 | Storage |
 | Daily backup | §6: list the day's changes for the customer's own scheduled `sparkpipe storage sync` to pull | Storage |
@@ -531,6 +644,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe models resident [names]`, `aliases` | §4.5 |
 | `sparkpipe repo add NAME` (prints the push URL) | §6 |
 | `sparkpipe pack create`, `pack refresh`, `pack ls`, `pin` | §5, §4.3 |
+| `sparkpipe anticipate status`, `plan`, `approve`, `focus`, `report`, `off`, `auto` | §5.3, §5.6 |
 | `sparkpipe warm FILE` | §4.2 |
 | `sparkpipe fn ls`, `fn run NAME`, `fn schedule`, `fn logs ID`, `fn cancel ID` | §7 |
 | `sparkpipe report [DATE]` | The morning report |
@@ -576,6 +690,8 @@ Errors use each API shape's own error body, with these `type` or `code` values:
 - `image_not_supported`, `context_too_long`, `busy`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
+`context_too_long` is sent in each shape's native form, so the harnesses compact on their own: on Messages, 400 `invalid_request_error` with the message `prompt is too long: N tokens > M maximum`; on Responses and chat completions, 400 with code `context_length_exceeded`.
+
 ## 18. Build order and acceptance tests
 
 Owners are components, so the work splits into parallel sessions with no shared files. `docs/FLEET_API_ISSUES.md` breaks it into issues with sizes, dependencies and done-when tests.
@@ -602,6 +718,12 @@ Acceptance tests, each recorded in `PERFORMANCE_STATUS.md`, all passed before 4 
 - **Gate B (warm-up).** A warmed prefix of 150K tokens is fully matched by the next real request, and the warm-up never delays an interactive request by more than one decode step.
 - **Gate C (big prompts).** A 1M-token prompt prefilled once is answered from the cache by a follow-up, with the first token under 10 s.
 - **Gate D (packs).** On the Customer Zero repository, the same task list with and without a 300K-token pack. Report turns, tokens read through tools, wall time and decode speed, for the Customer Zero report.
+- **Gate D2 (the anticipator).** On the Customer Zero repository over 10 working days, in `auto` mode with default budgets:
+  - at least 60% of sessions start on an anticipated leaf;
+  - in those sessions, at least 90% of first-turn prompt tokens come from the cache;
+  - nightly compute stays within budget, and no interactive request waits for anticipation.
+
+  The report also gives built-but-unused hours.
 - **Gate E (a night of Functions).** On the Customer Zero repository, one night runs every Function in §7.2 on its schedule.
   - Every run finishes.
   - Interactive first-token time during the night stays within 10% of an idle fleet's.
