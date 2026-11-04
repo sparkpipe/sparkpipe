@@ -333,8 +333,8 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   up to four heads, with every key re-read by each block.
 - `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
   row and 32 heads per block, 32-key tiles through a cp.async double buffer,
-  QK and PV on `mma.sync`, the probabilities split into high and low bf16
-  halves so PV keeps fp32 precision.
+  QK and PV on `mma.sync`, one BF16 copy of each tile's weights against
+  the running maximum (the publishers' flash form, Latent prefill below).
   - Rows past the dense limit read their selected positions, either from
     a list compacted in shared memory or from the caller's split lists
     (`LmLatentShardSplitLaunch`). The two orders are the same, so both
@@ -359,22 +359,29 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 
   | Shape | Scalar | Tensor cores |
   |---|---|---|
-  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.4 ms | 5.48 ms |
-  | Same, width 576 | 39.4 ms | 5.27 ms |
-  | 4,096 rows, 16K dense keys, width 576 | 99.3 ms | 9.73 ms |
-  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.040 / 0.056 / 0.171 ms | 0.030 / 0.030 / 0.029 ms |
-  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.0 ms | 13.7 ms |
+  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.7 ms | 5.19 ms |
+  | Same, width 576 | 40.2 ms | 5.00 ms |
+  | 4,096 rows, 16K dense keys, width 576 | 99.0 ms | 8.73 ms |
+  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.038 / 0.056 / 0.173 ms | 0.028 / 0.027 / 0.027 ms |
+  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.2 ms | 11.8 ms |
 
-  The normalized outputs differ from the scalar kernel's by at most 1/8192 of
-  each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`). With one bf16
-  copy of the probabilities the gap was 0.3%, and on the fleet one of six
-  greedy chat prompts per model changed its tokens against the scalar kernel
-  (GLM 5.3 Flash, GLM 5.3 Full, DSV4.1); the low half costs 6%.
+  The records are the flash form. On one rank every record lies closer to an
+  f64 model of it (each 32-key tile's weights against the running maximum
+  rounded to BF16 once, the sum unrounded) than to exact attention: 5e-5 to
+  1.8e-4 of each head's peak from the model, 1.6e-3 to 1.7e-3 from exact.
+  Against the FP32 scalar kernel the normalized outputs differ by up to 0.3%
+  of each head's peak, which is that rounding
+  (`tests/cuda/latent_shard_sparse_cuda.cu`). A low BF16 half (540dfd170)
+  once matched the scalar kernel and the fleet's earlier greedy tokens; the
+  publishers' kernels multiply one BF16 copy, the gates judge against their
+  references, and without the half the kernel is 5 to 15% faster on the
+  shapes above (the width-512 case is within run-to-run noise).
 
 **Latent prefill (`attn_prefill.cuh`, `attn_shard_prefill.cuh`)**
 
 - `LmLatentAttentionPrefillKernel` (GLM 5.3 Full and A.X K2, dense and
-  DSA-sparse) and `LmLatentShardPrefillKernel` (Ling 3, Kimi K3) take the
+  DSA-sparse) and `LmLatentShardPrefillKernel` (GLM 5.3 Flash, GLM 5.3
+  Full's scatter waves, A.X K2, Ling 3, Hy4, DSV4.1) take the
   same form as the GQA tiled kernel and the publishers' own kernels
   (FlashAttention-2, DeepSeek's `sparse_attn`): each 32-key tile's weights
   `exp(s - m)` against the running maximum are rounded to BF16 once for the
