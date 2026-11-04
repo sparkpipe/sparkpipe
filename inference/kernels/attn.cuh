@@ -20,7 +20,14 @@ enum LmRopePairing
 	LM_ROPE_INTERLEAVED = 1
 };
 
-template<LmRopePairing PAIRING, bool ROUNDED = false>
+enum LmRopeRounding
+{
+	LM_ROPE_FP32 = 0,
+	LM_ROPE_ROUNDED_TERMS = 1,
+	LM_ROPE_BF16_TRIG = 2
+};
+
+template<LmRopePairing PAIRING, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle, float scale = 1.0f)
 {
 	uint32_t low_offset,high_offset;
@@ -29,11 +36,17 @@ static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_
 	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
 	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
 	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
-	if constexpr ( ROUNDED )
+	if constexpr ( ROUNDING == LM_ROPE_ROUNDED_TERMS )
 	{
 		const float c = SparkMathRopeCos(angle,scale),s = SparkMathRopeSin(angle,scale),a = low,b = high;
 		low = SparkMathRopeRoundedTerm(a,-b,c,s);
 		high = SparkMathRopeRoundedTerm(b,a,c,s);
+	}
+	else if constexpr ( ROUNDING == LM_ROPE_BF16_TRIG )
+	{
+		const float c = SparkMathRoundBf16(SparkMathRopeCos(angle,scale)),s = SparkMathRoundBf16(SparkMathRopeSin(angle,scale)),a = low,b = high;
+		low = SparkMathRopeLow(a,b,c,s);
+		high = SparkMathRopeHigh(a,b,c,s);
 	}
 	else
 		LmRopePair(&low,&high,angle,scale);

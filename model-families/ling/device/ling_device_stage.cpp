@@ -99,6 +99,7 @@ struct LingDevice
 		attention->latent = G::kLatent;
 		attention->value_dimension = G::kValueDim;
 		attention->rope_theta = G::kRopeTheta;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		attention->epsilon = G::kNormEpsilon;
 		attention->scale = 1.0f / sqrtf((float)L::kQkDim);
 		attention->head_gate = 1u;

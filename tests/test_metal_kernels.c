@@ -487,7 +487,7 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 	params.epsilon = 1e-6f;
 	params.has_weight = c->weighted;
 	params.round_first = c->round_first;
-	params.rope_rounded_terms = c->rounded;
+	params.rope_rounding = c->rounded;
 	params.scale = (float)c->scale;
 	params.multiply = (float)c->multiply;
 	for ( i = 0u; i < c->pairs; i++ )
@@ -533,12 +533,20 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 						const double angle = (double)(float)((float)pos[row] * params.inverse_frequency[pair]);
 						const double partner = low ? -normed[other] : normed[other];
 						const double scale = c->scale != 0.0 ? c->scale : 1.0;
-						if ( c->rounded != 0u )
+						if ( c->rounded == SPARK_ROPE_ROUNDING_TERMS )
 						{
 							const double cosine = RoundBf16(cos(angle) * scale), sine = RoundBf16(sin(angle) * scale);
 							y = RoundBf16(RoundBf16(normed[i] * cosine) + RoundBf16(partner * sine));
 							tolerance = UNIT_BF16 * (fabs(y) + fabs(normed[i] * cosine) + fabs(partner * sine) + fabs(normed[i]) + fabs(partner)) +
 								slack[i] + slack[other];
+						}
+						else if ( c->rounded == SPARK_ROPE_ROUNDING_BF16_TRIG )
+						{
+							const double cosine = RoundBf16(cos(angle) * scale), sine = RoundBf16(sin(angle) * scale), sum = normed[i] * cosine + partner * sine;
+							y = RoundBf16(sum);
+							tolerance = FlipSlack(sum,(4.0 * UNIT_F32 * (fabs(normed[i] * cosine) + fabs(partner * sine))) / fmax(fabs(sum),1e-30)) +
+								fabs(normed[i]) * FlipSlack(cos(angle) * scale,2.0 * FUNCTION_ERROR) + fabs(partner) * FlipSlack(sin(angle) * scale,2.0 * FUNCTION_ERROR) +
+								slack[i] * fabs(cosine) + slack[other] * fabs(sine);
 						}
 						else
 						{
@@ -552,8 +560,10 @@ static void TestHeadRopeCase(uint32_t rows, uint32_t heads, uint32_t offset, uin
 			}
 	}
 	snprintf(shape,sizeof(shape),"rows %u, %s",rows,label);
-	Report("head_rmsnorm_rope",shape,&clean,&corrupted,c->rounded != 0u ?
+	Report("head_rmsnorm_rope",shape,&clean,&corrupted,c->rounded == SPARK_ROPE_ROUNDING_TERMS ?
 		"bf16 cos, sin and products: u (|y| + |x cos| + |p sin| + |x| + |p|) + flip slack of both normed elements" :
+		c->rounded == SPARK_ROPE_ROUNDING_BF16_TRIG ?
+		"bf16 cos and sin, one rounding: exact, flip slack of the fp32 sum and of cos and sin, plus both normed elements' slack" :
 		"rotary span: u|y| + flip slack of the normed bf16 rounding (both elements) + (4*16+4) eps32 (|x|+|partner|), times the rope scale; "
 		"elsewhere the flip slack only");
 	free(normed);
@@ -5651,7 +5661,9 @@ int main(int argc, char **argv)
 		TestHeadRopeCase(2u,2u,8192u,512u,&value,"2 heads x 512, weightless norm, no rope");
 		{
 			static const RopeCase latent = { 64u, 64u, 32u, 6000000.0, 0u, 0u, 0.0, 0.0, 1u, 576u, 1u, 0u };
+			static const RopeCase trig = { 64u, 64u, 32u, 10000.0, 0u, SPARK_ROPE_ROUNDING_BF16_TRIG, 0.0, 0.0, 0u, 576u, 1u, 0u };
 			TestHeadRopeCase(3u,8u,128u,192u,&latent,"8 heads, 64 interleaved dims of 192-wide heads into 576-wide rows, plain, theta 6e6");
+			TestHeadRopeCase(3u,8u,128u,192u,&trig,"8 heads, 64 half-split dims of 192-wide heads, plain, bf16 cos and sin, one rounding, theta 1e4");
 		}
 	}
 	{

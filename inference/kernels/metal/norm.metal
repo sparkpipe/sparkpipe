@@ -122,8 +122,10 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 			const bool low = p.interleaved != 0u ? i % 2u == 0u : i < half_rope;
 			const uint mate = p.interleaved != 0u ? (low ? i + 1u : i - 1u) : (low ? i + half_rope : i - half_rope);
 			const float angle = position * p.inverse_frequency[p.interleaved != 0u ? i / 2u : i % half_rope];
-			const float c = SparkMathRopeCos(angle, p.scale), s = SparkMathRopeSin(angle, p.scale);
-			if ( p.rope_rounded_terms != 0u )
+			const float cosine = SparkMathRopeCos(angle, p.scale), sine = SparkMathRopeSin(angle, p.scale);
+			const float c = p.rope_rounding == SPARK_ROPE_ROUNDING_BF16_TRIG ? SparkMathRoundBf16(cosine) : cosine;
+			const float s = p.rope_rounding == SPARK_ROPE_ROUNDING_BF16_TRIG ? SparkMathRoundBf16(sine) : sine;
+			if ( p.rope_rounding == SPARK_ROPE_ROUNDING_TERMS )
 			{
 				value = SparkMathRopeRoundedTerm(value, low ? -normed[mate] : normed[mate], c, s);
 			}

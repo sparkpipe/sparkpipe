@@ -346,13 +346,13 @@ struct LingModel
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmPerHeadProjectSplitKernel<LG_THREADS,G::kNope,G::kLatent,S::kQkDim,0u>), dim3(rows,S::kMlaRankHeads,G::kLatent / LM_PER_HEAD_SPLIT_OUTPUTS),
 			LG_THREADS, 0, stream, state->mla_q, layer->mla_uk, state->mla_latent_query, S::kMlaRankHeads, rows);
-		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,S::kMlaRankHeads), LG_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,S::kMlaRankHeads), LG_THREADS, 0, stream,
 			state->mla_q, step->positions, S::kMlaRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		LingRopeQueryPackKernel<<<dim3(rows, S::kMlaRankHeads), LG_THREADS, 0, stream>>>(state->mla_latent_query, state->mla_q, state->mla_query,
 			S::kMlaRankHeads, G::kLatent, G::kNope, G::kRope);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LG_THREADS,float,G::kNormRoundFirst>), rows, LG_THREADS, (G::kLatent + 8u) * sizeof(float), stream,
 			state->mla_kv, (const uint16_t *)0, layer->mla_kv_norm, (uint16_t *)0, state->mla_kv, G::kLatent, S::kSlot, G::kNormEpsilon);
-		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED>), dim3(rows,1u), LG_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), LG_THREADS, 0, stream,
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->mla_kv, step->sequence_of_row,

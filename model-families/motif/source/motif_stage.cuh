@@ -327,9 +327,9 @@ struct MotifStage
 			status = Check(Norm<true>(state->slot, w->kv_norm, state->slot, rows, MO_LATENT, MO_SLOT, stream), "kv norm", layer);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS>), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q, step->positions, kHeads, MO_HEAD, MO_ROPE, theta,
+		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_BF16_TRIG>), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q, step->positions, kHeads, MO_HEAD, MO_ROPE, theta,
 			inv_freq, 1.0f, MO_NOPE);
-		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS>), dim3(rows, 1u), MO_THREADS, 0, stream, state->slot, step->positions, 1u, MO_SLOT, MO_ROPE, theta,
+		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_BF16_TRIG>), dim3(rows, 1u), MO_THREADS, 0, stream, state->slot, step->positions, 1u, MO_SLOT, MO_ROPE, theta,
 			inv_freq, 1.0f, MO_LATENT);
 		if ( LmPerHeadProjectRowsLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream) != cudaSuccess )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);

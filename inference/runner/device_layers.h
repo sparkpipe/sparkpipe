@@ -118,6 +118,7 @@ typedef struct SparkDeviceLatentAttentionShape
 	uint32_t rope_unrotated;
 	uint32_t gate_unrounded;
 	uint32_t rope_half;
+	uint32_t rope_rounding;
 	uint32_t window;
 	uint32_t differential;
 } SparkDeviceLatentAttentionShape;
@@ -178,7 +179,7 @@ typedef struct SparkDeviceAttentionShape
 	uint32_t sinks;
 	uint32_t window;
 	uint32_t rope_pairs;
-	uint32_t rope_rounded_terms;
+	uint32_t rope_rounding;
 	float rope_scale;
 	float yarn_factor;
 	float yarn_original;

@@ -8,6 +8,9 @@
 #define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
 #define SPARK_ATTENTION_BLOCK_ROWS(dim) ((dim) > 256u ? 16u : 32u)
 #define SPARK_ATTENTION_SIMDS 8u
+#define SPARK_ROPE_ROUNDING_FP32 0u
+#define SPARK_ROPE_ROUNDING_TERMS 1u
+#define SPARK_ROPE_ROUNDING_BF16_TRIG 2u
 #define SPARK_ATTENTION_BLOCK_KEYS 64u
 #define SPARK_ATTENTION_DECODE_PARTITION_KEYS 128u
 #define SPARK_ATTENTION_PREFILL_PARTITION_KEYS 1024u
@@ -152,7 +155,7 @@ typedef struct SparkHeadRopeParams
 	uint32_t rope_dimension;
 	float epsilon;
 	uint32_t has_weight;
-	uint32_t rope_rounded_terms;
+	uint32_t rope_rounding;
 	float multiply;
 	uint32_t plain;
 	float scale;

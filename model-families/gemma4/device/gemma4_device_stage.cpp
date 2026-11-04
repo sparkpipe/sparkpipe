@@ -108,7 +108,7 @@ struct GemmaDevice
 		sliding->qk_weightless = G::kQkNormWeighted ? 0u : 1u;
 		sliding->query_multiply = G::kQueryMultiply == 1.0f ? 0.0f : G::kQueryMultiply;
 		sliding->window = G::kWindow;
-		sliding->rope_rounded_terms = 1u;
+		sliding->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		memset(full, 0, sizeof(*full));
 		full->heads = G::kFullHeads;
 		full->kv_heads = G::kFullKvHeads;
@@ -124,7 +124,7 @@ struct GemmaDevice
 		full->qk_weightless = sliding->qk_weightless;
 		full->query_multiply = sliding->query_multiply;
 		full->rope_pairs = G::kFullRopePairs;
-		full->rope_rounded_terms = 1u;
+		full->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		full->rope_scale = G::kFullRopeScale;
 		full->yarn_factor = G::kYarnFactor;
 		full->yarn_original = G::kYarnOriginal;

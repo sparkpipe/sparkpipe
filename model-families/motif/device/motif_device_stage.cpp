@@ -115,6 +115,7 @@ struct MotifDevice
 		attention->query_norm_once = 1u;
 		attention->tensor_prefix = "attn_";
 		attention->rope_half = 1u;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_BF16_TRIG;
 		attention->differential = kGroup;
 		attention->window = window;
 		if ( window != 0u )

@@ -355,7 +355,7 @@ static void AttentionRopeParams(const SparkDeviceAttentionShape *shape, SparkHea
 	params->epsilon = shape->epsilon;
 	params->has_weight = weighted;
 	params->round_first = shape->norm_round_first;
-	params->rope_rounded_terms = shape->rope_rounded_terms;
+	params->rope_rounding = shape->rope_rounding;
 	params->multiply = multiply;
 	params->scale = shape->rope_scale != 0.0f ? shape->rope_scale : 1.0f;
 	for ( pair = 0u; rotate != 0u && pair < pairs && pair < SPARK_KERNEL_ROPE_PAIRS; pair++ )
@@ -530,6 +530,7 @@ static void LatentRopeParams(const SparkDeviceLatentAttentionShape *shape, Spark
 	params->rope_dimension = shape->rope;
 	params->plain = 1u;
 	params->interleaved = shape->rope_half != 0u ? 0u : 1u;
+	params->rope_rounding = shape->rope_rounding;
 	params->scale = 1.0f;
 	if ( shape->rope_unrotated != 0u )
 		return;
