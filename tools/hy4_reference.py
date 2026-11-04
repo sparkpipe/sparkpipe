@@ -33,7 +33,9 @@ deployment; accumulations are f32.
              branch input is sum pre_s * stream_s
   hc post    stream_s += post_s * branch output (f32, then bf16)
   attention  MLA (q lora 2048, kv lora 512, nope 192, rope 64, value 256),
-             interleaved rope pairs (2i, 2i+1), theta 1e7, scale 1/sqrt(256),
+             interleaved rope pairs (2i, 2i+1), theta 1e7, each product and
+             the sum rounded to bf16 with bf16 cos and sin (BF16 rotary in
+             transformers and vLLM), scale 1/sqrt(256),
              learned per-head sink logit in the softmax denominator, in the
              publishers' flash form: weights w = exp(s - m) in f32 with m
              the row's maximum over its attended keys, the sink excluded
@@ -245,13 +247,13 @@ class Reference:
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float64) * self.inv_freq[None, :]
         shape = [values.shape[0]] + [1] * (values.ndim - 2) + [self.rope_dim // 2]
-        cos = np.cos(angles).astype(np.float32).reshape(shape)
-        sin = np.sin(angles).astype(np.float32).reshape(shape)
+        cos = bf16(np.cos(angles).astype(np.float32)).reshape(shape)
+        sin = bf16(np.sin(angles).astype(np.float32)).reshape(shape)
         even, odd = values[..., 0::2], values[..., 1::2]
         out = np.empty_like(values)
-        out[..., 0::2] = even * cos - odd * sin
-        out[..., 1::2] = even * sin + odd * cos
-        return bf16(out)
+        out[..., 0::2] = bf16(bf16(even * cos) - bf16(odd * sin))
+        out[..., 1::2] = bf16(bf16(odd * cos) + bf16(even * sin))
+        return out
 
     def hc_weights(self, streams, fn, base, scale, post):
         rows = streams.shape[0]
