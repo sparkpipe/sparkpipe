@@ -325,6 +325,22 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   Splitting P into bf16 high and low parts (the previous version) cost 19% at
   the 128-wide shape; the whole-tile path is the other 1.28x.
 
+**Latent prefill (`attn_prefill.cuh`, `attn_shard_prefill.cuh`)**
+
+- `LmLatentAttentionPrefillKernel` (GLM 5.3 Full and A.X K2, dense and
+  DSA-sparse) and `LmLatentShardPrefillKernel` (Ling 3, Kimi K3) take the
+  same form as the GQA tiled kernel and the publishers' own kernels
+  (FlashAttention-2, DeepSeek's `sparse_attn`): each 32-key tile's weights
+  `exp(s - m)` against the running maximum are rounded to BF16 once for the
+  P·V MMA, and the running sum adds the FP32 weights.
+- The latent prefill used to split each weight into BF16 high and low parts
+  and run two P·V MMAs per fragment. One part is 8 to 12% faster on GB10
+  (4 heads, 512 + 64 wide): 2,048 rows after 30,720 cached positions take
+  21.5 ms against 23.9 ms, 4,096 rows after 61,440 take 84 to 87 ms
+  against 91 to 97 ms (three runs each, `tests/cuda/attn_prefill_cuda.cu
+  --time` with longer cases). The kernel is not bound by its MMAs alone, so
+  the gain is less than the third of its MMAs that the low part was.
+
 **Projections (`project.cuh`)**
 
 - The low-rank and absorbed attention projections live in each model's
