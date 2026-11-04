@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Qwen3.8 Flash (qwen4_exp) NVIDIA NVFP4 checkpoint -> TP16 or TP1 named stage packs.
+"""Qwen3.8 Flash (qwen4_exp) publisher BF16 or NVIDIA NVFP4 checkpoint -> TP16 or TP1 named stage packs.
 
-One pass over the checkpoint writes every rank. Output per rank:
+One pass over the checkpoint writes every rank. The checkpoint decides the expert and n-gram table codecs: the publisher's
+BF16 checkpoint (no quantization_config) packs BF16 experts and a BF16 n-gram table, the NVIDIA NVFP4 checkpoint packs
+NVFP4 experts and an FP8 n-gram table. Output per rank:
 <out>/qwen38_flash.tp<T>.rank<NN>.pack (tools/spark_named_pack.py container),
 plus <pack>.sha256 and the empty-range <pack>.experts.
 
@@ -21,9 +23,11 @@ so no padding). At TP16 rank r holds:
                       [r*384, +384); the indexer projection [640, 2560] and its
                       q / k norms replicated
   MoE                 router [512, 2560] replicated; local experts 32r..32r+31
-                      as nvfp4 moe_w1 (gate) / moe_w3 (up) [32*640, 2560] and
-                      moe_w2 (down) [32*2560, 640], each with a ue4m3 scale
-                      plane whose 32 f32 weight_scale_2 globals come first;
+                      as moe_w1 (gate) / moe_w3 (up) [32*640, 2560] and
+                      moe_w2 (down) [32*2560, 640]: bf16 rows of the fused
+                      gate_up_proj (gate the first 640 of each expert's 1280)
+                      and of down_proj, or nvfp4 with a ue4m3 scale plane per
+                      tensor whose 32 f32 weight_scale_2 globals come first;
                       the shared expert rows [r*40, +40), each half zero-padded
                       to 64 rows so the down projection's K is a multiple of
                       64: gate|up [128, 2560] and down columns [2560, 64];
@@ -31,8 +35,9 @@ so no padding). At TP16 rank r holds:
   PLE (layer 1)       key [10240, 2560], value [2560, 2560], the three norms
                       (1 + w) f32 [10240], the dilated conv [10240, 4]
                       replicated; the n-gram table rows [r*20000096, +20000096)
-                      (checkpoint shards 8r..8r+7 back to back) as one fp8
-                      [20000096, 160] tensor and its per-tensor scale f32 [1]
+                      (checkpoint shards 8r..8r+7 back to back) as one bf16
+                      [20000096, 160] tensor, or as fp8 with its per-tensor
+                      scale f32 [1]
 The hash multipliers, head vocab sizes and head offsets are replicated i64
 tensors (and are listed in the config).
 The MTP decoder and the vision tower are not packed.
@@ -270,7 +275,16 @@ def expert_planes(checkpoint, source, proj, experts, rows, cols):
     return np.concatenate(payloads), globals_, np.concatenate(planes)
 
 
-def pack_moe(checkpoint, packs, layer):
+def pack_bf16_experts(checkpoint, packs, source, name, rank):
+    gate_up = checkpoint.array(source + "gate_up_proj", "BF16", (EXPERTS, 2 * MOE_INTER, HIDDEN))
+    down = checkpoint.array(source + "down_proj", "BF16", (EXPERTS, HIDDEN, MOE_INTER))
+    experts = slice(rank * LOCAL_EXPERTS, (rank + 1) * LOCAL_EXPERTS)
+    packs.add(rank, name + "moe_w1", gate_up[experts, :MOE_INTER].reshape(LOCAL_EXPERTS * MOE_INTER, HIDDEN), "bf16")
+    packs.add(rank, name + "moe_w3", gate_up[experts, MOE_INTER:].reshape(LOCAL_EXPERTS * MOE_INTER, HIDDEN), "bf16")
+    packs.add(rank, name + "moe_w2", down[experts].reshape(LOCAL_EXPERTS * HIDDEN, MOE_INTER), "bf16")
+
+
+def pack_moe(checkpoint, packs, layer, bf16):
     p = f"{PREFIX}layers.{layer}.mlp."
     name = f"layers.{layer}."
     packs.replicated(name + "moe_router", checkpoint.array(p + "gate.weight", "BF16", (EXPERTS, HIDDEN)), "bf16")
@@ -286,6 +300,9 @@ def pack_moe(checkpoint, packs, layer):
         packs.add(rank, name + "moe_shared_down", np.concatenate((shared_down[:, rows], pad_columns), axis=1), "bf16")
         if rank not in packs.writers:
             continue
+        if bf16:
+            pack_bf16_experts(checkpoint, packs, p + "experts.", name, rank)
+            continue
         experts = range(rank * LOCAL_EXPERTS, (rank + 1) * LOCAL_EXPERTS)
         for kind, proj, rows_, cols in (("moe_w1", "gate_proj", MOE_INTER, HIDDEN), ("moe_w3", "up_proj", MOE_INTER, HIDDEN),
                                         ("moe_w2", "down_proj", HIDDEN, MOE_INTER)):
@@ -295,7 +312,7 @@ def pack_moe(checkpoint, packs, layer):
                                     (LOCAL_EXPERTS, rows_, cols // 16), {"global_scales": LOCAL_EXPERTS})
 
 
-def pack_ple(checkpoint, packs):
+def pack_ple(checkpoint, packs, bf16):
     p = f"{PREFIX}layers.{PLE_LAYER}.ple."
     name = f"layers.{PLE_LAYER}."
     packs.replicated(name + "ple_key", checkpoint.array(p + "key_proj.weight", "BF16", (HC_WIDTH, HIDDEN)), "bf16")
@@ -303,16 +320,18 @@ def pack_ple(checkpoint, packs):
     for norm in ("norm_key", "norm_query", "norm_conv"):
         packs.replicated(name + "ple_" + norm, folded(checkpoint, p + norm + ".weight", HC_WIDTH), "f32")
     packs.replicated(name + "ple_conv", checkpoint.array(p + "conv1d.weight", "BF16", (HC_WIDTH, 1, 4)).reshape(HC_WIDTH, 4), "bf16")
-    scale = np.array([scalar_f32(checkpoint, p + "ple_embedding.ngram_embedding.weight_scale")], dtype=np.float32)
     hashing = f"{p}ple_embedding."
     packs.replicated(name + "ple_multipliers", np.asarray(checkpoint.array(hashing + "layer_multipliers", "I64", (3,))), "i64")
     packs.replicated(name + "ple_vocab_sizes", np.asarray(checkpoint.array(hashing + "ngram_heads_vocab_sizes", "I64", (16,))), "i64")
     packs.replicated(name + "ple_offsets", np.asarray(checkpoint.array(hashing + "ngram_heads_offsets", "I64", (16,))), "i64")
+    dtype, kind = ("BF16", "bf16") if bf16 else ("F8_E4M3", "fp8_e4m3")
+    scale = None if bf16 else np.array([scalar_f32(checkpoint, p + "ple_embedding.ngram_embedding.weight_scale")], dtype=np.float32)
     for rank in packs.ranks:
-        shards = [checkpoint.array(f"{p}ple_embedding.ngram_embedding.shard_{shard}.weight", "F8_E4M3", (PLE_SHARD_ROWS, PLE_HEAD_DIM))
+        shards = [checkpoint.array(f"{p}ple_embedding.ngram_embedding.shard_{shard}.weight", dtype, (PLE_SHARD_ROWS, PLE_HEAD_DIM))
                   for shard in range(rank * PLE_SHARDS_PER_RANK, (rank + 1) * PLE_SHARDS_PER_RANK)]
-        packs.writers[rank].add_parts(name + "ple_table", shards, "fp8_e4m3", (PLE_SHARDS_PER_RANK * PLE_SHARD_ROWS, PLE_HEAD_DIM))
-        packs.add(rank, name + "ple_table_scale", scale, "f32")
+        packs.writers[rank].add_parts(name + "ple_table", shards, kind, (PLE_SHARDS_PER_RANK * PLE_SHARD_ROWS, PLE_HEAD_DIM))
+        if scale is not None:
+            packs.add(rank, name + "ple_table_scale", scale, "f32")
 
 
 def ple_config(checkpoint, text):
@@ -333,7 +352,7 @@ def ple_config(checkpoint, text):
             "ple_eos": text["eos_token_id"]}
 
 
-def finish(packs, revision, contract_sha256, ple):
+def finish(packs, revision, contract_sha256, ple, bf16):
     for rank in packs.ranks:
         packs.writers[rank].close()
         config = {"model": "qwen38_flash", "tp_degree": TP, "tp_rank": rank, "hidden": HIDDEN, "layers": LAYERS,
@@ -344,7 +363,8 @@ def finish(packs, revision, contract_sha256, ple):
                   "index_heads": INDEX_HEADS, "index_dim": INDEX_DIM, "index_budget": 2048, "index_ratio": 4,
                   "ple_table_first": rank * PLE_SHARDS_PER_RANK * PLE_SHARD_ROWS, **ple}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
-               "linear_codec": "bf16", "expert_codec": "nvfp4_e2m1", "attn_qkv_layout": "fused_windows",
+               "linear_codec": "bf16", "expert_codec": "bf16" if bf16 else "nvfp4_e2m1",
+               "ple_table_codec": "bf16" if bf16 else "fp8_e4m3", "attn_qkv_layout": "fused_windows",
                "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
         assemble(final, packs.payload(rank), NAMED_PACK_MAGIC, NAMED_PACK_VERSION, NAMED_PACK_ALIGN, fmt, config,
@@ -387,8 +407,9 @@ def main():
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")
     text = json.loads((args.checkpoint / "config.json").read_text())["text_config"]
     check_geometry(text)
-    receipt = args.checkpoint / "DOWNLOAD-RECEIPT.json"
-    revision = json.loads(receipt.read_text()).get("revision", "unknown") if receipt.exists() else "unknown"
+    receipts = [args.checkpoint / name for name in ("DOWNLOAD-RECEIPT.json", "ARCHIVE-RECEIPT.json") if (args.checkpoint / name).exists()]
+    revision = json.loads(receipts[0].read_text()).get("revision", "unknown") if receipts else "unknown"
+    bf16 = "quantization_config" not in json.loads((args.checkpoint / "config.json").read_text())
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = Checkpoint(args.checkpoint)
@@ -400,14 +421,14 @@ def main():
         pack_mixer(checkpoint, packs, name + "attn_hyper_connection.", f"layers.{layer}.attn_hc_", True)
         pack_mixer(checkpoint, packs, name + "mlp_hyper_connection.", f"layers.{layer}.mlp_hc_", True)
         if layer == PLE_LAYER:
-            pack_ple(checkpoint, packs)
+            pack_ple(checkpoint, packs, bf16)
         if layer % FULL_PERIOD == FULL_PHASE:
             pack_attention(checkpoint, packs, layer)
         else:
             pack_gdn(checkpoint, packs, layer)
-        pack_moe(checkpoint, packs, layer)
+        pack_moe(checkpoint, packs, layer, bf16)
         print(f"layer {layer} packed", flush=True)
-    finish(packs, revision, contract_sha256, ple)
+    finish(packs, revision, contract_sha256, ple, bf16)
     return 0
 
 
