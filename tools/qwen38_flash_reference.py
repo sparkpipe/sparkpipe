@@ -17,7 +17,11 @@ SparkPipe's CUDA stage (model-families/qwen38/source/qwen38_hybrid_stage.cuh),
 read from the checkpoint directly. R() is a round to bf16.
 - projections: R(x @ W); NVFP4 experts dequantise exactly to e2m1 x ue4m3 x
   weight_scale_2 (the decode arithmetic; CUDA's prefill GEMM rounds that
-  operand to bf16)
+  operand to bf16); a BF16 release's fused experts (gate_up_proj [E, 2I, H]
+  with gate first, down_proj [E, H, I]) are read as they are, and its config,
+  saved with only the non-default values, leaves norm_topk_prob at its
+  default (true); its n-gram embedding shards are BF16 where NVIDIA's are
+  E4M3 times one scale
 - hyper-connections, 4 streams: group norm R(x * rsqrt(mean(x^2) + eps) *
   (1 + w)) per stream; low = R(R(low / 4) * sigmoid(R(low / 4))) of R(n @
   down); mixed = R(sum over streams of R(R(sigmoid(R(n @ up))) * n) / 4);
@@ -149,6 +153,18 @@ class Checkpoint:
         value = self.bf16(name) if self.meta(name)[2]["dtype"] == "BF16" else np.asarray(self.raw(name, "F32"), dtype=np.float32)
         return np.float32(value.reshape(-1)[0])
 
+    def expert(self, prefix, expert, part):
+        name = f"{prefix}experts.{expert}.{part}"
+        if name + ".weight" in self.weight_map:
+            return self.nvfp4(name)
+        down = self.raw(prefix + "experts.down_proj", "BF16")
+        if part == "down_proj":
+            fused = down[expert]
+        else:
+            gate_up = self.raw(prefix + "experts.gate_up_proj", "BF16")[expert]
+            fused = gate_up[:down.shape[2]] if part == "gate_proj" else gate_up[down.shape[2]:]
+        return (np.asarray(fused).astype(np.uint32) << 16).view(np.float32)
+
     def nvfp4(self, name):
         packed = np.asarray(self.raw(name + ".weight", "U8"))
         plane = np.asarray(self.raw(name + ".weight_scale", "F8_E4M3"))
@@ -179,7 +195,7 @@ class Reference:
         self.ple_taps = text["ple_conv_kernel_size"]
         self.eos = text["eos_token_id"]
         self.ple_layer = text["ple_layer_ids"][0] - 1
-        if text.get("output_gate_type") != "sigmoid" or not text.get("norm_topk_prob") or len(text["ple_layer_ids"]) != 1 or \
+        if text.get("output_gate_type") != "sigmoid" or not text.get("norm_topk_prob", True) or len(text["ple_layer_ids"]) != 1 or \
                 self.value_heads % self.key_heads != 0 or self.rope_dim % 2 != 0:
             raise ValueError("config is outside what this reference implements")
 
@@ -246,7 +262,8 @@ class Reference:
         c = self.checkpoint
         p = f"{PREFIX}layers.{self.ple_layer}.ple."
         table = p + "ple_embedding.ngram_embedding."
-        scale = c.scalar(table + "weight_scale")
+        fp8 = c.meta(table + "shard_0.weight")[2]["dtype"] == "F8_E4M3"
+        scale = c.scalar(table + "weight_scale") if fp8 else np.float32(1.0)
         ids = np.concatenate([self.ngram_ids(tokens, p + "ple_embedding.") for tokens in sequences])
         if ids.min() < 0 or ids.max() >= len([n for n in c.weight_map if n.startswith(table + "shard_")]) * NGRAM_SHARD_ROWS:
             raise ValueError("an n-gram id falls outside the table")
@@ -254,10 +271,13 @@ class Reference:
         parts = []
         for column in range(columns):
             shard, row = np.divmod(ids[:, column], NGRAM_SHARD_ROWS)
-            values = np.empty((rows, c.raw(table + "shard_0.weight", "F8_E4M3").shape[1]), dtype=np.float32)
+            values = np.empty((rows, c.meta(table + "shard_0.weight")[2]["shape"][1]), dtype=np.float32)
             for index in np.unique(shard):
                 chosen = shard == index
-                values[chosen] = E4M3[np.asarray(c.raw(f"{table}shard_{index}.weight", "F8_E4M3")[row[chosen]])]
+                if fp8:
+                    values[chosen] = E4M3[np.asarray(c.raw(f"{table}shard_{index}.weight", "F8_E4M3")[row[chosen]])]
+                else:
+                    values[chosen] = (np.asarray(c.raw(f"{table}shard_{index}.weight", "BF16")[row[chosen]]).astype(np.uint32) << 16).view(np.float32)
             parts.append(bf16(values * scale))
         embed = np.concatenate(parts, axis=1)
         key = self.group_norm(self.linear(embed, c.bf16(p + "key_proj.weight")), c.gain(p + "norm_key.weight"))
@@ -375,12 +395,11 @@ class Reference:
 
         def run(expert):
             tokens, slots = np.nonzero(chosen == expert)
-            e = f"{m}experts.{expert}."
             rows = x[tokens]
-            gate = self.linear(rows, c.nvfp4(e + "gate_proj"))
-            up = self.linear(rows, c.nvfp4(e + "up_proj"))
+            gate = self.linear(rows, c.expert(m, expert, "gate_proj"))
+            up = self.linear(rows, c.expert(m, expert, "up_proj"))
             act = bf16(silu(gate) * up * weights[tokens, slots][:, None])
-            return tokens, slots, self.linear(act, c.nvfp4(e + "down_proj"))
+            return tokens, slots, self.linear(act, c.expert(m, expert, "down_proj"))
 
         with ThreadPoolExecutor(self.threads) as pool:
             for tokens, slots, out in pool.map(run, np.unique(chosen)):
