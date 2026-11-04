@@ -396,9 +396,8 @@ struct GemmaDevice
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
 	{
-		(void)frame;
 		SparkDeviceStageLayerDone(&state->stage, index);
-		return SPARK_STATUS_OK;
+		return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)
