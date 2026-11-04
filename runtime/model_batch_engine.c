@@ -119,6 +119,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t draft_source_end;
 	uint32_t draft_run_drafts;
 	uint32_t draft_run_source;
+	uint32_t draft_proven;
 	SparkSpeculationHazard draft_hazards[SPARK_SPECULATION_FRAME_CLASSES];
 	uint32_t draft_tokens[SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE];
 	float model_rate_tokens;
@@ -1411,6 +1412,8 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 			const uint32_t model_accepted = accepted < model_rows ? accepted : model_rows;
 			SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],model_rows,model_accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
 			SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],model_rows,model_accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			if ( model_accepted > request->draft_proven )
+				request->draft_proven = model_accepted;
 			if ( draft_count > model_rows && accepted >= model_rows )
 			{
 				const uint32_t extension_class = SparkSpeculationFrameClass(request->draft_match,request->sampling.inverse_temperature != 0.0f ? 1u : 0u);
@@ -1435,6 +1438,8 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 		{
 			SparkSpeculationHazardObserve(&engine->frame_model.classes[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
 			SparkSpeculationHazardObserve(&request->draft_hazards[request->draft_class],draft_count,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			if ( accepted > request->draft_proven )
+				request->draft_proven = accepted;
 			request->draft_run_drafts = accepted == draft_count ? draft_count : 0u;
 			request->draft_run_source = request->draft_source_end + kept;
 		}
@@ -2200,6 +2205,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->draft_count = 0u;
 	state->draft_class = 0u;
 	state->draft_run_drafts = 0u;
+	state->draft_proven = 0u;
 	state->model_rate_tokens = 0.0f;
 	state->model_rate_ns = 0.0f;
 	state->model_rate_frames = 0.0f;
@@ -3254,6 +3260,7 @@ static uint32_t SparkModelBatchPlanDraft(
 	frame.lanes = plan.lanes;
 	frame.base_rows = plan.base_rows;
 	frame.base_tokens = plan.base_tokens;
+	frame.proven_drafts = request->draft_proven;
 	if ( request->draft_run_drafts != 0u && match.source_end == request->draft_run_source )
 		frame.minimum = 2u * request->draft_run_drafts < limit ? 2u * request->draft_run_drafts : limit;
 	frame.context = position + 1u > plan.context ? position + 1u : plan.context;

@@ -127,8 +127,10 @@ cap.
   prose request's first lookup match at 142 expected tokens from 160 drafts
   (A.X K2, 2026-11-04: one token kept, 1,041 ms where five plain steps cost
   190 ms). A rejected probe keeps the cap and the first accepted draft lifts
-  it. After that a request's frames in a class grow at most to four times the
-  deepest draft it has had accepted there (1, 4, 16, 64, then every draft):
+  it. After that a request's frames grow at most to four times the deepest
+  draft it has had accepted in any class (1, 4, 16, 64, then every draft; a
+  per-class depth made Ling's edit tasks probe and ramp again each time a
+  growing match changed class, 20 frames where 6 did, edits 4.55x -> 4.10x):
   one accepted probe draft is evidence for depth one, not for the 46 and 67
   drafts the pooled table then priced at 44 and 42 expected tokens on A.X K2
   prose (5 and 3 kept, 417 and 524 ms). A class the engine has seen fail still never probes. The rule lives in

@@ -316,15 +316,6 @@ static uint32_t SparkSpeculationFrameFreeDrafts(const SparkSpeculationFrameModel
 	return(free_drafts);
 }
 
-static uint32_t SparkSpeculationFrameProvenDrafts(const SparkSpeculationHazard *hazard)
-{
-	uint32_t bucket,proven = 0u;
-	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
-		if ( hazard->risk[bucket] > hazard->events[bucket] )
-			proven = 1u << bucket;
-	return(proven < SPARK_SPECULATION_FRAME_MAX_DRAFTS ? proven : SPARK_SPECULATION_FRAME_MAX_DRAFTS);
-}
-
 static void SparkSpeculationFrameProbe(const SparkSpeculationFrameModel *model, const SparkSpeculationHazard *engine_hazard, const SparkSpeculationHazard *request_hazard,
 	const SparkSpeculationFrameRequest *request, uint32_t lanes, uint32_t limit, SparkSpeculationFrameChoice *choice)
 {
@@ -366,9 +357,8 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 		SparkSpeculationFrameProbe(model,engine_hazard,request_hazard,request,lanes,feasible,choice);
 		return;
 	}
-	if ( request_hazard != 0 && request_hazard->risk[0] > request_hazard->events[0] &&
-		SPARK_SPECULATION_FRAME_GROWTH * SparkSpeculationFrameProvenDrafts(request_hazard) < feasible )
-		feasible = SPARK_SPECULATION_FRAME_GROWTH * SparkSpeculationFrameProvenDrafts(request_hazard);
+	if ( request_hazard != 0 && request->proven_drafts != 0u && SPARK_SPECULATION_FRAME_GROWTH * request->proven_drafts < feasible )
+		feasible = SPARK_SPECULATION_FRAME_GROWTH * request->proven_drafts;
 	for (pass=request->minimum != 0u ? 0u : 1u; pass<2u && choice->drafts == 0u; pass++)
 		for (index=0u; index<=sizeof(SparkSpeculationFrameCandidates) / sizeof(SparkSpeculationFrameCandidates[0]); index++)
 		{
@@ -394,6 +384,6 @@ void SparkSpeculationFrameChoose(const SparkSpeculationFrameModel *model, const 
 		choice->expected_tokens = 0.0f;
 		choice->frame_ns = 0.0f;
 	}
-	if ( choice->drafts != 0u && request_hazard != 0 && request_hazard->risk[0] <= request_hazard->events[0] )
+	if ( choice->drafts != 0u && request_hazard != 0 && request->proven_drafts == 0u )
 		SparkSpeculationFrameProbe(model,engine_hazard,request_hazard,request,lanes,choice->drafts,choice);
 }

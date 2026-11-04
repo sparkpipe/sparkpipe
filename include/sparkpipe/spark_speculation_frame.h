@@ -59,6 +59,7 @@ typedef struct SparkSpeculationFrameRequest
 	uint32_t sampled;
 	uint32_t lanes;
 	uint32_t base_rows;
+	uint32_t proven_drafts;
 	float base_tokens;
 	float cost_cap_ns;
 } SparkSpeculationFrameRequest;
