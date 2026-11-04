@@ -464,6 +464,7 @@ to `chat_frontend.py` in `~/sparkpipe-chat`:
 cd ~/sparkpipe-chat
 python3 api_keys.py --file api_keys.json create --days 30 --note "who it is for"
 python3 api_keys.py --file api_keys.json create --allow-swap --note "may switch models"
+python3 api_keys.py --file api_keys.json create --priority background --note "batch jobs"
 python3 api_keys.py --file api_keys.json create --gateway --note "VPS gateway pool key"
 python3 api_keys.py --file api_keys.json list
 python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
@@ -471,7 +472,10 @@ python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
 
 `create` prints the id and the key once; only the hash is stored. The
 `--gateway` key goes into the VPS's `/etc/sparkpipe-pay/pool_key`
-(`docs/PAYMENTS.md`); `list` marks it `gateway`.
+(`docs/PAYMENTS.md`); `list` marks it `gateway`. `--priority background`
+gives a key's requests background priority unless a request sends its own
+`X-SparkPipe-Priority`; a gateway key takes neither `--allow-swap` nor
+`--priority`, because the gateway forwards each customer key's own.
 `deployment/hub/chat_frontend.json` makes every model public except the
 Qwen models, as `docs/MODEL_SUPPORT.md` requires.
 
@@ -509,12 +513,19 @@ Token-exact replay (§3.2). For every assistant turn it returns, the chat
 layer stores the exact token ids the engine generated, and nothing of the
 prompt, under the handles it gave the client: each thinking `signature` and
 `tool_use` id (Messages), each output item's `id`, `call_id` and reasoning
-`encrypted_content` (Responses), each `tool_calls[].id` (chat completions),
-and the reply itself as a digest of its trimmed text and tool calls, for
-turns that carry no handle. A later request's assistant turn is replayed
-when one of its handles names a stored turn of the same account and model
-and the client's copy still has the same text and calls; a turn the client
-edited, or one with no known handle, is rendered by the template as before.
+`encrypted_content` (Responses) and each `tool_calls[].id` (chat
+completions). A turn that comes back with no known handle (a chat
+completions text reply, or a Messages turn without its thinking block) is
+found by its trimmed text and tool calls together with a digest of
+everything before it: the model, tools, template arguments and every
+earlier message, so the same words in another conversation never match.
+Every turn belongs to the member that made it (the gateway's
+`X-SparkPipe-Key`, or the direct key), and only that member's requests reach
+it, through any path, `tokenize` included. A turn is replayed only for the
+model that generated it and only while the client's copy has the same text
+and calls; a turn the client edited, or one not found, is rendered by the
+template as before. A store that cannot be read is logged and the request is
+rendered normally.
 To render, the chat layer puts a sentinel in place of each replayed turn's
 content, renders the conversation once, and replaces each turn, from its
 header to the template's turn end, by the model's generation prompt and the
@@ -531,7 +542,8 @@ account (`account-<id>.sqlite` for a gateway account, `key-<id>.sqlite` for
 a direct key, `own.sqlite` for our own requests), each with its `-wal` and
 `-shm` mode 600 and `secure_delete` on, so deleted rows are overwritten.
 A file holds that account's generated turns, its stored Responses
-conversations and its alias table; `prefill.sqlite` holds only the measured
+conversations (each readable only by the member that stored it) and its
+alias table; `prefill.sqlite` holds only the measured
 prefill rates per model and length, with no request content. Stored
 responses and turns share `replay.budget_bytes`; over it, the least recently
 used rows go first, whichever account holds them. Deletion follows the

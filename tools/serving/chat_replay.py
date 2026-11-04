@@ -10,7 +10,7 @@ from array import array
 from pathlib import Path
 
 DEFAULT_BUDGET_BYTES = 4 << 30
-VERSION = "sparkpipe-replay-2"
+VERSION = "sparkpipe-replay-3"
 SIGNATURE_PREFIX = "sp1."
 HANDLE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 SCOPE = re.compile(r"(own|key:[A-Za-z0-9_-]{1,64}|account:[A-Za-z0-9][A-Za-z0-9_-]{0,63})")
@@ -27,13 +27,13 @@ PREFILL_WEIGHT = 0.25
 STORE_ERRORS = (sqlite3.Error, OSError)
 
 SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, model TEXT NOT NULL, view BLOB NOT NULL, tokens BLOB NOT NULL, "
-    "bytes INTEGER NOT NULL, used REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS turns (id TEXT PRIMARY KEY, model TEXT NOT NULL, member TEXT NOT NULL, context BLOB NOT NULL, view BLOB NOT NULL, "
+    "tokens BLOB NOT NULL, bytes INTEGER NOT NULL, used REAL NOT NULL)",
     "CREATE INDEX IF NOT EXISTS turns_used ON turns (used)",
-    "CREATE INDEX IF NOT EXISTS turns_view ON turns (model, view)",
+    "CREATE INDEX IF NOT EXISTS turns_view ON turns (model, member, context, view)",
     "CREATE TABLE IF NOT EXISTS handles (handle TEXT PRIMARY KEY, turn TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS handles_turn ON handles (turn)",
-    "CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, parent TEXT, model TEXT NOT NULL, messages TEXT NOT NULL, "
+    "CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, parent TEXT, model TEXT NOT NULL, member TEXT NOT NULL, messages TEXT NOT NULL, "
     "bytes INTEGER NOT NULL, used REAL NOT NULL)",
     "CREATE INDEX IF NOT EXISTS responses_used ON responses (used)",
     "CREATE TABLE IF NOT EXISTS aliases (one INTEGER PRIMARY KEY CHECK (one = 1), aliases TEXT NOT NULL, bytes INTEGER NOT NULL, used REAL NOT NULL)",
@@ -66,9 +66,28 @@ def assistant_text(content):
     return content.strip() if isinstance(content, str) else canonical(content)
 
 
+def message_view(message):
+    if message.get("role") == "assistant":
+        return ["assistant", assistant_text(message.get("content")), [call_view(call) for call in message.get("tool_calls") or []]]
+    return [message.get("role"), message.get("content") if message.get("content") is not None else "", message.get("tool_call_id"), message.get("name")]
+
+
 def view_digest(model_id, message):
     view = [VERSION, model_id, assistant_text(message.get("content")), [call_view(call) for call in message.get("tool_calls") or []]]
     return hashlib.sha256(canonical(view).encode()).digest()
+
+
+def context_digests(model_id, tools, kwargs, messages):
+    digest = hashlib.sha256(canonical([VERSION, model_id, tools or [], kwargs or {}]).encode()).digest()
+    digests = [digest]
+    for message in messages:
+        digest = hashlib.sha256(digest + hashlib.sha256(canonical(message_view(message)).encode()).digest()).digest()
+        digests.append(digest)
+    return digests
+
+
+def member_key(member):
+    return member if isinstance(member, str) else ""
 
 
 def new_turn():
@@ -164,26 +183,28 @@ class ScopeStore:
         except sqlite3.Error:
             pass
 
-    def find(self, model_id, handles, view, now):
+    def find(self, model_id, member, handles, view, context, now):
         for handle in handles:
-            row = self.db.execute("SELECT turns.id, turns.model, turns.view, turns.tokens FROM handles JOIN turns ON turns.id = handles.turn "
-                                  "WHERE handles.handle = ?", (handle,)).fetchone()
-            if row is not None and row[1] == model_id and row[2] == view:
+            row = self.db.execute("SELECT turns.id, turns.tokens FROM handles JOIN turns ON turns.id = handles.turn "
+                                  "WHERE handles.handle = ? AND turns.model = ? AND turns.member = ? AND turns.view = ?",
+                                  (handle, model_id, member, view)).fetchone()
+            if row is not None:
                 self.touch("turns", "id", row[0], now)
-                return row[3]
-        row = self.db.execute("SELECT id, tokens FROM turns WHERE model = ? AND view = ? ORDER BY used DESC LIMIT 1", (model_id, view)).fetchone()
+                return row[1]
+        row = self.db.execute("SELECT id, tokens FROM turns WHERE model = ? AND member = ? AND context = ? AND view = ? ORDER BY used DESC LIMIT 1",
+                              (model_id, member, context, view)).fetchone()
         if row is None:
             return None
         self.touch("turns", "id", row[0], now)
         return row[1]
 
-    def put(self, turn, model_id, view, blob, handles, now):
-        size = len(blob) + sum(len(handle) for handle in handles)
+    def put(self, turn, model_id, member, context, view, blob, handles, now):
+        size = len(blob) + len(context) + sum(len(handle) for handle in handles)
         old = self.db.execute("SELECT bytes FROM turns WHERE id = ?", (turn,)).fetchone()
         self.db.execute("BEGIN")
         try:
-            self.db.execute("INSERT OR REPLACE INTO turns (id, model, view, tokens, bytes, used) VALUES (?, ?, ?, ?, ?, ?)",
-                            (turn, model_id, view, blob, size, now))
+            self.db.execute("INSERT OR REPLACE INTO turns (id, model, member, context, view, tokens, bytes, used) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (turn, model_id, member, context, view, blob, size, now))
             self.db.executemany("INSERT OR REPLACE INTO handles (handle, turn) VALUES (?, ?)", [(handle, turn) for handle in handles])
             self.db.execute("COMMIT")
         except BaseException:
@@ -256,21 +277,21 @@ class ReplayStore:
             store = self.scopes[scope] = ScopeStore(self.directory / name if self.directory is not None else None)
         return store
 
-    def find(self, scope, model_id, handles, view):
+    def find(self, scope, member, model_id, handles, view, context):
         store = self.store(scope)
         if store is None:
             return None
-        blob = store.find(model_id, [handle for handle in handles if valid_handle(handle)], view, time.time())
+        blob = store.find(model_id, member_key(member), [handle for handle in handles if valid_handle(handle)], view, context, time.time())
         if blob is None:
             return None
         tokens = array("I")
         tokens.frombytes(blob)
         return tokens
 
-    def put(self, scope, model_id, view, tokens, handles, turn=None):
+    def put(self, scope, member, model_id, view, context, tokens, handles, turn=None):
         turn = turn or new_turn()
         handles = sorted({handle for handle in handles if valid_handle(handle)})
-        self.store(scope, True).put(turn, model_id, view, array("I", tokens).tobytes(), handles, time.time())
+        self.store(scope, True).put(turn, model_id, member_key(member), context, view, array("I", tokens).tobytes(), handles, time.time())
         self.evict()
         return turn
 
@@ -285,17 +306,17 @@ class ReplayStore:
         stores = self.scopes.values() if scope is None else [self.scopes[scope]] if scope in self.scopes else []
         return sum(store.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] for store in stores)
 
-    def put_response(self, scope, response_id, parent, model_id, messages):
+    def put_response(self, scope, member, response_id, parent, model_id, messages):
         text = json.dumps(messages, ensure_ascii=False)
         size = len(text.encode()) + len(response_id)
         store = self.store(scope, True)
         old = store.db.execute("SELECT bytes FROM responses WHERE id = ?", (response_id,)).fetchone()
-        store.db.execute("INSERT OR REPLACE INTO responses (id, parent, model, messages, bytes, used) VALUES (?, ?, ?, ?, ?, ?)",
-                         (response_id, parent, model_id, text, size, time.time()))
+        store.db.execute("INSERT OR REPLACE INTO responses (id, parent, model, member, messages, bytes, used) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (response_id, parent, model_id, member_key(member), text, size, time.time()))
         store.bytes += size - (old[0] if old else 0)
         self.evict()
 
-    def response_messages(self, scope, response_id):
+    def response_messages(self, scope, member, response_id):
         store = self.store(scope)
         if store is None:
             return None
@@ -304,7 +325,7 @@ class ReplayStore:
             if cursor in seen:
                 return None
             seen.add(cursor)
-            row = store.db.execute("SELECT parent, messages FROM responses WHERE id = ?", (cursor,)).fetchone()
+            row = store.db.execute("SELECT parent, messages FROM responses WHERE id = ? AND member = ?", (cursor, member_key(member))).fetchone()
             if row is None:
                 return None
             store.touch("responses", "id", cursor, now)

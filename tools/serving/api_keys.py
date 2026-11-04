@@ -33,9 +33,14 @@ def store(path, document):
     os.replace(temporary, path)
 
 
-def create(path, days, note, gateway=False, allow_swap=False):
-    if gateway and allow_swap:
-        raise ValueError("a gateway key forwards each account's allow_swap in X-SparkPipe-Allow-Swap and has none of its own")
+PRIORITIES = ("interactive", "background")
+
+
+def create(path, days, note, gateway=False, allow_swap=False, priority=None):
+    if gateway and (allow_swap or priority is not None):
+        raise ValueError("a gateway key forwards each account's allow_swap and priority in X-SparkPipe-Allow-Swap and X-SparkPipe-Priority and has none of its own")
+    if priority is not None and priority not in PRIORITIES:
+        raise ValueError(f"priority is one of {', '.join(PRIORITIES)}")
     document = load(path)
     key = PREFIX + secrets.token_urlsafe(32)
     identifier = "k_" + secrets.token_hex(4)
@@ -44,7 +49,7 @@ def create(path, days, note, gateway=False, allow_swap=False):
     now = int(time.time())
     document["keys"].append({"id": identifier, "sha256": hashlib.sha256(key.encode()).hexdigest(), "created": now,
                              "expires": now + days * 86400 if days else None, "revoked": False, "note": note, "gateway": gateway,
-                             "allow_swap": allow_swap})
+                             "allow_swap": allow_swap, "priority": priority})
     store(path, document)
     return identifier, key
 
@@ -68,13 +73,14 @@ def main():
     made.add_argument("--note", default="")
     made.add_argument("--gateway", action="store_true", help="the market gateway's key: its requests name their account in X-SparkPipe-Account")
     made.add_argument("--allow-swap", action="store_true", help="let the key ask for a model that would unload a resident one")
+    made.add_argument("--priority", choices=PRIORITIES, help="the key's default priority; background runs below interactive requests")
     gone = commands.add_parser("revoke", help="refuse a key from now on")
     gone.add_argument("id")
     commands.add_parser("list", help="show every key's id, dates and state, never the key")
     arguments = parser.parse_args()
     if arguments.command == "create":
         try:
-            identifier, key = create(arguments.file, arguments.days, arguments.note, arguments.gateway, arguments.allow_swap)
+            identifier, key = create(arguments.file, arguments.days, arguments.note, arguments.gateway, arguments.allow_swap, arguments.priority)
         except ValueError as error:
             raise SystemExit(f"api_keys: {error}")
         print(f"{identifier} {key}")
@@ -88,7 +94,7 @@ def main():
             expires = time.strftime("%Y-%m-%d", time.gmtime(entry["expires"])) if entry.get("expires") else "never"
             print(entry["id"], time.strftime("%Y-%m-%d", time.gmtime(entry["created"])), "expires", expires,
                   "revoked" if entry.get("revoked") else "active", *(["gateway"] if entry.get("gateway") is True else []),
-                  *(["allow_swap"] if entry.get("allow_swap") is True else []), entry.get("note", ""))
+                  *(["allow_swap"] if entry.get("allow_swap") is True else []), *([entry["priority"]] if entry.get("priority") else []), entry.get("note", ""))
 
 
 if __name__ == "__main__":

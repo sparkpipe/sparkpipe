@@ -19,6 +19,8 @@ chat_replay = load("chat_replay")
 working_state = load("working_state")
 STOP = 9
 MODEL = "model"
+CONTEXT = b"c" * 32
+OTHER = b"o" * 32
 
 
 def mode(path):
@@ -49,14 +51,19 @@ def main():
         root.mkdir(mode=0o755)
         store = chat_replay.ReplayStore(root, budget_bytes=1 << 20)
         generated = [101, 102, 103, STOP]
-        turn_id = store.put("account:acme", MODEL, view, generated, ["sp1.abc.0", "toolu_1", "t1", "bad handle!"])
-        check(list(store.find("account:acme", MODEL, ["toolu_1"], view)) == generated, "a turn is found by any handle it was given")
-        check(list(store.find("account:acme", MODEL, [], view)) == generated, "a turn without a known handle is found by its reply, as chat completions sends it back")
-        check(store.find("account:acme", MODEL, ["toolu_1"], chat_replay.view_digest(MODEL, dict(same, content="edited"))) is None,
+        turn_id = store.put("account:acme", "m1", MODEL, view, CONTEXT, generated, ["sp1.abc.0", "toolu_1", "t1", "bad handle!"])
+        check(list(store.find("account:acme", "m1", MODEL, ["toolu_1"], view, OTHER)) == generated, "a turn is found by any handle it was given")
+        check(list(store.find("account:acme", "m1", MODEL, [], view, CONTEXT)) == generated,
+              "a turn without a known handle is found by its reply after the same earlier conversation, as chat completions sends it back")
+        check(store.find("account:acme", "m1", MODEL, [], view, OTHER) is None,
+              "the same reply after a different earlier conversation is not this turn")
+        check(store.find("account:acme", "m2", MODEL, ["toolu_1"], view, CONTEXT) is None and store.find("account:acme", None, MODEL, [], view, CONTEXT) is None,
+              "another member of the account cannot reach the turn, by handle or by reply")
+        check(store.find("account:acme", "m1", MODEL, ["toolu_1"], chat_replay.view_digest(MODEL, dict(same, content="edited")), CONTEXT) is None,
               "a handle whose turn the client edited does not replay the stored tokens")
-        check(store.find("account:other", MODEL, ["toolu_1"], view) is None and store.find("own", MODEL, ["toolu_1"], view) is None,
+        check(store.find("account:other", "m1", MODEL, ["toolu_1"], view, CONTEXT) is None and store.find("own", "m1", MODEL, ["toolu_1"], view, CONTEXT) is None,
               "a turn is found only in its own account's store")
-        check(store.find("account:acme", "other", ["toolu_1"], view) is None, "a turn replays only for the model that generated it")
+        check(store.find("account:acme", "m1", "other", ["toolu_1"], view, CONTEXT) is None, "a turn replays only for the model that generated it")
         blob = store.scopes["account:acme"].db.execute("SELECT tokens FROM turns WHERE id = ?", (turn_id,)).fetchone()[0]
         check(array("I", blob).tolist() == generated, "the store keeps exactly the generated token ids, nothing of the prompt")
         files = sorted(path.name for path in root.iterdir())
@@ -64,19 +71,20 @@ def main():
         check(mode(root) == "0o700", f"the store directory is private even when something else made it: {mode(root)}")
         check(all(mode(path) == "0o600" for path in root.iterdir()), f"every store file, with its -wal and -shm, is private: {[(path.name, mode(path)) for path in root.iterdir()]}")
 
-        store.put_response("account:acme", "resp_1", None, MODEL, [{"role": "user", "content": "one"}])
-        store.put_response("account:acme", "resp_2", "resp_1", MODEL, [{"role": "assistant", "content": "two"}])
-        check(store.response_messages("account:acme", "resp_2") == [{"role": "user", "content": "one"}, {"role": "assistant", "content": "two"}],
+        store.put_response("account:acme", "m1", "resp_1", None, MODEL, [{"role": "user", "content": "one"}])
+        store.put_response("account:acme", "m1", "resp_2", "resp_1", MODEL, [{"role": "assistant", "content": "two"}])
+        check(store.response_messages("account:acme", "m1", "resp_2") == [{"role": "user", "content": "one"}, {"role": "assistant", "content": "two"}],
               "a stored response rebuilds its whole conversation through its parents")
-        check(store.response_messages("account:other", "resp_2") is None, "another account cannot refer to a stored response")
+        check(store.response_messages("account:other", "m1", "resp_2") is None and store.response_messages("account:acme", "m2", "resp_2") is None,
+              "another account, or another member of the account, cannot refer to a stored response")
         before = store.bytes
-        store.put_response("account:acme", "resp_3", None, MODEL, [{"role": "user", "content": "x" * 1000}])
+        store.put_response("account:acme", "m1", "resp_3", None, MODEL, [{"role": "user", "content": "x" * 1000}])
         check(store.bytes >= before + 1000, "stored responses count against the store's budget")
         store.set_aliases("account:acme", {"claude-*": "x"})
         store.close()
         store = chat_replay.ReplayStore(root, budget_bytes=1 << 20)
-        check(list(store.find("account:acme", MODEL, ["sp1.abc.0"], view)) == generated and store.aliases("account:acme") == {"claude-*": "x"} and
-              store.response_messages("account:acme", "resp_2") is not None, "turns, responses and aliases survive a restart")
+        check(list(store.find("account:acme", "m1", MODEL, ["sp1.abc.0"], view, CONTEXT)) == generated and store.aliases("account:acme") == {"claude-*": "x"} and
+              store.response_messages("account:acme", "m1", "resp_2") is not None, "turns, responses and aliases survive a restart")
 
         store.observe_prefill(MODEL, 1000, 400, 4000)
         check(store.prefill_rate(MODEL, 1000) is None, "a mostly cached request is not a cold prefill measurement")
@@ -87,49 +95,49 @@ def main():
         check(store.prefill_rate(MODEL, 100000) is None, "no rate is guessed for a length far from any measurement")
 
         marker = [0x5A5A5A5A] * 64
-        store.put("own", MODEL, chat_replay.view_digest(MODEL, {"role": "assistant", "content": "keep"}), [7, 8], [])
-        old = store.put("own", MODEL, chat_replay.view_digest(MODEL, {"role": "assistant", "content": "old"}), marker, ["toolu_old"])
+        store.put("own", None, MODEL, chat_replay.view_digest(MODEL, {"role": "assistant", "content": "keep"}), CONTEXT, [7, 8], [])
+        old = store.put("own", None, MODEL, chat_replay.view_digest(MODEL, {"role": "assistant", "content": "old"}), CONTEXT, marker, ["toolu_old"])
         store.scopes["own"].db.execute("UPDATE turns SET used = ? WHERE id = ?", (time.time() - 100, old))
         for table in ("turns", "responses", "aliases"):
             store.scopes["account:acme"].db.execute(f"UPDATE {table} SET used = ?", (time.time() - 100,))
         wiped = time.time() - 50
         dropped = store.expire(lambda used: working_state.expired(used, wiped, 0, time.time()))
         raw = b"".join(path.read_bytes() for path in root.iterdir() if path.name.startswith("own"))
-        check(dropped >= 1 and store.find("own", MODEL, ["toolu_old"], chat_replay.view_digest(MODEL, {"role": "assistant", "content": "old"})) is None,
+        check(dropped >= 1 and store.find("own", None, MODEL, ["toolu_old"], chat_replay.view_digest(MODEL, {"role": "assistant", "content": "old"}), CONTEXT) is None,
               "a turn last used before the fleet's current user started is deleted")
         check(array("I", marker).tobytes() not in raw, "a deleted turn's tokens are overwritten in the store file, not left in free pages")
         check("account:acme" not in store.scopes and not (root / "account-acme.sqlite").exists() and not (root / "account-acme.sqlite-wal").exists(),
               "an account whose whole store expired has its files removed")
-        store.put("own", MODEL, view, [1], [])
+        store.put("own", None, MODEL, view, CONTEXT, [1], [])
         store.scopes["own"].db.execute("UPDATE turns SET used = ?", (time.time() - 2 * 86400,))
         store.expire(lambda used: working_state.expired(used, 0, time.time() + 3600, time.time()))
         check(store.turns("own") > 0, "state stays while its account still holds the fleet, even after 24 hours without use")
         store.expire(lambda used: working_state.expired(used, 0, time.time() - 86401, time.time()))
         check(store.turns("own") == 0 and not (root / "own.sqlite").exists(), "state goes 24 hours after the later of its last use and the last hour held")
 
-        store.put("key:k_1", MODEL, view, [1, 2], [])
-        store.put("account:b", MODEL, view, [3, 4], [])
+        store.put("key:k_1", "k_1", MODEL, view, CONTEXT, [1, 2], [])
+        store.put("account:b", None, MODEL, view, CONTEXT, [3, 4], [])
         store.clear("key:k_1")
         check(not (root / "key-k_1.sqlite").exists() and store.turns("account:b") == 1, "clearing one account removes its store and leaves the others")
         store.clear()
         check(store.turns() == 0 and not any(chat_replay.file_scope(path.name) for path in root.iterdir()), "clearing everything removes every account's store")
         store.close()
 
-    small = chat_replay.ReplayStore(None, budget_bytes=4 * 25)
+    small = chat_replay.ReplayStore(None, budget_bytes=2 * (4 * 10 + 32) + 36)
     views = [chat_replay.view_digest(MODEL, {"role": "assistant", "content": str(index)}) for index in range(4)]
-    small.put("account:a", MODEL, views[0], list(range(10)), [])
+    small.put("account:a", None, MODEL, views[0], CONTEXT, list(range(10)), [])
     time.sleep(0.01)
-    small.put("account:b", MODEL, views[1], list(range(10)), [])
+    small.put("account:b", None, MODEL, views[1], CONTEXT, list(range(10)), [])
     time.sleep(0.01)
-    small.find("account:a", MODEL, [], views[0])
+    small.find("account:a", None, MODEL, [], views[0], CONTEXT)
     small.scopes["account:a"].db.execute("UPDATE turns SET used = ?", (time.time(),))
     time.sleep(0.01)
-    small.put("account:a", MODEL, views[2], list(range(10)), [])
-    check(small.find("account:b", MODEL, [], views[1]) is None and small.find("account:a", MODEL, [], views[0]) is not None,
+    small.put("account:a", None, MODEL, views[2], CONTEXT, list(range(10)), [])
+    check(small.find("account:b", None, MODEL, [], views[1], CONTEXT) is None and small.find("account:a", None, MODEL, [], views[0], CONTEXT) is not None,
           "over budget the least recently used turn goes, whichever account holds it")
     check(small.bytes <= small.budget, f"the store stays within its budget: {small.bytes}")
     try:
-        small.put("../escape", MODEL, views[3], [1], [])
+        small.put("../escape", None, MODEL, views[3], CONTEXT, [1], [])
         check(False, "a scope that is not an account, a key or own is refused")
     except ValueError:
         pass
@@ -139,7 +147,8 @@ def main():
         print("FAIL test_chat_replay_store: " + failure)
     if failures:
         return 1
-    print("PASS test_chat_replay_store: a turn keeps only its generated tokens, is found by its handles or its reply and never when the client edited it; "
+    print("PASS test_chat_replay_store: a turn keeps only its generated tokens, is found by its handles or by its reply after the same earlier "
+          "conversation, only by its own member, and never when the client edited it; "
           "each account has its own private store file; responses count against the budget; turns, responses and aliases survive a restart; the "
           "working-state rule deletes state used before the current user started or 24 hours after the last use and hour held, overwriting it and "
           "removing empty stores; eviction is least recently used across accounts; cold prefills give a measured rate near their length")

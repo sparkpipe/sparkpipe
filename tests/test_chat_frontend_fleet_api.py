@@ -207,6 +207,64 @@ async def gateway_rules(harness, check):
           "a new user on the fleet (a later wiped in the directive) deletes every earlier account's replay store")
 
 
+async def isolation_rules(harness, check):
+    engine, frontend = harness.engine, harness.frontend
+    for name in ("a", "b"):
+        engine.reply(f"Reasoning {name.upper()} only.</think>It says hello world.")
+        await harness.post("/v1/chat/completions", chat([{"role": "user", "content": f"Read {name}.txt"}]), account="acme")
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "Read a.txt"}, {"role": "assistant", "content": "It says hello world."},
+                                                                       {"role": "user", "content": "Thanks"}]), account="acme")
+    prompt = harness.prompt_text()
+    check(status == 200 and "Reasoning B" not in prompt and "Reasoning A only." in prompt,
+          f"a reply sent back without a handle replays the turn of its own conversation, never another one with the same text: {prompt[-200:]}")
+
+    for name in ("c", "d"):
+        engine.reply(f"Thought {name.upper()} hidden.</think>Done.")
+        await harness.post("/v1/messages", {"model": "alpha", "max_tokens": 64, "messages": [{"role": "user", "content": f"Task {name}"}]}, account="acme")
+    engine.reply(ANSWER)
+    follow = [{"role": "user", "content": "Task c"}, {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}, {"role": "user", "content": "Next"}]
+    await harness.post("/v1/messages", {"model": "alpha", "max_tokens": 64, "messages": follow}, account="acme")
+    prompt = harness.prompt_text()
+    check("Thought D" not in prompt and "Thought C hidden." in prompt,
+          f"a Messages turn sent back without its thinking block replays its own conversation's turn, never another's: {prompt[-200:]}")
+
+    engine.reply(CALL_REPLY)
+    status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "Read secret.txt"}]), account="acme", **{"X-SparkPipe-Key": "k_one"})
+    call = json.loads(text)["choices"][0]["message"]["tool_calls"][0]
+    history = [{"role": "user", "content": "Read secret.txt"}, {"role": "assistant", "content": "Checking.", "tool_calls": [call]},
+               {"role": "tool", "tool_call_id": call["id"], "content": "hello"}]
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat(history), account="acme", **{"X-SparkPipe-Key": "k_two"})
+    check(json.loads(text)["sparkpipe"]["replayed_tokens"] == 0 and "Read it." not in harness.prompt_text(),
+          "another member of the account cannot replay a member's turn, even with its tool call id")
+    status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "messages": history, "tools": TOOLS}, account="acme", **{"X-SparkPipe-Key": "k_two"})
+    status, _, text = await harness.post("/v1/detokenize", {"model": "alpha", "tokens": json.loads(text)["tokens"]}, account="acme", **{"X-SparkPipe-Key": "k_two"})
+    check(status == 200 and "Read it." not in json.loads(text)["text"], "tokenize and detokenize never show another member's hidden reasoning")
+    status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "messages": history, "tools": TOOLS}, account="acme", **{"X-SparkPipe-Key": "k_one"})
+    status, _, text = await harness.post("/v1/detokenize", {"model": "alpha", "tokens": json.loads(text)["tokens"]}, account="acme", **{"X-SparkPipe-Key": "k_one"})
+    check("Read it." in json.loads(text)["text"], "the member who made the turn sees it rendered from its stored tokens")
+
+    working = frontend.replay.find
+
+    def unreadable(*arguments, **options):
+        raise chat_frontend.chat_replay.sqlite3.DatabaseError("database disk image is malformed")
+    frontend.replay.find = unreadable
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat(history), account="acme", **{"X-SparkPipe-Key": "k_one"})
+    frontend.replay.find = working
+    check(status == 200 and json.loads(text)["sparkpipe"]["replayed_tokens"] == 0, f"a store that cannot be read falls back to a normal render: {status} {text[:200]}")
+
+    background_id, background_key = chat_frontend.load_sibling("api_keys").create(harness.tmp / "api_keys.json", 0, "background", priority="background")
+    engine.reply(ANSWER)
+    status, _, _ = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), Authorization="Bearer " + background_key)
+    check(status == 200 and engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "a key made with --priority background runs its requests below interactive ones")
+    engine.reply(ANSWER)
+    status, _, _ = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), Authorization="Bearer " + background_key,
+                                      **{"X-SparkPipe-Priority": "interactive"})
+    check(engine.requests[-1]["priority"] == chat_frontend.INTERACTIVE_PRIORITY, "a request's own X-SparkPipe-Priority overrides its key's default")
+
+
 def catalogue_problems(document):
     problems = []
     required = {"slug": str, "display_name": str, "supported_reasoning_levels": list, "shell_type": str, "visibility": str, "supported_in_api": bool,
@@ -344,6 +402,7 @@ async def run(tmp, check):
         response.release()
         engine.hold = None
         await gateway_rules(harness, check)
+        await isolation_rules(harness, check)
 
 
 def main():
@@ -360,7 +419,9 @@ def main():
                  "gateway key must name a valid account, each account has its own replay store and alias table, X-SparkPipe-Allow-Swap 1 allows a swap and "
                  "background keys run below interactive ones; bad header values are not echoed; a failed controller falls back to the last residency and "
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
-                 "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store")
+                 "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
+                 "its own conversation's turn and only for its own member, also through tokenize; an unreadable store falls back to a normal render; a key "
+                 "made with --priority background runs below interactive requests")
 
 
 if __name__ == "__main__":

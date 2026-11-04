@@ -1793,13 +1793,17 @@ class Frontend:
         agent = next((clean_header(headers.get(name)) for name in AGENT_HEADERS if clean_header(headers.get(name))), None)
         return session, agent
 
-    def replay_render(self, model, messages, tools, kwargs, scope):
+    def replay_render(self, model, messages, tools, kwargs, scope, member, contexts):
         found = []
-        for index, message in enumerate(messages):
-            if message.get("role") == "assistant":
-                tokens = self.replay.find(scope, model.id, message_handles(message), chat_replay.view_digest(model.id, message))
-                if tokens is not None:
-                    found.append((index, tokens))
+        try:
+            for index, message in enumerate(messages):
+                if message.get("role") == "assistant":
+                    tokens = self.replay.find(scope, member, model.id, message_handles(message), chat_replay.view_digest(model.id, message), contexts[index])
+                    if tokens is not None:
+                        found.append((index, tokens))
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_store_failed", "action": "find", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return None
         if not found:
             return None
         opening = model.generation_prompt(tools, kwargs)
@@ -1849,8 +1853,8 @@ class Frontend:
         if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
             return None
         try:
-            return self.replay.put(plan["scope"], model.id, chat_replay.view_digest(model.id, assistant), list(plan.get("forced_ids", [])) + list(result["token_ids"]),
-                                   handles, turn)
+            return self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
+                                   list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
         except chat_replay.STORE_ERRORS as error:
             print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
                   file=sys.stderr, flush=True)
@@ -2032,7 +2036,7 @@ class Frontend:
         plan = self.plan(model, body, None)
         return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
 
-    def plan(self, model, body, headers, scope=None):
+    def plan(self, model, body, headers, scope=None, member=None):
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
@@ -2095,9 +2099,10 @@ class Frontend:
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
-        replay = self.replay_render(model, messages, tools, kwargs, scope) if scope is not None and session is None else None
+        contexts = chat_replay.context_digests(model.id, tools, kwargs, messages) if scope is not None and session is None else None
+        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts) if contexts is not None else None
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, (replay["text"], replay["ids"]) if replay is not None else None)
-        plan.update(replay=replay, scope=scope if session is None else None)
+        plan.update(replay=replay, scope=scope if contexts is not None else None, member=member, replay_context=contexts[-1] if contexts else None)
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
         trace.update(seen_tokens=seen, seen_of=seen_of)
@@ -2488,7 +2493,7 @@ class Frontend:
             scope = self.scope_of(public, request.headers) if public is not None else None
             model, bulk = await self.resolve_model(body.get("model"), public, scope or OWN_SCOPE)
             await self.admit_model(model, public, request.headers)
-            plan = self.plan(model, body, None if public is not None else request.headers, scope)
+            plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers))
             if "engine_body" in plan:
                 plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public)
         except RequestError as error:
@@ -2552,11 +2557,11 @@ class Frontend:
             raise RequestError(400, "invalid_request", "the request body must be a JSON object")
         return body
 
-    def responses_input(self, translated, scope):
+    def responses_input(self, translated, scope, member):
         previous = []
         if translated["previous_response_id"] is not None:
             try:
-                previous = self.replay.response_messages(scope, translated["previous_response_id"])
+                previous = self.replay.response_messages(scope, member, translated["previous_response_id"])
             except chat_replay.STORE_ERRORS as error:
                 print(json.dumps({"event": "replay_store_failed", "action": "previous_response", "error": f"{type(error).__name__}: {error}"}),
                       file=sys.stderr, flush=True)
@@ -2577,7 +2582,7 @@ class Frontend:
         if shape == "messages":
             translated = chat_shapes.messages_request(body)
         else:
-            translated = self.responses_input(chat_shapes.responses_request(body), scope)
+            translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers))
         model, bulk = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
@@ -2605,7 +2610,9 @@ class Frontend:
         effort = chat_shapes.effort_for(model.reasoning_effort, translated["effort"], translated["thinking"], translated["budget"])
         if effort is not None:
             kwargs.update(model.reasoning_effort[effort])
-        replay = self.replay_render(model, messages, tools, kwargs, scope)
+        member = self.member_of(key, headers)
+        contexts = chat_replay.context_digests(model.id, tools, kwargs, messages)
+        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts)
         messages = without_handles(messages)
         text, ids = (replay["text"], replay["ids"]) if replay is not None else model.render(messages, tools, kwargs)
         forced_ids = []
@@ -2620,7 +2627,7 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key)
-        plan.update(scope=scope, replay=replay, forced_ids=forced_ids, gate=(scope, self.member_of(key, headers)),
+        plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})})
         if key is not None:
             plan["public_key"] = key
@@ -2722,7 +2729,7 @@ class Frontend:
         self.replay_record(model, plan, assistant, result, message_handles(assistant), turn.turn)
         if shape == "responses" and translated["store"]:
             own = translated["messages"][translated["stored_from"]:] + [assistant]
-            self.store_safely(plan, self.replay.put_response, plan["scope"], turn.id, translated["previous_response_id"], model.id, own)
+            self.store_safely(plan, self.replay.put_response, plan["scope"], plan.get("member"), turn.id, translated["previous_response_id"], model.id, own)
         print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
               file=sys.stderr, flush=True)
         self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
@@ -2754,7 +2761,8 @@ class Frontend:
             elif isinstance(body.get("messages"), list):
                 messages = normalize_messages(body["messages"])
                 tools = body.get("tools") or None
-                replay = self.replay_render(model, messages, tools, {}, scope)
+                replay = self.replay_render(model, messages, tools, {}, scope, self.member_of(key, request.headers),
+                                            chat_replay.context_digests(model.id, tools, {}, messages))
                 ids = replay["ids"] if replay is not None else model.render(without_handles(messages), tools, {})[1]
             else:
                 raise RequestError(400, "invalid_request", "send text, or messages (and tools) to render with the chat template")
