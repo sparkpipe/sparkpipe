@@ -50,6 +50,9 @@ case "\${1:-}" in
   start)
     run_id="\$(lane_run_id "\${2:-}")" || exit 2
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
+    pack="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' config/adapter.json)" || exit 2
+    head -c 64 "\$pack.sha256" > packs/pack.sha256.tmp && mv -f packs/pack.sha256.tmp packs/pack.sha256 || exit 2
+    python3 bin/weightd_spine_budget.py "\$pack" > spine_budget.tmp && mv -f spine_budget.tmp spine_budget || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
     systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 ${STAGE_EXPERT_POOL_CAP_BYTES:+-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_CAP_BYTES }-E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
   ready)
