@@ -187,7 +187,8 @@ static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16,
 template<
 	uint32_t THREADS,
 	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT,
-	bool TABLE = false>
+	bool TABLE = false,
+	LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmExtractRopePerHeadKernel(
 	const uint16_t *__restrict__ input_bf16,
@@ -225,7 +226,7 @@ void LmExtractRopePerHeadKernel(
 		else
 			angle = position * __powf(
 				theta,-2.0f * (float)index / (float)rope_dimension);
-		LmRopePair(&low,&high,angle);
+		LmRopePairRounded<ROUNDING>(&low,&high,angle);
 		output_bf16[output_base + low_offset] = LmFloatToBf16(low);
 		output_bf16[output_base + high_offset] = LmFloatToBf16(high);
 	}

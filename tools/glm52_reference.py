@@ -23,8 +23,10 @@ pack decodes it, and
              bf16(bf16(x r) w)
   MLA        q_a -> norm -> q_b (192 nope + 64 rope per head), kv_a -> the
              512 latent norm plus the 64-wide rope key; interleaved rope at
-             theta 8e6 on the pairs (2i, 2i+1), each rotated value rounded
-             once; the query absorbed per head through kv_b's key rows
+             theta 8e6 on the pairs (2i, 2i+1), cos and sin rounded to bf16
+             and each product and the sum rounded, as transformers'
+             glm_moe_dsa and axk2 rotate their BF16 q_rot and k_rot; the
+             query absorbed per head through kv_b's key rows
              (rounded); softmax((q_l . k_l + q_r . k_r) / 16) over every
              earlier position (below 2,048 keys the indexer keeps them all)
              in the publishers' flash form: weights w = exp(s - m) in FP32
@@ -161,11 +163,11 @@ class Reference:
 
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float32) * self.inv_freq[None, :]
-        cos, sin = np.cos(angles)[:, None, :], np.sin(angles)[:, None, :]
+        cos, sin = base.bf16(np.cos(angles))[:, None, :], base.bf16(np.sin(angles))[:, None, :]
         low, high = values[..., 0::2], values[..., 1::2]
         rotated = np.empty_like(values)
-        rotated[..., 0::2] = base.bf16(low * cos - high * sin)
-        rotated[..., 1::2] = base.bf16(low * sin + high * cos)
+        rotated[..., 0::2] = base.bf16(base.bf16(low * cos) - base.bf16(high * sin))
+        rotated[..., 1::2] = base.bf16(base.bf16(high * cos) + base.bf16(low * sin))
         return rotated
 
     def attention_weights(self, a):

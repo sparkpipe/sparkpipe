@@ -27,6 +27,25 @@ enum LmRopeRounding
 	LM_ROPE_BF16_TRIG = 2
 };
 
+template<LmRopeRounding ROUNDING>
+static __device__ __forceinline__ void LmRopePairRounded(float *low, float *high, float angle, float scale = 1.0f)
+{
+	if constexpr ( ROUNDING == LM_ROPE_ROUNDED_TERMS )
+	{
+		const float c = SparkMathRopeCos(angle,scale),s = SparkMathRopeSin(angle,scale),a = *low,b = *high;
+		*low = SparkMathRopeRoundedTerm(a,-b,c,s);
+		*high = SparkMathRopeRoundedTerm(b,a,c,s);
+	}
+	else if constexpr ( ROUNDING == LM_ROPE_BF16_TRIG )
+	{
+		const float c = SparkMathRoundBf16(SparkMathRopeCos(angle,scale)),s = SparkMathRoundBf16(SparkMathRopeSin(angle,scale)),a = *low,b = *high;
+		*low = SparkMathRopeLow(a,b,c,s);
+		*high = SparkMathRopeHigh(a,b,c,s);
+	}
+	else
+		LmRopePair(low,high,angle,scale);
+}
+
 template<LmRopePairing PAIRING, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle, float scale = 1.0f)
 {
@@ -36,25 +55,12 @@ static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_
 	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
 	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
 	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
-	if constexpr ( ROUNDING == LM_ROPE_ROUNDED_TERMS )
-	{
-		const float c = SparkMathRopeCos(angle,scale),s = SparkMathRopeSin(angle,scale),a = low,b = high;
-		low = SparkMathRopeRoundedTerm(a,-b,c,s);
-		high = SparkMathRopeRoundedTerm(b,a,c,s);
-	}
-	else if constexpr ( ROUNDING == LM_ROPE_BF16_TRIG )
-	{
-		const float c = SparkMathRoundBf16(SparkMathRopeCos(angle,scale)),s = SparkMathRoundBf16(SparkMathRopeSin(angle,scale)),a = low,b = high;
-		low = SparkMathRopeLow(a,b,c,s);
-		high = SparkMathRopeHigh(a,b,c,s);
-	}
-	else
-		LmRopePair(&low,&high,angle,scale);
+	LmRopePairRounded<ROUNDING>(&low,&high,angle,scale);
 	rows_bf16[base + low_offset] = LmFloatToBf16(low);
 	rows_bf16[base + high_offset] = LmFloatToBf16(high);
 }
 
-template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, bool TABLE = false>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, bool TABLE = false, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, const float *__restrict__ inv_freq_table = 0)
 {
@@ -63,13 +69,13 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 	float position = (float)positions[blockIdx.x];
 	for (index = threadIdx.x; index < half; index += THREADS)
 		if constexpr ( TABLE )
-			LmRopeRotate<PAIRING>(rows_bf16,base,index,half,position * inv_freq_table[index]);
+			LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,position * inv_freq_table[index]);
 		else
-			LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+			LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 				position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
 }
 
-template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
 {
@@ -81,7 +87,7 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 	base = (((uint64_t)row * head_count) + head) * head_dimension + rope_offset;
 	position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
-		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+		LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
 }
 

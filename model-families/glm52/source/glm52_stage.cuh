@@ -138,6 +138,7 @@ struct Glm52Dimensions : GlmDefaults
 	static uint32_t FullIndexer(uint32_t layer) { return SparkGlm52StagePackLayerHasFullIndexer(layer); }
 	static const SparkGlm52StagePackGeometry *PackGeometry(void) { return SparkGlm52StagePackGeometryGlm52(); }
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
+	static constexpr bool kRopeRoundedTerms = true;
 };
 
 static_assert(LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS == GLM_SPLIT_PARTITIONS, "split-partials sizing matches the kernel's partition cap");
@@ -396,9 +397,9 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 	position = (float)positions[row];
 	for ( index = threadIdx.x; index < half; index += GLM_THREADS )
 		if constexpr ( S::kRopeTable )
-			LmRopeRotate<LM_ROPE_INTERLEAVED>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half, position * rope_table[index]);
+			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half, position * rope_table[index]);
 		else
-			LmRopeRotate<LM_ROPE_INTERLEAVED>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half,
+			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half,
 				position * __powf(theta, -2.0f * (float)index / (float)rope_dimension));
 }
 
@@ -550,7 +551,7 @@ static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, 
 		return status;
 	LM_LAUNCH((LmLayerNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kIndexDim + 8u) * sizeof(float), stream,
 		b->index_key_bf16, b->weights->index_norm_weight, b->weights->index_norm_bias, b->index_key_bf16, S::kIndexDim, S::kIndexDim, S::kIndexEpsilon);
-	LM_LAUNCH((LmRopeKernel<GLM_THREADS,S::kIndexPairing,S::kRopeTable>), rows, GLM_THREADS, 0, stream,
+	LM_LAUNCH((LmRopeKernel<GLM_THREADS,S::kIndexPairing,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), rows, GLM_THREADS, 0, stream,
 		b->index_key_bf16, b->positions, S::kIndexDim, 0u, S::kRope, S::kRopeTheta, b->rope_table);
 	LM_LAUNCH((LmKvShardStoreKernel<GlmIndexKv<S>,GLM_THREADS>), rows, GLM_THREADS, 0, stream,
 		b->index_shard, b->index_key_bf16, b->sequence_of_row, b->positions, rows, S::kIndexDim);
@@ -566,10 +567,10 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( S::kRopeTable )
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, S::kRope, S::kRopeTheta, b->rope_table, 1.0f, 0u);
 	else
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, 0u, S::kRope, S::kRopeTheta);
 	return GlmLaunched();
 }
@@ -681,7 +682,7 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 		sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 		b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
 			b->attn_heads * S::kLatent * S::kNope, b->query_latent_bf16, b->attn_heads, rows, stream) != cudaSuccess )

@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = {
-    ("model-families/glm52/source/glm52_stage.cuh", "GlmDefaults"): ("kExpertCodec", "kLinearCodec", "kIndexPairing", "kNormRoundFirst"),
+    ("model-families/glm52/source/glm52_stage.cuh", "GlmDefaults"): ("kExpertCodec", "kLinearCodec", "kIndexPairing", "kNormRoundFirst", "kRopeRoundedTerms"),
     ("model-families/ling/include/sparkpipe/spark_ling_family.h", "LingDefaults"): ("kAttention", "kNormEpsilon", "kKdaDoubledBeta", "kNormRoundFirst"),
     ("model-families/gemma4/include/sparkpipe/spark_gemma4_family.h", "GemmaDefaults"): ("kNormEpsilon", "kPostEpsilon", "kQkNormWeighted", "kQueryMultiply",
         "kValueNorm", "kAttentionScale", "kFullRope", "kGeluMlp", "kLayerScalar", "kPreNorm", "kSigmoidRouter", "kRoutedScale", "kRouterFloat", "kNormRoundFirst"),

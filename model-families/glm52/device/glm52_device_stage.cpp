@@ -110,6 +110,7 @@ struct Glm52Device
 		attention->latent = kLatent;
 		attention->value_dimension = kValueDim;
 		attention->rope_theta = G::kRopeTheta;
+		attention->rope_rounding = G::kRopeRoundedTerms ? SPARK_ROPE_ROUNDING_TERMS : SPARK_ROPE_ROUNDING_FP32;
 		attention->epsilon = kEpsilon;
 		attention->scale = G::kQkScale;
 		attention->query_lora = kQueryLora;
@@ -441,6 +442,7 @@ struct Glm53FullDevice
 		static constexpr uint32_t kDenseInter = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION;
 		static constexpr float kRmsEpsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
 		static constexpr bool kNormRoundFirst = true;
+		static constexpr bool kRopeRoundedTerms = true;
 		static constexpr float kRopeTheta = SPARK_GLM52_MODEL_ROPE_THETA;
 		static constexpr float kQkScale = SPARK_GLM52_MODEL_QK_SCALE;
 		static constexpr float kRoutedScale = SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
