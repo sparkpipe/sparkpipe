@@ -14,10 +14,8 @@
 #error "GLM53_FULL_EXPERT_CODEC must name the routed-expert weight codec of the packs this build serves"
 #endif
 
-struct Glm53FullGeometry : Glm52Dimensions
+struct Glm53FullGeometry : Glm52Dimensions<GLM53_FULL_LINEAR_CODEC, GLM53_FULL_EXPERT_CODEC>
 {
-	static constexpr uint32_t kLinearCodec = GLM53_FULL_LINEAR_CODEC;
-	static constexpr uint32_t kExpertCodec = GLM53_FULL_EXPERT_CODEC;
 	static constexpr uint32_t kTpDegree = SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE;
 	static constexpr uint32_t kIndexLayers = SPARK_GLM53_FULL_TP16_STAGE_INDEX_LAYERS;
 	static const char *Tag(void) { return "sparkpipe_glm53_full"; }

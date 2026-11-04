@@ -104,8 +104,11 @@ struct GlmShape : G
 		"a geometry that turns YaRN on chooses its betas and original positions");
 };
 
+template<uint32_t LINEAR_CODEC, uint32_t EXPERT_CODEC>
 struct Glm52Dimensions : GlmDefaults
 {
+	static constexpr uint32_t kLinearCodec = LINEAR_CODEC;
+	static constexpr uint32_t kExpertCodec = EXPERT_CODEC;
 	static constexpr uint32_t kHidden = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
 	static constexpr uint32_t kLayers = SPARK_GLM52_MODEL_LAYER_COUNT;
 	static constexpr uint32_t kFirstRouted = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;

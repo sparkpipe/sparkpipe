@@ -5,10 +5,8 @@
 #include "sparkpipe/spark_glm53_full_tp16_stage_model.h"
 #include "glm52_stage.cuh"
 
-struct ProbeGeometry : Glm52Dimensions
+struct ProbeGeometry : Glm52Dimensions<SPARK_WEIGHT_CODEC_FP8_E4M3, SPARK_WEIGHT_CODEC_FP8_E4M3>
 {
-	static constexpr uint32_t kLinearCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
-	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_FP8_E4M3;
 	static constexpr uint32_t kTpDegree = SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE;
 	static constexpr uint32_t kIndexLayers = SPARK_GLM53_FULL_TP16_STAGE_INDEX_LAYERS;
 	static const char *Tag(void) { return "glm_attach_kv_probe"; }
