@@ -553,6 +553,60 @@ class Book:
         return stamp_time(order["expires"]) if order.get("expires") else stamp_time(order["created"]) + timedelta(seconds=PENDING_SECONDS)
 
 
+def private_folder(path):
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    os.chmod(path, 0o700)
+
+
+def private_append(path):
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(descriptor, 0o600)
+    return os.fdopen(descriptor, "a+b")
+
+
+def trim(handle, path):
+    end = handle.seek(0, os.SEEK_END)
+    if not end:
+        return
+    handle.seek(end - 1)
+    if handle.read(1) == b"\n":
+        return
+    keep = end - 1
+    while keep > 0:
+        start = max(0, keep - 65536)
+        handle.seek(start)
+        found = handle.read(keep - start).rfind(b"\n")
+        if found >= 0:
+            keep = start + found + 1
+            break
+        keep = start
+    handle.truncate(keep)
+    log(f"{path}: cut a torn last line of {end - keep} bytes before appending")
+
+
+def parsed(lines, path):
+    found = []
+    for raw in lines:
+        try:
+            item = json.loads(raw)
+        except ValueError:
+            item = None
+        if isinstance(item, dict):
+            found.append(item)
+        else:
+            log(f"{path}: skipped a line that does not parse")
+    return found
+
+
+def complete_lines(path):
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        return []
+    return parsed(data[:data.rfind(b"\n") + 1].splitlines(), path)
+
+
 class Records:
     def __init__(self, path):
         self.path = path
@@ -610,7 +664,7 @@ class Journal:
         self.lock = threading.Lock()
         self.offsets = {}
         self.once = set()
-        os.makedirs(folder, exist_ok=True)
+        private_folder(folder)
         with self.lock:
             for name in self.names():
                 self.catch_up(name)
@@ -622,10 +676,9 @@ class Journal:
         handle.seek(self.offsets.get(name, 0))
         data = handle.read()
         done = data.rfind(b"\n") + 1
-        for raw in data[:done].splitlines():
-            found = json.loads(raw).get("once")
-            if found:
-                self.once.add(found)
+        for item in parsed(data[:done].splitlines(), os.path.join(self.folder, name)):
+            if item.get("once"):
+                self.once.add(item["once"])
         self.offsets[name] = self.offsets.get(name, 0) + done
 
     def catch_up(self, name):
@@ -639,9 +692,11 @@ class Journal:
     def add(self, item, day=None):
         name = (day or item["now"][:10]) + ".jsonl"
         raw = (json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
-        with self.lock, open(os.path.join(self.folder, name), "a+b") as handle:
+        path = os.path.join(self.folder, name)
+        with self.lock, private_append(path) as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             self.read_new(name, handle)
+            trim(handle, path)
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
@@ -659,11 +714,7 @@ class Journal:
     def items(self, last=None):
         found = []
         for name in self.names()[-last if last else 0:]:
-            try:
-                with open(os.path.join(self.folder, name), encoding="utf-8") as handle:
-                    found += [json.loads(raw) for raw in handle if raw.endswith("\n")]
-            except FileNotFoundError:
-                pass
+            found += complete_lines(os.path.join(self.folder, name))
         return found
 
     def prune(self, now):
@@ -680,17 +731,13 @@ class Usage:
         self.folder = folder
         self.lock = threading.Lock()
         self.ids = collections.OrderedDict()
-        os.makedirs(folder, exist_ok=True)
+        private_folder(folder)
 
     def path(self, account, day):
         return os.path.join(self.folder, account, day + ".jsonl")
 
     def lines(self, account, day):
-        try:
-            with open(self.path(account, day), encoding="utf-8") as handle:
-                return [json.loads(raw) for raw in handle if raw.endswith("\n")]
-        except FileNotFoundError:
-            return []
+        return complete_lines(self.path(account, day))
 
     def known(self, account, day):
         key = (account, day)
@@ -710,9 +757,10 @@ class Usage:
                 unique = list({record["request"]: record for record in fresh}.values())
                 if not unique:
                     continue
-                os.makedirs(os.path.join(self.folder, account), exist_ok=True)
-                with open(self.path(account, day), "a", encoding="utf-8") as handle:
-                    handle.write("".join(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in unique))
+                private_folder(os.path.join(self.folder, account))
+                with private_append(self.path(account, day)) as handle:
+                    trim(handle, self.path(account, day))
+                    handle.write("".join(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in unique).encode())
                     handle.flush()
                     os.fsync(handle.fileno())
                 seen.update(record["request"] for record in unique)

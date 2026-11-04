@@ -52,6 +52,7 @@ The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. I
 - `requests/<account>/<day>.jsonl`: the usage records the hub reports, one line per request, without prompts or replies, deleted a year after their day (`docs/FLEET_BOOKINGS.md`).
 - `notices/<day>.jsonl` and `deliveries/<day>.jsonl`: the notices sent to accounts and the outcome of each webhook delivery, deleted 30 days after their day.
 - `webhooks.json` (mode 600): each account's webhooks with their signing secrets, and its email subscription without the address, until the account deletes them.
+- `notices/`, `deliveries/` and `requests/` are folders of mode 700 with files of mode 600, and both units set `UMask=0077`, so every file the service creates is its own. A line of these files that does not parse is skipped and logged, and a torn last line (from a full disk or a power cut) is cut back to the last newline before the next record is appended, so the service always starts. The ledger is different: a torn or broken line stops the service until an operator looks.
 
 ## Mail
 

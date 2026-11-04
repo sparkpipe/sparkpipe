@@ -258,6 +258,9 @@ def check_units(failures):
         failures.append("Apache does not map https://sparkpipe.ai/availability.txt to the live service")
     if 'ProxyPass "http://127.0.0.1:18090/" retry=0 timeout=900 flushpackets=on upgrade=websocket' not in conf or 'ProxyPass "http://127.0.0.1:18091/" retry=0 timeout=900 flushpackets=on upgrade=websocket' not in conf:
         failures.append("Apache does not pass the WebSocket upgrade of /v1/responses through to the live service and the sandbox")
+    for unit in ("sparkpipe-pay.service", "sparkpipe-pay-sandbox.service"):
+        if "\nUMask=0077\n" not in (ROOT / "deployment" / "vps" / unit).read_text():
+            failures.append(f"{unit} does not keep the service's files private with UMask=0077")
 
 
 def live_flows(failures, work):
