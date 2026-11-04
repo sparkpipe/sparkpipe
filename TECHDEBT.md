@@ -993,8 +993,6 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     node); the BF16 serving path is staged on `fidelity/glm53-bf16`.
   - GLM 5.3 Flash serves FP8 (21 GB per rank) though its BF16 pack
     (`glm53flash.bf16.tp16`, 38 GB per rank) is on every node; the same branch.
-  - Qwen 3.8 Flash serves NVFP4 (8.9 GB per rank) from a BF16 source; no BF16
-    TP16 pack exists yet (about 32 GB per rank).
   - Qwen 3.8 Max serves a vetted NVFP4 build because the vendor's FP8 experts
     (about 170 GB per rank) do not fit one fleet; it moves to FP8 once two
     fleets serve it as two pipeline stages.
