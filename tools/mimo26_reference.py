@@ -289,7 +289,7 @@ class Reference:
                 np.add.at(output, tokens, contribution)
         return bf16(output)
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         spans, first = [], 0
         for tokens in sequences:
             spans.append((first, len(tokens)))
@@ -301,12 +301,16 @@ class Reference:
             started = time.time()
             p = f"model.layers.{layer}."
             residual = bf16(residual + self.attention(layer, rms(residual, self.checkpoint.bf16(p + "input_layernorm.weight"), self.epsilon), spans))
+            if dump is not None:
+                dump[f"attn{layer:02d}"] = residual.copy()
             normed = rms(residual, self.checkpoint.bf16(p + "post_attention_layernorm.weight"), self.epsilon)
             if self.config["moe_layer_freq"][layer]:
                 mlp = self.moe(layer, normed)
             else:
                 mlp = self.dense(layer, normed)
             residual = bf16(residual + mlp)
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = residual.copy()
             print(f"layer {layer} {'swa' if self.swa(layer) else 'full'} done in {time.time() - started:.1f}s", file=sys.stderr, flush=True)
         return rms(residual, self.checkpoint.bf16("model.norm.weight"), self.epsilon), spans
 
@@ -408,7 +412,11 @@ def teacher(args):
     for label in variants:
         REVERSED = label != "a"
         device.select(label)
-        normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [count for _, count in spans]), **dump)
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
                 for row in range(0, count - 1, 128):
@@ -433,6 +441,7 @@ def main():
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/mimo26/chat_template.json"))
     parser.add_argument("--answers-out")
     parser.add_argument("--threads", type=int, default=6)
+    parser.add_argument("--dump", help="teacher: write every layer's post-attention and post-MLP residual for all rows to DUMP.<variant>.npz")
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
