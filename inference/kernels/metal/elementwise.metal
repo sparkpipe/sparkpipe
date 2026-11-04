@@ -287,6 +287,47 @@ kernel void spark_route_combine_weighted_shared(constant SparkRouteParams &p [[b
 }
 
 template <uint SCORE>
+static inline void SparkRouteScores(constant SparkRouteParams &p, device const float *logits, device const float *bias, threadgroup float *score,
+	threadgroup float *selection, uint row, uint tid, uint threads)
+{
+	for ( uint expert = tid; expert < p.experts; expert += threads )
+	{
+		const float logit = logits[(ulong)row * p.logit_stride + expert];
+		const float rounded = p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit;
+		const float value = SCORE == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SparkMathSqrtSoftplus(rounded) : SparkMathSigmoid(rounded);
+		score[expert] = value;
+		selection[expert] = value + bias[expert];
+	}
+}
+
+static inline void SparkRouteScoredWeights(constant SparkRouteParams &p, threadgroup const float *score, threadgroup const uint *chosen,
+	device uint *experts, device float *weights, uint row)
+{
+	float total = 0.0f;
+	if ( p.tree_sum != 0u )
+	{
+		float tree[SPARK_ROUTE_MAX_TOP_K];
+		uint width = 1u;
+		while ( width < p.top_k )
+			width <<= 1u;
+		for ( uint pick = 0u; pick < width; pick++ )
+			tree[pick] = pick < p.top_k ? score[chosen[pick]] : 0.0f;
+		for ( uint step = width / 2u; step > 0u; step >>= 1u )
+			for ( uint pick = 0u; pick < step; pick++ )
+				tree[pick] = tree[pick] + tree[pick + step];
+		total = tree[0];
+	}
+	else
+		for ( uint pick = 0u; pick < p.top_k; pick++ )
+			total += score[chosen[pick]];
+	for ( uint pick = 0u; pick < p.top_k; pick++ )
+	{
+		experts[(ulong)row * p.top_k + pick] = chosen[pick];
+		weights[(ulong)row * p.top_k + pick] = score[chosen[pick]] / (total + 1e-20f) * p.scale;
+	}
+}
+
+template <uint SCORE>
 kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
@@ -299,14 +340,7 @@ kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], 
 	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
 	threadgroup float group_score[SPARK_ROUTE_MAX_GROUPS];
 	threadgroup uint group_open[SPARK_ROUTE_MAX_GROUPS];
-	for ( uint expert = tid; expert < p.experts; expert += threads )
-	{
-		const float logit = logits[(ulong)row * p.logit_stride + expert];
-		const float rounded = p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit;
-		const float value = SCORE == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SparkMathSqrtSoftplus(rounded) : SparkMathSigmoid(rounded);
-		score[expert] = value;
-		selection[expert] = value + bias[expert];
-	}
+	SparkRouteScores<SCORE>(p, logits, bias, score, selection, row, tid, threads);
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( p.groups > 1u )
 	{
@@ -385,30 +419,25 @@ kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], 
 		}
 		threadgroup_barrier(mem_flags::mem_threadgroup);
 	}
-	if ( tid != 0u )
-		return;
-	float total = 0.0f;
-	if ( p.tree_sum != 0u )
-	{
-		float tree[SPARK_ROUTE_MAX_TOP_K];
-		uint width = 1u;
-		while ( width < p.top_k )
-			width <<= 1u;
-		for ( uint pick = 0u; pick < width; pick++ )
-			tree[pick] = pick < p.top_k ? score[chosen[pick]] : 0.0f;
-		for ( uint step = width / 2u; step > 0u; step >>= 1u )
-			for ( uint pick = 0u; pick < step; pick++ )
-				tree[pick] = tree[pick] + tree[pick + step];
-		total = tree[0];
-	}
-	else
-		for ( uint pick = 0u; pick < p.top_k; pick++ )
-			total += score[chosen[pick]];
-	for ( uint pick = 0u; pick < p.top_k; pick++ )
-	{
-		experts[(ulong)row * p.top_k + pick] = chosen[pick];
-		weights[(ulong)row * p.top_k + pick] = score[chosen[pick]] / (total + 1e-20f) * p.scale;
-	}
+	if ( tid == 0u )
+		SparkRouteScoredWeights(p, score, chosen, experts, weights, row);
+}
+
+template <uint SCORE>
+kernel void spark_route_scored_pinned(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
+	device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
+	device const uint *pinned [[buffer(5)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint threads [[threads_per_threadgroup]])
+{
+	threadgroup float score[SPARK_ROUTE_MAX_EXPERTS];
+	threadgroup float selection[SPARK_ROUTE_MAX_EXPERTS];
+	threadgroup uint chosen[SPARK_ROUTE_MAX_TOP_K];
+	SparkRouteScores<SCORE>(p, logits, bias, score, selection, row, tid, threads);
+	if ( tid < p.top_k )
+		chosen[tid] = pinned[(ulong)row * p.top_k + tid];
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( tid == 0u )
+		SparkRouteScoredWeights(p, score, chosen, experts, weights, row);
 }
 
 #define SPARK_ROUTE_SCORED_INSTANCE(name, score) \
@@ -420,6 +449,15 @@ kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], 
 
 SPARK_ROUTE_SCORED_INSTANCE("spark_route_sigmoid_topk", SPARK_ROUTE_SCORE_SIGMOID)
 SPARK_ROUTE_SCORED_INSTANCE("spark_route_sqrt_softplus_topk", SPARK_ROUTE_SCORE_SQRT_SOFTPLUS)
+
+#define SPARK_ROUTE_PINNED_INSTANCE(name, score) \
+	template [[host_name(name)]] kernel void spark_route_scored_pinned<score>(constant SparkRouteParams &p [[buffer(0)]], \
+		device const float *logits [[buffer(1)]], device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], \
+		device float *weights [[buffer(4)]], device const uint *pinned [[buffer(5)]], uint row [[threadgroup_position_in_grid]], \
+		uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]]);
+
+SPARK_ROUTE_PINNED_INSTANCE("spark_route_sigmoid_pinned", SPARK_ROUTE_SCORE_SIGMOID)
+SPARK_ROUTE_PINNED_INSTANCE("spark_route_sqrt_softplus_pinned", SPARK_ROUTE_SCORE_SQRT_SOFTPLUS)
 
 kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const uint *targets [[buffer(2)]], device float *result [[buffer(3)]], device uint *argmax [[buffer(4)]],

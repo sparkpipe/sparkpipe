@@ -324,7 +324,7 @@ struct LingDevice
 		SparkStatus status = SparkDeviceGatedFfn(&state->stage, frame.queue, G::kSharedRows, SPARK_GATED_SILU_CLAMP, shared > 0.0f ? shared : INFINITY,
 			&frame.t, &layer.shared, &state->ffn_scratch, state->normed, state->shared_out);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceSigmoidExperts(&state->stage, frame.queue, &shape, &frame.t, &layer.experts, &state->experts, state->normed,
+			status = SparkDeviceSigmoidExperts(&state->stage, frame.queue, &shape, &frame.t, index, &layer.experts, &state->experts, state->normed,
 				state->shared_out, state->partial);
 		return status;
 	}

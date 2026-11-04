@@ -1337,12 +1337,13 @@ SparkStatus SparkDeviceSigmoidExpertsBind(SparkDeviceStage *stage, const SparkSt
 }
 
 SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape,
-	const SparkDeviceStepTensors *tensors, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
+	const SparkDeviceStepTensors *tensors, uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
 	SparkTensor shared, SparkTensor output)
 {
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows;
 	SparkGemvParams router;
 	SparkRouteParams route;
+	SparkTensor pinned;
 	SparkStatus status;
 	memset(&router,0,sizeof(router));
 	router.rows = rows;
@@ -1362,8 +1363,12 @@ SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue 
 	route.round_logits = shape->round_logits;
 	route.groups = shape->groups;
 	route.topk_groups = shape->topk_groups;
+	if ( status == SPARK_STATUS_OK && tensors->route_override_width != 0u )
+		status = ExpertsOverride(stage,shape,tensors,layer,&pinned);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsRouteSigmoid(stage->ops,queue,scratch->logits,weights->bias,scratch->experts,scratch->weights,&route);
+		status = tensors->route_override_width != 0u ?
+			SparkOpsRouteSigmoidPinned(stage->ops,queue,scratch->logits,weights->bias,pinned,scratch->experts,scratch->weights,&route) :
+			SparkOpsRouteSigmoid(stage->ops,queue,scratch->logits,weights->bias,scratch->experts,scratch->weights,&route);
 	if ( status == SPARK_STATUS_OK )
 		status = ExpertsRoutedFfn(stage,queue,shape,rows,weights,scratch,normed,&route);
 	if ( status == SPARK_STATUS_OK )

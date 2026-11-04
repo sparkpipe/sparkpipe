@@ -387,7 +387,7 @@ SparkStatus SparkDeviceRoutedFfnQdq(SparkDeviceStage *stage, SparkDeviceQueue *q
 SparkStatus SparkDeviceSigmoidExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
 SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape,
-	const SparkDeviceStepTensors *tensors, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
+	const SparkDeviceStepTensors *tensors, uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
 	SparkTensor shared, SparkTensor output);
 SparkStatus SparkDeviceBranchNorm(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor first,
 	const SparkTensor *second, const SparkTensor *first_weight, const SparkTensor *second_weight, SparkTensor output_weight, const SparkTensor *scalar);

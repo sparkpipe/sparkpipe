@@ -369,7 +369,7 @@ struct GemmaDevice
 	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const Layer &layer)
 	{
 		const SparkDeviceExpertsShape experts = ExpertsOf(state, layer);
-		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &experts, &frame.t, &layer.experts, &state->experts, state->normed, state->partial,
+		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &experts, &frame.t, layer.index, &layer.experts, &state->experts, state->normed, state->partial,
 			state->expert_out);
 	}
 

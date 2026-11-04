@@ -134,7 +134,9 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_poly_norm_mul",
 	"spark_differential_gate",
 	"spark_hc_site_clamped",
-	"spark_route_combine_weighted_shared"
+	"spark_route_combine_weighted_shared",
+	"spark_route_sigmoid_pinned",
+	"spark_route_sqrt_softplus_pinned"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1334,11 +1336,12 @@ SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	return(OpsLaunch(ops,queue,SPARK_OPS_SIGMOID_GATE_ROWS,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
-SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
-	const SparkRouteParams *params)
+static SparkStatus OpsRouteScored(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, const SparkTensor *pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
 {
 	SparkRouteParams launch = *params;
-	SparkDeviceBinding bindings[4];
+	SparkDeviceBinding bindings[5];
+	SparkOpsKernel kernel;
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts ||
@@ -1355,16 +1358,35 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 		status = OpsNeed("route_sigmoid","experts",experts,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_sigmoid","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK && pinned != 0 )
+		status = OpsNeed("route_sigmoid","pinned experts",*pinned,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(bias,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(experts,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(weights,SPARK_DEVICE_BIND_WRITE);
+	if ( pinned != 0 )
+		bindings[4] = OpsBind(*pinned,SPARK_DEVICE_BIND_READ);
 	if ( params->score != SPARK_ROUTE_SCORE_SIGMOID && params->score != SPARK_ROUTE_SCORE_SQRT_SOFTPLUS )
 		return(OpsRefuse("route_sigmoid","the expert score is a sigmoid or the square root of a softplus"));
-	return(OpsLaunch(ops,queue,params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS : SPARK_OPS_ROUTE_SIGMOID,params->rows,1u,1u,256u,
-		&launch,sizeof(launch),bindings,4u));
+	if ( pinned != 0 )
+		kernel = params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS_PINNED : SPARK_OPS_ROUTE_SIGMOID_PINNED;
+	else
+		kernel = params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS : SPARK_OPS_ROUTE_SIGMOID;
+	return(OpsLaunch(ops,queue,kernel,params->rows,1u,1u,256u,&launch,sizeof(launch),bindings,pinned != 0 ? 5u : 4u));
+}
+
+SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
+	const SparkRouteParams *params)
+{
+	return(OpsRouteScored(ops,queue,logits,bias,0,experts,weights,params));
+}
+
+SparkStatus SparkOpsRouteSigmoidPinned(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
+{
+	return(OpsRouteScored(ops,queue,logits,bias,&pinned,experts,weights,params));
 }
 
 SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,

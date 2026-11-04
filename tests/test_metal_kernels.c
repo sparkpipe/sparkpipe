@@ -3561,6 +3561,79 @@ static void TestRouteGroups(uint32_t rows)
 	SparkDeviceFree(&weights);
 }
 
+static void TestRoutePinned(uint32_t rows)
+{
+	enum { EXPERTS = 256u, TOP = 8u };
+	SparkDeviceBuffer logits, bias, pinned, experts, weights;
+	float *lv = (float *)Shared(&logits,(uint64_t)rows * EXPERTS * 4u,"pinned route logits");
+	float *bv = (float *)Shared(&bias,EXPERTS * 4u,"pinned route bias");
+	uint32_t *pv = (uint32_t *)Shared(&pinned,(uint64_t)rows * TOP * 4u,"pinned route experts in");
+	uint32_t *ev = (uint32_t *)Shared(&experts,(uint64_t)rows * TOP * 4u,"pinned route experts out");
+	float *wv = (float *)Shared(&weights,(uint64_t)rows * TOP * 4u,"pinned route weights");
+	SparkRouteParams route;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, pick, expert;
+	for ( row = 0u; row < rows * EXPERTS; row++ )
+		lv[row] = (float)(Normal() * 2.0);
+	for ( row = 0u; row < EXPERTS; row++ )
+		bv[row] = (float)(Normal() * 0.05);
+	for ( row = 0u; row < rows; row++ )
+		for ( pick = 0u; pick < TOP; pick++ )
+			pv[row * TOP + pick] = (row * 37u + pick * 29u + 3u) % EXPERTS;
+	memset(&route,0,sizeof(route));
+	route.rows = rows;
+	route.experts = EXPERTS;
+	route.top_k = TOP;
+	route.width = 1u;
+	route.logit_stride = EXPERTS;
+	route.scale = 2.5f;
+	if ( Run(SparkOpsRouteSigmoidPinned(&ops,queue,Whole(&logits),Whole(&bias),Whole(&pinned),Whole(&experts),Whole(&weights),&route),"route_sigmoid pinned") )
+		for ( pass = 0u; pass < 2u; pass++ )
+		{
+			Check *check = pass == 0u ? &clean : &corrupted;
+			memset(check,0,sizeof(*check));
+			for ( row = 0u; row < rows; row++ )
+			{
+				double score[EXPERTS], selection[EXPERTS], total = 0.0;
+				uint32_t chosen[TOP];
+				for ( expert = 0u; expert < EXPERTS; expert++ )
+				{
+					score[expert] = Sigmoid(lv[(uint64_t)row * EXPERTS + expert]);
+					selection[expert] = score[expert] + bv[expert];
+				}
+				for ( pick = 0u; pick < TOP; pick++ )
+				{
+					uint32_t best = EXPERTS;
+					if ( pass == 0u )
+						best = pv[row * TOP + pick];
+					else
+					{
+						for ( expert = 0u; expert < EXPERTS; expert++ )
+							if ( best == EXPERTS || selection[expert] > selection[best] )
+								best = expert;
+						selection[best] = -INFINITY;
+					}
+					chosen[pick] = best;
+					total += score[best];
+				}
+				for ( pick = 0u; pick < TOP; pick++ )
+				{
+					const double weight = score[chosen[pick]] / (total + 1e-20) * 2.5;
+					Observe(check,(double)ev[row * TOP + pick],(double)chosen[pick],0.0);
+					Observe(check,wv[row * TOP + pick],weight,8.0 * FUNCTION_ERROR * weight);
+				}
+			}
+		}
+	snprintf(shape,sizeof(shape),"rows %u, 256 experts, top 8 pinned",rows);
+	Report("route_sigmoid_pinned",shape,&clean,&corrupted,"the pinned experts exactly, weights from their unbiased scores to 8*16 eps32 relative; the control is the router's own choice");
+	SparkDeviceFree(&logits);
+	SparkDeviceFree(&bias);
+	SparkDeviceFree(&pinned);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&weights);
+}
+
 static void TestRouteWide(uint32_t rows)
 {
 	enum { EXPERTS = 896u, TOP = 16u };
@@ -5807,6 +5880,7 @@ int main(int argc, char **argv)
 	TestSharedExpert(3u);
 	TestRouteGroups(5u);
 	TestRouteWide(3u);
+	TestRoutePinned(5u);
 	TestNgram(0u);
 	TestLinearRoutedNvfp4(2u,2560u,96u);
 	TestLinearRoutedNvfp4(2u,640u,160u);
