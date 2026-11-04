@@ -91,6 +91,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
+- **Pair-first sums are not bit-identical to the rank-order sum.** The pair-first reduce-scatter (K3's paired prefill waves, op 6) now keeps pair sums in fp32 (accuracy equal to the plain reduce-scatter), but adds pairs first, so the last BF16 bit of a few elements can differ from the rank-order sum the other algorithms use. That breaks the README invariant that switching algorithm never changes a result bit. Fix: make the pairwise fp32 order canonical for every sum algorithm (direct, reduce-scatter, all-reduce), a one-time ulp-level change on every model, or keep pair-first off where bit identity with other algorithms matters. Owner decision.
 - Left out on purpose (2026-10-02): decode communication is not overlapped
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
@@ -326,9 +327,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   1M prompt on one 16-node fleet cannot share it with decode. The drafter tap
   stream gets no hidden states for the deferred span, only for the waves
   after it, so a drafter that builds its context from taps drafts without
-  the span. The waves after the span (up to 2,048 tokens) lease the experts
-  of every layer from weightd one layer at a time with no read-ahead, about
-  36 s a wave at 1M context.
+  the span. The waves after the span (up to 2,048 tokens) took about 36 s a
+  wave at 1M context while every routed layer synchronized the stream, read
+  the router back and only then leased its experts. They now lease each
+  layer's experts ahead of the router, two layers deep, whenever two layers
+  fit the pool (`STAGE-LEASE-AHEAD`, docs/WEIGHTD_DESIGN.md), and a resident
+  K3 (every group present in a whole-arena pool, as #1725 makes it) takes no
+  lease and no per-layer synchronization. Neither has a fleet measurement
+  yet: compare the tail-wave time and the K3 1M answer time with main.
 - Kimi K3's prefill attention expands the values but keeps the keys latent
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
@@ -966,21 +972,34 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `source_bit`. `SparkSpeculationDrafterMix`
   (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
   a fallback source and has no production caller.
-- Speculation serves on Kimi K3, GLM 5.3 Full and DeepSeek V4.1 Flash, whose
+- Speculation serves on every model in the README model table, whose
   adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
-  - verify frames for GLM 5.3 Flash and the twelve other models, with GLM 5.3
-    Flash's recurrent state restored to the accepted row through the
-    binding's recurrent-state hook;
+  - verify frames for Motif 3 once it serves;
+  - MiMo V2.6 speculates from the request's own context only: its 3-layer MTP
+    head (F32 in the checkpoint) and the DFlash draft model it ships in
+    `dflash/` are not packed or wired as drafters;
+  - FP8 projections in verify frames above 16 rows run no faster than the
+    16-row launches they replaced (0.97-1.10x, `tools/exact_dense_rows_bench.cu`):
+    every 16-row block decodes the FP8 weights again, and that decode, not
+    DRAM, bounds the kernel. bf16 projections run 2-3x faster and MXFP8
+    1.1-2.3x. A skinny variant that decodes each weight tile once into shared
+    memory for all row blocks of a frame, keeping the per-row sums, would help
+    GLM 5.3 Full and A.X K2 long frames;
+  - Ling 3.0 Flash's checkpoint carries one MTP layer (`model.layers.42`); the
+    pack drops it, so Ling 3.0 verifies only context-lookup drafts;
   - graphs for verify frames that carry several sequences: the runner
     captures a graph for one row per sequence or for one sequence's verify
     frame (`StageRunnerGraphEligible` in `inference/runner/stage_runner.cu`),
     so shared verify frames run eager;
-  - multi-row verify numerics differ from a 1-row decode by the reordering
-    floor, so speculative output is judged against the floor like batched
-    output. Add the accuracy gate as excess over the floor for edit-style
-    requests, and show that plain prompts with no matches lose no speed
-    beyond noise.
+  - show that plain prompts with no matches lose no speed beyond noise on
+    every model that speculates; every verify-capable stage now reproduces
+    one-row decode bit for bit (`tests/test_gemma4_verify_frames.cu`,
+    `tests/test_ling_verify_frames.cu`, `tests/test_glm52_verify_frames.cu`,
+    `tests/test_hy4_verify_frames.cu`, `tests/test_qwen38_verify_frames.cu`,
+    `tests/test_mimo26_verify_frames.cu`, and the K3 and DeepSeek V4.1 Flash
+    tests), so speculative output is judged EXACT against output without
+    speculation.
 
 ## Packaging and provenance
 

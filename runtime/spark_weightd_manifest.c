@@ -373,3 +373,48 @@ SparkStatus SparkWeightdPackPoolPlan(const char *pack_path,uint64_t arena_bytes,
 	SparkWeightdManifestDestroy(&manifest);
 	SPARK_RETURN(status);
 }
+
+SparkStatus SparkWeightdManifestLayerChunks(const SparkWeightdManifest *manifest,uint64_t chunk_bytes,uint32_t first_layer,uint32_t layer_count,uint64_t *chunks)
+{
+	const SparkWeightdRange *range;
+	ChunkSpan *spans;
+	uint64_t next = 0u,first;
+	uint32_t i,count = 0u;
+	if ( chunks == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*chunks = 0u;
+	if ( manifest == 0 || chunk_bytes == 0u || layer_count == 0u || first_layer > (UINT32_MAX - layer_count) ||
+		(manifest->range_count != 0u && manifest->ranges == 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( manifest->range_count == 0u )
+		return(SPARK_STATUS_OK);
+	spans = calloc(manifest->range_count,sizeof(*spans));
+	if ( spans == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (i=0u; i<manifest->range_count; i++)
+	{
+		range = &manifest->ranges[i];
+		if ( range->layer < first_layer || range->layer - first_layer >= layer_count )
+			continue;
+		if ( range->bytes == 0u || range->bytes > (UINT64_MAX - range->offset) )
+		{
+			free(spans);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		spans[count].first = (range->offset / chunk_bytes);
+		spans[count].last = ((range->offset + range->bytes - 1u) / chunk_bytes);
+		count++;
+	}
+	qsort(spans,count,sizeof(*spans),compare_chunk_span);
+	for (i=0u; i<count; i++)
+	{
+		first = spans[i].first < next ? next : spans[i].first;
+		if ( spans[i].last >= first )
+		{
+			*chunks += (spans[i].last - first + 1u);
+			next = (spans[i].last + 1u);
+		}
+	}
+	free(spans);
+	return(SPARK_STATUS_OK);
+}

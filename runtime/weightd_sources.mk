@@ -5,6 +5,7 @@ SPARKPIPE_WEIGHTD_SOURCES := \
 	runtime/spark_weightd_attach.c \
 	runtime/spark_weightd_kv_pool.c \
 	runtime/spark_weightd_map.c \
+	runtime/spark_weightd_lease_sets.c \
 	runtime/spark_weightd_spine.c \
 	runtime/spark_weightd_direct.c \
 	runtime/spark_weightd_receipt.c \
