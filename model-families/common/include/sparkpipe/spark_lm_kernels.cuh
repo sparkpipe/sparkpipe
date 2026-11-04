@@ -1812,8 +1812,8 @@ static __global__ void SparkLmAttnDecodeKernel(const void *q_bf16, uint64_t q_ro
 			if ( (pair * SPARK_LM_WARP_LANES) + lane < value_pairs )
 			{
 				pair_value = SparkLmLoadBf16Pair(v_cache_bf16,((v_base + (slot * v_slot_stride)) >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
-				accumulator[pair].x = fmaf(accumulator[pair].x,rescale,weight * pair_value.x);
-				accumulator[pair].y = fmaf(accumulator[pair].y,rescale,weight * pair_value.y);
+				accumulator[pair].x = fmaf(accumulator[pair].x,rescale,SparkMathAttentionValueWeight(weight) * pair_value.x);
+				accumulator[pair].y = fmaf(accumulator[pair].y,rescale,SparkMathAttentionValueWeight(weight) * pair_value.y);
 			}
 	}
 	if ( lane == 0u )
@@ -2040,8 +2040,8 @@ static __global__ void SparkLmGroupedAttnDecodeKernel(
             }
             rescale[local_head] = __shfl_sync(
                 0xffffffffu,rescale[local_head],0);
-            weight[local_head] = __shfl_sync(
-                0xffffffffu,weight[local_head],0);
+            weight[local_head] = SparkMathAttentionValueWeight(__shfl_sync(
+                0xffffffffu,weight[local_head],0));
         }
         for (pair_index = 0u;
              pair_index < pairs_per_lane;

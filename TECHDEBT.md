@@ -1411,9 +1411,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
     into `wq_b` in FP32; both backends round that norm once to BF16
     (`SparkDeviceLatentAttentionShape.query_norm_once`), and its
     hyper-connection site does not round the normed streams before the mix
-    as the reference's `bf16(w bf16(x r))` does. Its reference also rounds
-    the attention probabilities to BF16 before the value product, as the
-    publisher's eager attention does, where Metal keeps them in FP32. The
+    as the reference's `bf16(w bf16(x r))` does. Its reference rounds the
+    normalised attention probabilities to BF16 (the publisher's eager form),
+    where both backends now round the unnormalised weights (its flash form). The
     multi-floor gate fails Motif at TP8 at +3.71 standard errors after the
     norm changes (+2.77 before), with Metal's KL 1.03 to 1.09 times the
     floors. Metal's paired excess is +0.017 for Solar Open 2 and +0.025
@@ -1429,11 +1429,19 @@ and the multidev docs on 2026-09-28. Line numbers are in
     rounds the sigmoid) and its KDA gate (the publisher's
     `FusedRMSNormGated` rounds `x r w sigmoid(g)` once, where both backends
     round the norm and then the gate) keep their order until K3's reference
-    can be recomputed with them; and both backends keep the attention
-    probabilities in FP32, where the publisher's eager attention rounds them
-    (its SDPA and flash paths round the unnormalised exponentials instead,
-    and the references differ: Ling, K-EXAONE and Solar round the
-    probabilities, MiMo, Laguna and Gemma keep them in FP32). At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
+    can be recomputed with them. The attention weights take the publishers'
+    default form on both backends (FlashAttention-2, which Kimi K3's config
+    pins and SDPA picks; DeepSeek's `sparse_attn`): each weight `exp(s - m)`
+    against the running maximum is rounded to BF16 before it multiplies the
+    values, while the running sum adds the FP32 weight
+    (`SparkMathAttentionValueWeight`; CUDA's tiled GQA and sharded latent
+    prefill already did, the unsharded latent prefill does in
+    sparkpipe/sparkpipe#1743). The references still differ until they are
+    recomputed in that form: Ling, K-EXAONE, Solar and Motif round the
+    normalised probabilities as the eager path does, MiMo, Laguna and Gemma
+    keep them in FP32. The CUDA decode probes check the kernels against
+    exact attention within their bounds and against each other, not the
+    rounding itself, which only `test_metal_kernels` checks. At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
     output was 2.5e-3 of its norm from reference a against an a/b floor of
     8.3e-5; giving the reference the backends' choice at the gain, the
     probabilities and the gate brought it to 1.75e-3, and the rest is not

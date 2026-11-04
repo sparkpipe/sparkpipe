@@ -119,7 +119,7 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 			uint32_t element = (index * THREADS) + threadIdx.x;
 			if ( element < LATENT )
 				accumulator[index] = (accumulator[index] * scaled)
-					+ (__expf(score - running_max)
+					+ (SparkMathAttentionValueWeight(__expf(score - running_max))
 						* LmBf16ToFloat(((const uint16_t *)slot)[element]));
 		}
 	}
@@ -234,7 +234,7 @@ void LmLatentAttentionDecodeKernel(
             {
                 accumulator[index] =
                     (accumulator[index] * scaled_previous) +
-                    (scaled_current *
+                    (SparkMathAttentionValueWeight(scaled_current) *
                         LmBf16ToFloat(((const uint16_t *)slot)[element]));
             }
         }
@@ -476,7 +476,7 @@ void LmLatentAttentionDecodeSplitKernel(
                 {
                     accumulator[index] =
                         (accumulator[index] * scaled_previous) +
-                        (scaled_current *
+                        (SparkMathAttentionValueWeight(scaled_current) *
                             LmBf16ToFloat(values[group][index]));
                 }
             }
@@ -610,7 +610,7 @@ static __device__ __forceinline__ void LmLatentHeadsStep(const float (*query)[PE
         scaled_current = __expf(score - running_max[head]);
         running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
         for (element = 0u; element < PER_LANE; ++element)
-            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (scaled_current * value[element]);
+            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (SparkMathAttentionValueWeight(scaled_current) * value[element]);
     }
 }
 
@@ -1116,7 +1116,7 @@ void LmAttentionDecodeRangeKernel(const uint16_t *__restrict__ query_latent_bf16
 				uint32_t element = (index * THREADS) + threadIdx.x;
 				if ( element < LATENT )
 					accumulator[index] = (accumulator[index] * scaled)
-						+ (__expf(score - running_max)
+						+ (SparkMathAttentionValueWeight(__expf(score - running_max))
 							* LmBf16ToFloat(((const uint16_t *)slot)[element]));
 			}
 		}

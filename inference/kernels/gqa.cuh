@@ -149,7 +149,7 @@ static __device__ __forceinline__ void LmGqaAttentionDecodeRow(const uint16_t *_
 			uint32_t element = (index * THREADS) + threadIdx.x;
 			if ( element < VALUE_DIM )
 				accumulator[index] = (accumulator[index] * scaled)
-					+ (__expf(score - running_max) * LmBf16ToFloat(value[element]));
+					+ (SparkMathAttentionValueWeight(__expf(score - running_max)) * LmBf16ToFloat(value[element]));
 		}
 	}
 	for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
