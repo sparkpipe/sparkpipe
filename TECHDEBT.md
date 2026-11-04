@@ -121,7 +121,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
-- **Pair-first sums are not bit-identical to the rank-order sum.** The pair-first reduce-scatter (K3's paired prefill waves, op 6) and the pair-first all-reduce (every stage-runner model's large prefill waves, op 7) keep pair sums in fp32 (accuracy equal to the plain reduce-scatter), but add pairs first, so the last BF16 bit of a few elements can differ from the rank-order sum the other algorithms use. That breaks the README invariant that switching algorithm never changes a result bit. Fix: make the pairwise fp32 order canonical for every sum algorithm (direct, reduce-scatter, all-reduce), a one-time ulp-level change on every model, or keep pair-first off where bit identity with other algorithms matters. Owner decision.
 - Left out on purpose (2026-10-02): decode communication is not overlapped
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
