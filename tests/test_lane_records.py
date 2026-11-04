@@ -119,6 +119,8 @@ def main():
             failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
+        if record_id in chat and chat[record_id].get("sequences") != record.get("sequences"):
+            failures.append(f"{record_id}: deployment/hub/chat_frontend.json sequences {chat[record_id].get('sequences')} differs from the lane's {record.get('sequences')}")
         label = f"{context // 1048576}M" if context % 1048576 == 0 else f"{context // 1024}K"
         if readme.get(record_id) != label:
             failures.append(f"{record_id}: README.md's model table lists context {readme.get(record_id)} where the engine serves {label}")
@@ -126,7 +128,7 @@ def main():
         print("FAILED: " + line)
     if failures:
         return 1
-    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
+    print(f"PASS {len(lanes)} lane records render, match the swap controller, the chat layer (context and sequences) and the README model table, give the hub API the raw text prompt prefix the record names, and serve the contract maximum or say why not")
     return 0
 
 

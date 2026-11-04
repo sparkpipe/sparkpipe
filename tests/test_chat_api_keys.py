@@ -32,6 +32,7 @@ class FakeModel:
         self.context_tokens = 4096
         self.reasoning_effort = {}
         self.gate = SimpleNamespace(state=lambda: {"waiting": 1 if name == "inside" else 0})
+        self.sequences = chat_frontend.SequenceGate(8)
 
 
 def check(condition, message):
@@ -118,7 +119,7 @@ async def run(tmp):
                 check(response.status == 404 and body["error"]["message"].endswith("served: ['open']"), "a public key cannot reach an internal model, and the served list it gets names only the public ones")
             planned = []
 
-            def plan(model, body, headers):
+            def plan(model, body, headers, scope=None):
                 planned.append(headers)
                 raise chat_frontend.RequestError(400, "planned", "stop after planning")
             frontend.plan = plan
@@ -128,7 +129,7 @@ async def run(tmp):
                     check(response.status == 400, f"the planning stub answers: {response.status}")
             check(planned[0] is None and planned[1] is not None and planned[1].get("X-OpenWebUI-User-Id") == "u1", "a keyed request is planned with no caller identity, so it opens no chat memory and runs no chat command; an internal one keeps its headers")
             limit = frontend.public_body_limit()
-            check(limit == 16 * 4096 + (1 << 20), f"the public body limit is 16 bytes per token of the largest public context plus 1 MiB: {limit}")
+            check(limit == 32 << 20, f"the public body limit is 32 MiB, or 16 bytes per token of the largest public context plus 1 MiB when that is more: {limit}")
             oversize = json.dumps({"model": "open", "messages": [{"role": "user", "content": "x" * (limit + 1)}]})
             async with session.post(base + "/v1/chat/completions", headers=dict(with_key, **{"Content-Type": "application/json"}), data=oversize) as response:
                 check(response.status == 413 and (await response.json())["error"]["code"] == "request_too_large", f"an oversize public body is refused before parsing: {response.status}")
@@ -144,7 +145,7 @@ async def run(tmp):
             release = asyncio.Event()
             answered = []
 
-            def plan_ok(model, body, headers):
+            def plan_ok(model, body, headers, scope=None):
                 return {"trace": {}, "engine_body": {"prompt_token_ids": list(range(128))}, "prompt_tokens": 128}
 
             async def answer_wait(request, model, body, plan, started):
@@ -180,7 +181,7 @@ async def run(tmp):
                 async def run(self, model, identity, messages, name, argument, memory_off):
                     raise chat_frontend.RequestError(503, "engine_unavailable", "the engine is switching")
             frontend.commands = FailingCommands()
-            frontend.plan = lambda model, body, headers: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+            frontend.plan = lambda model, body, headers, scope=None: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
             async with session.post(base + "/v1/chat/completions", json={"model": "open", "messages": [{"role": "user", "content": "/compact 50%"}]}) as response:
                 text = await response.text()
                 failed = json.loads(text) if response.content_type == "application/json" else {"error": {"code": text[:60]}}

@@ -49,6 +49,7 @@ class Model:
         self.engine = engine
         self.vocabulary = Vocabulary()
         self.stop_token_ids = []
+        self.sequences = chat_frontend.SequenceGate(QUEUED)
 
 
 async def serve(app, **options):
@@ -75,7 +76,7 @@ async def run(tmp, failures):
     frontend = chat_frontend.Frontend({"models": []}, tmp)
     model = Model(engine_base)
     frontend.model_for = lambda body: model
-    frontend.plan = lambda model, body, headers: {"engine_body": {"prompt_token_ids": [1], "max_tokens": 4, "stream": True},
+    frontend.plan = lambda model, body, headers, scope=None: {"engine_body": {"prompt_token_ids": [1], "max_tokens": 4, "stream": True},
                                                   "parser": None, "prompt_tokens": 1, "session": None, "body": body}
     front_runner, front = await serve(chat_frontend.build(frontend), **chat_frontend.SERVER_OPTIONS)
     captured = io.StringIO()
