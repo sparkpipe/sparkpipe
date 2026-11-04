@@ -70,16 +70,16 @@ capture() {
   local id=$1 tag=$2 port; port=$(field "$id" port)
   hub "mkdir -p $RD/$id && cd $RD && timeout 3600 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
   case "$id" in
-    glm-5.3) hub "cd ~/rollover/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    kimi-k3) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_k3_golden.py $port $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
-    deepseek-v4.1-flash) hub "cd ~/rollover/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    glm-5.3) hub "cd $RD/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
+    kimi-k3) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_k3_golden.py $port $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
+    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    deepseek-v4.1-flash) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
   esac
 }
 compare() {
   local id=$1 a=$2 b=$3
   hub "cd $RD && python3 kit/release_compare.py $id/$a.json $id/$b.json | tail -7"
-  hub "test -f $RD/$id/golden-$a.json && test -f $RD/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json | head -3; cd ~/rollover/tree && python3 $RD/kit/rollover_golden_compare.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json 0.5 $RD/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
+  hub "test -f $RD/$id/golden-$a.json && test -f $RD/$id/golden-$b.json && { python3 ~/perfoverlap/exact.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json | head -3; cd $RD/tree && python3 $RD/kit/rollover_golden_compare.py $RD/$id/golden-$a.json $RD/$id/golden-$b.json 0.5 $RD/$id/golden-compare-$a-$b.json 2>&1 | tail -2; } || true"
 }
 
 step=${1:-}
@@ -106,6 +106,7 @@ case "$step" in
     [ "$missing" = 0 ] || { echo "PRECHECK-FAILED a configured pack, its digest or its .experts is missing"; exit 1; }
     echo "configured packs present with sidecar and manifest: $(wc -l < "$STATE/packs") rank packs"
     hub_space || exit 1
+    hub "rm -rf $RD/tree && mkdir -p $RD/tree && tar -C $RD/tree -xf $HUB_WORK/src/rp-src-$SHA.tar && echo $SHA > $RD/tree/SOURCE_COMMIT" || { echo "PRECHECK-FAILED the release source $HUB_WORK/src/rp-src-$SHA.tar does not unpack on the hub; the qualification tools run from it"; exit 1; }
     hub "mkdir -p $RD/kit $BK" && scp -q "$KIT/../tools/release_capture.py" "$KIT/../tools/release_compare.py" "$KIT/../tools/rollover_golden_compare.py" "$KIT/../tools/rollover_k3_golden.py" "$KIT/../tools/rollover_lp_capture.py" rtx5090:$RD/kit/ && scp -q "$KIT/../runtime/json.c" rtx5090:$RD/kit/prompt_source.c
     echo PRECHECK-OK ;;
   old)
@@ -163,10 +164,10 @@ case "$step" in
       if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' \$HOME/$(field $id lane)/root/residentd.log | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
-      hub "cd ~/rollover/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
+      hub "cd $RD/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --models-endpoint http://127.0.0.1:8433 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
       if [ -n "${COMPSEC:-}" ] || ! hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json > /dev/null 2>&1"; then
-        eff="--reasoning-effort minimal"; [ "$id" = qwen3.8-max ] && eff="--max-tokens 2048"
-        hub "cd ~/rollover/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
+        eff=$(hub "cd $RD/tree && python3 tools/compsec_effort.py http://127.0.0.1:8433 $id") || { echo "COMPSEC-SKIPPED $id: no reasoning effort to run it with"; eff=""; }
+        [ -n "$eff" ] && hub "cd $RD/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi
       hub "cd $RD/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
       fan "grep -a -c -i -E 'error|fail|fault|abort' \$HOME/$(field $id lane)/root/residentd.log" | awk '{s+=$2} END {print "rank log error lines:", s}'
