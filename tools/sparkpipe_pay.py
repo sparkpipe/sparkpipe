@@ -93,7 +93,12 @@ RECORD_DAYS = 366
 RECORDS_PER_REPORT = 10000
 RETRY_SECONDS = (60, 300, 1800, 7200, 21600, 43200, 86400)
 SWEEP_DAYS = 3
+NOTICE_DAYS = 30
 TUNNEL_CHECK = 30
+GUARD_STEP = 1
+WEBHOOK_SECONDS = 20
+WEBHOOK_WORKERS = 4
+CHUNK = re.compile(rb"[0-9A-Fa-f]{1,8}")
 WEBHOOK_SCHEMES = ("https",)
 WEBHOOKS_PER_ACCOUNT = 10
 OWN = {}
@@ -268,12 +273,31 @@ def webhook_address(url, own):
 
 class Pinned(http.client.HTTPSConnection):
     def __init__(self, host, port, address, secure):
-        super().__init__(host, port, timeout=15, context=ssl.create_default_context())
-        self.address, self.secure = address, secure
+        super().__init__(host, port, timeout=WEBHOOK_SECONDS, context=ssl.create_default_context())
+        self.address, self.secure, self.watch = address, secure, None
 
     def connect(self):
+        self.watch = threading.Timer(WEBHOOK_SECONDS, self.cut)
+        self.watch.daemon = True
+        self.watch.start()
         sock = socket.create_connection((self.address, self.port), self.timeout)
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host) if self.secure else sock
+        if not self.secure:
+            self.sock = sock
+            return
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host, do_handshake_on_connect=False)
+        self.sock.do_handshake()
+
+    def cut(self):
+        try:
+            if self.sock:
+                socket.socket.shutdown(self.sock, socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def close(self):
+        if self.watch:
+            self.watch.cancel()
+        super().close()
 
 
 def webhook_signature(secret, moment, body):
@@ -351,6 +375,7 @@ class Config:
         if any(self.swift_bank.values()) and not (all(self.swift_bank.values()) and BIC.match(self.swift_bank["bic"]) and all(len(v) <= 200 and v.isprintable() for v in self.swift_bank.values())):
             raise ValueError("Set all of " + ", ".join(SWIFT_SETTINGS.values()) + " on one line each, with an 8 or 11 character SWIFT/BIC, or leave them all empty")
         self.swift = all(self.swift_bank.values()) and not self.sandbox
+        self.terms_seen = {}
 
     def path(self, name):
         return os.path.join(self.data, name)
@@ -361,8 +386,13 @@ class Config:
         return json.loads(text[text.index("{"):text.rindex("}") + 1])
 
     def terms(self, name):
-        with open(os.path.join(self.site, "terms", name), "rb") as handle:
-            return hashlib.sha256(handle.read()).hexdigest()
+        path = os.path.join(self.site, "terms", name)
+        found = os.stat(path)
+        mark = (found.st_mtime_ns, found.st_size, found.st_ino)
+        if self.terms_seen.get(name, (None,))[0] != mark:
+            with open(path, "rb") as handle:
+                self.terms_seen[name] = (mark, hashlib.sha256(handle.read()).hexdigest())
+        return self.terms_seen[name][1]
 
     def secret_file(self, name):
         path = self.path(name)
@@ -449,8 +479,6 @@ class Book:
         self.invoices = {}
         self.accounts = {}
         self.emails = {}
-        self.sessions = {}
-        self.session_hashes = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -500,11 +528,6 @@ class Book:
             self.emails[data["email"]] = data["account"]
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
-        elif kind == "session":
-            self.sessions[data["session"]] = dict(data, created=line["at"], revoked=False)
-            self.session_hashes[data["hash"]] = data["session"]
-        elif kind == "session_revoke":
-            self.sessions[data["session"]]["revoked"] = True
         elif kind == "order":
             self.orders[data["order"]] = dict(data, created=line["at"], state="unpaid" if data.get("processor") == "swift" else "created", invoice=None, link=None, issued=False, paid=None, refunds=[])
         elif kind == "invoice":
@@ -530,6 +553,128 @@ class Book:
         return stamp_time(order["expires"]) if order.get("expires") else stamp_time(order["created"]) + timedelta(seconds=PENDING_SECONDS)
 
 
+class Records:
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.RLock()
+        self.items = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as handle:
+                self.items = json.load(handle)
+
+    def get(self, ident):
+        with self.lock:
+            return self.items.get(ident)
+
+    def values(self):
+        with self.lock:
+            return list(self.items.values())
+
+    def find(self, test):
+        with self.lock:
+            return next(((ident, record) for ident, record in self.items.items() if test(record)), (None, None))
+
+    def put(self, ident, record):
+        with self.lock:
+            self.items[ident] = record
+            self.save()
+
+    def drop(self, ident):
+        with self.lock:
+            found = self.items.pop(ident, None)
+            if found is not None:
+                self.save()
+            return found
+
+    def keep(self, test):
+        with self.lock:
+            gone = [ident for ident, record in self.items.items() if not test(record)]
+            for ident in gone:
+                del self.items[ident]
+            if gone:
+                self.save()
+
+    def save(self):
+        temporary = self.path + ".new"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(self.items, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, self.path)
+
+
+class Journal:
+    def __init__(self, folder, days):
+        self.folder, self.days = folder, days
+        self.lock = threading.Lock()
+        self.offsets = {}
+        self.once = set()
+        os.makedirs(folder, exist_ok=True)
+        with self.lock:
+            for name in self.names():
+                self.catch_up(name)
+
+    def names(self):
+        return sorted(name for name in os.listdir(self.folder) if name.endswith(".jsonl"))
+
+    def read_new(self, name, handle):
+        handle.seek(self.offsets.get(name, 0))
+        data = handle.read()
+        done = data.rfind(b"\n") + 1
+        for raw in data[:done].splitlines():
+            found = json.loads(raw).get("once")
+            if found:
+                self.once.add(found)
+        self.offsets[name] = self.offsets.get(name, 0) + done
+
+    def catch_up(self, name):
+        try:
+            with open(os.path.join(self.folder, name), "rb") as handle:
+                fcntl.flock(handle, fcntl.LOCK_SH)
+                self.read_new(name, handle)
+        except FileNotFoundError:
+            pass
+
+    def add(self, item, day=None):
+        name = (day or item["now"][:10]) + ".jsonl"
+        raw = (json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        with self.lock, open(os.path.join(self.folder, name), "a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            self.read_new(name, handle)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+            self.offsets[name] += len(raw)
+            if item.get("once"):
+                self.once.add(item["once"])
+
+    def sent(self, once):
+        with self.lock:
+            if once not in self.once:
+                for name in self.names()[-SWEEP_DAYS:]:
+                    self.catch_up(name)
+            return once in self.once
+
+    def items(self, last=None):
+        found = []
+        for name in self.names()[-last if last else 0:]:
+            try:
+                with open(os.path.join(self.folder, name), encoding="utf-8") as handle:
+                    found += [json.loads(raw) for raw in handle if raw.endswith("\n")]
+            except FileNotFoundError:
+                pass
+        return found
+
+    def prune(self, now):
+        cutoff = (now - timedelta(days=self.days)).strftime("%Y-%m-%d")
+        with self.lock:
+            for name in self.names():
+                if name[:-6] < cutoff:
+                    os.remove(os.path.join(self.folder, name))
+                    self.offsets.pop(name, None)
+
+
 class Usage:
     def __init__(self, folder):
         self.folder = folder
@@ -537,33 +682,36 @@ class Usage:
         self.ids = collections.OrderedDict()
         os.makedirs(folder, exist_ok=True)
 
-    def path(self, day):
-        return os.path.join(self.folder, day + ".jsonl")
+    def path(self, account, day):
+        return os.path.join(self.folder, account, day + ".jsonl")
 
-    def lines(self, day):
-        if not os.path.exists(self.path(day)):
+    def lines(self, account, day):
+        try:
+            with open(self.path(account, day), encoding="utf-8") as handle:
+                return [json.loads(raw) for raw in handle if raw.endswith("\n")]
+        except FileNotFoundError:
             return []
-        with open(self.path(day), encoding="utf-8") as handle:
-            return [json.loads(raw) for raw in handle if raw.endswith("\n")]
 
-    def known(self, day):
-        if day not in self.ids:
-            self.ids[day] = {record["request"] for record in self.lines(day)}
-            while len(self.ids) > 4:
+    def known(self, account, day):
+        key = (account, day)
+        if key not in self.ids:
+            self.ids[key] = {record["request"] for record in self.lines(account, day)}
+            while len(self.ids) > 256:
                 self.ids.popitem(last=False)
-        self.ids.move_to_end(day)
-        return self.ids[day]
+        self.ids.move_to_end(key)
+        return self.ids[key]
 
     def add(self, records):
         added = 0
         with self.lock:
-            for day in sorted({record["at"][:10] for record in records}):
-                seen = self.known(day)
-                fresh = [record for record in records if record["at"][:10] == day and record["request"] not in seen]
+            for account, day in sorted({(record["account"], record["at"][:10]) for record in records}):
+                seen = self.known(account, day)
+                fresh = [record for record in records if record["account"] == account and record["at"][:10] == day and record["request"] not in seen]
                 unique = list({record["request"]: record for record in fresh}.values())
                 if not unique:
                     continue
-                with open(self.path(day), "a", encoding="utf-8") as handle:
+                os.makedirs(os.path.join(self.folder, account), exist_ok=True)
+                with open(self.path(account, day), "a", encoding="utf-8") as handle:
                     handle.write("".join(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in unique))
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -574,33 +722,39 @@ class Usage:
     def prune(self, now):
         cutoff = (now - timedelta(days=RECORD_DAYS)).strftime("%Y-%m-%d")
         with self.lock:
-            for name in os.listdir(self.folder):
-                if name.endswith(".jsonl") and name[:-6] < cutoff:
-                    os.remove(os.path.join(self.folder, name))
-                    self.ids.pop(name[:-6], None)
+            for account in os.listdir(self.folder):
+                folder = os.path.join(self.folder, account)
+                for name in os.listdir(folder):
+                    if name.endswith(".jsonl") and name[:-6] < cutoff:
+                        os.remove(os.path.join(folder, name))
+                        self.ids.pop((account, name[:-6]), None)
+                if not os.listdir(folder):
+                    os.rmdir(folder)
 
     def query(self, account, since, until, match):
-        day, found = since.date(), []
-        with self.lock:
-            while day <= until.date():
-                for record in self.lines(day.isoformat()):
-                    if record["account"] == account and since <= stamp_time(record["at"]) < until and all(record.get(name) == value for name, value in match.items()):
-                        found.append(record)
-                day += timedelta(days=1)
-        return sorted(found, key=lambda record: (record["at"], record["request"]))
+        try:
+            names = sorted(os.listdir(os.path.join(self.folder, account)))
+        except FileNotFoundError:
+            return
+        first, last = since.strftime("%Y-%m-%d"), until.strftime("%Y-%m-%d")
+        for name in names:
+            if name.endswith(".jsonl") and first <= name[:-6] <= last:
+                found = [record for record in self.lines(account, name[:-6]) if since <= stamp_time(record["at"]) < until and all(record.get(key) == value for key, value in match.items())]
+                yield from sorted(found, key=lambda record: (record["at"], record["request"]))
 
 
 def usage_totals(records):
     totals = {name: 0 for name in TOTALS}
-    decode, timed = 0, 0.0
+    decode, timed, count = 0, 0.0, 0
     for record in records:
+        count += 1
         for name in TOTALS:
             totals[name] += record.get(name) or 0
         if record.get("decode_tps") and record.get("output_tokens"):
             decode += record["output_tokens"]
             timed += record["output_tokens"] / record["decode_tps"]
     shown = {name: round(value, 3) if isinstance(value, float) else value for name, value in totals.items()}
-    return dict(shown, requests=len(records), prefill_avoided_ms=shown["cold_prefill_ms_estimate"], cached_share=round(totals["cached_tokens"] / totals["prompt_tokens"], 4) if totals["prompt_tokens"] else 0,
+    return dict(shown, requests=count, prefill_avoided_ms=shown["cold_prefill_ms_estimate"], cached_share=round(totals["cached_tokens"] / totals["prompt_tokens"], 4) if totals["prompt_tokens"] else 0,
                 decode_tps=round(decode / timed, 2) if timed else None)
 
 
@@ -608,36 +762,10 @@ class Notifier:
     def __init__(self, app):
         self.app = app
         self.heap = []
-        self.known = set()
         self.cond = threading.Condition()
         self.count = itertools.count()
-        self.path = app.cfg.path("deliveries.jsonl")
-        self.secrets_path = app.cfg.path("webhook_secrets.json")
-        self.secrets_lock = threading.Lock()
-        if os.path.exists(self.path):
-            with open(self.path, encoding="utf-8") as handle:
-                self.known = {(item["notice"], item["target"]) for item in (json.loads(raw) for raw in handle if raw.endswith("\n"))}
-
-    def secrets(self):
-        if not os.path.exists(self.secrets_path):
-            return {}
-        with open(self.secrets_path, encoding="utf-8") as handle:
-            return json.load(handle)
-
-    def keep_secret(self, webhook, secret):
-        with self.secrets_lock:
-            found = self.secrets()
-            if secret is None:
-                found.pop(webhook, None)
-            else:
-                found[webhook] = secret
-            temporary = self.secrets_path + ".new"
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                json.dump(found, handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.secrets_path)
+        self.deliveries = Journal(app.cfg.path("deliveries"), NOTICE_DAYS)
+        self.known = {(item["notice"], item["target"]) for item in self.deliveries.items(SWEEP_DAYS + 1)}
 
     def schedule(self, notice, target, attempt=0, delay=0.0):
         with self.cond:
@@ -646,18 +774,17 @@ class Notifier:
             self.cond.notify()
 
     def sweep(self, now):
-        with self.app.book.lock:
-            hooks, recent = dict(self.app.book.market.webhooks), list(self.app.book.market.notices)
-        for notice in recent:
+        for notice in self.app.notices.items(SWEEP_DAYS + 1):
             if market.stamp_time(notice["now"]) >= now - timedelta(days=SWEEP_DAYS):
                 for target in notice["targets"]:
-                    if hooks.get(target, {}).get("kind") == "url" and (notice["notice"], target) not in self.known:
+                    with self.cond:
+                        due = target != "mail" and (notice["notice"], target) not in self.known
+                    if due and self.app.hooks.get(target):
                         self.schedule(notice, target)
 
     def finish(self, notice, target, attempt, outcome):
-        with self.cond:
-            with open(self.path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps({"notice": notice["notice"], "target": target, "attempts": attempt + 1, "outcome": outcome, "at": market.stamp(clock())}) + "\n")
+        moment = market.stamp(clock())
+        self.deliveries.add({"notice": notice["notice"], "target": target, "attempts": attempt + 1, "outcome": outcome, "at": moment}, moment[:10])
 
     def run(self):
         while True:
@@ -671,16 +798,15 @@ class Notifier:
                 log(f"webhook {target}: {error}")
 
     def attempt(self, notice, target, attempt):
-        hook = self.app.book.market.webhooks.get(target)
-        secret = self.secrets().get(target)
-        if not hook or not secret:
+        hook = self.app.hooks.get(target)
+        if not hook or hook["kind"] != "url":
             return self.finish(notice, target, attempt, "deleted")
         payload = {"text": notice["summary"]} if hook.get("slack") else {key: notice[key] for key in ("notice", "type", "account", "summary", "data")}
         if not hook.get("slack"):
             payload = dict(payload, id=payload.pop("notice"), created=notice["now"])
         try:
-            status = post_webhook(hook["target"], secret, payload, notice["type"], notice["notice"], urllib.parse.urlsplit(self.app.cfg.public).hostname)
-        except (OSError, http.client.HTTPException, Refusal) as error:
+            status = post_webhook(hook["target"], hook["secret"], payload, notice["type"], notice["notice"], urllib.parse.urlsplit(self.app.cfg.public).hostname)
+        except (OSError, ValueError, http.client.HTTPException, Refusal) as error:
             status = 0
             log(f"webhook {target} for {notice['notice']}: {error}")
         if 200 <= status < 300:
@@ -688,6 +814,45 @@ class Notifier:
         if attempt < len(RETRY_SECONDS):
             return self.schedule(notice, target, attempt + 1, RETRY_SECONDS[attempt])
         self.finish(notice, target, attempt, f"failed {status}")
+
+
+class Guard:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = {}
+        self.count = itertools.count()
+
+    def watch(self, check, cut):
+        ident = next(self.count)
+        with self.lock:
+            self.active[ident] = [time.monotonic() + TUNNEL_CHECK, math.inf, check, cut]
+        return ident
+
+    def done(self, ident):
+        with self.lock:
+            self.active.pop(ident, None)
+
+    def sweep(self):
+        with self.lock:
+            entries = list(self.active.items())
+        for ident, entry in entries:
+            now = time.monotonic()
+            if now >= entry[0]:
+                entry[0] = now + TUNNEL_CHECK
+                try:
+                    left = entry[2]()
+                except Exception as error:
+                    log(f"guard: {error}")
+                    left = None
+                entry[1] = now + left if left is not None else now
+            if time.monotonic() >= entry[1]:
+                self.done(ident)
+                entry[3]()
+
+    def run(self):
+        while True:
+            time.sleep(min(GUARD_STEP, TUNNEL_CHECK))
+            self.sweep()
 
 
 def text_field(value, label, size):
@@ -852,6 +1017,10 @@ class App:
         self.mails = queue.Queue()
         self.market = market.Market(self, cfg.sandbox, lambda: clock())
         self.usage = Usage(cfg.path("requests"))
+        self.notices = Journal(cfg.path("notices"), NOTICE_DAYS)
+        self.hooks = Records(cfg.path("webhooks.json"))
+        self.sessions = Records(cfg.path("sessions.json"))
+        self.guard = Guard()
         self.notifier = Notifier(self)
 
     def throttle(self, kind, who):
@@ -879,6 +1048,8 @@ class App:
         with self.book.lock:
             os.replace(self.book.path, self.book.path + "." + clock().strftime("%Y%m%d%H%M%S"))
             self.book = Book(self.book.path)
+            self.hooks.keep(lambda record: False)
+            self.sessions.keep(lambda record: False)
         with self.lock:
             self.codes.clear()
         return {"reset": True}
@@ -907,6 +1078,9 @@ class App:
         company = self.book.accounts[account]["company"]
         self.book.append("acceptance", dict(terms, account=account, statement=statement(self.cfg, company, terms), ip=ip, agent=agent))
 
+    def terms_current(self, account):
+        return account in self.book.accounts and self.accepted(account, self.current_terms())
+
     def require_terms(self, account, body, ip, agent):
         if not self.accepted(account, self.current_terms()):
             if body.get("accept") is not True:
@@ -925,36 +1099,35 @@ class App:
         return account if account in self.book.accounts else None
 
     def bearer_account(self, token):
-        record = self.book.sessions.get(self.book.session_hashes.get(market.key_digest(token)))
-        if not record or record["revoked"] or stamp_time(record["expires"]) <= clock():
+        record = self.sessions.get(market.key_digest(token))
+        if not record or stamp_time(record["expires"]) <= clock():
             return None
         return record["account"] if record["account"] in self.book.accounts else None
 
     def open_bearer(self, account, device):
         token = BEARER + secrets.token_urlsafe(32)
-        expires = clock() + timedelta(seconds=BEARER_SECONDS)
-        self.book.append("session", {"session": new_id("SE"), "account": account, "hash": market.key_digest(token), "device": device, "expires": market.stamp(expires)})
-        return token, market.stamp(expires)
+        now = clock()
+        expires = market.stamp(now + timedelta(seconds=BEARER_SECONDS))
+        self.sessions.put(market.key_digest(token), {"session": new_id("SE"), "account": account, "device": device, "created": market.stamp(now), "expires": expires})
+        return token, expires
 
     def sign_out(self, headers):
         token = credential(headers)
-        with self.book.lock:
-            found = self.book.session_hashes.get(market.key_digest(token)) if token.startswith(BEARER) else None
-            if found and not self.book.sessions[found]["revoked"]:
-                self.book.append("session_revoke", {"session": found, "account": self.book.sessions[found]["account"], "reason": "signout"})
+        if token.startswith(BEARER):
+            self.sessions.drop(market.key_digest(token))
         return {"ok": True}
 
     def revoke_session(self, account, found):
-        with self.book.lock:
-            record = self.book.sessions.get(found) if isinstance(found, str) else None
-            if not record or record["account"] != account or record["revoked"]:
-                raise Refusal("No active session with that id on this account.", 404)
-            self.book.append("session_revoke", {"session": found, "account": account, "reason": "revoked"})
+        ident, _ = self.sessions.find(lambda record: record["session"] == found and record["account"] == account)
+        if not ident:
+            raise Refusal("No active session with that id on this account.", 404)
+        self.sessions.drop(ident)
         return {"id": found, "revoked": True}
 
     def sessions_of(self, account):
         now = clock()
-        return [{"id": r["session"], "device": r["device"], "created": r["created"], "expires": r["expires"]} for r in self.book.sessions.values() if r["account"] == account and not r["revoked"] and stamp_time(r["expires"]) > now]
+        return sorted(({"id": r["session"], "device": r["device"], "created": r["created"], "expires": r["expires"]} for r in self.sessions.values() if r["account"] == account and stamp_time(r["expires"]) > now),
+                      key=lambda r: (r["created"], r["id"]))
 
     def principal(self, headers, ip, scope):
         token = credential(headers)
@@ -974,22 +1147,24 @@ class App:
     def notified(self, notice):
         account = self.book.accounts.get(notice["account"])
         for target in notice["targets"]:
-            hook = self.book.market.webhooks.get(target, {})
-            if target == "mail" or hook.get("kind") == "email":
-                if account:
-                    self.mail(account["email"] if target == "mail" else hook["target"], notice["summary"], notice["text"] + FOOTER)
-            elif hook.get("kind") == "url":
+            if target != "mail":
                 self.notifier.schedule(notice, target)
+            elif account:
+                self.mail(account["email"], notice["summary"], notice["text"] + FOOTER)
+
+    def hooks_of(self, account):
+        return sorted((w for w in self.hooks.values() if w["account"] == account), key=lambda w: w["webhook"])
 
     def hook_view(self, hook):
         found = {"id": hook["webhook"], "events": hook["events"], "slack": hook["slack"], "created": hook["now"]}
-        return dict(found, email=hook["target"]) if hook["kind"] == "email" else dict(found, url=hook["target"], hint=hook["hint"])
+        if hook["kind"] == "email":
+            return dict(found, email=self.book.accounts[hook["account"]]["email"], always=list(market.REQUIRED_EMAIL))
+        return dict(found, url=hook["target"], hint=hook["hint"])
 
     def webhooks(self, account):
-        with self.book.lock:
-            mine = [self.hook_view(w) for w in sorted(self.book.market.webhooks.values(), key=lambda w: w["webhook"]) if w["account"] == account]
-        email = [] if any("email" in w for w in mine) else [{"email": self.book.accounts[account]["email"], "events": list(market.EMAIL_EVENTS), "default": True}]
-        return {"object": "list", "data": mine + email, "events": list(market.EVENTS)}
+        mine = [self.hook_view(w) for w in self.hooks_of(account)]
+        email = [] if any("email" in w for w in mine) else [{"email": self.book.accounts[account]["email"], "events": list(market.EMAIL_EVENTS), "always": list(market.REQUIRED_EMAIL), "default": True}]
+        return {"object": "list", "data": mine + email, "events": list(market.EVENTS), "emailAlways": list(market.REQUIRED_EMAIL)}
 
     def webhook_put(self, account, body):
         events = body.get("events")
@@ -997,10 +1172,10 @@ class App:
             raise Refusal("Give events as a list of " + ", ".join(market.EVENTS) + ", or [\"*\"] for all of them.", 400, "invalid_request")
         if not isinstance(body.get("slack", False), bool) or (body.get("url") is None) == (body.get("email") is None):
             raise Refusal("Give either url, for a signed webhook, or email, with events, and slack as true or false.", 400, "invalid_request")
-        record, secret = self.book.accounts[account], None
+        record, secret, target = self.book.accounts[account], None, None
         if body.get("email") is not None:
-            kind, target = "email", email_field(body.get("email"))
-            if target != record["email"]:
+            kind = "email"
+            if email_field(body.get("email")) != record["email"]:
                 raise Refusal(f"Notices by email go to the account's own address, {record['email']}.", 400, "invalid_request")
         else:
             kind, target = "url", body.get("url")
@@ -1012,26 +1187,25 @@ class App:
                 secret = "whsec_" + secrets.token_urlsafe(32)
             elif not isinstance(secret, str) or not 16 <= len(secret) <= 200 or not secret.isprintable():
                 raise Refusal("Give secret as 16 to 200 printable characters, or leave it out and we make one.", 400, "invalid_request")
-        with self.book.lock:
-            mine = [w for w in self.book.market.webhooks.values() if w["account"] == account]
-            same = next((w for w in mine if w["kind"] == kind and w["target"] == target), None)
+        with self.hooks.lock:
+            mine = self.hooks_of(account)
+            same = next((w for w in mine if w["kind"] == kind and w.get("target") == target), None)
             if not same and len(mine) >= WEBHOOKS_PER_ACCOUNT:
                 raise Refusal(f"An account has at most {WEBHOOKS_PER_ACCOUNT} webhooks: delete one first.", 409, "too_many")
             ident = same["webhook"] if same else new_id("WH")
+            hook = {"webhook": ident, "account": account, "kind": kind, "events": sorted(set(events)), "slack": body.get("slack", False), "now": market.stamp(self.market.now())}
             if secret:
-                self.notifier.keep_secret(ident, secret)
-            self.book.append("webhook", {"webhook": ident, "account": account, "kind": kind, "target": target, "events": sorted(set(events)), "slack": body.get("slack", False),
-                                         "hint": secret[-4:] if secret else None, "now": market.stamp(self.market.now())})
-            found = self.hook_view(self.book.market.webhooks[ident])
+                hook.update(target=target, secret=secret, hint=secret[-4:])
+            self.hooks.put(ident, hook)
+        found = self.hook_view(hook)
         return dict(found, secret=secret) if secret and body.get("secret") is None else found
 
     def webhook_delete(self, account, ident):
-        with self.book.lock:
-            hook = self.book.market.webhooks.get(ident)
+        with self.hooks.lock:
+            hook = self.hooks.get(ident)
             if not hook or hook["account"] != account:
                 raise Refusal("No webhook with that id on this account.", 404)
-            self.book.append("webhook_delete", {"webhook": ident, "account": account})
-        self.notifier.keep_secret(ident, None)
+            self.hooks.drop(ident)
         return {"id": ident, "deleted": True}
 
     def usage_record(self, item, now):
@@ -1077,12 +1251,20 @@ class App:
         limit = pick("limit") or "1000"
         if not limit.isdigit() or not 1 <= int(limit) <= 10000:
             raise Refusal("Give limit from 1 to 10000.", 400, "invalid_request")
-        found = self.usage.query(account, since, until, {name: pick(name) for name in ("key", "fleet", "model", "session") if pick(name)})
-        after = pick("after")
-        page = [record for record in found if not after or f"{record['at']}|{record['request']}" > after][:int(limit)]
-        more = len(page) == int(limit) and f"{page[-1]['at']}|{page[-1]['request']}" < f"{found[-1]['at']}|{found[-1]['request']}"
-        return {"object": "list", "since": market.stamp(since), "until": market.stamp(until), "data": page, "totals": usage_totals(found), "has_more": more,
-                "next": f"{page[-1]['at']}|{page[-1]['request']}" if more else None}
+        after, page, more = pick("after"), [], [False]
+        cursor = lambda record: f"{record['at']}|{record['request']}"
+
+        def walk():
+            for record in self.usage.query(account, since, until, {name: pick(name) for name in ("key", "fleet", "model", "session") if pick(name)}):
+                if not after or cursor(record) > after:
+                    if len(page) < int(limit):
+                        page.append(record)
+                    else:
+                        more[0] = True
+                yield record
+
+        totals = usage_totals(walk())
+        return {"object": "list", "since": market.stamp(since), "until": market.stamp(until), "data": page, "totals": totals, "has_more": more[0], "next": cursor(page[-1]) if more[0] else None}
 
     def hub_events(self, body):
         items = body.get("events") if isinstance(body.get("events"), list) else [body]
@@ -1702,6 +1884,9 @@ class App:
     def housekeeping(self):
         self.book.refresh()
         self.usage.prune(clock())
+        self.notices.prune(self.market.now())
+        self.notifier.deliveries.prune(clock())
+        self.sessions.keep(lambda record: stamp_time(record["expires"]) > clock())
         self.notifier.sweep(self.market.now())
 
     def reconcile_forever(self):
@@ -1943,17 +2128,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def chunked(self):
         found = bytearray()
         while True:
-            try:
-                size = int(self.rfile.readline(1024).split(b";")[0].strip(), 16)
-            except ValueError:
+            line = self.rfile.readline(1024).split(b";")[0].strip()
+            if not CHUNK.fullmatch(line):
                 raise Refusal("The chunked request body is malformed.", 400, "invalid_request")
+            size = int(line, 16)
             if size == 0:
                 while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):
                     pass
                 return bytes(found)
             if len(found) + size > BODY_LIMIT:
                 raise Refusal("Request bodies are limited to 32 MiB.", 413, "invalid_request")
-            found += self.rfile.read(size)
+            chunk = self.rfile.read(size)
+            if len(chunk) < size:
+                raise Refusal("The chunked request body is malformed.", 400, "invalid_request")
+            found += chunk
             self.rfile.readline(1024)
 
     def hub_body(self, path):
@@ -1980,24 +2168,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
             raise Refusal("The request is not a JSON object.", 400, "invalid_request")
         return found
 
-    def chat_body(self, raw, requested):
+    def chat_body(self, raw):
         found = self.body_object(raw)
         if "sparkpipe" not in found:
-            return raw, requested
+            return raw, None
         extra = found["sparkpipe"]
         if not isinstance(extra, dict) or not isinstance(extra.get("fleet", ""), str) or set(extra) - {"fleet"}:
             raise Refusal("Give sparkpipe as an object whose only field is fleet, a Fleet id.", 400, "invalid_sparkpipe")
         rest = {name: value for name, value in found.items() if name != "sparkpipe"}
-        return json.dumps(rest, ensure_ascii=False).encode(), requested or extra.get("fleet") or None
+        return json.dumps(rest, ensure_ascii=False).encode(), extra.get("fleet") or None
 
-    def move_fleets(self, raw, record):
+    def move_fleets(self, raw):
         found = self.body_object(raw)
         source, target = found.get("from"), found.get("to")
         if not isinstance(source, str) or not isinstance(target, str) or source == target:
             raise Refusal("Give from and to as two different Fleets the account holds.", 400, "invalid_request")
-        if record and record["fleet"]:
-            raise Refusal(f"This key reaches only {record['fleet']}: moving working state needs a key without a fleet, or the account session.", 403, "invalid_key")
         return source, (target,)
+
+    def admitted(self, method, path, account, record):
+        app = self.server.app
+        requested = (self.headers.get("X-SparkPipe-Fleet") or "").strip() or None
+        if method == "POST" and path == "/v1/state/move":
+            if record and record["fleet"]:
+                raise Refusal(f"This key reaches only {record['fleet']}: moving working state needs a key without a fleet, or the account session.", 403, "invalid_key")
+            app.market.admit_first(account, None, None)
+            body = self.hub_body(path)
+            source, also = self.move_fleets(body)
+            return app.market.admit(account, record, source, also), body
+        if method == "POST" and path == "/v1/chat/completions":
+            fleet = app.market.admit_first(account, record, requested)
+            body, named = self.chat_body(self.hub_body(path))
+            return fleet or app.market.admit(account, record, named), body
+        return app.market.admit(account, record, requested), self.hub_body(path)
 
     def hub(self, method, parts, scope):
         app = self.server.app
@@ -2010,13 +2212,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if via == "cookie" and method not in ("GET", "HEAD") and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("gateway", account)
-            body = self.hub_body(path)
-            requested, also = (self.headers.get("X-SparkPipe-Fleet") or "").strip() or None, ()
-            if path == "/v1/chat/completions" and method == "POST":
-                body, requested = self.chat_body(body, requested)
-            if path == "/v1/state/move" and method == "POST":
-                requested, also = self.move_fleets(body, record)
-            fleet = app.market.admit(account, record, requested, also)
+            fleet, body = self.admitted(method, path, account, record)
         except Refusal as error:
             return self.api_error(error, shape, path)
         if app.cfg.sandbox:
@@ -2025,9 +2221,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
         target = app.cfg.hub_root + path + ("?" + parts.query if parts.query else "")
         headers = self.upstream_headers(account, record, fleet)
-        if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
-            return self.tunnel(target, headers, account, fleet, shape)
-        self.forward(method, target, headers, body, shape, path)
+        ip, upstream = self.client_ip(), []
+        self.cutoff = False
+        watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip), lambda: self.cut(upstream))
+        try:
+            if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
+                return self.tunnel(target, headers, shape, upstream)
+            self.forward(method, target, headers, body, shape, path, upstream)
+        finally:
+            app.guard.done(watch)
+
+    def still(self, account, fleet, scope, ip):
+        app = self.server.app
+        try:
+            found = app.principal(self.headers, ip, scope)[0]
+        except Refusal:
+            return None
+        return app.market.hold_left(account, fleet) if found == account else None
+
+    def cut(self, upstream):
+        self.cutoff = True
+        for sock in [self.connection] + upstream:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def upstream_headers(self, account, record, fleet):
         app = self.server.app
@@ -2041,11 +2259,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             found.append(("X-SparkPipe-Priority", record["priority"]))
         return found
 
-    def forward(self, method, target, headers, body, shape, path):
+    def forward(self, method, target, headers, body, shape, path, upstream):
         app = self.server.app
         connection = http.client.HTTPConnection(app.cfg.hub_host, app.cfg.hub_port, timeout=900)
         started = False
         try:
+            connection.connect()
+            upstream.append(connection.sock)
             connection.putrequest(method, target, skip_accept_encoding=True)
             for name, value in headers:
                 connection.putheader(name, value)
@@ -2076,19 +2296,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
         except (OSError, http.client.HTTPException) as error:
             log(f"fleet upstream {method} {'/'.join(path.split('/')[:3])}: {error}")
-            if not started:
+            if not started and not self.cutoff:
                 self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"), shape, path)
         finally:
             connection.close()
             self.close_connection = True
 
-    def tunnel(self, target, headers, account, fleet, shape):
+    def tunnel(self, target, headers, shape, sockets):
         app = self.server.app
         try:
             upstream = socket.create_connection((app.cfg.hub_host, app.cfg.hub_port), timeout=30)
         except OSError as error:
             log(f"fleet upstream websocket: {error}")
             return self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"), shape)
+        sockets.append(upstream)
         try:
             lines = [f"GET {target} HTTP/1.1", f"Host: {app.cfg.hub_host}:{app.cfg.hub_port}", "Connection: Upgrade", f"Upgrade: {self.headers.get('Upgrade')}"]
             upstream.sendall(("\r\n".join(lines + [f"{name}: {value}" for name, value in headers]) + "\r\n\r\n").encode("latin-1"))
@@ -2111,24 +2332,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.connection.sendall(reply)
                 return
             self.connection.sendall(reply)
-            self.pipe(upstream, account, fleet)
+            self.pipe(upstream)
         except OSError as error:
             log(f"fleet upstream websocket: {error}")
         finally:
             upstream.close()
             self.close_connection = True
 
-    def pipe(self, upstream, account, fleet):
-        app, client = self.server.app, self.connection
+    def pipe(self, upstream):
+        client = self.connection
         client.settimeout(None)
         upstream.settimeout(None)
-        checked = time.monotonic()
         while True:
-            ready = select.select([client, upstream], [], [], TUNNEL_CHECK)[0]
-            if time.monotonic() - checked >= TUNNEL_CHECK:
-                checked = time.monotonic()
-                if not app.market.holds(account, fleet):
-                    return
+            ready = select.select([client, upstream], [], [])[0]
             for side in ready:
                 data = side.recv(65536)
                 if not data:
@@ -2186,8 +2402,12 @@ def start(cfg, port=None):
     threading.Thread(target=app.work, daemon=True).start()
     threading.Thread(target=app.deliver, daemon=True).start()
     threading.Thread(target=app.market.run, args=(log,), daemon=True).start()
-    threading.Thread(target=app.notifier.run, daemon=True).start()
+    for _ in range(WEBHOOK_WORKERS):
+        threading.Thread(target=app.notifier.run, daemon=True).start()
+    threading.Thread(target=app.guard.run, daemon=True).start()
     app.usage.prune(clock())
+    app.notices.prune(app.market.now())
+    app.notifier.deliveries.prune(clock())
     app.notifier.sweep(app.market.now())
     server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port if port is None else port), Handler)
     server.daemon_threads = True
@@ -2238,8 +2458,9 @@ def credit(app, argv):
     if not account or not argv[4].strip():
         print("usage: sparkpipe_pay.py credit EMAIL HC NOTE, for an existing account", file=sys.stderr)
         return 2
-    lot = app.market.credit(account, credits, argv[4].strip()[:200])
-    print(f"credited {lot['hc']} HC to {argv[2]}, lot {lot['lot']}, lapsing {lot['expires']}")
+    lot = app.market.downtime_credit(account, credits, argv[4].strip()[:200])
+    flush(app)
+    print(f"credited {lot['hc']} HC to {argv[2]} under clause 4.4, lot {lot['lot']}, lapsing {lot['expires']}; the customer is told by downtime.credited")
     return 0
 
 

@@ -17,7 +17,7 @@ KST = timezone(timedelta(hours=9))
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round", "api_key", "api_key_revoke", "api_key_rotate", "maintenance", "maintenance_done", "clock",
-         "notice", "webhook", "webhook_delete", "auto_extend", "pair_loss")
+         "auto_extend", "auto_extend_wait")
 AVAILABILITY = {"free": "available"}
 SCOPES = ("inference", "state", "storage", "functions", "models", "account:read")
 PRIORITIES = ("interactive", "background")
@@ -25,10 +25,11 @@ EVENTS = ("booking.deadline", "booking.confirmed", "fleet.allocated", "waitlist.
           "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost")
 HUB_EVENTS = ("run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token", "pack.warm", "cache.restored", "models.changed")
 EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost")
+REQUIRED_EMAIL = ("fleet.allocated", "downtime.credited", "working_state.lost")
 DEADLINE_HOURS = (48, 6)
 REBUILD_HOURS = 24
 KEY_IPS = 32
-RECENT_NOTICES = 5000
+GRACE_SECONDS = 30
 
 
 class Refusal(Exception):
@@ -192,11 +193,8 @@ class State:
         self.round = None
         self.offset = 0
         self.seq = 0
-        self.sent = set()
-        self.notices = collections.deque(maxlen=RECENT_NOTICES)
-        self.webhooks = {}
         self.extend = {}
-        self.losses = {}
+        self.rebuilds = {}
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -223,6 +221,8 @@ class State:
     def on_hc_lot(self, data):
         self.lots[data["account"]].append({"lot": data["lot"], "hc": Decimal(data["hc"]), "first": data["hc"], "expires": data["expires"], "source": data["source"], "ref": data["ref"], "issued": data["now"]})
         self.lots[data["account"]].sort(key=lambda lot: (lot["expires"], lot["issued"]))
+        if data["source"] == "rebuild":
+            self.rebuilds[data["ref"]] = data
 
     def on_hc_debit(self, data):
         if data.get("lot"):
@@ -268,25 +268,14 @@ class State:
     def on_api_key_rotate(self, data):
         self.keys[data["key"]].update(retires=data["retires"], rotated_to=data["new"])
 
-    def on_notice(self, data):
-        if data.get("once"):
-            self.sent.add(data["once"])
-        self.notices.append(data)
-
-    def on_webhook(self, data):
-        self.webhooks[data["webhook"]] = data
-
-    def on_webhook_delete(self, data):
-        self.webhooks.pop(data["webhook"], None)
-
     def on_auto_extend(self, data):
         if data["weeks"]:
             self.extend[(data["account"], data["fleet"])] = {"weeks": data["weeks"], "now": data["now"]}
         else:
             self.extend.pop((data["account"], data["fleet"]), None)
 
-    def on_pair_loss(self, data):
-        self.losses[(data["fleet"], data["event"])] = data
+    def on_auto_extend_wait(self, data):
+        self.extend[(data["account"], data["fleet"])].update(through=data["through"], waiting=data["reason"])
 
     def on_maintenance(self, data):
         self.maintenance[data["maintenance"]] = dict(data, begins=slot_time(data["start"]), ends=slot_time(data["start"]) + HOUR * data["hours"], done=False)
@@ -334,14 +323,15 @@ class Market:
         found = {"notice": new_id("NT"), "account": account, "type": kind, "data": data, "summary": summary, "text": text, "targets": self.targets(account, kind), "now": stamp(now)}
         if once:
             found["once"] = once
-        self.book.append("notice", found)
+        self.app.notices.add(found)
         self.app.notified(found)
         return found
 
     def targets(self, account, kind):
-        mine = sorted((w for w in self.st.webhooks.values() if w["account"] == account), key=lambda w: w["webhook"])
-        found = [w["webhook"] for w in mine if kind in w["events"] or "*" in w["events"]]
-        if kind in EMAIL_EVENTS and not any(w["kind"] == "email" for w in mine):
+        mine = self.app.hooks_of(account)
+        found = [w["webhook"] for w in mine if w["kind"] == "url" and (kind in w["events"] or "*" in w["events"])]
+        email = next((w for w in mine if w["kind"] == "email"), None)
+        if kind in REQUIRED_EMAIL or (kind in email["events"] or "*" in email["events"] if email else kind in EMAIL_EVENTS):
             found.append("mail")
         return found
 
@@ -633,7 +623,7 @@ class Market:
             marks = [hours for hours in DEADLINE_HOURS if deadline - HOUR * hours <= now < deadline]
             if marks:
                 once = f"deadline:{account}:{fleet_id}:{slot_text(deadline)}:{min(marks)}"
-                if once not in self.st.sent:
+                if not self.app.notices.sent(once):
                     found.append((deadline - HOUR * min(marks), account, fleet_id, through, min(marks), once))
         return min(found) if found else None
 
@@ -664,10 +654,10 @@ class Market:
         due = max(through - WEEK * setting["weeks"], stamp_time(setting["now"]))
         if due > now:
             return None
-        once = f"extend:{account}:{fleet_id}:{slot_text(through)}"
-        if once in self.st.sent and through <= now:
-            return through, lambda: self.stop_extend(account, fleet_id, "insufficient_hc", through)
-        at = now if once in self.st.sent else due
+        waiting = setting.get("waiting") if setting.get("through") == slot_text(through) else None
+        if waiting and through <= now:
+            return through, lambda: self.stop_extend(account, fleet_id, waiting, through)
+        at = now if waiting else due
         fleet = self.fleet_field(pricing, fleet_id)
         weeks = max(1, (week_start(at) + WEEK * (1 + setting["weeks"]) - through) // WEEK)
         try:
@@ -675,21 +665,26 @@ class Market:
         except Refusal as error:
             reason = error.reason or "refused"
             return at, lambda: self.stop_extend(account, fleet_id, reason, at)
-        short = self.st.balance(account, stamp(at)) < Decimal(plan["price"])
-        if short and once in self.st.sent:
+        blocked = None if self.app.terms_current(account) else "terms"
+        if not blocked and self.st.balance(account, stamp(at)) < Decimal(plan["price"]):
+            blocked = "insufficient_hc"
+        if blocked and blocked == waiting:
             return None
-        return at, lambda: self.extend(account, fleet, plan, at, once, short)
+        return at, lambda: self.extend(account, fleet, plan, at, blocked)
 
-    def extend(self, account, fleet, plan, at, once, short):
-        if short:
-            balance = self.st.balance(account, stamp(at))
+    def extend(self, account, fleet, plan, at, blocked):
+        if blocked:
+            self.book.append("auto_extend_wait", {"account": account, "fleet": fleet["id"], "through": plan["first"], "reason": blocked, "now": stamp(at)})
+            balance, first = self.st.balance(account, stamp(at)), slot_time(plan["first"])
+            data = {"fleet": fleet["id"], "deadline": slot_text(first - DAY), "through": plan["first"], "early": True, "reason": blocked, "weeks": plan["weeks"], "price": plan["price"], "balance": text_hc(balance)}
+            if blocked == "terms":
+                return self.notify(account, "booking.deadline", data, at, f"Auto-extend on {fleet['name']} waits for you to accept the new Customer Agreement",
+                                   f"Auto-extend could not book {plan['weeks']} more Weeks of {fleet['name']} from {kst_text(first)}: the Customer Agreement has changed, and we accept no Booking until you accept the new version (clause 9.1). "
+                                   f"Accept it on your account page before {kst_text(first - DAY)} to keep the Fleet: {self.app.cfg.public}/market.html")
             need = Decimal(plan["price"]) - balance
-            data = {"fleet": fleet["id"], "deadline": slot_text(slot_time(plan["first"]) - DAY), "through": plan["first"], "early": True, "weeks": plan["weeks"], "price": plan["price"],
-                    "balance": text_hc(balance), "hc_needed": text_hc(need)}
-            self.notify(account, "booking.deadline", data, at, f"Auto-extend on {fleet['name']} needs {text_hc(need)} more HC",
-                        f"Auto-extend could not book {plan['weeks']} more Weeks of {fleet['name']} from {kst_text(slot_time(plan['first']))}: they cost {plan['price']} HC and your unlocked balance is {text_hc(balance)} HC. "
-                        f"Buy {text_hc(need)} HC before {kst_text(slot_time(plan['first']) - DAY)} to keep the Fleet: {self.app.cfg.public}/market.html", once)
-            return
+            return self.notify(account, "booking.deadline", dict(data, hc_needed=text_hc(need)), at, f"Auto-extend on {fleet['name']} needs {text_hc(need)} more HC",
+                               f"Auto-extend could not book {plan['weeks']} more Weeks of {fleet['name']} from {kst_text(first)}: they cost {plan['price']} HC and your unlocked balance is {text_hc(balance)} HC. "
+                               f"Buy {text_hc(need)} HC before {kst_text(first - DAY)} to keep the Fleet: {self.app.cfg.public}/market.html")
         ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), at, {"weeks": plan["weeks"], "discount": plan["discount"], "auto": True})
         self.confirmed(self.st.bookings[ident], at)
 
@@ -764,6 +759,14 @@ class Market:
     def credit(self, account, credits, note):
         with self.book.lock:
             return self.lot(account, credits, "credit", new_id("CR"), self.now(), note)
+
+    def downtime_credit(self, account, credits, note):
+        with self.book.lock:
+            now = self.now()
+            lot = self.lot(account, credits, "credit", new_id("CR"), now, note)
+            self.notify(account, "downtime.credited", {"lot": lot["lot"], "hc": lot["hc"], "clause": "4.4", "note": note}, now, f"SparkPipe credited {lot['hc']} HC for downtime",
+                        f"We credited {lot['hc']} HC to your account for hours a Fleet you held was unavailable or unreachable (clause 4.4): {note}. The HC lapses on {lot['expires'][:10]}.")
+        return lot
 
     def key_options(self, pricing, body, now):
         bad = lambda text: Refusal(text, 400, "invalid_request")
@@ -864,6 +867,28 @@ class Market:
             self.advance(now)
             return fleet in self.held(account, now)
 
+    def hold_left(self, account, fleet_id):
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            mine = [b for b in self.on_fleet(fleet_id) if b["account"] == account]
+            end = now
+            while any(b["begins"] <= end < b["ends"] for b in mine):
+                end = max(b["ends"] for b in mine if b["begins"] <= end < b["ends"])
+            if end == now:
+                end = max((b["ends"] for b in mine if b["ends"] <= now), default=now - timedelta(seconds=GRACE_SECONDS))
+        return (end - now).total_seconds() + GRACE_SECONDS
+
+    def admit_first(self, account, record, requested):
+        if requested or (record and record["fleet"]):
+            return self.admit(account, record, requested)
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            if not self.held(account, now):
+                raise Refusal("This account holds no Fleet now. Book an Hour or a Week to send requests.", 403, "fleet_not_held")
+        return None
+
     def admit(self, account, record, requested, also=()):
         if record and record["fleet"]:
             requested = record["fleet"]
@@ -897,29 +922,32 @@ class Market:
                 raise Refusal(f"Give {name} as a list of at most 1000 entries.", 400, "invalid_request")
             lost[name] = [short_text(item, name, 300) for item in items]
         run = short_text(body["run"], "run", 100) if body.get("run") is not None else None
+        ref = f"{fleet_id}:{event}"
         with self.book.lock:
             now = self.now()
             self.advance(now)
             at = stamp_field(body["at"], "time of the loss") if body.get("at") is not None else now
             if at > now + timedelta(minutes=5):
                 raise Refusal("The loss cannot be in the future.", 400, "invalid_request")
-            if (fleet_id, event) in self.st.losses:
-                return dict(self.st.losses[(fleet_id, event)], duplicate=True)
-            covering = [b for b in self.on_fleet(fleet_id) if b["account"] == account and b["begins"] <= at < b["ends"]]
-            if not covering:
-                raise Refusal(f"{account} did not hold {fleet_id} at {stamp(at)}.", 409, "not_held")
-            lot = self.lot(account, Decimal(covering[0]["rate"]) * REBUILD_HOURS, "rebuild", f"{fleet_id}:{event}", now)
-            data = dict(lost, fleet=fleet_id, event=event, account=account, at=stamp(at), run=run, hc=lot["hc"], lot=lot["lot"], now=stamp(now))
-            self.book.append("pair_loss", data)
+            lot, duplicate = self.st.rebuilds.get(ref), ref in self.st.rebuilds
+            if not lot:
+                covering = [b for b in self.on_fleet(fleet_id) if b["account"] == account and b["begins"] <= at < b["ends"]]
+                if not covering:
+                    raise Refusal(f"{account} did not hold {fleet_id} at {stamp(at)}.", 409, "not_held")
+                lot = self.lot(account, Decimal(covering[0]["rate"]) * REBUILD_HOURS, "rebuild", ref, now)
+            found = {"fleet": fleet_id, "event": event, "account": lot["account"], "hc": lot["hc"], "lot": lot["lot"], "credited": lot["now"], "duplicate": duplicate}
+            once = f"loss:{ref}"
+            if self.app.notices.sent(once):
+                return found
             name = self.fleet_name(fleet_id)
-            listed = [f"Lost {name}: {item}" for name, items in (("context", lost["contexts"]), ("storage path", lost["storage"])) for item in items[:50]]
+            listed = [f"Lost {label}: {item}" for label, items in (("context", lost["contexts"]), ("storage path", lost["storage"])) for item in items[:50]]
             more = len(lost["contexts"]) + len(lost["storage"]) - len(listed)
-            self.notify(account, "working_state.lost", {key: data[key] for key in ("fleet", "event", "at", "pair", "contexts", "storage", "run", "hc", "lot")}, now,
+            self.notify(lot["account"], "working_state.lost", dict(lost, fleet=fleet_id, event=event, at=stamp(at), run=run, hc=lot["hc"], lot=lot["lot"]), now,
                         f"SparkPipe {name} lost part of your working state: {lot['hc']} HC credited",
                         "\n".join([f"A node pair of {name} lost part of your working state at {kst_text(at)}. We credited {lot['hc']} HC, 24 hours of the Fleet at its Rate (clause 6.6)." + (f" Rebuild run {run} started." if run else ""), ""]
-                                  + listed + ([f"and {more} more, listed in the webhook and in GET /v1/runs."] if more > 0 else [])))
-        self.app.mail(self.app.cfg.notify, f"Pair loss on {fleet_id}: {lot['hc']} HC credited", f"{self.app.who(account)}: event {event} on {fleet_id} at {stamp(at)}, {len(lost['contexts'])} contexts and {len(lost['storage'])} storage paths lost; lot {lot['lot']} credited {lot['hc']} HC under clause 6.6.")
-        return dict(data, duplicate=False)
+                                  + listed + ([f"and {more} more, listed in the webhook and in GET /v1/runs."] if more > 0 else [])), once)
+        self.app.mail(self.app.cfg.notify, f"Pair loss on {fleet_id}: {lot['hc']} HC credited", f"{self.app.who(lot['account'])}: event {event} on {fleet_id} at {stamp(at)}, {len(lost['contexts'])} contexts and {len(lost['storage'])} storage paths lost; lot {lot['lot']} credited {lot['hc']} HC under clause 6.6.")
+        return found
 
     def hub_event(self, item):
         if not isinstance(item, dict) or item.get("type") not in HUB_EVENTS:
@@ -935,7 +963,7 @@ class Market:
         lines = [f"{key}: {value}" for key, value in sorted(data.items()) if isinstance(value, (str, int, float)) and not isinstance(value, bool)]
         once = f"hub:{fleet_id}:{ident}"
         with self.book.lock:
-            if once in self.st.sent:
+            if self.app.notices.sent(once):
                 return {"id": ident, "duplicate": True}
             found = self.notify(account, item["type"], dict(data, fleet=fleet_id), self.now(), summary, "\n".join([summary, ""] + lines), once)
         return {"id": ident, "notice": found["notice"], "duplicate": False}

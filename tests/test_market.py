@@ -8,6 +8,7 @@ import http.client
 import http.server
 import io
 import json
+import os
 import shutil
 import socket
 import sys
@@ -133,10 +134,13 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        for chunk in chunks:
-            self.wfile.write(chunk)
-            self.wfile.flush()
-            time.sleep(0.01)
+        try:
+            for chunk in chunks:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+                time.sleep(0.01)
+        except OSError:
+            self.close_connection = True
 
     def generic(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -152,6 +156,8 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
             return self.answer(200, {"model": data.get("model"), "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}}], "usage": {"prompt_tokens": 1000, "completion_tokens": 5}, "sparkpipe": {"fleet": fleet}})
         if self.path == "/v1/models/resident" and self.command == "PUT" and self.headers.get("X-SparkPipe-Allow-Swap") != "1":
             return self.answer(409, {"type": "error", "error": {"type": "model_not_loaded", "message": "kimi-k3 is resident"}})
+        if self.path == "/v1/responses" and body and json.loads(body).get("slow"):
+            return self.events([b"data: tick\n\n"] * 1000)
         if self.path == "/v1/messages" and body and json.loads(body).get("stream"):
             return self.events([f"event: {name}\ndata: {json.dumps({'type': name})}\n\n".encode() for name in ("message_start", "content_block_delta", "message_delta", "message_stop")])
         self.answer(200, {"method": self.command, "path": self.path, "fleet": fleet})
@@ -170,6 +176,23 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
 
     do_POST = do_PUT = do_DELETE = do_HEAD = generic
+
+
+class Drip(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.server.posts.append(time.monotonic())
+        try:
+            for _ in range(200):
+                self.wfile.write(b"H")
+                self.wfile.flush()
+                time.sleep(0.05)
+        except OSError:
+            pass
+        self.close_connection = True
 
 
 class Receiver(http.server.BaseHTTPRequestHandler):
@@ -205,7 +228,15 @@ def hub(port, path, body, key=POOL_KEY):
 
 
 def notices(app, account, kind=None):
-    return [n for n in app.book.market.notices if n["account"] == account and (kind is None or n["type"] == kind)]
+    return [n for n in app.notices.items() if n["account"] == account and (kind is None or n["type"] == kind)]
+
+
+def ledger_lines(app):
+    return [json.loads(raw) for raw in Path(app.cfg.path("ledger.jsonl")).read_text().splitlines()]
+
+
+def private(path):
+    return os.stat(path).st_mode & 0o777 == 0o600
 
 
 def until(test, seconds=10):
@@ -508,6 +539,30 @@ def passthrough(failures, app, m, port, upstream, state):
     connection.close()
     if status != 413 or upstream.calls[-1]["path"] != "/v1/storage/models/x/part-1":
         failures.append(f"a body over 32 MiB is not refused before it reaches the hub: {status}")
+    early = []
+    for method, path in (("POST", "/v1/chat/completions"), ("PUT", "/v1/storage/models/x/part-3"), ("POST", "/v1/state/move"), ("POST", "/git/main.git/git-receive-pack")):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.putrequest(method, path)
+        for name, value in dict(basic(keys[D]) if path.startswith("/git/") else {"X-Api-Key": keys[D]}, **{"Content-Length": str(20 << 20)}).items():
+            connection.putheader(name, value)
+        connection.endheaders()
+        try:
+            early.append(connection.getresponse().status)
+        except OSError as error:
+            early.append(str(error))
+        connection.close()
+    if early != [403, 403, 403, 403] or len(upstream.calls) != before + 1:
+        failures.append(f"the body of a request from an account that holds no Fleet is read before it is refused: {early}")
+    for size in (b"-1", b"+5", b"0x10", b"zz", b"123456789"):
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"POST /git/main.git/git-receive-pack HTTP/1.1\r\nHost: sparkpipe.ai\r\nAuthorization: " + basic(keys[H])["Authorization"].encode() + b"\r\nTransfer-Encoding: chunked\r\n\r\n" + size + b"\r\nabcde\r\n0\r\n\r\n")
+        try:
+            head = sock.recv(100)
+        except OSError:
+            head = b"timeout"
+        sock.close()
+        if not head.startswith(b"HTTP/1.0 400") or upstream.calls[-1]["path"] != "/v1/storage/models/x/part-1":
+            failures.append(f"a chunk size of {size!r} is not refused: {head!r}")
     status, _, _ = raw_call(port, "POST", "/git/main.git/git-receive-pack", headers=dict(basic(keys[H]), **{"Content-Type": "application/x-git-receive-pack-request"}), chunks=[b"0032want ", b"abc", b"\x00" * 70000])
     got = upstream.calls[-1]
     if status != 200 or got["path"] != "/git/main.git/git-receive-pack" or got["body"] != b"0032want abc" + b"\x00" * 70000 or sent(got, "content-length") != [str(70012)] or sent(got, "transfer-encoding"):
@@ -631,10 +686,13 @@ def usage(failures, app, m, port, state):
     if client(app, port, C)("GET", "/v1/requests")[1]["totals"]["requests"] != 1 or owner("GET", "/v1/requests?since=2027-01-06&until=2026-01-06")[0] != 400 or owner("GET", "/v1/requests?limit=0")[0] != 400:
         failures.append("another account's records are shown, or a bad window or limit is accepted")
     day = moment.strftime("%Y-%m-%d")
+    folder = Path(app.cfg.path("requests"))
+    if sorted(path.relative_to(folder).as_posix() for path in folder.rglob("*.jsonl")) != sorted([f"{H}/{day}.jsonl", f"{C}/{day}.jsonl"]) or "r_c" in (folder / H / f"{day}.jsonl").read_text():
+        failures.append(f"usage records are not filed per account and day: {sorted(str(path) for path in folder.rglob('*.jsonl'))}")
     app.usage.prune(moment + timedelta(days=366))
-    kept = (Path(app.cfg.path("requests")) / f"{day}.jsonl").exists()
+    kept = (folder / H / f"{day}.jsonl").exists()
     app.usage.prune(moment + timedelta(days=367))
-    if not kept or (Path(app.cfg.path("requests")) / f"{day}.jsonl").exists() or app.usage.query(H, moment - timedelta(days=1), moment + timedelta(days=1), {}):
+    if not kept or (folder / H / f"{day}.jsonl").exists() or list(app.usage.query(H, moment - timedelta(days=1), moment + timedelta(days=1), {})) or list(folder.iterdir()):
         failures.append("usage records are not kept for a year and then deleted")
 
 
@@ -775,6 +833,9 @@ def bearer_flows(failures, app, m, port, mailbox):
     other = second("POST", "/verify", {"email": "pilot@example.com", "code": tp.last_code(mailbox, "pilot@example.com"), "bearer": True, "device": "desktop"})[1]["session"]
     if cli("POST", "/signout", {}, headers=auth)[0] != 200 or cli("GET", "/market/state", headers=auth)[1]["account"] is not None or cli("POST", "/market/waitlist", {"lock": 144}, headers=auth)[0] != 401:
         failures.append("signing out does not end the bearer session")
+    kept = Path(app.cfg.path("sessions.json"))
+    if "laptop" in kept.read_text() or "desktop" not in kept.read_text() or not private(kept) or any("device" in json.dumps(line) or line["type"].startswith("session") for line in ledger_lines(app)):
+        failures.append("bearer sessions are kept in the ledger, or a signed-out session is kept, or the session file is readable by others")
     found = second("GET", "/market/state", headers={"Authorization": f"Bearer {other}"})[1]["account"]["sessions"]
     if [s_["device"] for s_ in found] != ["desktop"] or second("POST", "/market/sessions/revoke", {"id": found[0]["id"]}, headers={"Authorization": f"Bearer {other}"})[0] != 200 or second("GET", "/market/state", headers={"Authorization": f"Bearer {other}"})[1]["account"] is not None:
         failures.append("an account cannot see and revoke its own bearer sessions")
@@ -853,10 +914,43 @@ def extension_flows(failures, work):
             failures.append("auto-extend does not stop once the pin it keeps has lapsed")
         time_based_keys(failures, app, m, port, upstream, P)
         tunnel_end(failures, app, m, port)
+        changed_terms(failures, app, m, port, mailbox)
+        replay = sp.Book(app.cfg.path("ledger.jsonl"))
+        if set(replay.market.bookings) != set(app.book.market.bookings) or replay.market.extend != app.book.market.extend:
+            failures.append("a replayed ledger gives different auto-extended bookings or settings")
     finally:
         server.shutdown()
         upstream.shutdown()
         mailbox.shutdown()
+
+
+def changed_terms(failures, app, m, port, mailbox):
+    T = person(app, "terms", 1000)
+    m.book_weeks(T, {"fleet": "F3", "weeks": 1})
+    first = through(app, T, "F3")
+    terms = Path(app.cfg.site) / "terms" / "agreement-en.md"
+    text = terms.read_text()
+    try:
+        set_up = client(app, port, T)("PUT", "/market/auto-extend", {"fleet": "F3", "weeks_ahead": 1})
+        terms.write_text(text + "\n9.9. A clause added after the auto-extend setting was saved.\n")
+        if client(app, port, T)("PUT", "/market/auto-extend", {"fleet": "F3", "weeks_ahead": 1})[1].get("reason") != "terms":
+            failures.append("auto-extend is set again without accepting the new terms")
+        NOW[0] = first - market.WEEK + market.HOUR
+        m.tick()
+        m.tick()
+        warned = notices(app, T, "booking.deadline")
+        waited = [line["data"] for line in ledger_lines(app) if line["type"] == "auto_extend_wait" and line["data"]["account"] == T]
+        if set_up[0] != 200 or through(app, T, "F3") != first or len(warned) != 1 or (warned[0]["data"].get("reason"), warned[0]["data"].get("early")) != ("terms", True) or [w["reason"] for w in waited] != ["terms"]:
+            failures.append(f"auto-extend books for an account that has not accepted the current terms, or does not warn it once: {through(app, T, 'F3')} {warned} {waited}")
+        app.mails.join()
+        if not any(rcpt == ["terms@example.com"] and " ".join(mail["Subject"].split()) == "Auto-extend on Fleet 3 waits for you to accept the new Customer Agreement" for rcpt, mail in mailbox.mail):
+            failures.append("the account is not emailed that auto-extend waits for its acceptance of the new terms")
+        app.accept(T, "127.0.0.1", "test")
+        m.tick()
+        if through(app, T, "F3") != first + market.WEEK or not next(b for b in app.book.market.bookings.values() if b["account"] == T and b["ends"] == first + market.WEEK).get("auto"):
+            failures.append("auto-extend does not book once the account accepts the new terms")
+    finally:
+        terms.write_text(text)
 
 
 def time_based_keys(failures, app, m, port, upstream, P):
@@ -881,9 +975,10 @@ def time_based_keys(failures, app, m, port, upstream, P):
 
 
 def tunnel_end(failures, app, m, port):
-    Q = person(app, "quick", 10)
+    Q = person(app, "quick", 100)
     start = market.slot_time(market.slot_text(m.now())) + market.HOUR
     m.book_hours(Q, {"fleet": "F1", "start": slot(start), "hours": 1})
+    m.book_hours(Q, {"fleet": "F1", "start": slot(start + 2 * market.HOUR), "hours": 1})
     key = m.create_key(Q, {})["key"]
     NOW[0] = start + timedelta(minutes=30)
     saved, sp.TUNNEL_CHECK = sp.TUNNEL_CHECK, 0.2
@@ -891,17 +986,51 @@ def tunnel_end(failures, app, m, port):
         sock, head = websocket(port, key)
         sock.sendall(b"ping")
         first = sock.recv(100)
-        NOW[0] = start + market.HOUR
+        NOW[0] = start + market.HOUR + timedelta(seconds=10)
+        time.sleep(0.8)
+        sock.sendall(b"late")
+        late = sock.recv(100)
+        NOW[0] = start + market.HOUR + timedelta(seconds=31)
         sock.settimeout(5)
         try:
             closed = sock.recv(100) == b""
         except OSError:
             closed = False
         sock.close()
+        if not head.startswith(b"HTTP/1.1 101") or first != b"echo:ping" or late != b"echo:late" or not closed:
+            failures.append(f"a WebSocket is not given 30 seconds after the hold ends and then closed: {head[:40]!r} {first!r} {late!r} {closed}")
+        NOW[0] = start + 2 * market.HOUR + timedelta(minutes=30)
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        connection.request("POST", "/v1/responses", json.dumps({"slow": True}).encode(), {"X-Api-Key": key, "Content-Type": "application/json"})
+        response = connection.getresponse()
+        began = response.read1(64)
+        NOW[0] = start + 3 * market.HOUR + timedelta(seconds=31)
+        moment = time.monotonic()
+        try:
+            while response.read1(65536):
+                pass
+        except (OSError, http.client.HTTPException):
+            pass
+        took = time.monotonic() - moment
+        connection.close()
+        if not began.startswith(b"data: tick") or took > 3:
+            failures.append(f"an HTTP stream runs on past the end of the hold and its 30 seconds: {began!r} {took:.1f}s")
+        NOW[0] = start + 2 * market.HOUR + timedelta(minutes=40)
+        revoked = m.create_key(Q, {})
+        sock, head = websocket(port, revoked["key"])
+        sock.sendall(b"one")
+        echoed = sock.recv(100)
+        m.revoke_key(Q, revoked["id"])
+        sock.settimeout(5)
+        try:
+            cut = sock.recv(100) == b""
+        except OSError:
+            cut = False
+        sock.close()
+        if echoed != b"echo:one" or not cut:
+            failures.append(f"a WebSocket stays open after its key is revoked: {echoed!r} {cut}")
     finally:
         sp.TUNNEL_CHECK = saved
-    if not head.startswith(b"HTTP/1.1 101") or first != b"echo:ping" or not closed:
-        failures.append(f"a WebSocket stays open after the account stops holding the Fleet: {head[:40]!r} {first!r} {closed}")
 
 
 def signed(secret, headers, body):
@@ -913,8 +1042,9 @@ def signed(secret, headers, body):
 def notice_flows(failures, work):
     mailbox = tp.serve(tp.FakeSMTP, mail=[])
     good, slack, flaky = (tp.serve(Receiver, posts=[], fail=fail) for fail in (0, 0, 2))
-    saved = sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS
-    sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS = ("https", "http"), lambda text: True, (0.05,) * 7
+    drip = tp.serve(Drip, posts=[])
+    saved = sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS, sp.WEBHOOK_SECONDS
+    sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS, sp.WEBHOOK_SECONDS = ("https", "http"), lambda text: True, (0.05,) * 7, 1.5
     server, app, port = live(work, "notices", mailbox)
     m = app.market
     try:
@@ -931,7 +1061,12 @@ def notice_flows(failures, work):
         listed = owner("GET", "/v1/webhooks")[1]
         if [h.get("url") or h.get("email") for h in listed["data"]] != sorted([url(good), url(slack), url(flaky)], key=lambda u: [everything, chat_hook, retried][[url(good), url(slack), url(flaky)].index(u)]["id"]) + ["watcher@example.com"] or "secret" in json.dumps(listed) or listed["events"] != list(market.EVENTS):
             failures.append(f"the webhook list shows secrets, or not the default email notices: {listed}")
+        stuck = owner("PUT", "/v1/webhooks", {"url": url(drip), "events": ["booking.confirmed"], "secret": "d" * 24})[1]
         m.book_hours(W, {"fleet": "F1", "start": slot(kst(2027, 1, 6, 14)), "hours": 1})
+        confirmed = lambda: any(json.loads(body)["type"] == "booking.confirmed" for _, body in good.posts)
+        if not until(confirmed, 1) or not until(lambda: len(drip.posts) >= 2, 8) or drip.posts[1] - drip.posts[0] > 2.5:
+            failures.append(f"a slow webhook receiver holds up other deliveries, or one delivery runs past its deadline: {confirmed()} {[round(t - drip.posts[0], 2) for t in drip.posts]}")
+        owner("DELETE", f"/v1/webhooks/{stuck['id']}")
         m.join(O, {"lock": 200})
         m.join(W, {"lock": 300})
         m.join(O, {"lock": 200})
@@ -970,37 +1105,66 @@ def notice_flows(failures, work):
         sample = next(json.loads(body) for _, body in good.posts if json.loads(body)["type"] == "working_state.lost")
         if set(sample) != {"id", "type", "created", "account", "summary", "data"} or sample["data"]["contexts"] != ["conv-a", "conv-b"] or sample["data"]["hc"] != "24.000000":
             failures.append(f"a webhook body is not the event with its data: {sample}")
-        until(lambda: len(slack.posts) >= 1 and len(flaky.posts) >= 4)
+        until(lambda: len(slack.posts) >= 1 and len(flaky.posts) >= 5)
         if [json.loads(body) for _, body in slack.posts] != [{"text": "Booked Fleet 1: 1 hours from 2027-01-06 14:00 KST"}] or not all(signed(chat_hook["secret"], headers, body) for headers, body in slack.posts):
             failures.append(f"a Slack-compatible webhook does not get the event's text, signed: {slack.posts}")
         delivered = [json.loads(body)["type"] for headers, body in flaky.posts]
-        if len(flaky.posts) != 4 or sorted(set(delivered)) != ["booking.confirmed", "working_state.lost"] or not all(signed("f" * 24, headers, body) for headers, body in flaky.posts):
+        if len(flaky.posts) != 5 or sorted(set(delivered)) != ["booking.confirmed", "working_state.lost"] or not all(signed("f" * 24, headers, body) for headers, body in flaky.posts):
             failures.append(f"a failed delivery is not retried until it succeeds: {delivered}")
         app.mails.join()
         subjects = sorted(" ".join(mail["Subject"].split()) for rcpt, mail in mailbox.mail if rcpt == ["watcher@example.com"])
-        expect = ["Book the next Week of Fleet 4 by " + market.kst_text(deadline)] * 2 + ["SparkPipe Fleet 4 is yours from 2027-01-11", "SparkPipe Fleet 4 lost part of your working state: 24.000000 HC credited", "SparkPipe credited 3.000000 HC for maintenance on Fleet 4",
+        expect = ["Book the next Week of Fleet 4 by " + market.kst_text(deadline)] * 2 + ["SparkPipe Fleet 4 is yours from 2027-01-11", "SparkPipe credited 3.000000 HC for maintenance on Fleet 4"] + ["SparkPipe Fleet 4 lost part of your working state: 24.000000 HC credited"] * 2 + [
                   "SparkPipe maintenance on Fleet 4, 2027-01-18 00:00 KST"]
         if mine["fleet"] != "F4" or subjects != sorted(expect):
             failures.append(f"the default email notices are not booking.deadline, fleet.allocated, downtime.credited and working_state.lost: {subjects}")
         status, quiet = owner("PUT", "/v1/webhooks", {"email": "watcher@example.com", "events": []})
         listed = owner("GET", "/v1/webhooks")[1]["data"]
-        if status != 200 or quiet.get("email") != "watcher@example.com" or any(h.get("default") for h in listed) or m.targets(W, "booking.deadline") != [everything["id"]]:
+        if status != 200 or quiet.get("email") != "watcher@example.com" or any(h.get("default") for h in listed) or m.targets(W, "booking.deadline") != [everything["id"]] or m.targets(W, "booking.confirmed") != sorted([everything["id"], chat_hook["id"], retried["id"]]):
             failures.append(f"email notices cannot be turned off: {quiet} {listed}")
+        if any(m.targets(W, kind)[-1:] != ["mail"] for kind in ("fleet.allocated", "working_state.lost", "downtime.credited")) or quiet.get("always") != ["fleet.allocated", "downtime.credited", "working_state.lost"]:
+            failures.append(f"the notices the Agreement requires are not emailed once email notices are off: {[m.targets(W, kind) for kind in market.REQUIRED_EMAIL]} {quiet}")
+        before = len(mailbox.mail)
+        hub(port, "/hub/pair-loss", {"fleet": mine["fleet"], "event": "loss-quiet", "account": W, "contexts": ["conv-q"]})
+        if sp.credit(app, ["sparkpipe_pay.py", "credit", "watcher@example.com", "5", "Fleet 4 unreachable from 09:00 to 09:40 KST on 19 January"]) != 0:
+            failures.append("the operator credit command fails")
+        app.mails.join()
+        quiet_subjects = sorted(" ".join(mail["Subject"].split()) for rcpt, mail in mailbox.mail[before:] if rcpt == ["watcher@example.com"])
+        credited = notices(app, W, "downtime.credited")[-1]["data"]
+        if quiet_subjects != ["SparkPipe Fleet 4 lost part of your working state: 24.000000 HC credited", "SparkPipe credited 5.000000 HC for downtime"] or (credited.get("clause"), credited.get("hc")) != ("4.4", "5.000000"):
+            failures.append(f"with email notices off, a pair loss and an operator credit under clause 4.4 are not emailed with downtime.credited: {quiet_subjects} {credited}")
         if owner("PUT", "/v1/webhooks", {"email": "someone@else.example", "events": ["booking.deadline"]})[0] != 400 or owner("PUT", "/v1/webhooks", {"url": url(good), "events": ["nope"]})[0] != 400:
             failures.append("notices go to another address than the account's, or to an unknown event")
-        if owner("DELETE", f"/v1/webhooks/{retried['id']}")[1] != {"id": retried["id"], "deleted": True} or retried["id"] in m.targets(W, "working_state.lost") or retried["id"] in app.notifier.secrets():
-            failures.append("a deleted webhook keeps its secret or its events")
+        hooks = Path(app.cfg.path("webhooks.json"))
+        if owner("DELETE", f"/v1/webhooks/{retried['id']}")[1] != {"id": retried["id"], "deleted": True} or retried["id"] in m.targets(W, "working_state.lost") or retried["id"] in hooks.read_text() or url(flaky) in hooks.read_text() or not private(hooks):
+            failures.append("a deleted webhook keeps its secret, address or events, or the webhook file is readable by others")
+        if "watcher@example.com" in hooks.read_text():
+            failures.append("an email subscription stores the address")
+        text = Path(app.cfg.path("ledger.jsonl")).read_text()
+        kinds = {line["type"] for line in ledger_lines(app)}
+        mailed = {line["type"] for line in ledger_lines(app) if "watcher@example.com" in json.dumps(line)}
+        if any(found in text for found in ("conv-a", "conv-q", "models/x/", "sparkg", "run_rebuild", "/hook", "whsec_", "run_1")) or kinds & {"notice", "webhook", "webhook_delete", "pair_loss", "session"} or mailed - {"account"}:
+            failures.append(f"the ledger holds notices, webhooks, lost paths, context names or hub event data: {sorted(kinds)} {sorted(mailed)}")
         if raw_call(port, "PUT", "/v1/webhooks", json.dumps({"url": url(good), "events": ["*"]}).encode(), {"X-Api-Key": m.create_key(W, {})["key"]})[0] != 403:
             failures.append("an API key manages webhooks")
-        outcomes = [json.loads(line) for line in Path(app.cfg.path("deliveries.jsonl")).read_text().splitlines()]
-        if {o["outcome"] for o in outcomes} != {"delivered"} or sum(o["attempts"] for o in outcomes if o["target"] == retried["id"]) != 4 or {o["attempts"] for o in outcomes if o["target"] != retried["id"]} != {1}:
+        until(lambda: any(o["target"] == stuck["id"] for o in app.notifier.deliveries.items()), 5)
+        outcomes = [o for o in app.notifier.deliveries.items() if o["target"] != stuck["id"]]
+        if {o["outcome"] for o in outcomes} != {"delivered"} or sum(o["attempts"] for o in outcomes if o["target"] == retried["id"]) != 6 or {o["attempts"] for o in outcomes if o["target"] != retried["id"]} != {1}:
             failures.append(f"webhook outcomes are not recorded: {[o for o in outcomes if o['target'] == retried['id']]}")
+        if [o["outcome"] for o in app.notifier.deliveries.items() if o["target"] == stuck["id"]] != ["deleted"]:
+            failures.append("a delivery to a deleted webhook is not dropped")
+        later = m.now() + timedelta(days=sp.NOTICE_DAYS + 1)
+        app.notices.prune(later - timedelta(days=1))
+        kept = len(app.notices.items())
+        app.notices.prune(later)
+        app.notifier.deliveries.prune(later)
+        if not kept or app.notices.items() or app.notifier.deliveries.items():
+            failures.append(f"notices and delivery outcomes are not kept {sp.NOTICE_DAYS} days and then deleted")
     finally:
         server.shutdown()
-        for receiver in (good, slack, flaky):
+        for receiver in (good, slack, flaky, drip):
             receiver.shutdown()
         mailbox.shutdown()
-        sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS = saved
+        sp.WEBHOOK_SCHEMES, sp.allowed_address, sp.RETRY_SECONDS, sp.WEBHOOK_SECONDS = saved
 
 
 def pair_loss(failures, app, m, port, W, O, fleet):
@@ -1020,6 +1184,25 @@ def pair_loss(failures, app, m, port, W, O, fleet):
                 hub(port, "/hub/pair-loss", dict(report, event="loss-5", at="2099-01-01T00:00:00Z"))[0], hub(port, "/hub/pair-loss", {"fleet": fleet, "account": W})[0]]
     if refusals != [401, 409, 404, 400, 400] or balance(app, W) - before != 24:
         failures.append(f"a pair-loss report is credited with a wrong key, for an account that did not hold the Fleet, an unknown Fleet, a future time or no event: {refusals}")
+    crash = dict(report, event="loss-crash")
+
+    def crashed(*args, **kwargs):
+        raise RuntimeError("the service stopped after writing the credit")
+
+    m.notify = crashed
+    try:
+        m.pair_loss(crash)
+    except RuntimeError:
+        pass
+    finally:
+        del m.notify
+    replayed = [lot for lot in sp.Book(app.cfg.path("ledger.jsonl")).market.lots[W] if lot["ref"] == f"{fleet}:loss-crash"]
+    middle = balance(app, W)
+    status, again = hub(port, "/hub/pair-loss", crash)
+    resent = hub(port, "/hub/pair-loss", crash)[1]
+    told = [n for n in notices(app, W, "working_state.lost") if n["data"]["event"] == "loss-crash"]
+    if len(replayed) != 1 or middle - before != 48 or status != 200 or not again["duplicate"] or not resent["duplicate"] or balance(app, W) != middle or len(told) != 1 or told[0]["data"]["contexts"] != ["conv-a", "conv-b"]:
+        failures.append(f"a pair loss reported again after a crash is credited twice, or its notice is lost: {replayed} {again} {told}")
 
 
 def sandbox_flows(failures, work):

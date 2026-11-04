@@ -33,7 +33,7 @@ Every five minutes the service also asks CoinPayments about each open invoice fr
 
 The booking routes, the gateway, the holder schedule and `availability.txt` are in `docs/FLEET_BOOKINGS.md`.
 
-The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. It holds the account number, its expiry and an HMAC under `session_key` in the data directory, made on first start. A bearer session is for the CLI: `Authorization: Bearer sps-…` works wherever the cookie does, on `/account`, `/market/...` and the API. It lasts 90 days, the ledger keeps only its SHA-256 (`session` line with the `device` name and `expires`), and signing out or `POST /market/sessions/revoke` ends it (`session_revoke`). `GET /market/state` lists the account's live bearer sessions. A POST whose `Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address may ask for 20 codes, 30 verifications and 10 orders in ten minutes, and each email for 5 codes an hour.
+The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. It holds the account number, its expiry and an HMAC under `session_key` in the data directory, made on first start. A bearer session is for the CLI: `Authorization: Bearer sps-…` works wherever the cookie does, on `/account`, `/market/...` and the API. It lasts 90 days. `sessions.json` keeps only its SHA-256, with the session id, the account, the `device` name and `created` and `expires`; signing out or `POST /market/sessions/revoke` ends it and deletes that record, and an expired one is deleted at the next housekeeping (every five minutes). `GET /market/state` lists the account's live bearer sessions. A POST whose `Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address may ask for 20 codes, 30 verifications and 10 orders in ten minutes, and each email for 5 codes an hour.
 
 ## Rules the service enforces
 
@@ -46,11 +46,12 @@ The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. I
 
 `/var/lib/sparkpipe-pay`, owned by the service user:
 
-- `ledger.jsonl`: one JSON line per event (`account`, `acceptance`, `session`, `session_revoke`, `order`, `invoice`, `invoice_failed`, `invoice_state`, `toss_payment`, `toss_state`, `swift_state`, `payment`, `hc_issued`, `refund`, `tax_invoice`, and the market lines in `docs/FLEET_BOOKINGS.md`), each with the SHA-256 of the line before it. The service refuses to start if the chain is broken. An account or order line keeps the IP address and the browser, as the privacy policy's acceptance records say; a payment line keeps the coin CoinPayments reports, or, for Toss Payments, the payment key, the method, the card-slip link and `taxInvoice` (`needed`, `brn`, `supply`, `vat`). A SWIFT order line keeps its `reference`, the `bank` details its invoice gave and the customer's `declaration`; `swift_state` records the operator's confirmation (`received`, `note`) or cancellation (`reason`). Lines of types the service no longer writes, such as the live ledger's `hourly` order, replay as they are.
-- `session_key`: 32 random bytes that sign the session cookies. Deleting it signs everyone out of the page; bearer sessions are in the ledger.
-- `requests/<day>.jsonl`: the usage records the hub reports, one line per request, without prompts or replies, deleted a year after their day (`docs/FLEET_BOOKINGS.md`).
-- `webhook_secrets.json` (mode 600): each webhook's signing secret, which the ledger does not hold.
-- `deliveries.jsonl`: the outcome of each webhook delivery.
+- `ledger.jsonl`: one JSON line per event (`account`, `acceptance`, `order`, `invoice`, `invoice_failed`, `invoice_state`, `toss_payment`, `toss_state`, `swift_state`, `payment`, `hc_issued`, `refund`, `tax_invoice`, and the market lines in `docs/FLEET_BOOKINGS.md`), each with the SHA-256 of the line before it. The service refuses to start if the chain is broken. An account or order line keeps the IP address and the browser, as the privacy policy's acceptance records say; a payment line keeps the coin CoinPayments reports, or, for Toss Payments, the payment key, the method, the card-slip link and `taxInvoice` (`needed`, `brn`, `supply`, `vat`). A SWIFT order line keeps its `reference`, the `bank` details its invoice gave and the customer's `declaration`; `swift_state` records the operator's confirmation (`received`, `note`) or cancellation (`reason`). Lines of types the service no longer writes, such as the live ledger's `hourly` order, replay as they are.
+- `session_key`: 32 random bytes that sign the session cookies. Deleting it signs everyone out of the page; bearer sessions are in `sessions.json`.
+- `sessions.json` (mode 600): the live bearer sessions, above.
+- `requests/<account>/<day>.jsonl`: the usage records the hub reports, one line per request, without prompts or replies, deleted a year after their day (`docs/FLEET_BOOKINGS.md`).
+- `notices/<day>.jsonl` and `deliveries/<day>.jsonl`: the notices sent to accounts and the outcome of each webhook delivery, deleted 30 days after their day.
+- `webhooks.json` (mode 600): each account's webhooks with their signing secrets, and its email subscription without the address, until the account deletes them.
 
 ## Mail
 
@@ -152,7 +153,7 @@ On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/*.py`, the ledgers and 
 - Run the admin commands as the service user with its environment: `sudo -u sparkpipe-pay sh -c 'set -a; . /etc/sparkpipe-pay/env; python3 /opt/sparkpipe-pay/sparkpipe_pay.py verify'`. They append to the ledger safely while the service runs.
   - `verify` checks the ledger chain and prints its head and counts.
   - `release ORDER` fetches a `mismatch` invoice again and, once CoinPayments says `completed`, issues the HC the amount received covers at the order's price per HC.
-  - `credit EMAIL HC NOTE` adds a lot of HC under clause 4.4.
+  - `credit EMAIL HC NOTE` adds a lot of HC under clause 4.4 and tells the customer by `downtime.credited`, with the note, always by email.
   - `swift-confirm REFERENCE USD [NOTE]` and `swift-cancel REFERENCE REASON` are under SWIFT bank transfers above; `refund` takes SWIFT orders too.
   - `maintenance FLEET YYYY-MM-DD [HOURS]` schedules maintenance in the Week starting on that Monday (`docs/FLEET_BOOKINGS.md`).
   - `refund`, `tax-invoices` and `tax-invoice` are under Toss Payments above.
