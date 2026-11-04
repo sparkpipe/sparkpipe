@@ -96,9 +96,12 @@ case "$step" in
     python3 "$KIT/../tools/release_packs.py" $MODELS > "$STATE/packs" || { echo "PRECHECK-FAILED no pack list"; exit 1; }
     missing=0
     for r in $(seq 0 15); do
-      h=spark${HEX:$r:1}; packs=$(awk -v h=$h '$1 == h {print $2 "|" $3}' "$STATE/packs" | sort -u | tr '\n' ' ')
-      [ -n "$packs" ] || { echo "PRECHECK-FAILED no lane names a pack on $h"; missing=1; continue; }
-      node $r "for e in $packs; do p=\${e%|*}; d=\${e#*|}; test -s \$p -a -s \$d -a -s \$p.experts || echo MISSING \$p; done" | sed "s/^/$h: /" | grep MISSING && missing=1
+      h=spark${HEX:$r:1}
+      awk -v h=$h '$1 == h' "$STATE/packs" | grep -q . || { echo "PRECHECK-FAILED no lane names a pack on $h"; missing=1; continue; }
+      checked=$(node $r "$(python3 "$KIT/../tools/release_packs.py" --check $h "$STATE/packs"); echo CHECKED" 2>&1)
+      echo "$checked" | grep -qx CHECKED || { echo "PRECHECK-FAILED the pack check did not run on $h: $(echo "$checked" | tail -1)"; missing=1; continue; }
+      echo "$checked" | grep MISSING | sed "s/^/$h: /"
+      echo "$checked" | grep -q MISSING && missing=1
     done
     [ "$missing" = 0 ] || { echo "PRECHECK-FAILED a configured pack, its digest or its .experts is missing"; exit 1; }
     echo "configured packs present with sidecar and manifest: $(wc -l < "$STATE/packs") rank packs"
