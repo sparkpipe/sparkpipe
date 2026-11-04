@@ -718,6 +718,7 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
 	tests/test_stage_lane_setup.py \
+	tests/test_stage_lane_dense_setup.py \
 	tests/test_stage_lane_pack_identity.py \
 	tests/test_lane_tools.py \
 	tests/test_stage_lane_state_memory.py \

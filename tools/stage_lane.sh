@@ -123,7 +123,7 @@ setup() {
           target="/home/$host/$(python3 -c "print('${item#*=}'.format(rank=$rank))")"
           extras="$extras && test -f $target && ln -sfn $target $root/packs/${item%%=*} && printf '$DENSE_MANIFEST' > $root/packs/${item%%=*}.experts && { ! test -f $target.sha256 || ln -sfn $target.sha256 $root/packs/${item%%=*}.digest; }"
         done
-        $SSH "$host" "ln -sfn $pack $root/packs/$name && printf '$DENSE_MANIFEST' > $root/packs/$name.experts $extras && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $root/packs/$name > $root/spine_budget" < /dev/null
+        $SSH "$host" "ln -sfn $pack $root/packs/$name && printf '$DENSE_MANIFEST' > $root/packs/$name.experts && head -c 64 $pack.sha256 > $root/packs/$name.sha256 $extras && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $root/packs/$name > $root/spine_budget" < /dev/null
       else
         $SSH "$host" "ln -sfn $pack $root/packs/ && ln -sfn $pack.experts $root/packs/ && head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget" < /dev/null
       fi

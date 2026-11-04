@@ -1038,6 +1038,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Packaging and provenance
 
+- DeepSeek V4.1 Flash, the one dense lane, still reaches its pack and its
+  engram shard through links under its lane root (`packs/rankN.spstage`,
+  `packs/engram.spengram`, `packs/engram_tables.bin`) beside 16-byte
+  zero-range manifests, against the rule that lanes name real weight files.
+  On 2026-11-04 the release precheck found the pack links gone on all 16
+  nodes; they were recreated so the release could ship. #1723 and #1736 name
+  the real files and keep the zero-range manifests and the engram files in
+  the pack directory.
 - Lanes below the precision the README promises (publisher precision whenever
   it fits one fleet). None of them has an accuracy-equivalence result, so none
   may stay below it:
