@@ -681,9 +681,10 @@ and top-1 per ordered pair). For Solar Open 2 they do: A to B 0.078 and 0.084
 nats, B to H 0.076, A to H 0.076 and 0.083. Motif 3 at TP8 passes at +2.77
 standard errors (KL 1.08, 1.03 and 1.02 times the floors against A, B and H),
 its required controls fail at +36 and +59, and the one-layer probe fails too,
-at +5.3. `tools/pack_tensor_control.py` writes APFS clones
-of the pack with tensors corrupted, and the gate runs each through the same
-teacher-forced pass:
+at +5.3.
+
+`tools/pack_tensor_control.py` writes APFS clones of the pack with tensors
+corrupted, and the gate runs each through the same teacher-forced pass:
 
 | Control | Corruption | What it shows | Required |
 | --- | --- | --- | --- |
