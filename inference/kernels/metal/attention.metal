@@ -101,6 +101,7 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
 	constexpr uint LANE = D / 32u, VLANE = DV / 32u;
+	threadgroup float shared_score[SPARK_ATTENTION_DECODE_PARTITION_KEYS];
 	threadgroup float shared_max[SPARK_ATTENTION_SIMDS];
 	threadgroup float shared_sum[SPARK_ATTENTION_SIMDS];
 	threadgroup float shared_out[SPARK_ATTENTION_SIMDS][DV];
@@ -108,51 +109,63 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	const uint kv_head = (p.first_head + head) / p.group, sequence = sequence_of_row[row], length = positions[row] + 1u;
 	const uint begin = max(part * p.partition_keys, SparkAttentionFirstKey(p, positions[row])), end = min(length, part * p.partition_keys + p.partition_keys);
 	float q[LANE], acc[VLANE];
-	float running_max = -INFINITY, running_sum = 0.0f;
+	float local_max = -INFINITY, local_sum = 0.0f;
 	SparkLoadLane<LANE>(query + (ulong)row * p.query_stride + head * D + lane * LANE, q);
 	for ( uint d = 0u; d < VLANE; d++ )
 		acc[d] = 0.0f;
 	for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
 	{
 		device const ushort *slot = SparkKvSlot(p, pool, page_table, sequence, key, error, row);
-		float k[LANE], v[VLANE], score = 0.0f;
+		float k[LANE], score = 0.0f;
 		if ( slot == (device const ushort *)0 )
+		{
+			if ( lane == 0u )
+				shared_score[key - begin] = -INFINITY;
 			continue;
+		}
 		SparkLoadLane<LANE>(slot + kv_head * D + lane * LANE, k);
-		SparkLoadLane<VLANE>(slot + p.kv_heads * D + kv_head * DV + lane * VLANE, v);
 		for ( uint d = 0u; d < LANE; d++ )
 			score += q[d] * k[d];
 		score = simd_sum(score) * p.scale;
-		const float next_max = max(running_max, score);
-		const float correction = exp(running_max - next_max), weight = exp(score - next_max);
-		const float value_weight = SparkMathAttentionValueWeight(weight);
-		running_sum = running_sum * correction + weight;
-		for ( uint d = 0u; d < VLANE; d++ )
-			acc[d] = acc[d] * correction + value_weight * v[d];
-		running_max = next_max;
+		if ( lane == 0u )
+			shared_score[key - begin] = score;
+		local_max = max(local_max, score);
 	}
 	if ( lane == 0u )
+		shared_max[simd] = local_max;
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	float partition_max = -INFINITY;
+	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
+		partition_max = max(partition_max, shared_max[s]);
+	for ( uint key = begin + simd; key < end; key += SPARK_ATTENTION_SIMDS )
 	{
-		shared_max[simd] = running_max;
-		shared_sum[simd] = running_sum;
+		const float score = shared_score[key - begin];
+		device const ushort *slot = score == -INFINITY ? (device const ushort *)0 : SparkKvSlot(p, pool, page_table, sequence, key, error, row);
+		float v[VLANE];
+		if ( slot == (device const ushort *)0 )
+			continue;
+		SparkLoadLane<VLANE>(slot + p.kv_heads * D + kv_head * DV + lane * VLANE, v);
+		const float weight = exp(score - partition_max), value_weight = SparkMathAttentionValueWeight(weight);
+		local_sum += weight;
+		for ( uint d = 0u; d < VLANE; d++ )
+			acc[d] += value_weight * v[d];
 	}
+	if ( lane == 0u )
+		shared_sum[simd] = local_sum;
 	for ( uint d = 0u; d < VLANE; d++ )
 		shared_out[simd][lane * VLANE + d] = acc[d];
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( simd != 0u )
 		return;
-	float total_max = -INFINITY, total_sum = 0.0f;
-	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
-		total_max = max(total_max, shared_max[s]);
-	float out[VLANE];
+	const float total_max = partition_max;
+	float total_sum = 0.0f, out[VLANE];
 	for ( uint d = 0u; d < VLANE; d++ )
 		out[d] = 0.0f;
 	for ( uint s = 0u; s < SPARK_ATTENTION_SIMDS; s++ )
 	{
-		const float factor = shared_max[s] == -INFINITY ? 0.0f : exp(shared_max[s] - total_max);
-		total_sum += shared_sum[s] * factor;
+		total_sum += shared_sum[s];
 		for ( uint d = 0u; d < VLANE; d++ )
-			out[d] += shared_out[s][lane * VLANE + d] * factor;
+			out[d] += shared_out[s][lane * VLANE + d];
 	}
 	device float *record = partial + (((ulong)row * p.heads + head) * p.partitions + (EXTRA ? p.partition_base : 0u) + part) * (DV + 2u);
 	if ( lane == 0u )

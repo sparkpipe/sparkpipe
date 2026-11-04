@@ -4151,12 +4151,12 @@ static double AttentionValueWeight(const double *score, const double *slack, uin
 {
 	const uint32_t partition = prefill != 0u ? SPARK_ATTENTION_PREFILL_PARTITION_KEYS : SPARK_ATTENTION_DECODE_PARTITION_KEYS;
 	const uint32_t begin = key / partition * partition > first ? key / partition * partition : first;
+	const uint32_t partition_end = key / partition * partition + partition < end ? key / partition * partition + partition : end;
 	const uint32_t stop = prefill != 0u ? ((key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS < end ?
-		(key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS : end) : key + 1u;
-	const uint32_t step = prefill != 0u ? 1u : SPARK_ATTENTION_SIMDS;
+		(key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS : end) : partition_end;
 	double peak = -INFINITY, peak_slack = 0.0, weight;
 	uint32_t k;
-	for ( k = prefill != 0u ? begin : begin + (key - begin) % SPARK_ATTENTION_SIMDS; k < stop; k += step )
+	for ( k = begin; k < stop; k++ )
 		if ( score[k - base] > peak )
 		{
 			peak = score[k - base];
