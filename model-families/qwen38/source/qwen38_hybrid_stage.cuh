@@ -681,9 +681,9 @@ struct QwenHybridModel
 			state->attn_query, layer->q_norm, state->attn_query, rows, G::kHeads, G::kHeadDim, QH_EPSILON, 1.0f);
 		LM_LAUNCH((LmHeadRmsNormKernel<QH_THREADS,float>), dim3(G::kKvHeads,rows), QH_THREADS, 0, stream,
 			state->attn_key, layer->k_norm, state->attn_key, rows, G::kKvHeads, G::kHeadDim, QH_EPSILON, 1.0f);
-		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS>), dim3(rows,G::kHeads), QH_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS,LM_ROPE_HALF_SPLIT,G::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,G::kHeads), QH_THREADS, 0, stream,
 			state->attn_query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
-		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS>), dim3(rows,G::kKvHeads), QH_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS,LM_ROPE_HALF_SPLIT,G::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,G::kKvHeads), QH_THREADS, 0, stream,
 			state->attn_key, step->positions, G::kKvHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
 		QwenHybridPackSlotKernel<G><<<dim3(Blocks(2u * S::kKvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_key, state->attn_value, state->attn_slot);
 		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);

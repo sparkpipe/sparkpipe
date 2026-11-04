@@ -144,6 +144,7 @@ struct QwenDevice
 		attention->head_dimension = G::kHeadDim;
 		attention->rope_dimension = G::kRopeDim;
 		attention->rope_theta = G::kRopeTheta;
+		attention->rope_rounding = G::kRopeRoundedTerms ? SPARK_ROPE_ROUNDING_TERMS : SPARK_ROPE_ROUNDING_FP32;
 		attention->epsilon = QH_EPSILON;
 		attention->scale = (float)(1.0 / sqrt((double)G::kHeadDim));
 		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID_BF16;

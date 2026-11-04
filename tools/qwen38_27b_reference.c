@@ -511,7 +511,8 @@ static void RefHeadNormRope(uint32_t variant, const float *in, uint32_t in_strid
 				const float frequency = (float)(1.0 / pow(REF_THETA,(double)(2u * pair) / (double)REF_ROPE));
 				const float angle = (float)(first_position + row) * frequency;
 				const float partner = i < REF_ROPE / 2u ? -normed[i + REF_ROPE / 2u] : normed[i - REF_ROPE / 2u];
-				value = (float)((double)normed[i] * cos((double)angle) + (double)partner * sin((double)angle));
+				const float c = RoundBf16((float)cos((double)angle)), s = RoundBf16((float)sin((double)angle));
+				value = RoundBf16(RoundBf16(normed[i] * c) + RoundBf16(partner * s));
 			}
 			out[((uint64_t)row * heads + head) * REF_HEAD_DIM + i] = RoundBf16(value);
 		}
