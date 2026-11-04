@@ -24,6 +24,10 @@
              --variants a,b,h. Variant b sums each row's routed experts in
              descending instead of ascending expert order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
              and the three variants' distances from one another are the gate's floors.
+             Each of a, b and h also writes DIR/<name>.ref_<v>.routes, its chosen
+             experts as uint16 [layers][positions][top_k] (dense layers 0..k-1);
+             hp is h with a's experts, weighted by its own unbiased scores, for
+             the gate's pinned legs (list a first).
 
 Semantics follow modeling_laguna.py (checkpoint revision 0f573140, sha256
 765fd328...): pre-norm blocks; LagunaRMSNorm is w * bf16(x * rsqrt(mean
@@ -56,6 +60,7 @@ import reference_device_error as device
 
 PREFIX = "model."
 REVERSED = False
+PINNED = None
 
 
 def bf16(values):
@@ -217,7 +222,7 @@ class Reference:
         logits = bf16(normed @ self.weight(p + "gate.weight").T)
         scores = (np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))).astype(np.float32)
         selection = scores + self.weight(p + "experts.e_score_correction_bias")[None, :]
-        chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
+        chosen = PINNED[layer] if PINNED is not None else np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
         weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
         routed = np.zeros_like(normed)
@@ -238,6 +243,7 @@ class Reference:
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         bounds = np.cumsum([0] + [len(tokens) for tokens in sequences])
         routes = []
+        self.chosen = {}
         for layer in range(self.config["num_hidden_layers"]):
             p = f"{PREFIX}layers.{layer}."
             self.cache = {}
@@ -252,6 +258,7 @@ class Reference:
             else:
                 out, chosen = self.moe(layer, normed)
                 routes.append(chosen)
+                self.chosen[layer] = chosen
             for index in range(len(sequences)):
                 residual[index] = bf16(residual[index] + out[bounds[index]:bounds[index + 1]])
             if dump is not None:
@@ -359,20 +366,38 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+def write_routes(path, routes, layers, top_k, first, count):
+    filler = np.broadcast_to(np.arange(top_k, dtype=np.int64), (count, top_k))
+    stacked = np.stack([routes[layer][first:first + count] if layer in routes else filler for layer in range(layers)])
+    np.ascontiguousarray(stacked, dtype="<u2").tofile(path)
+
+
 def teacher(args):
-    global REVERSED
+    global REVERSED, PINNED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a, b and h")
+    if not variants or any(label not in ("a", "b", "h", "hp") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b, h and hp")
+    if "hp" in variants and ("a" not in variants or variants.index("a") > variants.index("hp")):
+        raise SystemExit("hp is h with a's experts: list a before it")
     reference = Reference(args.checkpoint)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    chosen_a = None
+    bounds = np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts])
     for label in variants:
         REVERSED = label != "a"
+        PINNED = chosen_a if label == "hp" else None
         device.select(label)
         dump = {} if args.dump else None
         finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        PINNED = None
+        if label == "a":
+            chosen_a = dict(reference.chosen)
+        if label != "hp":
+            for index, prompt in enumerate(prompts):
+                write_routes(out / f"{prompt['name']}.ref_{label}.routes", reference.chosen, reference.config["num_hidden_layers"],
+                             reference.top_k, bounds[index], len(prompt["prompt_token_ids"]))
         if dump is not None:
             np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
                      bounds=np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts]), **dump)
