@@ -322,7 +322,10 @@ def arm_source(contract: Dict[str, Any], target: str) -> Dict[str, Any]:
 
 
 def build_revision(contract: Dict[str, Any], target: str) -> str:
-    return arm_source(contract, target)["revision"] if target in ARMS else contract["model_revision"]
+    if target in ARMS:
+        return arm_source(contract, target)["revision"]
+    source = contract.get("three_resolution_sources", {}).get(target)
+    return source["revision"] if target != "fp8" and source is not None else contract["model_revision"]
 
 
 def served_model_id(contract: Dict[str, Any], target: str) -> str:

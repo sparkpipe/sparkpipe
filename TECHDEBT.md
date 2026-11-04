@@ -1041,11 +1041,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 - Lanes below the precision the README promises (publisher precision whenever
   it fits one fleet). None of them has an accuracy-equivalence result, so none
   may stay below it:
-  - GLM 5.3 Full serves FP8 (`glm53full.fp8lin.tp16`, 49 GB per rank) though
-    the publisher's BF16 fits (`glm53full.bf16.tp16`, 92 GB per rank, on every
-    node); the BF16 serving path is staged on `fidelity/glm53-bf16`.
-  - GLM 5.3 Flash serves FP8 (21 GB per rank) though its BF16 pack
-    (`glm53flash.bf16.tp16`, 38 GB per rank) is on every node; the same branch.
+  - GLM 5.3 Full at BF16 serves 786,432 positions, not the model's 1,048,576:
+    its 98 GB of weights a rank leave a 1M-position sequence's KV minimum
+    (6.5 GB) outside weightd's 6.9 GB memory margin. The FP8 build serves 1M;
+    a per-request FP8 option (the per-request precision item) or a second
+    fleet would serve both.
   - Qwen 3.8 Max serves a vetted NVFP4 build because the vendor's FP8 experts
     (about 170 GB per rank) do not fit one fleet; it moves to FP8 once two
     fleets serve it as two pipeline stages.

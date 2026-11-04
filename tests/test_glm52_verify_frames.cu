@@ -77,6 +77,29 @@ static GlmLinearWeight Fp8(uint64_t rows, uint64_t columns)
 	return weight;
 }
 
+static GlmLinearWeight Bf16Weight(uint64_t rows, uint64_t columns)
+{
+	GlmLinearWeight weight;
+	weight.weight = (const uint8_t *)Matrix(rows, columns);
+	weight.scale = 0;
+	return weight;
+}
+
+template<class G>
+static GlmLinearWeight Linear(uint64_t rows, uint64_t columns)
+{
+	return GlmLinearScaled<G> ? Fp8(rows, columns) : Bf16Weight(rows, columns);
+}
+
+template<class G>
+static const uint8_t *ExpertBlock(uint64_t groups, uint64_t rows, uint64_t columns, uint64_t *scale_offset)
+{
+	if ( GlmExpertScaled<G> )
+		return Fp8Block(groups, rows, columns, scale_offset);
+	*scale_offset = 0u;
+	return (const uint8_t *)Matrix(groups * rows, columns);
+}
+
 template<class G>
 struct VfRig
 {
@@ -118,19 +141,19 @@ struct VfRig
 		GlmLayer *layer = &state->layers[index];
 		const uint32_t heads = state->heads;
 		layer->attn_norm = Tensor<uint16_t>(G::kHidden, 0.2f, 1.0f);
-		layer->q_a = Fp8(G::kQueryA, G::kHidden);
+		layer->q_a = Linear<G>(G::kQueryA, G::kHidden);
 		layer->q_a_norm = Tensor<uint16_t>(G::kQueryA, 0.2f, 1.0f);
-		layer->q_b = Fp8((uint64_t)heads * S::kQueryHead, S::kQueryInput);
-		layer->kv_a = Fp8(S::kSlot, G::kHidden);
+		layer->q_b = Linear<G>((uint64_t)heads * S::kQueryHead, S::kQueryInput);
+		layer->kv_a = Linear<G>(S::kSlot, G::kHidden);
 		layer->kv_a_norm = Tensor<uint16_t>(G::kLatent, 0.2f, 1.0f);
 		layer->kv_b_key = Tensor<uint16_t>((uint64_t)heads * G::kLatent * G::kNope, 1.7f / sqrtf((float)G::kNope), 0.0f);
 		layer->kv_b_value = Tensor<uint16_t>((uint64_t)heads * G::kValue * G::kLatent, 1.7f / sqrtf((float)G::kLatent), 0.0f);
-		layer->o_proj = Fp8(G::kHidden, (uint64_t)heads * G::kValue);
+		layer->o_proj = Linear<G>(G::kHidden, (uint64_t)heads * G::kValue);
 		layer->post_norm = Tensor<uint16_t>(G::kHidden, 0.2f, 1.0f);
 		if ( G::FullIndexer(index) != 0u )
 		{
-			layer->index_q = Fp8(S::kIndexQuery, G::kQueryA);
-			layer->index_k = Fp8(G::kIndexDim, G::kHidden);
+			layer->index_q = Linear<G>(S::kIndexQuery, G::kQueryA);
+			layer->index_k = Linear<G>(G::kIndexDim, G::kHidden);
 			layer->index_head = Matrix(G::kIndexHeads, G::kHidden);
 			layer->index_norm_weight = Tensor<uint16_t>(G::kIndexDim, 0.2f, 1.0f);
 			layer->index_norm_bias = Tensor<uint16_t>(G::kIndexDim, 0.1f, 0.0f);
@@ -144,16 +167,16 @@ struct VfRig
 		}
 		if ( index < G::kFirstRouted )
 		{
-			layer->dense_gate_up = Fp8(2u * G::kDenseInter, G::kHidden);
-			layer->dense_down = Fp8(G::kHidden, G::kDenseInter);
+			layer->dense_gate_up = Linear<G>(2u * G::kDenseInter, G::kHidden);
+			layer->dense_down = Linear<G>(G::kHidden, G::kDenseInter);
 			return;
 		}
 		layer->router = Matrix(G::kExperts, G::kHidden);
 		layer->router_bias = Tensor<float>(G::kExperts, 0.05f, 0.0f);
-		layer->shared_gate_up = Fp8(2u * G::kExpertInter, G::kHidden);
-		layer->shared_down = Fp8(G::kHidden, G::kExpertInter);
-		experts_up[index] = Fp8Block(G::kExperts, 2u * G::kExpertInter, G::kHidden, &layer->up_gate_scale);
-		experts_down[index] = Fp8Block(G::kExperts, G::kHidden, G::kExpertInter, &layer->down_scale);
+		layer->shared_gate_up = Linear<G>(2u * G::kExpertInter, G::kHidden);
+		layer->shared_down = Linear<G>(G::kHidden, G::kExpertInter);
+		experts_up[index] = ExpertBlock<G>(G::kExperts, 2u * G::kExpertInter, G::kHidden, &layer->up_gate_scale);
+		experts_down[index] = ExpertBlock<G>(G::kExperts, G::kHidden, G::kExpertInter, &layer->down_scale);
 		state->w1_offset[index] = 0u;
 		state->w2_offset[index] = 0u;
 	}
