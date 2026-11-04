@@ -40,6 +40,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | C7 | Keep-alives and busy handling | A 10-minute prefill keeps a Claude Code and a Codex stream open. When all sequences are busy, requests wait up to 60 s, then get 429 with `retry-after` | S | |
 | C8 | Fair share between members | With two members flooding requests, neither gets more than three quarters of the sequences while the other waits | M | G5 |
 | C9 | Pack prefixing with version affinity (§5) | A session keeps its pack version through a refresh. New sessions get the new version only once it is warm | M | P4 |
+| C12 | Session evidence | For each session, the chat layer records the file paths in tool calls (reads, edits, searches) and the pack it started on, as working state, never file contents. A scripted session's evidence lists exactly the files it touched, and switching the signal off records nothing | S | C1, C2 |
 
 ## Gateway and account (VPS)
 
@@ -67,6 +68,10 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | P3 | Repositories pushed to the fleet | `git push` to `/git/{repo}.git` with the SparkPipe key updates the fleet's copy, and each push triggers the scheduled refreshes. A tree-sitter symbol index and a semantic index are built on the sandbox host, and a 1M-line repository is indexed in under an hour | L | P1, F3 |
 | P4 | Pack builder | Least-changed files first, deterministic rendering, budget and versions; the same commit always gives the same tokens | M | P3 |
 | P5 | Pack refresh and warm-up | After a push, the new version is warm in the background, and only the part after the first changed file is prefilled again | M | P4, E5, E8 |
+| P10 | Pack trees (§5.2) | A tree of one root, three trunks and twelve leaves stores the root and trunks once (cache bytes measured), each level ends on the model's resume boundary, and moving a session from one leaf to another recomputes only the leaf's tail | M | P4, E6 |
+| P11 | Anticipator planner (§5.3) | On the Customer Zero repository it turns structure, history, session evidence and hints into a plan within the compute and cache budgets, in under 5 minutes, with reasons for every leaf. The same inputs always give the same plan | L | P3, P10, C12 |
+| P12 | Automatic pack selection, `+auto` (§5.4) | Claude Code, Codex and OpenCode sessions started in three different subdirectories each land on the expected leaf at their first request, keep it for the whole session, and report it in telemetry; an unmatched session starts without a pack | M | C9, P10 |
+| P13 | Anticipator controls and report (§5.6, §5.7) | Every setting is enforced, and `plan` mode builds nothing until approved. Focus hints change the next plan, and excluded paths never enter a pack. The morning report's figures reconcile with the telemetry records | M | P11, G3, F1 |
 | P6 | Export and restore | An archive of storage, drafters and pack definitions restores on another fleet | M | P1 |
 | P7 | Daily backup by pull | `GET /v1/storage/changes` and `sparkpipe storage sync` copy only the day's changes to a local directory or a bucket the customer's machine writes to; the morning report shows each path's last pull | M | P1, L1 |
 
@@ -134,4 +139,4 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| T1 | Gates A–F of `docs/FLEET_API.md` §18 | Each gate run on Fleet 1 and recorded in `PERFORMANCE_STATUS.md` before 4 January 2027 | M | all |
+| T1 | Gates A–F and D2 of `docs/FLEET_API.md` §18 | Each gate run on Fleet 1 and recorded in `PERFORMANCE_STATUS.md` before 4 January 2027 | M | all |
