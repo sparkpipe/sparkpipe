@@ -30,8 +30,10 @@ class FakeModel:
     def __init__(self, name):
         self.id = name
         self.context_tokens = 4096
+        self.max_output_tokens = 1024
         self.reasoning_effort = {}
         self.gate = SimpleNamespace(state=lambda: {"waiting": 1 if name == "inside" else 0})
+        self.sequences = chat_frontend.SequenceGate(8)
 
 
 def check(condition, message):
@@ -118,7 +120,7 @@ async def run(tmp):
                 check(response.status == 404 and body["error"]["message"].endswith("served: ['open']"), "a public key cannot reach an internal model, and the served list it gets names only the public ones")
             planned = []
 
-            def plan(model, body, headers):
+            def plan(model, body, headers, scope=None, member=None):
                 planned.append(headers)
                 raise chat_frontend.RequestError(400, "planned", "stop after planning")
             frontend.plan = plan
@@ -128,7 +130,7 @@ async def run(tmp):
                     check(response.status == 400, f"the planning stub answers: {response.status}")
             check(planned[0] is None and planned[1] is not None and planned[1].get("X-OpenWebUI-User-Id") == "u1", "a keyed request is planned with no caller identity, so it opens no chat memory and runs no chat command; an internal one keeps its headers")
             limit = frontend.public_body_limit()
-            check(limit == 16 * 4096 + (1 << 20), f"the public body limit is 16 bytes per token of the largest public context plus 1 MiB: {limit}")
+            check(limit == 32 << 20, f"the public body limit is 32 MiB, or 16 bytes per token of the largest public context plus 1 MiB when that is more: {limit}")
             oversize = json.dumps({"model": "open", "messages": [{"role": "user", "content": "x" * (limit + 1)}]})
             async with session.post(base + "/v1/chat/completions", headers=dict(with_key, **{"Content-Type": "application/json"}), data=oversize) as response:
                 check(response.status == 413 and (await response.json())["error"]["code"] == "request_too_large", f"an oversize public body is refused before parsing: {response.status}")
@@ -144,7 +146,7 @@ async def run(tmp):
             release = asyncio.Event()
             answered = []
 
-            def plan_ok(model, body, headers):
+            def plan_ok(model, body, headers, scope=None, member=None):
                 return {"trace": {}, "engine_body": {"prompt_token_ids": list(range(128))}, "prompt_tokens": 128}
 
             async def answer_wait(request, model, body, plan, started):
@@ -157,30 +159,39 @@ async def run(tmp):
             async def send(headers):
                 async with session.post(base + "/v1/chat/completions", headers=headers, json=chat_body) as response:
                     return response.status, (await response.json()).get("error", {}).get("code")
-            running = [asyncio.ensure_future(send(with_key)) for _ in range(chat_frontend.PUBLIC_KEY_CONCURRENCY)]
+            gate = frontend.models["open"].sequences
+            share = gate.share()
+            running = [asyncio.ensure_future(send(with_key)) for _ in range(share)]
             for _ in range(100):
-                if len(answered) == chat_frontend.PUBLIC_KEY_CONCURRENCY:
+                if len(answered) == share:
                     break
                 await asyncio.sleep(0.01)
-            check(answered == [good_id] * chat_frontend.PUBLIC_KEY_CONCURRENCY, f"a key runs up to its concurrency limit: {answered}")
-            check(await send(with_key) == (429, "rate_limited"), "one more request from the same key is refused while its limit is in use")
+            check(answered == [good_id] * share, f"a key alone may use the sequences up to its fair share and beyond: {answered}")
             other = asyncio.ensure_future(send(dict(public, Authorization="Bearer " + second)))
             inside = asyncio.ensure_future(send({}))
             for _ in range(100):
-                if len(answered) == chat_frontend.PUBLIC_KEY_CONCURRENCY + 2:
+                if len(answered) == share + 2:
                     break
                 await asyncio.sleep(0.01)
-            check(sorted(answered[chat_frontend.PUBLIC_KEY_CONCURRENCY:], key=str) == sorted([second_id, None], key=str), f"another key and an internal request are not held by the first key's limit: {answered}")
+            check(sorted(answered[share:], key=str) == sorted([second_id, None], key=str), f"another key and an internal request get the free sequences at once: {answered}")
+            waited = chat_frontend.BUSY_WAIT_SECONDS
+            chat_frontend.BUSY_WAIT_SECONDS = 0.2
+            async with session.post(base + "/v1/chat/completions", headers=with_key, json=chat_body) as response:
+                busy = (response.status, response.headers.get("Retry-After"), response.headers.get("x-should-retry"), (await response.json())["error"]["code"])
+            chat_frontend.BUSY_WAIT_SECONDS = waited
+            check(busy == (429, str(chat_frontend.BUSY_RETRY_AFTER_SECONDS), "true", "busy"),
+                  f"a key's request that finds every sequence busy waits, then gets 429 busy with Retry-After: {busy}")
             release.set()
             results = await asyncio.gather(*running, other, inside)
-            check(all(status == 200 for status, _ in results) and frontend.public_inflight == {}, f"every admitted request completes and the counts return to zero: {results} {frontend.public_inflight}")
+            check(all(status == 200 for status, _ in results) and gate.state()["in_use"] == 0 and gate.state()["waiting"] == 0,
+                  f"every admitted request completes and the gate returns to idle: {results} {gate.state()}")
             check(await send(with_key) == (200, None), "the key is admitted again once its requests finish")
 
             class FailingCommands:
                 async def run(self, model, identity, messages, name, argument, memory_off):
                     raise chat_frontend.RequestError(503, "engine_unavailable", "the engine is switching")
             frontend.commands = FailingCommands()
-            frontend.plan = lambda model, body, headers: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+            frontend.plan = lambda model, body, headers, scope=None, member=None: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
             async with session.post(base + "/v1/chat/completions", json={"model": "open", "messages": [{"role": "user", "content": "/compact 50%"}]}) as response:
                 text = await response.text()
                 failed = json.loads(text) if response.content_type == "application/json" else {"error": {"code": text[:60]}}
@@ -243,4 +254,4 @@ async def run(tmp):
 
 with tempfile.TemporaryDirectory() as directory:
     asyncio.run(run(Path(directory)))
-print("PASS test_chat_api_keys: the public door needs a valid, unrevoked, unexpired key; it shows and serves only the public models and paths, never naming an internal model; a keyed request is planned without caller identity, so no memory or command state; an oversize or unsized public body is refused before parsing; a key runs at most four requests at once; a key reports cached tokens only for prefixes it sent; public and anonymous status carry no controller error, memory or shell text and public status names only public models, while the admin login sees it all; liveliness is open; a revoke applies from the next request; the keys file holds hashes only; internal requests are unchanged")
+print("PASS test_chat_api_keys: the public door needs a valid, unrevoked, unexpired key; it shows and serves only the public models and paths, never naming an internal model; a keyed request is planned without caller identity, so no memory or command state; an oversize or unsized public body is refused before parsing; a key shares the sequences fairly with other keys and internal requests and gets 429 busy with Retry-After after the busy wait; a key reports cached tokens only for prefixes it sent; public and anonymous status carry no controller error, memory or shell text and public status names only public models, while the admin login sees it all; liveliness is open; a revoke applies from the next request; the keys file holds hashes only; internal requests are unchanged")
