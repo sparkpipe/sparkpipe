@@ -18,8 +18,8 @@ Every five minutes the service also asks CoinPayments about each open invoice fr
 | Route | Does |
 | --- | --- |
 | `POST /pay/api/code` | `email`: emails a 6-digit sign-in code, valid 10 minutes for 5 tries |
-| `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account |
-| `POST /pay/api/signout` | Clears the cookie |
+| `POST /pay/api/verify` | `email`, `code`, and for a new account `company` and `accept: true`: signs in, sets the cookie `sp_session` and returns the account. With `bearer: true` and an optional `device` (the CLI), it sets no cookie and returns `session` (`sps-…`) and `sessionExpires` with the account |
+| `POST /pay/api/signout` | Clears the cookie, or ends the bearer session sent with it |
 | `GET /pay/api/account` | The signed-in account: `email`, `company`, `since`, `termsCurrent`, `hc` (the unlocked balance), `locked` and the last 50 `orders`, each as `GET /pay/api/order/<order>` shows it |
 | `POST /pay/api/order` | Signed in. `product: "credits"`, `hc` and `accept: true` when the Agreement changed since the account accepted it; then either `coin`, which returns `order` and `checkout`, or `processor: "toss"` with an optional `brn`, which returns `order` and the Toss Payments request for the page (`toss`: `clientKey`, `variantKey`, `test`, `orderId`, `orderName`, `amount` with VAT, `currency`, `customerEmail`, `customerName`, `successUrl`, `failUrl`). 503 `cards_closed` without Toss Payments keys. Or `processor: "swift"` with `declare: true`, which returns `order`, `processor`, `reference`, `hc`, `price`, `net`, `vatRate` (`"0"`), `vat` (`"0.00"`), `total`, `currency` (`USD`) and `bank` (`beneficiary`, `account`, `bank`, `address`, `bic`); 400 `declaration` without `declare: true`, 503 `swift_closed` without the bank settings, 404 in the sandbox |
 | `GET /pay/api/order/<order>` | The order: `order`, `product`, `hc`, `price`, `net`, `vatRate`, `vat`, `total`, `currency`, `coin`, `processor`, `state`, `issued`, `issuedHC`, `created`, `paid`, `received`, `method`, `deposit`, `refunded`, `reason`, `expires`, `reference` and `bank` (SWIFT), and `checkout` while unpaid. The order number is 80 random bits |
@@ -33,7 +33,7 @@ Every five minutes the service also asks CoinPayments about each open invoice fr
 
 The booking routes, the gateway, the holder schedule and `availability.txt` are in `docs/FLEET_BOOKINGS.md`.
 
-The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. It holds the account number, its expiry and an HMAC under `session_key` in the data directory, made on first start. A POST whose `Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address may ask for 20 codes, 30 verifications and 10 orders in ten minutes, and each email for 5 codes an hour.
+The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. It holds the account number, its expiry and an HMAC under `session_key` in the data directory, made on first start. A bearer session is for the CLI: `Authorization: Bearer sps-…` works wherever the cookie does, on `/account`, `/market/...` and the API. It lasts 90 days. `sessions.json` keeps only its SHA-256, with the session id, the account, the `device` name and `created` and `expires`; signing out or `POST /market/sessions/revoke` ends it and deletes that record, and an expired one is deleted at the next housekeeping (every five minutes). `GET /market/state` lists the account's live bearer sessions. A POST whose `Origin` is not `SPARKPIPE_PAY_PUBLIC` is refused. Each client IP address may ask for 20 codes, 30 verifications and 10 orders in ten minutes, and each email for 5 codes an hour.
 
 ## Rules the service enforces
 
@@ -47,7 +47,12 @@ The session cookie is HttpOnly, SameSite=Lax, Secure and scoped to `/pay/api`. I
 `/var/lib/sparkpipe-pay`, owned by the service user:
 
 - `ledger.jsonl`: one JSON line per event (`account`, `acceptance`, `order`, `invoice`, `invoice_failed`, `invoice_state`, `toss_payment`, `toss_state`, `swift_state`, `payment`, `hc_issued`, `refund`, `tax_invoice`, and the market lines in `docs/FLEET_BOOKINGS.md`), each with the SHA-256 of the line before it. The service refuses to start if the chain is broken. An account or order line keeps the IP address and the browser, as the privacy policy's acceptance records say; a payment line keeps the coin CoinPayments reports, or, for Toss Payments, the payment key, the method, the card-slip link and `taxInvoice` (`needed`, `brn`, `supply`, `vat`). A SWIFT order line keeps its `reference`, the `bank` details its invoice gave and the customer's `declaration`; `swift_state` records the operator's confirmation (`received`, `note`) or cancellation (`reason`). Lines of types the service no longer writes, such as the live ledger's `hourly` order, replay as they are.
-- `session_key`: 32 random bytes that sign the session cookies. Deleting it signs everyone out.
+- `session_key`: 32 random bytes that sign the session cookies. Deleting it signs everyone out of the page; bearer sessions are in `sessions.json`.
+- `sessions.json` (mode 600): the live bearer sessions, above.
+- `requests/<account>/<day>.jsonl`: the usage records the hub reports, one line per request, without prompts or replies, deleted a year after their day (`docs/FLEET_BOOKINGS.md`).
+- `notices/<day>.jsonl` and `deliveries/<day>.jsonl`: the notices sent to accounts and the outcome of each webhook delivery, deleted 30 days after their day.
+- `webhooks.json` (mode 600): each account's webhooks with their signing secrets, and its email subscription without the address, until the account deletes them.
+- `notices/`, `deliveries/` and `requests/` are folders of mode 700 with files of mode 600, and both units set `UMask=0077`, so every file the service creates is its own. A line of these files that does not parse is skipped and logged, and a torn last line (from a full disk or a power cut) is cut back to the last newline before the next record is appended, so the service always starts. The ledger is different: a torn or broken line stops the service until an operator looks.
 
 ## Mail
 
@@ -149,7 +154,7 @@ On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/*.py`, the ledgers and 
 - Run the admin commands as the service user with its environment: `sudo -u sparkpipe-pay sh -c 'set -a; . /etc/sparkpipe-pay/env; python3 /opt/sparkpipe-pay/sparkpipe_pay.py verify'`. They append to the ledger safely while the service runs.
   - `verify` checks the ledger chain and prints its head and counts.
   - `release ORDER` fetches a `mismatch` invoice again and, once CoinPayments says `completed`, issues the HC the amount received covers at the order's price per HC.
-  - `credit EMAIL HC NOTE` adds a lot of HC under clause 4.4.
+  - `credit EMAIL HC NOTE` adds a lot of HC under clause 4.4 and tells the customer by `downtime.credited`, with the note, always by email.
   - `swift-confirm REFERENCE USD [NOTE]` and `swift-cancel REFERENCE REASON` are under SWIFT bank transfers above; `refund` takes SWIFT orders too.
   - `maintenance FLEET YYYY-MM-DD [HOURS]` schedules maintenance in the Week starting on that Monday (`docs/FLEET_BOOKINGS.md`).
   - `refund`, `tax-invoices` and `tax-invoice` are under Toss Payments above.
