@@ -1501,15 +1501,10 @@ Metal backend and the single-Studio stage are in
     the arena that survives a code-only redeploy, is CUDA VMM only;
   - a lane record, model description and swap-controller entry for the
     Studio target (`metal.apple10`);
-  - one frame chooser. Until the batch engine drives the device runner,
-    `tools/metal_stage_run.c` chooses speculative frames itself on the
-    common cost model (`src/spark_speculation_frame.c`). That includes the
-    rule that a first probe frame may cost at most the cost model's margin
-    over a plain step (one draft where no frame is that cheap), which took
-    Metal prose from a 0.5% loss to a 0.4% gain. The batch engine (`runtime/model_batch_engine.c`) has its own
-    chooser. Fold both into one function in `src/` that the engine and every
-    backend call, and check whether the probe rule also helps the CUDA
-    lanes' prose speculation.
+  - one frame driver. Until the batch engine drives the device runner,
+    `tools/metal_stage_run.c` assembles its own frame requests; the choice
+    itself, including the probe rule that took Metal prose from a 0.5% loss
+    to a 0.4% gain, is `SparkSpeculationFrameChoose` for both.
 - Map the numerics gate's resolution at BF16. The gate now judges the Studio
   stage against the reference's own reduction-order floor (mean KL at most
   2 times, top-1 disagreement at most 1.5 times, a paired block test at 3

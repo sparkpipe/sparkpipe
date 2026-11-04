@@ -900,28 +900,17 @@ static SparkStatus SpecFrame(Session *session, const uint32_t *rows, uint32_t co
 }
 
 static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const SparkSpeculationLookupMatch *match, uint32_t feasible, uint32_t context,
-	uint32_t *frame_class)
+	uint32_t proven, uint32_t *frame_class)
 {
 	SparkSpeculationFrameRequest request;
 	SparkSpeculationFrameChoice choice;
 	memset(&request,0,sizeof(request));
 	*frame_class = SparkSpeculationFrameClass(match->match_length,0u);
-	if ( run->model->classes[*frame_class].frames == 0u )
-	{
-		const float step = SparkSpeculationFrameTokenCost(run->model,context);
-		uint32_t free_drafts = 0u, drafts;
-		for ( drafts = 1u; drafts <= feasible; drafts++ )
-		{
-			const float cost = SparkSpeculationFrameCost(run->model,drafts + 1u,context);
-			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
-				free_drafts = drafts;
-		}
-		feasible = free_drafts != 0u ? free_drafts : 1u;
-	}
 	request.feasible = feasible;
 	request.context = context;
 	request.match_length = match->match_length;
 	request.lanes = 1u;
+	request.proven_drafts = proven;
 	SparkSpeculationFrameChoose(run->model,&hazards[*frame_class],&request,&choice);
 	return(choice.drafts < feasible ? choice.drafts : feasible);
 }
@@ -929,6 +918,7 @@ static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const 
 static SparkStatus SpecGreedy(Session *session, const RunOptions *options, const SparkTokenPrompt *prompt, uint32_t speculate, SpecRun *run)
 {
 	SparkSpeculationHazard hazards[SPARK_SPECULATION_FRAME_CLASSES];
+	uint32_t proven = 0u;
 	const uint32_t capacity = prompt->count + options->new_tokens + options->draft_max + 2u;
 	uint32_t *history = (uint32_t *)calloc(capacity,sizeof(uint32_t)), *heads = (uint32_t *)calloc(RUN_LOOKUP_BUCKETS,sizeof(uint32_t));
 	uint32_t *chain = (uint32_t *)calloc(capacity,sizeof(uint32_t)), frame[SPARK_DEVICE_STAGE_VERIFY_ROWS], length = prompt->count, next = 0u;
@@ -959,7 +949,7 @@ static SparkStatus SpecGreedy(Session *session, const RunOptions *options, const
 			SparkSpeculationLookupIndexFind(&index,history,RUN_LOOKUP_MAX_MATCH,RUN_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK )
 		{
 			drafts = length - 1u - match.source_end;
-			drafts = SpecChoose(run,hazards,&match,drafts < options->draft_max ? drafts : options->draft_max,length,&frame_class);
+			drafts = SpecChoose(run,hazards,&match,drafts < options->draft_max ? drafts : options->draft_max,length,proven,&frame_class);
 		}
 		frame[0] = next;
 		memcpy(frame + 1,history + match.source_end + 1u,(size_t)drafts * sizeof(uint32_t));
@@ -983,6 +973,8 @@ static SparkStatus SpecGreedy(Session *session, const RunOptions *options, const
 			SparkSpeculationFrameObserveFrame(run->model,drafts + 1u,length,NowNs() - before);
 			SparkSpeculationHazardObserve(&run->model->classes[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
 			SparkSpeculationHazardObserve(&hazards[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			if ( accepted > proven )
+				proven = accepted;
 			run->frames++;
 			run->drafted += drafts;
 			run->accepted += accepted;

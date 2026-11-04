@@ -15,6 +15,7 @@ extern "C" {
 #define SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS 9u
 #define SPARK_SPECULATION_FRAME_MAX_DRAFTS 255u
 #define SPARK_SPECULATION_FRAME_PROBE_DRAFTS 16u
+#define SPARK_SPECULATION_FRAME_GROWTH 4u
 #define SPARK_SPECULATION_FRAME_HAZARD_PRIOR 0.2f
 #define SPARK_SPECULATION_FRAME_REQUEST_WEIGHT 8.0f
 #define SPARK_SPECULATION_FRAME_ENGINE_DECAY 0.995f
@@ -58,6 +59,7 @@ typedef struct SparkSpeculationFrameRequest
 	uint32_t sampled;
 	uint32_t lanes;
 	uint32_t base_rows;
+	uint32_t proven_drafts;
 	float base_tokens;
 	float cost_cap_ns;
 } SparkSpeculationFrameRequest;
