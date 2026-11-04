@@ -315,7 +315,7 @@ class Reference:
             residual = bf16(residual * self.checkpoint.f32(p + "layer_scalar")[0])
         return residual
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         global REVERSED
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
@@ -327,6 +327,8 @@ class Reference:
                     REVERSED = self.reversed_of[index]
                     device.select(self.variant_of[index])
                 residuals[index] = self.layer(layer, residuals[index], position)
+                if dump is not None:
+                    dump.setdefault(index, {})[f"mlp{layer:02d}"] = residuals[index].copy()
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
@@ -472,7 +474,14 @@ def teacher(args):
     reference.pin_source = [first_a + index % len(prompts) if label in ("bp", "hp") else None for index, (_, label) in enumerate(runs)]
     if any(variants.index(label) < variants.index("a") for label in pinned):
         raise ValueError("list a before bp and hp so a's experts are chosen first in every layer")
-    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
+    dump = {} if args.dump else None
+    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs], dump)
+    if dump is not None:
+        for label in variants:
+            indices = [index for index, (_, run_label) in enumerate(runs) if run_label == label]
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([runs[index][0]["name"] for index in indices]),
+                     bounds=np.cumsum([0] + [len(runs[index][0]["prompt_token_ids"]) for index in indices]),
+                     **{key: np.concatenate([dump[index][key] for index in indices]) for key in dump[indices[0]]})
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
@@ -534,6 +543,7 @@ def main():
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--variants", default="a,b,h")
+    r.add_argument("--dump", help="write every layer's post-layer residual for all rows to DUMP.<variant>.npz")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)
