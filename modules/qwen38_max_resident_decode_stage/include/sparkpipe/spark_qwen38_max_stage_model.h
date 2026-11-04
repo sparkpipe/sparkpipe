@@ -31,6 +31,7 @@ template<uint32_t TP>
 struct Qwen38MaxGeometry : QwenHybridDefaults
 {
 	static constexpr uint32_t kTpDegree = TP;
+	static constexpr uint32_t kExpertCodec = SPARK_WEIGHT_CODEC_NVFP4_E2M1;
 	static constexpr uint32_t kHidden = SPARK_QWEN38_MAX_STAGE_HIDDEN;
 	static constexpr uint32_t kLayers = SPARK_QWEN38_MAX_STAGE_LAYERS;
 	static constexpr uint32_t kVocab = 248320u;
