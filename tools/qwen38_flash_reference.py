@@ -418,7 +418,7 @@ class Reference:
             total += routed[:, slot]
         return bf16(total + shared)
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         spans, first = [], 0
         for tokens in sequences:
             if len(tokens) > DENSE_INDEX_POSITIONS:
@@ -439,6 +439,8 @@ class Reference:
             residual = self.inject(residual, out, weights)
             mixed, weights = self.mixer(p + "mlp_hyper_connection.", residual, True)
             residual = self.inject(residual, self.moe(layer, mixed), weights)
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = residual.copy()
             print(f"layer {layer} {'attention' if self.full(layer) else 'gdn'} done in {time.time() - started:.1f}s", file=sys.stderr, flush=True)
         final, _ = self.mixer(PREFIX + "hyper_connection_mixer.", residual, False)
         return final, spans
@@ -465,7 +467,11 @@ def teacher(args):
     for label in variants:
         REVERSED = label != "a"
         device.select(label)
-        hidden, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        hidden, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [count for _, count in spans]), **dump)
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
                 for row in range(0, count - 1, 128):
@@ -482,6 +488,7 @@ def main():
     parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--only", help="comma-separated prompt names (default every prompt)")
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--dump", help="teacher: write every layer's residual streams for all rows to DUMP.<variant>.npz")
     parser.add_argument("--out", required=True)
     teacher(parser.parse_args())
     return 0
