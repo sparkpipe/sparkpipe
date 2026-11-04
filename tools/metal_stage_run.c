@@ -906,18 +906,6 @@ static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const 
 	SparkSpeculationFrameChoice choice;
 	memset(&request,0,sizeof(request));
 	*frame_class = SparkSpeculationFrameClass(match->match_length,0u);
-	if ( run->model->classes[*frame_class].frames == 0u )
-	{
-		const float step = SparkSpeculationFrameTokenCost(run->model,context);
-		uint32_t free_drafts = 0u, drafts;
-		for ( drafts = 1u; drafts <= feasible; drafts++ )
-		{
-			const float cost = SparkSpeculationFrameCost(run->model,drafts + 1u,context);
-			if ( cost > 0.0f && cost <= SPARK_SPECULATION_FRAME_MARGIN * step )
-				free_drafts = drafts;
-		}
-		feasible = free_drafts != 0u ? free_drafts : 1u;
-	}
 	request.feasible = feasible;
 	request.context = context;
 	request.match_length = match->match_length;

@@ -119,6 +119,17 @@ cap.
 - Decision: among 1-16, 20, 24, ..., 255 and the feasible maximum, the frame
   with the most expected tokens per nanosecond, only if it beats the chain by
   5%. A class with no evidence gets one probe frame of up to 16 drafts.
+- Probes cost at most the margin: a probe holds the most drafts whose frame
+  costs at most 5% over a plain step (one draft when no frame is that cheap).
+  A request that has not had a draft accepted in a class probes there too,
+  whenever the engine's table would speculate: the engine's hazards come
+  from every request, and an edit task's long accepted matches priced a
+  prose request's first lookup match at 142 expected tokens from 160 drafts
+  (A.X K2, 2026-11-04: one token kept, 1,041 ms where five plain steps cost
+  190 ms). A rejected probe keeps the cap and the first accepted draft lifts
+  it. A class the engine has seen fail still never probes. The rule lives in
+  `SparkSpeculationFrameChoose`, which the batch engine and the Metal stage
+  runner both call.
 - Caps: a waiting prefill caps a frame at two single steps. A lane below the
   highest priority the engine has served (chat-memory background work at 0
   while foreground carries 1) is capped at eight chained tokens, so a
