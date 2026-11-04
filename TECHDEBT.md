@@ -1439,9 +1439,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
     sparkpipe/sparkpipe#1743). The references still differ until they are
     recomputed in that form: Ling, K-EXAONE, Solar and Motif round the
     normalised probabilities as the eager path does, MiMo, Laguna and Gemma
-    keep them in FP32. The CUDA decode probes check the kernels against
-    exact attention within their bounds and against each other, not the
-    rounding itself, which only `test_metal_kernels` checks. At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
+    keep them in FP32. `tests/cuda/gqa_shard_cuda.cu` checks the rounding
+    of the context-split GQA kernels (where the flash and exact forms round
+    to different BF16 outputs, over 99% of the outputs take the flash
+    form's), and `test_metal_kernels` checks Metal's; the latent decode
+    probes still check only against exact attention within their bounds
+    and against each other. At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
     output was 2.5e-3 of its norm from reference a against an a/b floor of
     8.3e-5; giving the reference the backends' choice at the gain, the
     probabilities and the gate brought it to 1.75e-3, and the rest is not
