@@ -327,6 +327,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Qwen 3.8 and Gemma 4's sliding layers). Gemma 4's global layers (512-wide
   keys) still take the scalar kernel, which re-reads every key for every row
   and reaches 1 to 2 TFLOP/s per node; a long Gemma 4 prompt is bound by it.
+- GLM 5.3 Full prefills a 774,432-token prompt in 2,878 s (BF16, 2026-11-04):
+  its 4,096-row waves take 17 to 31 s at 670K to 750K context (130 to 250
+  tok/s) against 1,289 tok/s at 7.4K. Waves over 256 rows take the gather
+  path, whose attention cost grows with the context; trace one deep wave.
+- Hy4 prefills at 123 tok/s (7.4K tokens, 2026-11-04): a 256-row wave takes
+  about 2 s on the GPU against 70 ms for a one-row step, so a wave costs 29
+  rows' worth where the other models cost about one. A per-row cost
+  dominates; profile one wave to find it.
 - Only Kimi K3 runs on the shared pass engine (`inference/runner/pass_prefill.cuh`).
   - GLM 5.3 Full, GLM 5.3 Flash and DSV4.1 still prefill in TP16 waves, which
     move every row's hidden state through the GPU mesh collectives at about
@@ -1041,11 +1049,6 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 - Lanes below the precision the README promises (publisher precision whenever
   it fits one fleet). None of them has an accuracy-equivalence result, so none
   may stay below it:
-  - GLM 5.3 Full at BF16 serves 786,432 positions, not the model's 1,048,576:
-    its 98 GB of weights a rank leave a 1M-position sequence's KV minimum
-    (6.5 GB) outside weightd's 6.9 GB memory margin. The FP8 build serves 1M;
-    a per-request FP8 option (the per-request precision item) or a second
-    fleet would serve both.
   - Qwen 3.8 Max serves a vetted NVFP4 build because the vendor's FP8 experts
     (about 170 GB per rank) do not fit one fleet; it moves to FP8 once two
     fleets serve it as two pipeline stages.
@@ -1291,6 +1294,19 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
   `docs/GLM_REAL_DRIVER_PROBE.md`, the probe paragraph of
   `docs/DRIVER_ACCEPTANCE.md` and the `glm5_next_driver_probe` entry in
   `tools/test_serving_reliability_host.py`.
+- The GLM 5.3 Full and Flash weight warms in `deployment/hub/model_swap.json`
+  are written by hand with the checkpoint revision as a literal, not rendered
+  from the lane records like A.X K2's (`expert_warm` in `tools/stage_lane.py`),
+  and `tests/test_lane_records.py` compares only the keys a record renders,
+  so they escape it. Without the warm a GLM lane runs on expert leases with
+  no CUDA graphs until one prefill touches every expert: 4.4 against 28
+  tok/s B1 for GLM 5.3 Full in the 2026-11-04 gates, whose controller config
+  has no warm. Render both from the records with the revision their adapter
+  builds use, and give gate controller configs the same warms.
+- The BF16 GLM 5.3 Full and Flash paths are compared only with the FP8 lanes
+  (Full: 2,190 positions, +0.0068 ± 0.0049 nats, KL 0.042), and BF16 did not
+  score better there. Check a few layers of each BF16 stage against
+  `tools/glm52_transformers_stage_reference.py` on the BF16 checkpoint.
 - Hy4 runs on the common runner (`modules/hy4_tp16_resident_decode_stage`,
   `model-families/hy4/source/hy4_stage.cuh`) and serves as `hy4-preview`, but
   it is not checked against a reference. The one teacher-forced run of
