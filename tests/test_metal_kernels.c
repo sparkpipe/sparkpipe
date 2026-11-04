@@ -4056,19 +4056,41 @@ static void AttentionFree(AttentionFixture *f)
 		SparkDeviceFree(&f->sinks);
 }
 
-static double AttentionSlack(double value, double spread, double magnitude, uint32_t keys)
+static double AttentionSlack(double value, double spread, double flips, double magnitude, uint32_t keys)
 {
-	const double attended = RoundBf16(value), absolute = 2.0 * spread + Gamma(keys + 8.0) * magnitude + 4.0 * FUNCTION_ERROR * fabs(value);
+	const double attended = RoundBf16(value), absolute = 2.0 * spread + flips + Gamma(keys + 8.0) * magnitude + 4.0 * FUNCTION_ERROR * fabs(value);
 	return(fabs(RoundBf16(value - absolute) - attended) > fabs(RoundBf16(value + absolute) - attended) ?
 		fabs(RoundBf16(value - absolute) - attended) : fabs(RoundBf16(value + absolute) - attended));
 }
 
+static double AttentionValueWeight(const double *score, const double *slack, uint32_t base, uint32_t first, uint32_t key, uint32_t end, uint32_t prefill,
+	double best, double *flip)
+{
+	const uint32_t partition = prefill != 0u ? SPARK_ATTENTION_PREFILL_PARTITION_KEYS : SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	const uint32_t begin = key / partition * partition > first ? key / partition * partition : first;
+	const uint32_t stop = prefill != 0u ? ((key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS < end ?
+		(key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS : end) : key + 1u;
+	const uint32_t step = prefill != 0u ? 1u : SPARK_ATTENTION_SIMDS;
+	double peak = -INFINITY, peak_slack = 0.0, weight;
+	uint32_t k;
+	for ( k = prefill != 0u ? begin : begin + (key - begin) % SPARK_ATTENTION_SIMDS; k < stop; k += step )
+		if ( score[k - base] > peak )
+		{
+			peak = score[k - base];
+			peak_slack = slack[k - base];
+		}
+	weight = exp(score[key - base] - peak);
+	*flip = FlipSlack(weight,slack[key - base] + peak_slack + 2.0 * FUNCTION_ERROR) * exp(peak - best);
+	return(RoundBf16(weight) * exp(peak - best));
+}
+
 static void AttentionReference(const AttentionFixture *f, const uint16_t *query, const uint16_t *gate, uint32_t sequence, uint32_t position,
-	uint32_t head, double *out, double *tolerance)
+	uint32_t head, uint32_t prefill, double *out, double *tolerance)
 {
 	const uint16_t *keys = (const uint16_t *)f->keys.host, *values = (const uint16_t *)f->values.host;
 	const uint32_t kv = head / (att.heads / att.kv), length = position + 1u, low = att.window != 0u && length > att.window ? length - att.window : 0u;
 	double *score = (double *)malloc(length * sizeof(double)), *slack = (double *)malloc(length * sizeof(double)), best = -INFINITY, total = 0.0;
+	double *rounded = (double *)malloc(length * sizeof(double)), *flip = (double *)malloc(length * sizeof(double));
 	const uint32_t vdim = AttVdim();
 	const double sink = att.sinks != 0u ? ((const float *)f->sinks.host)[head] : -INFINITY;
 	uint32_t j, d;
@@ -4091,6 +4113,8 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 	if ( sink > best )
 		best = sink;
 	for ( j = low; j < length; j++ )
+		rounded[j] = AttentionValueWeight(score,slack,0u,low,j,length,prefill,best,&flip[j]);
+	for ( j = low; j < length; j++ )
 	{
 		score[j] = exp(score[j] - best);
 		total += score[j];
@@ -4099,23 +4123,26 @@ static void AttentionReference(const AttentionFixture *f, const uint16_t *query,
 		total += exp(sink - best);
 	for ( d = 0u; d < vdim; d++ )
 	{
-		double value = 0.0, spread = 0.0, magnitude = 0.0;
+		double value = 0.0, spread = 0.0, flips = 0.0, magnitude = 0.0;
 		for ( j = low; j < length; j++ )
 		{
 			const double v = Bf16(values[((uint64_t)sequence * f->context + j) * att.qkv + att.value_offset + kv * vdim + d]);
-			value += score[j] / total * v;
+			value += rounded[j] / total * v;
 			magnitude += score[j] / total * fabs(v);
 			spread += score[j] / total * fabs(v) * 2.0 * slack[j];
+			flips += flip[j] / total * fabs(v);
 		}
 		const double sigmoid = att.gate != 0u ? Sigmoid(Bf16(gate[att.separate != 0u ? head * att.dim + d : head * 2u * att.dim + att.dim + d])) : 1.0;
 		const double attended = RoundBf16(value), g = att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? RoundBf16(sigmoid) : sigmoid;
 		const double gate_slack = att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? FlipSlack(sigmoid,2.0 * FUNCTION_ERROR) : 0.0;
-		const double slack = AttentionSlack(value,spread,magnitude,length);
+		const double slack = AttentionSlack(value,spread,flips,magnitude,length);
 		out[d] = attended * g;
 		tolerance[d] = (att.gate != 0u ? UNIT_BF16 * fabs(out[d]) : 0.0) + g * slack + fabs(attended) * gate_slack + 4.0 * FUNCTION_ERROR * fabs(out[d]);
 	}
 	free(score);
 	free(slack);
+	free(rounded);
+	free(flip);
 }
 
 static SparkAttentionParams AttentionParamsFor(const AttentionFixture *f, uint32_t rows, uint32_t sequences)
@@ -4228,7 +4255,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 		for ( row = 0u; row < rows; row++ )
 			for ( head = 0u; head < att.heads; head++ )
 			{
-				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,ref,
+				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,prefill,ref,
 					tolerance);
 				for ( d = 0u; d < AttVdim(); d++ )
 					Observe(check,Bf16(output[((uint64_t)row * att.heads + head) * AttVdim() + d]),ref[d],tolerance[d]);
@@ -5212,6 +5239,8 @@ static void TestAttentionExtra(uint32_t heads)
 				const uint32_t count = position + 1u - low + visible;
 				const uint16_t *q = qv + ((uint64_t)row * heads + head) * DIM;
 				double *score = (double *)malloc(count * sizeof(double)), *slack = (double *)malloc(count * sizeof(double)), best = sink[head], total = 0.0;
+				double *rounded = (double *)malloc(count * sizeof(double)), *flip = (double *)malloc(count * sizeof(double));
+				const uint32_t primary = position + 1u - low;
 				const uint16_t **key = (const uint16_t **)malloc(count * sizeof(*key));
 				for ( part = 0u; part < count; part++ )
 				{
@@ -5227,24 +5256,31 @@ static void TestAttentionExtra(uint32_t heads)
 					slack[part] = Gamma(DIM + 2.0) * magnitude * scale + 2.0 * FUNCTION_ERROR * (1.0 + fabs(score[part]));
 					best = fmax(best,score[part]);
 				}
+				for ( part = 0u; part < primary; part++ )
+					rounded[part] = AttentionValueWeight(score,slack,low,low,low + part,position + 1u,0u,best,&flip[part]);
+				for ( part = primary; part < count; part++ )
+					rounded[part] = AttentionValueWeight(score + primary,slack + primary,0u,0u,part - primary,visible,0u,best,&flip[part]);
 				for ( part = 0u; part < count; part++ )
 					total += (score[part] = exp(score[part] - best));
 				total += exp(sink[head] - best);
 				for ( d = 0u; d < DIM; d++ )
 				{
-					double value = 0.0, spread = 0.0, magnitude = 0.0;
+					double value = 0.0, spread = 0.0, flips = 0.0, magnitude = 0.0;
 					for ( part = 0u; part < count; part++ )
 					{
 						const double v = Bf16(key[part][d]);
-						value += score[part] / total * v;
+						value += rounded[part] / total * v;
 						magnitude += score[part] / total * fabs(v);
 						spread += score[part] / total * fabs(v) * 2.0 * slack[part];
+						flips += flip[part] / total * fabs(v);
 					}
-					Observe(check,Bf16(ov[((uint64_t)row * heads + head) * DIM + d]),RoundBf16(value),AttentionSlack(value,spread,magnitude,count) +
+					Observe(check,Bf16(ov[((uint64_t)row * heads + head) * DIM + d]),RoundBf16(value),AttentionSlack(value,spread,flips,magnitude,count) +
 						4.0 * FUNCTION_ERROR * fabs(value));
 				}
 				free(score);
 				free(slack);
+				free(rounded);
+				free(flip);
 				free(key);
 			}
 	}

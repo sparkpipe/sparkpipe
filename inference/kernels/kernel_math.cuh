@@ -89,6 +89,11 @@ SPARK_MATH_FN float SparkMathNormGainRounded(float normed, float gain)
 	return(SparkMathRoundBf16(normed) * gain);
 }
 
+SPARK_MATH_FN float SparkMathAttentionValueWeight(float weight)
+{
+	return(SparkMathRoundBf16(weight));
+}
+
 SPARK_MATH_FN float SparkMathExp2Fast(float value)
 {
 #if defined(__CUDA_ARCH__)

@@ -4,8 +4,6 @@
 
 using namespace mpp::tensor_ops;
 
-#define SPARK_ATTENTION_SIMDS 8u
-#define SPARK_ATTENTION_BLOCK_KEYS 64u
 #define SPARK_ATTENTION_BLOCK_SIMDS 4u
 
 static inline bool SparkKvPage(device const uint *page_table, uint pages_per_sequence, uint page_slots, uint pool_pages, uint sequence,
@@ -127,9 +125,10 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 		score = simd_sum(score) * p.scale;
 		const float next_max = max(running_max, score);
 		const float correction = exp(running_max - next_max), weight = exp(score - next_max);
+		const float value_weight = SparkMathAttentionValueWeight(weight);
 		running_sum = running_sum * correction + weight;
 		for ( uint d = 0u; d < VLANE; d++ )
-			acc[d] = acc[d] * correction + weight * v[d];
+			acc[d] = acc[d] * correction + value_weight * v[d];
 		running_max = next_max;
 	}
 	if ( lane == 0u )
@@ -211,6 +210,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 {
 	constexpr uint ROWS = SPARK_ATTENTION_BLOCK_ROWS(D);
 	threadgroup float block[ROWS * SPARK_ATTENTION_BLOCK_KEYS];
+	threadgroup bfloat probability[ROWS * SPARK_ATTENTION_BLOCK_KEYS];
 	threadgroup float row_max[ROWS];
 	threadgroup float row_sum[ROWS];
 	threadgroup float row_scale[ROWS];
@@ -231,7 +231,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 	matmul2d<value_descriptor, execution_simdgroups<SPARK_ATTENTION_BLOCK_SIMDS>> value_operation;
 	tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> queries(query + (ulong)first_row * p.query_stride + head * D,
 		dextents<int32_t, 2>(D, count), array<int32_t, 2>{ 1, int(p.query_stride) });
-	tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> weights(block, dextents<int32_t, 2>(SPARK_ATTENTION_BLOCK_KEYS, ROWS),
+	tensor<threadgroup bfloat, dextents<int32_t, 2>, tensor_inline> weights(probability, dextents<int32_t, 2>(SPARK_ATTENTION_BLOCK_KEYS, ROWS),
 		array<int32_t, 2>{ 1, int(SPARK_ATTENTION_BLOCK_KEYS) });
 	tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> first_values(pool, dextents<int32_t, 2>(DV, SPARK_ATTENTION_BLOCK_KEYS),
 		array<int32_t, 2>{ 1, int(slot_stride) });
@@ -255,7 +255,7 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 			array<int32_t, 2>{ 1, int(slot_stride) });
 		tensor<device bfloat, dextents<int32_t, 2>, tensor_inline> value_block(slot + p.kv_heads * D + kv_head * DV, dextents<int32_t, 2>(DV, keys),
 			array<int32_t, 2>{ 1, int(slot_stride) });
-		tensor<threadgroup float, dextents<int32_t, 2>, tensor_inline> tile_weights(block, dextents<int32_t, 2>(keys, ROWS),
+		tensor<threadgroup bfloat, dextents<int32_t, 2>, tensor_inline> tile_weights(probability, dextents<int32_t, 2>(keys, ROWS),
 			array<int32_t, 2>{ 1, int(SPARK_ATTENTION_BLOCK_KEYS) });
 		auto scores = score_operation.template get_destination_cooperative_tensor<decltype(queries), decltype(key_block), float>();
 		threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -278,8 +278,8 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 			low_value = next == -INFINITY ? 0.0f : exp(low_value - next);
 			high_value = next == -INFINITY ? 0.0f : exp(high_value - next);
 			const float total = simd_sum(low_value + high_value);
-			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane] = low_value;
-			block[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] = high_value;
+			probability[r * SPARK_ATTENTION_BLOCK_KEYS + lane] = bfloat(SparkMathAttentionValueWeight(low_value));
+			probability[r * SPARK_ATTENTION_BLOCK_KEYS + lane + 32u] = bfloat(SparkMathAttentionValueWeight(high_value));
 			if ( lane == 0u )
 			{
 				row_max[r] = next;
