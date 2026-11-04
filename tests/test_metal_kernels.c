@@ -5561,7 +5561,8 @@ static void TestHcClamped(uint32_t rows)
 	Check clean, corrupted, weight_clean, weight_corrupted;
 	char shape[96];
 	uint64_t index;
-	uint32_t pass, row, s, t, d, m, c, iteration;
+	uint32_t pass, row, s, t, d, m, c, iteration, poked_row = 0u, poked_stream = 0u;
+	double most_open = -INFINITY;
 	FillBf16(sv,(uint64_t)rows * flat,1.0);
 	for ( index = 0u; index < (uint64_t)MIXES * flat; index++ )
 		fv[index] = (float)(0.05 * Normal());
@@ -5581,10 +5582,31 @@ static void TestHcClamped(uint32_t rows)
 	params.gate_clamp = (float)gate_clamp;
 	params.residual_clamp = (float)residual_clamp;
 	params.sum_floor = (float)floor_sum;
+	for ( row = 0u; row < rows; row++ )
+	{
+		double dots[STREAMS] = { 0.0 }, square = 0.0;
+		for ( index = 0u; index < flat; index++ )
+		{
+			const double x = Bf16(sv[(uint64_t)row * flat + index]);
+			for ( s = 0u; s < STREAMS; s++ )
+				dots[s] += x * fv[(uint64_t)s * flat + index];
+			square += x * x;
+		}
+		for ( s = 0u; s < STREAMS; s++ )
+		{
+			const double pre = dots[s] / sqrt(square / flat + norm_epsilon) * cv[0] + bv[s];
+			if ( pre > most_open )
+			{
+				most_open = pre;
+				poked_row = row;
+				poked_stream = s;
+			}
+		}
+	}
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted, *weight_check = pass == 0u ? &weight_clean : &weight_corrupted;
-		const uint64_t poke = (uint64_t)(rows - 1u) * flat + 2u * WIDTH + 333u;
+		const uint64_t poke = (uint64_t)poked_row * flat + (uint64_t)poked_stream * WIDTH + 333u;
 		const uint16_t saved = sv[poke];
 		memset(check,0,sizeof(*check));
 		memset(weight_check,0,sizeof(*weight_check));
