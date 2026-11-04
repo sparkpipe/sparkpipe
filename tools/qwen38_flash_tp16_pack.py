@@ -40,6 +40,9 @@ so no padding). At TP16 rank r holds:
                       scale f32 [1]
 The hash multipliers, head vocab sizes and head offsets are replicated i64
 tensors (and are listed in the config).
+A text_config key the checkpoint leaves out takes its transformers class
+default: the publisher's config omits norm_topk_prob, which NVIDIA's re-export
+of the same weights serializes as the default, true.
 The MTP decoder and the vision tower are not packed.
 """
 
@@ -98,6 +101,7 @@ PLE_HEAD_DIM = 160
 PREFIX = "model.language_model."
 EXPERTS_MAGIC = 0x58504557
 EXPERTS_VERSION = 2
+CONFIG_DEFAULTS = {"norm_topk_prob": True}
 
 
 class PackFailure(RuntimeError):
@@ -387,7 +391,7 @@ def check_geometry(text):
                 "indexer_head_dim": INDEX_DIM, "full_attention_interval": FULL_PERIOD, "split_ngram_parts": PLE_SHARDS,
                 "ple_embed_dim": HIDDEN, "ple_layer_ids": [PLE_LAYER + 1], "norm_topk_prob": True,
                 "output_gate_type": "sigmoid", "tie_word_embeddings": False}
-    differing = {key: (text.get(key), value) for key, value in expected.items() if text.get(key) != value}
+    differing = {key: (text.get(key), value) for key, value in expected.items() if text.get(key, CONFIG_DEFAULTS.get(key)) != value}
     if differing:
         raise PackFailure(f"checkpoint geometry differs from the packer's: {differing}")
 
