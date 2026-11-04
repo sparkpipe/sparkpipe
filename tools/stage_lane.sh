@@ -45,12 +45,13 @@ node_script() {
 set -uo pipefail
 LANE_TOOL=$LANE_TOOL
 $(declare -f lane_run_id lane_log_file lane_log_prelude)
+lane_pack() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' config/adapter.json; }
 cd $root || exit 2
 case "\${1:-}" in
   start)
     run_id="\$(lane_run_id "\${2:-}")" || exit 2
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
-    pack="\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' config/adapter.json)" || exit 2
+    pack="\$(lane_pack)" || exit 2
     head -c 64 "\$pack.sha256" > packs/pack.sha256.tmp && mv -f packs/pack.sha256.tmp packs/pack.sha256 || exit 2
     python3 bin/weightd_spine_budget.py "\$pack" > spine_budget.tmp && mv -f spine_budget.tmp spine_budget || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
@@ -68,7 +69,9 @@ case "\${1:-}" in
     [ \$pack -eq 0 ] && [ \$kv -eq 0 ] ;;
   drop-kv)
     ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --drop-kv $KV_LABEL ;;
-  *) echo "usage: lane.sh start [RUN_ID]|ready RUN_ID|stop|reclaim|drop-kv" >&2; exit 2 ;;
+  pack)
+    lane_pack ;;
+  *) echo "usage: lane.sh start [RUN_ID]|ready RUN_ID|stop|reclaim|drop-kv|pack" >&2; exit 2 ;;
 esac
 SCRIPT
 }

@@ -71,18 +71,28 @@ def main():
                 failures.append(f"start with {adapter_pack.name} left packs/pack.sha256 {(root / 'packs' / 'pack.sha256').read_text()!r}, not the configured pack's digest")
             if (root / "spine_budget").read_text().strip() != str(budget) or f"SPARK_WEIGHTD_SPINE_BUDGET_BYTES={budget} " not in arguments:
                 failures.append(f"start with {adapter_pack.name} launched with spine budget {(root / 'spine_budget').read_text().strip()} ({arguments.strip()[:120]}), not the configured pack's {budget}")
+        printed = subprocess.run(["bash", str(script), "pack"], capture_output=True, text=True).stdout.strip()
+        if printed != str(second):
+            failures.append(f"lane.sh pack printed {printed!r}, not the configured {second}")
         (packs / "bf16.rank00.pack.sha256").unlink()
         result, _ = start(script, root, home, second)
         if result.returncode == 0:
             failures.append("start with a configured pack that has no .sha256 sidecar succeeded")
         if (root / "packs" / "pack.sha256").read_text() != "b" * 64:
             failures.append("a refused start changed packs/pack.sha256")
+    swap = json.loads((ROOT / "deployment" / "hub" / "model_swap.json").read_text())
+    lanes = json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"]
+    for entry in swap["models"]:
+        warm = entry.get("node_warm", "")
+        if lanes.get(entry["id"], {}).get("launcher") == "stage_lane" and warm and ("readlink" in warm or "$(./lane.sh pack)" not in warm):
+            failures.append(f"{entry['id']}: the swap entry warms {warm.split('weightd_warm', 1)[-1][:80]!r}, not the pack its config names ($(./lane.sh pack))")
     for failure in failures:
         print("FAIL " + failure)
     if failures:
         return 1
     print("PASS stage lane pack identity: lane.sh start takes the expected pack digest and the spine budget from the pack config/adapter.json names, "
-          "so a pushed pack switch launches against the new pack, and a configured pack without a sidecar refuses to start")
+          "so a pushed pack switch launches against the new pack, and a configured pack without a sidecar refuses to start; lane.sh pack prints that pack, "
+          "and every stage lane's swap-controller warm command warms it")
     return 0
 
 
