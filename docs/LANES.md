@@ -110,7 +110,12 @@ expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
 from the `.sha256` beside the pack `config/adapter.json` names, and the spine
 budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
 describe the pack the lane was first staged with. A configured pack without
-its sidecar refuses to start. `lane.sh pack` prints the configured pack, and
+its sidecar refuses to start. A dense lane (DeepSeek V4.1 Flash) names a pack
+link inside its own `packs/`; residentd reads exactly one `packs/*.sha256`,
+so that lane keeps the `packs/pack.sha256` setup writes from the pack, and
+`lane.sh start` refuses when it is missing. The release precheck applies the
+same rule through `tools/release_packs.py`, which prints every rank's pack
+and digest file. `lane.sh pack` prints the configured pack, and
 the swap controller's weight-warm commands warm `$(./lane.sh pack)` rather
 than the link the lane was staged with.
 

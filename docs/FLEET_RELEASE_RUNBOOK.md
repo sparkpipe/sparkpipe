@@ -301,7 +301,7 @@ release are committed under `qualification/releases/<sha>/`.
 | `rollback` | down, then swapping | refuses unless every backup of the stamp exists; runs `down`; restores every lane root, hub API directory, `weightd_warm` and the controller config (with a controller restart); restores the production weightd and `WEIGHTSD_BIN` (section 5.2); then activates, captures and compares each model against `old` |
 
 Run `precheck`, `old`, `stage` and `backup` while production serves, then the
-window: `down`, `weightd`, `install`, `records`, `qualify`. `precheck` refuses unless the kit's tree is the release commit (the lane records and the controller config come from it) and unless every pack a rendered lane config names is on its node with its `.sha256` and `.experts`; `OLD_WD`, the weightd the fleet runs before the release, has no default. The other steps exit
+window: `down`, `weightd`, `install`, `records`, `qualify`. `precheck` refuses unless the kit's tree is the release commit (the lane records and the controller config come from it) and unless every pack a rendered lane config names is on its node with its digest and `.experts` (`tools/release_packs.py` lists them: the `.sha256` beside a real pack file, or a dense lane's single `packs/pack.sha256`); `OLD_WD`, the weightd the fleet runs before the release, has no default. The other steps exit
 non-zero and name what failed; stop there. `old` and `qualify` go on to the
 next model and print `OLD-FAILED <id>` or `NEW-ACTIVATE-FAILED <id>`. Roll
 back when a model does not activate or its qualification regresses. `rollback` leaves weightd and the models down
