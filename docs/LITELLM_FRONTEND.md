@@ -647,6 +647,24 @@ its request shapes are covered by `tests/test_chat_frontend_responses.py`
 and its catalogue by `tests/test_chat_frontend_fleet_api.py`, which checks
 `/v1/codex/models` against Codex's deserializer rules.
 
+Deployed on 2026-11-04 from `b2580e78a`. On the hub at 08:32Z,
+`chat_frontend.py`, `chat_shapes.py`, `chat_replay.py`, `working_state.py`,
+`codex_instructions.md`, `api_keys.py` and `deployment/hub/chat_frontend.json`
+(as `config.json`) were copied into `~/sparkpipe-chat`, and `sparkpipe-chat`
+was restarted while the controller was idle and no client was connected; the
+previous files are in
+`/srv/workspace/sparkpipe/backups/sparkpipe-chat.prev-20261104T083119Z`. The
+VPS (payment service, its units, `sparkpipe-pay.conf` and the site) followed
+at 08:36Z from the same commit, with backups in
+`/root/backups/20261104T083119Z`. The gateway's pool key is now the gateway
+key `k_39cb168c`; the plain key it replaced, `k_dbfba343`, is revoked.
+Checked after the restart: `/v1/models` and `/v1/codex/models`, a Messages
+and a Responses request on GLM 5.3, `count_tokens`, the replay directory
+created with mode 700, the gateway key refused without
+`X-SparkPipe-Account` (400 `account_required`) and served with it, and every
+VPS file equal to the commit. No directive exists yet, so rows expire 24 h
+after their last use until the working-state controller writes one.
+
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
 `https://sparkpipe.ai:8443` is the chat app for invited people: Open WebUI
@@ -927,9 +945,15 @@ install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
   openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
 systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
   /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
-systemd-run --user --unit=sparkpipe-chat -p WorkingDirectory=/home/spec/sparkpipe-chat \
+systemd-run --user --unit=sparkpipe-chat -p MemoryMax=4G -p WorkingDirectory=/home/spec/sparkpipe-chat \
   /usr/bin/bash -c 'exec python3 chat_frontend.py --config config.json --host 127.0.0.1 --port 8433 >> chat.log 2>&1'
 ```
+
+Restart the chat layer only while the controller is idle and no client is
+connected to it: `ss -tn state established '( sport = :8433 )'` lists
+nothing. An engine API's `live_requests` is not the test, because a gate's
+scoring talks to the engine API directly, never passes through the chat
+layer and is not interrupted by its restart.
 
 Read the controller from a hub shell without putting the token on a command
 line:
