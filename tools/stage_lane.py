@@ -224,7 +224,7 @@ GLM53_FLASH = {
     "kv_label": "glm53_flash_bf16_stage",
     "node_memory_bytes": 43 << 30,
     "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/tokenizer.json",
-    "pack": "sparkdata/glm53flash.bf16.tp16/packs/glm53flash.bf16-official.tp16.rank{rank:x}.sp",
+    "pack": "sparkdata/glm53flash.bf16.tp16/packs/glm53flash.bf16-f12e0fe1.tp16.rank{rank:x}.sp",
     "adapter": "libglm53_flash_bf16_tp16_serving_adapter.so",
     "program": "glm53_flash",
     "node_target": "cuda.sm121.glm53_flash.stage_runner.linear_bf16.expert_bf16.kv_bf16",
