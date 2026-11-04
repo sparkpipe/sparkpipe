@@ -232,7 +232,7 @@ class Reference:
             routed[rows] = bf16(routed[rows] + bf16(out * weights[rows, slots][:, None]))
         return bf16(bf16(routed * self.routed_scale) + shared), chosen
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         embed = self.checkpoint.raw(PREFIX + "embed_tokens.weight")
         residual = [(np.asarray(embed[np.asarray(tokens)]).astype(np.uint32) << 16).view(np.float32) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
@@ -244,6 +244,8 @@ class Reference:
             for index in range(len(sequences)):
                 attended = self.attention(layer, self.norm(residual[index], p + "input_layernorm.weight"), positions[index])
                 residual[index] = bf16(residual[index] + attended)
+            if dump is not None:
+                dump[f"attn{layer:02d}"] = np.concatenate(residual)
             normed = np.concatenate([self.norm(values, p + "post_attention_layernorm.weight") for values in residual])
             if layer in self.config["mlp_only_layers"]:
                 out = self.mlp(normed, p + "mlp.")
@@ -252,6 +254,8 @@ class Reference:
                 routes.append(chosen)
             for index in range(len(sequences)):
                 residual[index] = bf16(residual[index] + out[bounds[index]:bounds[index + 1]])
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = np.concatenate(residual)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.cache = {}
         return [self.norm(values, PREFIX + "norm.weight") for values in residual]
@@ -367,7 +371,11 @@ def teacher(args):
     for label in variants:
         REVERSED = label != "a"
         device.select(label)
-        finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts]), **dump)
         for prompt, final in zip(prompts, finals):
             count = len(prompt["prompt_token_ids"])
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -399,6 +407,7 @@ def main():
     parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/laguna/chat_template.json"))
+    parser.add_argument("--dump", help="teacher: write every layer's post-attention and post-MLP residual for all rows to DUMP.<variant>.npz")
     parser.add_argument("--out")
     args = parser.parse_args()
     if args.mode == "yarn":
