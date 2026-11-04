@@ -284,10 +284,10 @@ def main() -> int:
         record = lane.recurrent_page_bytes("tp4pp4")
         check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
               "the KDA record per logical page is the KV binding's recurrent lane bytes")
-        minimum = lane.kv_backing_minimum("tp4pp4", limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
+        minimum = lane.kv_backing_minimum("tp4pp4", lane.KV_PAGES_PER_SEQUENCE, limits["kv_logical_page_capacity"])
         check(lane.kv_page_bytes("tp16") == 24 * 64 * 576 * 2 // 16, failures,
               "a TP16 rank holds one sixteenth of every MLA layer's page")
-        check(all(node["kv_backing_maximum_bytes"] == minimum >= (limits["kv_logical_page_capacity"] - limits["kv_physical_page_capacity"] + 2) * lane.kv_page_bytes("tp4pp4")
+        check(all(node["kv_backing_maximum_bytes"] == minimum >= (limits["kv_logical_page_capacity"] - lane.KV_PAGES_PER_SEQUENCE + 2) * lane.kv_page_bytes("tp4pp4")
                   for node in deployment["nodes"]), failures,
               "the KV backing is exactly the spilled pages the lane geometry parks")
         short = subprocess.run(

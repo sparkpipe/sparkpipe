@@ -601,8 +601,8 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
 
-def kv_backing_bytes(logical_pages: int, physical_pages: int, page_bytes: int) -> int:
-    return (logical_pages - physical_pages + KV_BACKING_IN_FLIGHT_PAGES) * page_bytes
+def kv_backing_bytes(logical_pages: int, sequence_pages: int, page_bytes: int) -> int:
+    return (logical_pages - sequence_pages + KV_BACKING_IN_FLIGHT_PAGES) * page_bytes
 
 
 def kv_physical_pages(model: dict, page_bytes: int, cap: int | None) -> int:
@@ -631,7 +631,7 @@ def check_arguments(model: dict, args) -> None:
     if args.kv_logical_pages < args.sequences * args.kv_pages:
         raise SystemExit(f"logical pages {args.kv_logical_pages} must hold every resident sequence at full length: {args.sequences} x {args.kv_pages}")
     states = (2 * args.sequences + 2) * model["recurrent_bytes"]
-    args.kv_backing_bytes = kv_backing_bytes(args.kv_logical_pages, args.kv_physical_pages, model["kv_page_bytes"])
+    args.kv_backing_bytes = kv_backing_bytes(args.kv_logical_pages, args.kv_pages, model["kv_page_bytes"])
     if args.state_memory_bytes is None:
         args.state_memory_bytes = 2 * states
     if model["recurrent_bytes"] and args.state_memory_bytes < states:

@@ -105,7 +105,7 @@ def main():
             hub = json.loads((pathlib.Path(directory) / "model_resident.json").read_text())
             node = json.loads((pathlib.Path(directory) / "deployment.json").read_text())
             limits = node["runtime_limits"]
-            need = stage_lane.kv_backing_bytes(limits["kv_logical_page_capacity"], limits["kv_physical_page_capacity"], model["kv_page_bytes"])
+            need = stage_lane.kv_backing_bytes(limits["kv_logical_page_capacity"], record["context_tokens"] // model.get("kv_block_tokens", stage_lane.KV_BLOCK_TOKENS), model["kv_page_bytes"])
             for rank in node["nodes"]:
                 if "kv_snapshot_maximum_bytes" in rank or "kv_partition_reserve_bytes" in rank or rank["kv_backing_maximum_bytes"] != need:
                     failures.append(f"{record_id}: rank {rank['rank_index']} renders a per-lane snapshot cap, a partition reserve or a {rank['kv_backing_maximum_bytes']}-byte backing instead of the {need} bytes its spilled pages need")

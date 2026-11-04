@@ -88,7 +88,7 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->backing_directory = engine->backing;
-	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;
 	configuration->ledger_path = "/tmp/sparkpipe-kv-shared-prefix-ledger";
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));

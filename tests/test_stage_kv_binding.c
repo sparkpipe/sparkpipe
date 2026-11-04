@@ -186,7 +186,7 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->backing_directory = DIRECTORY;
-	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
 	configuration->ledger_path = LEDGER_PATH;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
@@ -889,7 +889,7 @@ static void TestSnapshotRefusals(void)
 		char small[128],other[160];
 		SparkKvLedger ledger;
 		uint32_t slot = SPARK_KV_LEDGER_NO_SLOT;
-		const uint64_t quota = UINT64_C(1) << 30,backing = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+		const uint64_t quota = UINT64_C(1) << 30,backing = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 		(void)snprintf(small,sizeof(small),"%s-small",LEDGER_PATH);
 		(void)snprintf(other,sizeof(other),"%s-other-lane",LEDGER_PATH);
 		(void)unlink(small);
@@ -1634,7 +1634,7 @@ static void TestRecurrentRefusals(void)
 	configuration.recurrent.memory_bytes = (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 1u) * TEST_PAGE_BYTES;
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 1u) * TEST_PAGE_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	RemoveDirectories();
 	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size, no state memory, state memory short of two checkpoints per resident lane plus two, and backing short of the page spill refuse: ok\n");

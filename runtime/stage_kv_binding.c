@@ -221,12 +221,12 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? layer_page : (uint64_t)configuration->physical_page_count * layer_page;
 		binding->page_bytes += packed;
 	}
-	missing = (uint64_t)(configuration->logical_page_count - configuration->physical_page_count);
+	missing = (uint64_t)(configuration->logical_page_count - binding->pages_per_sequence);
 	in_flight = configuration->logical_page_count < 2u ? configuration->logical_page_count : 2u;
 	if ( missing != 0u && (configuration->backing_maximum_bytes == 0u || missing + in_flight > configuration->backing_maximum_bytes / binding->page_bytes) )
 	{
-		fprintf(stderr,"%s kv binding refused: %llu spill pages and %u in flight of %llu bytes need backing, %llu bytes configured\n",
-			configuration->module_tag,(unsigned long long)missing,in_flight,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
+		fprintf(stderr,"%s kv binding refused: %llu spill pages (logical pages beyond the %u of one sequence the pool minimum keeps resident) and %u in flight of %llu bytes need backing, %llu bytes configured\n",
+			configuration->module_tag,(unsigned long long)missing,binding->pages_per_sequence,in_flight,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return(SparkStageKvBindingStateBudget(binding,configuration,missing + in_flight));

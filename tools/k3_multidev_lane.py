@@ -155,8 +155,8 @@ def kv_page_bytes(topology: str) -> int:
     return max(mla) * k3_constant("KV_PAGE_SLOTS") * slot // tp
 
 
-def kv_backing_minimum(topology: str, physical_pages: int, logical_pages: int) -> int:
-    spill = logical_pages - physical_pages + 2
+def kv_backing_minimum(topology: str, sequence_pages: int, logical_pages: int) -> int:
+    spill = logical_pages - sequence_pages + 2
     return spill * kv_page_bytes(topology) + KV_IN_FLIGHT_MARGIN_BYTES
 
 
@@ -452,7 +452,7 @@ def main() -> int:
     if arguments.rows is not None and not arguments.sequences <= arguments.rows <= MAX_ROWS:
         raise SystemExit(f"rows must be within sequences..{MAX_ROWS}: a decode wave carries one row per sequence "
                          f"and the K3 adapter takes at most {MAX_ROWS} rows")
-    arguments.kv_backing_bytes = kv_backing_minimum(arguments.topology, arguments.kv_physical_pages, arguments.kv_logical_pages)
+    arguments.kv_backing_bytes = kv_backing_minimum(arguments.topology, arguments.kv_pages, arguments.kv_logical_pages)
     states = state_memory_minimum(arguments.topology, arguments.sequences)
     if arguments.state_memory_bytes is None:
         arguments.state_memory_bytes = 2 * states
