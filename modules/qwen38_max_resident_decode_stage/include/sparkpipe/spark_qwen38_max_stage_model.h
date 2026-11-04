@@ -2,6 +2,7 @@
 #define SPARKPIPE_SPARK_QWEN38_MAX_STAGE_MODEL_H
 
 #include "sparkpipe/spark_stage_runner_model.h"
+#include "sparkpipe/spark_weight_codec.h"
 
 #ifdef __cplusplus
 extern "C" {
