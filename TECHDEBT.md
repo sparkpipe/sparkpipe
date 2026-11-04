@@ -1038,6 +1038,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Packaging and provenance
 
+- The GLM 5.3 Flash stage registers its expert arena with weightd under the
+  FP8 checkpoint's revision (`WeightdRevision()` in
+  `spark_glm53_flash_tp16_stage_model.h` returns `84c6a6aa…`) in the BF16
+  build too, so the swap controller's warm has to name that revision for the
+  BF16 lane (`tests/test_glm53_flash_warm_identity.py`). Take the revision
+  from the build's `GLM53_FLASH_MODEL_REVISION`, as GLM 5.3 Full's stage
+  does, and move the warm to `f12e0fe1…` in the same change.
 - DeepSeek V4.1 Flash, the one dense lane, still reaches its pack and its
   engram shard through links under its lane root (`packs/rankN.spstage`,
   `packs/engram.spengram`, `packs/engram_tables.bin`) beside 16-byte
