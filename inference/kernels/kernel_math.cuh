@@ -167,6 +167,11 @@ SPARK_MATH_FN float SparkMathRopeHigh(float low, float high, float cosine, float
 	return((low * sine) + (high * cosine));
 }
 
+SPARK_MATH_FN float SparkMathRopeRoundedTerm(float own, float partner, float cosine, float sine)
+{
+	return(SparkMathRoundBf16(SparkMathRoundBf16(own * SparkMathRoundBf16(cosine)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(sine))));
+}
+
 SPARK_MATH_FN float SparkMathLog1p(float value)
 {
 #if defined(__METAL_VERSION__)

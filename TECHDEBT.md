@@ -1374,14 +1374,6 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
     Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;
-  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
-    of the rotary terms, which the reference follows, while CUDA rotates in
-    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
-    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
-    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
-    to +3.48 / +3.86, so the two backends differ here until
-    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
-    qualification);
   - expressions that differ inside a backend, each a numerical change that
     needs the affected model's gate: the experts' tanh GeLU
     (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies

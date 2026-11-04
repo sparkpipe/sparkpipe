@@ -125,8 +125,7 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 			const float c = SparkMathRopeCos(angle, p.scale), s = SparkMathRopeSin(angle, p.scale);
 			if ( p.rope_rounded_terms != 0u )
 			{
-				const float partner = low ? -normed[mate] : normed[mate];
-				value = SparkMathRoundBf16(SparkMathRoundBf16(value * SparkMathRoundBf16(c)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(s)));
+				value = SparkMathRopeRoundedTerm(value, low ? -normed[mate] : normed[mate], c, s);
 			}
 			else
 				value = low ? SparkMathRopeLow(value, normed[mate], c, s) : SparkMathRopeHigh(normed[mate], value, c, s);

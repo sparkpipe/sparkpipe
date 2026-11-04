@@ -20,7 +20,7 @@ enum LmRopePairing
 	LM_ROPE_INTERLEAVED = 1
 };
 
-template<LmRopePairing PAIRING>
+template<LmRopePairing PAIRING, bool ROUNDED = false>
 static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle, float scale = 1.0f)
 {
 	uint32_t low_offset,high_offset;
@@ -29,7 +29,14 @@ static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_
 	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
 	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
 	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
-	LmRopePair(&low,&high,angle,scale);
+	if constexpr ( ROUNDED )
+	{
+		const float c = SparkMathRopeCos(angle,scale),s = SparkMathRopeSin(angle,scale),a = low,b = high;
+		low = SparkMathRopeRoundedTerm(a,-b,c,s);
+		high = SparkMathRopeRoundedTerm(b,a,c,s);
+	}
+	else
+		LmRopePair(&low,&high,angle,scale);
 	rows_bf16[base + low_offset] = LmFloatToBf16(low);
 	rows_bf16[base + high_offset] = LmFloatToBf16(high);
 }

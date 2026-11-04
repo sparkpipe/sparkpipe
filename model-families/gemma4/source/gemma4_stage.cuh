@@ -405,10 +405,10 @@ struct GemmaModel
 				state->value, (const float *)0, state->value, rows, KVH, HD, G::kNormEpsilon, 1.0f);
 		if ( !FULL || G::kFullRope )
 		{
-			LM_LAUNCH((LmRopePerHeadKernel<GM_THREADS>), dim3(rows,HEADS), GM_THREADS, 0, stream,
+			LM_LAUNCH((LmRopePerHeadKernel<GM_THREADS,LM_ROPE_HALF_SPLIT,true>), dim3(rows,HEADS), GM_THREADS, 0, stream,
 				state->query, step->positions, HEADS, HD, FULL ? S::kFullRopeWidth : HD, FULL ? G::kFullTheta : G::kSlidingTheta,
 				FULL ? state->full_inv_freq : (const float *)0, FULL ? G::kFullRopeScale : 1.0f, 0u);
-			LM_LAUNCH((LmRopePerHeadKernel<GM_THREADS>), dim3(rows,KVH), GM_THREADS, 0, stream,
+			LM_LAUNCH((LmRopePerHeadKernel<GM_THREADS,LM_ROPE_HALF_SPLIT,true>), dim3(rows,KVH), GM_THREADS, 0, stream,
 				state->key, step->positions, KVH, HD, FULL ? S::kFullRopeWidth : HD, FULL ? G::kFullTheta : G::kSlidingTheta,
 				FULL ? state->full_inv_freq : (const float *)0, FULL ? G::kFullRopeScale : 1.0f, 0u);
 		}
