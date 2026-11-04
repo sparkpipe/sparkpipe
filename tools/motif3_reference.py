@@ -13,11 +13,11 @@
   gate-prompts  the Metal gate prompts (tools/gemma4_reference.py's set) in
              Motif's chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position: --prompts prompts.json ->
-             --out DIR/<name>.ref_<v>.logits for --variants a,h. Variant b adds
+             --out DIR/<name>.ref_<v>.logits for --variants a,b,h. Variant b adds
              each row's routed experts in descending instead of ascending
              expert order; h is b with a GPU's exp error
-             (tools/reference_device_error.py), the second reference whose
-             distance from a is the gate's floor.
+             (tools/reference_device_error.py); the three variants' distances
+             from one another are the gate's floors.
 
 Semantics follow the publisher's modeling_motif.py at revision 2ed2ed5c:
 - Four hyper-connection streams start as copies of the embedding. Each site
@@ -395,7 +395,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "teacher", "gate-prompts"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/motif/chat_template.json"))
     parser.add_argument("--out", required=True)

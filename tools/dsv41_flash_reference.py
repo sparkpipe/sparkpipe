@@ -7,15 +7,15 @@
              chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position but the last:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,h (or b), through tools/ling3_reference.py's
+             --variants a,b,h, through tools/ling3_reference.py's
              teacher: a multiplies in numpy's order; b splits every matmul's
              inner dimension into 1,024-wide chunks summed last chunk first,
              reverses the other reductions (norms, mixes, softmax, Sinkhorn
              and engram sums, the route weight sum, the stream sums) and
              combines the routed experts in reverse pick order, so a against
              b is the FP32 reduction-order noise; h is b with a GPU's exp
-             error (tools/reference_device_error.py), and a against h is the
-             gate's floor
+             error (tools/reference_device_error.py), and the three variants'
+             distances from one another are the gate's floors
 
 Every prompt is its own sequence at positions 0..n-1. A position at or past
 index_topk (512) is refused: below it the sparse indexer keeps every
@@ -648,7 +648,7 @@ def main():
     parser.add_argument("mode", choices=("gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--template", default=str(ROOT / "model-families/dsv41_flash/chat_template.json"))
     parser.add_argument("--token-map", default=str(ROOT / "qualification/t1_reference/dsv41/engram_token_map.npy"),
                         help="the engram vocabulary -> compressed id map (tools/dsv41_flash_engram_tables.py's)")

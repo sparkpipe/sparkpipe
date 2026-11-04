@@ -20,7 +20,8 @@
             1,024-wide chunks summed last chunk first, reverses every other
             reduction and combines the experts in descending order, so a
             against b is the noise of FP32 reduction order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py):
-            a against h is the Metal gate's floor
+            the three variants' distances from one another are the Metal
+            gate's floors
   gate-prompts, spec-prompts   the Metal gate and speculation prompts
             (tools/gemma4_reference.py's sources and cuts) in MiMo's chat
             framing -> --out prompts.json
@@ -424,7 +425,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "teacher", "gate-prompts", "spec-prompts"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/mimo26/chat_template.json"))
     parser.add_argument("--answers-out")

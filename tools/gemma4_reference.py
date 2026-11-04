@@ -26,9 +26,9 @@
              the discrete expert choice, and hp is h pinned the same way;
              h is b with every exp and tanh
              carrying a GPU's measured error
-             (tools/reference_device_error.py), so a against h is the
-             gate's floor: reduction-order noise plus the transcendental
-             noise a GPU adds. MoE models also write
+             (tools/reference_device_error.py), so the three variants'
+             distances from one another are the gate's floors:
+             reduction-order noise plus the transcendental noise a GPU adds. MoE models also write
              <out>/<name>.ref_<variant>.routes for a, b and h, the chosen
              experts as little-endian uint16 [layer][position][rank]
   gate-prompts  the Metal gate prompts (the same instructions and repository
@@ -529,7 +529,7 @@ def main():
     r.add_argument("--checkpoint", required=True)
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--variants", default="a,h")
+    r.add_argument("--variants", default="a,b,h")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

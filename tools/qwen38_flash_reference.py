@@ -9,8 +9,9 @@
             1,024-wide chunks summed last chunk first and reverses every other
             reduction, the hyper-connection stream sum and the expert
             combination, so a against b is the noise of FP32 reduction order,
-            and h is b with a GPU's exp and tanh error (tools/reference_device_error.py): a
-            against h is the Metal gate's floor
+            and h is b with a GPU's exp and tanh error (tools/reference_device_error.py): the
+            three variants' distances from one another are the Metal gate's
+            floors
 
 No publisher modeling code exists for qwen4_exp, so the semantics are those of
 SparkPipe's CUDA stage (model-families/qwen38/source/qwen38_hybrid_stage.cuh),
@@ -474,7 +475,7 @@ def main():
     parser.add_argument("mode", choices=("teacher",))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts", required=True)
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--only", help="comma-separated prompt names (default every prompt)")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--out", required=True)

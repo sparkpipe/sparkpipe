@@ -17,11 +17,11 @@
              rendered with the full K-EXAONE chat turn -> --out prompts.json.
   teacher    FP32 logits of every prompt position for the Metal gate:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,h. Both variants take FP32 matrix products (BLAS
+             --variants a,b,h. Both variants take FP32 matrix products (BLAS
              order) instead of f64 ones; variant b adds each row's routed
              experts in descending instead of ascending expert order, and
              h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
-             the second reference whose distance from a is the gate's floor.
+             and the three variants' distances from one another are the gate's floors.
 
 Semantics follow model_contracts/references/modeling_exaone_moe.py
 (nuxlear/transformers@969f8bdf): pre-norm blocks; RMSNorm is w * bf16(x *
@@ -356,7 +356,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/kexaone2/chat_template.json"))
     parser.add_argument("--out")

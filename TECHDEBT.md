@@ -1314,7 +1314,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
     adds a GPU's measured exp and tanh error to variant b's reduction order,
     because the floor of reduction order alone (a against b) failed the
     reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
-    the models gated against a and b are being re-gated against a and h;
+    the gate now judges every candidate against all three variants a, b
+    and h, each the reference in turn ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)),
+    and the references that hold only a and h are getting b;
   Kernel bodies (the schedules) stay per backend.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with

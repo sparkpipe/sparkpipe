@@ -667,12 +667,13 @@ static double RefLogprob(const float *logits, uint32_t token)
 static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPrompt *prompt, const char *out, uint32_t new_tokens, FILE *greedy, uint32_t first)
 {
 	float *logits = (float *)malloc((size_t)prompt->count * REF_VOCAB * sizeof(float));
-	static const uint32_t variants[2] = { 0u, 2u };
+	static const uint32_t variants[3] = { 0u, 1u, 2u };
+	static const char names[3] = { 'a', 'b', 'h' };
 	uint32_t pass, variant, *generated = (uint32_t *)calloc(new_tokens + 1u,sizeof(uint32_t));
 	char path[4096];
 	if ( logits == 0 || generated == 0 || prompt->count + new_tokens > REF_MAX_CONTEXT || prompt->count < 2u )
 		Die("a prompt does not fit the reference",prompt->name);
-	for ( pass = 0u; pass < 2u; pass++ )
+	for ( pass = 0u; pass < 3u; pass++ )
 	{
 		const double start = Seconds();
 		FILE *file;
@@ -681,15 +682,15 @@ static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPr
 		ref_device_error = variant == 2u ? 1u : 0u;
 		RefStateReset(state);
 		RefForward(variant,model,state,prompt->tokens,prompt->count,logits);
-		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,variant == 0u ? 'a' : 'h');
+		snprintf(path,sizeof(path),"%s/%s.ref_%c.logits",out,prompt->name,names[pass]);
 		file = fopen(path,"wb");
 		if ( file == 0 || fwrite(logits,sizeof(float),(size_t)(prompt->count - 1u) * REF_VOCAB,file) != (size_t)(prompt->count - 1u) * REF_VOCAB ||
 			fclose(file) != 0 )
 			Die("cannot write",path);
 		generated[0] = RefArgmax(logits + (uint64_t)(prompt->count - 1u) * REF_VOCAB);
-		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,variant == 0u ? 'a' : 'h',prompt->count - 1u,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u teacher-forced positions in %.1f s\n",prompt->name,names[pass],prompt->count - 1u,Seconds() - start);
 		fprintf(greedy,"%s{\"name\":\"%s\",\"variant\":\"%c\",\"prompt_tokens\":%u,\"generated\":[",first != 0u && variant == 0u ? "" : ",\n",prompt->name,
-			variant == 0u ? 'a' : 'h',prompt->count);
+			names[pass],prompt->count);
 		for ( index = 0u; index < new_tokens; index++ )
 		{
 			fprintf(greedy,"%s%u",index != 0u ? "," : "",generated[index]);
@@ -698,7 +699,7 @@ static void RefPrompt(const RefModel *model, RefState *state, const SparkTokenPr
 		}
 		fprintf(greedy,"],\"seconds\":%.1f}",Seconds() - start);
 		fflush(greedy);
-		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,variant == 0u ? 'a' : 'h',new_tokens,Seconds() - start);
+		fprintf(stderr,"%s variant %c: %u greedy tokens, %.1f s total\n",prompt->name,names[pass],new_tokens,Seconds() - start);
 		(void)RefLogprob;
 	}
 	free(logits);

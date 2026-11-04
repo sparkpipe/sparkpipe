@@ -125,4 +125,5 @@ fi
 if [ "$spec" = 1 ]; then
 	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 fi
+sh tools/metal_gate_floors.sh "$out" "$prompts" "$vocab"
 python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts" --tp-degree "$tp"

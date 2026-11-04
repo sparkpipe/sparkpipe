@@ -616,17 +616,18 @@ every position. The reference, `tools/qwen38_27b_reference.c`, is a separate
 implementation of the same precision policy on the CPU: it reads the original
 safetensors (separate q, k, v, z, b and a projections, unfused, norms folded
 at load), converts the weights to FP32 once and runs the whole prompt through
-Accelerate's FP32 GEMM. It runs twice per prompt: variant A uses the BLAS
-GEMM over the full inner dimension and forward sums; variant H splits every
-GEMM's inner dimension into 1,024-wide chunks accumulated last chunk first,
-reverses every sum (the order of the older variant B) and gives every exp and
-tanh the error a GPU's has (`tools/reference_device_error.py`: on the M5 Ultra
+Accelerate's FP32 GEMM. It runs three times per prompt: variant A uses the
+BLAS GEMM over the full inner dimension and forward sums; variant B splits
+every GEMM's inner dimension into 1,024-wide chunks accumulated last chunk
+first and reverses every sum; variant H is B with every exp and tanh carrying
+the error a GPU's has (`tools/reference_device_error.py`: on the M5 Ultra
 under `-fno-fast-math`, exp is off by a relative 1.64e-7 mean and 4.35e-7
 standard deviation, about 18 times FP32 rounding, and tanh by an absolute
 3.7e-8; the error is a fixed function of the input, drawn from a hash of its
-bits). KL divergence between A and H is the floor: FP32 reduction-order noise
-plus the transcendental noise any GPU adds, under BF16 rounding. Every
-reference (the Python ones too) computes A and H by default.
+bits). The KL divergences among A, B and H are the floors: FP32
+reduction-order noise plus the transcendental noise any GPU adds, under BF16
+rounding. Every reference (the Python ones too) computes A, B and H by
+default.
 
 The floor used to be A against B, reduction order alone. It failed the
 reference itself: the same numpy reference of Gemma 4 31B run on a second CPU
@@ -653,7 +654,34 @@ when all three hold:
   blocks (`sqrt(n/(n-1) * sum (above_b - share * size_b)^2) / positions`),
   because neighbouring positions share context and are not independent.
 
-Metal must pass both legs. `tools/pack_tensor_control.py` writes APFS clones
+Metal must pass both legs. With two variants the floor is one draw of the
+noise, and the paired test assumes that the candidate beats that one draw at
+exactly half the positions. When the references hold A, B and H, the gate
+uses all three instead (`tools/metal_gate_floors.sh` writes each position's KL
+for every ordered pair, `tools/metal_gate_summary.py` judges them), and the
+receipt's `pass` is that verdict; the two-leg verdict stays in the receipt as
+`single_floor_pass`. Each variant R in turn is the reference, the other two
+its floors, and a candidate passes when all three hold:
+
+- for every R, its mean KL against R is at most 2 times the mean of R's two
+  floors' KL;
+- for every R, its top-1 disagreement with R is at most 1.5 times the mean of
+  the two floors';
+- the paired test over the six orderings (R, F, T) of the three variants: at
+  each position, [KL(R || candidate) > KL(R || F)] minus [KL(R || T) >
+  KL(R || F)], averaged over the orderings. The third variant T measures the
+  rate at which a floor-like draw lands above F, so the null is measured
+  rather than assumed to be one half, and a candidate distributed like a
+  further variant has an expected excess of zero. The mean excess may be at
+  most 3 standard errors above zero, with the same 128-position block error.
+
+The orderings are only exchangeable when the three variants sit about equally
+far apart, so the receipt lists all six floors (`multi_floor.floors`, mean KL
+and top-1 per ordered pair). For Solar Open 2 they do: A to B 0.078 and 0.084
+nats, B to H 0.076, A to H 0.076 and 0.083. Motif 3 at TP8 passes at +2.77
+standard errors (KL 1.08, 1.03 and 1.02 times the floors against A, B and H),
+its required controls fail at +36 and +59, and the one-layer probe fails too,
+at +5.3. `tools/pack_tensor_control.py` writes APFS clones
 of the pack with tensors corrupted, and the gate runs each through the same
 teacher-forced pass:
 
