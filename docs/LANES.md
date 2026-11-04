@@ -44,9 +44,12 @@ weightd runs with.
   grows on demand, so the scheduler's physical capacity is the most the
   model can hold alone on the node, not a reservation;
 - the record renders: physical pages hold one sequence, logical pages hold
-  every resident sequence at full length, the backing is exactly the parked
-  pages plus two in flight (`kv_backing_maximum_bytes`, derived, never a record
-  field), recurrent checkpoint memory holds two per sequence plus two;
+  every resident sequence at full length, the backing holds every logical page
+  beyond the one sequence the pool's minimum keeps resident, plus two in flight
+  (`kv_backing_maximum_bytes`, derived, never a record field): the pool grows
+  only after the arena has parked, and a pool other lanes hold at its minimum
+  parks everything past one sequence; recurrent checkpoint memory holds two per
+  sequence plus two;
 - no record names `kv_backing_bytes` or `kv_snapshot_bytes`, and the document
   names no `kv_partition_reserve_bytes`: every lane's KV on disk shares the
   node's 500 GB quota ([`docs/INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh));

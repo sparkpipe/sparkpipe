@@ -439,6 +439,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   free space than the quota fails KV writes with `ENOSPC` (refused, never
   partial). Close it with a startup check per tier that the partition can
   hold every tier's quota at once.
+- A running lane reserves its whole worst-case spill backing in the node KV
+  quota (logical pages less one sequence, 15 to 96 GiB per lane), although the
+  file is sparse and a lane whose pool grows parks little. Two follow-ups:
+  - the ledger should count backing pages as they park, not the maximum, so
+    the reservation does not evict snapshot files it never needs;
+  - the arena parks before the pool grows (`SparkStageKvBindingPoolTick` grows
+    after it sees evictions), so a long fill writes pages to NVMe while device
+    memory is free; growing before parking, when weightd has unlent chunks,
+    keeps those pages resident.
 - The node KV quota is in code and host tests only
   ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). Close it on the fleet:
   two lanes on one node fill the 500 GB, the ledger's `used_bytes` stays at or

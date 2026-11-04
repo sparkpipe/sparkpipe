@@ -335,7 +335,10 @@ own. A write that would take the node past the quota evicts the node's oldest
 snapshot file first, whichever lane holds it: the lane's own, another running
 lane's (asked through the ledger, freed within a second), or a stopped lane's
 (deleted directly). A write is refused only when nothing evictable is left,
-for example while spill backings hold the quota. weightd's purge records
+for example while spill backings hold the quota. A running lane's backing
+holds every logical page past the one sequence its pool's minimum keeps
+resident (15 to 96 GiB per lane at today's lane records), because a pool that
+other lanes hold at its minimum parks everything else. weightd's purge records
 stopped lanes' stores in the ledger every minute and deletes files unused for
 24 hours. The pair partner's working-state mirror is not counted
 ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). A write the store cannot complete is logged with the step
