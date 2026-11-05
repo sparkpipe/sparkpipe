@@ -777,9 +777,10 @@ positions); Muse Glimmer has its own tokenizer and chat template and
 `qualification/metal/muse_glimmer/` (5,640 positions). Gemma 4 31B and Muse
 are dense, so their gate is the Qwen gate's set: free decode against a with
 b as the floor, and the three weight controls. The reference is
-`tools/gemma4_reference.py teacher --variants a,b,bp` (a and b for the dense
-models): numpy, the publisher's eager rounding, a and b in the two reduction
-orders.
+`tools/gemma4_reference.py teacher --variants a,b,h,bp,hp` (a, b and h for
+the dense models): numpy, the publisher's eager rounding, a and b in the two
+reduction orders, h with a GPU's exp and tanh error, and bp and hp b and h
+with a's experts.
 
 The router makes the free-route floor useless as a gate. Its logits are
 BF16, so the eighth and ninth experts of a row are often a rounding step
@@ -798,14 +799,20 @@ fills a route override for every step (`SparkStageRunnerStep.route_override`,
 `[layer][row][rank]`) that the experts layer kind uses instead of its top-k
 (`spark_route_pinned`). Pinned, a against bp is 0.063 nats.
 
-The receipt applies the rule to both sets. Free routes: Metal against a
-and b with b and a as the floor; it must pass, which shows the end-to-end
-noise is that of a correct implementation. Pinned routes: Metal, the same
-pass prefilled in 64-row chunks (`metal_rows64`, the skinny tensor-unit
-projection the batches use) and the controls (run pinned), against a and bp
-with each other as the floor; the Metal runs must pass and
-`control_layers`, `control_rotate` and `control_experts` (experts 0 and 1 of
-every layer's `moe_w2` swapped, the reach of a misindexed expert) must fail. Metal's own top-k is
+The receipt applies the multi-floor rule to both sets. Free routes: Metal
+against a, b and h, each the reference in turn; it must pass, which shows the
+end-to-end noise is that of a correct implementation. Pinned routes: Metal,
+the same pass prefilled in 64-row chunks (`metal_rows64`, the skinny
+tensor-unit projection the batches use) and the controls (run pinned),
+against a, bp and hp the same way (`metal_gate_floors.sh`'s `pmf` labels);
+the Metal runs must pass and `control_layers`, `control_rotate` and
+`control_experts` (experts 0 and 1 of every layer's `moe_w2` swapped, the
+reach of a misindexed expert) must fail. References without bp fall back to
+the single floor, a against hp. One floor draw was not enough here either:
+on one build the two pinned runs, which differ only in prefill chunking,
+gave +3.02 and +1.07 sigma against a and +1.55 and +3.62 against hp, and
+against a, bp and hp they gave +0.52 and +0.78, with the required controls
+at +27.9, +495 and +71.5. Metal's own top-k is
 checked by the kernel test (exact experts at 128 experts, top 8).
 
 The fast batch ladder is not identical to solo decode for most sequences,

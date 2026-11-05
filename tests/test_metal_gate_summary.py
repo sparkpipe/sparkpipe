@@ -109,6 +109,29 @@ def main():
               all(not floors[name]["pass"] and floors[name]["paired"]["sigma"] > 3.0 for name in ("control_layers", "control_rotate")))
         check("two reference variants give no multi-floor test",
               summary.multi_floor([row for row in rows if not row["label"].startswith("mf:b:") and ":b" not in row["label"]], out, ["synthetic"]) is None)
+        (out / "compare" / "kl-pinned").mkdir()
+        for name, seed in (("bp", 27), ("hp", 28)):
+            write_logits(out / f"{name}.logits", noisy(base, 0.01, seed))
+
+        def pmf(reference, other):
+            result = subprocess.run([str(COMPARE), str(out / "prompts.json"), "synthetic", str(VOCAB), str(out / f"{reference}.logits"),
+                                     str(out / f"{other}.logits"), f"pmf:{reference}:{other}", "0", "-",
+                                     str(out / "compare" / "kl-pinned" / f"synthetic.{reference}.{other}.f64")], capture_output=True, text=True,
+                                    check=True)
+            return json.loads(result.stdout)
+
+        pinned_rows = [pmf(reference, other) for reference in ("a", "bp", "hp")
+                       for other in ("a", "bp", "hp", "metal", "control_layers", "control_rotate") if other != reference]
+        pinned = summary.multi_floor(rows + pinned_rows, out, ["synthetic"], "pmf", summary.PINNED_MULTI_FLOOR_VARIANTS, "kl-pinned")
+        check("references a, bp and hp give the pinned multi-floor test", pinned is not None and pinned["variants"] == ["a", "bp", "hp"])
+        check("the pinned multi-floor test passes a candidate with the variants' noise and fails the corrupted controls",
+              pinned["metal"]["pass"] and all(not pinned[name]["pass"] and pinned[name]["paired"]["sigma"] > 3.0
+                                              for name in ("control_layers", "control_rotate")))
+        check("the free multi-floor test reads only its own rows when pinned rows are present",
+              summary.multi_floor(rows + pinned_rows, out, ["synthetic"])["variants"] == ["a", "b", "h"])
+        check("without bp there is no pinned multi-floor test",
+              summary.multi_floor(rows + [row for row in pinned_rows if ":bp" not in row["label"]], out, ["synthetic"], "pmf",
+                                  summary.PINNED_MULTI_FLOOR_VARIANTS, "kl-pinned") is None)
         short = out / "compare" / "kl" / "synthetic.a.metal.f64"
         short.write_bytes(short.read_bytes()[:-8])
         try:

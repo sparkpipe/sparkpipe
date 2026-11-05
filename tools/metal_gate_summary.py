@@ -24,7 +24,10 @@ reference A's choice, against A and against H pinned the same way (hp), with
 A against hp as the floor. The same rule applies to it; the Metal runs
 (metal, and metal_rows64 when present: the same pass prefilled in 64-row
 chunks) must pass every set present, and a required control must fail in
-every set it appears in. A batch ladder run with --exact-rows (exact/) must
+every set it appears in. When the references also hold bp (B pinned to A's
+experts), the pinned set is judged by the multi-floor rule over a, bp and hp
+(metal_gate_floors.sh's pmf labels) instead of the single floor A against hp,
+as the free set is over a, b and h. A batch ladder run with --exact-rows (exact/) must
 give every batched sequence the tokens of its solo run, and no ladder (plain
 or exact rows) may give one batch different tokens across its repeats.
 
@@ -49,6 +52,7 @@ REQUIRED_WHERE_RUN = ("control_experts",)
 PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
 MULTI_FLOOR_VARIANTS = ("a", "b", "h")
+PINNED_MULTI_FLOOR_VARIANTS = ("a", "bp", "hp")
 BLOCK_POSITIONS = 128
 
 
@@ -124,19 +128,19 @@ def read_kl(path):
     return values
 
 
-def multi_floor_variants(rows):
+def multi_floor_variants(rows, tag, set_variants):
     present = {row["label"] for row in rows}
-    return [variant for variant in MULTI_FLOOR_VARIANTS
-            if all(f"mf:{variant}:{other}" in present for other in MULTI_FLOOR_VARIANTS if other != variant)]
+    return [variant for variant in set_variants
+            if all(f"{tag}:{variant}:{other}" in present for other in set_variants if other != variant)]
 
 
-def multi_floor_candidate(rows, out, prompts, variants, candidate):
+def multi_floor_candidate(rows, out, prompts, variants, candidate, tag, kl_dir):
     legs = {}
     for reference in variants:
-        floors = [aggregate(rows, f"mf:{reference}:{other}") for other in variants if other != reference]
+        floors = [aggregate(rows, f"{tag}:{reference}:{other}") for other in variants if other != reference]
         floor_kl = sum(item["kl_mean"] for item in floors) / len(floors)
         floor_disagreement = sum(1.0 - item["top1_agreement"] for item in floors) / len(floors)
-        measured = aggregate(rows, f"mf:{reference}:{candidate}")
+        measured = aggregate(rows, f"{tag}:{reference}:{candidate}")
         kl_ratio = ratio(measured["kl_mean"], floor_kl)
         top1_ratio = ratio(1.0 - measured["top1_agreement"], floor_disagreement)
         legs[f"reference_{reference}"] = {"kl_mean": measured["kl_mean"], "floor_kl_mean": floor_kl, "kl_ratio_to_floor": kl_ratio,
@@ -145,7 +149,7 @@ def multi_floor_candidate(rows, out, prompts, variants, candidate):
     pairs = [(reference, floor, third) for reference, floor, third in itertools.permutations(variants, 3)]
     blocks, total, positions = [], 0.0, 0
     for name in prompts:
-        kl = {(reference, other): read_kl(out / "compare" / "kl" / f"{name}.{reference}.{other}.f64")
+        kl = {(reference, other): read_kl(out / "compare" / kl_dir / f"{name}.{reference}.{other}.f64")
               for reference in variants for other in [*variants, candidate] if other != reference}
         count = len(kl[(variants[0], candidate)])
         if any(len(series) != count for series in kl.values()):
@@ -169,17 +173,17 @@ def multi_floor_candidate(rows, out, prompts, variants, candidate):
     return {**legs, "paired": paired, "pass": passed}
 
 
-def multi_floor(rows, out, prompts):
-    variants = multi_floor_variants(rows)
+def multi_floor(rows, out, prompts, tag="mf", set_variants=MULTI_FLOOR_VARIANTS, kl_dir="kl"):
+    variants = multi_floor_variants(rows, tag, set_variants)
     if len(variants) < 3:
         return None
     present = {row["label"] for row in rows}
     candidates = [name for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
-                  if all(f"mf:{variant}:{name}" in present for variant in variants)]
-    floors = {f"{reference}_vs_{other}": {key: aggregate(rows, f"mf:{reference}:{other}")[key] for key in ("kl_mean", "top1_agreement")}
+                  if all(f"{tag}:{variant}:{name}" in present for variant in variants)]
+    floors = {f"{reference}_vs_{other}": {key: aggregate(rows, f"{tag}:{reference}:{other}")[key] for key in ("kl_mean", "top1_agreement")}
               for reference in variants for other in variants if other != reference}
     return {"variants": variants, "floors": floors,
-            **{name: multi_floor_candidate(rows, out, prompts, variants, name) for name in candidates}}
+            **{name: multi_floor_candidate(rows, out, prompts, variants, name, tag, kl_dir) for name in candidates}}
 
 
 def common_prefix(first, second):
@@ -319,6 +323,8 @@ def main():
         receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
     numerics = receipt["numerics"]
     floors = multi_floor(rows, out, [item["name"] for item in prompts["prompts"]])
+    pinned_floors = multi_floor(rows, out, [item["name"] for item in prompts["prompts"]], "pmf", PINNED_MULTI_FLOOR_VARIANTS, "kl-pinned") \
+        if floors is not None and pinned is not None else None
     sets = [numerics] + ([pinned] if pinned is not None else [])
     if pinned is not None:
         numerics["pinned_routes"] = pinned
@@ -328,15 +334,22 @@ def main():
     numerics["pass"] = all("metal" in item and all(item[name]["verdict"]["pass"] for name in CANDIDATES if name in item) for item in sets) and \
         numerics["controls_fail_as_required"]
     if floors is not None:
+        floor_sets = [floors] + ([pinned_floors] if pinned_floors is not None else [])
         floors["controls_fail_as_required"] = all(name in floors and not floors[name]["pass"] for name in REQUIRED_CONTROLS) and \
-            all(not floors[name]["pass"] for name in REQUIRED_WHERE_RUN if name in floors)
+            all(not item[name]["pass"] for item in floor_sets for name in REQUIRED_CONTROLS + REQUIRED_WHERE_RUN if name in item)
+        pinned_pass = all(pinned_floors[name]["pass"] for name in CANDIDATES if name in pinned_floors) if pinned_floors is not None else \
+            all(item[name]["verdict"]["pass"] for item in sets[1:] for name in CANDIDATES if name in item)
         floors["pass"] = "metal" in floors and all(floors[name]["pass"] for name in CANDIDATES if name in floors) and \
-            floors["controls_fail_as_required"] and all(item[name]["verdict"]["pass"] for item in sets[1:] for name in CANDIDATES if name in item)
+            floors["controls_fail_as_required"] and pinned_pass
+        if pinned_floors is not None:
+            floors["pinned_routes"] = pinned_floors
         floors["rule"] = (f"three reference variants ({', '.join(floors['variants'])}): against each, mean KL <= {KL_FACTOR:g} x and top-1 "
                           f"disagreement <= {TOP1_FACTOR:g} x the mean over the other variants as floors; and, for every reference, floor and "
                           f"third variant, the share of positions where the candidate is further from the reference than the floor, less the "
                           f"same share for the third variant, averaged over all of them, at most {PAIRED_SIGMA:g} block standard errors above "
-                          f"zero; the required controls fail")
+                          f"zero; the required controls fail; with every layer's experts pinned to a's choice, the pinned runs are judged "
+                          f"the same way against {', '.join(PINNED_MULTI_FLOOR_VARIANTS)} when the references hold all three, else each "
+                          f"pinned run passes the single-floor rule against a and hp")
         numerics["multi_floor"] = floors
         numerics["single_floor_pass"] = numerics["pass"]
         numerics["pass"] = floors["pass"]
