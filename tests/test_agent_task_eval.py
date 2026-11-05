@@ -220,6 +220,22 @@ def main():
               f"the score is wrong: {result}")
         table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(claude_out)], capture_output=True, text=True).stdout
         check("| kimi-k3 | claude-code | 2 / 5 | 40% |" in table, f"the report row is wrong:\n{table}")
+        job = tmp / "jobs" / "k3-tb21"
+        for name, task, reward, exception in (("a__1", "a", 1.0, None), ("a__2", "a", 0.0, None), ("b__1", "b", 0.0, "AgentTimeoutError"), ("c__1", "c", 1.0, None)):
+            (job / name).mkdir(parents=True)
+            (job / name / "result.json").write_text(json.dumps({"task_name": task, "trial_name": name, "verifier_result": {"rewards": {"reward": reward}},
+                                                                 "exception_info": {"exception_type": exception} if exception else None,
+                                                                 "agent_result": {"n_input_tokens": 100, "n_cache_tokens": 80, "n_output_tokens": 10}}))
+        (job / "result.json").write_text(json.dumps({"id": "job", "stats": {}}))
+        scored = tmp / "tb21.json"
+        tool.harbor_score(arguments("harbor-score", "--job", str(job), "--harness", "claude-code", "--model", "kimi-k3", "--label", "k3tb", "--output", str(scored)))
+        result = json.loads(scored.read_text())
+        check(result["planned"] == 3 and result["trials"] == 4 and result["resolved"] == 1.5 and result["pass_rate"] == 0.5,
+              f"the Harbor score does not average attempts per task: {result}")
+        check(result["agent_timeouts"] == 1 and result["tokens"]["n_cache_tokens"] == 320 and result["passed_tasks"] == ["a", "c"],
+              f"the Harbor score lost timeouts, tokens or passed tasks: {result}")
+        table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(scored)], capture_output=True, text=True).stdout
+        check("| kimi-k3 | claude-code | 1.5 / 3 | 50% |" in table, f"the Harbor report row is wrong:\n{table}")
     for failure in check.failures:
         print(f"FAIL test_agent_task_eval: {failure}")
     if check.failures:
@@ -227,7 +243,8 @@ def main():
     print("PASS test_agent_task_eval: the SWE-bench sample is stratified by repository and repeatable; prepare-agents places the pinned "
           "Linux binaries; each task runs Claude Code or Codex in its own container with the key and agents mounted read-only, never in an "
           "argument or a container file, configured for the public door; transcripts, patches and SWE-bench predictions are saved, timeouts and "
-          "failed starts recorded, every container removed, a rerun resumes, and the score reads the SWE-bench report")
+          "failed starts recorded, every container removed, a rerun resumes, the score reads the SWE-bench report, and Harbor "
+          "Terminal-Bench jobs score as the mean pass rate per task")
 
 
 if __name__ == "__main__":

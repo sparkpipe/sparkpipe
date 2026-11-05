@@ -287,13 +287,50 @@ def score(arguments):
     print(json.dumps({key: value for key, value in result.items() if key != "resolved_ids"}))
 
 
+def trial_results(job):
+    trials = []
+    for path in sorted(Path(job).glob("*/result.json")):
+        document = json.loads(path.read_text())
+        if "task_name" in document and "trial_name" in document:
+            trials.append(document)
+    return trials
+
+
+def harbor_score(arguments):
+    trials = trial_results(arguments.job)
+    if not trials:
+        raise SystemExit(f"agent_task_eval: {arguments.job} holds no Harbor trial results")
+    tasks = {}
+    for trial in trials:
+        rewards = (trial.get("verifier_result") or {}).get("rewards") or {}
+        reward = rewards.get("reward")
+        failed = trial.get("exception_info") is not None
+        tasks.setdefault(trial["task_name"], []).append({"reward": reward, "exception": (trial.get("exception_info") or {}).get("exception_type") if failed else None})
+    passes = {name: sum((attempt["reward"] or 0) >= 1 for attempt in attempts) / len(attempts) for name, attempts in tasks.items()}
+    exceptions = {}
+    for attempts in tasks.values():
+        for attempt in attempts:
+            if attempt["exception"]:
+                exceptions[attempt["exception"]] = exceptions.get(attempt["exception"], 0) + 1
+    tokens = {key: sum(int((trial.get("agent_result") or {}).get(key) or 0) for trial in trials) for key in ("n_input_tokens", "n_cache_tokens", "n_output_tokens")}
+    result = {"label": arguments.label, "harness": arguments.harness, "model": arguments.model, "benchmark": arguments.benchmark, "planned": len(tasks),
+              "trials": len(trials), "resolved": round(sum(passes.values()), 2), "pass_rate": round(sum(passes.values()) / len(tasks), 4),
+              "empty_patches": 0, "evaluation_errors": sum(exceptions.values()), "infrastructure_failures": 0, "agent_timeouts": exceptions.get("AgentTimeoutError", 0),
+              "exceptions": exceptions, "tokens": tokens, "agent_seconds_median": None, "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0),
+              "job": str(arguments.job)}
+    Path(arguments.output).write_text(json.dumps(result, indent=1) + "\n")
+    print(json.dumps({key: value for key, value in result.items() if key != "passed_tasks"}))
+
+
 def report(arguments):
     rows = ["| Model | Harness | Resolved | Pass rate | Empty patches | Agent timeouts | Evaluation errors | Median agent time |",
             "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
     for path in arguments.runs:
-        result = json.loads((Path(path) / "score.json").read_text())
-        rows.append(f"| {result['model']} | {result['harness']} | {result['resolved']} / {result['planned']} | {result['pass_rate']:.0%} | "
-                    f"{result['empty_patches']} | {result['agent_timeouts']} | {result['evaluation_errors']} | {result['agent_seconds_median']} s |")
+        path = Path(path)
+        result = json.loads((path / "score.json" if path.is_dir() else path).read_text())
+        median = "–" if result["agent_seconds_median"] is None else f"{result['agent_seconds_median']} s"
+        rows.append(f"| {result['model']} | {result['harness']} | {result['resolved']:g} / {result['planned']} | {result['pass_rate']:.0%} | "
+                    f"{result['empty_patches']} | {result['agent_timeouts']} | {result['evaluation_errors']} | {median} |")
     print("\n".join(rows))
 
 
@@ -356,6 +393,13 @@ def build_parser():
     scorer = commands.add_parser("score")
     scorer.add_argument("--run", required=True)
     scorer.add_argument("--report", required=True)
+    harbor = commands.add_parser("harbor-score")
+    harbor.add_argument("--job", required=True)
+    harbor.add_argument("--harness", required=True, choices=HARNESSES)
+    harbor.add_argument("--model", required=True)
+    harbor.add_argument("--benchmark", default="terminal-bench/terminal-bench-2-1")
+    harbor.add_argument("--label", required=True)
+    harbor.add_argument("--output", required=True)
     reporter = commands.add_parser("report")
     reporter.add_argument("runs", nargs="+")
     preparer = commands.add_parser("prepare-agents")
@@ -368,7 +412,7 @@ def build_parser():
 
 def main():
     arguments = build_parser().parse_args()
-    {"select": select, "run": run, "score": score, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
+    {"select": select, "run": run, "score": score, "harbor-score": harbor_score, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
 
 
 if __name__ == "__main__":
