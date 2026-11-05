@@ -26,7 +26,8 @@ EVENTS = ("booking.deadline", "booking.confirmed", "fleet.allocated", "waitlist.
 HUB_EVENTS = ("run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token", "pack.warm", "cache.restored", "models.changed")
 EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost")
 REQUIRED_EMAIL = ("fleet.allocated", "downtime.credited", "working_state.lost")
-DEADLINE_HOURS = (48, 6)
+DEADLINE_HOURS = (72, 48, 6, 2)
+DEFAULT_WEEKS_AHEAD = 1
 REBUILD_HOURS = 24
 KEY_IPS = 32
 GRACE_SECONDS = 30
@@ -319,8 +320,11 @@ class Market:
     def fleet_name(self, fleet_id):
         return next((f["name"] for f in self.settings()["fleets"] if f["id"] == fleet_id), fleet_id)
 
-    def notify(self, account, kind, data, now, summary, text, once=None):
-        found = {"notice": new_id("NT"), "account": account, "type": kind, "data": data, "summary": summary, "text": text, "targets": self.targets(account, kind), "now": stamp(now)}
+    def notify(self, account, kind, data, now, summary, text, once=None, mail=False):
+        targets = self.targets(account, kind)
+        if mail and "mail" not in targets:
+            targets.append("mail")
+        found = {"notice": new_id("NT"), "account": account, "type": kind, "data": data, "summary": summary, "text": text, "targets": targets, "now": stamp(now)}
         if once:
             found["once"] = once
         self.app.notices.add(found)
@@ -338,8 +342,9 @@ class Market:
     def confirmed(self, booking, now):
         what = f"{booking['weeks']} Weeks" if booking["kind"] == "week" else f"{booking['hours']} hours"
         data = {key: booking[key] for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "source", "auto") if key in booking}
+        keep = " " + self.extend_line(booking["account"], booking["fleet"]) if booking["kind"] == "week" else ""
         self.notify(booking["account"], "booking.confirmed", data, now, f"Booked {self.fleet_name(booking['fleet'])}: {what} from {kst_text(booking['begins'])}",
-                    f"Booking {booking['booking']}: {self.fleet_name(booking['fleet'])}, {what} from {kst_text(booking['begins'])} to {kst_text(booking['ends'])}, for {booking['hc']} HC.")
+                    f"Booking {booking['booking']}: {self.fleet_name(booking['fleet'])}, {what} from {kst_text(booking['begins'])} to {kst_text(booking['ends'])}, for {booking['hc']} HC.{keep}")
 
     def positions(self):
         return {account: n for n, account in enumerate(self.queue_order(), 1)}
@@ -440,9 +445,16 @@ class Market:
     def pay(self, account, fleet, kind, start, end, price, now, extra):
         if self.st.balance(account, stamp(now)) < price:
             raise Refusal(f"This booking costs {text_hc(price)} HC, more than the account's unlocked HC. Buy HC first.", 402, "insufficient_hc")
+        first = kind == "week" and not self.weeks_left(account, fleet["id"], now)[1]
         data = dict(extra, booking=new_id("BK"), account=account, fleet=fleet["id"], kind=kind, start=slot_text(start), end=slot_text(end), hc=text_hc(price), rate=text_hc(fleet["rate"]), source="hc", now=stamp(now))
         self.book.append("booking", data)
+        if first:
+            self.default_extend(account, fleet["id"], now)
         return data["booking"]
+
+    def default_extend(self, account, fleet_id, now):
+        if (account, fleet_id) not in self.st.extend:
+            self.book.append("auto_extend", {"account": account, "fleet": fleet_id, "weeks": DEFAULT_WEEKS_AHEAD, "default": True, "now": stamp(now)})
 
     def book_hours(self, account, body):
         pricing = self.settings()
@@ -584,11 +596,13 @@ class Market:
         data = {"booking": new_id("BK"), "account": account, "fleet": fleet["id"], "kind": "week", "start": slot_text(monday), "end": slot_text(monday + WEEK * weeks),
                 "hc": text_hc(price), "rate": text_hc(fleet["rate"]), "weeks": weeks, "discount": format(off, "f"), "source": "waitlist", "unlocked": text_hc(left), "now": stamp(sunday)}
         self.book.append("booking", data)
+        self.default_extend(account, fleet["id"], sunday)
         self.notify(account, "fleet.allocated", {key: data[key] for key in ("booking", "fleet", "start", "end", "weeks", "hc", "discount", "unlocked")}, sunday,
                     f"SparkPipe {fleet['name']} is yours from {kst_text(monday)[:10]}", "\n".join([
                         f"The waitlist allocated {fleet['name']} to you: {weeks} Weeks from {kst_text(monday)} to {kst_text(monday + WEEK * weeks)}, for {text_hc(price)} HC of your lock" + (f" at {off * 100:.0f}% off." if off else "."),
                         f"{text_hc(left)} HC of your lock is unlocked and back in your balance." if left > 0 else "Your whole lock paid for those Weeks.",
-                        f"To keep the Fleet, book its next Week by {kst_text(monday + WEEK * weeks - DAY)}: {self.app.cfg.public}/market.html",
+                        self.extend_line(account, fleet["id"]),
+                        f"Without it, book the next Week by {kst_text(monday + WEEK * weeks - DAY)} to keep the Fleet.",
                     ]))
 
     def maintenance_at(self, now):
@@ -634,9 +648,28 @@ class Market:
             data["next_week_hc"] = self.week_plan(pricing, account, fleet, 1, at)["price"]
         except Refusal:
             pass
+        setting = self.st.extend.get((account, fleet_id))
+        data["auto_extend"] = setting["weeks"] if setting else 0
+        if self.extend_waiting(account, fleet_id):
+            data["waiting"] = self.extend_waiting(account, fleet_id)
         cost = f" It costs {data['next_week_hc']} HC; your unlocked balance is {data['balance']} HC." if "next_week_hc" in data else ""
         self.notify(account, "booking.deadline", data, at, f"Book the next Week of {fleet['name']} by {kst_text(deadline)}",
-                    f"Your last booked Week of {fleet['name']} ends at {kst_text(through)}. Book the next Week by {kst_text(deadline)} to keep the Fleet; after that the waitlist may be allocated it (clause 15).{cost} {self.app.cfg.public}/market.html", once)
+                    f"Your last booked Week of {fleet['name']} ends at {kst_text(through)}. Book the next Week by {kst_text(deadline)} to keep the Fleet; after that the waitlist may be allocated it (clause 15).{cost} {self.extend_line(account, fleet_id)}", once)
+
+    def extend_line(self, account, fleet_id):
+        setting, page = self.st.extend.get((account, fleet_id)), f"{self.app.cfg.public}/market.html"
+        if not setting:
+            return f"Auto-extend is off for this Fleet: turn it on on your account page to book the next Week from your HC without anyone having to remember: {page}"
+        waits = {"terms": "until you accept the current Customer Agreement", "insufficient_hc": "until your unlocked HC covers the next Week"}
+        ahead = f"{setting['weeks']} Week{'s' if setting['weeks'] != 1 else ''}"
+        if self.extend_waiting(account, fleet_id) in waits:
+            return f"Auto-extend is on, keeping {ahead} booked ahead, but it waits {waits[self.extend_waiting(account, fleet_id)]}: {page}"
+        return f"Auto-extend is on: it keeps {ahead} booked ahead from your unlocked HC, so you keep the Fleet. Turn it off or change it on your account page: {page}"
+
+    def extend_waiting(self, account, fleet_id):
+        setting = self.st.extend.get((account, fleet_id))
+        through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
+        return setting.get("waiting") if setting and through and setting.get("through") == slot_text(through) else None
 
     def extend_at(self, now, pricing):
         found = []
@@ -689,10 +722,14 @@ class Market:
         self.confirmed(self.st.bookings[ident], at)
 
     def stop_extend(self, account, fleet_id, reason, at):
+        through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
         self.book.append("auto_extend", {"account": account, "fleet": fleet_id, "weeks": 0, "reason": reason, "now": stamp(at)})
-        if account in self.book.accounts:
-            self.app.mail(self.book.accounts[account]["email"], f"SparkPipe auto-extend stopped on {self.fleet_name(fleet_id)}",
-                          f"Auto-extend on {self.fleet_name(fleet_id)} stopped at {kst_text(at)} ({reason}). Book Weeks yourself, or turn auto-extend on again while you hold the Fleet: {self.app.cfg.public}/market.html")
+        why = {"not_pinned": "the Weeks it kept have ended", "taken": "someone else booked the next Week after your deadline passed", "terms": "your last booked Week ended while it waited for you to accept the current Customer Agreement",
+               "insufficient_hc": "your last booked Week ended while your unlocked HC did not cover the next one", "not_weekly": "the Fleet stopped serving by the Week", "too_far": "the next Week is more than 52 Weeks ahead"}.get(reason, reason)
+        data = {"fleet": fleet_id, "stopped": True, "reason": reason, "through": slot_text(through) if through else None, "deadline": slot_text(through - DAY) if through else None, "auto_extend": 0}
+        name, page = self.fleet_name(fleet_id), f"{self.app.cfg.public}/market.html"
+        keep = f" Book the next Week by {kst_text(through - DAY)} to keep the Fleet, or turn auto-extend on again." if through and through - DAY > at else " Book Weeks yourself, or turn auto-extend on again while you hold the Fleet."
+        self.notify(account, "booking.deadline", data, at, f"SparkPipe auto-extend stopped on {name}", f"Auto-extend on {name} stopped at {kst_text(at)}: {why}.{keep} {page}", mail=True)
 
     def auto_extend(self, account, body):
         pricing = self.settings()
@@ -1057,7 +1094,8 @@ class Market:
             count, through = self.weeks_left(account, fleet["id"], now)
             if through:
                 room = through - WEEK < week_start(now) + WEEK * pricing["bookings"]["maxWeeksAhead"] and not self.busy(fleet["id"], through, through + WEEK)
-                found.append({"fleet": fleet["id"], "weeks": count, "through": slot_text(through), "deadline": slot_text(through - DAY), "canExtend": room, "autoExtend": self.st.extend.get((account, fleet["id"]), {}).get("weeks", 0)})
+                found.append({"fleet": fleet["id"], "weeks": count, "through": slot_text(through), "deadline": slot_text(through - DAY), "canExtend": room, "autoExtend": self.st.extend.get((account, fleet["id"]), {}).get("weeks", 0),
+                              "autoExtendWaiting": self.extend_waiting(account, fleet["id"])})
         return found
 
     def view(self, account):
