@@ -536,6 +536,7 @@ PYTHON_TESTS := \
 	tests/test_site.py \
 	tests/test_pay.py \
 	tests/test_market.py \
+	tests/test_sparkpipe_cli.py \
 	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
