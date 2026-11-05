@@ -84,7 +84,7 @@ RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
 SPENDING = ("/market/book-hours", "/market/book-weeks", "/market/waitlist", "/market/auto-extend")
 OWNER_ACTIONS = SPENDING + ("/market/buy", "/market/waitlist/leave")
-ACCOUNT_ROLES = {"webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
+ACCOUNT_ROLES = {"requests_erase": (("owner",), "Deleting the records of the account's requests"), "webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
                  "member_delete": (("owner",), "Removing members"), "audit": (("owner", "admin"), "The audit log")}
 AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start", "hours", "hc")), "/market/book-weeks": ("booking.weeks", ("booking", "fleet", "first", "weeks", "price")),
            "/market/waitlist": ("waitlist.lock", ("locked",)), "/market/waitlist/leave": ("waitlist.leave", ()), "/market/auto-extend": ("auto_extend.set", ("fleet", "weeks_ahead")),
@@ -149,6 +149,7 @@ HUB_ROUTES = tuple((re.compile(pattern), scope, read) for pattern, scope, read i
 ))
 ACCOUNT_ROUTES = (
     ("GET", r"/v1/requests", "read", "requests"),
+    ("DELETE", r"/v1/requests", "write", "requests_erase"),
     ("GET", r"/v1/keys", "read", "keys"),
     ("POST", r"/v1/keys", "write", "key_create"),
     ("DELETE", r"/v1/keys/(KY[A-Z2-7]{16})", "write", "key_revoke"),
@@ -517,6 +518,7 @@ class Book:
         self.members = {}
         self.member_emails = {}
         self.invites = {}
+        self.erased = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -566,6 +568,8 @@ class Book:
             self.emails[data["email"]] = data["account"]
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
+        elif kind == "records_erased":
+            self.erased[data["account"]] = data["through"]
         elif kind == "member_invite":
             self.invites[data["invite"]] = dict(data, created=line["at"], state="invited")
             for other in self.invites.values():
@@ -822,6 +826,17 @@ class Usage:
                 seen.update(record[self.ident] for record in unique)
                 added += len(unique)
         return added
+
+    def erase(self, account):
+        folder, count = os.path.join(self.folder, account), 0
+        with self.lock:
+            for name in os.listdir(folder) if os.path.isdir(folder) else []:
+                count += len(complete_lines(os.path.join(folder, name)))
+                os.remove(os.path.join(folder, name))
+                self.ids.pop((account, name[:-6]), None)
+            if os.path.isdir(folder):
+                os.rmdir(folder)
+        return count
 
     def prune(self, now):
         cutoff = (now - timedelta(days=RECORD_DAYS)).strftime("%Y-%m-%d")
@@ -1448,6 +1463,8 @@ class App:
         if any(name not in found for name in ("request", "account", "fleet", "at")) or found["account"] not in self.book.accounts:
             raise Refusal("Every record names its request, a known account, its fleet and when it ran (at).", 400, "invalid_request")
         moment = market.stamp_field(found["at"], "time the request ran")
+        if found["at"] <= self.book.erased.get(found["account"], ""):
+            raise Refusal("The account had the records of its requests up to this time deleted (DPA clause 9.3).", 409, "erased")
         if not now - timedelta(days=RECORD_DAYS) <= moment <= now + timedelta(minutes=5):
             raise Refusal("A record is kept for a year: it must be from the last year, and not from the future.", 400, "invalid_request")
         owner = self.book.market.keys.get(found.get("key"))
@@ -1543,6 +1560,7 @@ class App:
         account, member, role = actor
         calls = {
             "requests": lambda: self.requests(actor, query),
+            "requests_erase": lambda: self.erase_records(account, member, "the owner's request through the API"),
             "keys": lambda: {"object": "list", "data": [self.market.key_view(r) for r in self.book.market.keys.values() if r["account"] == account and (role != "member" or r["member"] == member)]},
             "key_create": lambda: self.market.create_key(account, body, member, role),
             "key_revoke": lambda: self.market.revoke_key(account, match.group(1), member, role),
@@ -1572,6 +1590,17 @@ class App:
         found = self.need_actor(headers)
         self.require_role(found, roles, what)
         return found[0]
+
+    def erase_records(self, account, by, note):
+        now = self.market.now()
+        with self.book.lock:
+            count = self.usage.erase(account)
+            line = self.book.append("records_erased", {"account": account, "through": market.stamp(now), "records": count, "by": by, "note": note[:200], "now": market.stamp(now)})
+        self.audit(account, by, "records.erased", {"records": count, "through": line["data"]["through"]})
+        self.mail(self.book.accounts[account]["email"], "SparkPipe deleted the records of your requests",
+                  f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)} (Data Processing Agreement clause 9.3). "
+                  f"Your bookings, payments and HC, which the law has us keep, are unchanged. Records of requests made from now on are kept for a year as before.{FOOTER}")
+        return {"erased": count, "through": line["data"]["through"]}
 
     def members(self, account):
         record, now = self.book.accounts[account], market.stamp(self.market.now())
@@ -2881,6 +2910,17 @@ def uptime(app, argv):
     return 0
 
 
+def erase_records(app, argv):
+    account = app.book.emails.get(argv[2].lower())
+    if not account or not argv[3].strip():
+        print("usage: sparkpipe_pay.py erase-records EMAIL NOTE, for an existing account's owner email, with the written request as NOTE", file=sys.stderr)
+        return 2
+    found = app.erase_records(account, "operator", argv[3].strip())
+    flush(app)
+    print(f"deleted {found['erased']} request records of {argv[2]} up to {found['through']} (DPA clause 9.3); the customer is emailed, and the hub's records are deleted on the hub")
+    return 0
+
+
 def refund(app, argv):
     account = {"bank": argv[6], "accountNumber": argv[7], "holderName": argv[8]} if len(argv) == 9 else None
     try:
@@ -2945,6 +2985,7 @@ COMMANDS = {
     ("credit", 5): lambda cfg, app, argv: credit(app, argv),
     ("refund", 6): lambda cfg, app, argv: refund(app, argv),
     ("uptime", 5): lambda cfg, app, argv: uptime(app, argv),
+    ("erase-records", 4): lambda cfg, app, argv: erase_records(app, argv),
     ("refund", 9): lambda cfg, app, argv: refund(app, argv),
     ("tax-invoices", 2): lambda cfg, app, argv: tax_invoices(app, argv),
     ("tax-invoice", 4): lambda cfg, app, argv: tax_invoice(app, argv),
@@ -2964,7 +3005,7 @@ def main(argv):
     if command:
         return command(cfg, App(cfg, Book(cfg.path("ledger.jsonl"))), argv)
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON|uptime FLEET FROM TO]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON|uptime FLEET FROM TO|erase-records EMAIL NOTE]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app
