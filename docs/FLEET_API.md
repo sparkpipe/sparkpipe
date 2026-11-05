@@ -37,7 +37,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Anticipator | `GET/PUT /v1/anticipator`, `GET /v1/anticipator/plan`, `POST /v1/anticipator/plan/approve`, `PUT /v1/anticipator/focus`, `GET /v1/anticipator/report` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, git over HTTPS at `/git/{repo}.git` |
 | Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `GET /v1/storage/changes`, `POST /v1/export`, `POST /v1/restore` |
-| Fetch | `POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
+| Fetch | `GET/POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
 | Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` |
 | Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` |
 | Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` |
@@ -154,6 +154,7 @@ base_url = "https://sparkpipe.ai/pay/api/v1"
 env_key = "SPARKPIPE_API_KEY"
 wire_api = "responses"
 stream_idle_timeout_ms = 600000
+model_catalog_url = "https://sparkpipe.ai/pay/api/v1/codex/models"
 ```
 
 ### 3.5 `POST /v1/chat/completions`
@@ -222,12 +223,14 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 - **Status line.** `sparkpipe statusline` shows the fleet, the resident models, the cached share of the last turn and the prefill avoided today.
 
 **Codex** (OpenAI Responses, §3.4)
-- **Setup.** `sparkpipe setup codex` writes a `[profiles.sparkpipe]` profile and the provider of §3.4, with:
-  - `model_context_window` and `model_auto_compact_token_limit` set from the model;
-  - `model_catalog_url` pointing at `GET /v1/codex/models`, a Codex-native catalogue of our models with context windows and reasoning settings;
-  - `agents.default_subagent_model` set to the same model;
-  - `agents.max_concurrent_threads_per_session` set to fit the fleet's sequences;
-  - `[mcp_servers.sparkpipe]` for §10.
+- **Setup.** `sparkpipe setup codex` writes two files in `$CODEX_HOME` (`~/.codex`):
+  - In `config.toml`: the `model`, `model_provider` and provider of §3.4, whose `model_catalog_url` points at `GET /v1/codex/models`, a Codex-native catalogue of our models with context windows and reasoning settings. Also `[mcp_servers.sparkpipe]` for §10, with `bearer_token_env_var = "SPARKPIPE_API_KEY"`.
+  - The profile `sparkpipe.config.toml`, which `codex --profile sparkpipe` lays over `config.toml` (Codex 0.134.0 and later read profiles only from such files, with top-level keys, not from `[profiles.<name>]` tables). It holds:
+    - `model` and `model_provider`;
+    - `model_context_window` and `model_auto_compact_token_limit` (the context window minus the output limit), set from the model;
+    - `[agents]` with `default_subagent_model` set to the same model, and `max_concurrent_threads_per_session` set to the fleet's sequences less the main thread's.
+
+  It merges into `config.toml` without changing any other setting, and refuses, leaving the file as it was, when it cannot. The profile file is SparkPipe's own and is rewritten whole.
 - **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing.
 - **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn.
 
@@ -235,10 +238,13 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 - **Setup.** `sparkpipe setup opencode` writes `opencode.json`:
   - the provider, with `baseURL` and `{env:SPARKPIPE_API_KEY}`;
   - `limit.context` and `limit.output` per model;
-  - the subagent model set to the same model;
+  - the subagent model set to the same model (the `general` and `explore` agents, and `compaction`);
+  - `small_model` and the hidden `title` and `summary` agents on the fleet's background model, so titles and summaries never go to another provider;
   - the remote MCP server of §10;
-  - `prune` off, because pruning rewrites history and misses the cache;
+  - `prune` off, because pruning rewrites history and misses the cache. Off is OpenCode's default and the key is deprecated in OpenCode 2, so setup only turns off a `prune` the file turned on;
   - `"share": "disabled"`, so sessions are never uploaded outside Korea.
+
+  These are OpenCode 1's keys (`provider`, `small_model`, `agent`, `mcp`), which OpenCode 2 still reads.
 - **The SparkPipe plugin for OpenCode** does what the Claude Code plugin does: it warms on session start, reports status and adds the fleet commands.
 - **models.dev.** Our models and their served context windows are published there, so OpenCode knows them without any manual setting.
 
@@ -446,7 +452,7 @@ Customer storage is on the fleet's nodes: 500 GB per node, mirrored to the pair 
 
 Terabytes move between the fleet and the source over the fleet's own line, while the customer's machine sends only the request. An engineer on a plane can start a 1.5 TB model download, or a repository and its datasets, and get a notification when it is in storage.
 
-- **Request.** `POST /v1/fetch {"source": "hf://org/model@revision", "to": "models/x/", "include": ["*.safetensors", "*.json"], "then": "pack"}`, with the source's token in the `X-SparkPipe-Source-Token` header when the source needs one, returns a fetch id at once. `GET /v1/fetch/{id}` reports files, bytes, rate and checks; `DELETE` cancels. `sparkpipe fetch` is the same in the CLI.
+- **Request.** `POST /v1/fetch {"source": "hf://org/model@revision", "to": "models/x/", "include": ["*.safetensors", "*.json"], "then": "pack"}`, with the source's token in the `X-SparkPipe-Source-Token` header when the source needs one, returns a fetch id at once. `GET /v1/fetch` lists the account's fetches as `{"data": [...]}`, each with `id`, `state`, `source`, `to`, `bytes` and `total_bytes`. `GET /v1/fetch/{id}` reports files, bytes, rate and checks; `DELETE` cancels. `sparkpipe fetch` and `sparkpipe fetch ls` are the same in the CLI.
 - **Sources:**
   - `hf://` models and datasets, pinned to a revision (resolved to a commit hash when the fetch starts);
   - `s3://` and S3-compatible buckets (R2, GCS through S3 compatibility, MinIO), through presigned URLs or a key sent with the request;
@@ -658,7 +664,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe models add`, `models rm` | §9 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke` | Keys, with `--fleet` and `--allow-swap` |
 | `sparkpipe wipe [--storage]` | §4.4 |
-| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `localhost` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers |
+| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `127.0.0.1` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers. It forwards only the inference paths of §2 and `/mcp`, including the `/v1/responses` WebSocket. Clients send a random key it prints at each start, and it refuses requests addressed to another host name or carrying an `Origin`, so other local users and web pages cannot borrow the account's key |
 | `sparkpipe mcp` | The stdio MCP bridge (§10) |
 | `sparkpipe batch submit FILE`, `batch ls`, `batch get ID` | §11 |
 | `sparkpipe team invite EMAIL --role`, `team ls`, `audit` | §12 |
