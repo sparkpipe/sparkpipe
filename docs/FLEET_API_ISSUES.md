@@ -55,6 +55,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | G7 | Webhooks and email notifications | Every event in §13 is delivered signed, with retries. `booking.deadline` fires 72 h, 48 h, 6 h and 2 h before the Sunday deadline, and when auto-extend waits or stops | M | |
 | G8 | Auto-extend | On by default from the first booked or granted week, one week ahead, with a one-click off switch and the weeks-ahead setting on the account page. A fleet with auto-extend keeps its weeks booked ahead across a simulated year, a holder who does nothing keeps the fleet, and a short balance triggers an early warning | M | G7 |
 | G9 | Several fleets: prefix-affinity routing | With two held fleets and `fleet: "any"`, a session's turns all land on the fleet where its prefix is warm | M | C4 |
+| G11 | Uptime records and the automatic downtime credit (Agreement 4.4) | The VPS probes each Fleet's hub every 30 seconds and records every period without a good probe, gaps in its own probing included. Every booked hour a period of more than 15 minutes touches is credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily, and at its end, never twice with maintenance. `status.html` and its Korean twin show status, uptime and periods from those records | M | |
 | G10 | Automatic rebuild credit (Agreement 6.6) | A pair-loss report from E14 credits 24 hours of the fleet within an hour, once per event, and sends `working_state.lost` | S | E14, G7 |
 
 ## Storage, repositories and packs
