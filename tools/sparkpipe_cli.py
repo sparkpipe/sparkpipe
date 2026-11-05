@@ -185,7 +185,7 @@ def api_base(text):
 
 def receive(stream, amount, where):
     try:
-        return stream.read(amount)
+        return stream.read() if amount is None else stream.read(amount)
     except (OSError, http.client.HTTPException) as error:
         raise Failure(f"{where} broke off ({type(error).__name__}); run this again.")
 
@@ -266,7 +266,7 @@ class Client:
 
     def call(self, method, path, body=None, auth="key", headers=None, query=None):
         with self.open(method, path, body, auth, headers, query) as response:
-            return parse_json(receive(response, -1, f"The answer from {self.api}"))
+            return parse_json(receive(response, None, f"The answer from {self.api}"))
 
 
 class Context:
