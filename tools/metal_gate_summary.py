@@ -53,7 +53,7 @@ PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
 MULTI_FLOOR_VARIANTS = ("a", "b", "h")
 PINNED_MULTI_FLOOR_VARIANTS = ("a", "bp", "hp")
-BLOCK_POSITIONS = 128
+BLOCK_POSITIONS = 512
 
 
 def aggregate(rows, label):

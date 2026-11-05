@@ -682,7 +682,16 @@ its floors, and a candidate passes when all three hold:
   rate at which a floor-like draw lands above F, so the null is measured
   rather than assumed to be one half, and a candidate distributed like a
   further variant has an expected excess of zero. The mean excess may be at
-  most 3 standard errors above zero, with the same 128-position block error.
+  most 3 standard errors above zero, the error taken over contiguous
+  512-position blocks.
+
+The multi-floor test's blocks are 512 positions because the excess is
+correlated over hundreds of positions: from 128- to 1,024-position blocks the
+standard error grows 1.6 to 2.4 times for Qwen 3.8 27B and Flash, Gemma 4 26B,
+HY4 and Muse. With 128-position blocks, two Qwen 3.8 27B Metal builds whose
+logits differ by exactly the reference floor (KL 0.0420 against a to b's
+0.0419) gave -2.88 and +1.89 sigma; with 512-position blocks they give -1.78
+and +1.09. The gate prompts hold 5,636 positions, about a dozen blocks.
 
 The orderings are only exchangeable when the three variants sit about equally
 far apart, so the receipt lists all six floors (`multi_floor.floors`, mean KL

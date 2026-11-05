@@ -15,6 +15,7 @@ import metal_gate_summary as summary
 COMPARE = ROOT / "build" / "logit_compare"
 VOCAB = 32
 POSITIONS = 512
+MULTI_POSITIONS = 2048
 
 
 def write_logits(path, rows):
@@ -81,13 +82,16 @@ def main():
         worse["above_floor_blocks"] = [[128, 128] for _ in range(4)]
         worse["above_floor_positions"] = 512
         check("a candidate above the floor at every position has paired +inf and fails", summary.paired(worse)[2] == math.inf)
+    long_base = [[generator.gauss(0.0, 2.0) for _ in range(VOCAB)] for _ in range(MULTI_POSITIONS)]
+    for row in long_base:
+        row[generator.randrange(VOCAB)] += 8.0
     with tempfile.TemporaryDirectory() as directory:
         out = Path(directory)
         (out / "compare" / "kl").mkdir(parents=True)
-        tokens = [generator.randrange(VOCAB) for _ in range(POSITIONS + 1)]
+        tokens = [generator.randrange(VOCAB) for _ in range(MULTI_POSITIONS + 1)]
         (out / "prompts.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "prompt_token_ids": tokens}]}))
-        logits = {"a": noisy(base, 0.01, 21), "b": noisy(base, 0.01, 22), "h": noisy(base, 0.01, 23), "metal": noisy(base, 0.01, 24),
-                  "control_layers": noisy(base, 0.5, 25), "control_rotate": noisy(base, 0.5, 26)}
+        logits = {"a": noisy(long_base, 0.2, 21), "b": noisy(long_base, 0.2, 22), "h": noisy(long_base, 0.2, 23),
+                  "metal": noisy(long_base, 0.2, 24), "control_layers": noisy(long_base, 1.0, 25), "control_rotate": noisy(long_base, 1.0, 26)}
         for name, rows in logits.items():
             write_logits(out / f"{name}.logits", rows)
 
@@ -100,7 +104,7 @@ def main():
         rows = [mf(reference, other) for reference in "abh" for other in ("a", "b", "h", "metal", "control_layers", "control_rotate")
                 if other != reference]
         check("the per-position KL file holds one double per position",
-              (out / "compare" / "kl" / "synthetic.a.metal.f64").stat().st_size == POSITIONS * 8)
+              (out / "compare" / "kl" / "synthetic.a.metal.f64").stat().st_size == MULTI_POSITIONS * 8)
         floors = summary.multi_floor(rows, out, ["synthetic"])
         check("three reference variants give the multi-floor test", floors is not None and floors["variants"] == ["a", "b", "h"])
         check("a candidate with the variants' own noise passes the multi-floor test",
@@ -111,7 +115,7 @@ def main():
               summary.multi_floor([row for row in rows if not row["label"].startswith("mf:b:") and ":b" not in row["label"]], out, ["synthetic"]) is None)
         (out / "compare" / "kl-pinned").mkdir()
         for name, seed in (("bp", 27), ("hp", 28)):
-            write_logits(out / f"{name}.logits", noisy(base, 0.01, seed))
+            write_logits(out / f"{name}.logits", noisy(long_base, 0.2, seed))
 
         def pmf(reference, other):
             result = subprocess.run([str(COMPARE), str(out / "prompts.json"), "synthetic", str(VOCAB), str(out / f"{reference}.logits"),
