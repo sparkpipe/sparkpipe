@@ -1737,13 +1737,19 @@ Metal backend and the single-Studio stage are in
     is 52 GB of the Studio's 256 GB for nothing. A windowed attention layer
     should take its pages from a ring of `window / page + 1` pages per
     sequence, indexed by position modulo the ring;
-  - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
-    and folds the route weight into the activation; the Metal stage and the
-    numpy reference follow the publisher's eager order (cube first, weight
-    after the down projection, BF16 sums in ascending expert order), so the
-    two backends differ by those rounding points. The CUDA stage should take
-    the shared GeLU and the publisher's order and pass this reference's
-    pinned-route gate;
+  - both backends fold the route weight into the activation before the down
+    projection (`bf16(bf16(gelu(g)) u w)`), where the publisher applies it
+    after: transformers' eager `Gemma4TextExperts` (and this reference)
+    rounds each weighted expert output and sums in BF16 in ascending expert
+    order, and its default `grouped_mm` sums the weighted outputs in FP32
+    and rounds once. A reference in the backends' form sits 1.31 times the
+    floor from the eager one, one in `grouped_mm`'s 1.03 times. Metal in
+    `grouped_mm`'s form (`spark_route_combine_weighted`, CUDA's
+    `LmMoeLocalWeightedFinalizeKernel`) moved its pinned runs further from
+    the eager references (pinned multi-floor +0.39 and +3.78 sigma against
+    +0.52 and +0.78), so it is not taken; aligning both backends and the
+    reference with `grouped_mm` together is still open. The experts' and the
+    dense GeLU forms give the same BF16 values;
   - speculation is exact (every run's tokens equal plain decode's on six
     prompts) and takes the rewrite from 92 to 323 tok/s, but a frame costs
     more than a step from two rows on, so the first probe in a match class
