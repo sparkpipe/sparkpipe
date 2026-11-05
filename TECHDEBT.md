@@ -1378,7 +1378,10 @@ and the multidev docs on 2026-09-28. Line numbers are in
     needs the affected model's gate: the experts' tanh GeLU
     (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
     `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
-    cube first, so Gemma 4's dense and expert FFNs round differently; the
+    cube first; on BF16 inputs the two round to the same BF16 GeLU for
+    every value in FP32 with NumPy's tanh (a one-ulp difference in the
+    inner argument for 260 inputs never reaches the rounded output), so
+    only the code text differs; the
     head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
     gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
     `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;

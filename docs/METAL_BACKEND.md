@@ -154,8 +154,12 @@ rotary rotation
 round every term).
 The experts' tanh GeLU is `SparkMathGeluTanhScaleFirst`, which multiplies
 `0.044715 g g g` from the left as CUDA's expert kernels always have; the
-dense GeLU cubes first. Both backends use the same two, so the choice
-between them is made in one place.
+dense GeLU cubes first, as PyTorch's does. Both backends use the same two,
+so the choice between them is made in one place. The two give the same BF16
+GeLU for every BF16 input: in FP32 with NumPy's tanh, the inner argument
+differs by one FP32 ulp for 260 of the 34,048 inputs below 64 in magnitude,
+and none of those moves the rounded output. CUDA's expert kernels keep their
+text.
 Each is an inline function that the CUDA kernels (through `dtype.cuh`), the
 Metal kernels (through `common.metal`) and the host CUDA shim of the host
 tests include. A formula is defined once, so a change to it reaches both
