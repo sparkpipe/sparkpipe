@@ -1597,6 +1597,9 @@ class App:
             count = self.usage.erase(account)
             line = self.book.append("records_erased", {"account": account, "through": market.stamp(now), "records": count, "by": by, "note": note[:200], "now": market.stamp(now)})
         self.audit(account, by, "records.erased", {"records": count, "through": line["data"]["through"]})
+        self.mail(self.cfg.notify, f"Erase the hub's request records of {account} within 30 days",
+                  f"{self.who(account)} had the records of its requests deleted on the VPS ({note[:200]}): {count} records up to {line['data']['through']}. "
+                  f"DPA clause 9.3 gives us 30 days for the hub's records too. On each hub, as the chat layer's user: python3 chat_frontend.py --config chat_frontend.json --erase-records {account} --note \"{note[:100]}\"")
         self.mail(self.book.accounts[account]["email"], "SparkPipe deleted the records of your requests",
                   f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)} (Data Processing Agreement clause 9.3). "
                   f"Your bookings, payments and HC, which the law has us keep, are unchanged. Records of requests made from now on are kept for a year as before.{FOOTER}")
