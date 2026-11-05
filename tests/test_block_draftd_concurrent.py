@@ -89,11 +89,23 @@ def main():
     late = Scheduler(module, wait_ms=30.0).request(44, 5)
     if not late["event"].wait(1.0) or late["result"] is not None:
         failures.append("a request whose taps never arrive must be answered unavailable at its deadline")
+    owners = Scheduler(module, wait_ms=30.0).server
+    owners.new_context = lambda: types.SimpleNamespace()
+    first = owners.context_for(100012, (7, 100012), 0)
+    if owners.context_for(100012, (7, 100012), 40) is not first:
+        failures.append("a later frame of the same request must extend the request's context")
+    replaced = owners.context_for(100012, (9, 100012), 1759)
+    if replaced is first or owners.contexts[100012] is not replaced:
+        failures.append("a frame from a new engine session must replace a context left by an earlier session under the same sequence id")
+    if owners.contexts.get(("retired", 100012, (7, 100012))) is not first:
+        failures.append("the replaced context must stay as a donor for the prefix its tokens share")
+    if owners.context_for(100012, (9, 100013), 60) is replaced:
+        failures.append("a frame from another request must not write into a context that request did not create")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS draft server keeps every lane's request pending and drafts each as its taps arrive")
+    print("PASS draft server keeps every lane's request pending and drafts each as its taps arrive; a context belongs to the session and request whose taps made it")
     return 0
 
 

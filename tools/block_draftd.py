@@ -11,6 +11,11 @@ of block drafts, each scored by the drafter's confidence head.
 A sequence whose taps start after position 0 (a prefix-cache hit on the
 target) takes the missing context from another sequence that shares those
 tokens. Without a donor the draft attends only to the positions it has.
+A context belongs to the engine session (control generation) and request
+whose taps created it. The API numbers requests from 100001 at every start,
+so a frame from another session or request gets a new context under its
+sequence id instead of writing over a stranger's positions; the old one
+stays as a donor for the prefix its tokens share.
 
 --drafter dspark:CHECKPOINT serves a checkpoint's built-in DSpark drafter
 (spec_offline/dspark_fast.py): taps o36,o37,o38, a 128-position ring of
@@ -198,7 +203,7 @@ class Server:
                     raw = handle.read(FRAME.size)
                     if len(raw) != FRAME.size:
                         break
-                    (magic, _version, kind, _header, fingerprint, _control, request, _request_generation, sequence, first, _serial,
+                    (magic, _version, kind, _header, fingerprint, control, request, _request_generation, sequence, first, _serial,
                      rows, flags, _tail, entries, payload) = FRAME.unpack(raw)
                     if magic != MAGIC or kind != 2 or fingerprint != hello["fingerprint"] or payload != rows * (4 + row_bytes):
                         print(f"TAP-BAD-FRAME from {peer}: magic {magic:#x} kind {kind} rows {rows} payload {payload}", flush=True)
@@ -213,7 +218,7 @@ class Server:
                         record.write(token_raw)
                         record.write(data)
                         record.flush()
-                    self.work.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
+                    self.work.put(("frame", (sequence, (control, request), first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
             if record is not None:
@@ -236,18 +241,14 @@ class Server:
             self.hello = body
             self.columns = [body["entries"].index(name) for name in self.layers]
             return
-        sequence, _request, first, _flags, tokens, data, arrived = body
+        sequence, owner, first, _flags, tokens, data, arrived = body
         if self.hello is None:
             return
         applying = time.monotonic()
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
         rows = torch.from_numpy(np.frombuffer(data, dtype=np.uint16).reshape(len(tokens), count, hidden).copy()).view(torch.bfloat16)
         taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
-        context = self.contexts.get(sequence)
-        if context is None or first == 0:
-            context = RingContext(self.drafter) if self.dspark else LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
-            self.contexts[sequence] = context
-        self.contexts.move_to_end(sequence)
+        context = self.context_for(sequence, owner, first)
         context.write(first, tokens, taps)
         torch.cuda.synchronize()
         self.timing["frames"] += 1
@@ -256,6 +257,21 @@ class Server:
         self.stats["frames"] += 1
         self.stats["rows"] += len(tokens)
         self.evict()
+
+    def new_context(self):
+        return RingContext(self.drafter) if self.dspark else LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
+
+    def context_for(self, sequence, owner, first):
+        context = self.contexts.get(sequence)
+        if context is not None and first != 0 and getattr(context, "owner", None) != owner:
+            self.contexts[("retired", sequence, getattr(context, "owner", None))] = self.contexts.pop(sequence)
+            context = None
+        if context is None or first == 0:
+            context = self.new_context()
+            context.owner = owner
+            self.contexts[sequence] = context
+        self.contexts.move_to_end(sequence)
+        return context
 
     def expire(self, now):
         stale = expire_contexts(self.contexts, now)
