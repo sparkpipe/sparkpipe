@@ -595,7 +595,8 @@ prompt. The non-streamed body and the last stream event carry the
 `pack`, prompt, cached, prefill and replayed tokens, `queue_ms`,
 `prefill_ms`, `ttft_ms`, `output_tokens`, `decode_tps`, `draft_accept`,
 `cold_prefill_ms_estimate`, `priority`, `session`, `agent`), and the chat
-layer logs it as a `request_record` line. `X-SparkPipe-Request`, `-Model`,
+layer keeps it as the request's record (Request records, below), never in
+its log. `X-SparkPipe-Request`, `-Model`,
 `-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms` and `-Fleet` come with the
 headers. `cold_prefill_ms_estimate` applies the measured cold prefill rate
 of the model near this prompt length (cold requests of 512 tokens or more,
@@ -603,6 +604,33 @@ in quarter-octave length buckets, used within two buckets) to the cached
 tokens; with no measurement near that length it is null. `draft_accept` is
 null until the engine reports draft and accepted tokens per request, and
 `pack` until packs exist.
+
+### Request records
+
+The operational record of each request (the `sparkpipe` object above, with
+`at`, `account`, `member`, `key` and `shape`) is a line of
+`request-records/<owner>/<day>.jsonl` next to the config, or in the config's
+`records.directory`. `<owner>` is `account-<id>` for a gateway request,
+`key-<id>` for a direct key and `own` for our own requests. The folder is
+mode 700 and its files mode 600. It is not working state: the chat layer
+refuses a records directory inside the replay store, and a wipe does not
+touch it. A record holds counts, times and ids, never prompt text, reply
+text or token numbers, and nothing of it goes to stderr, so journald keeps
+no copy; the log lines keep only the model, counts, times and settings. Day
+files are deleted 366 days after their day (checked hourly).
+
+When a customer asks in writing to have the records of its requests deleted
+(Data Processing Agreement clause 9.3: within 30 days), run on each hub, as
+the chat layer's user:
+
+```sh
+python3 chat_frontend.py --config chat_frontend.json --erase-records AC... --note "request of 2027-01-03"
+```
+
+It deletes that account's folder, appends `{account, at, records, note}` to
+`request-records/erasures.jsonl` and prints `request_records_erased` with the
+count. Records of later requests are kept again. The VPS's copy is deleted
+with `sparkpipe_pay.py erase-records` (`docs/PAYMENTS.md`).
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
 `"priority": "background"`, `<model>-bulk`, and Claude Code's
