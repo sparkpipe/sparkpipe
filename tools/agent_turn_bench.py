@@ -710,6 +710,7 @@ def run_arm(client, sessions, arguments, recorder, ratio, arm, watch_factory=Non
     arrivals = random.Random(f"{arguments.seed}:arrivals:{arm}")
     delays = [index * arguments.stagger + arrivals.uniform(0, arguments.jitter) for index in range(len(sessions))]
     watch = watch_factory().start() if watch_factory else None
+    load_before = os.getloadavg()
     stop, health = threading.Event(), []
     poller = None
     if arguments.engine_health:
@@ -737,7 +738,9 @@ def run_arm(client, sessions, arguments, recorder, ratio, arm, watch_factory=Non
     if poller is not None:
         poller.join(timeout=10)
     arm_record = {"arm": arm, "phase": "arm", "label": arguments.label, "sessions": len(sessions), "wall_s": rounded(time.monotonic() - origin),
-                  "delays_s": [rounded(delay) for delay in delays], "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+                  "delays_s": [rounded(delay) for delay in delays], "load_average": {"before": [round(value, 2) for value in load_before],
+                                                                                         "after": [round(value, 2) for value in os.getloadavg()]},
+                  "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     if health:
         live = [sample["live_requests"] for sample in health if sample["live_requests"] is not None]
         arm_record["engine_live_requests"] = {"samples": len(health), "max": max(live, default=None), "unreachable": sum(sample["live_requests"] is None for sample in health)}
@@ -840,6 +843,8 @@ def summarize(records):
             arm["memory"] = extra["memory"]["verdict"]
         if "engine_live_requests" in extra:
             arm["engine_live_requests"] = extra["engine_live_requests"]
+        if "load_average" in extra:
+            arm["load_average"] = extra["load_average"]
     return summary
 
 
@@ -882,33 +887,59 @@ def parse_range(text):
     return low, high
 
 
+class Setup:
+    def __init__(self, arguments):
+        self.key = read_key(arguments.key_file) if arguments.key_file else None
+        self.client = Client(arguments.endpoint, self.key, public=self.key is not None, max_retries=arguments.max_retries)
+        status, models = self.client.get("/v1/models")
+        self.entry = next((model for model in (models or {}).get("data", []) if model.get("id") == arguments.model), None) if status == 200 else None
+        if self.entry is None:
+            raise SystemExit(f"agent_turn_bench: {arguments.model} is not in /v1/models ({status})")
+        self.arms = [int(value) for value in arguments.sessions.split(",")]
+        self.shapes = arguments.shapes.split(",")
+        if any(shape not in SHAPES for shape in self.shapes):
+            raise SystemExit(f"agent_turn_bench: shapes are {', '.join(SHAPES)}")
+        arguments.start_high = arguments.context_high - arguments.turns * arguments.result_tokens[1] - arguments.max_tokens * arguments.turns
+        if arguments.start_high < arguments.context_low:
+            raise SystemExit("agent_turn_bench: the context range is too narrow for the turns and result sizes")
+        self.corpus = Corpus.load(arguments.corpus)
+        self.count = Counter(self.client, arguments.model)
+        self.ratio = calibrate(self.count, self.corpus)
+        self.preamble = Preamble(self.corpus, arguments.preamble_tokens, self.ratio, self.count)
+        self.seeds = Seeds(self.corpus, self.preamble, arguments, self.ratio, self.count)
+
+
+def plan(arguments):
+    setup = Setup(arguments)
+    sessions = setup.seeds.sessions(max(setup.arms), setup.shapes)
+    shared = setup.count({"system": setup.preamble.system, "tools": MESSAGES_TOOLS, "messages": [{"role": "user", "content": "x"}]})
+    seeds = [{"session": session.index, "shape": session.shape, "target_tokens": session.target, "tokens": setup.count(session.count_body())} for session in sessions]
+    cold = sum(seed["tokens"] for seed in seeds) - shared * (len(seeds) - 1)
+    rate = arguments.prefill_rate
+    arms = [{"arm": arm, "sessions": arm, "seed_tokens": sum(seed["tokens"] for seed in seeds[:arm]),
+             "live_prefill_tokens": arm * arguments.turns * sum(arguments.result_tokens) // 2,
+             "output_tokens_at_most": arm * arguments.turns * arguments.max_tokens} for arm in setup.arms]
+    document = {"model": arguments.model, "label": arguments.label, "shared_preamble_tokens": shared, "seeds": seeds, "warm_prefill_tokens": cold,
+                "warm_seconds_at_prefill_rate": round(cold / rate) if rate else None, "prefill_rate": rate, "arms": arms,
+                "characters_per_token": round(setup.ratio, 4)}
+    if arguments.output:
+        Path(arguments.output).write_text(json.dumps(document, indent=1) + "\n")
+    print(json.dumps(document, indent=1))
+
+
 def run(arguments):
     output = Path(arguments.output)
     output.mkdir(parents=True, exist_ok=True)
-    key = read_key(arguments.key_file) if arguments.key_file else None
-    client = Client(arguments.endpoint, key, public=key is not None, max_retries=arguments.max_retries)
-    status, models = client.get("/v1/models")
-    entry = next((model for model in (models or {}).get("data", []) if model.get("id") == arguments.model), None) if status == 200 else None
-    if entry is None:
-        raise SystemExit(f"agent_turn_bench: {arguments.model} is not in /v1/models ({status})")
-    corpus = Corpus.load(arguments.corpus)
-    count = Counter(client, arguments.model)
-    ratio = calibrate(count, corpus)
-    preamble = Preamble(corpus, arguments.preamble_tokens, ratio, count)
-    arms = [int(value) for value in arguments.sessions.split(",")]
-    shapes = arguments.shapes.split(",")
-    if any(shape not in SHAPES for shape in shapes):
-        raise SystemExit(f"agent_turn_bench: shapes are {', '.join(SHAPES)}")
-    arguments.start_high = arguments.context_high - arguments.turns * arguments.result_tokens[1] - arguments.max_tokens * arguments.turns
-    if arguments.start_high < arguments.context_low:
-        raise SystemExit("agent_turn_bench: the context range is too narrow for the turns and result sizes")
+    setup = Setup(arguments)
+    client, entry, key, arms, shapes = setup.client, setup.entry, setup.key, setup.arms, setup.shapes
+    corpus, ratio, seeds = setup.corpus, setup.ratio, setup.seeds
     tool = Path(__file__).read_bytes()
     run_record = {"phase": "run", "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "endpoint": arguments.endpoint, "model": arguments.model,
                   "model_entry": entry, "public_key": key is not None, "characters_per_token": round(ratio, 4), "arms": arms, "shapes": shapes,
                   "turns": arguments.turns, "max_tokens": arguments.max_tokens, "effort": arguments.effort, "context": [arguments.context_low, arguments.context_high],
                   "result_tokens": list(arguments.result_tokens), "preamble_tokens": arguments.preamble_tokens, "stagger_s": arguments.stagger,
                   "jitter_s": arguments.jitter, "seed": arguments.seed, "label": arguments.label, "corpus_files": len(corpus.files),
-                  "tool_sha256": hashlib.sha256(tool).hexdigest(), "argv": sys.argv[1:]}
+                  "warm_only": arguments.warm_only, "tool_sha256": hashlib.sha256(tool).hexdigest(), "argv": sys.argv[1:]}
     recorder = Recorder(output / "turns.jsonl")
     recorder.write(run_record)
     watch_factory = None
@@ -917,11 +948,10 @@ def run(arguments):
         import fleet_memory_watch
         hosts = arguments.memory_hosts.split(",")
         watch_factory = lambda: fleet_memory_watch.MemoryWatch(hosts, seconds=arguments.arm_seconds + 600)
-    seeds = Seeds(corpus, preamble, arguments, ratio, count)
     try:
-        if arguments.warm:
+        if arguments.warm or arguments.warm_only:
             warm(client, seeds.sessions(max(arms), shapes), arguments, recorder, ratio)
-        for arm in arms:
+        for arm in [] if arguments.warm_only else arms:
             run_arm(client, seeds.sessions(arm, shapes, arm), arguments, recorder, ratio, arm, watch_factory)
     finally:
         recorder.close()
@@ -938,10 +968,7 @@ def report(arguments):
         print(markdown(summary))
 
 
-def build_parser():
-    parser = argparse.ArgumentParser(description="Replay multi-turn agent sessions in the Messages and Responses shapes and time every turn")
-    commands = parser.add_subparsers(dest="command", required=True)
-    runner = commands.add_parser("run")
+def session_arguments(runner):
     runner.add_argument("--endpoint", required=True)
     runner.add_argument("--key-file")
     runner.add_argument("--model", required=True)
@@ -965,7 +992,19 @@ def build_parser():
     runner.add_argument("--memory-hosts")
     runner.add_argument("--seed", default="agent-turn-1")
     runner.add_argument("--label", required=True)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Replay multi-turn agent sessions in the Messages and Responses shapes and time every turn")
+    commands = parser.add_subparsers(dest="command", required=True)
+    runner = commands.add_parser("run")
+    session_arguments(runner)
+    runner.add_argument("--warm-only", action="store_true")
     runner.add_argument("--output", required=True)
+    planner = commands.add_parser("plan")
+    session_arguments(planner)
+    planner.add_argument("--prefill-rate", type=float, default=0.0)
+    planner.add_argument("--output")
     reporter = commands.add_parser("report")
     reporter.add_argument("paths", nargs="+")
     reporter.add_argument("--json", action="store_true")
@@ -974,10 +1013,7 @@ def build_parser():
 
 def main():
     arguments = build_parser().parse_args()
-    if arguments.command == "run":
-        run(arguments)
-    else:
-        report(arguments)
+    {"run": run, "plan": plan, "report": report}[arguments.command](arguments)
 
 
 if __name__ == "__main__":

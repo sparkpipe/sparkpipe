@@ -83,12 +83,15 @@ def corpus(directory):
     return directory
 
 
-def run_bench(base, key_file, corpus_dir, output, shapes, sessions, label, extra=()):
-    arguments = bench.build_parser().parse_args([
-        "run", "--endpoint", base, "--key-file", str(key_file), "--model", "alpha", "--corpus", str(corpus_dir), "--sessions", sessions,
+def bench_arguments(command, base, key_file, corpus_dir, shapes, sessions, label, extra=()):
+    return bench.build_parser().parse_args([
+        command, "--endpoint", base, "--key-file", str(key_file), "--model", "alpha", "--corpus", str(corpus_dir), "--sessions", sessions,
         "--shapes", shapes, "--turns", "3", "--max-tokens", "256", "--context-low", "12000", "--context-high", "40000", "--result-tokens", "150:300",
-        "--preamble-tokens", "600", "--stagger", "0.2", "--jitter", "0", "--label", label, "--output", str(output), *extra])
-    bench.run(arguments)
+        "--preamble-tokens", "600", "--stagger", "0.2", "--jitter", "0", "--label", label, *extra])
+
+
+def run_bench(base, key_file, corpus_dir, output, shapes, sessions, label, extra=()):
+    bench.run(bench_arguments("run", base, key_file, corpus_dir, shapes, sessions, label, ("--output", str(output), *extra)))
     return bench.load_records([output])
 
 
@@ -146,6 +149,30 @@ def check_end_to_end(tmp, check):
         background.replies.text = RESPONSES_REPLY
         responses = run_bench(harness.base, key_file, corpus_dir, tmp / "responses", "responses", "2", "r", ("--no-warm",))
         check(len(harness.engine.requests) - len(engine_requests) == 6, "the Responses run did not send six turns to the engine")
+        before = len(harness.engine.requests)
+        planned = tmp / "plan.json"
+        bench.plan(bench_arguments("plan", harness.base, key_file, corpus_dir, "messages", "1,3", "m", ("--prefill-rate", "100", "--output", str(planned))))
+        check(len(harness.engine.requests) == before, "plan sent a request to the engine")
+        background.replies.text = MESSAGES_REPLY
+        split = tmp / "split"
+        bench.run(bench_arguments("run", harness.base, key_file, corpus_dir, "messages", "1,3", "m", ("--warm-only", "--output", str(split))))
+        warmed = len(harness.engine.requests) - before
+        bench.run(bench_arguments("run", harness.base, key_file, corpus_dir, "messages", "1,3", "m", ("--no-warm", "--output", str(split))))
+        split_records = bench.load_records([split])
+    plan = json.loads(planned.read_text())
+    seed_tokens = [seed["tokens"] for seed in plan["seeds"]]
+    check(seed_tokens == [warm["prompt_tokens"] for warm in sorted((r for r in records if r["phase"] == "warm"), key=lambda r: r["session"])],
+          f"plan's counted seeds {seed_tokens} differ from the prompts the warm pass sent")
+    check(plan["warm_prefill_tokens"] == sum(seed_tokens) - plan["shared_preamble_tokens"] * 2 and
+          plan["warm_seconds_at_prefill_rate"] == round(plan["warm_prefill_tokens"] / 100), f"plan's warm estimate is wrong: {plan}")
+    check([arm["sessions"] for arm in plan["arms"]] == [1, 3] and plan["arms"][1]["seed_tokens"] == sum(seed_tokens), "plan's arms are wrong")
+    check(warmed == 3, f"--warm-only sent {warmed} requests, not one per seed")
+    split_warms = [record for record in split_records if record["phase"] == "warm"]
+    split_turns = [record for record in split_records if record["phase"] == "turn"]
+    check(len(split_warms) == 3 and len(split_turns) == 12, f"the split run has {len(split_warms)} warms and {len(split_turns)} turns, not 3 and 12")
+    check(all(record["prefill_tokens"] <= 64 for record in split_turns if record["turn"] == 0),
+          "a turn after a warm pass in an earlier invocation did not resume from the cache")
+    check(sum(record["phase"] == "run" for record in split_records) == 2 and split_records[0]["warm_only"] is True, "the two invocations' run records are missing")
     run = records[0]
     check(run["phase"] == "run" and run["model_entry"]["id"] == "alpha" and run["public_key"] is True, f"the run record is wrong: {json.dumps(run)[:300]}")
     warms = [record for record in records if record["phase"] == "warm"]
@@ -195,6 +222,7 @@ def check_end_to_end(tmp, check):
     check(arm3["sessions"] == 3 and arm3["turns_ok"] == 9 and arm3["turns_with_tool_calls"] == 9, f"the arm 3 summary is wrong: {json.dumps(arm3)[:400]}")
     check(abs(arm3["share"]["waiting_for_first_token"] + arm3["share"]["decode"] - 1) < 1e-6, "the waiting and decode shares do not add to one")
     check(summary["warm"]["m"]["seeds"] == 3, "the warm summary does not count three seeds")
+    check(len(arm3["load_average"]["before"]) == 3 and len(arm3["load_average"]["after"]) == 3, "the arm summary lacks the host's load average")
     table = bench.markdown(bench.summarize(bench.load_records([tmp / "messages", tmp / "responses"])))
     check("| m 3 |" in table and "| r 2 |" in table, f"the merged report does not label its runs:\n{table}")
 
@@ -264,7 +292,7 @@ def main():
         check_retry(check)
         check_summary(check)
         check_memory_watch(tmp, check)
-    check.finish("Messages and Responses sessions replay through the real chat layer: seeds warm once and resume from the cache, every turn's "
+    check.finish("Messages and Responses sessions replay through the real chat layer: seeds warm once and resume from the cache, also from a --warm-only pass in an earlier invocation, plan counts every seed and the warm pass's prefill without touching the engine, every turn's "
                  "tool_use or function_call gets its result appended so the next prompt hits the cache to the end of the reply, arms run 1 and 3 "
                  "staggered sessions, a 429 waits Retry-After and counts in the first-token time, the summary's rates, shares, together window and "
                  "context buckets are exact, and the memory watch judges each node against 1 GiB above earlyoom's line")
