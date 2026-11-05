@@ -20,6 +20,8 @@ KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round
          "auto_extend", "auto_extend_wait", "downtime", "failover", "failover_end")
 AVAILABILITY = {"free": "available"}
 SCOPES = ("inference", "state", "storage", "functions", "models", "account:read")
+ROLES = ("owner", "admin", "member")
+ROLE_SCOPES = {"owner": SCOPES, "admin": SCOPES, "member": ("inference", "functions", "account:read")}
 PRIORITIES = ("interactive", "background")
 EVENTS = ("booking.deadline", "booking.confirmed", "fleet.allocated", "waitlist.position", "run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token",
           "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost", "fleet.failover")
@@ -274,7 +276,7 @@ class State:
         self.round = data["sunday"]
 
     def on_api_key(self, data):
-        self.keys[data["key"]] = {"key": data["key"], "account": data["account"], "note": data["note"], "hint": data["hint"], "created": data["now"], "revoked": False,
+        self.keys[data["key"]] = {"key": data["key"], "account": data["account"], "member": data.get("member", data["account"]), "note": data["note"], "hint": data["hint"], "created": data["now"], "revoked": False,
                                   "scopes": data.get("scopes", list(SCOPES)), "fleet": data.get("fleet"), "allow_swap": data.get("allow_swap", False), "expires": data.get("expires"),
                                   "ips": data.get("ips", []), "priority": data.get("priority"), "rotated_from": data.get("rotated_from"), "retires": None}
         self.key_hashes[data["hash"]] = data["key"]
@@ -622,6 +624,7 @@ class Market:
                 "hc": text_hc(price), "rate": text_hc(fleet["rate"]), "weeks": weeks, "discount": format(off, "f"), "source": "waitlist", "unlocked": text_hc(left), "now": stamp(sunday)}
         self.book.append("booking", data)
         self.default_extend(account, fleet["id"], sunday)
+        self.app.audit(account, "system", "fleet.allocated", {"booking": data["booking"], "fleet": fleet["id"], "first": data["start"], "weeks": weeks, "hc": data["hc"]}, sunday)
         self.notify(account, "fleet.allocated", {key: data[key] for key in ("booking", "fleet", "start", "end", "weeks", "hc", "discount", "unlocked")}, sunday,
                     f"SparkPipe {fleet['name']} is yours from {kst_text(monday)[:10]}", "\n".join([
                         f"The waitlist allocated {fleet['name']} to you: {weeks} Weeks from {kst_text(monday)} to {kst_text(monday + WEEK * weeks)}, for {text_hc(price)} HC of your lock" + (f" at {off * 100:.0f}% off." if off else "."),
@@ -898,6 +901,7 @@ class Market:
                                f"Buy {text_hc(need)} HC before {kst_text(first - DAY)} to keep the Fleet: {self.app.cfg.public}/market.html")
         ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), at, {"weeks": plan["weeks"], "discount": plan["discount"], "auto": True})
         self.confirmed(self.st.bookings[ident], at)
+        self.app.audit(account, "system", "booking.auto", {"booking": ident, "fleet": fleet["id"], "first": plan["first"], "weeks": plan["weeks"], "price": plan["price"]}, at)
 
     def stop_extend(self, account, fleet_id, reason, at):
         through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
@@ -1016,43 +1020,48 @@ class Market:
         return {"note": note.strip(), "scopes": [scope for scope in SCOPES if scope in scopes], "fleet": fleet, "allow_swap": body.get("allow_swap", False), "expires": expires, "ips": ips, "priority": priority}
 
     def key_view(self, record):
-        found = {name: record.get(name) for name in ("key", "note", "hint", "created", "revoked", "scopes", "fleet", "allow_swap", "expires", "ips", "priority", "retires", "rotated_from")}
+        found = {name: record.get(name) for name in ("key", "member", "note", "hint", "created", "revoked", "scopes", "fleet", "allow_swap", "expires", "ips", "priority", "retires", "rotated_from")}
         return dict(found, id=record["key"])
 
-    def new_key(self, account, options, now, rotated_from=None):
+    def new_key(self, account, options, now, rotated_from=None, member=None):
         key = "sk-hc-" + secrets.token_urlsafe(24)
         found = new_id("KY")
-        data = dict(options, key=found, account=account, hash=key_digest(key), hint=key[-4:], now=stamp(now))
+        data = dict(options, key=found, account=account, member=member or account, hash=key_digest(key), hint=key[-4:], now=stamp(now))
         if rotated_from:
             data["rotated_from"] = rotated_from
         self.book.append("api_key", data)
         return dict(self.key_view(self.st.keys[found]), key=key)
 
-    def create_key(self, account, body):
+    def create_key(self, account, body, member=None, role="owner"):
         pricing = self.settings()
+        allowed = ROLE_SCOPES[role]
+        body = body if "scopes" in body else dict(body, scopes=list(allowed))
         with self.book.lock:
             now = self.now()
-            return self.new_key(account, self.key_options(pricing, body, now), now)
+            options = self.key_options(pricing, body, now)
+            if any(scope not in allowed for scope in options["scopes"]) or (options["allow_swap"] and role == "member"):
+                raise Refusal(f"A {role} of the account makes keys with the scopes {', '.join(allowed)} only, without allow_swap.", 403, "role")
+            return self.new_key(account, options, now, member=member)
 
-    def own_key(self, account, found, now):
+    def own_key(self, account, found, now, member=None, role="owner"):
         record = self.st.keys.get(found) if isinstance(found, str) else None
-        if not record or record["account"] != account or record["revoked"] or (record["retires"] and stamp_time(record["retires"]) <= now):
+        if not record or record["account"] != account or record["revoked"] or (record["retires"] and stamp_time(record["retires"]) <= now) or (role == "member" and record["member"] != member):
             raise Refusal("No active key with that id on this account.", 404)
         return record
 
-    def revoke_key(self, account, found):
+    def revoke_key(self, account, found, member=None, role="owner"):
         with self.book.lock:
-            self.own_key(account, found, self.now())
+            self.own_key(account, found, self.now(), member, role)
             self.book.append("api_key_revoke", {"key": found})
         return {"id": found, "revoked": True}
 
-    def rotate_key(self, account, found):
+    def rotate_key(self, account, found, member=None, role="owner"):
         with self.book.lock:
             now = self.now()
-            record = self.own_key(account, found, now)
+            record = self.own_key(account, found, now, member, role)
             if record["retires"]:
                 raise Refusal("This key was already rotated.", 409, "rotated")
-            made = self.new_key(account, {name: record[name] for name in ("note", "scopes", "fleet", "allow_swap", "expires", "ips", "priority")}, now, found)
+            made = self.new_key(account, {name: record[name] for name in ("note", "scopes", "fleet", "allow_swap", "expires", "ips", "priority")}, now, found, record["member"])
             self.book.append("api_key_rotate", {"key": found, "account": account, "new": made["id"], "retires": stamp(now + HOUR)})
         return dict(made, replaces=found, retires=stamp(now + HOUR))
 

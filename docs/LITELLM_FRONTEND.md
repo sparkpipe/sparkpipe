@@ -80,7 +80,8 @@ calls) leave two sequences for interactive ones, and a freed sequence goes to
 a waiting interactive request first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
 own requests) holding the fewest sequences, then to the member (the gateway's
-`X-SparkPipe-Key`) holding the fewest, then to the first to arrive; an account
+`X-SparkPipe-Member`, the team member of `docs/FLEET_API.md` §12, or its
+`X-SparkPipe-Key` when it names no member) holding the fewest, then to the first to arrive; an account
 or member already holding three quarters of the sequences takes no more
 while another one waits (C8). There is no per-key cap besides this. A caller
 cancels a request by closing its connection, whether it is still queued or
@@ -430,7 +431,8 @@ public models:
   `X-SparkPipe-Account` (1 to 64 letters, digits, `-` or `_`; 400
   `account_required` or `invalid_account` otherwise). That account, not the
   key, is the request's scope: its replay store, alias table and fair share.
-  `X-SparkPipe-Key` names the account's own key as the member, and
+  `X-SparkPipe-Member` names the team member (or, without it,
+  `X-SparkPipe-Key` names the key) as the member, and
   `X-SparkPipe-Allow-Swap: 1` (or `true`) lets that request load another
   model; the gateway key itself has no `allow_swap`. Every other key is its
   own scope, so a gateway key made without `--gateway` would make all
@@ -520,7 +522,7 @@ found by its trimmed text and tool calls together with a digest of
 everything before it: the model, tools, template arguments and every
 earlier message, so the same words in another conversation never match.
 Every turn belongs to the member that made it (the gateway's
-`X-SparkPipe-Key`, or the direct key), and only that member's requests reach
+`X-SparkPipe-Member`, else its `X-SparkPipe-Key`, or the direct key), and only that member's requests reach
 it, through any path, `tokenize` included. A turn is replayed only for the
 model that generated it and only while the client's copy has the same text
 and calls; a turn the client edited, or one not found, is rendered by the
