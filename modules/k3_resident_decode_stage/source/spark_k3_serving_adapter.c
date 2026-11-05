@@ -18,9 +18,11 @@
 #error "a Kimi K3.1 Pro build is TP16 and names its pack contract in K31_PRO_CONTRACT_SHA256"
 #endif
 #define SPARK_K3_SERVING_SOURCE_ID "moonshotai/Kimi-K3.1-Pro"
+#define SPARK_K3_SERVING_MODULE_TAG "k31_stage"
 #define SPARK_K3_SERVING_KV_REGIONS SPARK_STAGE_KV_MAX_REGIONS
 #else
 #define SPARK_K3_SERVING_SOURCE_ID SPARK_K3_MODEL_SOURCE_ID
+#define SPARK_K3_SERVING_MODULE_TAG "k3_stage"
 #define SPARK_K3_SERVING_KV_REGIONS 1u
 #endif
 
@@ -165,7 +167,7 @@ static const SparkStageServingModel K3StageServing =
 {
 	.descriptor = &K3ServingDescriptor,
 	.runner_model = SparkK3StageModel,
-	.module_tag = "k3_stage",
+	.module_tag = SPARK_K3_SERVING_MODULE_TAG,
 	.tp_degree = SPARK_K3_SERVING_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = K3ServingKvLayout,

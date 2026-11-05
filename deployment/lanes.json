@@ -76,6 +76,21 @@
     "log": "/srv/workspace/sparkpipe/logs/draftd.log"
    }
   },
+  "kimi-k3.1-pro": {
+   "launcher": "stage_lane",
+   "model": "k31_pro",
+   "lane": 8,
+   "runtime_root": "/home/{host}/stage-lanes/k31_pro/lane8/root",
+   "weightd_socket": "/tmp/spark_weightd.sock",
+   "memory_max": "16G",
+   "sequences": 8,
+   "rows": 1024,
+   "context_tokens": 1048576,
+   "kv_logical_pages": 131072,
+   "state_budget_bytes": 5368709120,
+   "tokenizer_sha256": "58578ae8cb9f99f2b928afd7af00c6ac87d8262a01484fb7a51b7dc608742ad9",
+   "text_prompt_prefix_token_ids": []
+  },
   "qwen3.8-27b": {
    "launcher": "stage_lane",
    "model": "qwen38_27b",

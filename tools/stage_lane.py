@@ -395,6 +395,22 @@ K3 = {
     "kv_page_bytes": 24 * 64 * (512 + 64) * 2 // WORLD,
     "recurrent_bytes": 69 * (6 * 128 * 128 * 4 + 6 * (2 * 128 + 128) * 4 * 2),
 }
+K31_PRO = {
+    **K3,
+    "swap_id": "kimi-k3.1-pro",
+    "api_port": 8481,
+    "kv_label": "k31_stage",
+    "node_memory_bytes": 104689827840 + (512 << 20),
+    "tokenizer_json": "/mnt/cold-raid5/models/kimi-k3.1-pro-d9e99b0792a5/tiktoken.model",
+    "pack": "sparkdata/k31_pro.mxfp4.tp16/k31_pro.tp16.rank{rank:02d}.pack",
+    "adapter": "libk31_pro_tp16_serving_adapter.so",
+    "firmware_adapter": "libk31_pro_tp16_serving_adapter.so",
+    "program": "k31_pro",
+    "node_target": "cuda.sm121.k31_pro.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+    "contract": "model_contracts/k31_pro_authoritative.json",
+    "expert_warm": {"model_tag": "kimi-k3.1-pro", "revision": "mxfp4", "layers": 93, "experts": 896, "timeout_s": 3600},
+    "kv_page_bytes": 24 * 64 * ((512 + 64) * 2 + 128 * 2) // WORLD,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
@@ -403,6 +419,7 @@ MODELS = {
     "glm53_full": GLM53_FULL,
     "hy4": HY4,
     "k3": K3,
+    "k31_pro": K31_PRO,
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
     "motif3": MOTIF3,
@@ -561,10 +578,10 @@ def expert_warm(model: dict, root: str) -> dict:
     warm = model.get("expert_warm")
     if warm is None:
         return {}
-    revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
+    revision = warm.get("revision") or json.loads((ROOT / model["contract"]).read_text())["revision"]
     return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
                           f"./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
-                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
+                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:

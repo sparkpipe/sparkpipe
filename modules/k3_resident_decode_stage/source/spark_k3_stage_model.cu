@@ -1320,7 +1320,7 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 {
 	SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
 	"sparkpipe_k3",
-	"kimi-k3",
+	SPARK_K3_SERVING_INDEXER != 0 ? "kimi-k3.1-pro" : "kimi-k3",
 	"mxfp4",
 	K3ModelOpen,
 	K3ModelManifestCheck,
