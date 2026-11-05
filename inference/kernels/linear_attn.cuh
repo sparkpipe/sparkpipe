@@ -37,7 +37,7 @@ void LmGdnGateKernel(const uint16_t *__restrict__ decay_logit_bf16, const uint16
 	scalar = ((uint64_t)row * heads) + head;
 	logit = ((uint64_t)row * (logit_stride != 0u ? logit_stride : heads)) + head;
 	shifted = LmBf16ToFloat(decay_logit_bf16[logit]) + head_bias[head];
-	factor = SparkMathGatedDeltaDecayFast(head_log_scale[head],shifted);
+	factor = SparkMathGatedDeltaDecay(head_log_scale[head],shifted);
 	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		retention[(scalar * KEY_DIM) + index] = factor;
 	if ( threadIdx.x == 0u )

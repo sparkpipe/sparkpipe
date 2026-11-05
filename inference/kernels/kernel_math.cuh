@@ -11,8 +11,6 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_AS_BITS(value) as_type<uint>(value)
 #define SPARK_MATH_EXP(x) metal::exp(x)
 #define SPARK_MATH_EXP_FAST(x) metal::exp(x)
-#define SPARK_MATH_LOG(x) metal::log(x)
-#define SPARK_MATH_LOG_FAST(x) metal::log(x)
 #define SPARK_MATH_COS_FAST(x) metal::cos(x)
 #define SPARK_MATH_SIN_FAST(x) metal::sin(x)
 #define SPARK_MATH_TANH(x) metal::tanh(x)
@@ -37,8 +35,6 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_AS_BITS(value) __float_as_uint(value)
 #define SPARK_MATH_EXP(x) expf(x)
 #define SPARK_MATH_EXP_FAST(x) __expf(x)
-#define SPARK_MATH_LOG(x) logf(x)
-#define SPARK_MATH_LOG_FAST(x) __logf(x)
 #define SPARK_MATH_COS_FAST(x) __cosf(x)
 #define SPARK_MATH_SIN_FAST(x) __sinf(x)
 #define SPARK_MATH_TANH(x) tanhf(x)
@@ -142,11 +138,6 @@ SPARK_MATH_FN float SparkMathSwishFast(float value)
 	return(value * SparkMathSigmoidFast(value));
 }
 
-SPARK_MATH_FN float SparkMathSoftplus(float value)
-{
-	return(value > 20.0f ? value : SPARK_MATH_LOG(1.0f + SPARK_MATH_EXP(value)));
-}
-
 SPARK_MATH_FN float SparkMathRopeCos(float angle, float scale)
 {
 	return(SPARK_MATH_COS_FAST(angle) * scale);
@@ -187,21 +178,15 @@ SPARK_MATH_FN float SparkMathSoftplusGate(float logit)
 	return(SparkMathRoundBf16(logit > 20.0f ? logit : SparkMathLog1p(SPARK_MATH_EXP(logit))));
 }
 
-SPARK_MATH_FN float SparkMathSoftplusFast(float value)
+SPARK_MATH_FN float SparkMathSoftplus(float value)
 {
-	return(value > 20.0f ? value : SPARK_MATH_LOG_FAST(1.0f + SPARK_MATH_EXP_FAST(value)));
+	return(value > 20.0f ? value : SparkMathLog1p(SPARK_MATH_EXP(value)));
 }
 
 SPARK_MATH_FN float SparkMathGatedDeltaDecay(float log_scale, float shifted)
 {
 	const float softplus = SparkMathSoftplus(shifted);
 	return(SPARK_MATH_EXP(-SPARK_MATH_EXP(log_scale) * softplus));
-}
-
-SPARK_MATH_FN float SparkMathGatedDeltaDecayFast(float log_scale, float shifted)
-{
-	const float softplus = SparkMathSoftplusFast(shifted);
-	return(SPARK_MATH_EXP_FAST(-SPARK_MATH_EXP_FAST(log_scale) * softplus));
 }
 
 SPARK_MATH_FN float SparkMathBoundedDecay(float logit, float bias, float log_scale, float minimum_log_decay)
