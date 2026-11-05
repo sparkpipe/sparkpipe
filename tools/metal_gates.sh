@@ -15,7 +15,7 @@ case $model in
 	gemma4-31b) routed=0 prompt_dir=gemma4 vocab=262144 probe=ffn_down layer=11;;
 	muse-glimmer-30b) routed=0 prompt_dir=muse_glimmer vocab=202048 probe=ffn_down layer=11;;
 	mimo-v2.6-flash) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=11;;
-	mimo-v2.6-pro) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=7;;
+	mimo-v2.6-pro) routed=0 prompt_dir=mimo26_flash vocab=152576 probe=attn_out layer=7 probe_layers=moe_w2;;
 	qwen3.8-flash) routed=0 prompt_dir=qwen38_27b vocab=248320 probe=moe_shared_down layer=11 greedy_tokens=8 bench_prompt=design spec=0 bench_long=2048;;
 	laguna-s-2.1) routed=0 prompt_dir=laguna vocab=100352 probe=attn_out layer=11;;
 	k-exaone-2.0) routed=0 prompt_dir=kexaone2 vocab=153600 probe=attn_out layer=11;;
@@ -62,7 +62,7 @@ make -s build/test_device_contract_metal build/test_metal_bf16_convert build/tes
 ./build/test_metal_kernels "$out/kernels.json" > "$out/kernels.txt"
 ./build/device_bandwidth 16 "$pack" > "$out/bandwidth.json" 2> "$out/bandwidth.log"
 $run --pack "$pack" --mode teacher --out "$out/metal" --verify-pack $teacher_flags > "$out/metal_teacher.log"
-controls="control:layers.$layer.$probe:swap-rows control_layers:layers.*.$probe:swap-rows control_rotate:layers.$layer.$probe:rotate-rows"
+controls="control:layers.$layer.$probe:swap-rows control_layers:layers.*.${probe_layers:-$probe}:swap-rows control_rotate:layers.$layer.$probe:rotate-rows"
 pin=""
 if [ "$routed" = 1 ]; then
 	mkdir -p "$out/pinned" "$out/pinned64"

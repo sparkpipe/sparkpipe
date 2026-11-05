@@ -1019,7 +1019,15 @@ near 0.6), so those layers' `attn_out` reaches the residual only as values far
 below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
 byte-identical. Shifting the layer's query rows by one breaks that alignment
 and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
-them by a mean KL of 0.56.
+them by a mean KL of 0.56. The all-layer control corrupts the experts' down
+projection instead (`probe_layers=moe_w2`: experts 0 and 1 of each rank's 48
+exchanged in layers 1 to 69, the reach of a misindexed expert). Rows 0 and 1
+of every layer's `attn_out` swapped left Pro as close to the references as
+Metal itself (multi-floor -0.82 sigma, KL 0.88 to 1.04 times the floors);
+the expert swap fails at +13.74 sigma (KL 1.63 to 1.67). The single-layer
+controls stay on `attn_out`: rotating all 48 experts of layer 7 moved the
+logits less than the floor (-3.88 sigma), and rotating its `attn_out` fails
+at +6.13 sigma.
 
 ### HY4 on eight ranks
 
