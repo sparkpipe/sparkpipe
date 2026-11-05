@@ -891,7 +891,7 @@ activation scale; CUDA and Metal multiply BF16 activations and apply neither.
 `tools/qwen38_max_reference.py gate-prompts` writes
 `qualification/metal/qwen38_max/` (the Gemma set in the Qwen 3.8 chat turn;
 Max's tokenizer is the 27B's, so the framing tokens are the 27B set's), and
-`teacher` writes references a and b in FP32 through the Flash reference's
+`teacher` writes references a, b and h in FP32 through the Flash reference's
 gated delta rule, attention and experts, with the 27B reference's residual
 and norms and the SiLU gate of the gated norm. The controls corrupt
 `moe_shared_down`, layer 11 for the single-layer ones:

@@ -11,7 +11,9 @@
              sums in numpy's order, b splits every matmul's inner dimension
              into 1,024-wide chunks summed last chunk first and reverses
              every other reduction and the expert combination, so a against
-             b is the noise of FP32 reduction order (the Metal gate's floor)
+             b is the noise of FP32 reduction order, and h is b with a GPU's
+             exp and tanh error (tools/reference_device_error.py): the three
+             variants' distances from one another are the Metal gate's floors
 
 The semantics are SparkPipe's CUDA stage
 (model-families/qwen38/source/qwen38_hybrid_stage.cuh) on Max's geometry. The
@@ -102,7 +104,7 @@ def main():
     parser.add_argument("mode", choices=("gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,b")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--only", help="comma-separated prompt names (default every prompt)")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/qwen38/chat_template.json"))
