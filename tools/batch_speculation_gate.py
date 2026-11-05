@@ -2,15 +2,19 @@
 """Batch speculation gate: B concurrent greedy requests with speculation off and on must emit identical tokens; reports aggregate tokens per second both ways.
 
 Prompts are rendered by the chat layer's own template from --chat-dir, so the
-engine sees exactly what a chat would send. Two task kinds: "edit" asks for a
+engine sees exactly what a chat would send. Three task kinds: "edit" asks for a
 source file back with one rename (lookup drafts copy it), "prose" asks for an
-essay (model drafts). Each (kind, batch, repeat) runs off then on.
+essay (model drafts), and "agent" is a coding agent's turn: tool definitions,
+a Read call whose result is a source file, then the model's reasoning and the
+Edit calls it makes (lookup drafts copy the code it edits, model drafts the
+rest). Each (kind, batch, repeat) runs off then on.
 """
 import argparse
 import hashlib
 import http.client
 import importlib.util
 import json
+import re
 import statistics
 import sys
 import threading
@@ -42,6 +46,46 @@ def edit_tasks(sources, count):
     return [{"role": "user", "content": "Below is a source file. Reproduce it exactly, changing only the name of the first function "
              "defined in it by appending _v2 everywhere that name appears. Output only the file, inside one ```c block.\n\n```c\n"
              + files[index * step].read_text(errors="replace") + "\n```"} for index in range(count)]
+
+
+AGENT_TOOLS = [
+    {"type": "function", "function": {"name": "Read", "description": "Read a file from the repository.",
+     "parameters": {"type": "object", "properties": {"file_path": {"type": "string", "description": "Path of the file"}}, "required": ["file_path"]}}},
+    {"type": "function", "function": {"name": "Edit", "description": "Replace one exact occurrence of old_string with new_string in a file.",
+     "parameters": {"type": "object", "properties": {"file_path": {"type": "string"}, "old_string": {"type": "string", "description": "Exact text to replace"},
+                                                     "new_string": {"type": "string", "description": "Replacement text"}},
+                    "required": ["file_path", "old_string", "new_string"]}}},
+    {"type": "function", "function": {"name": "Bash", "description": "Run a shell command in the repository.",
+     "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}},
+]
+FUNCTION = re.compile(r"^(?:static\s+)?(?:inline\s+)?[A-Za-z_][A-Za-z0-9_ \t\*]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{]*\)\s*\{", re.M)
+
+
+def agent_tasks(sources, count):
+    files = []
+    for path in sorted(Path(sources).rglob("*.c")):
+        if 3000 <= path.stat().st_size <= 9000:
+            text = path.read_text(errors="replace")
+            names = [match.group(1) for match in FUNCTION.finditer(text) if match.group(1) not in ("if", "for", "while", "switch", "return")]
+            if len(names) >= 2:
+                files.append((path, text, names))
+    if len(files) < count:
+        raise SystemExit(f"batch_speculation_gate: {sources} has {len(files)} C files of 3-9 KB with two functions, need {count}")
+    step = len(files) // count
+    tasks = []
+    for index in range(count):
+        path, text, names = files[index * step]
+        relative = str(path.relative_to(sources))
+        tasks.append([
+            {"role": "system", "content": "You are a coding agent working in a C repository. Think about the change, then make it with the tools. "
+                                          "Each Edit replaces one exact occurrence, so quote enough surrounding code to make old_string unique."},
+            {"role": "user", "content": f"In {relative}, the function {names[1]} should check its pointer arguments for NULL at the top and return early. "
+                                        f"Also rename {names[0]} to {names[0]}_checked everywhere in that file. Read the file first."},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_read_0", "type": "function",
+                                                                 "function": {"name": "Read", "arguments": json.dumps({"file_path": relative})}}]},
+            {"role": "tool", "tool_call_id": "call_read_0", "content": text},
+        ])
+    return tasks
 
 
 def prose_tasks(count):
@@ -98,7 +142,8 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--sources", required=True)
     parser.add_argument("--batches", default="1,2,4,8")
-    parser.add_argument("--kinds", default="edit,prose")
+    parser.add_argument("--kinds", default="edit,prose,agent")
+    parser.add_argument("--template-kwargs", default="{}", help="JSON object passed to the chat template, e.g. a model's thinking switch")
     parser.add_argument("--max-tokens", type=int, default=384)
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=3600)
@@ -110,8 +155,13 @@ def main():
     summary = {}
     with open(arguments.output, "a") as handle:
         for kind in arguments.kinds.split(","):
-            messages = edit_tasks(arguments.sources, max(batches)) if kind == "edit" else prose_tasks(max(batches))
-            prompts = [model.render(frontend.normalize_messages([message]), None, {})[1] for message in messages]
+            if kind == "agent":
+                conversations, tools = agent_tasks(arguments.sources, max(batches)), AGENT_TOOLS
+            elif kind in ("edit", "prose"):
+                conversations, tools = [[message] for message in (edit_tasks(arguments.sources, max(batches)) if kind == "edit" else prose_tasks(max(batches)))], None
+            else:
+                raise SystemExit(f"batch_speculation_gate: unknown kind {kind}")
+            prompts = [model.render(frontend.normalize_messages(conversation), tools, json.loads(arguments.template_kwargs))[1] for conversation in conversations]
             for count in batches:
                 for repeat in range(arguments.repeats):
                     off = arm(arguments, prompts[:count], model.stop_token_ids, False)

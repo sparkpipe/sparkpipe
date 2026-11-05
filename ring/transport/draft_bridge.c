@@ -45,6 +45,10 @@ struct SparkDraftBridge
     uint32_t connect_timeout_ms;
     uint32_t io_timeout_ms;
     int socket_fd;
+    uint32_t pending;
+    uint32_t pending_node_capacity;
+    uint64_t pending_sequence_id;
+    uint64_t pending_generation;
 };
 
 static void SparkDraftBridgePutU32Le(
@@ -111,6 +115,7 @@ static void SparkDraftBridgeDropConnection(
         (void)close(bridge->socket_fd);
         bridge->socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
     }
+    bridge->pending = 0u;
 }
 
 static SparkStatus SparkDraftBridgeFailTransport(
@@ -480,7 +485,7 @@ void SparkDraftBridgeDestroy(
     free(bridge);
 }
 
-SparkStatus SparkDraftBridgeProposeTree(
+SparkStatus SparkDraftBridgeSendTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
     uint64_t sequence_id,
@@ -495,30 +500,16 @@ SparkStatus SparkDraftBridgeProposeTree(
     uint32_t time_budget_ms,
     uint32_t max_depth,
     const SparkRowSampling *sampling,
-    SparkDraftBridgeNode *nodes_out,
-    uint32_t node_capacity,
-    uint32_t *node_count_out,
-    SparkDraftBridgeProposalInfo *info_out)
+    uint32_t node_capacity)
 {
     SparkStatus status;
     uint8_t *cursor;
-    const uint8_t *reader;
-    const uint8_t *record;
-    const uint8_t *footer;
     uint64_t request_bytes;
-    uint64_t response_node_bytes;
-    uint64_t response_sequence_id;
-    uint64_t response_generation;
-    uint32_t server_status;
-    uint32_t node_count;
     uint32_t node_index;
-    uint32_t stage_index;
 
     if (bridge == 0 ||
         committed_token_ids == 0 ||
-        nodes_out == 0 ||
-        node_count_out == 0 ||
-        info_out == 0)
+        bridge->pending != 0u)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
@@ -559,9 +550,6 @@ SparkStatus SparkDraftBridgeProposeTree(
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-
-    *node_count_out = 0u;
-    memset(info_out, 0, sizeof(*info_out));
 
     if (bridge->socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
     {
@@ -648,6 +636,55 @@ SparkStatus SparkDraftBridgeProposeTree(
     {
         return SparkDraftBridgeFailTransport(bridge);
     }
+    bridge->pending = 1u;
+    bridge->pending_node_capacity = node_capacity;
+    bridge->pending_sequence_id = sequence_id;
+    bridge->pending_generation = generation;
+    return SPARK_STATUS_OK;
+}
+
+uint32_t SparkDraftBridgePending(
+    const SparkDraftBridge *bridge)
+{
+    return bridge != 0 ? bridge->pending : 0u;
+}
+
+SparkStatus SparkDraftBridgeReceiveTree(
+    SparkDraftBridge *bridge,
+    SparkDraftBridgeNode *nodes_out,
+    uint32_t node_capacity,
+    uint32_t *node_count_out,
+    SparkDraftBridgeProposalInfo *info_out)
+{
+    SparkStatus status;
+    const uint8_t *reader;
+    const uint8_t *record;
+    const uint8_t *footer;
+    uint64_t response_node_bytes;
+    uint64_t response_sequence_id;
+    uint64_t response_generation;
+    uint64_t sequence_id;
+    uint64_t generation;
+    uint32_t server_status;
+    uint32_t node_count;
+    uint32_t node_index;
+    uint32_t stage_index;
+
+    if (bridge == 0 ||
+        nodes_out == 0 ||
+        node_count_out == 0 ||
+        info_out == 0 ||
+        bridge->pending == 0u ||
+        node_capacity < bridge->pending_node_capacity)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    *node_count_out = 0u;
+    memset(info_out, 0, sizeof(*info_out));
+    bridge->pending = 0u;
+    node_capacity = bridge->pending_node_capacity;
+    sequence_id = bridge->pending_sequence_id;
+    generation = bridge->pending_generation;
     status = SparkDraftBridgeReadAll(
         bridge->socket_fd,
         bridge->response_buffer,
@@ -728,4 +765,41 @@ SparkStatus SparkDraftBridgeProposeTree(
     }
     *node_count_out = node_count;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkDraftBridgeProposeTree(
+    SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    const uint32_t *committed_token_ids,
+    uint32_t committed_token_count,
+    const void *tap_rows,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    SparkDraftBridgeNode *nodes_out,
+    uint32_t node_capacity,
+    uint32_t *node_count_out,
+    SparkDraftBridgeProposalInfo *info_out)
+{
+    SparkStatus status;
+    if (nodes_out == 0 || node_count_out == 0 || info_out == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    *node_count_out = 0u;
+    memset(info_out, 0, sizeof(*info_out));
+    status = SparkDraftBridgeSendTree(bridge, speculator_mask, sequence_id, generation, position, anchor_token_id,
+        committed_token_ids, committed_token_count, tap_rows, tap_row_count, depth, time_budget_ms, max_depth,
+        sampling, node_capacity);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkDraftBridgeReceiveTree(bridge, nodes_out, node_capacity, node_count_out, info_out);
 }
