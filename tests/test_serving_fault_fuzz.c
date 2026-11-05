@@ -163,6 +163,7 @@ static void FaultBuildDeployment(SparkModelResidentDeployment *deployment,
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 256u;
 	fixture.runtime_limits.kv_physical_page_capacity = 256u;
+	fixture.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	fixture.control_port_base = 59200u;
 	fixture.node_count = TEST_RANKS;
 	fixture.coordinator_rank_index = 0u;

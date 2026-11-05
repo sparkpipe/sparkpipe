@@ -98,6 +98,7 @@ def resident_deployment() -> dict:
             "resident_sequence_capacity": STAGED_SLOTS,
             "kv_logical_page_capacity": STAGED_SLOTS * ((STAGED_CONTEXT + 63) // 64),
             "kv_physical_page_capacity": STAGED_SLOTS * ((STAGED_CONTEXT + 63) // 64),
+            "output_vocabulary": 202048,
         },
         "nodes": nodes,
     }

@@ -108,10 +108,34 @@ cap.
   else in flight) feeds a table of frame cost per row bucket and context
   bucket (verify frames, and clean single-lane prefill waves as a prior), and
   the chain's per-token and single-step cost per context bucket. Missing cells
-  interpolate in rows and borrow the nearest context bucket.
+  interpolate in rows and borrow the nearest context bucket. Beyond the
+  measured sizes a cost scales the nearest one by (rows + 8) / (rows measured
+  + 8); a straight line through the two smallest sizes could price a frame
+  below zero. A cell not measured for 64 frames of its context bucket is
+  stale: the price is the lower of the estimate over all cells and the one
+  over fresh cells only, so a size priced during a slow stretch is tried again
+  once its fresh neighbours say it is cheaper, and the next measurement
+  replaces a stale cell instead of averaging into it.
 - Decision: among 1-16, 20, 24, ..., 255 and the feasible maximum, the frame
   with the most expected tokens per nanosecond, only if it beats the chain by
   5%. A class with no evidence gets one probe frame of up to 16 drafts.
+- Probes cost at most the margin: a probe holds the most drafts whose frame
+  costs at most 5% over a plain step (one draft when no frame is that cheap).
+  A request that has not had a draft accepted in a class probes there too,
+  whenever the engine's table would speculate: the engine's hazards come
+  from every request, and an edit task's long accepted matches priced a
+  prose request's first lookup match at 142 expected tokens from 160 drafts
+  (A.X K2, 2026-11-04: one token kept, 1,041 ms where five plain steps cost
+  190 ms). A rejected probe keeps the cap and the first accepted draft lifts
+  it. After that a request's frames grow at most to four times the deepest
+  draft it has had accepted in any class (1, 4, 16, 64, then every draft; a
+  per-class depth made Ling's edit tasks probe and ramp again each time a
+  growing match changed class, 20 frames where 6 did, edits 4.55x -> 4.10x):
+  one accepted probe draft is evidence for depth one, not for the 46 and 67
+  drafts the pooled table then priced at 44 and 42 expected tokens on A.X K2
+  prose (5 and 3 kept, 417 and 524 ms). A class the engine has seen fail still never probes. The rule lives in
+  `SparkSpeculationFrameChoose`, which the batch engine and the Metal stage
+  runner both call.
 - Caps: a waiting prefill caps a frame at two single steps. A lane below the
   highest priority the engine has served (chat-memory background work at 0
   while foreground carries 1) is capped at eight chained tokens, so a

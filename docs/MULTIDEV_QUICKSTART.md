@@ -37,9 +37,10 @@ and `SPARK_TP_WAIT_MODE=hardware`; it sets neither `SPARK_WEIGHTD_LANE` nor
 `MemoryMax` (observed 2026-09-28 on spark0). `start_root` in `tools/fleet_node_agent.sh`
 maps the two `G5_` switches to `SPARK_GLM5_NEXT_GRAPH_PATH` and
 `SPARK_GLM5_NEXT_PIN_EXPERTS`, and passes `SPARK_WEIGHTD_EXPERT_POOL_BYTES`
-34359738368 unless `G5_EXPERT_POOL_BYTES` overrides it. The production arena is
-the whole GLM rank pack, pinned: the daemon held 20,874 MiB of device memory on
-spark6 (nvidia-smi, observed 2026-09-28).
+only when `G5_EXPERT_POOL_CAP_BYTES` names a cap (it refuses the retired
+`G5_EXPERT_POOL_BYTES`). Without a cap weightd sizes the pool from the pack, so
+the production arena is the whole GLM rank pack, pinned: the daemon held 20,874
+MiB of device memory on spark6 (nvidia-smi, observed 2026-09-28).
 
 Lane jobs attach to that daemon. Do not start another weightd-line daemon on a
 Spark:
@@ -151,7 +152,9 @@ attached consumer is cold, and the next attach that needs room frees the oldest
 cold arena (`SparkWeightdServerReclaimCold`). `weightd_warm SOCKET --reclaim`
 frees every cold arena on the daemon, including other developers' warmed
 arenas, so do not use it on the shared daemon without checking whose they are.
-A daemon holds at most 16 arenas (`SPARK_WEIGHTD_ARENA_COUNT_MAX`). A
+A daemon holds at most 16 arenas (`SPARK_WEIGHTD_ARENA_COUNT_MAX`); a 17th
+pack frees the coldest cold arena, and is refused only while all 16 are
+attached or leased. A
 graph-mode GLM job needs its whole pack pinned, so on W it must budget the full
 pack; a partial `.wset` only serves eager mode.
 
@@ -241,15 +244,17 @@ executable:
 export SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock
 export SPARK_WEIGHTD_LANE=4
 export SPARK_TP_MESH_RANKS=4,5,6,7
-export SPARK_WEIGHTD_EXPERT_POOL_BYTES=POOL_BYTES
+export SPARK_WEIGHTD_EXPERT_POOL_BYTES=POOL_CAP_BYTES
 exec /actual/verified/bin/sparkpipe_model_residentd \
   --deployment "$SPARK_QUEUE_RUNTIME_ROOT/deployment.json" \
   --rank-index "$SPARK_QUEUE_RANK"
 ```
 
-A GLM job in the qualified configuration also sets
+`POOL_CAP_BYTES` is the job's explicit expert pool cap, for a job that
+streams experts on purpose; leave the variable unset and weightd sizes the
+pool from the pack. A GLM job in the qualified configuration also sets
 `SPARK_GLM5_NEXT_GRAPH_PATH=1`, `SPARK_GLM5_NEXT_PIN_EXPERTS=1` and
-`SPARK_TP_WAIT_MODE=hardware`, with a pool larger than the pack. An unset wait
+`SPARK_TP_WAIT_MODE=hardware`, without a cap (the whole pack). An unset wait
 mode means spin (`ring/transport/tp_device_collective.c`), which is not the
 qualified configuration; before PR #1255 (merged in cf64e90) spin mode also
 failed single-sequence prefill waves above 8 rows.

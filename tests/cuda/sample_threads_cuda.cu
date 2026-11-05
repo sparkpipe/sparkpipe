@@ -179,7 +179,51 @@ int main(void)
 		printf("FAIL sampling threads: %u of %u rows differ between one thread and %u threads or miss the double-precision log-softmax\n", failures, checks, PROBE_THREADS);
 		return 1;
 	}
+	{
+		const uint32_t output_vocabulary = PROBE_VOCAB - 243u;
+		uint32_t past = 0u, unbounded_past = 0u;
+		for (row = 0u; row < PROBE_ROWS; ++row)
+			for (token = output_vocabulary; token < PROBE_VOCAB; ++token)
+				host_logits[ProbeIndex(row, token)] = 40.0f;
+		PROBE_CUDA(cudaMemcpy(logits, host_logits, logit_count * sizeof(float), cudaMemcpyHostToDevice));
+		for (rule = 0u; rule < sizeof(probe_rules) / sizeof(probe_rules[0]); ++rule)
+			for (seed = 0u; seed < PROBE_SEEDS; ++seed)
+			{
+				for (row = 0u; row < PROBE_ROWS; ++row)
+				{
+					host_rules[row] = SparkSamplingRuleWith(probe_rules[rule].temperature, 1000003ull * (seed + 1u) + 7919ull * row + rule,
+						probe_rules[rule].top_p, probe_rules[rule].top_k, probe_rules[rule].logprobs);
+					host_positions[row] = 211000u + 3u * seed + row;
+				}
+				PROBE_CUDA(cudaMemcpy(rules, host_rules, sizeof(host_rules), cudaMemcpyHostToDevice));
+				PROBE_CUDA(cudaMemcpy(positions, host_positions, sizeof(host_positions), cudaMemcpyHostToDevice));
+				for (side = 0u; side < 2u; ++side)
+				{
+					vocab.vocabulary = side == 0u ? output_vocabulary : PROBE_VOCAB;
+					ProbeLaunch(PROBE_THREADS, vocab, rows[side]);
+					PROBE_CUDA(cudaMemcpy(host_tokens[side], tokens[side], sizeof(host_tokens[side]), cudaMemcpyDeviceToHost));
+					PROBE_CUDA(cudaMemcpy(host_logprobs[side], logprobs[side], sizeof(host_logprobs[side]), cudaMemcpyDeviceToHost));
+				}
+				for (row = 0u; row < PROBE_ROWS; ++row)
+				{
+					past += host_tokens[0][row] >= output_vocabulary ? 1u : 0u;
+					unbounded_past += host_tokens[1][row] >= output_vocabulary && host_tokens[1][row] < PROBE_VOCAB ? 1u : 0u;
+					for (index = 0u; index < probe_rules[rule].logprobs; ++index)
+					{
+						const uint32_t alternative = host_logprobs[0][row * SPARK_SAMPLING_MAX_LOGPROBS + index].token;
+						past += alternative != SPARK_SAMPLING_NO_TOKEN && alternative >= output_vocabulary ? 1u : 0u;
+					}
+				}
+			}
+		vocab.vocabulary = PROBE_VOCAB;
+		if ( past != 0u || unbounded_past == 0u )
+		{
+			printf("FAIL sampling output vocabulary: %u tokens or alternatives past the %u-token output vocabulary; the unbounded control drew %u there\n",
+				past, output_vocabulary, unbounded_past);
+			return 1;
+		}
+	}
 	printf("PASS sampling threads: %u rows over %u logit shapes (ties, flat, bf16 levels, -inf, twin peaks, wide, one spike) and %u rules choose the same token, "
-		"logit and logprob tokens with %u threads as with one thread, and the logprobs match a double-precision log-softmax within 1e-4\n", checks, PROBE_ROWS, (uint32_t)(sizeof(probe_rules) / sizeof(probe_rules[0])), PROBE_THREADS);
+		"logit and logprob tokens with %u threads as with one thread, the logprobs match a double-precision log-softmax within 1e-4, and no token or alternative passes a smaller output vocabulary whose padding outscores every real token\n", checks, PROBE_ROWS, (uint32_t)(sizeof(probe_rules) / sizeof(probe_rules[0])), PROBE_THREADS);
 	return 0;
 }

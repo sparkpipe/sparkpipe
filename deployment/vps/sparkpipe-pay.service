@@ -1,5 +1,5 @@
 [Unit]
-Description=SparkPipe payments: email accounts, Toss Payments and CoinPayments, webhooks and the fleet-hour ledger
+Description=SparkPipe payments and bookings: email accounts, Toss Payments and CoinPayments, HC, Hours, Weeks, the waitlist, the API gateway and the ledger
 After=network-online.target
 Wants=network-online.target
 
@@ -10,6 +10,7 @@ EnvironmentFile=/etc/sparkpipe-pay/env
 ExecStart=/usr/bin/python3 /opt/sparkpipe-pay/sparkpipe_pay.py serve
 Restart=on-failure
 RestartSec=5
+UMask=0077
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

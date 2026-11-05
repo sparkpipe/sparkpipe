@@ -34,7 +34,9 @@ nothing more:
   keeps every character the model wrote, including the blank lines some
   models put after a reasoning block, so the client's history re-renders to
   the generated tokens and prefix reuse covers the whole reply;
-- it keeps no request state; prefix reuse happens in the engine;
+- prefix reuse happens in the engine; the chat layer keeps one piece of
+  request state, the replay store of the Fleet API shapes (below), so a
+  structured history renders back to the exact tokens the model generated;
 - while the engine is starting (its 503 says `"status":"starting"`) or is
   unreachable, a request waits in the model's `warm_queue` (`depth`,
   `wait_seconds`, and `activation_url`, which is POSTed once per cold period
@@ -66,10 +68,23 @@ Known limits:
 
 ### Queueing and cancel (2026-10-18)
 
-The door queues every request and rejects none for load (owner,
-2026-10-18). A caller manages its own backlog and cancels a request by
-closing its connection, whether the request is still queued or already
-streaming:
+Internal requests (SparkPipe Chat, LiteLLM, the LAN) queue without a limit
+and are never rejected for load (owner, 2026-10-18). Keyed requests on the
+public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
+§3.1): every request takes one of the model's `sequences` (the lane's, in
+`deployment/lanes.json`) in the chat layer, a keyed request waits up to 60 s
+for one and then gets 429 `busy` with an integer `Retry-After` and
+`x-should-retry: true`. Background requests (`<model>-bulk`,
+`X-SparkPipe-Priority: background`, Claude Code's compaction and auxiliary
+calls) leave two sequences for interactive ones, and a freed sequence goes to
+a waiting interactive request first. Among waiters of the same priority, a
+freed sequence goes to the account (a gateway account, a direct key, or our
+own requests) holding the fewest sequences, then to the member (the gateway's
+`X-SparkPipe-Key`) holding the fewest, then to the first to arrive; an account
+or member already holding three quarters of the sequences takes no more
+while another one waits (C8). There is no per-key cap besides this. A caller
+cancels a request by closing its connection, whether it is still queued or
+already streaming:
 
 - LiteLLM runs with `general_settings.cancel_on_disconnect: true`, so a
   client that goes away cancels LiteLLM's upstream call; mid-stream LiteLLM
@@ -103,7 +118,7 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`; every call needs the controller token (see Control-plane access) |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
 | Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
@@ -344,7 +359,7 @@ Apache serves these pages from the port-443 virtual host `deployment/vps/sparkpi
 
 `https://hyor.io` is the company's page: one page in English and Korean (`deployment/vps/hyor.io/`, copied to `/var/www/hyor` on the same VPS), linked from the seal in every sparkpipe.ai footer. `deployment/vps/hyor-io.conf` is its virtual host (`/etc/apache2/sites-available/hyor-io.conf`, enabled with `a2ensite hyor-io`). It sends `www.hyor.io` to `hyor.io`, chooses the language the way sparkpipe.ai does (the `lang` cookie, then the Korean /24 map), allows no scripts, and logs to the same Apache logs. The HTTPS virtual host and the port-80 redirect switch on by themselves once `/etc/letsencrypt/live/hyor.io/` exists. The certificate comes from `certbot certonly --webroot -w /var/www/hyor -d hyor.io -d www.hyor.io --deploy-hook 'systemctl reload apache2'`, so certbot never edits the virtual host. DNS for hyor.io is at Spaceship: `@` A `27.102.120.99`, `www` CNAME `hyor.io`, and the mail records. Mail for hyor.io runs on the VPS mail server that serves sparkpipe.ai (Postfix, Dovecot and rspamd, `docs/VPS_MAIL.md`): `@` MX `sparkpipe.ai`, `@` TXT `v=spf1 ip4:27.102.120.99 -all`, `_dmarc` TXT with `p=quarantine` and reports to `dmarc@hyor.io`, and `s202610._domainkey` TXT for rspamd's hyor.io DKIM key. `cem@hyor.io` is a mailbox of its own and the page's contact address; `postmaster@`, `abuse@` and `dmarc@hyor.io` deliver to it. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
-Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `agreement`, `market-rules`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
+Every page with a Korean twin (`index`, `fleets`, `terms`, `privacy`, `agreement`, each with a `-ko.html` page) carries the EN / 한국어 switch and `hreflang` alternates. `deployment/vps/sparkpipe-lang.conf`, included in the port-443 virtual host after the canonical-host rule, chooses the language:
 
 - `?lang=ko` or `?lang=en` on any page sets the cookie `lang` (one year, Secure, HttpOnly, SameSite=Lax) and redirects to the same page without the query. The switch links carry it.
 - A request that does not come from one of our own pages (no `https://sparkpipe.ai/` referrer) for an English page with a Korean twin goes to the Korean twin when the cookie says `ko`, or when there is no `lang` cookie and the client's /24 is in the Korean map. Links between our pages are followed as written, so an English link on a Korean page stays English. This needs `Referrer-Policy: same-origin` on the virtual host: other sites still get no referrer.
@@ -384,29 +399,53 @@ public models:
 - A request that carries the header, with any value, is public. The door
   that sets the header must also strip it from what the browser sends, so
   only the door can mark a request.
-- A public request needs `Authorization: Bearer sk-sp-...` with a key that
-  is in the keys file, not revoked and not expired; otherwise it gets 401
-  `invalid_api_key`. `/health/liveliness` needs no key.
+- A public request needs `Authorization: Bearer sk-sp-...` or
+  `X-Api-Key: sk-sp-...` (Claude Code sends the second) with a key that is
+  in the keys file, not revoked and not expired; otherwise it gets 401
+  `invalid_api_key` (`invalid_key` in the Anthropic and Responses bodies).
+  `/health/liveliness` and `/api/hello` need no key.
 - Public requests may use only `/v1/models`, `/v1/chat/completions`,
-  `/v1/sparkpipe/status` and `/health/liveliness`; every other path is 404.
+  `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`,
+  `/v1/tokenize`, `/v1/detokenize`, `/v1/models/aliases`, `/v1/codex/models`,
+  `DELETE /v1/cache`, `/v1/sparkpipe/status`, `/api/hello` and
+  `/health/liveliness`; every
+  other path is 404, in the error body of the path's API shape.
   `/v1/models` lists only the public models, and a request for any other
   model gets 404 naming only the public ones. Leaving out `models` makes
   every served model public.
 - A public request is planned without the caller's Open WebUI headers, so it
-  opens no chat memory, runs no chat command and keeps no conversation
-  state. Its trace line records the key's id, never the key.
-- A public `POST` needs a `Content-Length` (411 `length_required` otherwise)
-  of at most 16 bytes per token of the largest public context plus 1 MiB
-  (413 `request_too_large`), checked before the body is read.
-- Each key runs at most four requests at once; a fifth gets 429
-  `rate_limited` until one finishes. Other keys and internal requests are not
-  held by it.
+  opens no chat memory and runs no chat command. Its only conversation state
+  is the replay store of its account. Its trace line records the key's id,
+  never the key.
+- A public `POST` or `PUT` needs a `Content-Length` (411 `length_required`
+  otherwise) of at most 32 MiB, or 16 bytes per token of the largest public
+  context plus 1 MiB when that is more (413 `request_too_large`), checked
+  before the body is read.
+- A key's requests share the sequences with other keys and internal
+  requests by the fair-share rule of "Queueing and cancel": a key alone may
+  use every sequence, and a request that finds none free waits up to 60 s,
+  then gets 429 `busy` with `Retry-After`.
+- A key made with `--gateway` is the market gateway's (`tools/sparkpipe_pay.py`).
+  Each of its requests must name the market account in
+  `X-SparkPipe-Account` (1 to 64 letters, digits, `-` or `_`; 400
+  `account_required` or `invalid_account` otherwise). That account, not the
+  key, is the request's scope: its replay store, alias table and fair share.
+  `X-SparkPipe-Key` names the account's own key as the member, and
+  `X-SparkPipe-Allow-Swap: 1` (or `true`) lets that request load another
+  model; the gateway key itself has no `allow_swap`. Every other key is its
+  own scope, so a gateway key made without `--gateway` would make all
+  customers one account: the gateway's pool key must be made with
+  `--gateway`.
 - `cached_tokens` in a public reply counts only prefixes that key itself sent
-  (a per-key ledger of 64-token blocks), so a key cannot test whether
-  someone else sent a prompt. Prefix reuse itself is shared.
-- A public request for a public model that is not loaded starts the swap, as
-  any request does, but it never cancels the owner's chat-memory jobs while
-  it waits (TECHDEBT, Serving API).
+  (a per-key ledger of 64-token blocks) or that its account's replay store
+  holds, so a key cannot test whether someone else sent a prompt. Prefix
+  reuse itself is shared.
+- A public request for a model that is not resident is served only when no
+  model is resident or the controller is already switching to it. Otherwise
+  it gets 409 `model_not_loaded` naming the resident models, unless its key
+  has `allow_swap` (`api_keys.py create --allow-swap`), so a key never swaps
+  the fleet by accident. While it waits for a model that is loading, it never
+  cancels the owner's chat-memory jobs (TECHDEBT, Serving API).
 - `/v1/sparkpipe/status` gives the controller's full status only to the
   admin's SparkPipe Chat login. Public keys and everyone else get a view
   without the controller's error text, its memory figures or the errors in
@@ -424,11 +463,19 @@ to `chat_frontend.py` in `~/sparkpipe-chat`:
 ```sh
 cd ~/sparkpipe-chat
 python3 api_keys.py --file api_keys.json create --days 30 --note "who it is for"
+python3 api_keys.py --file api_keys.json create --allow-swap --note "may switch models"
+python3 api_keys.py --file api_keys.json create --priority background --note "batch jobs"
+python3 api_keys.py --file api_keys.json create --gateway --note "VPS gateway pool key"
 python3 api_keys.py --file api_keys.json list
 python3 api_keys.py --file api_keys.json revoke k_1a2b3c4d
 ```
 
-`create` prints the id and the key once; only the hash is stored.
+`create` prints the id and the key once; only the hash is stored. The
+`--gateway` key goes into the VPS's `/etc/sparkpipe-pay/pool_key`
+(`docs/PAYMENTS.md`); `list` marks it `gateway`. `--priority background`
+gives a key's requests background priority unless a request sends its own
+`X-SparkPipe-Priority`; a gateway key takes neither `--allow-swap` nor
+`--priority`, because the gateway forwards each customer key's own.
 `deployment/hub/chat_frontend.json` makes every model public except the
 Qwen models, as `docs/MODEL_SUPPORT.md` requires.
 
@@ -438,6 +485,185 @@ included in the port-443 virtual host after the language rules
 request, sets it on `/v1/` and proxies `/v1/` to the chat layer through the
 hub tunnel's port 18081. The chat app on port 8443 and the LAN door are
 unchanged.
+
+### Fleet API shapes (2026-11-04)
+
+The chat layer serves the inference shapes of `docs/FLEET_API.md` §3 for
+Claude Code, Codex and OpenCode, translated where the tokenizer, chat
+templates and tool-call parsers already live. `tools/serving/chat_shapes.py`
+(request translation and stream writers), `tools/serving/chat_replay.py`
+(the replay store), `tools/serving/working_state.py` (the deletion rule) and
+`tools/serving/codex_instructions.md` sit next to `chat_frontend.py` in
+`~/sparkpipe-chat`, as `chat_memory.py` does.
+
+| Path | What it does |
+| --- | --- |
+| `POST /v1/messages` | Anthropic Messages, streamed or not. `system` as a string or text blocks; `text`, `thinking`, `tool_use`, `tool_result`, `image` (models with `"images": true` only, otherwise 400 `image_not_supported`) and text `document` blocks; `role: "system"` messages render in place as system turns. `tool_choice` `auto`, `any`, `tool`, `none`; `thinking` and `output_config.effort` map to the model's `reasoning_effort`. `defer_loading` and `tool_reference` answer 400. `cache_control`, `metadata`, `anthropic-beta` and unknown fields are ignored |
+| `POST /v1/messages/count_tokens` | The exact prompt length the engine would get, replay included |
+| `POST /v1/responses` | OpenAI Responses, streamed or not: `message`, `reasoning`, `function_call`, `function_call_output` and custom tool items; `instructions` and `developer` messages render as system turns; function tools, and custom tools as a function with one string `input`; other tool types are left out. `previous_response_id` rebuilds the conversation from stored responses (`store` defaults to true); `prompt_cache_key` is the affinity key. `text.format` other than text answers 400 until grammar-constrained sampling lands |
+| `POST /v1/chat/completions` | Unchanged, plus replay, aliases, the residency rule, keep-alives and telemetry on keyed requests |
+| `POST /v1/tokenize`, `POST /v1/detokenize` | `text`, or `messages` and `tools` rendered with the template and replay, to token ids; and back |
+| `GET/PUT /v1/models/aliases` | The account's alias table: at most 64 entries, each a name or pattern of at most 128 characters with at most four `*` |
+| `GET /v1/models` | Resident models first, each with `resident`, `context_window`, `max_output_tokens`, `sequences` and the Anthropic list fields, plus the alias table |
+| `GET /v1/codex/models` | The same models as Codex's own catalogue (`model_catalog_url`), below |
+| `DELETE /v1/cache` | Deletes the account's replay store now: its turns, stored responses and alias table |
+| `HEAD /api/hello` | 200, no key |
+
+Token-exact replay (§3.2). For every assistant turn it returns, the chat
+layer stores the exact token ids the engine generated, and nothing of the
+prompt, under the handles it gave the client: each thinking `signature` and
+`tool_use` id (Messages), each output item's `id`, `call_id` and reasoning
+`encrypted_content` (Responses) and each `tool_calls[].id` (chat
+completions). A turn that comes back with no known handle (a chat
+completions text reply, or a Messages turn without its thinking block) is
+found by its trimmed text and tool calls together with a digest of
+everything before it: the model, tools, template arguments and every
+earlier message, so the same words in another conversation never match.
+Every turn belongs to the member that made it (the gateway's
+`X-SparkPipe-Key`, or the direct key), and only that member's requests reach
+it, through any path, `tokenize` included. A turn is replayed only for the
+model that generated it and only while the client's copy has the same text
+and calls; a turn the client edited, or one not found, is rendered by the
+template as before. A store that cannot be read is logged and the request is
+rendered normally.
+To render, the chat layer puts a sentinel in place of each replayed turn's
+content, renders the conversation once, and replaces each turn, from its
+header to the template's turn end, by the model's generation prompt and the
+stored tokens (their trailing stop token folded into the template's). The
+generation prompt is found by rendering a probe conversation with and
+without it. Every cut falls on a control token, so the text between cuts
+tokenizes as it did when the turn was generated, and the prompt matches the
+engine's cache up to the end of the previous reply. A forced tool choice
+stores its opening marker with the generated tokens.
+
+Working state and deletion (§3.2, Agreement 6.2). The store is a directory
+(`replay.directory`, mode 700 whoever created it) with one SQLite file per
+account (`account-<id>.sqlite` for a gateway account, `key-<id>.sqlite` for
+a direct key, `own.sqlite` for our own requests), each with its `-wal` and
+`-shm` mode 600 and `secure_delete` on, so deleted rows are overwritten.
+A file holds that account's generated turns, its stored Responses
+conversations (each readable only by the member that stored it) and its
+alias table; `prefill.sqlite` holds only the measured
+prefill rates per model and length, with no request content. Stored
+responses and turns share `replay.budget_bytes`; over it, the least recently
+used rows go first, whichever account holds them. Deletion follows the
+working-state rule of `docs/WORKING_STATE.md` through the function in
+`tools/serving/working_state.py`: every second the chat layer reads the
+directive the working-state controller writes on the hub
+(`replay.directive`, `~/sparkdata/working-state/directive`), and every row
+last used before `wiped` (another account started using the fleet), or 24 h
+after the later of its last use and `held_until`, is deleted; an account
+whose rows are all gone has its files removed. A missing directive is
+`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` removes
+the account's files at once; the engine's cache goes at the next change of
+user or by the same 24 h rule, and the answer says so (`not_deleted`).
+Responses `store` (true unless the request sets it to false, as in OpenAI's
+API) decides whether the conversation is kept for `previous_response_id`;
+the generated tokens are kept either way. A failed write to the store (disk
+full, I/O error) is logged as `replay_store_failed` and the reply is
+delivered whole.
+
+Residency and aliases (§4.5). The resident models are the controller's
+`models[].active`, with `active` first. A keyed request for another model is
+served when no model is resident or the controller is switching to it, and
+otherwise gets 409 `model_not_loaded` with `resident`, unless the key has
+`allow_swap` (or a gateway key forwards `X-SparkPipe-Allow-Swap: 1`).
+Internal requests keep swapping as before. The default alias table maps
+`claude-*` and `gpt-*` to the first resident model (`null` in the table);
+`PUT` replaces the account's table, whose targets must be served models, and
+the most specific pattern wins. Patterns match by finding their literal
+pieces in order, so matching is linear in the name. When the controller does
+not answer, the chat layer logs the error (`control_unavailable`) and uses
+the residency it last read; with none, it answers 503 `control_unavailable`
+without the controller's detail. `<model>+<pack>` answers 404 `pack_not_found`
+until packs exist (C9). Until the controller runs several models at once
+(E18), a model fits next to the resident ones only when none is resident;
+E18 adds the per-node memory check to the controller's status for this
+rule to read.
+
+Streams and telemetry (§3.1, §3.6). A stream opens on its first event, or
+after 10 s without one, and then sends `ping` events (Messages) or SSE
+comment lines (Responses, chat completions) every 10 s while prefill or a
+long tool call produces no event; an error before the stream opens keeps its
+HTTP status. Messages usage splits the prompt into `cache_read_input_tokens`
+(the engine's cached tokens), `cache_creation_input_tokens` (the rest of the
+prompt's full 64-token blocks) and `input_tokens`, which always sum to the
+prompt. The non-streamed body and the last stream event carry the
+`sparkpipe` object (`request`, `fleet` from `X-SparkPipe-Fleet`, `model`,
+`pack`, prompt, cached, prefill and replayed tokens, `queue_ms`,
+`prefill_ms`, `ttft_ms`, `output_tokens`, `decode_tps`, `draft_accept`,
+`cold_prefill_ms_estimate`, `priority`, `session`, `agent`), and the chat
+layer logs it as a `request_record` line. `X-SparkPipe-Request`, `-Model`,
+`-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms` and `-Fleet` come with the
+headers. `cold_prefill_ms_estimate` applies the measured cold prefill rate
+of the model near this prompt length (cold requests of 512 tokens or more,
+in quarter-octave length buckets, used within two buckets) to the cached
+tokens; with no measurement near that length it is null. `draft_accept` is
+null until the engine reports draft and accepted tokens per request, and
+`pack` until packs exist.
+
+Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
+`"priority": "background"`, `<model>-bulk`, and Claude Code's
+`x-claude-code-request-class` `compaction` and `auxiliary` run at bulk
+priority; everything else is interactive. The record's `session` is
+`X-Claude-Code-Session-Id`, OpenCode's `x-session-affinity` or Codex's
+`prompt_cache_key`; `agent` is `x-claude-code-agent-id` or OpenCode's
+`x-parent-session-id`.
+
+Context overflow (§17). A prompt longer than the model's window is refused
+in each shape's native form, so the harnesses compact on their own: Messages
+answers 400 `invalid_request_error` with the message `prompt is too long: N
+tokens > M maximum`, and Responses and chat completions answer 400 with code
+`context_length_exceeded`.
+
+Codex catalogue. `GET /v1/codex/models` answers Codex's `ModelsResponse`
+(`codex-rs/protocol/src/openai_models.rs` at openai/codex `d84c8724`): one
+entry per served model, resident first, with `slug`, `context_window` and
+`max_context_window` (the served window), the model's reasoning efforts as
+`supported_reasoning_levels` (`medium` by default), `shell_type`
+`unified_exec`, `apply_patch_tool_type` `freeform` (the custom-tool path of
+`/v1/responses`), `truncation_policy` 10,000 tokens, `input_modalities` and
+`base_instructions` from `codex.instructions_file`. Codex refuses a whole
+catalogue whose entries lack `base_instructions`, an unknown enum value or
+a float where it wants an integer, and fetches it with the provider's key,
+so `sparkpipe setup codex` sets `model_catalog_url` to this path.
+
+A forced tool choice (`any`, `tool`, `required`) offers only the named tool
+when there is one and opens the prompt with the model's tool-call marker,
+closing reasoning first; a forced call that does not parse is refused rather
+than regenerated. Models with a channel protocol take `auto` or `none` until
+grammar-constrained sampling (E10).
+
+Receipts (2026-11-04, local chat layer on the test fixture's tokenizer and
+template, with a scripted engine that keeps a prefix cache, after the replay
+store kept only generated tokens): Claude Code 2.1.317 `claude -p` with the
+setup environment of §3.3 read a file with its `Read` tool and answered from
+it in two turns; turn 2's 59,776-token prompt replayed 59,737 tokens and the
+engine matched all of them, while the key's store held only the two replies
+(210 and 62 tokens). OpenCode 1.18.21 `opencode run` through
+`@ai-sdk/anthropic` (`x-api-key`) did the same: 23,634 of 23,881 tokens
+replayed and cached on turn 2. Codex was not installed on the workstation;
+its request shapes are covered by `tests/test_chat_frontend_responses.py`
+and its catalogue by `tests/test_chat_frontend_fleet_api.py`, which checks
+`/v1/codex/models` against Codex's deserializer rules.
+
+Deployed on 2026-11-04 from `b2580e78a`. On the hub at 08:32Z,
+`chat_frontend.py`, `chat_shapes.py`, `chat_replay.py`, `working_state.py`,
+`codex_instructions.md`, `api_keys.py` and `deployment/hub/chat_frontend.json`
+(as `config.json`) were copied into `~/sparkpipe-chat`, and `sparkpipe-chat`
+was restarted while the controller was idle and no client was connected; the
+previous files are in
+`/srv/workspace/sparkpipe/backups/sparkpipe-chat.prev-20261104T083119Z`. The
+VPS (payment service, its units, `sparkpipe-pay.conf` and the site) followed
+at 08:36Z from the same commit, with backups in
+`/root/backups/20261104T083119Z`. The gateway's pool key is now the gateway
+key `k_39cb168c`; the plain key it replaced, `k_dbfba343`, is revoked.
+Checked after the restart: `/v1/models` and `/v1/codex/models`, a Messages
+and a Responses request on GLM 5.3, `count_tokens`, the replay directory
+created with mode 700, the gateway key refused without
+`X-SparkPipe-Account` (400 `account_required`) and served with it, and every
+VPS file equal to the commit. No directive exists yet, so rows expire 24 h
+after their last use until the working-state controller writes one.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 
@@ -719,9 +945,15 @@ install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
   openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
 systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
   /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
-systemd-run --user --unit=sparkpipe-chat -p WorkingDirectory=/home/spec/sparkpipe-chat \
+systemd-run --user --unit=sparkpipe-chat -p MemoryMax=4G -p WorkingDirectory=/home/spec/sparkpipe-chat \
   /usr/bin/bash -c 'exec python3 chat_frontend.py --config config.json --host 127.0.0.1 --port 8433 >> chat.log 2>&1'
 ```
+
+Restart the chat layer only while the controller is idle and no client is
+connected to it: `ss -tn state established '( sport = :8433 )'` lists
+nothing. An engine API's `live_requests` is not the test, because a gate's
+scoring talks to the engine API directly, never passes through the chat
+layer and is not interrupted by its restart.
 
 Read the controller from a hub shell without putting the token on a command
 line:

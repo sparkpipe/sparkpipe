@@ -7,7 +7,7 @@ fi
 : "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry, or STAGE_RECORD names a deployment/lanes.json record}"
 : "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
-: "${STAGE_EXPERT_POOL_BYTES:?STAGE_EXPERT_POOL_BYTES is the per-rank routed expert pool}"
+[ -z "${STAGE_EXPERT_POOL_BYTES:-}" ] || { echo "stage_lane: STAGE_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and STAGE_EXPERT_POOL_CAP_BYTES (the record's expert_pool_cap_bytes) is the optional explicit cap" >&2; exit 2; }
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
 LANE_TOOL=stage_lane
 LANE_RANKS=16
@@ -45,13 +45,20 @@ node_script() {
 set -uo pipefail
 LANE_TOOL=$LANE_TOOL
 $(declare -f lane_run_id lane_log_file lane_log_prelude)
+lane_pack() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' config/adapter.json; }
 cd $root || exit 2
 case "\${1:-}" in
   start)
     run_id="\$(lane_run_id "\${2:-}")" || exit 2
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
+    pack="\$(lane_pack)" || exit 2
+    case "\$pack" in
+      $root/packs/*) test -s packs/pack.sha256 || exit 2 ;;
+      *) head -c 64 "\$pack.sha256" > packs/pack.sha256.tmp && mv -f packs/pack.sha256.tmp packs/pack.sha256 || exit 2 ;;
+    esac
+    python3 bin/weightd_spine_budget.py "\$pack" > spine_budget.tmp && mv -f spine_budget.tmp spine_budget || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
-    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_BYTES -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
+    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 ${STAGE_EXPERT_POOL_CAP_BYTES:+-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_CAP_BYTES }-E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
   ready)
     state="\$(systemctl --user is-active $UNIT)"
     if [ "\$state" = active ] && grep -q 'model_residentd ready' "\$(lane_log_file "\${2:?ready RUN_ID}")" 2>/dev/null; then echo READY
@@ -65,7 +72,9 @@ case "\${1:-}" in
     [ \$pack -eq 0 ] && [ \$kv -eq 0 ] ;;
   drop-kv)
     ./bin/weightd_warm $STAGE_WEIGHTD_SOCKET --drop-kv $KV_LABEL ;;
-  *) echo "usage: lane.sh start [RUN_ID]|ready RUN_ID|stop|reclaim|drop-kv" >&2; exit 2 ;;
+  pack)
+    lane_pack ;;
+  *) echo "usage: lane.sh start [RUN_ID]|ready RUN_ID|stop|reclaim|drop-kv|pack" >&2; exit 2 ;;
 esac
 SCRIPT
 }
@@ -77,9 +86,8 @@ render() {
   fi
   python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" \
     --sequences "${STAGE_SEQUENCES:-8}" --rows "${STAGE_ROWS:-1024}" --kv-pages "${STAGE_KV_PAGES:-64}" \
-    ${STAGE_KV_PHYSICAL_PAGES:+--kv-physical-pages "$STAGE_KV_PHYSICAL_PAGES"} \
+    ${STAGE_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$STAGE_KV_PHYSICAL_PAGES_CAP"} \
     ${STAGE_KV_LOGICAL_PAGES:+--kv-logical-pages "$STAGE_KV_LOGICAL_PAGES"} \
-    ${STAGE_KV_BACKING_BYTES:+--kv-backing-bytes "$STAGE_KV_BACKING_BYTES"} \
     ${STAGE_STATE_BUDGET_BYTES:+--state-budget-bytes "$STAGE_STATE_BUDGET_BYTES"} \
     ${STAGE_TOKENIZER_SHA256:+--tokenizer-sha256 "$STAGE_TOKENIZER_SHA256"} \
     ${STAGE_TOKENIZER_DIR:+--tokenizer-dir "$STAGE_TOKENIZER_DIR"} \

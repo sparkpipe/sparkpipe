@@ -40,14 +40,13 @@ int main(int argc, char **argv)
     request.identity.arena_bytes = (uint64_t)info.st_size;
     request.identity.topology = 16u;
     memcpy(request.pack_path, argv[1], strlen(argv[1]) + 1u);
-    request.expert_pool_bytes = 4294967296ull;
     spine_budget = 8589934592ull;
     socket = getenv("SPARK_WEIGHTD_SOCKET");
     if (socket == 0)
         socket = "/tmp/spark_weightd.sock";
     fprintf(stderr, "harness: path=%s arena=%llu socket=%s\n",
         argv[1], (unsigned long long)request.identity.arena_bytes, socket);
-    status = SparkWeightdLazyPackCreateChecked(socket, &request, spine_budget,
+    status = SparkWeightdLazyPackCreateChecked(socket, &request, 0u, spine_budget,
         120000000000ull, 0, 0, &pack);
     fprintf(stderr, "harness: CreateChecked status=%d\n", (int)status);
     if (status == SPARK_STATUS_OK && pack != 0)

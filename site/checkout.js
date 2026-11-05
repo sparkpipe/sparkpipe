@@ -57,8 +57,17 @@
     const found = (COINS[coinOf(id)] || []).find((n) => n.id === id);
     return found ? coinOf(id) + ' on ' + found.name : id || '-';
   };
-  const paidWith = (o) => (o.processor === 'toss' ? (METHODS[o.method] || 'Card or bank') + ', Toss Payments' : coinName(o.coin));
-  const stateOf = (o) => (o.processor === 'toss' && o.state === 'failed' ? 'Not paid' : o.processor === 'toss' && o.state === 'created' ? 'Awaiting payment' : STATES[o.state] || o.state);
+  const paidWith = (o) => (o.processor === 'toss' ? (METHODS[o.method] || 'Card or bank') + ', Toss Payments' : o.processor === 'swift' ? 'USD bank transfer (SWIFT), reference ' + o.reference : coinName(o.coin));
+  const stateOf = (o) => (o.processor === 'toss' && o.state === 'failed' ? 'Not paid' : o.processor === 'toss' && o.state === 'created' ? 'Awaiting payment' : o.processor === 'swift' && o.state === 'unpaid' ? 'Awaiting your transfer' : STATES[o.state] || o.state);
+  const BANK = [['beneficiary', 'Beneficiary'], ['account', 'Account number'], ['bank', 'Bank'], ['address', 'Bank address'], ['bic', 'SWIFT/BIC']];
+  const bankRows = (o) => [['Amount', usd(o.total) + ' (VAT 0%)'], ['Payment reference', o.reference]].concat(BANK.map(([key, label]) => [label, (o.bank || {})[key] || '-']));
+  const swiftStatus = (o) => {
+    if (o.state === 'completed' && o.issued) return null;
+    if (o.state === 'unpaid') return { title: 'Waiting for your USD bank transfer (SWIFT).', text: 'Send ' + usd(o.total) + ' by SWIFT from your company\u2019s own account outside Korea to the account below, with the payment reference ' + o.reference + ' in the payment details and charges OUR, so the whole amount arrives. We emailed you the invoice. Your HC is issued once the whole amount reaches our account, usually one to five business days after you send it.', step: 1, bank: true };
+    if (o.state === 'paid' || o.state === 'completed') return { title: 'Transfer received. Issuing…', text: 'Your HC appears in your account in a moment.', step: 3 };
+    if (o.state === 'refunded') return { title: 'This payment was refunded.', text: usd(o.refunded) + ' went back by SWIFT to the account it came from.', kind: 'ok', step: 4, retry: false };
+    return { title: 'This order was cancelled.', text: (o.reason ? 'Reason: ' + o.reason + '. ' : '') + 'Nothing was issued. Do not send a transfer for it; a transfer that still arrives goes back by SWIFT to the account it came from.', step: 0, retry: true };
+  };
   const tossStatus = (o) => {
     const total = krw(o.total), d = o.deposit || {};
     if (o.state === 'completed' && o.issued) return null;
@@ -71,6 +80,8 @@
   };
   const TOSS = { config: null, widgets: null, box: null, parts: null, agreed: null, chain: Promise.resolve() };
   const tossConfig = () => TOSS.config || (TOSS.config = call('/toss/config').catch(() => ({ enabled: false })));
+  let swiftConfigured = null;
+  const swiftConfig = () => swiftConfigured || (swiftConfigured = call('/swift/config').catch(() => ({ enabled: false })));
   const tossSdk = () => new Promise((resolve, reject) => {
     const fail = () => reject(new Error('Toss Payments did not load. Check your connection, or pay in USDC or USDT.'));
     if (window.TossPayments) return resolve(window.TossPayments);
@@ -194,69 +205,17 @@
       label.append(radio(name, value, value === 'coin'), b, span);
       return label;
     };
-    const toss = tile('toss', 'Card or Korean bank transfer', 'Toss Payments, in won');
-    toss.hidden = true;
-    tiles.append(toss, tile('coin', 'USDC or USDT', 'CoinPayments, in US dollars'));
+    const offered = { toss: tile('toss', 'Card or Korean bank transfer', 'Toss Payments, in won'), coin: tile('coin', 'USDC or USDT', 'CoinPayments, in US dollars'), swift: tile('swift', 'USD bank transfer (SWIFT)', 'In US dollars, VAT 0%') };
+    offered.toss.hidden = true;
+    offered.swift.hidden = true;
+    tiles.append(offered.toss, offered.coin, offered.swift);
     box.prepend(tiles);
     tiles.addEventListener('change', (event) => { if (event.target.name === name) onChange(event.target.value); });
     return {
-      offer: (on) => { toss.hidden = !on; if (on && !tiles.querySelector('input:checked')) toss.querySelector('input').checked = true; },
+      offer: (value, on) => { offered[value].hidden = !on; if (on && !tiles.querySelector('input:checked')) offered[value].querySelector('input').checked = true; },
       choose: (value) => { const input = tiles.querySelector('input[value="' + value + '"]'); if (input) input.checked = true; onChange(value); },
       note: (value, text) => { tiles.querySelector('input[value="' + value + '"]').parentElement.querySelector('span').textContent = text; },
     };
   };
-  const planPay = (form, a, P) => {
-    const k = (name) => form.querySelector('[data-k="' + name + '"]');
-    const amount = form.elements.amount, note = form.querySelector('.flash'), button = form.querySelector('button[type=submit]');
-    const box = k('pay'), coins = document.createElement('div'), toss = document.createElement('div'), methods = document.createElement('div'), agreement = document.createElement('div');
-    toss.className = 'toss-box';
-    toss.hidden = true;
-    toss.append(methods, agreement);
-    box.append(toss, coins);
-    let method = 'coin';
-    const net = () => (method === 'toss' ? Math.round(+amount.value || 0) : Math.round((+amount.value || 0) * 100) / 100);
-    const update = () => {
-      const currency = method === 'toss' ? 'KRW' : 'USD', value = net(), vat = vatOf(value, currency, P.vatRate), price = method === 'toss' ? +a.priceKRW : +a.price;
-      const smallest = method === 'toss' ? 1000 : 1, left = method === 'toss' ? +a.remainingKRW : +a.remaining;
-      const how = method === 'toss' ? 'by card or bank transfer' : 'in ' + coinOf(chosen(form, 'coin-' + a.plan) || 'USDC.ERC20');
-      k('issues').textContent = value >= smallest ? 'Issues ' + whole(Math.floor(value / price * 10000) / 10000) + ' hours. Total with VAT: ' + priced(value + vat, currency) + ' ' + how + '.' : '';
-      button.textContent = value >= smallest ? 'Pay ' + priced(value + vat, currency) + ' ' + how : 'Pay ' + how;
-      button.disabled = Boolean(a.ended) || value < smallest || value > left;
-      if (method === 'toss' && value >= smallest) tossAmount(value + vat);
-    };
-    const switchTo = (value) => {
-      method = value;
-      const won = method === 'toss';
-      k('unit').textContent = won ? 'Amount, before VAT (KRW)' : 'Amount, before VAT (USD)';
-      amount.step = won ? '1' : '0.01';
-      amount.min = won ? '1000' : '1';
-      amount.value = won ? a.nextGateKRW || '' : a.nextGate ? a.nextGate.amount : '';
-      toss.hidden = !won;
-      coins.hidden = won;
-      update();
-      if (won) tossMount(methods, agreement, Math.max(net() + vatOf(net(), 'KRW', P.vatRate), 1100)).catch((error) => say(note, error.message, 'error'));
-    };
-    const picker = methodPicker(box, 'method-' + a.plan, switchTo);
-    coinPicker(coins, 'coin-' + a.plan, 'USDC.ERC20', () => update());
-    amount.addEventListener('input', update);
-    switchTo('coin');
-    if (a.priceKRW && !a.ended) tossConfig().then((config) => { if (config.enabled) { picker.offer(true); picker.choose('toss'); } });
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      button.disabled = true;
-      say(note, '');
-      try {
-        if (method === 'toss') {
-          tossReady();
-          const placed = await call('/order', { product: 'plan', plan: a.plan, amount: String(net()), processor: 'toss' });
-          await tossPay(placed.toss);
-          return;
-        }
-        const placed = await call('/order', { product: 'plan', plan: a.plan, amount: net().toFixed(2), coin: chosen(form, 'coin-' + a.plan) });
-        if (!/^https:\/\//.test(placed.checkout)) throw new Error('The checkout link is not secure. Your order is listed below.');
-        window.location.assign(placed.checkout);
-      } catch (error) { say(note, error.message, 'error'); update(); }
-    });
-  };
-  window.SP = { call, me, usd, krw, priced, vatOf, whole, say, COINS, STATES, METHODS, coinOf, coinName, paidWith, stateOf, tossStatus, coinPicker, methodPicker, planPay, chosen, store, codeFlow, tossConfig, tossMount, tossAmount, tossReady, tossPay, sandbox: SANDBOX };
+  window.SP = { call, me, usd, krw, priced, vatOf, whole, say, COINS, STATES, METHODS, coinOf, coinName, paidWith, stateOf, tossStatus, swiftStatus, bankRows, coinPicker, methodPicker, chosen, store, codeFlow, tossConfig, swiftConfig, tossMount, tossAmount, tossReady, tossPay, sandbox: SANDBOX };
 })();

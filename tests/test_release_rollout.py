@@ -1,5 +1,6 @@
 """Run release_rollout.sh stage, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -30,6 +31,8 @@ mkdir -p "$(dirname "$target")" && cp "$1" "$target"
 """,
     "curl": "#!/usr/bin/env bash\necho \"$*\" >> \"$FAKE_FLEET/curl.log\"\nexit 0\n",
     "sleep": "#!/usr/bin/env bash\nexit 0\n",
+    "systemctl": "#!/usr/bin/env bash\nexit 0\n",
+    "systemd-run": "#!/usr/bin/env bash\necho \"$*\" >> \"$FAKE_FLEET/systemd-run.log\"\nexit 0\n",
     "df": """#!/usr/bin/env bash
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 for path in "$@"; do case "$path" in -*) ;; *) echo "fake 999999999 1 ${FAKE_DF_FREE_KIB:-104857600} 1% $path" ;; esac; done
@@ -69,6 +72,9 @@ def build(fleet, wd_bytes):
     for _, api in model_lanes:
         (work / "backups" / f"{api}.prev-{STAMP}" / "bin").mkdir(parents=True, exist_ok=True)
         (work / "backups" / f"{api}.prev-{STAMP}" / "bin" / "api").write_text("old")
+    (hub / "sparkpipe-swap").mkdir(parents=True)
+    (hub / "sparkpipe-swap" / "model_swap.json").write_text("live controller\n")
+    (hub / "sparkpipe-swap" / f"model_swap.json.prev-{STAMP}").write_text("previous controller\n")
     (hub / "release-staging" / "weightd-rollback").mkdir(parents=True)
     (hub / "release" / "core" / "bin").mkdir(parents=True)
     old_wd = hashlib.sha256(wd_bytes).hexdigest()[:16]
@@ -147,6 +153,8 @@ def complete_rollback(work, fleet, state, model_lanes, extra, old_wd):
               f"spark{HEX[index]} weightd_warm was not restored", result)
     for _, api in model_lanes:
         check((fleet / "rtx5090" / api / "bin" / "api").read_text() == "old", f"hub {api} was not restored", result)
+    check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == "previous controller\n",
+          "rollback did not restore the controller config", result)
     calls = (fleet / "curl.log").read_text() if (fleet / "curl.log").exists() else ""
     check(result.returncode != 0, "rollback exited 0 although the old weightd never became ready", result)
     check("/activate" not in calls, "rollback activated a model on a weightd that is not ready", result)
@@ -249,6 +257,24 @@ def install(fail_host, process=None):
     return body
 
 
+def records(work, fleet, state, model_lanes, extra, old_wd):
+    shims = work / "push-shims"
+    shims.mkdir()
+    (shims / "python3").write_text(f"""#!/usr/bin/env bash
+case "$*" in *lane_config.py\\ push\\ *) echo "${{@: -1}}" >> "$FAKE_FLEET/push.log"; exit 0 ;; esac
+exec {sys.executable} "$@"
+""")
+    (shims / "python3").chmod(0o755)
+    result = run("records", fleet, work, old_wd, state, PATH=f"{shims}:{work / 'shims'}:{os.environ['PATH']}")
+    check(result.returncode == 0 and "RECORDS-FAILED" not in result.stdout, "records failed on a healthy fleet", result)
+    pushed = (fleet / "push.log").read_text().split()
+    lanes = sorted(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"])
+    check(sorted(pushed) == lanes, f"records pushed {sorted(pushed)}, not every lane record", result)
+    check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == (ROOT / "deployment" / "hub" / "model_swap.json").read_text(),
+          "records did not install the release's controller config", result)
+    check("model_swap.py --config model_swap.json" in (fleet / "systemd-run.log").read_text(), "records did not restart the controller", result)
+
+
 fleet_case("stage verifies all 16 nodes", stage(""))
 fleet_case("backup puts the hub API backups on the workspace volume, not in the home", backup(104857600))
 fleet_case("backup refuses before any change when the hub workspace is short of space", backup(1048576))
@@ -256,6 +282,7 @@ fleet_case("install puts one identical release on all 16 nodes and the hub", ins
 fleet_case("install fails when one node has no staged release", install("spark9"))
 fleet_case("install is not blocked by a process that only names the residentd binary",
            install("", "pgrep -f bin/sparkpipe_model_residentd"))
+fleet_case("records writes every lane's rendered files and installs and restarts the release's controller config", records)
 fleet_case("install refuses while a residentd runs", install("", "./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index 6"))
 fleet_case("stage fails when one node is not staged", stage("spark9"))
 fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, state, lanes: (state / "utc").unlink()))
@@ -266,4 +293,4 @@ fleet_case("rollback refuses when a hub API backup is missing",
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); rollback refuses an incomplete backup before changing anything, restores every lane, hub API and weightd_warm from a complete one, and never activates on an old weightd that is not ready")
+print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records pushes every lane record and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready")

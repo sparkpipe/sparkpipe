@@ -70,6 +70,7 @@ typedef struct TestHook
 static SparkStageKvBinding BINDING;
 static char DIRECTORY[64];
 static char SNAPSHOT_DIRECTORY[64];
+static char LEDGER_PATH[96];
 static SparkStageKvConfiguration CONFIGURATION;
 static uint64_t NEXT_ID = 1u;
 static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
@@ -185,9 +186,9 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->backing_directory = DIRECTORY;
-	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
-	configuration->snapshot_maximum_bytes = 1ull << 26;
+	configuration->ledger_path = LEDGER_PATH;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
@@ -879,11 +880,33 @@ static void TestSnapshotRefusals(void)
 	configuration.snapshot_directory = 0;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	Configure(&configuration);
-	configuration.snapshot_maximum_bytes = 0u;
+	configuration.ledger_path = 0;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	Configure(&configuration);
-	configuration.snapshot_maximum_bytes = 4096u;
-	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	configuration.ledger_path = "relative-ledger";
+	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
+	{
+		char small[128],other[160];
+		SparkKvLedger ledger;
+		uint32_t slot = SPARK_KV_LEDGER_NO_SLOT;
+		const uint64_t quota = UINT64_C(1) << 30,backing = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
+		(void)snprintf(small,sizeof(small),"%s-small",LEDGER_PATH);
+		(void)snprintf(other,sizeof(other),"%s-other-lane",LEDGER_PATH);
+		(void)unlink(small);
+		assert(SparkKvLedgerOpen(&ledger,small,4096u) == SPARK_STATUS_OK);
+		Configure(&configuration);
+		configuration.ledger_path = small;
+		ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+		ledger.file->quota_bytes = quota;
+		assert(SparkKvLedgerJoin(&ledger,SPARK_KV_LEDGER_KIND_BACKING,other,&slot) == SPARK_STATUS_OK);
+		assert(SparkKvLedgerReserve(&ledger,slot,0u,quota - backing + 1u,SPARK_KV_LEDGER_NO_OLDEST,&(SparkKvLedgerVictim){0}) == SPARK_STATUS_OK);
+		ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+		SparkKvLedgerLeave(&ledger,slot);
+		assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+		Unload();
+		SparkKvLedgerClose(&ledger);
+		(void)unlink(small);
+	}
 	Configure(&configuration);
 	configuration.expert_codec = 999u;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
@@ -892,12 +915,24 @@ static void TestSnapshotRefusals(void)
 	ExpectRefused(&configuration,SPARK_STATUS_NOT_FOUND);
 	Configure(&CONFIGURATION);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	{
+		SparkKvLedgerUsage usage;
+		assert(SparkKvLedgerSample(&BINDING.ledger,&usage) == SPARK_STATUS_OK && usage.quota_bytes == SPARK_KV_NODE_QUOTA_BYTES);
+		assert(usage.backing_slots == 1u && usage.backing_bytes == CONFIGURATION.backing_maximum_bytes && usage.snapshot_slots >= 1u);
+	}
 	configuration = CONFIGURATION;
 	memset(&other,0,sizeof(other));
 	assert(SparkStageKvBindingInitialize(&other,&configuration) == SPARK_STATUS_BUSY);
 	SparkStageKvBindingDestroy(&other);
 	Close();
-	printf("A10 snapshot refusals: ok\n");
+	{
+		SparkKvLedgerUsage usage;
+		SparkKvLedger ledger;
+		assert(SparkKvLedgerOpen(&ledger,LEDGER_PATH,0u) == SPARK_STATUS_OK && SparkKvLedgerSample(&ledger,&usage) == SPARK_STATUS_OK);
+		assert(usage.backing_slots == 0u && usage.backing_bytes == 0u);
+		SparkKvLedgerClose(&ledger);
+	}
+	printf("A10 snapshot refusals: no ledger path, a relative one, a node quota short of one page file and a node quota another lane's backing holds refuse, and the same quota admits the lane once that backing leaves; an open binding charges its backing to the node ledger and gives it back at destroy: ok\n");
 }
 
 static void PublishStep(uint64_t sequence,uint32_t slot,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint8_t *bytes)
@@ -974,6 +1009,50 @@ static void PublishTwoPageChain(uint8_t pages[2][TEST_PAGE_BYTES])
 	PublishStep(1u,0u,0u,4u,0x70u,0x31u,pages[0]);
 	PublishStep(1u,0u,4u,8u,0x71u,0x32u,pages[1]);
 	ReleaseSequence(1u,0u);
+}
+
+static void SetRestoreSlot(uint32_t index,const SparkModelDriverCacheLane *lane,uint32_t state)
+{
+	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
+	memset(&BINDING.restores[index],0,sizeof(BINDING.restores[index]));
+	BINDING.restores[index].identity = lane->prefix_identity;
+	BINDING.restores[index].token_count = lane->prefix_token_count;
+	BINDING.restores[index].state = state;
+	BINDING.restores[index].status = SPARK_STATUS_NOT_FOUND;
+	BINDING.restores[index].done_ns = 1u;
+	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
+}
+
+static void TestRestoreGateWaitsForEveryLane(void)
+{
+	TestStep wave,second;
+	SparkModelDriverCacheLane lanes[2];
+	uint64_t jobs;
+	SparkStatus status;
+	Open();
+	StepInit(&wave,61u,0u,8u,8u);
+	StepPrefix(&wave,8u,0x93u);
+	StepInit(&second,62u,1u,8u,8u);
+	StepPrefix(&second,8u,0x94u);
+	lanes[0] = wave.lane;
+	lanes[1] = second.lane;
+	wave.request.cache_lanes = lanes;
+	wave.request.cache_lane_count = wave.request.active_slot_count = wave.request.new_token_count = 2u;
+	SetRestoreSlot(0u,&lanes[0],SPARK_STAGE_KV_RESTORE_DONE);
+	SetRestoreSlot(1u,&lanes[1],SPARK_STAGE_KV_RESTORE_RUNNING);
+	jobs = BINDING.restore_jobs;
+	assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_PENDING);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_DONE && BINDING.restores[1].state == SPARK_STAGE_KV_RESTORE_RUNNING && BINDING.restore_jobs == jobs);
+	assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_PENDING);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_DONE && BINDING.restore_jobs == jobs);
+	SetRestoreSlot(1u,&lanes[1],SPARK_STAGE_KV_RESTORE_DONE);
+	status = StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	assert(status != SPARK_STATUS_PENDING && BINDING.restore_jobs == jobs);
+	assert(BINDING.restores[0].state == SPARK_STAGE_KV_RESTORE_FREE && BINDING.restores[1].state == SPARK_STAGE_KV_RESTORE_FREE);
+	if ( status == SPARK_STATUS_OK )
+		assert(StepAdmit(&wave,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
+	Close();
+	printf("restore gate: a wave answered PENDING keeps the finished restores of its other lanes, queues no new job for them, and frees them only when every lane is ready: ok\n");
 }
 
 static void TestSnapshotRestartRestore(void)
@@ -1200,15 +1279,15 @@ static void TestParkedPrefixSaves(void)
 	uint32_t chain,flags,attempt;
 	Open();
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	maximum = BINDING.snapshot_store.maximum_bytes;
-	BINDING.snapshot_store.maximum_bytes = 1u;
+	maximum = BINDING.ledger.file->quota_bytes;
+	BINDING.ledger.file->quota_bytes = 1u;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	PublishStepRetry(60u,0xa0u,0x31u,first[0]);
 	WaitSavesIdle();
 	flags = EntryFlags(0xa0u);
 	assert((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u && (flags & 0x80000000u) != 0u);
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	BINDING.snapshot_store.maximum_bytes = maximum;
+	BINDING.ledger.file->quota_bytes = maximum;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	for (chain=0u; chain<TEST_PHYSICAL + 1u && (EntryFlags(0xa0u) & 0x80000000u) != 0u; chain++)
 	{
@@ -1442,6 +1521,102 @@ static void TestRecurrentRoundTrip(void)
 	printf("A11 recurrent state: captured only for publishing lanes, recorded at finish, restored on a prefix hit at claim, cleared by reset and by a failed finish: ok\n");
 }
 
+static void TestRecurrentStateSurvivesRestart(void)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	SparkModelDriverKvStoreCounters counters;
+	SparkKvSnapshotKey state_key;
+	void *stream = (void *)(uintptr_t)0x52u;
+	SparkStatus status;
+	uint32_t index,attempt;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	StepInit(&step,1u,0u,0u,4u);
+	StepPublish(&step,4u,0x92u);
+	StepStart(&step);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		RECURRENT.lanes[0][index] = (uint8_t)(0x30u + index);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	ReleaseSequence(1u,0u);
+	memset(&state_key,0,sizeof(state_key));
+	memcpy(state_key.layout_sha256,BINDING.layout_sha256,sizeof(state_key.layout_sha256));
+	Identity((SparkModelDriverCacheIdentity *)state_key.identity_sha256,0x92u);
+	state_key.token_count = 4u;
+	state_key.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
+	for (attempt=0u; SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) == 0u && attempt<1000u; attempt++)
+		SleepMs(2u);
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK && SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) != 0u);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	StepInit(&step,2u,1u,4u,5u);
+	StepPrefix(&step,4u,0x92u);
+	status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	for (attempt=0u; status == SPARK_STATUS_PENDING && attempt<500u; attempt++)
+	{
+		SleepMs(2u);
+		status = StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
+	}
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	printf("recurrent restart: prepare status %u, restores %llu pages %llu misses %llu store files %llu\n",(unsigned)status,(unsigned long long)counters.restore_count,
+		(unsigned long long)counters.restore_page_count,(unsigned long long)counters.restore_miss_count,(unsigned long long)counters.store_file_count);
+	assert(status == SPARK_STATUS_OK && (BINDING.lane_state_flags[1] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		assert(RECURRENT.lanes[1][index] == (uint8_t)(0x30u + index));
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	Close();
+	printf("A11 recurrent restart: the newest state of a released sequence between checkpoints is in the snapshot store by its release, before the engine closes, and restores into a new engine: ok\n");
+}
+
+static void TestPromptCheckpointPersists(void)
+{
+	TestStep step,stateless;
+	TestFinished finished = {0};
+	SparkKvSnapshotKey state_key;
+	void *stream = (void *)(uintptr_t)0x53u;
+	uint32_t attempt;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	StepInit(&step,1u,0u,0u,4u);
+	StepPublish(&step,4u,0x93u);
+	StepStart(&step);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	memset(&state_key,0,sizeof(state_key));
+	memcpy(state_key.layout_sha256,BINDING.layout_sha256,sizeof(state_key.layout_sha256));
+	Identity((SparkModelDriverCacheIdentity *)state_key.identity_sha256,0x93u);
+	state_key.token_count = 4u;
+	state_key.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
+	for (attempt=0u; SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) == 0u && attempt<1000u; attempt++)
+		SleepMs(2u);
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK && SparkKvSnapshotContains(&BINDING.snapshot_store,&state_key) != 0u);
+	assert(BINDING.page_cache.checkpoint_persist_count == 1u && BINDING.page_cache.sequences[0].sequence_id == 1u);
+	StepInit(&stateless,2u,1u,0u,4u);
+	StepPublish(&stateless,4u,0x94u);
+	stateless.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
+	StepStart(&stateless);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&stateless.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&stateless,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	assert(BINDING.page_cache.checkpoint_persist_count == 1u);
+	ReleaseSequence(1u,0u);
+	ReleaseSequence(2u,1u);
+	Close();
+	printf("A11 prompt checkpoint: a state captured off the checkpoint stride reaches the snapshot store when its lane publishes it, while the sequence is still live, and a stateless publish is not persisted: ok\n");
+}
+
 static void TestRecurrentRefusals(void)
 {
 	SparkStageKvConfiguration configuration;
@@ -1459,7 +1634,7 @@ static void TestRecurrentRefusals(void)
 	configuration.recurrent.memory_bytes = (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 1u) * TEST_PAGE_BYTES;
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 1u) * TEST_PAGE_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	RemoveDirectories();
 	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size, no state memory, state memory short of two checkpoints per resident lane plus two, and backing short of the page spill refuse: ok\n");
@@ -1587,9 +1762,9 @@ static void TestSnapshotStatelessChain(void)
 	WaitSavesIdle();
 	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.save_failure_count == 0u && counters.store_file_count == 2u);
+	assert(counters.save_failure_count == 0u && counters.store_file_count == 3u);
 	assert(SnapshotHolds(0x70u,4u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x70u,4u,SPARK_KV_SNAPSHOT_FILE_STATE) == 0u);
-	assert(SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_STATE) == 0u);
+	assert(SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_PAGES) == 1u && SnapshotHolds(0x71u,8u,SPARK_KV_SNAPSHOT_FILE_STATE) == 1u);
 	Unload();
 	TestKvServerFinish();
 	TestKvServerStart(64ull << 20);
@@ -1600,7 +1775,7 @@ static void TestSnapshotStatelessChain(void)
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
 	assert(counters.restore_page_count == 2u && counters.restore_failure_count == 0u);
 	Close();
-	printf("snapshot of a sparse checkpoint chain: pages save as they publish, a checkpoint state off the anchor stride stays in memory until the binding closes, closing saves it, and the chain restores after a restart with a fresh pool: ok\n");
+	printf("snapshot of a sparse checkpoint chain: pages save as they publish, the released sequence's newest state off the anchor stride saves at release, a stateless page saves no state, and the chain restores after a restart with a fresh pool: ok\n");
 }
 
 static void TestStatelessBoundaryProbeKeepsChain(void)
@@ -1728,6 +1903,8 @@ static void TestWeightdOwnsPool(void)
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
+	(void)snprintf(LEDGER_PATH,sizeof(LEDGER_PATH),"/tmp/sparkpipe-kv-binding-ledger-%d",(int)getpid());
+	(void)unlink(LEDGER_PATH);
 	TestKvServerStart(64ull << 20);
 	TestWeightdOwnsPool();
 	TestCompletionEntryNeverWaits();
@@ -1741,6 +1918,7 @@ int main(void)
 	TestCopierContract();
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
+	TestRestoreGateWaitsForEveryLane();
 	TestRestartAdoptsDevicePages();
 	TestAdoptedPagesKeepTheirAge();
 	TestRestoreHintStartsEarly();
@@ -1749,6 +1927,8 @@ int main(void)
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
+	TestRecurrentStateSurvivesRestart();
+	TestPromptCheckpointPersists();
 	TestRecurrentRefusals();
 	TestRecurrentCheckpoints();
 	TestSnapshotStatelessChain();
@@ -1757,5 +1937,6 @@ int main(void)
 	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
+	(void)unlink(LEDGER_PATH);
 	return(0);
 }

@@ -45,10 +45,11 @@ static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uin
 	memset(&configuration, 0, sizeof(configuration));
 	configuration.runtime_limits.kv_logical_page_capacity = logical;
 	configuration.runtime_limits.kv_physical_page_capacity = physical;
+	configuration.runtime_limits.output_vocabulary = 32000u;
 	configuration.kv_backing_directory = DIRECTORY;
 	configuration.kv_backing_maximum_bytes = UINT64_C(1) << 26;
 	configuration.kv_snapshot_directory = SNAPSHOT_DIRECTORY;
-	configuration.kv_snapshot_maximum_bytes = UINT64_C(1) << 26;
+	configuration.kv_ledger_path = "/tmp/sparkpipe-k3-kv-binding-ledger";
 	return(StageServingBindKv(state, &configuration));
 }
 

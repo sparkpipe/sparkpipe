@@ -834,6 +834,7 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 64u;
+	fixture.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	fixture.control_port_base = TestTcpPortRange(TEST_MODEL_PIPELINE_RANK_COUNT);
 	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_MODEL_PIPELINE_RANK_COUNT;

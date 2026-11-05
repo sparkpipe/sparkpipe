@@ -344,6 +344,15 @@ static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *rest
 	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -4);
 }
 
+static uint32_t CudaSavedStates(const CudaEngine *engine)
+{
+	uint32_t index,count = 0u;
+	for (index=0u; index<engine->cache.entry_capacity; index++)
+		if ( (engine->cache.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED_STATE) != 0u )
+			count++;
+	return(count);
+}
+
 static void CudaRemoveTree(const char *directory)
 {
 	char path[1200];
@@ -356,7 +365,8 @@ static void CudaRemoveTree(const char *directory)
 		if ( item->d_name[0] == '.' && (item->d_name[1] == '\0' || (item->d_name[1] == '.' && item->d_name[2] == '\0')) )
 			continue;
 		snprintf(path,sizeof(path),"%s/%s",directory,item->d_name);
-		unlink(path);
+		if ( unlink(path) != 0 )
+			CudaRemoveTree(path);
 	}
 	closedir(listing);
 	rmdir(directory);
@@ -367,10 +377,11 @@ int main(int argc,char **argv)
 	static CudaEngine source,fresh,cold;
 	static float logits_source[CUDA_VOCAB],logits_restored[CUDA_VOCAB],logits_cold[CUDA_VOCAB];
 	SparkKvSnapshotStore store;
-	char directory[512];
+	SparkKvLedger ledger;
+	char directory[512],ledger_path[600];
 	uint64_t prefill_ns = 0u,restore_ns = 0u,cold_ns = 0u,read_bytes;
 	int32_t result;
-	uint32_t index,differences = 0u;
+	uint32_t index,differences = 0u,states;
 	if ( argc != 2 || argv[1][0] != '/' )
 	{
 		fprintf(stderr,"usage: %s ABSOLUTE_PARENT_DIRECTORY\n",argv[0]);
@@ -379,15 +390,20 @@ int main(int argc,char **argv)
 	snprintf(directory,sizeof(directory),"%s/kv-snapshot-cuda-XXXXXX",argv[1]);
 	if ( mkdtemp(directory) == 0 )
 		return(2);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
+	snprintf(ledger_path,sizeof(ledger_path),"%s.ledger",directory);
+	if ( SparkKvLedgerOpen(&ledger,ledger_path,1ull << 32u) != SPARK_STATUS_OK )
+		return(2);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,&ledger,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
 	CHECK(result == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
-	CHECK(source.snapshot.save_page_count == CUDA_PROMPT_PAGES && source.snapshot.save_failure_count == 0u && store.file_count == CUDA_PROMPT_PAGES && store.write_failure_count == 0u);
+	states = CudaSavedStates(&source);
+	CHECK(states != 0u && source.snapshot.save_page_count == CUDA_PROMPT_PAGES + states && source.snapshot.save_failure_count == 0u &&
+		store.file_count == CUDA_PROMPT_PAGES + states && store.write_failure_count == 0u);
 	CudaEngineClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,&ledger,1ull << 30u) == SPARK_STATUS_OK && store.file_count == CUDA_PROMPT_PAGES + states);
 	CHECK(CudaEngineOpen(&fresh,&store) == 0);
 	result = CudaRestorePrompt(&fresh,logits_restored,&restore_ns);
 	CHECK(result == 0);
@@ -399,7 +415,7 @@ int main(int argc,char **argv)
 	CudaEngineClose(&fresh);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,1ull << 32u,1ull << 30u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,&ledger,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&cold,&store) == 0);
 	cold.snapshot.layout_sha256[0] ^= 1u;
 	result = CudaPrefillPrompt(&cold,logits_cold,&cold_ns);
@@ -408,5 +424,7 @@ int main(int argc,char **argv)
 	SparkKvSnapshotStoreClose(&store);
 	CudaRemoveTree(directory);
 	printf("test_kv_snapshot_cuda: prompt_tokens=%u pages=%u snapshot_bytes_per_page=%u logits=%u bitwise_differences=%u prefill_with_save_us=%llu restore_us=%llu read_bytes=%llu checks=%u failures=%u\n",CUDA_PROMPT_TOKENS,CUDA_PROMPT_PAGES,CUDA_PAGE_BYTES + CUDA_STATE_BYTES,CUDA_VOCAB,differences,(unsigned long long)(prefill_ns / 1000u),(unsigned long long)(restore_ns / 1000u),(unsigned long long)read_bytes,cuda_checks,cuda_failures);
+	SparkKvLedgerClose(&ledger);
+	(void)unlink(ledger_path);
 	return(cuda_failures == 0u ? 0 : 1);
 }

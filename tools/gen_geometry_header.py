@@ -31,6 +31,10 @@ FAMILIES = {
         "contract": "model_contracts/glm53_flash_authoritative.json",
         "header": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h",
     },
+    "motif": {
+        "contract": "model_contracts/motif3_authoritative.json",
+        "header": "model-families/motif/include/sparkpipe/spark_motif_model.h",
+    },
 }
 
 # Constants that are module/deployment policy, not checkpoint geometry; the
@@ -55,6 +59,12 @@ FAMILY_POLICY = {
         "replay_rows_max": 8,
         "miss_pack_stride": 512,
         "miss_ring_capacity": 1024,
+    },
+    "motif": {
+        "tp_degree": 16,                          # placement: one head group per rank
+        "kv_bits": 16,                            # latent page policy
+        "kv_page_slots": 64,
+        "bf16_bytes": 2,
     },
 }
 
@@ -339,8 +349,110 @@ def render_glm5_next(c: dict) -> str:
 """
 
 
+def render_motif(c: dict) -> str:
+    import math
+    model, attention, windows, rope = c["model"], c["attention"], c["windows"], c["rope"]
+    hc, moe, poly, tokens, mtp = c["hyper_connections"], c["moe"], c["polynorm"], c["tokens"], c["mtp"]
+    policy = FAMILY_POLICY["motif"]
+    tp = policy["tp_degree"]
+    require(attention["query_head_count"] == attention["noise_head_count"] * attention["group_size"],
+            "motif heads are whole groups of signal heads and one noise head")
+    require(attention["query_head_count"] // tp == attention["group_size"], "motif TP16 places one head group per rank")
+    require(attention["key_value_head_count"] == tp, "motif TP16 places one KV head per rank")
+    require(moe["routed_expert_count"] % tp == 0, "motif experts must divide into the ranks")
+    require(windows["full_layers"] == [layer for layer in range(model["layer_count"]) if layer % windows["period"] == 0],
+            "motif full layers follow the window period")
+    require(moe["routed_layers"] == list(range(moe["first_dense_layer_count"], model["layer_count"])),
+            "motif routes every layer after the dense ones")
+    require(hc["expansion_rate"] == 4, "motif hyper-connections are four streams")
+    require(len(tokens["eos_token_ids"]) == 3, "motif ends on three tokens")
+    mscale = 0.1 * rope["mscale"] * math.log(rope["factor"]) + 1.0
+    full_scale = attention["head_dimension"] ** -0.5 * mscale * mscale
+    window_scale = attention["head_dimension"] ** -0.5
+    eos = tokens["eos_token_ids"]
+    rows = [
+        ("HIDDEN_DIMENSION", u(model["hidden_dimension"])),
+        ("LAYER_COUNT", u(model["layer_count"])),
+        ("VOCABULARY_SIZE", u(model["vocabulary_size"])),
+        ("MAXIMUM_CONTEXT_TOKENS", u(model["maximum_context_tokens"])),
+        ("RMS_NORM_EPSILON", f32(model["rms_norm_epsilon"])),
+        ("HIDDEN_CLAMP", f32(model["hidden_clamp"])),
+        ("QUERY_HEAD_COUNT", u(attention["query_head_count"])),
+        ("NOISE_HEAD_COUNT", u(attention["noise_head_count"])),
+        ("SIGNAL_HEAD_COUNT", u(attention["signal_head_count"])),
+        ("HEAD_GROUP_SIZE", u(attention["group_size"])),
+        ("KV_HEAD_COUNT", u(attention["key_value_head_count"])),
+        ("QUERY_LORA_RANK", u(attention["query_lora_rank"])),
+        ("KV_LORA_RANK", u(attention["kv_lora_rank"])),
+        ("HEAD_DIMENSION", u(attention["head_dimension"])),
+        ("ROPE_DIMENSION", u(attention["qk_rope_head_dimension"])),
+        ("NOPE_DIMENSION", u(attention["qk_nope_head_dimension"])),
+        ("VALUE_DIMENSION", u(attention["value_head_dimension"])),
+        ("LATENT_ROW_DIMENSION", u(attention["kv_lora_rank"] + attention["qk_rope_head_dimension"])),
+        ("WINDOW_PERIOD", u(windows["period"])),
+        ("WINDOW_TOKENS", u(windows["window_tokens"])),
+        ("WINDOW_ROPE_THETA", f32(windows["window_rope_theta"])),
+        ("ROPE_THETA", f32(rope["theta"])),
+        ("YARN_FACTOR", f32(rope["factor"])),
+        ("YARN_ORIGINAL_CONTEXT", u(rope["original_max_position_embeddings"])),
+        ("YARN_BETA_FAST", f32(rope["beta_fast"])),
+        ("YARN_BETA_SLOW", f32(rope["beta_slow"])),
+        ("FULL_SOFTMAX_SCALE", f32(full_scale)),
+        ("WINDOW_SOFTMAX_SCALE", f32(window_scale)),
+        ("HC_STREAMS", u(hc["expansion_rate"])),
+        ("HC_MIX_DIMENSION", u((2 + hc["expansion_rate"]) * hc["expansion_rate"])),
+        ("HC_SINKHORN_ITERATIONS", u(hc["sinkhorn_iterations"])),
+        ("HC_NORM_EPSILON", f32(hc["norm_epsilon"])),
+        ("HC_GATE_CLAMP", f32(hc["gate_clamp"])),
+        ("HC_RESIDUAL_CLAMP", f32(hc["residual_logit_clamp"])),
+        ("HC_SUM_FLOOR", f32(hc["sinkhorn_sum_floor"])),
+        ("HC_POST_COEFFICIENT", f32(hc["post_coefficient"])),
+        ("MOE_EXPERT_COUNT", u(moe["routed_expert_count"])),
+        ("MOE_TOP_K", u(moe["experts_per_token"])),
+        ("MOE_SHARED_EXPERT_COUNT", u(moe["shared_expert_count"])),
+        ("MOE_EXPERT_INTERMEDIATE", u(moe["expert_intermediate_dimension"])),
+        ("DENSE_INTERMEDIATE", u(moe["dense_intermediate_dimension"])),
+        ("FIRST_ROUTED_LAYER", u(moe["first_dense_layer_count"])),
+        ("MOE_ROUTED_SCALE", f32(moe["routed_scaling_factor"])),
+        ("MOE_NORMALIZE_SELECTED", u(1 if moe["normalize_selected"] else 0)),
+        ("POLYNORM_OUTPUT_SCALE", f32(poly["output_scale"])),
+        ("POLYNORM_ROUTED_BIAS_CLAMP", f32(poly["routed_bias_clamp"])),
+        ("POLYNORM_EPSILON", f32(poly["epsilon"])),
+        ("MTP_LAYER_COUNT", u(mtp["layer_count"])),
+        ("BEGINNING_OF_TEXT_TOKEN", u(tokens["beginning_of_text"])),
+        ("PAD_TOKEN", u(tokens["pad"])),
+        ("EOS_TOKEN_0", u(eos[0])),
+        ("EOS_TOKEN_1", u(eos[1])),
+        ("EOS_TOKEN_2", u(eos[2])),
+        ("KV_BITS", u(policy["kv_bits"])),
+        ("KV_PAGE_SLOTS", u(policy["kv_page_slots"])),
+        ("BF16_BYTES", u(policy["bf16_bytes"])),
+    ]
+    body = "\n".join(f"#define SPARK_MOTIF_MODEL_{name} {value}" for name, value in rows)
+    return f"""#ifndef SPARKPIPE_SPARK_MOTIF_MODEL_H
+#define SPARKPIPE_SPARK_MOTIF_MODEL_H
+
+#include <stdint.h>
+
+{body}
+#define SPARK_MOTIF_MODEL_LAYER_IS_WINDOW(layer) (((layer) % SPARK_MOTIF_MODEL_WINDOW_PERIOD) != 0u)
+#define SPARK_MOTIF_MODEL_LATENT_ROW_BYTES (SPARK_MOTIF_MODEL_LATENT_ROW_DIMENSION * SPARK_MOTIF_MODEL_BF16_BYTES)
+#define SPARK_MOTIF_MODEL_HC_FLAT_DIMENSION (SPARK_MOTIF_MODEL_HC_STREAMS * SPARK_MOTIF_MODEL_HIDDEN_DIMENSION)
+
+#if (SPARK_MOTIF_MODEL_QUERY_HEAD_COUNT % SPARK_MOTIF_MODEL_HEAD_GROUP_SIZE) != 0u
+#error motif heads must be whole signal-and-noise groups
+#endif
+#if (SPARK_MOTIF_MODEL_MOE_EXPERT_COUNT % {tp}u) != 0u
+#error motif experts must divide into the ranks
+#endif
+
+#endif
+"""
+
+
 RENDERERS = {
     "glm5_next": render_glm5_next,
+    "motif": render_motif,
 }
 
 
