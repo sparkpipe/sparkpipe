@@ -143,20 +143,41 @@ PAGES = [
         "title": "SparkPipe Customer Agreement", "other": "agreement-ko.html",
         "desc": "Draft SparkPipe Customer Agreement for hour-credits, demo hours, weeks on a pinned fleet and the waitlist, published for review.",
         "lead": "This Agreement is accepted online while signed in to the account, and we record the hashes of its exact texts. The Korean text prevails (clause 12.3).",
+        "version": "Version of 2 November 2026", "notice": "booking",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 고객 계약", "other": "agreement.html",
         "desc": "SparkPipe 시간 크레딧, 데모 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
         "lead": "본 계약은 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
+        "version": "2026년 11월 2일 판", "notice": "booking",
+    },
+    {
+        "src": "dpa-en.md", "out": "dpa.html", "lang": "en", "tag": "terms",
+        "title": "SparkPipe Data Processing Agreement", "other": "dpa-ko.html",
+        "desc": "Draft SparkPipe Data Processing Agreement for personal data processed on a customer's fleets, under GDPR Article 28, the UK GDPR and Korea's PIPA, published for review.",
+        "lead": "This DPA is part of the Customer Agreement and applies whenever we process personal data for a customer on its fleets. The Korean text prevails (clause 11.4).",
+        "version": "Version of 5 November 2026", "notice": "review",
+    },
+    {
+        "src": "dpa-ko.md", "out": "dpa-ko.html", "lang": "ko", "tag": "약관",
+        "title": "SparkPipe 데이터 처리 계약", "other": "dpa.html",
+        "desc": "고객의 플릿에서 처리하는 개인정보에 관한 SparkPipe 데이터 처리 계약 검토용 공개 문안. GDPR 제28조, 영국 GDPR, 개인정보 보호법.",
+        "lead": "본 계약은 고객 계약의 일부이며, 공급자가 고객의 플릿에서 고객을 위하여 개인정보를 처리하는 모든 경우에 적용된다. 국문본이 우선한다(제11.4조).",
+        "version": "2026년 11월 5일 판", "notice": "review",
     },
 ]
 
 NOTICE = {
-    "en": "<b>Published for review.</b> Demo hours can be booked from 1 December 2026 and weeks on a pinned fleet from 4 January 2027. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
-    "ko": "<b>검토용으로 공개한 문안입니다.</b> 데모 시간은 2026년 12월 1일부터, 고정 플릿의 주는 2027년 1월 4일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    "booking": {
+        "en": "<b>Published for review.</b> Demo hours can be booked from 1 December 2026 and weeks on a pinned fleet from 4 January 2027. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+        "ko": "<b>검토용으로 공개한 문안입니다.</b> 데모 시간은 2026년 12월 1일부터, 고정 플릿의 주는 2027년 1월 4일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    },
+    "review": {
+        "en": "<b>Published for review.</b> This text may still change. To have it countersigned, or to send comments, write to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+        "ko": "<b>검토용으로 공개한 문안입니다.</b> 문안은 바뀔 수 있습니다. 서명본이 필요하거나 의견이 있으면 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+    },
 }
-VERSION = {"en": "Version of 2 November 2026", "ko": "2026년 11월 2일 판"}
 NAV = {
     "en": ('<a href="terms.html">All terms</a>', '<a href="privacy.html">Privacy</a>', '<a href="index.html">Home</a>'),
     "ko": ('<a href="terms-ko.html">약관 목록</a>', '<a href="privacy-ko.html">개인정보처리방침</a>', '<a href="index-ko.html">홈</a>'),
@@ -227,10 +248,10 @@ def page(p):
 <main class="wrap policy">
 <section>
 <h1>{inline(title)}</h1>
-<p class="effective">{VERSION[p['lang']]}</p>
+<p class="effective">{p['version']}</p>
 <p>{inline(p['lead'])}</p>
 </section>
-<div class="notice"><p>{NOTICE[p['lang']]}</p></div>
+<div class="notice"><p>{NOTICE[p['notice']][p['lang']]}</p></div>
 {content}
 </main>
 
