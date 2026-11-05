@@ -123,6 +123,25 @@
     <p>BF16의 비용은 속도입니다. 토큰마다 읽는 가중치 바이트가 두 배이기 때문입니다. GLM 5.3의 단일 요청 디코드는 28.1 tok/s 대비 21.2 tok/s(−25%), 7K 프리필은 1,286 대비 1,109(−14%)입니다. GLM 5.3 Flash는 디코드가 51.1 대비 47.4(−7%)이고 프리필 차이는 2% 이내입니다. Qwen 3.8 27B는 디코드가 61.3 대비 46.4(−24%)이고 프리필은 같습니다. Qwen 3.8 Flash는 BF16 빌드가 더 새로운 프리필 경로를 쓰기 때문에 BF16에서 프리필이 3.1배 빠릅니다(413 대비 1,299 tok/s). 또한 GLM 5.3은 BF16 가중치가 차지하는 메모리 때문에 컨텍스트가 1M이 아니라 768K입니다.</p>
   </section>
 
+  <section id="precision-choice">
+    <h2>정밀도 선택(예정)</h2>
+    <p>모든 모델을 게시자의 원래 정밀도(기본)로 제공하고, 8비트(FP8)와 4비트(NVFP4 또는 MXFP4)로도 제공하며, 좋은 빌드가 있는 경우 EXL3로도 제공할 예정입니다. 모델 이름으로 고르며, 예를 들어 <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span>, <span class="mono">glm-5.3-nvfp4</span>입니다. 정밀도가 낮을수록 더 빠르고 캐시에 쓸 메모리가 더 많이 남아, 더 긴 대화나 더 많은 요청을 한 번에 처리할 수 있습니다. 이 목록은 각 변형의 속도, 원래 정밀도 모델 대비 정확도, 캐시 용량을 모두 실측으로 보여 줄 것이며, 모든 변형은 제공 전에 같은 정확도 검사를 통과합니다. 현재는 각 모델이 위 모델 표에 있는 한 가지 정밀도로만 제공됩니다. 지금까지 측정한 네 모델은 다음과 같습니다.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>모델</th><th>정밀도</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th class="num">ds4-eval, 92문항 중</th><th class="num">GPU 메모리의 캐시</th><th class="num">컨텍스트 창</th></tr>
+      <tr><td><b>GLM 5.3</b></td><td>BF16 (기본)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">측정 중</td><td class="num">1.8M 토큰</td><td class="num">768K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">28.1 tok/s</td><td class="num">1,286 tok/s</td><td class="num">측정 중</td><td class="num">9.6M 토큰</td><td class="num">1M</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (기본)</td><td class="num">47.4 tok/s</td><td class="num">1,701 tok/s</td><td class="num">77</td><td class="num">68M 토큰</td><td class="num">128K</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">51.1 tok/s</td><td class="num">1,732 tok/s</td><td class="num">77</td><td class="num">86M 토큰</td><td class="num">128K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (기본)</td><td class="num">46.4 tok/s</td><td class="num">2,107 tok/s</td><td class="num">78</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">61.3 tok/s</td><td class="num">2,080 tok/s</td><td class="num">76</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (기본)</td><td class="num">44.9 tok/s</td><td class="num">1,299 tok/s</td><td class="num">80</td><td class="num">56M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">45.9 tok/s</td><td class="num">413 tok/s</td><td class="num">78</td><td class="num">65M 토큰</td><td class="num">256K</td></tr>
+    </table>
+    </div>
+    <p>2026-11-04에 측정했으며, 각 쌍의 디코드와 프리필은 같은 날의 비교 실행에서 나온 값입니다. GPU 메모리의 캐시는 가중치가 남긴 메모리에 플릿이 모든 요청에 걸쳐 한 번에 GPU 메모리에 담아 두는 프롬프트와 답변의 토큰 수이며, 나머지는 SSD에 두었다가 필요할 때 다시 불러옵니다. Qwen 3.8 Flash의 4비트 빌드는 이전 프리필 경로를 쓰기 때문에 프리필이 더 느립니다. Qwen 3.8 Flash는 저희 회사 내부에서만 씁니다.</p>
+  </section>
+
   <section id="limits">
     <h2>하드웨어 한계에 얼마나 가까운가</h2>
     <p>각 단계는 가장 먼저 포화되는 자원이 한계를 정합니다. 단일 요청 디코드의 한계는 메모리입니다. 16대의 Spark가 각각 토큰에 필요한 가중치의 16분의 1을 273 GB/s로 읽습니다. Spark 16대에서 프리필의 한계는 네트워크입니다. 레이어마다 부분 결과를 16대 전체에서 합산하며, 실제로는 노드당 약 10 GB/s입니다. 연산 한계는 이보다 20~100배 멀리 있습니다. 아래는 위의 속도가 각 한계의 몇 퍼센트에 이르는지입니다.</p>
