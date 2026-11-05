@@ -27,7 +27,10 @@ chunks) must pass every set present, and a required control must fail in
 every set it appears in. When the references also hold bp (B pinned to A's
 experts), the pinned set is judged by the multi-floor rule over a, bp and hp
 (metal_gate_floors.sh's pmf labels) instead of the single floor A against hp,
-as the free set is over a, b and h. A batch ladder run with --exact-rows (exact/) must
+as the free set is over a, b and h, and the required controls must fail in the
+pinned set: with free routes a BF16 router's near-ties make the floor too wide
+to see an FFN corruption, so the free set reports its controls without
+requiring them to fail. A batch ladder run with --exact-rows (exact/) must
 give every batched sequence the tokens of its solo run, and no ladder (plain
 or exact rows) may give one batch different tokens across its repeats.
 
@@ -334,9 +337,9 @@ def main():
     numerics["pass"] = all("metal" in item and all(item[name]["verdict"]["pass"] for name in CANDIDATES if name in item) for item in sets) and \
         numerics["controls_fail_as_required"]
     if floors is not None:
-        floor_sets = [floors] + ([pinned_floors] if pinned_floors is not None else [])
-        floors["controls_fail_as_required"] = all(name in floors and not floors[name]["pass"] for name in REQUIRED_CONTROLS) and \
-            all(not item[name]["pass"] for item in floor_sets for name in REQUIRED_CONTROLS + REQUIRED_WHERE_RUN if name in item)
+        control_set = pinned_floors if pinned_floors is not None else floors
+        floors["controls_fail_as_required"] = all(name in control_set and not control_set[name]["pass"] for name in REQUIRED_CONTROLS) and \
+            all(not control_set[name]["pass"] for name in REQUIRED_WHERE_RUN if name in control_set)
         pinned_pass = all(pinned_floors[name]["pass"] for name in CANDIDATES if name in pinned_floors) if pinned_floors is not None else \
             all(item[name]["verdict"]["pass"] for item in sets[1:] for name in CANDIDATES if name in item)
         floors["pass"] = "metal" in floors and all(floors[name]["pass"] for name in CANDIDATES if name in floors) and \
@@ -347,7 +350,8 @@ def main():
                           f"disagreement <= {TOP1_FACTOR:g} x the mean over the other variants as floors; and, for every reference, floor and "
                           f"third variant, the share of positions where the candidate is further from the reference than the floor, less the "
                           f"same share for the third variant, averaged over all of them, at most {PAIRED_SIGMA:g} block standard errors above "
-                          f"zero; the required controls fail; with every layer's experts pinned to a's choice, the pinned runs are judged "
+                          f"zero; the required controls fail, in the pinned set when there is one; with every layer's experts pinned to a's "
+                          f"choice, the pinned runs are judged "
                           f"the same way against {', '.join(PINNED_MULTI_FLOOR_VARIANTS)} when the references hold all three, else each "
                           f"pinned run passes the single-floor rule against a and hp")
         numerics["multi_floor"] = floors

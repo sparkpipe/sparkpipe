@@ -817,7 +817,12 @@ against a, bp and hp the same way (`metal_gate_floors.sh`'s `pmf` labels);
 the Metal runs must pass and `control_layers`, `control_rotate` and
 `control_experts` (experts 0 and 1 of every layer's `moe_w2` swapped, the
 reach of a misindexed expert) must fail. References without bp fall back to
-the single floor, a against hp. One floor draw was not enough here either:
+the single floor, a against hp. When the pinned set is judged on the
+multi-floor rule, the required controls must fail there; the free set reports
+its controls without requiring them to fail, because its floor is the one
+the router makes too wide (Gemma 4 26B's all-layer `ffn_down` swap sits at
++2.87 sigma against free routes and +17.5 sigma pinned, with 512-position
+blocks). One floor draw was not enough here either:
 on one build the two pinned runs, which differ only in prefill chunking,
 gave +3.02 and +1.07 sigma against a and +1.55 and +3.62 against hp, and
 against a, bp and hp they gave +0.52 and +0.78, with the required controls
