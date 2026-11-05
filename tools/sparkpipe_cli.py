@@ -3,17 +3,20 @@ import argparse
 import contextlib
 import getpass
 import hashlib
+import hmac
 import http.client
 import http.server
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -30,35 +33,47 @@ except ImportError:
 VERSION = "0.1.0"
 API = "https://sparkpipe.ai/pay/api"
 KEYCHAIN_SERVICE = "sparkpipe"
-SESSION_COOKIE = "sp_session"
 TIMEOUT = 60
+TOOL_TIMEOUT = 600
 UPSTREAM_TIMEOUT = 900
 BODY_LIMIT = 32 * 1024 * 1024
 CHUNK = 65536
 PROXY_PORT = 8790
 PLATFORM = sys.platform
-TOKEN_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
-SLOT = re.compile(r"^(\d{4}-\d{2}-\d{2})T(\d{2})(?::00)?Z?$")
+TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+CREDENTIAL = re.compile(r"[\x21-\x7e]{1,4096}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+HOST = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
+SLOT = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})(?::00)?Z?")
 SOURCES = ("hf://", "s3://", "https://", "git+https://")
 SOURCE_HOSTS = {"hf://": "huggingface.co", "s3://": "s3.amazonaws.com"}
 TOKEN_HOSTS = {"hf": "huggingface.co"}
 LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 INSTALL = {"secret-tool": " (Debian and Ubuntu: apt install libsecret-tools)", "aws": " (https://aws.amazon.com/cli/)"}
 HF_GUIDANCE = "Use a fine-grained, read-only Hugging Face token, limited to the repositories you need and with an expiry: https://huggingface.co/settings/tokens"
+SHA_METADATA = "sparkpipe-sha256"
 CLAUDE_MODELS = {"claude-opus-5-5": "main", "claude-sonnet-5-5": "main", "claude-fable-5-1": "main", "claude-haiku-5-5": "haiku"}
 CODEX_ROOT = ("model", "model_provider")
-CODEX_TABLES = (("model_providers", "sparkpipe"), ("profiles", "sparkpipe"), ("mcp_servers", "sparkpipe"))
-OPENCODE_SUBAGENTS = ("general", "explore")
+CODEX_TABLES = (("model_providers", "sparkpipe"), ("mcp_servers", "sparkpipe"))
+CODEX_PROFILE = "sparkpipe"
+OPENCODE_AGENTS = {"general": "main", "explore": "main", "compaction": "main", "title": "small", "summary": "small"}
 MODEL_FIELDS = ("context_window", "max_output_tokens", "sequences")
+PROXY_PATHS = frozenset(("/v1/messages", "/v1/messages/count_tokens", "/v1/responses", "/v1/chat/completions", "/v1/models", "/v1/codex/models",
+                         "/v1/tokenize", "/v1/detokenize", "/api/hello", "/mcp"))
+PROXY_HOSTS = ("127.0.0.1", "localhost")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
-CREDENTIALS = {"authorization", "x-api-key"}
+CREDENTIALS = {"authorization", "x-api-key", "cookie"}
 HEADER = re.compile(r"^\s*\[\[?([^\[\]]+)\]\]?\s*(?:#.*)?$")
 KEY = re.compile(r"""^\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*=""")
 PART = re.compile(r"""\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)""")
 
 
 class Failure(Exception):
+    pass
+
+
+class Skipped(Failure):
     pass
 
 
@@ -84,11 +99,15 @@ def config_path():
     return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "sparkpipe" / "config.json"
 
 
-def read_json(path):
+def read_text(path):
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
-        return {}
+        return ""
+
+
+def read_json(path):
+    text = read_text(path)
     try:
         data = json.loads(text) if text.strip() else {}
     except ValueError as error:
@@ -126,6 +145,34 @@ def write_file(path, text, mode):
         raise
 
 
+def backup(path):
+    real = Path(os.path.realpath(path))
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    found, count = real.with_name(f"{real.name}.{stamp}.bak"), 1
+    while found.exists():
+        found, count = real.with_name(f"{real.name}.{stamp}-{count}.bak"), count + 1
+    write_file(found, real.read_text(encoding="utf-8"), 0o600)
+    return found
+
+
+def save_config(path, text, mode):
+    path = Path(path)
+    if not path.exists():
+        write_file(path, text, mode)
+        return f"Wrote {path}."
+    if path.read_text(encoding="utf-8") == text:
+        return f"{path} already holds these settings."
+    kept = backup(path)
+    write_file(path, text, mode)
+    return f"Wrote {path}; the previous version is {kept}."
+
+
+def credential(value, where):
+    if not isinstance(value, str) or not CREDENTIAL.fullmatch(value):
+        raise Failure(f"{where} holds a space, a line break or another character that cannot be sent; set it again.")
+    return value
+
+
 def api_base(text):
     text = text.rstrip("/")
     parts = urllib.parse.urlsplit(text)
@@ -136,13 +183,23 @@ def api_base(text):
     raise Failure(f"{text} is not an https:// API address.")
 
 
+def receive(stream, amount, where):
+    try:
+        return stream.read(amount)
+    except (OSError, http.client.HTTPException) as error:
+        raise Failure(f"{where} broke off ({type(error).__name__}); run this again.")
+
+
 def parse_json(raw):
     if not raw.strip():
         return {}
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except ValueError:
         raise Failure("The API answered with something other than JSON.")
+    if not isinstance(data, dict):
+        raise Failure("The API answered with JSON that is not an object.")
+    return data
 
 
 def error_fields(data):
@@ -157,7 +214,7 @@ def error_fields(data):
 def refusal(error):
     try:
         data = json.loads(error.read() or b"{}")
-    except ValueError:
+    except (ValueError, OSError, http.client.HTTPException):
         data = {}
     message, reason = error_fields(data)
     return ApiError(error.code, message or f"The API answered {error.code} {error.reason}.", reason)
@@ -204,12 +261,12 @@ class Client:
             return self.opener.open(request, timeout=TIMEOUT)
         except urllib.error.HTTPError as error:
             raise refusal(error)
-        except (urllib.error.URLError, OSError) as error:
-            raise Failure(f"Cannot reach {self.api}: {getattr(error, 'reason', error)}")
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+            raise Failure(f"Cannot reach {self.api}: {getattr(error, 'reason', None) or type(error).__name__}")
 
     def call(self, method, path, body=None, auth="key", headers=None, query=None):
         with self.open(method, path, body, auth, headers, query) as response:
-            return parse_json(response.read())
+            return parse_json(receive(response, -1, f"The answer from {self.api}"))
 
 
 class Context:
@@ -222,9 +279,16 @@ class Context:
         return self.cfg if self.cfg.get("api") == self.api else {}
 
     def client(self):
-        key = os.environ.get("SPARKPIPE_API_KEY") or self.mine().get("key")
+        named = os.environ.get("SPARKPIPE_API_KEY")
+        key, session = named or self.mine().get("key"), self.mine().get("session")
+        if key:
+            credential(key, "SPARKPIPE_API_KEY" if named else f"The key in {config_path()}")
+        if session:
+            credential(session, f"The session in {config_path()}")
         fleet = getattr(self.args, "fleet", None) or os.environ.get("SPARKPIPE_FLEET")
-        return Client(self.api, self.mine().get("session"), key, fleet)
+        if fleet and not FLEET.fullmatch(fleet):
+            raise Failure(f"{fleet!r} is not a fleet name such as F3.")
+        return Client(self.api, session, key, fleet)
 
     def save(self):
         write_file(config_path(), json_text(self.cfg), 0o600)
@@ -247,6 +311,16 @@ def size(value):
         value /= 1000
 
 
+def percent(value):
+    try:
+        found = Decimal(str(value)) * 100
+    except InvalidOperation:
+        return None
+    if not found.is_finite() or found <= 0:
+        return None
+    return format(found.normalize(), "f") + "%"
+
+
 def confirm(ctx, question):
     if ctx.args.yes:
         return
@@ -260,48 +334,47 @@ def confirm(ctx, question):
 
 def account_state(client):
     account = client.call("GET", "/market/state", auth="session").get("account")
-    if not account:
+    if not isinstance(account, dict):
         raise Failure("The session has expired: run sparkpipe login.")
     return account
 
 
-def session_cookie(values):
-    for value in values:
-        name, _, rest = value.partition("=")
-        token = rest.split(";", 1)[0].strip()
-        if name.strip() == SESSION_COOKIE and token:
-            return token
-    return None
+def device_name():
+    return ("sparkpipe CLI on " + socket.gethostname())[:100]
 
 
 def verify(client, email, code, args):
-    body = {"email": email, "code": code}
+    body = {"email": email, "code": code, "bearer": True, "device": device_name()}
     if args.company:
         body["company"] = args.company
     if args.accept:
         body["accept"] = True
     try:
-        with client.open("POST", "/verify", body, auth=None) as response:
-            summary = parse_json(response.read())
-            session = session_cookie(response.headers.get_all("Set-Cookie") or [])
+        summary = client.call("POST", "/verify", body, auth=None)
     except ApiError as error:
         if error.reason == "new":
             raise Failure(f"No account uses {email} yet. To open one, read the Customer Agreement on sparkpipe.ai and run: sparkpipe login --email {email} --company 'Your legal name' --accept")
         if error.reason == "terms":
             raise Failure("Opening an account needs the Customer Agreement accepted: read it on sparkpipe.ai and add --accept.")
         raise
-    if not session:
+    if not summary.get("session"):
         raise Failure("The sign-in answered without a session.")
-    return session, summary
+    return credential(summary["session"], "The sign-in's session"), summary
+
+
+def sign_out(api, session):
+    if isinstance(session, str) and CREDENTIAL.fullmatch(session):
+        with contextlib.suppress(Failure):
+            Client(api, session=session).call("POST", "/signout", {}, auth="session")
 
 
 def machine_key(client, previous):
-    keys = account_state(client).get("keys", [])
-    active = {k.get("key") for k in keys if not k.get("revoked")}
+    keys = account_state(client).get("keys") or []
+    active = {k.get("id") for k in keys if isinstance(k, dict) and not k.get("revoked") and not k.get("retires")}
     if previous.get("key") and previous.get("key_id") in active:
         return previous["key"], previous["key_id"], False
-    made = client.call("POST", "/market/keys", {"note": "sparkpipe CLI on " + socket.gethostname()[:60]}, auth="session")
-    return made["key"], made["id"], True
+    made = client.call("POST", "/market/keys", {"note": device_name()}, auth="session")
+    return credential(made.get("key"), "The new key"), made.get("id"), True
 
 
 def login(ctx):
@@ -314,13 +387,18 @@ def login(ctx):
     else:
         code = prompt(f"Code from the email sent to {email}: ").strip()
     session, summary = verify(client, email, code, args)
-    previous = ctx.mine() if ctx.mine().get("email") == email else {}
+    mine = ctx.mine()
+    previous = mine if mine.get("email") == email else {}
     client.session = session
     key, ident, made = machine_key(client, previous)
-    ctx.cfg = {"api": ctx.api, "email": email, "session": session, "key": key, "key_id": ident, "tokens": ctx.cfg.get("tokens", {}), "sync": ctx.cfg.get("sync", {})}
+    ctx.cfg = {"api": ctx.api, "email": email, "session": session, "session_expires": summary.get("sessionExpires"), "key": key, "key_id": ident,
+               "tokens": ctx.cfg.get("tokens", {}), "sync": ctx.cfg.get("sync", {})}
     ctx.save()
+    if mine.get("session") != session:
+        sign_out(ctx.api, mine.get("session"))
     company = f" ({summary['company']})" if summary.get("company") else ""
-    print(f"Signed in as {email}{company}. {'Created' if made else 'Kept'} key {ident} for this machine, saved in {config_path()}.")
+    until = f" until {summary['sessionExpires']}" if summary.get("sessionExpires") else ""
+    print(f"Signed in as {email}{company}{until}. {'Created' if made else 'Kept'} key {ident} for this machine, saved in {config_path()}.")
     return 0
 
 
@@ -382,7 +460,7 @@ def spend(ctx, client, path, body):
 
 
 def slot(text):
-    found = SLOT.match(text)
+    found = SLOT.fullmatch(text)
     try:
         datetime.strptime(found.group(1) + found.group(2), "%Y-%m-%d%H")
     except (AttributeError, ValueError):
@@ -390,11 +468,24 @@ def slot(text):
     return f"{found.group(1)}T{found.group(2)}:00Z"
 
 
+def hour_price(state, fleet, hours):
+    found = next((f for f in state.get("fleets") or [] if isinstance(f, dict) and f.get("id") == fleet), None)
+    if not found:
+        raise Failure(f"{fleet} is not on the Fleet List.")
+    try:
+        price = Decimal(hours) * Decimal(str((state.get("bookings") or {})["hourHC"])) * Decimal(str(found["rate"]))
+    except (KeyError, TypeError, InvalidOperation):
+        raise Failure("The market did not give the price of an hour and the fleet's Rate.")
+    return price.quantize(Decimal("0.000001"))
+
+
 def book_week(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "weeks": ctx.args.weeks}
     plan = client.call("POST", "/market/quote-weeks", request, auth="session")
-    confirm(ctx, f"Book {ctx.args.fleet_id} for {ctx.args.weeks} week(s), {plan.get('first')} to {plan.get('end')}, for {plan.get('price')} HC ({plan.get('discount')} off)?")
+    off = percent(plan.get("discount"))
+    discount = f" ({off} off)" if off else ""
+    confirm(ctx, f"Book {ctx.args.fleet_id} for {ctx.args.weeks} week(s), {plan.get('first')} to {plan.get('end')}, for {plan.get('price')} HC{discount}?")
     booked = spend(ctx, client, "/market/book-weeks", request)
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('first')} to {booked.get('end')} for {booked.get('price')} HC."])
     return 0
@@ -403,7 +494,8 @@ def book_week(ctx):
 def book_hours(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "start": slot(ctx.args.start), "hours": ctx.args.hours}
-    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, paid from your HC?")
+    price = hour_price(client.call("GET", "/market/state", auth="session"), request["fleet"], request["hours"])
+    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {price} HC?")
     booked = spend(ctx, client, "/market/book-hours", request)
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('start')} to {booked.get('end')} for {booked.get('hc')} HC."])
     return 0
@@ -436,14 +528,14 @@ def keys_ls(ctx):
     mine = ctx.mine().get("key_id")
     lines = []
     for k in keys:
-        marks = ("revoked" if k.get("revoked") else "active") + ("  this machine" if k.get("key") == mine else "")
-        lines.append(f"{k.get('key')}  ...{k.get('hint')}  {k.get('created')}  {marks}  {k.get('note') or ''}".rstrip())
+        marks = ("revoked" if k.get("revoked") else "active") + ("  this machine" if k.get("id") == mine else "")
+        lines.append(f"{k.get('id')}  ...{k.get('hint')}  {k.get('created')}  {marks}  {k.get('note') or ''}".rstrip())
     emit(ctx, keys, lines or ["No keys."])
     return 0
 
 
 def keys_create(ctx):
-    body = {"note": ctx.args.note or "sparkpipe CLI on " + socket.gethostname()[:60]}
+    body = {"note": ctx.args.note or device_name()}
     if ctx.args.key_fleet:
         body["fleet"] = ctx.args.key_fleet
     if ctx.args.allow_swap:
@@ -465,11 +557,13 @@ def keys_revoke(ctx):
     return 0
 
 
-def run(command, stdin=None, check=True, secret=False):
+def run(command, stdin=None, check=True, secret=False, timeout=TOOL_TIMEOUT):
     try:
-        found = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=600)
+        found = subprocess.run(command, input=stdin, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
         raise Failure(f"{command[0]} is not installed{INSTALL.get(command[0], '')}.")
+    except subprocess.TimeoutExpired:
+        raise Failure(f"{' '.join(command[:2])} did not finish within {timeout} seconds; nothing more was done.")
     if check and found.returncode != 0:
         detail = "" if secret else ": " + found.stderr.strip()[:300]
         raise Failure(f"{' '.join(command[:2])} exited {found.returncode}{detail}")
@@ -517,7 +611,7 @@ def keychain():
 
 
 def token_name(text):
-    if not TOKEN_NAME.match(text):
+    if not TOKEN_NAME.fullmatch(text):
         raise Failure(f"Name a token with letters, digits, '.', '_' or '-', not {text!r}.")
     return text
 
@@ -529,7 +623,7 @@ def host_matches(host, bound):
 def tokens_set(ctx):
     name = token_name(ctx.args.name)
     host = (ctx.args.host or TOKEN_HOSTS.get(name) or "").lower()
-    if not HOST.match(host):
+    if not HOST.fullmatch(host):
         raise Failure("Name the host this token belongs to, for example --host huggingface.co: it is sent only with fetches from that host.")
     store = keychain()
     if host_matches(host, "huggingface.co"):
@@ -537,6 +631,8 @@ def tokens_set(ctx):
     value = prompt_secret(f"Token for {name} ({host}), not shown: ").strip()
     if not value:
         raise Failure("No token was entered; nothing was saved.")
+    if not CREDENTIAL.fullmatch(value):
+        raise Failure("The token holds a space, a line break or another character a token cannot have; nothing was saved.")
     store.store(name, value)
     ctx.cfg.setdefault("tokens", {})[name] = {"host": host}
     ctx.save()
@@ -598,10 +694,11 @@ def source_token(ctx, host):
         if not found:
             return None
         name = found[0]
-    value = keychain().load(name)
+    store = keychain()
+    value = store.load(name)
     if value is None:
         raise Failure(f"The token {name} is missing from the keychain: add it again with sparkpipe tokens set {name}.")
-    return name, value
+    return name, credential(value, f"The token {name} in {store.name}")
 
 
 def token_header(token):
@@ -674,10 +771,27 @@ def sync_parts(prefix, path):
     return parts
 
 
-def copy_stream(stream, out):
+def listed(change):
+    expected, sha = change.get("size"), change.get("sha256")
+    if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int) or expected < 0):
+        raise Failure(f"The fleet listed {change.get('path')} with a size that is not a number of bytes.")
+    if sha is not None and not (isinstance(sha, str) and SHA256.fullmatch(sha.lower())):
+        raise Failure(f"The fleet listed {change.get('path')} with a SHA-256 that is not 64 hexadecimal digits.")
+    return expected, sha.lower() if sha else None
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for data in iter(lambda: stream.read(CHUNK), b""):
+            digest.update(data)
+    return digest.hexdigest()
+
+
+def copy_stream(stream, out, name):
     digest, total = hashlib.sha256(), 0
     while True:
-        data = stream.read(CHUNK)
+        data = receive(stream, CHUNK, f"The download of {name}")
         if not data:
             return total, digest.hexdigest()
         out.write(data)
@@ -688,9 +802,9 @@ def copy_stream(stream, out):
 def check_download(parts, written, digest, sha, expected):
     name = "/".join(parts)
     if expected is not None and written != expected:
-        raise Failure(f"{name}: received {written} bytes, the fleet listed {expected}; nothing was replaced.")
-    if sha and digest != sha.lower():
-        raise Failure(f"{name}: the SHA-256 does not match the fleet's; nothing was replaced.")
+        raise Skipped(f"{name}: received {written} bytes and the fleet listed {expected}, so it changed on the fleet after it was listed; nothing was replaced.")
+    if sha and digest != sha:
+        raise Skipped(f"{name}: the SHA-256 does not match the fleet's, so it changed on the fleet after it was listed; nothing was replaced.")
 
 
 class LocalTarget:
@@ -706,13 +820,19 @@ class LocalTarget:
             raise Failure(f"{path} leads outside {self.root}; nothing was written for it.")
         return path
 
+    def matches(self, parts, expected, sha):
+        path = self.place(parts)
+        if not sha or expected is None or not path.is_file() or path.stat().st_size != expected:
+            return False
+        return file_digest(path) == sha
+
     def write(self, parts, stream, sha, expected):
         path = self.place(parts)
         path.parent.mkdir(parents=True, exist_ok=True)
         handle, temporary = tempfile.mkstemp(prefix=".sparkpipe-", dir=str(path.parent))
         try:
             with os.fdopen(handle, "wb") as out:
-                written, digest = copy_stream(stream, out)
+                written, digest = copy_stream(stream, out, "/".join(parts))
             check_download(parts, written, digest, sha, expected)
             os.replace(temporary, path)
         except BaseException:
@@ -729,21 +849,38 @@ class LocalTarget:
 
 class BucketTarget:
     def __init__(self, dest):
+        parts = urllib.parse.urlsplit(dest)
+        self.bucket, self.prefix = parts.netloc, parts.path.strip("/")
+        if not self.bucket:
+            raise Failure(f"{dest} names no bucket.")
         self.name = dest.rstrip("/")
         if not shutil.which("aws"):
             raise Failure("Syncing to s3:// uses the aws command with your own credentials: install and configure it first" + INSTALL["aws"] + ".")
+
+    def key(self, parts):
+        return "/".join(([self.prefix] if self.prefix else []) + parts)
+
+    def matches(self, parts, expected, sha):
+        if not sha or expected is None:
+            return False
+        found = run(["aws", "s3api", "head-object", "--bucket", self.bucket, "--key", self.key(parts), "--output", "json"], check=False)
+        try:
+            head = json.loads(found.stdout) if found.returncode == 0 else {}
+        except ValueError:
+            return False
+        return isinstance(head, dict) and head.get("ContentLength") == expected and (head.get("Metadata") or {}).get(SHA_METADATA) == sha
 
     def write(self, parts, stream, sha, expected):
         with tempfile.TemporaryDirectory(prefix="sparkpipe-sync-") as folder:
             local = os.path.join(folder, "file")
             with open(local, "wb") as out:
-                written, digest = copy_stream(stream, out)
+                written, digest = copy_stream(stream, out, "/".join(parts))
             check_download(parts, written, digest, sha, expected)
-            run(["aws", "s3", "cp", "--only-show-errors", local, self.name + "/" + "/".join(parts)])
+            run(["aws", "s3", "cp", "--only-show-errors", "--metadata", f"{SHA_METADATA}={digest}", local, f"s3://{self.bucket}/{self.key(parts)}"], timeout=None)
         return written
 
     def remove(self, parts):
-        run(["aws", "s3", "rm", "--only-show-errors", self.name + "/" + "/".join(parts)])
+        run(["aws", "s3", "rm", "--only-show-errors", f"s3://{self.bucket}/{self.key(parts)}"], timeout=None)
 
 
 def sync_target(dest):
@@ -755,6 +892,8 @@ def sync_target(dest):
 
 
 def apply_change(client, target, prefix, change, delete, counts):
+    if not isinstance(change, dict):
+        raise Failure("The fleet listed a change that is not an object.")
     parts = sync_parts(prefix, change.get("path"))
     kind = change.get("change")
     if kind == "deleted":
@@ -764,9 +903,32 @@ def apply_change(client, target, prefix, change, delete, counts):
         return
     if kind not in ("added", "changed"):
         raise Failure(f"The fleet listed {change.get('path')} with an unknown change {kind!r}.")
-    with client.open("GET", "/v1/storage/" + urllib.parse.quote(change["path"], safe="/")) as response:
-        counts["bytes"] += target.write(parts, response, change.get("sha256"), change.get("size"))
+    expected, sha = listed(change)
+    if target.matches(parts, expected, sha):
+        counts["unchanged"] += 1
+        return
+    try:
+        response = client.open("GET", "/v1/storage/" + urllib.parse.quote(change["path"], safe="/"))
+    except ApiError as error:
+        if error.status == 404:
+            raise Skipped(f"{change['path']}: deleted on the fleet after it was listed; nothing was replaced.")
+        raise
+    with response:
+        counts["bytes"] += target.write(parts, response, sha, expected)
     counts["copied"] += 1
+
+
+def sync_lines(counts, prefix, target, delete):
+    lines = [f"Copied {counts['copied']} file(s), {size(counts['bytes'])}, from {prefix or 'storage'} to {target.name}."]
+    if counts["unchanged"]:
+        lines.append(f"{counts['unchanged']} file(s) were already there with the same SHA-256.")
+    if counts["skipped"]:
+        lines.append(f"Skipped {counts['skipped']} file(s) that changed or went away on the fleet during the sync; the change list brings their newer state.")
+    if counts["deleted"]:
+        lines.append(f"Deleted {counts['deleted']} file(s) deleted on the fleet.")
+    if counts["kept"] and not delete:
+        lines.append(f"Kept {counts['kept']} file(s) deleted on the fleet; add --delete to remove them here too.")
+    return lines
 
 
 def storage_sync(ctx):
@@ -775,36 +937,45 @@ def storage_sync(ctx):
     client = ctx.client()
     key = f"{ctx.api} {prefix} {target.name}"
     since = ctx.cfg.get("sync", {}).get(key)
-    counts = {"copied": 0, "bytes": 0, "deleted": 0, "kept": 0}
+    counts = {"copied": 0, "bytes": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "kept": 0}
     while True:
         query = dict({"prefix": prefix}, **({"since": since} if since else {}))
         page = client.call("GET", "/v1/storage/changes", query=query)
-        for change in page.get("data", []):
-            apply_change(client, target, prefix, change, ctx.args.delete, counts)
+        for change in page.get("data") or []:
+            try:
+                apply_change(client, target, prefix, change, ctx.args.delete, counts)
+            except Skipped as error:
+                counts["skipped"] += 1
+                print(f"sparkpipe: skipped {error}", file=sys.stderr)
         if page.get("more") and page.get("until") in (None, since):
             raise Failure("The fleet's list of changes did not advance; nothing more was copied.")
-        since = page.get("until") or since
+        if page.get("until") and page["until"] != since:
+            since = page["until"]
+            ctx.cfg.setdefault("sync", {})[key] = since
+            ctx.save()
         if not page.get("more"):
             break
-    ctx.cfg.setdefault("sync", {})[key] = since
-    ctx.save()
-    lines = [f"Copied {counts['copied']} file(s), {size(counts['bytes'])}, from {prefix or 'storage'} to {target.name}."]
-    if counts["deleted"]:
-        lines.append(f"Deleted {counts['deleted']} file(s) deleted on the fleet.")
-    if counts["kept"]:
-        lines.append(f"Kept {counts['kept']} file(s) deleted on the fleet; add --delete to remove them here too.")
-    emit(ctx, dict(counts, until=since), lines)
+    emit(ctx, dict(counts, until=since), sync_lines(counts, prefix, target, ctx.args.delete))
     return 0
 
 
 def fleet_models(ctx, pattern):
     client = ctx.client()
     listing = {m.get("id"): m for m in client.call("GET", "/v1/models").get("data", []) if isinstance(m, dict)}
-    aliases = client.call("GET", "/v1/models/aliases")
-    main = ctx.args.model or aliases.get(pattern) or aliases.get("claude-*")
+    table = client.call("GET", "/v1/models/aliases")
+    aliases = table.get("aliases") if isinstance(table.get("aliases"), dict) else {}
+    first = table.get("first_resident")
+
+    def resolve(*patterns):
+        for name in patterns:
+            if name in aliases:
+                return aliases[name] or first
+        return None
+
+    main = ctx.args.model or resolve(pattern, "claude-*") or first
     if not main:
-        raise Failure(f"The fleet's alias table names no model for {pattern}: pass --model.")
-    haiku = getattr(ctx.args, "haiku", None) or aliases.get("claude-haiku-*") or main
+        raise Failure(f"The fleet has no resident model and its alias table names none for {pattern}: pass --model.")
+    haiku = getattr(ctx.args, "haiku", None) or resolve("claude-haiku-*") or main
     return client, main, haiku, listing
 
 
@@ -859,9 +1030,9 @@ def setup_claude_code(ctx):
     object_fields(path, settings, ("env", "modelOverrides"))
     settings["env"] = dict(settings.get("env", {}), **claude_env(ctx.api, client.key, main, haiku, context))
     settings["modelOverrides"] = dict(settings.get("modelOverrides", {}), **{name: main if role == "main" else haiku for name, role in CLAUDE_MODELS.items()})
-    write_file(path, json_text(settings), 0o600)
+    print(save_config(path, json_text(settings), 0o600))
     background = f", and {haiku} for background calls" if haiku != main else ""
-    print(f"Wrote {path}: Claude Code uses {main} on {ctx.api}{background}.")
+    print(f"Claude Code uses {main} on {ctx.api}{background}.")
     if "ANTHROPIC_API_KEY" in settings["env"] or os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is also set: Claude Code would send it to SparkPipe as X-Api-Key. Remove it from your settings and shell.")
     return 0
@@ -871,8 +1042,12 @@ def toml_value(value):
     return str(value) if isinstance(value, int) else json.dumps(value, ensure_ascii=False)
 
 
+def toml_pairs(pairs):
+    return [f"{name} = {toml_value(value)}" for name, value in pairs]
+
+
 def toml_block(path, pairs):
-    return "\n".join(["[" + ".".join(path) + "]"] + [f"{name} = {toml_value(value)}" for name, value in pairs])
+    return "\n".join(["[" + ".".join(path) + "]"] + toml_pairs(pairs))
 
 
 def toml_string(quoted, literal, bare):
@@ -924,20 +1099,25 @@ def merge_codex(text, root, tables):
         kept.pop(0)
     while kept and not kept[-1].strip():
         kept.pop()
-    parts = ["\n".join(f"{name} = {toml_value(value)}" for name, value in root)]
+    parts = ["\n".join(toml_pairs(root))]
     parts += ["\n".join(kept)] if kept else []
     parts += [toml_block(path, pairs) for path, pairs in tables]
     return "\n\n".join(parts) + "\n"
 
 
-def codex_tables(api, main, found):
+def codex_tables(api):
     return [
-        (("model_providers", "sparkpipe"), [("name", "SparkPipe"), ("base_url", api + "/v1"), ("env_key", "SPARKPIPE_API_KEY"), ("wire_api", "responses"), ("stream_idle_timeout_ms", 600000)]),
-        (("profiles", "sparkpipe"), [("model", main), ("model_provider", "sparkpipe"), ("model_context_window", found["context_window"]),
-                                     ("model_auto_compact_token_limit", found["context_window"] - found["max_output_tokens"]), ("model_catalog_url", api + "/v1/codex/models")]),
-        (("profiles", "sparkpipe", "agents"), [("default_subagent_model", main), ("max_concurrent_threads_per_session", found["sequences"])]),
+        (("model_providers", "sparkpipe"), [("name", "SparkPipe"), ("base_url", api + "/v1"), ("env_key", "SPARKPIPE_API_KEY"), ("wire_api", "responses"),
+                                            ("stream_idle_timeout_ms", 600000), ("model_catalog_url", api + "/v1/codex/models")]),
         (("mcp_servers", "sparkpipe"), [("url", api + "/mcp"), ("bearer_token_env_var", "SPARKPIPE_API_KEY")]),
     ]
+
+
+def codex_profile(main, found):
+    root = [("model", main), ("model_provider", "sparkpipe"), ("model_context_window", found["context_window"]),
+            ("model_auto_compact_token_limit", found["context_window"] - found["max_output_tokens"])]
+    agents = [("default_subagent_model", main), ("max_concurrent_threads_per_session", max(1, found["sequences"] - 1))]
+    return "\n".join(toml_pairs(root)) + "\n\n" + toml_block(("agents",), agents) + "\n"
 
 
 def codex_others(doc):
@@ -957,8 +1137,10 @@ def dig(doc, path):
 
 
 def check_codex(path, before, after, root, tables):
-    if tomllib is None:
+    if not before.strip():
         return
+    if tomllib is None:
+        raise Failure(f"{path} already holds settings, and merging into it safely needs Python 3.11 or later: run this again with Python 3.11 or later. Nothing was changed.")
     try:
         old = tomllib.loads(before)
     except tomllib.TOMLDecodeError as error:
@@ -976,44 +1158,44 @@ def setup_codex(ctx):
     client, main, _, listing = fleet_models(ctx, "gpt-*")
     found = limits(listing, main)
     path = Path(ctx.args.config or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
-    try:
-        before = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        before = ""
-    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api, main, found)
+    profile = path.with_name(CODEX_PROFILE + ".config.toml")
+    before = read_text(path)
+    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api)
     after = merge_codex(before, root, tables)
     check_codex(path, before, after, root, tables)
-    write_file(path, after, file_mode(path, 0o600))
-    print(f"Wrote {path}: Codex uses {main} on {ctx.api}, also as the profile sparkpipe (codex --profile sparkpipe).")
+    print(save_config(path, after, file_mode(path, 0o600)))
+    print(save_config(profile, codex_profile(main, found), file_mode(profile, 0o600)))
+    print(f"Codex uses {main} on {ctx.api}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents.")
     key_reminder(client, "Codex")
     return 0
 
 
-def opencode_provider(api, main, haiku, listing):
+def opencode_provider(api, main, small, listing):
     models = {}
-    for name in dict.fromkeys((main, haiku)):
+    for name in dict.fromkeys((main, small)):
         found = limits(listing, name, ("context_window", "max_output_tokens"))
         models[name] = {"name": name, "limit": {"context": found["context_window"], "output": found["max_output_tokens"]}}
     return {"npm": "@ai-sdk/anthropic", "name": "SparkPipe", "options": {"baseURL": api + "/v1", "apiKey": "{env:SPARKPIPE_API_KEY}"}, "models": models}
 
 
 def setup_opencode(ctx):
-    client, main, haiku, listing = fleet_models(ctx, "claude-*")
+    client, main, small, listing = fleet_models(ctx, "claude-*")
     path = Path(ctx.args.config or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode" / "opencode.json")
     settings = read_json(path)
     object_fields(path, settings, ("provider", "agent", "mcp", "compaction"))
     settings.setdefault("$schema", "https://opencode.ai/config.json")
-    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, haiku, listing)
+    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, small, listing)
     settings["model"] = "sparkpipe/" + main
-    settings["small_model"] = "sparkpipe/" + haiku
+    settings["small_model"] = "sparkpipe/" + small
     agents = settings.setdefault("agent", {})
-    for name in OPENCODE_SUBAGENTS:
-        agents[name] = dict(agents.get(name) if isinstance(agents.get(name), dict) else {}, model="sparkpipe/" + main)
+    for name, role in OPENCODE_AGENTS.items():
+        agents[name] = dict(agents.get(name) if isinstance(agents.get(name), dict) else {}, model="sparkpipe/" + (main if role == "main" else small))
     settings.setdefault("mcp", {})["sparkpipe"] = {"type": "remote", "url": ctx.api + "/mcp", "headers": {"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, "enabled": True}
-    settings.setdefault("compaction", {})["prune"] = False
+    if settings.get("compaction", {}).get("prune"):
+        settings["compaction"]["prune"] = False
     settings["share"] = "disabled"
-    write_file(path, json_text(settings), file_mode(path, 0o600))
-    print(f"Wrote {path}: OpenCode uses sparkpipe/{main} on {ctx.api}.")
+    print(save_config(path, json_text(settings), file_mode(path, 0o600)))
+    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}, and sparkpipe/{small} for titles and summaries.")
     key_reminder(client, "OpenCode")
     return 0
 
@@ -1047,7 +1229,7 @@ def exchange(settings, method, path, body, headers):
         attempt += 1
 
 
-def outbound(incoming, settings):
+def outbound(incoming, settings, upgrade=False):
     sent = {}
     for name, value in incoming.items():
         lower = name.lower()
@@ -1057,7 +1239,32 @@ def outbound(incoming, settings):
     sent["Authorization"] = "Bearer " + settings["key"]
     if settings["fleet"]:
         sent["X-SparkPipe-Fleet"] = settings["fleet"]
+    if upgrade:
+        sent["Connection"], sent["Upgrade"] = "Upgrade", "websocket"
     return sent
+
+
+def client_keys(headers):
+    found = [(headers.get("X-Api-Key") or "").strip()]
+    given = (headers.get("Authorization") or "").strip()
+    if given[:7].lower() == "bearer ":
+        found.append(given[7:].strip())
+    return found
+
+
+def same(given, wanted):
+    return hmac.compare_digest(given.encode("utf-8", "replace"), wanted.encode("utf-8", "replace"))
+
+
+def pipe(source, sink, other):
+    with contextlib.suppress(OSError, ValueError, http.client.HTTPException):
+        while True:
+            data = source.read1(CHUNK)
+            if not data:
+                break
+            sink(data)
+    with contextlib.suppress(OSError):
+        socket.socket.shutdown(other, socket.SHUT_RDWR)
 
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -1076,6 +1283,19 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def refusal(self):
+        port = self.server.server_address[1]
+        if (self.headers.get("Host") or "").lower() not in {f"{host}:{port}" for host in PROXY_HOSTS}:
+            return 403, "permission_error", f"The proxy answers only requests addressed to http://127.0.0.1:{port}."
+        if self.headers.get("Origin") is not None:
+            return 403, "permission_error", "The proxy refuses requests from web pages."
+        if not any(same(given, self.server.settings["token"]) for given in client_keys(self.headers)):
+            return 401, "authentication_error", "Send the key sparkpipe proxy printed when it started, as x-api-key or Authorization: Bearer."
+        words = self.requestline.split()
+        if len(words) != 3 or words[1] != self.path or self.path.split("?", 1)[0] not in PROXY_PATHS:
+            return 404, "not_found_error", "The proxy forwards only the inference paths of the Fleet API."
+        return None
+
     def request_body(self):
         if self.headers.get("Transfer-Encoding"):
             return self.fail(411, "invalid_request", "Send the request with a Content-Length.")
@@ -1089,17 +1309,25 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
     def forward(self):
         settings = self.server.settings
-        if not self.path.startswith("/"):
-            return self.fail(400, "invalid_request", "Send requests to this proxy with a path such as /v1/messages.")
+        refused = self.refusal()
+        if refused:
+            self.close_connection = True
+            return self.fail(*refused)
+        upgrade = (self.headers.get("Upgrade") or "").lower() == "websocket"
         body = self.request_body()
         if body is None:
             return
         try:
-            connection, response = exchange(settings, self.command, self.path, body or None, outbound(self.headers, settings))
+            connection, response = exchange(settings, self.command, self.path, body or None, outbound(self.headers, settings, upgrade))
+        except ValueError:
+            return self.fail(400, "invalid_request", "The request carries a header that cannot be forwarded.")
         except (OSError, http.client.HTTPException) as error:
-            return self.fail(502, "upstream_error", f"Cannot reach {settings['api']}: {error}")
+            return self.fail(502, "upstream_error", f"Cannot reach {settings['api']}: {type(error).__name__}")
         try:
-            self.relay(response)
+            if upgrade and response.status == 101:
+                self.tunnel(connection, response)
+            else:
+                self.relay(response)
         except (OSError, http.client.HTTPException):
             self.close_connection = True
         finally:
@@ -1126,25 +1354,50 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if not data:
                 return
 
+    def tunnel(self, connection, response):
+        self.close_connection = True
+        self.log_request(101)
+        self.send_response_only(101, response.reason)
+        for name, value in response.getheaders():
+            if name.lower() not in HOP or name.lower() in ("connection", "upgrade"):
+                self.send_header(name, value)
+        self.end_headers()
+        self.wfile.flush()
+        upstream = connection.sock
+        upstream.settimeout(None)
+        sending = threading.Thread(target=pipe, args=(self.rfile, upstream.sendall, upstream), daemon=True)
+        sending.start()
+        pipe(response.fp, self.connection.sendall, self.connection)
+        sending.join(5)
+
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = do_OPTIONS = forward
 
 
-def proxy_server(api, key, fleet, port, retries, max_wait, log=True):
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", port), ProxyHandler)
-    server.daemon_threads = True
-    server.settings = {"api": api, "base": urllib.parse.urlsplit(api).path, "key": key, "fleet": fleet, "retries": retries, "max_wait": max_wait, "log": log}
+class ProxyServer(http.server.ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        sys.stderr.write(f"sparkpipe proxy: a request from {client_address[0]} failed ({sys.exc_info()[0].__name__}).\n")
+
+
+def proxy_server(api, key, fleet, port, retries, max_wait, token, log=True):
+    server = ProxyServer(("127.0.0.1", port), ProxyHandler)
+    server.settings = {"api": api, "base": urllib.parse.urlsplit(api).path, "key": key, "fleet": fleet, "retries": retries, "max_wait": max_wait, "token": token, "log": log}
     return server
 
 
 def proxy(ctx):
     client = ctx.client()
     client.credentials("key")
-    server = proxy_server(ctx.api, client.key, client.fleet, ctx.args.port, ctx.args.retries, ctx.args.max_wait)
+    token = "spl-" + secrets.token_urlsafe(24)
+    server = proxy_server(ctx.api, client.key, client.fleet, ctx.args.port, ctx.args.retries, ctx.args.max_wait, token)
     port = server.server_address[1]
     fleet = f", fleet {client.fleet}" if client.fleet else ""
-    print(f"Proxy for {ctx.api}{fleet} on http://127.0.0.1:{port}. Any API key works; the proxy sends this machine's key.")
-    print(f"  Anthropic clients: base URL http://127.0.0.1:{port}")
-    print(f"  OpenAI clients: base URL http://127.0.0.1:{port}/v1")
+    print(f"Proxy for {ctx.api}{fleet} on http://127.0.0.1:{port}. It sends this machine's key to the fleet.")
+    print(f"  Clients send this key, new each time the proxy starts: {token}")
+    print(f"  Anthropic clients: ANTHROPIC_BASE_URL=http://127.0.0.1:{port} ANTHROPIC_API_KEY={token}")
+    print(f"  OpenAI clients: base URL http://127.0.0.1:{port}/v1 and API key {token}")
+    print("  It forwards only the inference paths, and refuses web pages and requests addressed to other host names.")
     sys.stdout.flush()
     try:
         server.serve_forever()
@@ -1206,7 +1459,7 @@ def fleet_commands(commands, base, fleet):
     claude = leaf(setup, "claude-code", setup_claude_code, [base, fleet], "Configure Claude Code")
     claude.add_argument("--settings", help="the settings file (default ~/.claude/settings.json)")
     codex = leaf(setup, "codex", setup_codex, [base, fleet], "Configure Codex")
-    codex.add_argument("--config", help="the config file (default ~/.codex/config.toml)")
+    codex.add_argument("--config", help="the config file (default ~/.codex/config.toml); the profile sparkpipe.config.toml goes beside it")
     opencode = leaf(setup, "opencode", setup_opencode, [base, fleet], "Configure OpenCode")
     opencode.add_argument("--config", help="the config file (default ~/.config/opencode/opencode.json)")
     for command in (claude, codex, opencode):
@@ -1268,6 +1521,14 @@ def main(argv=None):
     except KeyboardInterrupt:
         print(file=sys.stderr)
         return 130
+    except OSError as error:
+        print(f"sparkpipe: {error.strerror or type(error).__name__}" + (f": {error.filename}" if error.filename else ""), file=sys.stderr)
+        return 1
+    except Exception as error:
+        if os.environ.get("SPARKPIPE_DEBUG"):
+            raise
+        print(f"sparkpipe: stopped on an unexpected {type(error).__name__}. Its message is not shown, because it may hold a key; set SPARKPIPE_DEBUG=1 to see it.", file=sys.stderr)
+        return 70
 
 
 if __name__ == "__main__":
