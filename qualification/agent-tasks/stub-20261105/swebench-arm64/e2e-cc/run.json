@@ -1,0 +1,21 @@
+{
+ "label": "e2e-cc",
+ "harness": "claude-code",
+ "model": "stub-model",
+ "endpoint": "http://host.docker.internal:18433",
+ "dataset": "SWE-bench/SWE-bench_Verified",
+ "dataset_sha256": "faf8fab974e851c5065a84d2a46e6c77ab99143d2f3d0a9922c81105514403dd",
+ "seed": "swebench-verified-1",
+ "tasks": [
+  "sympy__sympy-13480",
+  "psf__requests-2931",
+  "pytest-dev__pytest-7982"
+ ],
+ "agent_sha256": "2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3",
+ "agent_version": "@anthropic-ai/claude-code-linux-arm64@2.1.311 2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3 package/claude\n@openai/codex@0.166.0-linux-arm64 f2e6c980c937e734644bed1b4a9a018d3e63a0ccbe71aafc85c86a8c6e4b462a package/vendor/aarch64-unknown-linux-musl/bin/codex\n",
+ "context": 262144,
+ "timeout_s": 600,
+ "max_turns": 0,
+ "tool_sha256": "fb705d1f4845c071bec52061c1e17e4099970b56f672a5db53de51779bed2782",
+ "utc": "2026-11-05T04:41:35Z"
+}

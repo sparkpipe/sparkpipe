@@ -1,0 +1,24 @@
+{
+    "job_name": "stub-cx-tb21",
+    "jobs_dir": "/Users/cem/sparkpipe-agent-e2e/tb21/jobs",
+    "n_concurrent_trials": 1,
+    "agents": [
+        {
+            "name": "codex",
+            "model_name": "stub-model",
+            "kwargs": {
+                "version": "0.166.0",
+                "config": "/Users/cem/sparkpipe-agent-e2e/tb21/codex-stub.toml"
+            }
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench/terminal-bench-2-1",
+            "ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+            "task_names": [
+                "terminal-bench/fix-git"
+            ]
+        }
+    ]
+}

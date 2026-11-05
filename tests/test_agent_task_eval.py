@@ -186,6 +186,11 @@ def main():
         tool.run(arguments("run", *common, "--harness", "claude-code", "--label", "k3s", "--output", str(stopped), "--stop-after", "0.000001"))
         check(not (stopped / "runs.jsonl").exists() and not any(call[0] == "run" and any("k3s" in part for part in call) for call in docker_calls(log)),
               "a task started after --stop-after")
+        picked = tmp / "picked"
+        tool.run(arguments("run", *common, "--harness", "claude-code", "--label", "k3p", "--output", str(picked), "--instance", first["instance_id"]))
+        check(json.loads((picked / "run.json").read_text())["tasks"] == [first["instance_id"]] and
+              [json.loads(line)["instance_id"] for line in (picked / "runs.jsonl").read_text().splitlines()] == [first["instance_id"]],
+              "--instance did not limit both the run and its planned set")
         os.environ["FAKE_EXIT"] = "124"
         timed = tmp / "timed"
         tool.run(arguments("run", *common, "--harness", "claude-code", "--label", "k3t", "--output", str(timed), "--limit", "1"))
@@ -258,7 +263,7 @@ def main():
     print("PASS test_agent_task_eval: the SWE-bench sample is stratified by repository and repeatable; prepare-agents places the pinned "
           "Linux binaries; each task runs Claude Code or Codex in its own container with the key and agents mounted read-only, never in an "
           "argument or a container file, configured for the public door; transcripts, patches and SWE-bench predictions are saved, timeouts and "
-          "failed starts recorded, every container removed, no task starts after --stop-after, a rerun resumes, the score reads the SWE-bench report, and Harbor "
+          "failed starts recorded, every container removed, no task starts after --stop-after, --instance limits the run and its planned set, a rerun resumes, the score reads the SWE-bench report, and Harbor "
           "Terminal-Bench jobs score as the mean pass rate per task")
 
 

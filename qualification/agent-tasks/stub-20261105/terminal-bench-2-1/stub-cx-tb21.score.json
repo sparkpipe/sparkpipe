@@ -1,0 +1,23 @@
+{
+ "label": "stub-cx-tb21",
+ "harness": "codex",
+ "model": "stub-model",
+ "benchmark": "terminal-bench/terminal-bench-2-1",
+ "planned": 1,
+ "trials": 1,
+ "resolved": 0.0,
+ "pass_rate": 0.0,
+ "empty_patches": 0,
+ "evaluation_errors": 0,
+ "infrastructure_failures": 0,
+ "agent_timeouts": 0,
+ "exceptions": {},
+ "tokens": {
+  "n_input_tokens": 11709,
+  "n_cache_tokens": 0,
+  "n_output_tokens": 24
+ },
+ "agent_seconds_median": null,
+ "passed_tasks": [],
+ "job": "terminal-bench-2-1/stub-cx-tb21"
+}

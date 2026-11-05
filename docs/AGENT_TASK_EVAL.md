@@ -37,9 +37,60 @@ docker run --rm --add-host host.docker.internal:host-gateway curlimages/curl -s 
 The first line opens the tunnel; the second checks it from a container.
 `/api/hello` needs no key and touches no engine.
 
-The published SWE-bench images are x86_64. On an aarch64 host, build them
-from the task repo: `swebench images build`, or `swebench eval ...
---task-repo`. They keep the dataset's image names, which the runner uses.
+### Check the plumbing first, with no fleet
+
+`tools/agent_endpoint_stub.py` is a canned Messages and Responses endpoint.
+Point every command below at it instead of the tunnel.
+
+- **What it replies:** for each task named in `--solve`, the first turn
+  calls the shell tool with `git apply` of the task's gold patch (`Bash`,
+  `exec_command` or `shell`, whichever the agent offers). Any other task
+  gets a harmless look around, and the next turn ends.
+- **What a working setup gives:** the named tasks resolve, the others score
+  as empty patches, and Terminal-Bench tasks get reward 0.
+- **Its log:** every request, with whether `X-SparkPipe-Public: 1` came, and
+  a 12-digit hash of the key, never the key itself.
+
+```sh
+python3 tools/agent_endpoint_stub.py --port 18433 --model stub-model --dataset verified.jsonl \
+  --solve psf__requests-2931,sympy__sympy-13480 --log stub-requests.jsonl
+```
+
+`verified.jsonl` is the dataset with its `patch` field, for example
+`load_swebench_dataset` written out as JSON lines. The run of 2026-11-05 on
+an arm64 Mac with colima is in `qualification/agent-tasks/stub-20261105/`:
+Claude Code and Codex each resolved the 2 of 3 SWE-bench tasks the stub
+solved, and both scored 0 on Terminal-Bench's `fix-git`.
+
+On colima, containers reach the Mac's loopback at `host.docker.internal`
+(with `--add-host host.docker.internal:host-gateway`), and Harbor's task
+networks reach it at 192.168.5.2. Docker volumes see only `$HOME`, so keep
+the agents, the key file and the runs there.
+
+### Images on an arm64 host
+
+The published SWE-bench images (`swebench/sweb.eval.x86_64.*`) are x86_64.
+SWE-bench 4.1's Dockerfiles carry the aarch64 conda builds, but its command
+line always asks for x86_64. `agent_task_eval.py swebench --arch arm64` runs
+that command line with the arch the host has.
+
+```sh
+uv venv swe4 && uv pip install --python swe4/bin/python swebench==4.1.0
+swe4/bin/python tools/agent_task_eval.py swebench --arch arm64 prepare_images --dataset_name princeton-nlp/SWE-bench_Verified \
+  --instance_ids $(python3 -c "import json;print(' '.join(t['instance_id'] for t in json.load(open('qualification/agent-tasks/swebench-verified-50.json'))['tasks']))") \
+  --max_workers 2 --namespace none --tag latest --env_image_tag latest
+```
+
+The first line installs SWE-bench 4.1. The second builds the 50 tasks'
+images. On the Mac, the stub run's base, three environment and three task
+images took 5.5 minutes. Docker reports each task image at about 3.3 GB and
+each environment at 3.2 GB, but they share layers. On colima, the
+SDK-based grader needs
+`DOCKER_HOST=unix://$HOME/.colima/default/docker.sock`.
+
+The images are named `sweb.eval.arm64.<instance_id>:latest`. Pass
+`--image-template 'sweb.eval.arm64.{instance_id_lower}:latest'` to `run`,
+and grade with the same wrapper, as in the next section.
 
 ## The key
 
@@ -99,6 +150,22 @@ python3 tools/agent_task_eval.py score --run runs/glm53-cc --report runs/glm53-c
 
 The three commands run the agent, evaluate the patches, then score the run.
 
+On an arm64 host, the same run uses the local images and the 4.1 grader:
+
+```sh
+python3 tools/agent_task_eval.py run --tasks qualification/agent-tasks/swebench-verified-50.json --harness claude-code --model glm-5.3 \
+  --endpoint http://host.docker.internal:18433 --add-host host.docker.internal:host-gateway --key-file ~/.sparkpipe-bench-key \
+  --agents ~/sparkpipe-agents --context 786432 --timeout 3600 --parallel 4 --stop-after 1800 \
+  --image-template 'sweb.eval.arm64.{instance_id_lower}:latest' --label glm53-cc --output runs/glm53-cc
+mkdir -p runs/glm53-cc/eval && (cd runs/glm53-cc/eval && ../../../swe4/bin/python ../../../tools/agent_task_eval.py swebench --arch arm64 run_evaluation \
+  --dataset_name princeton-nlp/SWE-bench_Verified --predictions_path ../predictions.jsonl --run_id glm53-cc --namespace none --max_workers 3 --report_dir .)
+python3 tools/agent_task_eval.py score --run runs/glm53-cc --report runs/glm53-cc/eval/claude-code__glm-5.3.glm53-cc.json
+```
+
+The paths in the second command assume `runs/` and `swe4/` sit in the
+repository root. `--instance ID`, repeated, limits a run and its planned set
+to those tasks, for a preflight of two or three.
+
 - **Context:** `--context` is the model's `context_tokens` in
   `deployment/hub/chat_frontend.json`. Today that is GLM 5.3 786,432, and
   Kimi K3 and DeepSeek V4.1 Flash 1,048,576.
@@ -113,10 +180,18 @@ The three commands run the agent, evaluate the patches, then score the run.
 
 [Harbor](https://github.com/harbor-framework/harbor) is the official runner.
 Install it with `uv tool install harbor`; 0.25.0 was current on 2026-11-05.
+It needs `docker compose`. On a Mac with Homebrew's Docker CLI, run `brew
+install docker-compose` and link it into `~/.docker/cli-plugins`.
+
 Write the agent's native config with `agent-config`, and put the key and
-base URL in a mode-600 env file. On Linux, point the base URL at the bridge
-address the tunnel binds, because Harbor's task networks do not map
-`host.docker.internal`.
+base URL in a mode-600 env file. Harbor's task networks do not map
+`host.docker.internal`:
+- on Linux, point the base URL at the bridge address the tunnel binds;
+- on colima, at 192.168.5.2.
+
+Harbor installs the agent in each task container from `--ak version=`.
+Task filters take the dataset's prefixed names, such as `-i
+terminal-bench/fix-git`.
 
 ```sh
 python3 tools/agent_task_eval.py agent-config --harness claude-code --endpoint http://172.17.0.1:18433 --model glm-5.3 --context 786432 --output cc-glm53.json
@@ -132,10 +207,15 @@ benchmark, then score the job.
 - **Codex:** use `agent-config --harness codex`, an env file holding
   `SPARKPIPE_API_KEY`, `-a codex --ak version=0.166.0 --ak
   config=codex-glm53.toml`.
-- **Preflight:** run two or three tasks with `-l 3` or a task filter, and
-  check the job's transcripts show requests reaching the chat layer.
-  DeepSeek ran Terminal-Bench 2.1 without network access, while here the
-  agent inside the task container must reach the fleet.
+- **Preflight:** first run `-i terminal-bench/fix-git` against the stub. It
+  is a light task: a Python slim base, 1 CPU, 2 GB, internet allowed. It
+  takes about three minutes on the Mac, and its trial must finish with no
+  exception and reward 0. Then run two or three tasks against the fleet with
+  `-l 3`, and check that the transcripts show requests reaching the chat
+  layer.
+- **Network:** every Terminal-Bench 2.1 task sets `allow_internet = true`,
+  which the agent needs to reach the endpoint. DeepSeek's own runs had no
+  network access, so check this before comparing.
 - **Scoring:** `harbor-score` averages each task's attempts, so `-k 3` gives
   pass@1 over 3, as DeepSeek reports.
 

@@ -2,12 +2,15 @@
 import argparse
 import concurrent.futures
 import hashlib
+import inspect
 import json
 import os
 import re
+import runpy
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -81,6 +84,12 @@ def select(arguments):
     for row in chosen:
         repos[row["repo"]] = repos.get(row["repo"], 0) + 1
     print(json.dumps({"count": len(chosen), "repos": repos}))
+
+
+def task_image(task, template):
+    if not template:
+        return task["image"]
+    return template.format(instance_id=task["instance_id"], instance_id_lower=task["instance_id"].lower())
 
 
 def container_name(label, instance_id):
@@ -183,7 +192,7 @@ def run_task(task, arguments, docker, output, lock, deadline):
         return None
     name = container_name(arguments.label, task["instance_id"])
     record = {"instance_id": task["instance_id"], "repo": task.get("repo"), "difficulty": task.get("difficulty"), "harness": arguments.harness,
-              "model": arguments.model, "image": task["image"], "label": arguments.label, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+              "model": arguments.model, "image": task_image(task, arguments.image_template), "label": arguments.label, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     started = time.monotonic()
     log_path = output / "logs" / f"{task['instance_id']}.jsonl"
     docker.call(["rm", "-f", name])
@@ -194,7 +203,7 @@ def run_task(task, arguments, docker, output, lock, deadline):
             run += ["--add-host", host]
         if arguments.network:
             run += ["--network", arguments.network]
-        made = docker.call(run + [task["image"], "sleep", "infinity"], timeout=1800)
+        made = docker.call(run + [record["image"], "sleep", "infinity"], timeout=1800)
         if made.returncode != 0:
             record["error"] = "container: " + made.stderr.decode(errors="replace")[-400:]
             return record
@@ -249,12 +258,13 @@ def run(arguments):
         (output / directory).mkdir(parents=True, exist_ok=True)
     document = json.loads(Path(arguments.tasks).read_text())
     done = finished(output)
-    tasks = [task for task in document["tasks"] if task["instance_id"] not in done][:arguments.limit or None]
+    wanted = set(arguments.instance or [])
+    tasks = [task for task in document["tasks"] if task["instance_id"] not in done and (not wanted or task["instance_id"] in wanted)][:arguments.limit or None]
     meta = output / "run.json"
     if not meta.exists():
         meta.write_text(json.dumps({"label": arguments.label, "harness": arguments.harness, "model": arguments.model, "endpoint": arguments.endpoint,
                                     "dataset": document.get("dataset"), "dataset_sha256": document.get("dataset_sha256"), "seed": document.get("seed"),
-                                    "tasks": [task["instance_id"] for task in document["tasks"]], "agent_sha256": hashlib.sha256(agent.read_bytes()).hexdigest(),
+                                    "tasks": [task["instance_id"] for task in document["tasks"] if not wanted or task["instance_id"] in wanted], "agent_sha256": hashlib.sha256(agent.read_bytes()).hexdigest(),
                                     "agent_version": (Path(arguments.agents) / "VERSIONS").read_text() if (Path(arguments.agents) / "VERSIONS").exists() else None,
                                     "context": arguments.context, "timeout_s": arguments.timeout, "max_turns": arguments.max_turns,
                                     "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -355,6 +365,19 @@ def report(arguments):
     print("\n".join(rows))
 
 
+def swebench_cli(arguments):
+    from swebench.harness.test_spec import test_spec as spec_module
+    function = spec_module.make_test_spec
+    names = [name for name, parameter in inspect.signature(function).parameters.items() if parameter.default is not inspect.Parameter.empty]
+    if "arch" not in names:
+        raise SystemExit("agent_task_eval: this swebench's make_test_spec takes no arch")
+    defaults = list(function.__defaults__)
+    defaults[names.index("arch")] = arguments.arch
+    function.__defaults__ = tuple(defaults)
+    sys.argv = [arguments.module] + arguments.rest
+    runpy.run_module(f"swebench.harness.{arguments.module}", run_name="__main__", alter_sys=True)
+
+
 def prepare_agents(arguments):
     target = Path(arguments.output)
     target.mkdir(parents=True, exist_ok=True)
@@ -407,6 +430,8 @@ def build_parser():
     runner.add_argument("--parallel", type=int, default=1)
     runner.add_argument("--limit", type=int, default=0)
     runner.add_argument("--stop-after", type=float, default=0.0)
+    runner.add_argument("--instance", action="append")
+    runner.add_argument("--image-template")
     runner.add_argument("--network")
     runner.add_argument("--add-host", action="append")
     runner.add_argument("--docker", default="docker")
@@ -431,6 +456,10 @@ def build_parser():
     configure.add_argument("--output", required=True)
     reporter = commands.add_parser("report")
     reporter.add_argument("runs", nargs="+")
+    harness = commands.add_parser("swebench")
+    harness.add_argument("--arch", required=True, choices=("x86_64", "arm64"))
+    harness.add_argument("module", choices=("prepare_images", "run_evaluation"))
+    harness.add_argument("rest", nargs=argparse.REMAINDER)
     preparer = commands.add_parser("prepare-agents")
     preparer.add_argument("--platform", required=True, choices=sorted(CODEX_PLATFORM_TAGS))
     preparer.add_argument("--claude-code")
@@ -441,7 +470,7 @@ def build_parser():
 
 def main():
     arguments = build_parser().parse_args()
-    {"select": select, "run": run, "score": score, "harbor-score": harbor_score, "agent-config": agent_config, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
+    {"select": select, "run": run, "score": score, "harbor-score": harbor_score, "agent-config": agent_config, "swebench": swebench_cli, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
 
 
 if __name__ == "__main__":
