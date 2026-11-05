@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from pathlib import Path
 
 try:
@@ -476,7 +476,7 @@ def hour_price(state, fleet, hours):
         price = Decimal(hours) * Decimal(str((state.get("bookings") or {})["hourHC"])) * Decimal(str(found["rate"]))
     except (KeyError, TypeError, InvalidOperation):
         raise Failure("The market did not give the price of an hour and the fleet's Rate.")
-    return price.quantize(Decimal("0.000001"))
+    return price.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
 
 
 def book_week(ctx):

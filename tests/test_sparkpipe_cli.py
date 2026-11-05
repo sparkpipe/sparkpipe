@@ -336,8 +336,9 @@ def check_units(failures):
         refused(failures, lambda: cli.token_name(name), f"the token name {name!r} is accepted")
     expect(failures, (cli.percent("0.1"), cli.percent(0.05), cli.percent("0.125"), cli.percent("0"), cli.percent(None)) == ("10%", "5%", "12.5%", None, None),
            "a discount is not shown as a percentage")
-    state = {"bookings": {"hourHC": 1, "weekHC": 144}, "fleets": [{"id": "F1", "rate": 1.5}, {"id": "F3", "rate": 2}]}
+    state = {"bookings": {"hourHC": 1, "weekHC": 144}, "fleets": [{"id": "F1", "rate": 1.5}, {"id": "F3", "rate": 2}, {"id": "F5", "rate": "0.3333337"}]}
     expect(failures, str(cli.hour_price(state, "F1", 2)) == "3.000000" and str(cli.hour_price(state, "F3", 5)) == "10.000000", "the price of hours is not hours x hourHC x Rate")
+    expect(failures, str(cli.hour_price(state, "F5", 1)) == "0.333333", "the price of hours is not rounded down to a millionth of an HC as the market charges it")
     refused(failures, lambda: cli.hour_price(state, "F9", 1), "hours of a fleet that is not on the Fleet List are priced")
     env = cli.claude_env(cli.API, KEY, "kimi-k3+core", "kimi-k3+core", 1000000)
     spec = {"ANTHROPIC_BASE_URL": "https://sparkpipe.ai/pay/api", "ANTHROPIC_AUTH_TOKEN": KEY, "ANTHROPIC_MODEL": "kimi-k3+core", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k3+core",
