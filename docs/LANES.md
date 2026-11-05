@@ -18,7 +18,6 @@ whether the fleet still matches.
 | `context_reason` | required while `context_tokens` is below the contract maximum: what holds it there |
 | `kv_physical_pages_cap` | optional: keeps the device KV pool below this many pages, for a lane that must leave room on purpose (co-resident sets). Without it the device pool may grow to what the node budget leaves the model: `(weightd device_bytes_max - node_memory_bytes) / kv_page_bytes`, at most 4,194,302 pages (the pool metadata bound). The rendered `kv_physical_page_capacity` is that number and the rendered logical capacity is the larger of it and `kv_logical_pages` |
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
-| `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
 | `memory_max` | the residentd unit's MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes it (and the socket, state budget and expert pool cap) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry the record's values |
@@ -45,8 +44,15 @@ weightd runs with.
   grows on demand, so the scheduler's physical capacity is the most the
   model can hold alone on the node, not a reservation;
 - the record renders: physical pages hold one sequence, logical pages hold
-  every resident sequence at full length, the backing holds the parked
-  pages, recurrent checkpoint memory holds two per sequence plus two;
+  every resident sequence at full length, the backing holds every logical page
+  beyond the one sequence the pool's minimum keeps resident, plus two in flight
+  (`kv_backing_maximum_bytes`, derived, never a record field): the pool grows
+  only after the arena has parked, and a pool other lanes hold at its minimum
+  parks everything past one sequence; recurrent checkpoint memory holds two per
+  sequence plus two;
+- no record names `kv_backing_bytes` or `kv_snapshot_bytes`, and the document
+  names no `kv_partition_reserve_bytes`: every lane's KV on disk shares the
+  node's 500 GB quota ([`docs/INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh));
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
   `deployment/hub/chat_frontend.json` is the record's;
@@ -98,7 +104,20 @@ LiteLLM serve the same contexts.
 
 `push` writes one record's rendered files to the nodes and the hub, keeps
 every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
-not touch binaries, packs or KV, so a lane restart picks the change up.
+not touch binaries, packs or KV, so a lane restart picks the change up. That
+includes a pack switch, such as a precision change: `lane.sh start` takes the
+expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
+from the `.sha256` beside the pack `config/adapter.json` names, and the spine
+budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
+describe the pack the lane was first staged with. A configured pack without
+its sidecar refuses to start. A dense lane (DeepSeek V4.1 Flash) names a pack
+link inside its own `packs/`; residentd reads exactly one `packs/*.sha256`,
+so that lane keeps the `packs/pack.sha256` setup writes from the pack, and
+`lane.sh start` refuses when it is missing. The release precheck applies the
+same rule through `tools/release_packs.py`, which prints every rank's pack
+and digest file. `lane.sh pack` prints the configured pack, and
+the swap controller's weight-warm commands warm `$(./lane.sh pack)` rather
+than the link the lane was staged with.
 
 `SPARK_LANES=<file>` renders, audits or pushes from another copy of the
 records, which is how a gate tries a raised record before it is committed.

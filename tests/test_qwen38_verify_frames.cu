@@ -46,7 +46,7 @@ struct SmallMax : Qwen38MaxGeometry<SPARK_QWEN38_MAX_STAGE_TP_DEGREE>
 	static const char *Tag(void) { return "qwen3.8-max"; }
 };
 
-struct SmallFlash : Qwen38FlashGeometry<SPARK_QWEN38_FLASH_STAGE_TP_DEGREE>
+struct SmallFlash : Qwen38FlashGeometry<SPARK_QWEN38_FLASH_STAGE_TP_DEGREE, QWEN38_FLASH_EXPERT_CODEC, QWEN38_FLASH_PLE_TABLE_CODEC>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1280u;
@@ -94,6 +94,12 @@ static uint8_t *Bytes(uint64_t count, uint32_t kind)
 template<class G>
 static void Experts(uint64_t rows, uint64_t columns, const uint8_t **payload, const uint8_t **scale)
 {
+	if constexpr ( G::kExpertCodec == SPARK_WEIGHT_CODEC_BF16 )
+	{
+		*payload = (const uint8_t *)Matrix((uint64_t)G::kLocalExperts * rows, columns);
+		*scale = 0;
+		return;
+	}
 	const uint64_t scale_bytes = SparkWeightCodecScaleBytes(SPARK_WEIGHT_CODEC_NVFP4_E2M1, G::kLocalExperts, rows, columns);
 	uint8_t *scales = Bytes(scale_bytes, 2u);
 	const float *global = Tensor<float>(G::kLocalExperts, 0.0f, 0.5f / sqrtf((float)columns));
@@ -211,8 +217,16 @@ struct VfRig
 		state->ple_norm_query = Norm(S::kResidual);
 		state->ple_norm_conv = Norm(S::kResidual);
 		state->ple_conv_weight = Tensor<uint16_t>((uint64_t)S::kResidual * G::kPleConv, 0.5f, 0.0f);
-		state->ple_table = Bytes((uint64_t)rows * G::kPleHeadDim, 0u);
-		state->ple_table_scale = Tensor<float>(1u, 0.0f, 0.5f);
+		if constexpr ( G::kPleTableCodec == SPARK_WEIGHT_CODEC_BF16 )
+		{
+			state->ple_table = (const uint8_t *)Tensor<uint16_t>((uint64_t)rows * G::kPleHeadDim, 0.5f, 0.0f);
+			state->ple_table_scale = 0;
+		}
+		else
+		{
+			state->ple_table = Bytes((uint64_t)rows * G::kPleHeadDim, 0u);
+			state->ple_table_scale = Tensor<float>(1u, 0.0f, 0.5f);
+		}
 		Need(cudaMalloc(&device[0], multipliers.size() * sizeof(int64_t)) == cudaSuccess &&
 			cudaMalloc(&device[1], primes.size() * sizeof(int64_t)) == cudaSuccess && cudaMalloc(&device[2], offsets.size() * sizeof(int64_t)) == cudaSuccess &&
 			cudaMemcpy(device[0], multipliers.data(), multipliers.size() * sizeof(int64_t), cudaMemcpyHostToDevice) == cudaSuccess &&

@@ -104,10 +104,8 @@ def deployment_gates(deployment, runtime_root, socket, failures):
               f"node {i}: kv backing cap must be finite")
         check(node.get("kv_snapshot_directory") == runtime_root + "/kvsnapshot", failures,
               f"node {i}: the KV binding refuses a deployment without a snapshot store under the root")
-        check(0 < node.get("kv_snapshot_maximum_bytes", 0) < 1 << 40, failures,
-              f"node {i}: kv snapshot cap must be finite")
-        check(0 < node.get("kv_partition_reserve_bytes", 0) < 1 << 42, failures,
-              f"node {i}: the snapshot store needs a partition reserve it keeps free")
+        check("kv_snapshot_maximum_bytes" not in node and "kv_partition_reserve_bytes" not in node, failures,
+              f"node {i}: the node KV quota replaces the per-lane snapshot cap and the partition reserve")
         endpoint = node["control_endpoint"]
         host = f"spark{HEX[i]}"
         check(endpoint["host"] == host, failures,
@@ -286,12 +284,12 @@ def main() -> int:
         record = lane.recurrent_page_bytes("tp4pp4")
         check(record == 29638656 and lane.recurrent_page_bytes("tp16") == 28403712, failures,
               "the KDA record per logical page is the KV binding's recurrent lane bytes")
-        minimum = lane.kv_backing_minimum("tp4pp4", limits["kv_physical_page_capacity"], limits["kv_logical_page_capacity"])
+        minimum = lane.kv_backing_minimum("tp4pp4", lane.KV_PAGES_PER_SEQUENCE, limits["kv_logical_page_capacity"])
         check(lane.kv_page_bytes("tp16") == 24 * 64 * 576 * 2 // 16, failures,
               "a TP16 rank holds one sixteenth of every MLA layer's page")
-        check(all(node["kv_backing_maximum_bytes"] >= minimum >= (limits["kv_logical_page_capacity"] - limits["kv_physical_page_capacity"] + 2) * lane.kv_page_bytes("tp4pp4")
+        check(all(node["kv_backing_maximum_bytes"] == minimum >= (limits["kv_logical_page_capacity"] - lane.KV_PAGES_PER_SEQUENCE + 2) * lane.kv_page_bytes("tp4pp4")
                   for node in deployment["nodes"]), failures,
-              "the default KV backing holds the spilled pages")
+              "the KV backing is exactly the spilled pages the lane geometry parks")
         short = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
              "--runtime-root", runtime_root,
@@ -299,8 +297,8 @@ def main() -> int:
              "--kv-backing-bytes", str(minimum - 1),
              "--output-dir", str(Path(temporary) / "short")],
             capture_output=True, text=True)
-        check(short.returncode != 0 and "spilled" in short.stderr, failures,
-              "a KV backing below the spilled pages is refused")
+        check(short.returncode != 0 and "unrecognized arguments: --kv-backing-bytes" in short.stderr, failures,
+              "a per-lane KV backing size is no longer a lane setting")
         states = lane.state_memory_minimum("tp4pp4", limits["resident_sequence_capacity"])
         tight = subprocess.run(
             [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
@@ -328,7 +326,6 @@ def main() -> int:
                 [sys.executable, str(ROOT / "tools/k3_multidev_lane.py"),
                  "--runtime-root", runtime_root,
                  "--weightd-socket", socket_path,
-                 "--kv-backing-bytes", str(40 * 10 ** 9),
                  "--output-dir", str(Path(temporary) / "refused"), *arguments],
                 capture_output=True, text=True)
             check(refused.returncode != 0 and message in refused.stderr, failures, refusal)
@@ -337,7 +334,6 @@ def main() -> int:
              "--runtime-root", runtime_root,
              "--weightd-socket", socket_path,
              "--sequences", "4", "--kv-pages", "64", "--kv-physical-pages-cap", "64",
-             "--kv-backing-bytes", str(40 * 10 ** 9),
              "--output-dir", str(Path(temporary) / "defaulted")],
             capture_output=True, text=True)
         limits = json.loads((Path(temporary) / "defaulted" / "deployment.json").read_text())["runtime_limits"] if defaulted.returncode == 0 else {}
@@ -348,7 +344,6 @@ def main() -> int:
              "--runtime-root", runtime_root,
              "--weightd-socket", socket_path,
              "--sequences", "4", "--kv-pages", "64",
-             "--kv-backing-bytes", str(40 * 10 ** 9),
              "--output-dir", str(Path(temporary) / "filled")],
             capture_output=True, text=True)
         budget = (stage_lane.lane_records()["weightd"]["device_bytes_max"] - stage_lane.MODELS["k3"]["node_memory_bytes"]) // lane.kv_page_bytes("tp4pp4")
@@ -363,7 +358,6 @@ def main() -> int:
                  "--runtime-root", runtime_root,
                  "--weightd-socket", socket_path,
                  "--rows", str(rows),
-                 "--kv-backing-bytes", str(40 * 10 ** 9),
                  "--output-dir", str(wide_dir)],
                 capture_output=True, text=True)
             wide_limits = json.loads((wide_dir / "deployment.json").read_text())["runtime_limits"] if wide.returncode == 0 else {}

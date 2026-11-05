@@ -23,6 +23,36 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Mesh collectives
 
+- Prefill sums go pair-first (2026-11-02, unproven on the fleet). The stage
+  runner turns a family's BF16 all-reduce into the pair-first all-reduce
+  (`SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`, chosen by
+  `StageRunnerSumOperation` in `inference/runner/stage_runner.cu`) when the
+  dispatch is a prefill and not a verify, the round is not split into begin
+  and finish, and the collective takes the size: an even degree of 4 or more
+  with peer routes and rank segments above 131,096 values (342 rows or more
+  at 6,144 wide and 16 ranks). Both prefill lanes of a wave (#1707) share the
+  runner's one collective, and each lane carries its own dispatch's rule.
+  Every model on the stage runner gets it, K3's own all-reduce rounds
+  included; decode, verify frames, graph-captured steps (16 rows or fewer)
+  and smaller waves keep the plain all-reduce bit for bit. Pair sums stay in
+  fp32 through the group sum (#1740), so a prefill sum has the plain
+  all-reduce's one BF16 rounding but adds pairs first. On one GPU with an
+  emulated transport (`tp_mesh_hardware_probe --pair-allreduce`) the result
+  equals that pairwise fp32 reference element for element at 4, 8 and 16
+  ranks and 2,048 and 4,096 rows of 6,144. On the fleet (2026-11-03), with
+  pair sums still rounded to BF16, the teacher-forced score against the
+  plain all-reduce moved 0.01-0.10 nats per token (GLM 5.3 Flash and
+  DeepSeek V4.1 Flash about 0.10, Solar Open 2 0.05, K-EXAONE 2.0 0.02,
+  Qwen 3.8 27B 0.01) against a same-build floor of exactly 0; the fp32
+  version is still to be scored, and what remains after it is the order
+  question below. Open: fleet timing against the plain
+  all-reduce (`mesh_round_bench` operation 7 against 1), and the A/B on
+  glm-5.3-flash, glm-5.3, deepseek-v4.1-flash, k-exaone-2.0 and solar-open-2
+  (decode EXACT, prefill NLL and top-1 within the same-build noise floor,
+  LONG_CHARS 200000 prefill faster, no WD-TRANSFER-STUCK), run with the
+  pipelined-boundary fix underneath and rerunning the 2026-11-02 GLM
+  long-prompt gate that failed without it.
+
 - Every hardware-wait round still crosses weightd's CPU relay once: the GPU
   publishes its payload and doorbell cell, and weightd's doorbell sweep
   (`SparkWeightdMeshDoorbellSweep`, `node/weightd_mesh.c`) posts the RDMA
@@ -91,7 +121,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   by a 16-rank fleet ladder and GLM-5.3 Full T1, accuracy gate, B16, B256+ and
   TTFT A/B against the switch-only collective with root-filesystem checksums
   unchanged on every node.
-- **Pair-first sums are not bit-identical to the rank-order sum.** The pair-first reduce-scatter (K3's paired prefill waves, op 6) now keeps pair sums in fp32 (accuracy equal to the plain reduce-scatter), but adds pairs first, so the last BF16 bit of a few elements can differ from the rank-order sum the other algorithms use. That breaks the README invariant that switching algorithm never changes a result bit. Fix: make the pairwise fp32 order canonical for every sum algorithm (direct, reduce-scatter, all-reduce), a one-time ulp-level change on every model, or keep pair-first off where bit identity with other algorithms matters. Owner decision.
 - Left out on purpose (2026-10-02): decode communication is not overlapped
   with compute. Single-sequence prefill waves of 512 rows or more run as two
   half-wave lanes on their own streams, whose collectives overlap the other
@@ -339,6 +368,12 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (576 wide), so each head and key pair costs 1,408 FLOPs where expanded
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
   2.0 s of a 3.6 s wave.
+- DSV4.1's landing path attends 4 heads per block on tensor cores, padded to
+  32 query slots, so 7 of every 8 slots repeat work: 1.3x the scalar kernel
+  where 64 heads get 7.5-9.4x (docs/KERNEL_PLAYBOOK.md, Latent shard
+  attention). A kernel that unions a block's rows' selected keys, the way GLM
+  5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
+  paths must move together because they agree bit for bit.
 
 ## Placement beyond TP16
 
@@ -437,15 +472,33 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - Enforce the internal NVMe tiers as validated directories with byte budgets
   on the existing root filesystem (owner 2026-10-03: no repartitioning). KV
   has its tier: each deployment node names its `kv_partition`, residentd
-  refuses KV directories off it, and `kv_backing_maximum_bytes` and
-  `kv_snapshot_maximum_bytes` bound its stores (`node/model_residentd.c`,
-  `runtime/model_resident_deployment.c`). Every snapshot store keeps the
-  node's `kv_partition_reserve_bytes` (512 GiB) free on the partition and
-  evicts its oldest files before a write that would take the partition below
-  it. The active model shard tier (1 TB) has no named directory, byte budget or
-  startup check, so a shard copy can still take the partition below the
-  reserve; the KV stores give the space back only on their next write, and an
-  idle model's store keeps its files until the 24-hour expiry.
+  refuses KV directories off it, and the node's own KV on disk shares one
+  500 GB quota in the node ledger
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). The ledger counts only
+  KV, not free space: the active model shard tier (1 TB), user scratch and the
+  pair mirror have no ledger of their own, so a partition that holds less
+  free space than the quota fails KV writes with `ENOSPC` (refused, never
+  partial). Close it with a startup check per tier that the partition can
+  hold every tier's quota at once.
+- A running lane reserves its whole worst-case spill backing in the node KV
+  quota (logical pages less one sequence, 15 to 96 GiB per lane), although the
+  file is sparse and a lane whose pool grows parks little. Two follow-ups:
+  - the ledger should count backing pages as they park, not the maximum, so
+    the reservation does not evict snapshot files it never needs;
+  - the arena parks before the pool grows (`SparkStageKvBindingPoolTick` grows
+    after it sees evictions), so a long fill writes pages to NVMe while device
+    memory is free; growing before parking, when weightd has unlent chunks,
+    keeps those pages resident.
+- The node KV quota is in code and host tests only
+  ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). Close it on the fleet:
+  two lanes on one node fill the 500 GB, the ledger's `used_bytes` stays at or
+  under the quota, the lane holding the oldest files frees them for the other
+  (`freed ... of the ... bytes the node KV quota asked`), a stopped lane's
+  oldest files are deleted for a running one (`was closed and held the node's
+  oldest KV`), and no lane logs `refused a ... file for the node KV quota`
+  while snapshot files remain. Eviction is oldest first to the minute for a
+  stopped lane (its files are cut by one-minute age buckets) and exact for a
+  running one.
 - Reserve at least 1 TB of every external NVMe for direct rank-local model
   access and combine the remaining capacity into the selected striped,
   failure-aware model-data pool.
@@ -617,14 +670,14 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`index full, reach max htree level :2` on lenovo7 and spark0); links a page
   to its parent and its orphans through one hash chain instead of a scan of
   the index (a write cost 13.6 ms at 1.8 million files, 1.5 ms now); scans
-  the shards on eight threads; and keeps the partition reserve. A lenovo7
+  the shards on eight threads; and shares the node KV quota. A lenovo7
   bench with cold caches opened 2.27 million K3-sized files in 3.0 s with a
-  431 MB index and 4.53 million in 7.6 s with 952 MB. The budgets are 256 GiB
-  per rank for the four core models and 64 GiB for the others. Not yet proven
+  431 MB index and 4.53 million in 7.6 s with 952 MB. Every lane now shares
+  the node's 500 GB quota instead of a budget of its own. Not yet proven
   on the fleet: a K3 store past 8 GiB that restores an older 500K
   conversation with `cached_tokens` covering it and tokens equal to an
   uninterrupted run; a K3 -> GLM -> K3 swap that restores a 270K conversation
-  in under 15 s; a store at its budget that keeps the newest conversations
+  in under 15 s; a node at its quota that keeps the newest conversations
   whole while older ones go tip-first; and the first open that removes the
   previous layout's flat files.
 - Crash recovery of the KV snapshot store has not run on the fleet. The store
@@ -985,6 +1038,60 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Packaging and provenance
 
+- Precision variants (README, Packs and Models; the Fleet List's "Choosing a
+  precision"): only each model's default precision serves. Still to build:
+  - one lane record, swap entry, chat-layer and LiteLLM name and Open WebUI
+    entry per variant, first for the packs already on every node: GLM 5.3
+    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4;
+  - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide
+    blocks with FP8 scales) for models with no publisher or community
+    variant: K-EXAONE 2.0, Solar Open 2, Gemma 4, Ling 3.0, Laguna, Muse
+    Glimmer and the 4-bit variants of GLM 5.3, Qwen 3.8 27B, A.X K2, HY4 and
+    MiMo;
+  - the families whose stages still hard-code their formats (Kimi K3,
+    DeepSeek V4.1 Flash, HY4, MiMo, Gemma 4, Ling 3.0, Laguna, Solar Open 2,
+    K-EXAONE 2.0, Muse Glimmer) moved onto the codec layer, one PR a family,
+    and a dry-law check that no stage or packer names a format;
+  - the accuracy gate per variant (paired NLL and distribution comparison,
+    the long-context depth comparison, ds4-eval 92) and the Fleet List's
+    per-variant speed, accuracy and cache capacity generated from its
+    receipts instead of written by hand;
+  - an EXL3 codec on both backends, once a survey shows which models have
+    good EXL3 builds;
+  - Qwen 3.8 Max's FP8 default needs two fleets (the pipeline item under
+    Placement beyond TP16).
+- The GLM 5.3 Flash stage registers its expert arena with weightd under the
+  FP8 checkpoint's revision (`WeightdRevision()` in
+  `spark_glm53_flash_tp16_stage_model.h` returns `84c6a6aa…`) in the BF16
+  build too, so the swap controller's warm has to name that revision for the
+  BF16 lane (`tests/test_glm53_flash_warm_identity.py`). Take the revision
+  from the build's `GLM53_FLASH_MODEL_REVISION`, as GLM 5.3 Full's stage
+  does, and move the warm to `f12e0fe1…` in the same change.
+- DeepSeek V4.1 Flash, the one dense lane, still reaches its pack and its
+  engram shard through links under its lane root (`packs/rankN.spstage`,
+  `packs/engram.spengram`, `packs/engram_tables.bin`) beside 16-byte
+  zero-range manifests, against the rule that lanes name real weight files.
+  On 2026-11-04 the release precheck found the pack links gone on all 16
+  nodes; they were recreated so the release could ship. Because the pack sits
+  in `packs/`, its digest is the lane's single `packs/pack.sha256` (residentd
+  reads exactly one), a rule `lane.sh start` and `tools/release_packs.py`
+  carry for this one lane. #1723 and #1736 name the real files and keep the
+  zero-range manifests and the engram files in the pack directory, which
+  removes the rule.
+- Lanes below the precision the README promises (publisher precision whenever
+  it fits one fleet). None of them has an accuracy-equivalence result, so none
+  may stay below it:
+  - GLM 5.3 Full at BF16 serves 786,432 positions, not the model's 1,048,576:
+    its 98 GB of weights a rank leave a 1M-position sequence's KV minimum
+    (6.5 GB) outside weightd's 6.9 GB memory margin. The FP8 build serves 1M;
+    a per-request FP8 option (the per-request precision item) or a second
+    fleet would serve both.
+  - Qwen 3.8 Max serves a vetted NVFP4 build because the vendor's FP8 experts
+    (about 170 GB per rank) do not fit one fleet; it moves to FP8 once two
+    fleets serve it as two pipeline stages.
+  - Each switch is gated on next-token accuracy and NLL over natural text
+    (coord `sprint-1102/nllkit`) against the lane it replaces, plus decode and
+    prefill speed.
 - License follow-ups (2026-10-18; the code is Apache-2.0 and NOTICE covers
   every third-party file kept in the tree):
   - The HY4 reference tools and module were first written against
@@ -1434,15 +1541,10 @@ Metal backend and the single-Studio stage are in
     the arena that survives a code-only redeploy, is CUDA VMM only;
   - a lane record, model description and swap-controller entry for the
     Studio target (`metal.apple10`);
-  - one frame chooser. Until the batch engine drives the device runner,
-    `tools/metal_stage_run.c` chooses speculative frames itself on the
-    common cost model (`src/spark_speculation_frame.c`). That includes the
-    rule that a first probe frame may cost at most the cost model's margin
-    over a plain step (one draft where no frame is that cheap), which took
-    Metal prose from a 0.5% loss to a 0.4% gain. The batch engine (`runtime/model_batch_engine.c`) has its own
-    chooser. Fold both into one function in `src/` that the engine and every
-    backend call, and check whether the probe rule also helps the CUDA
-    lanes' prose speculation.
+  - one frame driver. Until the batch engine drives the device runner,
+    `tools/metal_stage_run.c` assembles its own frame requests; the choice
+    itself, including the probe rule that took Metal prose from a 0.5% loss
+    to a 0.4% gain, is `SparkSpeculationFrameChoose` for both.
 - Map the numerics gate's resolution at BF16. The gate now judges the Studio
   stage against the reference's own reduction-order floor (mean KL at most
   2 times, top-1 disagreement at most 1.5 times, a paired block test at 3
