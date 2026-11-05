@@ -61,9 +61,10 @@ def site(work, serving=True):
     (work / "pool_key").write_text(POOL_KEY + "\n")
 
 
-def live(work, name, mailbox, upstream=None):
+def live(work, name, mailbox, upstream=None, extra=None):
     env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
-           "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key")}
+           "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key"), "SPARKPIPE_PAY_HEALTH_SECONDS": "0"}
+    env.update(extra or {})
     if upstream:
         env["SPARKPIPE_POOL_UPSTREAM"] = f"http://127.0.0.1:{upstream.server_address[1]}/v1"
     sp.clock = lambda: NOW[0]
@@ -145,6 +146,9 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
     def generic(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
+        if self.path == "/health" and self.command == "GET":
+            healthy = getattr(self.server, "healthy", True)
+            return self.answer(200 if healthy else 503, {"ok": healthy})
         self.record(body)
         fleet = self.headers.get("X-SparkPipe-Fleet")
         if self.path == "/v1/chat/completions":
@@ -729,8 +733,8 @@ def holders_and_maintenance(failures, app, m, port, state):
     status, kind, raw = call(port, "GET", "/availability.txt")
     if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving demo\nF3 serving pinned\nF4 serving available\nF5 serving available\nwaitlist locks 3\n"):
         failures.append(f"availability.txt: {status} {kind} {raw[-120:]!r}")
-    if client(app, port, C)("POST", "/market/sandbox/clock", {"hours": 1})[0] != 404:
-        failures.append("the live service moves its clock")
+    if client(app, port, C)("POST", "/market/sandbox/clock", {"hours": 1})[0] != 404 or client(app, port, C)("POST", "/market/sandbox/fleet", {"fleet": "F3", "up": False})[0] != 404:
+        failures.append("the live service moves its clock or takes a Fleet down on request")
 
 
 def deadline(failures, app, m, mailbox, state):
@@ -1248,6 +1252,126 @@ def pair_loss(failures, app, m, port, W, O, fleet):
         failures.append(f"a pair loss reported again after a crash is credited twice, or its notice is lost: {replayed} {again} {told}")
 
 
+def probe(app, moment, *states):
+    NOW[0] = moment
+    for upstream, healthy in states:
+        upstream.healthy = healthy
+    app.uptime.probe_all()
+    app.market.tick()
+
+
+def downtime_lots(app, account):
+    return [(lot["first"], [market.kst_text(market.slot_time(hour))[5:16] for hour in lot["hours"]]) for lot in app.book.market.lots[account] if lot["source"] == "downtime"]
+
+
+def public_status(port):
+    status, _, raw = call(port, "GET", "/status")
+    return status, {f["id"]: f for f in json.loads(raw)["fleets"]} if status == 200 else {}
+
+
+def uptime_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    one, two = (tp.serve(FakeUpstream, seen=[], calls=[], healthy=True) for _ in range(2))
+    extra = {"SPARKPIPE_FLEET_UPSTREAMS": f"F4=http://127.0.0.1:{two.server_address[1]}/v1"}
+    server, app, port = live(work, "uptime", mailbox, one, extra)
+    saved, sp.UPTIME_GAP_SECONDS = sp.UPTIME_GAP_SECONDS, 10 ** 9
+    try:
+        NOW[0] = kst(2027, 1, 8, 12)
+        H, R = person(app, "held", 1000), person(app, "renter", 100)
+        app.market.book_weeks(H, {"fleet": "F3", "weeks": 3})
+        planned = app.market.schedule_maintenance("F3", "2027-01-25")
+        NOW[0] = kst(2027, 1, 11, 12)
+        app.market.book_hours(R, {"fleet": "F4", "start": slot(kst(2027, 1, 12, 10)), "hours": 3})
+        probe(app, kst(2027, 1, 12, 10, 50))
+        probe(app, kst(2027, 1, 12, 10, 55), (one, False), (two, False))
+        probe(app, kst(2027, 1, 12, 11, 5))
+        early = downtime_lots(app, H)
+        probe(app, kst(2027, 1, 12, 11, 6))
+        first, shown = downtime_lots(app, H), public_status(port)[1]
+        probe(app, kst(2027, 1, 12, 12, 59))
+        middle = downtime_lots(app, H)
+        probe(app, kst(2027, 1, 12, 13), (one, True), (two, True))
+        if early or first != [("2.000000", ["01-12 10:00", "01-12 11:00"])] or middle != first or downtime_lots(app, H) != first + [("1.000000", ["01-12 12:00"])]:
+            failures.append(f"a held Fleet down for more than 15 minutes does not credit each booked hour the period touches, as soon as it passes 15 minutes and at its end: {early} {first} {middle} {downtime_lots(app, H)}")
+        if downtime_lots(app, R) != [("2.000000", ["01-12 10:00", "01-12 11:00"]), ("1.000000", ["01-12 12:00"])]:
+            failures.append(f"an Hour holder on a Fleet with its own upstream is not credited from that Fleet's records: {downtime_lots(app, R)}")
+        if (shown["F3"]["status"], shown["F3"]["since"], shown["F4"]["status"], shown["F1"]["status"]) != ("down", market.stamp(kst(2027, 1, 12, 10, 50)), "down", "down"):
+            failures.append(f"the status page does not show a Fleet down since its last good probe: {shown}")
+        told = notices(app, H, "downtime.credited")
+        app.mails.join()
+        if [n["data"]["hours"] for n in told] != [[slot(kst(2027, 1, 12, h)) for h in (10, 11)], [slot(kst(2027, 1, 12, 12))]] or {n["data"]["clause"] for n in told} != {"4.4"} or not all(n["targets"][-1:] == ["mail"] for n in told):
+            failures.append(f"each downtime credit does not send downtime.credited with its hours, by email: {told}")
+        subjects = [" ".join(mail["Subject"].split()) for rcpt, mail in mailbox.mail if rcpt == [app.cfg.notify] and " F3 " in mail["Subject"]]
+        if not any(s.startswith("Fleet down: F3 since") for s in subjects) or not any(s.startswith("Fleet back: F3 from") for s in subjects):
+            failures.append(f"we are not emailed when a Fleet goes down for more than 15 minutes and when it is back: {subjects}")
+        probe(app, kst(2027, 1, 12, 14))
+        probe(app, kst(2027, 1, 12, 14, 1), (one, False))
+        blip = public_status(port)[1]
+        probe(app, kst(2027, 1, 12, 14, 10), (one, True))
+        probe(app, kst(2027, 1, 12, 15))
+        probe(app, kst(2027, 1, 12, 15, 1), (one, False))
+        probe(app, kst(2027, 1, 12, 15, 20), (one, True))
+        probe(app, kst(2027, 1, 12, 15, 30), (one, False))
+        probe(app, kst(2027, 1, 12, 15, 50), (one, True))
+        if (blip["F3"]["status"], blip["F4"]["status"]) != ("down", "up") or downtime_lots(app, H)[2:] != [("1.000000", ["01-12 15:00"])]:
+            failures.append(f"a period of 15 minutes or less is credited, two periods in one hour credit it twice, or Fleets on different upstreams share a status: {downtime_lots(app, H)} {blip}")
+        probe(app, kst(2027, 1, 12, 16))
+        server.shutdown()
+        sp.UPTIME_GAP_SECONDS = saved
+        server, app, port = live(work, "uptime", mailbox, one, extra)
+        probe(app, kst(2027, 1, 12, 16, 40))
+        gap = [s for s in app.uptime.spans(kst(2027, 1, 12)) if s["fleet"] == "F3" and s["cause"] == "gateway"]
+        if downtime_lots(app, H)[3:] != [("1.000000", ["01-12 16:00"])] or [(s["start"], s["end"]) for s in gap] != [(market.stamp(kst(2027, 1, 12, 16)), market.stamp(kst(2027, 1, 12, 16, 40)))]:
+            failures.append(f"40 minutes in which the service saw no good probe, across a restart, are not a period the Fleet was unreachable: {gap} {downtime_lots(app, H)}")
+        sp.UPTIME_GAP_SECONDS = 10 ** 9
+        probe(app, kst(2027, 1, 24, 23, 50))
+        probe(app, kst(2027, 1, 24, 23, 55), (one, False))
+        probe(app, kst(2027, 1, 25, 3, 20), (one, True))
+        maintained = [lot["first"] for lot in app.book.market.lots[H] if lot["source"] == "maintenance"]
+        if planned["start"] != slot(kst(2027, 1, 25)) or downtime_lots(app, H)[4:] != [("2.000000", ["01-24 23:00", "01-25 03:00"])] or maintained != ["3.000000"]:
+            failures.append(f"booked hours under maintenance are credited twice, or the hours around it are not credited: {planned} {downtime_lots(app, H)[4:]} {maintained}")
+        probe(app, kst(2027, 1, 26, 10))
+        probe(app, kst(2027, 1, 26, 10, 5), (one, False))
+        probe(app, kst(2027, 1, 26, 10, 20))
+        probe(app, kst(2027, 1, 27, 10, 30))
+        probe(app, kst(2027, 1, 27, 12), (one, True))
+        long = [(hc, len(hours)) for hc, hours in downtime_lots(app, H)[5:]]
+        if long != [("1.000000", 1), ("24.000000", 24), ("1.000000", 1)]:
+            failures.append(f"a period that goes on for a day is not credited once it passes 15 minutes, again each day, and at its end: {long}")
+        status, fleets = public_status(port)
+        f3 = fleets.get("F3", {})
+        if status != 200 or (f3.get("status"), f3.get("since")) != ("up", market.stamp(kst(2027, 1, 27, 12))) or [i["creditable"] for i in f3.get("incidents", [])] != [True, True, True, True, True, False, True]:
+            failures.append(f"the status page does not list each period, newest first, saying which are over 15 minutes: {f3}")
+        if f3.get("uptime", {}).get("24h") != 0.0 or f3["uptime"]["7d"] != 84.226 or fleets["F4"]["uptime"]["7d"] != 100.0 or fleets["F4"]["since"] != market.stamp(kst(2027, 1, 12, 16, 40)) or H in json.dumps(fleets) or R in json.dumps(fleets):
+            failures.append(f"the status page uptime is not measured from the records, without maintenance, or it names accounts: {f3.get('uptime')} {fleets.get('F4', {}).get('uptime')}")
+        two.shutdown()
+        two.server_close()
+        probe(app, kst(2027, 1, 27, 12, 1))
+        refused_state = app.uptime.entry("F4")
+        if public_status(port)[1]["F4"]["status"] != "down" or "ConnectionRefused" not in refused_state.get("detail", ""):
+            failures.append(f"a hub that does not answer is not recorded as down: {refused_state}")
+        lines = client(app, port, H)("GET", "/market/ledger")[1]["lines"]
+        if sum(1 for line in lines if line["type"] == "hc_lot" and line["data"]["source"] == "downtime") != 8 or any(line["type"] == "downtime" for line in lines):
+            failures.append("the account's ledger does not show its downtime credits, or shows other accounts' credit records")
+        replay = sp.Book(app.cfg.path("ledger.jsonl"))
+        if replay.market.downtime_hours != app.book.market.downtime_hours or set(replay.market.downtime) != set(app.book.market.downtime):
+            failures.append("a replayed ledger gives different downtime credits")
+        server.shutdown()
+        server, app, port = live(work, "uptime", mailbox, one, extra)
+        before = balance(app, H)
+        app.market.tick()
+        if balance(app, H) != before or len(downtime_lots(app, H)) != 8:
+            failures.append("a restarted service credits downtime again")
+        if sp.uptime(app, ["sparkpipe_pay.py", "uptime", "F3", "2027-01-12", "2027-01-13"]) != 0:
+            failures.append("the operator cannot list a Fleet's uptime records")
+    finally:
+        sp.UPTIME_GAP_SECONDS = saved
+        server.shutdown()
+        for upstream in (one, two):
+            upstream.shutdown()
+        mailbox.shutdown()
+
+
 def sandbox_flows(failures, work):
     site(work / "plain-root", serving=False)
     cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
@@ -1286,6 +1410,14 @@ def sandbox_flows(failures, work):
         off = user("PUT", "/market/auto-extend", {"fleet": "F3", "weeks_ahead": 0})
         if [p["autoExtend"] for p in pinned] != [1] or [market.slot_time(p["through"]) - market.slot_time(q["through"]) for p, q in zip(kept, pinned)] != [market.WEEK] or off[1].get("weeks_ahead") != 0 or user("GET", "/market/state")[1]["account"]["pinned"][0]["autoExtend"] != 0:
             failures.append(f"in the sandbox, a first Week does not turn auto-extend on, keep the Fleet a Week later, and turn off with one call: {pinned} {kept} {off}")
+        before = Decimal(user("GET", "/market/state")[1]["account"]["balance"])
+        down = user("POST", "/market/sandbox/fleet", {"fleet": "F3", "up": False})
+        user("POST", "/market/sandbox/clock", {"hours": 1})
+        middle = public_status(port)[1].get("F3", {})
+        user("POST", "/market/sandbox/fleet", {"fleet": "F3", "up": True})
+        after = user("GET", "/market/state")[1]["account"]
+        if down[0] != 200 or middle.get("status") != "down" or Decimal(after["balance"]) - before != 1 or [l["hc"] for l in after["lots"] if l["source"] == "downtime"] != ["1.000000"] or public_status(port)[1]["F3"]["status"] != "up":
+            failures.append(f"the sandbox does not take a held Fleet down and credit the booked hour under clause 4.4: {down} {middle} {after['lots']}")
         held = user("GET", "/market/state")[1]["account"]
     finally:
         server.shutdown()
@@ -1312,6 +1444,7 @@ def main():
         allocation_flows(failures, work)
         extension_flows(failures, work)
         notice_flows(failures, work)
+        uptime_flows(failures, work)
         sandbox_flows(failures, work)
     finally:
         shutil.rmtree(work)
@@ -1319,7 +1452,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies and reset; and the ledger replays")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, and reset; and the ledger replays")
     return 0
 
 

@@ -17,7 +17,7 @@ KST = timezone(timedelta(hours=9))
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round", "api_key", "api_key_revoke", "api_key_rotate", "maintenance", "maintenance_done", "clock",
-         "auto_extend", "auto_extend_wait")
+         "auto_extend", "auto_extend_wait", "downtime")
 AVAILABILITY = {"free": "available"}
 SCOPES = ("inference", "state", "storage", "functions", "models", "account:read")
 PRIORITIES = ("interactive", "background")
@@ -29,6 +29,9 @@ REQUIRED_EMAIL = ("fleet.allocated", "downtime.credited", "working_state.lost")
 DEADLINE_HOURS = (72, 48, 6, 2)
 DEFAULT_WEEKS_AHEAD = 1
 REBUILD_HOURS = 24
+OUTAGE = timedelta(minutes=15)
+OUTAGE_PASS = timedelta(days=1)
+UPTIME_WINDOWS = (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90))
 KEY_IPS = 32
 GRACE_SECONDS = 30
 
@@ -87,6 +90,14 @@ def week_start(moment):
 def sunday_after(moment):
     found = week_start(moment) + 6 * DAY
     return found if found > moment else found + WEEK
+
+
+def slot_floor(moment):
+    return slot_time(slot_text(moment))
+
+
+def slot_ceil(moment):
+    return slot_floor(moment) + HOUR if slot_floor(moment) < moment else moment
 
 
 def overlap(begins, ends, start, end):
@@ -196,6 +207,8 @@ class State:
         self.seq = 0
         self.extend = {}
         self.rebuilds = {}
+        self.downtime = {}
+        self.downtime_hours = set()
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -220,10 +233,12 @@ class State:
         return sum((part for _, part in self.locks.get(account, {}).get("parts", [])), Decimal(0))
 
     def on_hc_lot(self, data):
-        self.lots[data["account"]].append({"lot": data["lot"], "hc": Decimal(data["hc"]), "first": data["hc"], "expires": data["expires"], "source": data["source"], "ref": data["ref"], "issued": data["now"]})
+        self.lots[data["account"]].append(dict({name: data[name] for name in ("fleet", "hours") if name in data}, lot=data["lot"], hc=Decimal(data["hc"]), first=data["hc"], expires=data["expires"], source=data["source"], ref=data["ref"], issued=data["now"]))
         self.lots[data["account"]].sort(key=lambda lot: (lot["expires"], lot["issued"]))
         if data["source"] == "rebuild":
             self.rebuilds[data["ref"]] = data
+        if data["source"] == "downtime":
+            self.downtime_hours.update((data["fleet"], hour) for hour in data["hours"])
 
     def on_hc_debit(self, data):
         if data.get("lot"):
@@ -277,6 +292,9 @@ class State:
 
     def on_auto_extend_wait(self, data):
         self.extend[(data["account"], data["fleet"])].update(through=data["through"], waiting=data["reason"])
+
+    def on_downtime(self, data):
+        self.downtime[data["downtime"]] = data
 
     def on_maintenance(self, data):
         self.maintenance[data["maintenance"]] = dict(data, begins=slot_time(data["start"]), ends=slot_time(data["start"]) + HOUR * data["hours"], done=False)
@@ -622,6 +640,90 @@ class Market:
                         f"SparkPipe credited {text_hc(credits)} HC for maintenance on {name}",
                         f"Maintenance on {name} from {kst_text(found['begins'])} to {kst_text(found['ends'])} overlapped your booking. We credited {text_hc(credits)} HC to your account (clause 4.4).")
 
+    def outage_at(self, now):
+        found = []
+        for span in self.app.uptime.spans(now - 30 * DAY):
+            begins, ends = stamp_time(span["start"]), stamp_time(span["end"]) if span["end"] else None
+            ends = ends if ends and ends <= now else None
+            if (ends or now) - begins <= OUTAGE:
+                continue
+            done = self.st.downtime.get(span["span"])
+            if not done:
+                at = ends or begins + OUTAGE + timedelta(seconds=1)
+            elif ends and not done["end"]:
+                at = ends
+            elif not ends and stamp_time(done["now"]) + OUTAGE_PASS <= now:
+                at = stamp_time(done["now"]) + OUTAGE_PASS
+            else:
+                continue
+            if at <= now:
+                found.append((at, span["span"], span, ends))
+        return min(found, key=lambda item: item[:2]) if found else None
+
+    def credit_outage(self, span, at, ends):
+        fleet_id, begins, first = span["fleet"], stamp_time(span["start"]), span["span"] not in self.st.downtime
+        through, moment, owed = slot_ceil(ends) if ends else slot_floor(at) + HOUR, slot_floor(begins), {}
+        while moment < through:
+            if (fleet_id, slot_text(moment)) not in self.st.downtime_hours and not self.maintained(fleet_id, moment, moment + HOUR):
+                for b in self.busy(fleet_id, moment, moment + HOUR):
+                    found = owed.setdefault(b["account"], [Decimal(0), []])
+                    found[0] += Decimal(b["rate"])
+                    found[1].append(slot_text(moment))
+            moment += HOUR
+        lots = {account: self.lot(account, credits, "downtime", span["span"], at, extra={"fleet": fleet_id, "hours": hours}) for account, (credits, hours) in sorted(owed.items())}
+        name, period = self.fleet_name(fleet_id), f"from {kst_text(begins)} to {kst_text(ends)}" if ends else f"since {kst_text(begins)}"
+        for account, lot in lots.items():
+            listed = ", ".join(kst_text(slot_time(hour))[11:16] for hour in lot["hours"])
+            self.notify(account, "downtime.credited", {"downtime": span["span"], "fleet": fleet_id, "start": span["start"], "end": stamp(ends) if ends else None, "hours": lot["hours"], "hc": lot["hc"], "lot": lot["lot"], "clause": "4.4"}, at,
+                        f"SparkPipe credited {lot['hc']} HC for downtime on {name}",
+                        f"{name} was unavailable or unreachable {period}{'' if ends else ', and we are still on it'}. We credited {lot['hc']} HC for {len(lot['hours'])} booked hour{'s' if len(lot['hours']) != 1 else ''} it touched ({listed} KST), at the Fleet's Rate (clause 4.4). "
+                        f"The HC lapses on {lot['expires'][:10]}. Our uptime records: {self.app.cfg.public}/status.html", once=f"downtime:{span['span']}:{account}:{slot_text(through)}")
+        self.book.append("downtime", {"downtime": span["span"], "fleet": fleet_id, "start": span["start"], "end": stamp(ends) if ends else None, "cause": span["cause"], "through": slot_text(through),
+                                      "credited": [[account, lot["hc"]] for account, lot in lots.items()], "now": stamp(at)})
+        if first or ends:
+            credited = "; ".join(f"{self.app.who(account)} {lot['hc']} HC" for account, lot in lots.items()) or "no booked hours"
+            self.app.mail(self.app.cfg.notify, f"{'Fleet down' if not ends else 'Fleet back'}: {fleet_id} {period}", f"{name} was unavailable or unreachable {period} ({span['cause']}). Credited under clause 4.4: {credited}.")
+
+    def status_page(self):
+        pricing = self.settings()
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            spans = self.app.uptime.spans(now - (UPTIME_WINDOWS[-1][1] + 1) * DAY)
+            fleets = [self.fleet_status(listed, fleet, [s for s in spans if s["fleet"] == fleet["id"]], now) for listed, fleet in zip(pricing["fleets"], self.fleets(pricing))]
+        return {"now": stamp(now), "outageMinutes": OUTAGE // timedelta(minutes=1), "fleets": fleets}
+
+    def fleet_status(self, listed, fleet, spans, now):
+        entry = self.app.uptime.entry(fleet["id"])
+        closing = [m for m in self.maintained(fleet["id"], now, now + timedelta(seconds=1))]
+        opened = next((s for s in spans if not s["end"]), None)
+        if not fleet["serving"]:
+            status, since = "not_serving", None
+        elif closing:
+            status, since = "maintenance", slot_text(closing[0]["begins"])
+        elif opened:
+            status, since = "down", opened["start"]
+        elif entry:
+            status, since = "up", max([s["end"] for s in spans] + [entry["first"]])
+        else:
+            status, since = "unknown", None
+        first = stamp_time(entry["first"]) if entry else None
+        uptime = {}
+        for label, days in UPTIME_WINDOWS:
+            start = max(now - DAY * days, first) if first else None
+            if not start or start >= now:
+                uptime[label] = None
+                continue
+            down = timedelta(0)
+            for s in spans:
+                begins, ends = max(stamp_time(s["start"]), start), stamp_time(s["end"]) if s["end"] else now
+                down += overlap(begins, ends, start, now) - sum((overlap(max(begins, m["begins"]), min(ends, m["ends"]), start, now) for m in self.maintained(fleet["id"], begins, ends)), timedelta(0))
+            uptime[label] = round(100 * (1 - down / (now - start)), 3)
+        incidents = [{"start": s["start"], "end": s["end"], "minutes": int(((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) // timedelta(minutes=1)), "cause": s["cause"],
+                      "creditable": ((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) > OUTAGE} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
+        return {"id": fleet["id"], "name": listed["name"], "serving": fleet["serving"], "demo": listed.get("demo", False), "status": status, "since": since, "recordsSince": entry["first"] if entry else None,
+                "uptime": uptime, "incidents": incidents, "maintenance": merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK))}
+
     def pins(self, now):
         found = {}
         for b in self.st.bookings.values():
@@ -749,7 +851,7 @@ class Market:
         pricing = self.settings()
         while True:
             lapse, sunday, done = self.lapse_at(now), self.round_at(now), self.maintenance_at(now)
-            due, extension = self.deadline_at(now), self.extend_at(now, pricing)
+            due, extension, outage = self.deadline_at(now), self.extend_at(now, pricing), self.outage_at(now)
             events = []
             if lapse:
                 events.append((stamp_time(lapse), 0, lambda: self.lapse(lapse, pricing)))
@@ -757,10 +859,12 @@ class Market:
                 events.append((sunday, 1, lambda: self.allocate(sunday, pricing)))
             if done:
                 events.append((done[0], 2, lambda: self.credit_maintenance(done[1])))
+            if outage:
+                events.append((outage[0], 3, lambda: self.credit_outage(outage[2], outage[0], outage[3])))
             if extension:
-                events.append((extension[0], 3, extension[1]))
+                events.append((extension[0], 4, extension[1]))
             if due:
-                events.append((due[0], 4, lambda: self.deadline(pricing, *due)))
+                events.append((due[0], 5, lambda: self.deadline(pricing, *due)))
             if not events:
                 return
             min(events, key=lambda event: event[:2])[2]()
@@ -777,8 +881,8 @@ class Market:
             except Exception as error:
                 log(f"market tick: {error}")
 
-    def lot(self, account, credits, source, ref, now, note=None):
-        data = {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(months_later(now, self.settings()["hc"]["validityMonths"])), "source": source, "ref": ref, "now": stamp(now)}
+    def lot(self, account, credits, source, ref, now, note=None, extra=None):
+        data = dict(extra or {}, lot=new_id("LT"), account=account, hc=text_hc(credits), expires=stamp(months_later(now, self.settings()["hc"]["validityMonths"])), source=source, ref=ref, now=stamp(now))
         if note:
             data["note"] = note
         self.book.append("hc_lot", data)
@@ -1044,6 +1148,17 @@ class Market:
         if best is None:
             raise Refusal(f"No run of {hours} hours on {fleet['name']} that Week starts at least 7 days from now.")
         return best[2]
+
+    def sandbox_fleet(self, body):
+        fleet = self.fleet_field(self.settings(), body.get("fleet"))
+        if not isinstance(body.get("up"), bool):
+            raise Refusal("Give up as true or false.", 400, "invalid_request")
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            self.app.uptime.observe(fleet["id"], body["up"], now, "sandbox", watch=False)
+            self.advance(now)
+        return {"fleet": fleet["id"], "up": body["up"], "now": stamp(now)}
 
     def move_clock(self, hours):
         with self.book.lock:
