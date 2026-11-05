@@ -123,6 +123,25 @@
     <p>What BF16 costs is speed, because each token reads twice the weight bytes. One-request decode on GLM 5.3 runs at 21.2 against 28.1 tok/s (−25%) and its 7K prefill at 1,109 against 1,286 (−14%); GLM 5.3 Flash decodes at 47.4 against 51.1 (−7%), and its prefill is within 2%; Qwen 3.8 27B decodes at 46.4 against 61.3 (−24%), with prefill unchanged. Qwen 3.8 Flash prefills 3.1 times faster at BF16 (1,299 against 413 tok/s), because its BF16 build runs a newer prefill path. GLM 5.3's BF16 weights also leave room for 768K of context instead of 1M.</p>
   </section>
 
+  <section id="precision-choice">
+    <h2>Choosing a precision (coming)</h2>
+    <p>Every model will be offered at its publisher's full precision, the default, and also at 8 bits (FP8) and 4 bits (NVFP4 or MXFP4), and in EXL3 where good builds exist. You choose by model name, for example <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span> or <span class="mono">glm-5.3-nvfp4</span>. A lower precision runs faster and leaves more memory for the cache, so longer conversations or more requests fit at once. For every variant this list will show its speed, its accuracy against the full-precision model and its cache capacity, all measured, and each variant passes the same accuracy check before it is offered. Today each model serves one precision, the one in the model table above. The four models measured so far:</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Model</th><th>Precision</th><th class="num">Decode, one request</th><th class="num">Prefill, 7K prompt</th><th class="num">ds4-eval, of 92</th><th class="num">Cache in GPU memory</th><th class="num">Context window</th></tr>
+      <tr><td><b>GLM 5.3</b></td><td>BF16 (default)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">measuring</td><td class="num">1.8M tokens</td><td class="num">768K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">28.1 tok/s</td><td class="num">1,286 tok/s</td><td class="num">measuring</td><td class="num">9.6M tokens</td><td class="num">1M</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (default)</td><td class="num">47.4 tok/s</td><td class="num">1,701 tok/s</td><td class="num">77</td><td class="num">68M tokens</td><td class="num">128K</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">51.1 tok/s</td><td class="num">1,732 tok/s</td><td class="num">77</td><td class="num">86M tokens</td><td class="num">128K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (default)</td><td class="num">46.4 tok/s</td><td class="num">2,107 tok/s</td><td class="num">78</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">61.3 tok/s</td><td class="num">2,080 tok/s</td><td class="num">76</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (default)</td><td class="num">44.9 tok/s</td><td class="num">1,299 tok/s</td><td class="num">80</td><td class="num">56M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">45.9 tok/s</td><td class="num">413 tok/s</td><td class="num">78</td><td class="num">65M tokens</td><td class="num">256K</td></tr>
+    </table>
+    </div>
+    <p>Measured on 2026-11-04; the decode and prefill of each pair come from the same day's comparison runs. Cache in GPU memory is how many tokens of prompts and answers the fleet keeps in GPU memory at once, across all requests, in the memory the weights leave free; more stay on SSD and come back when needed. Qwen 3.8 Flash's 4-bit build prefills more slowly because it runs an older prefill path. Qwen 3.8 Flash is used only inside our company.</p>
+  </section>
+
   <section id="limits">
     <h2>How close to the hardware limit</h2>
     <p>Each step is bounded by the resource that saturates first. Decoding one request is bounded by memory: each of the 16 Sparks reads its sixteenth of the weights a token needs, at 273 GB/s. Prefill on 16 Sparks is bounded by the network: every layer adds up its partial results across all 16, about 10 GB/s a node in practice. Compute is 20 to 100 times further away. Shown is the share of each floor the speeds above reach:</p>

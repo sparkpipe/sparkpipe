@@ -112,14 +112,23 @@ packs. A pack is already sharded for one topology and already in the exact
 byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier.
 
-SparkPipe never quantizes a model itself. Packs carry a publisher's release
-or a vetted community release with pinned provenance. A model at or near the
-frontier serves at its publisher's full precision whenever it fits one fleet:
-BF16, or the format it was trained or released in (A.X K2's FP8, Kimi K3's
-MXFP4 experts). A vetted 4-bit build serves only a model that does not fit one
-fleet at full precision (Qwen 3.8 Max), because that is better than not
-serving it. The packer only converts formats, slices by topology and lays out
-scale planes; its codecs come from one shared table.
+Every model serves at its publisher's full precision by default whenever it
+fits one fleet: BF16, or the format it was trained or released in (A.X K2's
+FP8, Kimi K3's MXFP4 experts). Each model is also offered at 8 bits (FP8) and
+4 bits (NVFP4 or MXFP4), and in EXL3 where good builds exist, as variants with
+their own served names (`glm-5.3-fp8`, `glm-5.3-nvfp4`), so the user chooses
+between speed, cache capacity and full precision. A variant is the
+publisher's or a vetted community release with pinned provenance where one
+exists, and otherwise the output of the shared quantizing packer; every
+variant passes the accuracy gate against the full-precision model before it
+is offered, and the Fleet List gives its measured speed, accuracy and cache
+capacity. A model that does not fit one fleet at full precision (Qwen 3.8
+Max) serves the best variant that does. Formats live in one codec layer per
+backend (`inference/kernels/weight_codec.cuh` on CUDA,
+`inference/runner/device_layers.c` on Metal): no model stage names a format,
+so a variant is a pack and a build flag, not new code. The packer converts
+formats, quantizes, slices by topology and lays out scale planes; its codecs
+come from one shared table.
 
 **weightd.** One persistent daemon per node, `weightd`, owns the weight
 arenas:
@@ -631,6 +640,9 @@ model's cached prefixes come back from the KV snapshot store.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
+- **Precision variants:** every row is the publisher's precision; the 8-bit
+  and 4-bit variants of a model serve under its name with `-fp8`, `-nvfp4` or
+  `-mxfp4` appended (Packs, above).
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.

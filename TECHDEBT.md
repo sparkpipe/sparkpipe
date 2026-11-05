@@ -1038,6 +1038,28 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Packaging and provenance
 
+- Precision variants (README, Packs and Models; the Fleet List's "Choosing a
+  precision"): only each model's default precision serves. Still to build:
+  - one lane record, swap entry, chat-layer and LiteLLM name and Open WebUI
+    entry per variant, first for the packs already on every node: GLM 5.3
+    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4;
+  - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide
+    blocks with FP8 scales) for models with no publisher or community
+    variant: K-EXAONE 2.0, Solar Open 2, Gemma 4, Ling 3.0, Laguna, Muse
+    Glimmer and the 4-bit variants of GLM 5.3, Qwen 3.8 27B, A.X K2, HY4 and
+    MiMo;
+  - the families whose stages still hard-code their formats (Kimi K3,
+    DeepSeek V4.1 Flash, HY4, MiMo, Gemma 4, Ling 3.0, Laguna, Solar Open 2,
+    K-EXAONE 2.0, Muse Glimmer) moved onto the codec layer, one PR a family,
+    and a dry-law check that no stage or packer names a format;
+  - the accuracy gate per variant (paired NLL and distribution comparison,
+    the long-context depth comparison, ds4-eval 92) and the Fleet List's
+    per-variant speed, accuracy and cache capacity generated from its
+    receipts instead of written by hand;
+  - an EXL3 codec on both backends, once a survey shows which models have
+    good EXL3 builds;
+  - Qwen 3.8 Max's FP8 default needs two fleets (the pipeline item under
+    Placement beyond TP16).
 - The GLM 5.3 Flash stage registers its expert arena with weightd under the
   FP8 checkpoint's revision (`WeightdRevision()` in
   `spark_glm53_flash_tp16_stage_model.h` returns `84c6a6aa…`) in the BF16
