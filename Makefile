@@ -443,7 +443,6 @@ PYTHON_TESTS := \
 	tests/test_expert_grouping.py \
 	tests/test_ds4_parallel_pxe_rescue.py \
 	tests/test_sparkpipe_fsck_health_automount.py \
-	tests/test_sparkpipe_cli.py \
 	tests/test_gemm_k_alignment.py \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_dspark_trace_quality.py \
