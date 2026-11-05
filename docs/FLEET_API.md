@@ -620,6 +620,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
 | `models.changed` | A model loaded or unloaded on the fleet |
 | `downtime.credited` | HC credited for downtime or maintenance |
+| `fleet.failover` | A held fleet is down and requests go to a free fleet without working state (Agreement 15.7), and when that ends |
 | `working_state.lost` | A node pair lost part of the working state: what was lost, the rebuild credit under clause 6.6 (24 hours of the fleet), and the rebuild run started |
 
 ## 14. Several fleets
@@ -692,7 +693,7 @@ A held fleet is then never lost to a forgotten Sunday.
 | Storage | 4 TB per fleet | §6 |
 
 Errors use each API shape's own error body, with these `type` or `code` values:
-- `fleet_required`, `fleet_not_held`, `model_not_loaded`;
+- `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 

@@ -2378,32 +2378,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("gateway", account)
             fleet, body = self.admitted(method, path, account, record)
+            served, origin = app.market.route(account, fleet) if app.cfg.hub or app.cfg.sandbox else (fleet, None)
         except Refusal as error:
             return self.api_error(error, shape, path)
         if app.cfg.sandbox:
-            return self.sandboxed(method, path, body, fleet, shape)
-        hub = app.cfg.upstream(fleet)
-        if not hub:
-            return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
-        target = hub[2] + path + ("?" + parts.query if parts.query else "")
-        headers = self.upstream_headers(account, record, fleet)
-        ip, upstream = self.client_ip(), []
-        self.cutoff = False
-        watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip), lambda: self.cut(upstream))
-        try:
-            if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
-                return self.tunnel(hub, target, headers, shape, upstream)
-            self.forward(hub, method, target, headers, body, shape, path, upstream)
-        finally:
-            app.guard.done(watch)
+            return self.sandboxed(method, path, body, served, shape, origin)
+        while True:
+            hub = app.cfg.upstream(served)
+            if not hub:
+                return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
+            target = hub[2] + path + ("?" + parts.query if parts.query else "")
+            headers = self.upstream_headers(account, record, served, origin)
+            ip, upstream = self.client_ip(), []
+            self.cutoff = False
+            watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip, served), lambda: self.cut(upstream))
+            try:
+                if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
+                    return self.tunnel(hub, target, headers, shape, upstream)
+                if self.forward(hub, method, target, headers, body, shape, path, upstream, origin):
+                    return
+            finally:
+                app.guard.done(watch)
+            if origin:
+                return self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"), shape, path)
+            app.uptime.observe(fleet, False, app.market.now(), "the gateway could not connect")
+            try:
+                served, origin = app.market.route(account, fleet)
+            except Refusal as error:
+                return self.api_error(error, shape, path)
 
-    def still(self, account, fleet, scope, ip):
+    def still(self, account, fleet, scope, ip, served):
         app = self.server.app
         try:
             found = app.principal(self.headers, ip, scope)[0]
         except Refusal:
             return None
-        return app.market.hold_left(account, fleet) if found == account else None
+        if found != account:
+            return None
+        left = app.market.hold_left(account, fleet)
+        return left if served == fleet else min(left, app.market.failover_left(served, app.market.now()))
 
     def cut(self, upstream):
         self.cutoff = True
@@ -2413,7 +2426,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def upstream_headers(self, account, record, fleet):
+    def upstream_headers(self, account, record, fleet, origin=None):
         app = self.server.app
         found = [(name, value) for name, value in self.headers.items()
                  if TOKEN.fullmatch(name) and "\r" not in value and "\n" not in value and name.lower() not in DROPPED and not name.lower().startswith("x-forwarded-")
@@ -2423,13 +2436,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                   ("X-SparkPipe-Allow-Swap", "1" if not record or record["allow_swap"] else "0")]
         if record and record["priority"] and not self.headers.get("X-SparkPipe-Priority"):
             found.append(("X-SparkPipe-Priority", record["priority"]))
+        if origin:
+            found.append(("X-SparkPipe-Failover-From", origin))
         return found
 
-    def forward(self, hub, method, target, headers, body, shape, path, upstream):
+    def forward(self, hub, method, target, headers, body, shape, path, upstream, origin=None):
         connection = http.client.HTTPConnection(hub[0], hub[1], timeout=900)
         started = False
         try:
             connection.connect()
+        except OSError as error:
+            log(f"fleet upstream {method} {'/'.join(path.split('/')[:3])}: {error}")
+            connection.close()
+            return False
+        try:
             upstream.append(connection.sock)
             connection.putrequest(method, target, skip_accept_encoding=True)
             for name, value in headers:
@@ -2452,6 +2472,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for name, value in response.getheaders():
                 if name.lower() not in RESPONSE_DROPPED:
                     self.send_header(name, value)
+            if origin:
+                self.send_header("X-SparkPipe-Failover-From", origin)
             self.end_headers()
             started = True
             while True:
@@ -2466,6 +2488,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             connection.close()
             self.close_connection = True
+        return True
 
     def tunnel(self, hub, target, headers, shape, sockets):
         try:
@@ -2515,7 +2538,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 (upstream if side is client else client).sendall(data)
 
-    def sandboxed(self, method, path, body, fleet, shape):
+    def sandboxed(self, method, path, body, fleet, shape, origin=None):
         app = self.server.app
         pricing = app.cfg.pricing()
         if method == "GET" and path == "/v1/models":
@@ -2530,7 +2553,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refusal("Choose one of the models: " + ", ".join(m["id"] for m in pricing["models"]) + ".", 404, "model_not_found")
         except Refusal as error:
             return self.api_error(error, shape, path)
-        self.simulated(found, found["messages"], {"model": found["model"], "fleet": fleet})
+        self.simulated(found, found["messages"], {"model": found["model"], "fleet": fleet, "failover_from": origin})
 
     def stream_head(self):
         self.send_response(200)
@@ -2548,7 +2571,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         text, tokens_in, tokens_out = market.simulate(ticket["model"], ticket["fleet"], messages, min(max(limit, 1), 512))
         made, ident = int(time.time()), "chatcmpl-" + secrets.token_hex(12)
         usage = {"prompt_tokens": tokens_in, "completion_tokens": tokens_out, "total_tokens": tokens_in + tokens_out}
-        note = {"fleet": ticket["fleet"]}
+        note = dict({"fleet": ticket["fleet"]}, **({"failover_from": ticket["failover_from"]} if ticket.get("failover_from") else {}))
         if body.get("stream") is True:
             self.stream_head()
             for word in text.split(" "):

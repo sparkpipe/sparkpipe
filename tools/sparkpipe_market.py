@@ -17,14 +17,14 @@ KST = timezone(timedelta(hours=9))
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round", "api_key", "api_key_revoke", "api_key_rotate", "maintenance", "maintenance_done", "clock",
-         "auto_extend", "auto_extend_wait", "downtime")
+         "auto_extend", "auto_extend_wait", "downtime", "failover", "failover_end")
 AVAILABILITY = {"free": "available"}
 SCOPES = ("inference", "state", "storage", "functions", "models", "account:read")
 PRIORITIES = ("interactive", "background")
 EVENTS = ("booking.deadline", "booking.confirmed", "fleet.allocated", "waitlist.position", "run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token",
-          "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost")
+          "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost", "fleet.failover")
 HUB_EVENTS = ("run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token", "pack.warm", "cache.restored", "models.changed")
-EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost")
+EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost", "fleet.failover")
 REQUIRED_EMAIL = ("fleet.allocated", "downtime.credited", "working_state.lost")
 DEADLINE_HOURS = (72, 48, 6, 2)
 DEFAULT_WEEKS_AHEAD = 1
@@ -209,6 +209,7 @@ class State:
         self.rebuilds = {}
         self.downtime = {}
         self.downtime_hours = set()
+        self.failovers = {}
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -295,6 +296,12 @@ class State:
 
     def on_downtime(self, data):
         self.downtime[data["downtime"]] = data
+
+    def on_failover(self, data):
+        self.failovers[data["failover"]] = dict(data, begins=stamp_time(data["start"]), ends=None, end=None)
+
+    def on_failover_end(self, data):
+        self.failovers[data["failover"]].update(end=data["end"], ends=stamp_time(data["end"]), reason=data["reason"])
 
     def on_maintenance(self, data):
         self.maintenance[data["maintenance"]] = dict(data, begins=slot_time(data["start"]), ends=slot_time(data["start"]) + HOUR * data["hours"], done=False)
@@ -684,6 +691,75 @@ class Market:
             credited = "; ".join(f"{self.app.who(account)} {lot['hc']} HC" for account, lot in lots.items()) or "no booked hours"
             self.app.mail(self.app.cfg.notify, f"{'Fleet down' if not ends else 'Fleet back'}: {fleet_id} {period}", f"{name} was unavailable or unreachable {period} ({span['cause']}). Credited under clause 4.4: {credited}.")
 
+    def fleet_down(self, fleet_id):
+        entry = self.app.uptime.entry(fleet_id)
+        return bool(entry and entry.get("open"))
+
+    def fleet_up(self, fleet_id):
+        entry = self.app.uptime.entry(fleet_id)
+        return not (entry and entry.get("open")) if self.sandbox else bool(entry and not entry.get("open"))
+
+    def active_failovers(self):
+        return [f for f in self.st.failovers.values() if f["ends"] is None]
+
+    def free_now(self, fleet_id, now):
+        return not self.busy(fleet_id, now, now + timedelta(seconds=1)) and not self.maintained(fleet_id, now, now + timedelta(seconds=1))
+
+    def route(self, account, fleet_id):
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            if not self.fleet_down(fleet_id):
+                return fleet_id, None
+            current = next((f for f in self.active_failovers() if f["account"] == account and f["from"] == fleet_id), None)
+            if current:
+                return current["to"], fleet_id
+            taken = {f["to"] for f in self.st.failovers.values() if f["account"] != account and (f["ends"] is None or f["ends"] > slot_floor(now))}
+            choices = sorted((f for f in self.fleets(self.settings()) if f["id"] != fleet_id and f["serving"] and f["id"] not in taken and self.fleet_up(f["id"]) and self.free_now(f["id"], now)), key=lambda f: f["demo"])
+            if not choices:
+                raise Refusal(f"{self.fleet_name(fleet_id)} is down and no free Fleet can serve you now; try again in a minute. Every booked hour a period over 15 minutes touches is credited (clause 4.4).", 503, "fleet_down")
+            target, ident = choices[0], new_id("FO")
+            self.book.append("failover", {"failover": ident, "account": account, "from": fleet_id, "to": target["id"], "start": stamp(now), "now": stamp(now)})
+            held, name = self.fleet_name(fleet_id), self.fleet_name(target["id"])
+            self.notify(account, "fleet.failover", {"failover": ident, "state": "started", "from": fleet_id, "to": target["id"], "start": stamp(now)}, now, f"SparkPipe serves you on {name} while {held} is down",
+                        f"{held}, which you hold, is down. From {kst_text(now)} we serve your requests on {name}, which is free, without your working state, so the first requests there prefill again (clause 15.7). "
+                        f"Every booked hour of {held} that the period touches is still credited (clause 4.4). Your requests go back to {held} as soon as it serves again. {self.app.cfg.public}/status.html")
+            return target["id"], fleet_id
+
+    def failover_left(self, target, now):
+        found = [b["begins"] for b in self.on_fleet(target) if b["begins"] > now] + [m["begins"] for m in self.st.maintenance.values() if m["fleet"] == target and m["begins"] > now]
+        return (min(found) - now).total_seconds() + GRACE_SECONDS if found else 7 * 86400
+
+    def hold_end(self, account, fleet_id, moment):
+        mine, end = [b for b in self.on_fleet(fleet_id) if b["account"] == account], moment
+        while any(b["begins"] <= end < b["ends"] for b in mine):
+            end = max(b["ends"] for b in mine if b["begins"] <= end < b["ends"])
+        return end
+
+    def failover_end_at(self, now):
+        found = []
+        for f in self.active_failovers():
+            later = [b["begins"] for b in self.on_fleet(f["to"]) if f["begins"] < b["ends"] and b["begins"] <= now] + [m["begins"] for m in self.st.maintenance.values() if m["fleet"] == f["to"] and f["begins"] < m["ends"] and m["begins"] <= now]
+            held = self.hold_end(f["account"], f["from"], f["begins"])
+            if not self.fleet_down(f["from"]):
+                found.append((now, f["failover"], "recovered"))
+            elif later:
+                found.append((max(min(later), f["begins"]), f["failover"], "taken"))
+            elif held <= now:
+                found.append((max(held, f["begins"]), f["failover"], "hold_ended"))
+            elif not self.fleet_up(f["to"]):
+                found.append((now, f["failover"], "down"))
+        return min(found) if found else None
+
+    def end_failover(self, at, ident, reason):
+        f = self.st.failovers[ident]
+        self.book.append("failover_end", {"failover": ident, "end": stamp(at), "reason": reason, "now": stamp(at)})
+        held, name = self.fleet_name(f["from"]), self.fleet_name(f["to"])
+        why = {"recovered": f"{held} serves again, and your requests go back to it", "taken": f"{name} is no longer free; while {held} is down your next request goes to another free Fleet if there is one",
+               "hold_ended": f"your hold of {held} ended", "down": f"{name} is down too; while {held} is down your next request goes to another free Fleet if there is one"}[reason]
+        self.notify(f["account"], "fleet.failover", {"failover": ident, "state": "ended", "from": f["from"], "to": f["to"], "start": f["start"], "end": stamp(at), "reason": reason}, at,
+                    f"SparkPipe stopped serving you on {name}", f"We stopped serving your requests on {name} at {kst_text(at)}: {why}.")
+
     def status_page(self):
         pricing = self.settings()
         with self.book.lock:
@@ -851,7 +927,7 @@ class Market:
         pricing = self.settings()
         while True:
             lapse, sunday, done = self.lapse_at(now), self.round_at(now), self.maintenance_at(now)
-            due, extension, outage = self.deadline_at(now), self.extend_at(now, pricing), self.outage_at(now)
+            due, extension, outage, moved = self.deadline_at(now), self.extend_at(now, pricing), self.outage_at(now), self.failover_end_at(now)
             events = []
             if lapse:
                 events.append((stamp_time(lapse), 0, lambda: self.lapse(lapse, pricing)))
@@ -861,10 +937,12 @@ class Market:
                 events.append((done[0], 2, lambda: self.credit_maintenance(done[1])))
             if outage:
                 events.append((outage[0], 3, lambda: self.credit_outage(outage[2], outage[0], outage[3])))
+            if moved:
+                events.append((moved[0], 4, lambda: self.end_failover(*moved)))
             if extension:
-                events.append((extension[0], 4, extension[1]))
+                events.append((extension[0], 5, extension[1]))
             if due:
-                events.append((due[0], 5, lambda: self.deadline(pricing, *due)))
+                events.append((due[0], 6, lambda: self.deadline(pricing, *due)))
             if not events:
                 return
             min(events, key=lambda event: event[:2])[2]()
@@ -1251,11 +1329,13 @@ class Market:
             now = self.now()
             self.advance(now)
             closed = self.maintained(fleet_id, start, end)
-            hours = []
-            for b in self.busy(fleet_id, start, end):
-                moment = max(b["begins"], start)
-                while moment < min(b["ends"], end):
+            spans = [(b["begins"], b["ends"], b["account"]) for b in self.busy(fleet_id, start, end)]
+            spans += [(slot_floor(f["begins"]), slot_ceil(f["ends"]) if f["ends"] else slot_floor(now) + HOUR, f["account"]) for f in self.st.failovers.values() if f["to"] == fleet_id]
+            hours = set()
+            for begins, ends, account in spans:
+                moment = max(begins, start)
+                while moment < min(ends, end):
                     if not any(m["begins"] <= moment < m["ends"] for m in closed):
-                        hours.append({"start": slot_text(moment), "account": b["account"]})
+                        hours.add((slot_text(moment), account))
                     moment += HOUR
-        return {"fleet": fleet_id, "now": stamp(now), "hours": sorted(hours, key=lambda h: h["start"])}
+        return {"fleet": fleet_id, "now": stamp(now), "hours": [{"start": hour, "account": account} for hour, account in sorted(hours)]}
