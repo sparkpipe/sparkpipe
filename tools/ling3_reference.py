@@ -17,14 +17,15 @@
              Ling's chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position but the last for the
              Metal gate: --prompts prompts.json -> --out
-             DIR/<name>.ref_<v>.logits for --variants a,h (or b). Both variants
+             DIR/<name>.ref_<v>.logits for --variants a,b,h. Both variants
              multiply in FP32 rather than the score mode's f64: a in numpy's
              order; b splits every matmul's inner dimension into 1,024-wide
              chunks summed last chunk first, reverses the other reductions
              (norms, the recurrent dot products, softmax sums) and combines
              the routed experts in descending order, so a against b is the
              noise of FP32 reduction order; h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
-             and a against h is the gate's floor
+             and the three variants' distances from one another are the
+             gate's floors
 
 Semantics follow the publisher modeling_bailing_moe_v3.py and the fla
 kernels it calls (fla 0.5.2):
@@ -487,7 +488,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/ling/chat_template.json"))
     parser.add_argument("--capture")
     parser.add_argument("--swiglu-limits", choices=("serving", "modeling"), default="serving")

@@ -9,7 +9,7 @@
   score      as tools/ling3_reference.py score: one forward over prompt +
              served tokens per prompt against --capture capture.json
   gate-prompts, teacher  as tools/ling3_reference.py: the Metal gate prompts
-             in Solar's chat turn, and FP32 references a and h
+             in Solar's chat turn, and FP32 references a, b and h
 
 Semantics follow the publisher modular_solar_open2.py and the fla kernels its
 fast path calls (model_contracts/references/fla_kda_gate.py):
@@ -176,7 +176,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/solar_open2/chat_template.json"))
     parser.add_argument("--capture")
     parser.add_argument("--tie-margin", type=float, default=0.1)

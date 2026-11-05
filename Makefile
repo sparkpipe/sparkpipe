@@ -195,6 +195,10 @@ MUSE_TP16_CONTRACT := model_contracts/muse_glimmer_authoritative.json
 MUSE_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MUSE_TP16_CONTRACT)"; else shasum -a 256 "$(MUSE_TP16_CONTRACT)"; fi | awk '{print $$1}')
 MUSE_TP16_SOURCES := modules/muse_glimmer_tp16_resident_decode_stage/source/spark_muse_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/muse_glimmer_tp16_resident_decode_stage/source/spark_muse_tp16_stage_model.cu
 GLM53_FLASH_TP16_SERVING_ADAPTER := build/libglm53_flash_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+MOTIF3_TP16_SERVING_ADAPTER := build/libmotif3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
+MOTIF3_TP16_CONTRACT := model_contracts/motif3_authoritative.json
+MOTIF3_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MOTIF3_TP16_CONTRACT)"; else shasum -a 256 "$(MOTIF3_TP16_CONTRACT)"; fi | awk '{print $$1}')
+MOTIF3_TP16_SOURCES := modules/motif3_tp16_resident_decode_stage/source/spark_motif3_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/motif3_tp16_resident_decode_stage/source/spark_motif3_tp16_stage_model.cu
 GLM53_FLASH_TP16_CONTRACT := model_contracts/glm53_flash_authoritative.json
 GLM53_FLASH_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(GLM53_FLASH_TP16_CONTRACT)"; else shasum -a 256 "$(GLM53_FLASH_TP16_CONTRACT)"; fi | awk '{print $$1}')
 GLM53_FLASH_BF16_TP16_SERVING_ADAPTER := build/libglm53_flash_bf16_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
@@ -572,6 +576,7 @@ PYTHON_TESTS := \
 	tests/test_latent_shard_decode_cuda.py \
 	tests/test_causal_conv_tiled_cuda.py \
 	tests/test_glm5_next_hc_site_cuda.py \
+	tests/test_poly_norm_diff_cuda.py \
 	tests/test_glm5_next_pool_score_cuda.py \
 	tests/test_latent_shard_sparse_cuda.py \
 	tests/test_glm5_next_verify_cuda.py \
@@ -779,6 +784,8 @@ PYTHON_TESTS := \
 	tests/test_t1_reference_muse.py \
 	tests/test_t1_reference_quarantine.py \
 	tests/test_gen_geometry_header.py \
+	tests/test_motif_schedule.py \
+	tests/test_motif3_pack.py \
 	tests/test_lane_run_log.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
@@ -1512,6 +1519,16 @@ $(LING_DEVICE_OBJECT): $(LING_DEVICE_SOURCES) $(LING_DEVICE_HEADERS) $(DEVICE_RU
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(LING_DEVICE_SOURCES) -o $@
 
+HY4_DEVICE_SOURCES := model-families/hy4/device/hy4_device_stage.cpp
+HY4_DEVICE_HEADERS := model-families/hy4/include/sparkpipe/spark_hy4_family.h model-families/hy4/include/sparkpipe/spark_hy4_device_stage.h \
+	modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h
+HY4_DEVICE_INCLUDE_FLAGS := -Imodel-families/hy4/include -Imodules/hy4_tp16_resident_decode_stage/include
+HY4_DEVICE_OBJECT := build/metal/hy4_device_stage.o
+
+$(HY4_DEVICE_OBJECT): $(HY4_DEVICE_SOURCES) $(HY4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(HY4_DEVICE_SOURCES) -o $@
+
 GLM5_NEXT_DEVICE_SOURCES := model-families/glm5_next/device/glm5_next_device_stage.cpp
 GLM5_NEXT_DEVICE_HEADERS := model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h \
 	model-families/glm5_next/include/sparkpipe/spark_glm5_next_device_stage.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_model.h \
@@ -1523,16 +1540,6 @@ $(GLM5_NEXT_DEVICE_OBJECT): $(GLM5_NEXT_DEVICE_SOURCES) $(GLM5_NEXT_DEVICE_HEADE
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(GLM5_NEXT_DEVICE_SOURCES) -o $@
 
-HY4_DEVICE_SOURCES := model-families/hy4/device/hy4_device_stage.cpp
-HY4_DEVICE_HEADERS := model-families/hy4/include/sparkpipe/spark_hy4_family.h model-families/hy4/include/sparkpipe/spark_hy4_device_stage.h \
-	modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h
-HY4_DEVICE_INCLUDE_FLAGS := -Imodel-families/hy4/include -Imodules/hy4_tp16_resident_decode_stage/include
-HY4_DEVICE_OBJECT := build/metal/hy4_device_stage.o
-
-$(HY4_DEVICE_OBJECT): $(HY4_DEVICE_SOURCES) $(HY4_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
-	@mkdir -p $(dir $@)
-	$(CXX) $(CORE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(HY4_DEVICE_SOURCES) -o $@
-
 GLM52_DEVICE_SOURCES := model-families/glm52/device/glm52_device_stage.cpp
 GLM52_DEVICE_HEADERS := model-families/glm52/include/sparkpipe/spark_glm52_family.h model-families/glm52/include/sparkpipe/spark_glm52_device_stage.h \
 	model-families/glm52/include/sparkpipe/spark_glm52_model.h modules/axk2_tp16_resident_decode_stage/include/sparkpipe/spark_axk2_tp16_stage_model.h
@@ -1543,8 +1550,39 @@ $(GLM52_DEVICE_OBJECT): $(GLM52_DEVICE_SOURCES) $(GLM52_DEVICE_HEADERS) $(DEVICE
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(GLM52_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(GLM52_DEVICE_SOURCES) -o $@
 
-build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(GLM52_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+DSV41_DEVICE_SOURCES := model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp
+DSV41_DEVICE_HEADERS := model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h \
+	model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_device_stage.h model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_model.h \
+	model-families/dsv41_flash/include/sparkpipe/llm_defines.h
+DSV41_DEVICE_INCLUDE_FLAGS := -Imodel-families/dsv41_flash/include
+DSV41_DEVICE_OBJECT := build/metal/dsv41_flash_device_stage.o
+
+$(DSV41_DEVICE_OBJECT): $(DSV41_DEVICE_SOURCES) $(DSV41_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CXXFLAGS) -c $(DSV41_DEVICE_SOURCES) -o $@
+
+K3_DEVICE_SOURCES := model-families/k3/device/k3_device_stage.cpp
+K3_DEVICE_HEADERS := model-families/k3/include/sparkpipe/spark_k3_family.h model-families/k3/include/sparkpipe/spark_k3_device_stage.h \
+	inference/llms/kimi_k3/config.h
+K3_DEVICE_INCLUDE_FLAGS := -Imodel-families/k3/include
+K3_DEVICE_OBJECT := build/metal/k3_device_stage.o
+
+$(K3_DEVICE_OBJECT): $(K3_DEVICE_SOURCES) $(K3_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(K3_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(K3_DEVICE_SOURCES) -o $@
+
+MOTIF_DEVICE_SOURCES := model-families/motif/device/motif_device_stage.cpp
+MOTIF_DEVICE_HEADERS := model-families/motif/include/sparkpipe/spark_motif_family.h model-families/motif/include/sparkpipe/spark_motif_device_stage.h \
+	model-families/motif/include/sparkpipe/spark_motif_model.h modules/motif3_tp16_resident_decode_stage/include/sparkpipe/spark_motif3_tp16_stage_model.h
+MOTIF_DEVICE_INCLUDE_FLAGS := -Imodel-families/motif/include -Imodules/motif3_tp16_resident_decode_stage/include
+MOTIF_DEVICE_OBJECT := build/metal/motif_device_stage.o
+
+$(MOTIF_DEVICE_OBJECT): $(MOTIF_DEVICE_SOURCES) $(MOTIF_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
+	@mkdir -p $(dir $@)
+	$(CXX) $(CORE_INCLUDE_FLAGS) $(MOTIF_DEVICE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CXXFLAGS) -c $(MOTIF_DEVICE_SOURCES) -o $@
+
+build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(GLM52_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(K3_DEVICE_INCLUDE_FLAGS) $(MOTIF_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi
@@ -1666,6 +1704,9 @@ $(GLM53_FLASH_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_T
 
 $(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,glm53_flash-bf16-tp16,glm53_flash_bf16_stage,zai-org/GLM-5.3-Flash-BF16,f12e0fe1f6b2ea274c11a569582edfd99d993c5e)
+
+$(MOTIF3_TP16_SERVING_ADAPTER): $(MOTIF3_TP16_SOURCES) $(MOTIF3_TP16_CONTRACT) modules/motif3_tp16_resident_decode_stage/include/sparkpipe/spark_motif3_tp16_stage_model.h model-families/motif/source/motif_stage.cuh model-families/motif/include/sparkpipe/spark_motif_family.h model-families/motif/include/sparkpipe/spark_motif_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMOTIF3_TP16_CONTRACT_SHA256=\"$(MOTIF3_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/motif3_tp16_resident_decode_stage/include -Imodel-families/motif/source -Imodel-families/motif/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MOTIF3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(LAGUNA_TP16_SERVING_ADAPTER): $(LAGUNA_TP16_SOURCES) $(LAGUNA_TP16_CONTRACT) modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DLAGUNA_TP16_CONTRACT_SHA256=\"$(LAGUNA_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/laguna_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LAGUNA_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi

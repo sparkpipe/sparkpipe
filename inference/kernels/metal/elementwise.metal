@@ -269,7 +269,25 @@ kernel void spark_route_combine_weighted(constant SparkRouteParams &p [[buffer(0
 	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
 }
 
-kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
+kernel void spark_route_combine_weighted_shared(constant SparkRouteParams &p [[buffer(0)]], device const ushort *expert_out [[buffer(1)]],
+	device const float *weights [[buffer(2)]], device const ushort *shared [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( index >= p.width )
+		return;
+	float total = 0.0f;
+	for ( uint k = 0u; k < p.top_k; k++ )
+	{
+		const ulong route = (ulong)row * p.top_k + k;
+		total = fma(SparkMathBf16ToFloat(expert_out[route * p.width + index]), weights[route], total);
+	}
+	total += SparkMathBf16ToFloat(shared[(ulong)row * p.width + index]);
+	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
+}
+
+template <uint SCORE>
+kernel void spark_route_scored_topk(constant SparkRouteParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], device float *weights [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
@@ -284,7 +302,8 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	for ( uint expert = tid; expert < p.experts; expert += threads )
 	{
 		const float logit = logits[(ulong)row * p.logit_stride + expert];
-		const float value = SparkMathSigmoid(p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit);
+		const float rounded = p.round_logits != 0u ? SparkMathRoundBf16(logit) : logit;
+		const float value = SCORE == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SparkMathSqrtSoftplus(rounded) : SparkMathSigmoid(rounded);
 		score[expert] = value;
 		selection[expert] = value + bias[expert];
 	}
@@ -392,6 +411,16 @@ kernel void spark_route_sigmoid_topk(constant SparkRouteParams &p [[buffer(0)]],
 	}
 }
 
+#define SPARK_ROUTE_SCORED_INSTANCE(name, score) \
+	template [[host_name(name)]] kernel void spark_route_scored_topk<score>(constant SparkRouteParams &p [[buffer(0)]], \
+		device const float *logits [[buffer(1)]], device const float *bias [[buffer(2)]], device uint *experts [[buffer(3)]], \
+		device float *weights [[buffer(4)]], uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], \
+		uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], \
+		uint simds [[simdgroups_per_threadgroup]]);
+
+SPARK_ROUTE_SCORED_INSTANCE("spark_route_sigmoid_topk", SPARK_ROUTE_SCORE_SIGMOID)
+SPARK_ROUTE_SCORED_INSTANCE("spark_route_sqrt_softplus_topk", SPARK_ROUTE_SCORE_SQRT_SOFTPLUS)
+
 kernel void spark_logprob_rows(constant SparkLogprobParams &p [[buffer(0)]], device const float *logits [[buffer(1)]],
 	device const uint *targets [[buffer(2)]], device float *result [[buffer(3)]], device uint *argmax [[buffer(4)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
@@ -469,4 +498,140 @@ kernel void spark_sigmoid_gate_rows(constant SparkRouteParams &p [[buffer(0)]], 
 	const float gate = SparkMathSigmoid(SparkMathBf16ToFloat(logits[(ulong)row * p.logit_stride]));
 	const ulong at = (ulong)row * p.width + index;
 	values[at] = SparkMathFloatToBf16(SparkMathBf16ToFloat(values[at]) * gate);
+}
+
+kernel void spark_block_qdq(constant SparkQdqParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint size = SPARK_QDQ_BLOCK(p.format), block = group.x * group_size.x + tid, row = group.y;
+	if ( row >= p.rows || block * size >= p.width )
+		return;
+	device const ushort *x = input + (ulong)row * p.input_stride + block * size;
+	device ushort *y = output + (ulong)row * p.output_stride + block * size;
+	float values[32];
+	float amax = 0.0f;
+	for ( uint i = 0u; i < size; i++ )
+	{
+		values[i] = SparkMathBf16ToFloat(x[i]);
+		amax = fmax(amax, fabs(values[i]));
+	}
+	const float scale = p.format == SPARK_QDQ_FP8 ? SparkMathFp8QdqScale(amax) : p.format == SPARK_QDQ_FP4 ? SparkMathFp4QdqScale(amax) :
+		SparkMathFp4Pow2QdqScale(amax);
+	for ( uint i = 0u; i < size; i++ )
+		y[i] = SparkMathFloatToBf16(p.format == SPARK_QDQ_FP8 ? SparkMathFp8Qdq(values[i], scale) : SparkMathFp4Qdq(values[i], scale));
+}
+
+static inline uint SparkSequenceOfRow(device const uint *row_begin, uint sequences, uint row)
+{
+	uint lane = 0u;
+	while ( lane + 1u < sequences && row_begin[lane + 1u] <= row )
+		lane++;
+	return lane;
+}
+
+kernel void spark_kv_compress(constant SparkCompressParams &p [[buffer(0)]], device const float *kv [[buffer(1)]], device const float *score [[buffer(2)]],
+	device const float *state [[buffer(3)]], device const uint *positions [[buffer(4)]], device const uint *row_begin [[buffer(5)]],
+	device const uint *state_index [[buffer(6)]], device ushort *pooled [[buffer(7)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, c = group.x * group_size.x + tid;
+	if ( row >= p.rows || c >= p.width )
+		return;
+	const ulong at = (ulong)row * p.width + c;
+	if ( p.ratio == 1u )
+	{
+		pooled[at] = SparkMathFloatToBf16(kv[at]);
+		return;
+	}
+	if ( (positions[row] + 1u) % p.ratio != 0u )
+		return;
+	const uint lane = SparkSequenceOfRow(row_begin, p.sequences, row);
+	device const float *carried = state + (ulong)state_index[lane] * p.state_stride;
+	const bool inside = row > row_begin[lane];
+	const float first = inside ? kv[at - p.width] : carried[c], first_score = inside ? score[at - p.width] : carried[p.width + c];
+	pooled[at] = SparkMathFloatToBf16(SparkMathSoftmaxPool2(first, first_score, kv[at], score[at]));
+}
+
+kernel void spark_kv_compress_save(constant SparkCompressParams &p [[buffer(0)]], device const float *kv [[buffer(1)]],
+	device const float *score [[buffer(2)]], device float *state [[buffer(3)]], device const uint *positions [[buffer(4)]],
+	device const uint *row_begin [[buffer(5)]], device const uint *state_index [[buffer(6)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint lane = group.y, c = group.x * group_size.x + tid;
+	if ( p.commit == 0u || lane >= p.sequences || c >= p.width || row_begin[lane + 1u] == row_begin[lane] )
+		return;
+	const uint row = row_begin[lane + 1u] - 1u;
+	if ( (positions[row] + 1u) % p.ratio == 0u )
+		return;
+	device float *carried = state + (ulong)state_index[lane] * p.state_stride;
+	carried[c] = kv[(ulong)row * p.width + c];
+	carried[p.width + c] = score[(ulong)row * p.width + c];
+}
+
+kernel void spark_compressed_positions(constant SparkCompressParams &p [[buffer(0)]], device const uint *positions [[buffer(1)]],
+	device uint *store [[buffer(2)]], device uint *rope [[buffer(3)]], device uint *last [[buffer(4)]], uint row [[thread_position_in_grid]])
+{
+	if ( row >= p.rows )
+		return;
+	const uint position = positions[row];
+	store[row] = (position + 1u) % p.ratio == 0u ? position / p.ratio : SPARK_KV_SKIP;
+	rope[row] = position + 1u - p.ratio;
+	last[row] = (position + 1u) / p.ratio - 1u;
+}
+
+kernel void spark_poly_norm_mul(constant SparkPolyNormParams &p [[buffer(0)]], device const ushort *gate_up [[buffer(1)]],
+	device const float *params [[buffer(2)]], device const uint *param_of_row [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
+	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float scratch[32];
+	if ( row >= p.rows )
+		return;
+	device const ushort *gate = gate_up + (ulong)row * p.input_stride, *up = gate + p.width;
+	device ushort *y = output + (ulong)row * p.output_stride;
+	const uint index = p.indexed != 0u ? param_of_row[row] : 0u;
+	if ( index >= p.param_count )
+	{
+		for ( uint i = tid; i < p.width; i += threads )
+			y[i] = 0u;
+		return;
+	}
+	float square = 0.0f, fourth = 0.0f, sixth = 0.0f;
+	for ( uint i = tid; i < p.width; i += threads )
+	{
+		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), g2 = g * g, g3 = g2 * g;
+		square += g * g;
+		fourth += g2 * g2;
+		sixth += g3 * g3;
+	}
+	square = SparkGroupSum(square, scratch, lane, simd, simds);
+	fourth = SparkGroupSum(fourth, scratch, lane, simd, simds);
+	sixth = SparkGroupSum(sixth, scratch, lane, simd, simds);
+	const float count = float(p.width);
+	const float d1 = sqrt(square / count + p.epsilon), d2 = sqrt(fourth / count + p.epsilon), d3 = sqrt(sixth / count + p.epsilon);
+	device const float *w = params + 4ul * index;
+	const float w0 = SparkMathSigmoid(w[0]), w1 = SparkMathSigmoid(w[1]), w2 = SparkMathSigmoid(w[2]);
+	const float bias = p.routed != 0u ? SparkMathClamp(w[3], p.bias_clamp) : w[3];
+	for ( uint i = tid; i < p.width; i += threads )
+	{
+		const float g = SparkMathClamp(SparkMathBf16ToFloat(gate[i]), p.clamp), u = SparkMathClamp(SparkMathBf16ToFloat(up[i]), p.clamp);
+		const float value = SparkMathPolyNorm(g, d1, d2, d3, w0, w1, w2, bias) * u;
+		y[i] = p.routed != 0u ? SparkMathFloatToBf16(SparkMathClamp(value, p.clamp) * p.output_scale) :
+			SparkMathFloatToBf16(SparkMathRoundBf16(value) * p.output_scale);
+	}
+}
+
+kernel void spark_differential_gate(constant SparkDifferentialGateParams &p [[buffer(0)]], device const ushort *heads [[buffer(1)]],
+	device const ushort *lambda [[buffer(2)]], device const ushort *gate [[buffer(3)]], device ushort *output [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, element = group.x * group_size.x + tid, width = p.groups * p.signal * p.dimension;
+	if ( row >= p.rows || element >= width )
+		return;
+	const uint head = element / p.dimension, d = element % p.dimension, team = head / p.signal, member = head % p.signal;
+	device const ushort *base = heads + (ulong)row * p.heads_stride + (ulong)team * (p.signal + 1u) * p.dimension;
+	const float signal = SparkMathBf16ToFloat(base[(ulong)member * p.dimension + d]), noise = SparkMathBf16ToFloat(base[(ulong)p.signal * p.dimension + d]);
+	const float weight = SparkMathBf16ToFloat(lambda[(ulong)row * p.lambda_stride + p.lambda_offset + head]);
+	const float opened = SparkMathBf16ToFloat(gate[(ulong)row * p.gate_stride + element]);
+	output[(ulong)row * p.output_stride + element] = SparkMathFloatToBf16(SparkMathDifferentialGate(signal, noise, weight, opened));
 }

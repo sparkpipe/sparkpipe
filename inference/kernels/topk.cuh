@@ -17,10 +17,7 @@ static __device__ __forceinline__ float LmTopkScore(const float *scores, const u
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SIGMOID )
 		return(SparkMathSigmoidFast(value));
 	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SQRT_SOFTPLUS )
-	{
-		float softplus = value > 20.0f ? value : log1pf(expf(value));
-		return(sqrtf(softplus > 0.0f ? softplus : 0.0f));
-	}
+		return(SparkMathSqrtSoftplus(value));
 	return(value);
 }
 

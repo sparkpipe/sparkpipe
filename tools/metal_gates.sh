@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 5 ]; then
-	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|qwen3.8-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
+	echo "usage: [SPARK_GATE_TP=N [SPARK_GATE_STREAM=1]] [SPARK_GATE_DECODE=N] [SPARK_GATE_GREEDY=N] $0 gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|qwen3.8-flash|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2|deepseek-v4.1-flash|kimi-k3|motif-3 PACK REFERENCE_LOGITS_DIR OUT_DIR REVISION" >&2
 	exit 2
 fi
 model=$1
@@ -25,6 +25,9 @@ case $model in
 	glm-5.3-flash) routed=0 prompt_dir=glm53flash vocab=154880 probe=kda_out layer=12;;
 	glm-5.3-full) routed=0 prompt_dir=glm53full vocab=154880 probe=mla_out layer=11;;
 	ax-k2) routed=0 prompt_dir=axk2 vocab=163840 probe=mla_out layer=11;;
+	deepseek-v4.1-flash) routed=0 prompt_dir=dsv41_flash vocab=129280 probe=kv layer=11 sidecar=dsv41_flash.engram.pack;;
+	kimi-k3) routed=0 prompt_dir=k3 vocab=163840 probe=kda_out layer=12;;
+	motif-3) routed=0 prompt_dir=motif3 vocab=220160 probe=attn_kv_a layer=12;;
 	*) echo "unknown Metal model $model" >&2; exit 2;;
 esac
 greedy_tokens=${SPARK_GATE_GREEDY:-${greedy_tokens:-128}}
@@ -49,6 +52,7 @@ if [ "$tp" -gt 1 ]; then
 fi
 mkdir -p "$control_dir"
 control_pack=$control_dir/$(basename "$pack")
+[ -n "${sidecar:-}" ] && ln -sfn "$(cd "$(dirname "$pack")" && pwd)/$sidecar" "$control_dir/$sidecar"
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
 ln -sfn "$reference" "$out/ref"
 cd "$root"
@@ -121,4 +125,5 @@ fi
 if [ "$spec" = 1 ]; then
 	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 fi
+sh tools/metal_gate_floors.sh "$out" "$prompts" "$vocab"
 python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts" --tp-degree "$tp"
