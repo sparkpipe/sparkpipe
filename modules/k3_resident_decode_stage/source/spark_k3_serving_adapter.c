@@ -10,6 +10,20 @@
 
 #include "spark_k3_dspark_format.h"
 
+#if !defined(SPARK_K3_SERVING_INDEXER) || (SPARK_K3_SERVING_INDEXER != 0 && SPARK_K3_SERVING_INDEXER != 1)
+#error "SPARK_K3_SERVING_INDEXER must name the packs this build serves: 0 for Kimi K3, 1 for Kimi K3.1 Pro (the MLA indexer)"
+#endif
+#if SPARK_K3_SERVING_INDEXER == 1
+#if SPARK_K3_SERVING_TOPOLOGY != 16 || !defined(K31_PRO_CONTRACT_SHA256)
+#error "a Kimi K3.1 Pro build is TP16 and names its pack contract in K31_PRO_CONTRACT_SHA256"
+#endif
+#define SPARK_K3_SERVING_SOURCE_ID "moonshotai/Kimi-K3.1-Pro"
+#define SPARK_K3_SERVING_KV_REGIONS SPARK_STAGE_KV_MAX_REGIONS
+#else
+#define SPARK_K3_SERVING_SOURCE_ID SPARK_K3_MODEL_SOURCE_ID
+#define SPARK_K3_SERVING_KV_REGIONS 1u
+#endif
+
 #if SPARK_K3_SERVING_TOPOLOGY == 404
 #define SPARK_K3_SERVING_ADAPTER_ID "k3-tp4pp4"
 #define SPARK_K3_SERVING_TP_DEGREE 4u
@@ -36,7 +50,11 @@
 	SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_RESIDUAL_BANK
 #define SPARK_K3_SERVING_SIDEBAND_BYTES SPARK_K3_RESIDUAL_BANK_BYTES_PER_ROW
 #elif SPARK_K3_SERVING_TOPOLOGY == 16
+#if SPARK_K3_SERVING_INDEXER == 1
+#define SPARK_K3_SERVING_ADAPTER_ID "k31-pro-tp16"
+#else
 #define SPARK_K3_SERVING_ADAPTER_ID "k3-tp16"
+#endif
 #define SPARK_K3_SERVING_TP_DEGREE 16u
 #define SPARK_K3_SERVING_PARALLEL_GROUP_SIZE 0u
 #define SPARK_K3_SERVING_CAPABILITIES \
@@ -56,7 +74,11 @@
 #error "SPARK_K3_SERVING_TOPOLOGY must be 404 (TP4xPP4) or 16 (TP16)"
 #endif
 
+#if SPARK_K3_SERVING_INDEXER == 1
+#define SPARK_K3_SERVING_CONTRACT_SHA256 K31_PRO_CONTRACT_SHA256
+#else
 #define SPARK_K3_SERVING_CONTRACT_SHA256 "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
+#endif
 #define SPARK_K3_SERVING_MAX_ROWS 4096u
 
 static void K3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
@@ -68,6 +90,16 @@ static void K3ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKv
 	kv->arena_head_dim = SPARK_K3_MODEL_MLA_KV_A_DIMENSION;
 	kv->arena_bytes_per_scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
 	SparkK3KvFillCapacityRequest(&kv->capacity_request);
+	kv->region_count = SPARK_K3_SERVING_KV_REGIONS;
+	if ( SPARK_K3_SERVING_KV_REGIONS > 1u )
+	{
+		kv->regions[1].layout = SPARK_STAGE_KV_REGION_LAYER_MAJOR;
+		kv->regions[1].layer_page_bytes = (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_KV_INDEX_KEY_DIMENSION * SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR;
+		kv->regions[1].layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
+		kv->capacity_request.index_key_layer_count = SPARK_K3_KV_MLA_LAYER_COUNT;
+		kv->capacity_request.index_key_dimension = SPARK_K3_KV_INDEX_KEY_DIMENSION;
+		kv->capacity_request.index_key_bytes_per_scalar = SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR;
+	}
 	if ( tp_degree > 1u )
 		kv->context_shard = SparkK3KvShardContext(tp_rank, tp_degree);
 }
@@ -81,7 +113,7 @@ static const SparkModelServingAdapterDescriptor K3ServingDescriptor =
 {
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
 		SPARK_K3_SERVING_ADAPTER_ID,
-		SPARK_K3_MODEL_SOURCE_ID,
+		SPARK_K3_SERVING_SOURCE_ID,
 		SPARK_K3_SERVING_ADAPTER_ID,
 		"k3",
 		SPARK_K3_SERVING_CONTRACT_SHA256),

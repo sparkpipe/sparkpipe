@@ -78,6 +78,7 @@ struct K3SliceState
 	uint16_t *kda_k_window;
 	uint16_t *kda_v_window;
 	const LmKvView *mla_cache;
+	const LmKvView *index_cache;
 	uint16_t *replay_conv_q;
 	uint16_t *replay_conv_k;
 	uint16_t *replay_conv_v;
@@ -210,6 +211,12 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 		buffers->cache = state->mla_cache[mla_index];
 		buffers->cache_shard.pages = buffers->cache;
 		buffers->cache_shard.shard = buffers->kv_shard;
+		if ( state->index_cache != 0 )
+		{
+			buffers->index_cache = state->index_cache[mla_index];
+			buffers->index_shard.pages = buffers->index_cache;
+			buffers->index_shard.shard = buffers->kv_shard;
+		}
 	}
 }
 
@@ -500,6 +507,31 @@ struct K3Cuda
 	static int32_t MlaUp(Context &c, uint32_t lane, uint32_t stream)
 	{
 		return K3LayerMlaUp<Format,Geometry>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static int32_t MlaIndex(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaIndex<Format>(Lane(c, lane), c.rows[lane], c.multiprocessors, Stream(c, stream));
+	}
+
+	static uint32_t MlaIndexChunks(const Context &c, uint32_t lane)
+	{
+		return K3LayerIndexChunks(Lane(c, lane), c.rows[lane]);
+	}
+
+	static void SetIndexChunk(Context &c, uint32_t lane, uint32_t chunk)
+	{
+		Lane(c, lane)->index_chunk = chunk;
+	}
+
+	static int32_t MlaIndexSelect(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaIndexSelect(Lane(c, lane), c.rows[lane], Stream(c, stream));
+	}
+
+	static int32_t MlaIndexMerge(Context &c, uint32_t lane, uint32_t stream)
+	{
+		return K3LayerMlaIndexMerge(Lane(c, lane), c.rows[lane], Stream(c, stream));
 	}
 
 	static int32_t MlaShardPartials(Context &c, uint32_t lane, uint32_t stream)

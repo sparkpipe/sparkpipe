@@ -262,6 +262,9 @@ def main():
     config = config.get("text_config", config)
     if config.get("num_hidden_layers") != LAYERS or config.get("hidden_size") != H or config.get("vocab_size") != VOCAB:
         raise PackFailure("the checkpoint is not the Kimi K3 geometry this packer pins")
+    if config.get("dsa_config") is not None:
+        raise PackFailure("the checkpoint carries dsa_config (Kimi K3.1's MLA indexer), which the device stage does not run: "
+                          "a pack without the indexer would attend every position and serve another model")
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     reader = Reader(args.checkpoint)

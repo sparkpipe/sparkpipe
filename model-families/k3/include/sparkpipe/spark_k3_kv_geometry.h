@@ -11,8 +11,8 @@
 #define SPARK_K3_KV_LATENT_DIMENSION SPARK_K3_MODEL_MLA_LATENT_DIMENSION
 #define SPARK_K3_KV_ROPE_DIMENSION SPARK_K3_MODEL_MLA_ROPE_DIMENSION
 #define SPARK_K3_KV_INDEX_KEY_LAYER_COUNT 0u
-#define SPARK_K3_KV_INDEX_KEY_DIMENSION 0u
-#define SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR 0u
+#define SPARK_K3_KV_INDEX_KEY_DIMENSION 128u
+#define SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR 2u
 #define SPARK_K3_KV_KDA_HEADS SPARK_K3_MODEL_KDA_HEAD_COUNT
 #define SPARK_K3_KV_KDA_KEY_DIM SPARK_K3_MODEL_KDA_HEAD_KEY_DIMENSION
 #define SPARK_K3_KV_KDA_VALUE_DIM SPARK_K3_MODEL_KDA_HEAD_VALUE_DIMENSION
@@ -40,7 +40,6 @@ static inline void SparkK3KvFillCapacityRequest(
 	request->bytes_per_scalar = SPARK_K3_KV_BYTES_PER_SCALAR;
 	request->fp8_scale_block_size = 0u;
 	request->index_key_layer_count = SPARK_K3_KV_INDEX_KEY_LAYER_COUNT;
-	request->index_key_dimension = SPARK_K3_KV_INDEX_KEY_DIMENSION;
-	request->index_key_bytes_per_scalar =
-		SPARK_K3_KV_INDEX_KEY_BYTES_PER_SCALAR;
+	request->index_key_dimension = 0u;
+	request->index_key_bytes_per_scalar = 0u;
 }

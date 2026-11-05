@@ -10,6 +10,7 @@
 #define K3_COLLECTIVE_MLA_KEYS 7u
 #define K3_COLLECTIVE_MLA_MHA_QUERY 8u
 #define K3_COLLECTIVE_MLA_MHA_PARTIALS 9u
+#define K3_COLLECTIVE_MLA_INDEX 10u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_COLLECTIVE_ROWS 0x400u
@@ -142,11 +143,22 @@ struct K3Schedule
 		if ( status != B::kOk )
 			return status;
 		status = B::MlaUp(c, K3_LANE_A, K3_STREAM_MAIN);
+		if ( status == B::kOk )
+			status = B::MlaIndex(c, K3_LANE_A, K3_STREAM_MAIN);
 		if ( status != B::kOk )
 			return status;
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_QUERY);
 		status = B::MlaGate(c, K3_LANE_A, K3_STREAM_MAIN);
 		B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_QUERY | K3_COLLECTIVE_FINISH);
+		for ( uint32_t chunk = 0u; status == B::kOk && chunk < B::MlaIndexChunks(c, K3_LANE_A); chunk++ )
+		{
+			B::SetIndexChunk(c, K3_LANE_A, chunk);
+			status = B::MlaIndexSelect(c, K3_LANE_A, K3_STREAM_MAIN);
+			if ( status != B::kOk )
+				break;
+			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_INDEX);
+			status = B::MlaIndexMerge(c, K3_LANE_A, K3_STREAM_MAIN);
+		}
 		if ( status != B::kOk )
 			return status;
 		status = B::MlaShardPartials(c, K3_LANE_A, K3_STREAM_MAIN);
