@@ -89,6 +89,16 @@ It fetches the payment, refuses a clause outside that list, an amount above what
 3. Register the webhook `https://sparkpipe.ai/pay/api/toss/webhook` for `PAYMENT_STATUS_CHANGED` and `DEPOSIT_CALLBACK` on the live MID, and `https://sparkpipe.ai/pay/sandbox/api/toss/webhook` in the test environment.
 4. Copy the live checkout-page keys (`live_gck_…`, `live_gsk_…`) into `/etc/sparkpipe-pay/env` as `TOSS_CLIENT_KEY` and `TOSS_SECRET_KEY`, by editing the file, never on a command line, and restart the service. The live service refuses test keys and the sandbox refuses live keys; a key without the other stops the service. Under API key access policy, allow only the VPS's address.
 
+### Saved payment for automatic top-ups (not built)
+
+An automatic HC top-up would charge a saved card through a Toss Payments billing key (자동결제, 빌링) when auto-extend waits for HC (`docs/FLEET_BOOKINGS.md`), so that a short balance never costs a holder its Fleet. It is not built, because three things are missing:
+
+1. **The merchant contract.** Billing keys are a separate Toss Payments service that Toss reviews and adds to a MID by contract. Nothing in this repository or the live configuration records that our MID has it. The service today holds only the checkout-page keys (`live_gck_…`, `live_gsk_…`); billing uses the API individual-integration keys (`live_ck_…`, `live_sk_…`) of a MID with 자동결제 enabled, and takes cards only.
+2. **The customer's standing authorization.** Clause 3.3(a) of the Customer Agreement has Customer pay through Toss Payments "as its payment window offers them for the order", and a billing charge has no payment window. Whether an Order placed by a standing authorization fits clause 3.3(a) is for the pending legal review; this service does not change the contract text.
+3. **The operator's settings:** the billing keys in `/etc/sparkpipe-pay/env`, and the limits the account page would offer (the most HC per top-up and per month).
+
+Once the contract and the legal review allow it, the build is: the account page calls the SDK's `requestBillingAuth({method: "CARD", …})`; the success redirect sends `authKey` and `customerKey` to `POST /v1/billing/authorizations/issue`; the billing key is kept in a mode-600 file like `webhooks.json`, never in the ledger, which records only that a card is saved (its masked number) and the customer's limits and acceptance; a top-up is an ordinary Toss Payments order, priced on the server at the `krw` ladder with VAT, charged with `POST /v1/billing/{billingKey}` and `Idempotency-Key: billing-<order>`, and settled through the same check as every Toss Payments payment (`payment`, `hc_issued`, `hc_lot`, receipt by email); it runs only when auto-extend writes `auto_extend_wait` with `insufficient_hc`, for the HC that Week needs (at least `hc.min`), within the customer's limits; and one click deletes the card, its billing key at Toss Payments and the file entry.
+
 ## SWIFT bank transfers
 
 A USD bank transfer (SWIFT) is clause 3.3(b): US dollars from the customer's own account outside Korea to our US dollar account at a Korean foreign exchange bank. It is zero-rated for a customer with no place of business in Korea, so it is the only method at 0% VAT; Toss Payments and USDC/USDT stay at 10%.

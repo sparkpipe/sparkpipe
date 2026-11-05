@@ -613,7 +613,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 | Event | When |
 | --- | --- |
-| `booking.deadline` | 48 h and 6 h before 00:00 on the Sunday of the last booked week, while the next week is not booked |
+| `booking.deadline` | 72 h, 48 h, 6 h and 2 h before 00:00 on the Sunday of the last booked week, while the next week is not booked; early when auto-extend cannot book (§16), and when it stops |
 | `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
 | `run.finished`, `run.failed`, `report.ready` | §7 |
 | `fetch.finished`, `fetch.failed`, `fetch.needs_token` | §6.1, §6.2 |
@@ -674,7 +674,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 The account endpoints already exist in the payment service under `/market/...`: state, quote and book weeks, book hours, the waitlist, keys and the ledger (`docs/FLEET_BOOKINGS.md`). For the CLI they also accept `Authorization: Bearer <session>` from the email-code sign-in, besides the page's cookie. Keys gain the options of §12.
 
-**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC.
+**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC. It is on by default, one week ahead, from the first week an account books or the waitlist grants it on a fleet; `weeks_ahead: 0`, or one click on the account page, turns it off.
 - It books each new week as soon as the rules allow, at the discount for the weeks held.
 - If the balance runs short, it sends `booking.deadline` early, with the HC needed.
 
