@@ -149,6 +149,7 @@ def main():
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--label", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--streams", help="JSONL file that receives every request's prompt and output token ids, for offline drafter replay")
     arguments = parser.parse_args()
     frontend, model = load_model(arguments.chat_dir, arguments.model)
     batches = [int(value) for value in arguments.batches.split(",")]
@@ -178,6 +179,11 @@ def main():
                               "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
                     handle.write(json.dumps(record) + "\n")
                     handle.flush()
+                    if arguments.streams:
+                        with open(arguments.streams, "a") as streams:
+                            for index, (a, b) in enumerate(zip(off["streams"], on["streams"])):
+                                streams.write(json.dumps({"label": arguments.label, "kind": kind, "batch": count, "repeat": repeat, "stream": index,
+                                                          "prompt": prompts[index], "off": a["tokens"], "on": b["tokens"]}) + "\n")
                     print(json.dumps({key: record[key] for key in ("kind", "batch", "repeat", "off_tok_s", "on_tok_s", "identical", "first_differences", "errors")}), flush=True)
                     summary.setdefault((kind, count), []).append(record)
                     if record["errors"]:
