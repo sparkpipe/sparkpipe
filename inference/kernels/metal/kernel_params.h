@@ -124,6 +124,8 @@ typedef struct SparkRouteParams
 	uint32_t groups;
 	uint32_t topk_groups;
 	uint32_t tree_sum;
+	uint32_t score;
+	uint32_t pad[3];
 } SparkRouteParams;
 
 typedef struct SparkScaleParams
@@ -236,7 +238,8 @@ typedef struct SparkKvParams
 	uint32_t value_offset;
 	uint32_t pool_pages;
 	uint32_t value_dimension;
-	uint32_t pad[2];
+	uint32_t skip;
+	uint32_t pad;
 } SparkKvParams;
 
 typedef struct SparkAttentionParams
@@ -264,6 +267,9 @@ typedef struct SparkAttentionParams
 	uint32_t has_sinks;
 	uint32_t first_head;
 	uint32_t group;
+	uint32_t partition_base;
+	uint32_t extra_partitions;
+	uint32_t pad[3];
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams
@@ -276,6 +282,36 @@ typedef struct SparkSiluMulParams
 	float up_limit;
 	uint32_t pad[2];
 } SparkSiluMulParams;
+
+typedef struct SparkPolyNormParams
+{
+	uint32_t rows;
+	uint32_t width;
+	uint32_t input_stride;
+	uint32_t output_stride;
+	uint32_t param_count;
+	uint32_t indexed;
+	uint32_t routed;
+	uint32_t pad;
+	float clamp;
+	float bias_clamp;
+	float output_scale;
+	float epsilon;
+} SparkPolyNormParams;
+
+typedef struct SparkDifferentialGateParams
+{
+	uint32_t rows;
+	uint32_t groups;
+	uint32_t signal;
+	uint32_t dimension;
+	uint32_t heads_stride;
+	uint32_t lambda_stride;
+	uint32_t lambda_offset;
+	uint32_t gate_stride;
+	uint32_t output_stride;
+	uint32_t pad[3];
+} SparkDifferentialGateParams;
 
 typedef struct SparkLogprobParams
 {
@@ -332,8 +368,51 @@ typedef struct SparkHcParams
 	float hc_epsilon;
 	float post_magnitude;
 	uint32_t iterations;
+	float gate_clamp;
+	float residual_clamp;
+	float sum_floor;
+	uint32_t pad;
 } SparkHcParams;
 
 #define SPARK_HC_COMB_MIXES 24u
+
+#define SPARK_QDQ_FP8 0u
+#define SPARK_QDQ_FP4 1u
+#define SPARK_QDQ_FP4_POW2 2u
+#define SPARK_QDQ_BLOCK(format) ((format) == SPARK_QDQ_FP4 ? 16u : 32u)
+#define SPARK_ROUTE_SCORE_SIGMOID 0u
+#define SPARK_ROUTE_SCORE_SQRT_SOFTPLUS 1u
+#define SPARK_KV_SKIP 0xffffffffu
+
+typedef struct SparkQdqParams
+{
+	uint32_t rows;
+	uint32_t width;
+	uint32_t input_stride;
+	uint32_t output_stride;
+	uint32_t format;
+	uint32_t pad[3];
+} SparkQdqParams;
+
+typedef struct SparkCompressParams
+{
+	uint32_t rows;
+	uint32_t sequences;
+	uint32_t width;
+	uint32_t ratio;
+	uint32_t state_stride;
+	uint32_t commit;
+	uint32_t pad[2];
+} SparkCompressParams;
+
+typedef struct SparkGateParams
+{
+	uint32_t rows;
+	uint32_t streams;
+	uint32_t width;
+	float epsilon;
+	float floor;
+	uint32_t pad[3];
+} SparkGateParams;
 
 #endif

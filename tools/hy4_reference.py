@@ -16,10 +16,10 @@
              chat_template.json, reasoning off) -> --out prompts.json
   teacher    logits of every prompt position for the Metal gate: --prompts
              prompts.json -> --out DIR/<name>.ref_<v>.logits for --variants
-             a,h. Variant b sums every matrix product in 1,024-wide chunks
+             a,b,h. Variant b sums every matrix product in 1,024-wide chunks
              last first, reverses the norms' and softmax sums and adds the
              routed experts in descending order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
-             the second reference whose distance from a is the gate's floor
+             and the three variants' distances from one another are the gate's floors
 
 The checkpoint ships no modeling code. The semantics follow config.json and
 the hy-v4 graph llama.cpp merged at 49c0dc82 (MIT, see NOTICE), which mirrors the vLLM
@@ -573,7 +573,7 @@ def main():
     e = sub.add_parser("teacher")
     e.add_argument("--checkpoint", required=True)
     e.add_argument("--prompts", required=True)
-    e.add_argument("--variants", default="a,h")
+    e.add_argument("--variants", default="a,b,h")
     e.add_argument("--lora-epsilon", type=float, default=1e-5)
     e.add_argument("--out", required=True)
     m = sub.add_parser("summary")

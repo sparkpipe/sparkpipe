@@ -1213,11 +1213,19 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
   digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
   Qwen3.8-27b nvfp4, Ling, the last with possessive quantifiers), laguna's
-  leading newline-run split and muse-glimmer's cased letters. Any other
-  pre-tokenizer fails the load with an error naming the file. gemma4's
+  leading newline-run split, muse-glimmer's cased letters and Motif's
+  multi-word cased letters. Any other pre-tokenizer fails the load with an
+  error naming the file. gemma4's
   `Replace` plus `Split " "` loads: the split is a no-op once the normalizer
   has replaced every space, but this has not been checked against gemma4's own
   file.
+- Added tokens implement `lstrip` (Motif's whitespace-run tokens absorb the
+  whitespace before them, as Hugging Face does). An added token with `rstrip`
+  or `single_word` fails the load; no served model declares either. A
+  metaspace model whose character has no vocabulary entry and no complete
+  byte fallback fails the encode, where Hugging Face emits one `unk` per
+  character or drops it; Gemma 4, the only metaspace model, has every byte
+  token, so no served model reaches it.
 - The tokenizer implements the `NFC` normalizer (Ling, Qwen3.8, MiMo) and
   the metaspace `Replace`. Any other normalizer (`Sequence`, `NFKC`,
   `Lowercase`, another `Replace`) fails the load with an error. Implement
@@ -1466,7 +1474,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
     adds a GPU's measured exp and tanh error to variant b's reduction order,
     because the floor of reduction order alone (a against b) failed the
     reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
-    the models gated against a and b are being re-gated against a and h;
+    the gate now judges every candidate against all three variants a, b
+    and h, each the reference in turn ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)),
+    and the references that hold only a and h are getting b;
   Kernel bodies (the schedules) stay per backend.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
@@ -1637,8 +1647,10 @@ Metal backend and the single-Studio stage are in
   test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
   (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
   (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
-  reference and Kimi K3 for its pack and reference. The Metal backends for
-  DeepSeek V4.1 Flash and Qwen 3.8 Max are in progress.
+  reference and Kimi K3 for its pack and reference. DeepSeek V4.1 Flash
+  passes against references a and h (KL 1.10 and 0.98 times the floor's,
+  paired +2.0 and +1.2 sigma). The Metal backend for Qwen 3.8 Max is in
+  progress.
 - HY4 on the Studio (`HyDevice<Hy4Device>`): the DSA indexer (`index_q`,
   `index_k` with its LayerNorm, the ReLU-weighted head scores, the exact
   top-2,048 per rank and over the gathered candidates, the second KV pool
@@ -1678,6 +1690,16 @@ Metal backend and the single-Studio stage are in
   (`Glm52Device<Axk2Device>`) reads `Axk2Dimensions` from its module header,
   which the CUDA `Axk2Geometry` also takes its values from; its indexer
   (64 heads, ReLU scores, half-split rope) is not built either.
+- Kimi K3 on the Studio (`K3Device`): the latent attention layers run `q_b`,
+  round, then multiply each head by `mla_uk` (kv_b's key rows) and round
+  again, as the teacher does, where CUDA's pack folds the key rows into the
+  query weight and rounds once; the latent slot stores the 512-wide latent
+  as key and value (1,088 elements where CUDA keeps 576). With
+  `kExpertCells` false the schedule's `ResidentMoe` phases carry the
+  expert-cells meaning (gather the latent slices, then all-reduce the
+  3,584-wide expert sum, CUDA's production arithmetic), not CUDA's own
+  `ResidentMoe` split by latent input, and every rank scores all 896
+  experts where CUDA scores 112 per rank and gathers them.
 - Qwen 3.8 Flash Next on the Studio (`QwenDevice<Qwen38FlashDevice>`):
   - the QSA indexer is not built, so the stage refuses contexts past 2,048
     positions. Below 2,052 the indexer keeps every block and attention is
@@ -1750,6 +1772,52 @@ Metal backend and the single-Studio stage are in
     solo tokens. Taking the GEMV passes for three to eight rows in the GEMV
     family would make B3 to B8 both faster and identical to solo decode;
     it needs Gemma's ladder gate re-run.
+- DeepSeek V4.1 Flash on Metal (`model-families/dsv41_flash/device/`) is the
+  dense path only:
+  - the sparse-attention indexer is not built, so a row at position 512 or
+    later is refused. It needs the index keys beside the compressed keys,
+    the 32-head ReLU-weighted scores, an exact top 512 with CUDA's tie
+    order, the selection reused by the layers between index sources and the
+    candidate-block prefilter past 16,384 compressed keys;
+  - the window keys of every layer sit in the paged pool for every position
+    (2 KB per position per layer), not in a 128-row ring per sequence;
+  - `SparkOpsAttentionExtra` runs the decode kernel for every row count, so
+    prefill walks 128-key partitions one key per SIMD group instead of the
+    tensor-unit blocks;
+  - `Begin` waits for the queue once per step to read the engram ids and
+    copies the 48 rows per token from the 203 GB table file on the host; at
+    TP8 in one process every rank reads the same rows;
+  - verify frames and `keep_rows` are not wired (the compressor's carried
+    pair is not replayed), so speculation is refused;
+  - each rank rounds its routed sum plus its shared slice to BF16 before the
+    BF16 all-reduce; the publisher all-reduces the routed sum in FP32 and
+    rounds once after the shared expert;
+  - the compressed rope table comes from `SparkRopeYarnRampTable`, not from
+    CUDA's `D41FrequencyKernel` op order, and the software E4M3 and E2M1
+    rounders are checked against an enumerated grid, not against the PTX
+    conversions on a GPU;
+  - the indexer weights and the dspark blocks are not packed;
+  - the TP8 gate passes with Metal at +2.3 and +2.9 sigma on the paired test
+    (the limit is 3), further from the floor than the other TP8 models.
+    Each rank's BF16 partials of `o_b` and of the MoE before the all-reduce
+    are extra roundings the references do not have; a TP1 gate, or an FP32
+    all-reduce, would show whether they are the whole difference.
+- Motif 3 on Metal (`model-families/motif/device/`):
+  - the latent attention keeps the whole latent on every rank and attends
+    the rank's heads, where CUDA shards the context (gathered queries,
+    partial records, an all-to-all merge), so the softmax merge order
+    differs;
+  - the window layers' inverse frequencies come from the host in double
+    precision, not CUDA's per-pair `__powf`;
+  - the dense MLP and the shared expert run on their owner rank and the
+    other ranks add zeros, as CUDA; each rank's partial rounds to BF16 before
+    the BF16 all-reduce;
+  - the MTP layer is not packed, so speculation is refused;
+  - the CUDA driver is a first draft on `drivers/motif3`, and the Metal
+    operations follow it (`LmPolyNormMulKernel`, `LmDifferentialGateKernel`,
+    `MotifHcPolicy`, `LmMoeLocalWeightedFinalizeKernel`); the PolyNorm,
+    differential-gate and mHC gate formulas are shared through
+    `kernel_math.cuh`, the weighted finalize is not.
 - Define hardware profiles for one to eight Studios: memory, bandwidth, the
   Thunderbolt 5 island wiring, the bridge to the Sparks, power, and storage.
 - Add Thunderbolt 5 RDMA as a link class. Apple's verbs API (TN3205) offers

@@ -54,4 +54,5 @@ for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in 
 	fi
 done
 ./build/metal_stage_run --pack "$pack" --prompts "$prompts" --mode bench --out "$out/metal" --new-tokens 256 --prefill-rows 2048 --repeats 3 > "$out/metal_bench.log"
+sh tools/metal_gate_floors.sh "$out" "$prompts" 248320
 python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts"

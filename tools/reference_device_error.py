@@ -5,7 +5,9 @@ the M5 Ultra's exp under -fno-fast-math is off from double precision by a
 relative error of mean 1.64e-7 and standard deviation 4.35e-7 over [-30, 10]
 (about 18 times FP32 rounding), its tanh by an absolute error of mean 6.1e-9
 and standard deviation 3.67e-8 over [-6, 6], and its rsqrt rounds like FP32.
-Reference variant h (and hp, h with pinned routes) selects that error. As in
+Reference variant h (and hp, h with pinned routes) selects that error;
+an exp that overflows stays infinite, as on the GPU, rather than turning
+into inf - inf. As in
 a GPU's approximation the error is a fixed function of the input: a 32-bit
 hash of the input's FP32 bits (the same one tools/qwen38_27b_reference.c
 uses) gives a uniform draw with that mean and standard deviation, so a
@@ -44,7 +46,8 @@ def exp(values):
     exact = np.exp(values)
     if not ACTIVE:
         return exact
-    return exact + exact * draw(values, 1, EXP_ERROR)
+    with np.errstate(invalid="ignore"):
+        return np.where(np.isfinite(exact), exact + exact * draw(values, 1, EXP_ERROR), exact)
 
 
 def tanh(values):

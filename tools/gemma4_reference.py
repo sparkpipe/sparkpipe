@@ -26,9 +26,9 @@
              the discrete expert choice, and hp is h pinned the same way;
              h is b with every exp and tanh
              carrying a GPU's measured error
-             (tools/reference_device_error.py), so a against h is the
-             gate's floor: reduction-order noise plus the transcendental
-             noise a GPU adds. MoE models also write
+             (tools/reference_device_error.py), so the three variants'
+             distances from one another are the gate's floors:
+             reduction-order noise plus the transcendental noise a GPU adds. MoE models also write
              <out>/<name>.ref_<variant>.routes for a, b and h, the chosen
              experts as little-endian uint16 [layer][position][rank]
   gate-prompts  the Metal gate prompts (the same instructions and repository
@@ -419,15 +419,16 @@ def spec_prompts(args):
                                           "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "generation")):
+def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "generation"), encode=None, tokenizer_file="tokenizer.json"):
     import hashlib
     import html
     import re
-    from tokenizers import Tokenizer
     root = Path(__file__).resolve().parents[1]
     template = json.loads(Path(args.template).read_text())
-    tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / "tokenizer.json"))
-    encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
+    if encode is None:
+        from tokenizers import Tokenizer
+        tokenizer = Tokenizer.from_file(str(Path(args.checkpoint) / tokenizer_file))
+        encode = lambda text: tokenizer.encode(text, add_special_tokens=False).ids
     head = encode("".join(template[key] for key in head_keys))
     tail = encode("".join(template[key] for key in tail_keys))
     prompts = []
@@ -446,7 +447,7 @@ def gate_prompts(args, head_keys=("prefix", "user"), tail_keys=("turn_suffix", "
         prompts.append({"name": name, "source": source, "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                         "instruction": instruction, "tokens": len(tokens), "prompt_token_ids": tokens})
         print(f"{name}: {len(tokens)} tokens from {source}", flush=True)
-    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / "tokenizer.json").read_bytes()).hexdigest(),
+    Path(args.out).write_text(json.dumps({"tokenizer_sha256": hashlib.sha256((Path(args.checkpoint) / tokenizer_file).read_bytes()).hexdigest(),
                                           "prompts": prompts}, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
@@ -528,7 +529,7 @@ def main():
     r.add_argument("--checkpoint", required=True)
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--variants", default="a,h")
+    r.add_argument("--variants", default="a,b,h")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

@@ -21,9 +21,9 @@
              rendered with the full Laguna chat turn -> --out prompts.json.
   teacher    FP32 logits of every prompt position for the Metal gate:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,h. Variant b sums each row's routed experts in
+             --variants a,b,h. Variant b sums each row's routed experts in
              descending instead of ascending expert order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
-             the second reference whose distance from a is the gate's floor.
+             and the three variants' distances from one another are the gate's floors.
 
 Semantics follow modeling_laguna.py (checkpoint revision 0f573140, sha256
 765fd328...): pre-norm blocks; LagunaRMSNorm is w * bf16(x * rsqrt(mean
@@ -392,7 +392,7 @@ def main():
     parser.add_argument("mode", choices=("tokenize", "score", "yarn", "gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/laguna/chat_template.json"))
     parser.add_argument("--out")

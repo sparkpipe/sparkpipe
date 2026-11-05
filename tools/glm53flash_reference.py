@@ -5,19 +5,21 @@
              GLM's chat turn (thinking off) -> --out prompts.json
   teacher    FP32 logits of every prompt position but the last:
              --prompts prompts.json -> --out DIR/<name>.ref_<v>.logits for
-             --variants a,h, through tools/ling3_reference.py's teacher: a
+             --variants a,b,h, through tools/ling3_reference.py's teacher: a
              multiplies in numpy's order; b splits every matmul's inner
              dimension into 1,024-wide chunks summed last chunk first,
              reverses the other reductions (norms, the recurrent dot
              products, softmax sums) and combines the routed experts in
              descending order, so a against b is the FP32 reduction-order
              noise; h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
-             and a against h is the gate's floor
+             and the three variants' distances from one another are the
+             gate's floors
 
 The rounding points follow the CUDA stage (model-families/glm5_next/source):
 the BF16 projections are the CUDA pack's bf16(e4m3 x block scale) through
 tools/glm5_next_resident_stagepack.py's reader, the routed experts are
-e4m3 x FP32 block scale in FP32, and
+e4m3 x FP32 block scale in FP32 (a BF16 release's weights are read as they
+are), and
   hyper-connections  four BF16 streams; per row r = rsqrt(mean(x^2) + eps)
              over all 4H values, 24 mixes m = (fn . x) r; pre = sigmoid(m
              s0 + b) + 1e-6, post = 2 sigmoid(m s1 + b), the 4x4
@@ -113,8 +115,10 @@ class Reference:
 
     def expert(self, name):
         dtype, shape, _ = self.source.meta(name)
+        if dtype == "BF16":
+            return widen(np.asarray(self.source.raw(name)).view(np.uint16).reshape(shape))
         if dtype != "F8_E4M3":
-            raise ValueError(f"{name}: expected F8_E4M3, got {dtype}")
+            raise ValueError(f"{name}: expected F8_E4M3 or BF16, got {dtype}")
         codes = np.asarray(self.source.raw(name)).reshape(shape)
         scale = np.asarray(self.source.raw(name + "_scale_inv")).view(np.float32).reshape((shape[0] + 127) // 128, (shape[1] + 127) // 128)
         expanded = np.repeat(np.repeat(scale, 128, axis=0)[:shape[0]], 128, axis=1)[:, :shape[1]]
@@ -319,7 +323,7 @@ def main():
     parser.add_argument("mode", choices=("gate-prompts", "teacher"))
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--prompts")
-    parser.add_argument("--variants", default="a,h")
+    parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/glm5_next/chat_template.json"))
     parser.add_argument("--dump", help="teacher: write the embedding and every layer's streams for all rows to PATH.a.npz / PATH.b.npz")
     parser.add_argument("--out", required=True)

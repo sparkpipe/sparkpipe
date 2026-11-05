@@ -5,7 +5,7 @@ import random
 import sys
 import unicodedata
 
-from tokenizers import Regex, Tokenizer, models, pre_tokenizers
+from tokenizers import AddedToken, Regex, Tokenizer, models, pre_tokenizers
 from tokenizers.pre_tokenizers import ByteLevel
 
 PATTERNS = {
@@ -24,6 +24,7 @@ PATTERNS = {
         "[\u4e00-\u9fa5\u3040-\u309f\u30a0-\u30ff]+",
         "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
     ],
+    "cased_words": "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?: [\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+)*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?: [\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*)*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
     "phrase_letters": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}\\p{M}*(?: \\p{L}\\p{M}*)*)+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]?|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
 }
 
@@ -71,6 +72,19 @@ HANDPICKED = [
     "서울 Seoul 부산 Busan 12 34abc def5 ghi",
     "東京タワーは333メートル・高さ ひらがなabc漢字123 カタカナ・テスト",
     "for i in range(10):\n    print(i)  \n\t\n",
+    "The New York Times's best seller list and the quick brown fox's den",
+    "HELLO WORLD Foo bar BAZ Qux NASA Rover ABC def GHi jKL",
+    "two  spaces break words but one space joins them ",
+    "Hello\u00a0World Hello\tWorld Hello World. Hello, World!",
+    "iPhone iPad macOS eBay x́y ́z Ýa ́B",
+    "대한민국의 수도는 서울 입니다 한국어 문장 Korean Text",
+    "word's word'S Word's WORD'S a b'll C D'RE",
+    "Σας Σας ΣΑΣ σας ǅungla ǅUNGLA ʰello ʰELLO",
+    "a b c d e f g h i j k l m n o p q r s t u v w x y z",
+    "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z",
+    "x!\x01!y a\x01b !\x01\x01! \x01",
+    "a \n b\u3000\n c \u2028\t\td\u200b\n e\ufeff  f\u00a0  g\x85\n<x> <x>\n",
+    "end with strip   \n\n",
 ]
 
 POOLS = [
@@ -169,6 +183,33 @@ def tokenizer_for(pattern):
     return tokenizer
 
 
+STRIP_DROPPED_BYTES = (0x01, 0x0B, 0x1C, 0x1F, 0xC0, 0xFF)
+STRIP_MERGES = (("!", "!"), ("a", "b"), ("Ġ", "a"))
+STRIP_ADDED = (("  ", True), ("\n", True), ("\n\n", True), ("\t\t", True), ("<x>", False))
+
+
+def strip_tokenizer():
+    level = ByteLevel.alphabet()
+    mapping = {}
+    printable = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    shifted = 0
+    for value in range(256):
+        if value in printable:
+            mapping[value] = chr(value)
+        else:
+            mapping[value] = chr(256 + shifted)
+            shifted += 1
+    dropped = {mapping[value] for value in STRIP_DROPPED_BYTES}
+    symbols = [character for character in sorted(level) if character not in dropped]
+    symbols += ["".join(pair) for pair in STRIP_MERGES]
+    tokenizer = Tokenizer(models.BPE({symbol: index for index, symbol in enumerate(symbols)}, list(STRIP_MERGES)))
+    tokenizer.pre_tokenizer = pre_tokenizers.Sequence(
+        [pre_tokenizers.Split(Regex(PATTERNS["cased_words"]), "isolated"),
+         pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False)])
+    tokenizer.add_tokens([AddedToken(content, lstrip=strip, normalized=False) for content, strip in STRIP_ADDED])
+    return tokenizer
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
@@ -193,6 +234,11 @@ def main():
             "tokenizer": json.loads(tokenizer.to_str()),
             "piece_ends": [byte_ends(text, tokenizer.pre_tokenizer.pre_tokenize_str(text)) for text in texts],
         }
+    strip = strip_tokenizer()
+    document["added_strip"] = {
+        "tokenizer": json.loads(strip.to_str()),
+        "ids": [strip.encode(text, add_special_tokens=False).ids for text in texts],
+    }
     glm = Tokenizer.from_file(arguments.glm_tokenizer)
     document["glm_ids"] = [glm.encode(text, add_special_tokens=False).ids for text in texts]
     with open(arguments.output, "w") as handle:
