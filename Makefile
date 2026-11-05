@@ -740,6 +740,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_responses.py \
 	tests/test_chat_frontend_fleet_api.py \
 	tests/test_chat_replay_store.py \
+	tests/test_anticipator.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
