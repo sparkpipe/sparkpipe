@@ -87,12 +87,15 @@ def container_name(label, instance_id):
     return NAME_CHARACTERS.sub("-", f"ate-{label}-{instance_id}")[:120]
 
 
-def claude_settings(endpoint, model, context):
-    return {"apiKeyHelper": READ_KEY, "env": {
+def claude_settings(endpoint, model, context, key_helper=True):
+    settings = {"env": {
         "ANTHROPIC_BASE_URL": endpoint, "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "CLAUDE_CODE_SUBAGENT_MODEL": model,
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(context), "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1", "ANTHROPIC_CUSTOM_HEADERS": f"{PUBLIC_HEADER}: 1",
         "DISABLE_AUTOUPDATER": "1", "IS_SANDBOX": "1"}}
+    if key_helper:
+        settings["apiKeyHelper"] = READ_KEY
+    return settings
 
 
 def toml_value(value):
@@ -175,7 +178,9 @@ class Docker:
             raise RuntimeError(f"writing {path} failed: {done.stderr.decode(errors='replace')[-300:]}")
 
 
-def run_task(task, arguments, docker, output, lock):
+def run_task(task, arguments, docker, output, lock, deadline):
+    if deadline is not None and time.monotonic() >= deadline:
+        return None
     name = container_name(arguments.label, task["instance_id"])
     record = {"instance_id": task["instance_id"], "repo": task.get("repo"), "difficulty": task.get("difficulty"), "harness": arguments.harness,
               "model": arguments.model, "image": task["image"], "label": arguments.label, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -255,14 +260,21 @@ def run(arguments):
                                     "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                     "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=1) + "\n")
     docker, lock = Docker(arguments.docker), threading.Lock()
+    deadline = time.monotonic() + arguments.stop_after if arguments.stop_after else None
+    skipped = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=arguments.parallel) as pool:
-        futures = [pool.submit(run_task, task, arguments, docker, output, lock) for task in tasks]
+        futures = [pool.submit(run_task, task, arguments, docker, output, lock, deadline) for task in tasks]
         for future in concurrent.futures.as_completed(futures):
             record = future.result()
+            if record is None:
+                skipped += 1
+                continue
             with lock:
                 with open(output / "runs.jsonl", "a") as handle:
                     handle.write(json.dumps(record) + "\n")
             print(json.dumps({key: record.get(key) for key in ("instance_id", "seconds", "exit_code", "timed_out", "patch_bytes", "error")}), flush=True)
+    if skipped:
+        print(json.dumps({"stopped_after_s": arguments.stop_after, "not_started": skipped}), flush=True)
 
 
 def score(arguments):
@@ -320,6 +332,15 @@ def harbor_score(arguments):
               "job": str(arguments.job)}
     Path(arguments.output).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({key: value for key, value in result.items() if key != "passed_tasks"}))
+
+
+def agent_config(arguments):
+    if arguments.harness == "claude-code":
+        text = json.dumps(claude_settings(arguments.endpoint, arguments.model, arguments.context, key_helper=False), indent=1) + "\n"
+    else:
+        text = codex_config(arguments.endpoint, arguments.model, arguments.context, arguments.output_tokens)
+    Path(arguments.output).write_text(text)
+    print(arguments.output)
 
 
 def report(arguments):
@@ -385,6 +406,7 @@ def build_parser():
     runner.add_argument("--max-turns", type=int, default=0)
     runner.add_argument("--parallel", type=int, default=1)
     runner.add_argument("--limit", type=int, default=0)
+    runner.add_argument("--stop-after", type=float, default=0.0)
     runner.add_argument("--network")
     runner.add_argument("--add-host", action="append")
     runner.add_argument("--docker", default="docker")
@@ -400,6 +422,13 @@ def build_parser():
     harbor.add_argument("--benchmark", default="terminal-bench/terminal-bench-2-1")
     harbor.add_argument("--label", required=True)
     harbor.add_argument("--output", required=True)
+    configure = commands.add_parser("agent-config")
+    configure.add_argument("--harness", required=True, choices=HARNESSES)
+    configure.add_argument("--endpoint", required=True)
+    configure.add_argument("--model", required=True)
+    configure.add_argument("--context", type=int, required=True)
+    configure.add_argument("--output-tokens", type=int, default=32768)
+    configure.add_argument("--output", required=True)
     reporter = commands.add_parser("report")
     reporter.add_argument("runs", nargs="+")
     preparer = commands.add_parser("prepare-agents")
@@ -412,7 +441,7 @@ def build_parser():
 
 def main():
     arguments = build_parser().parse_args()
-    {"select": select, "run": run, "score": score, "harbor-score": harbor_score, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
+    {"select": select, "run": run, "score": score, "harbor-score": harbor_score, "agent-config": agent_config, "report": report, "prepare-agents": prepare_agents}[arguments.command](arguments)
 
 
 if __name__ == "__main__":

@@ -182,6 +182,10 @@ def main():
         records = [json.loads(line) for line in (claude_out / "runs.jsonl").read_text().splitlines()]
         check(len(records) == 5 and len({record["instance_id"] for record in records}) == 5, "a rerun did not resume with only the unfinished tasks")
 
+        stopped = tmp / "stopped"
+        tool.run(arguments("run", *common, "--harness", "claude-code", "--label", "k3s", "--output", str(stopped), "--stop-after", "0.000001"))
+        check(not (stopped / "runs.jsonl").exists() and not any(call[0] == "run" and any("k3s" in part for part in call) for call in docker_calls(log)),
+              "a task started after --stop-after")
         os.environ["FAKE_EXIT"] = "124"
         timed = tmp / "timed"
         tool.run(arguments("run", *common, "--harness", "claude-code", "--label", "k3t", "--output", str(timed), "--limit", "1"))
@@ -236,6 +240,17 @@ def main():
               f"the Harbor score lost timeouts, tokens or passed tasks: {result}")
         table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(scored)], capture_output=True, text=True).stdout
         check("| kimi-k3 | claude-code | 1.5 / 3 | 50% |" in table, f"the Harbor report row is wrong:\n{table}")
+        native = tmp / "settings.json"
+        tool.agent_config(arguments("agent-config", "--harness", "claude-code", "--endpoint", "http://127.0.0.1:18433", "--model", "glm-5.3",
+                                    "--context", "786432", "--output", str(native)))
+        written = json.loads(native.read_text())
+        check("apiKeyHelper" not in written and written["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18433"
+              and written["env"]["ANTHROPIC_CUSTOM_HEADERS"] == "X-SparkPipe-Public: 1" and written["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "786432",
+              f"the Harbor Claude Code settings are wrong: {written}")
+        native = tmp / "config.toml"
+        tool.agent_config(arguments("agent-config", "--harness", "codex", "--endpoint", "http://127.0.0.1:18433", "--model", "glm-5.3",
+                                    "--context", "786432", "--output", str(native)))
+        check(native.read_text() == tool.codex_config("http://127.0.0.1:18433", "glm-5.3", 786432, 32768), "the Harbor Codex config differs from the runner's")
     for failure in check.failures:
         print(f"FAIL test_agent_task_eval: {failure}")
     if check.failures:
@@ -243,7 +258,7 @@ def main():
     print("PASS test_agent_task_eval: the SWE-bench sample is stratified by repository and repeatable; prepare-agents places the pinned "
           "Linux binaries; each task runs Claude Code or Codex in its own container with the key and agents mounted read-only, never in an "
           "argument or a container file, configured for the public door; transcripts, patches and SWE-bench predictions are saved, timeouts and "
-          "failed starts recorded, every container removed, a rerun resumes, the score reads the SWE-bench report, and Harbor "
+          "failed starts recorded, every container removed, no task starts after --stop-after, a rerun resumes, the score reads the SWE-bench report, and Harbor "
           "Terminal-Bench jobs score as the mean pass rate per task")
 
 
