@@ -39,6 +39,11 @@ struct K3LayerWeights
 	const void *mla_gate_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
+	const void *mla_index_query_weight;
+	const void *mla_index_key_weight;
+	const void *mla_index_head_weight;
+	const void *mla_index_norm_weight;
+	const void *mla_index_norm_bias;
 
 	const void *router_weight;
 	const float *router_bias;
@@ -144,6 +149,11 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->mla_gate_weight = weights->mla_gate_weight;
 	buffers->mla_out_weight = weights->mla_out_weight;
 	buffers->mla_out_scale = weights->mla_out_scale;
+	buffers->mla_index_query_weight = weights->mla_index_query_weight;
+	buffers->mla_index_key_weight = weights->mla_index_key_weight;
+	buffers->mla_index_head_weight = weights->mla_index_head_weight;
+	buffers->mla_index_norm_weight = weights->mla_index_norm_weight;
+	buffers->mla_index_norm_bias = weights->mla_index_norm_bias;
 	buffers->router_weight = weights->router_weight;
 	buffers->router_bias = weights->router_bias;
 	buffers->routed_down_weight = weights->routed_down_weight;

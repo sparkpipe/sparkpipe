@@ -105,6 +105,11 @@ struct K3LayerBuffers
 	const void *mla_gate_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
+	const void *mla_index_query_weight;
+	const void *mla_index_key_weight;
+	const void *mla_index_head_weight;
+	const void *mla_index_norm_weight;
+	const void *mla_index_norm_bias;
 
 	const void *router_weight;
 	const float *router_bias;
