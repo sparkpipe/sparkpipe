@@ -22,18 +22,26 @@ def fleet_tests():
     return names
 
 
+def lane_tests():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ci_lanes", ROOT / "tools" / "ci_lanes.py")
+    lanes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lanes)
+    return {pathlib.Path(entry).name for entry in tuple(lanes.SITE_PATHS) + tuple(lanes.FAST_TESTS) if entry.startswith("tests/test_") and entry.endswith(".py")}
+
+
 def main():
-    registered = python_tests() | fleet_tests()
+    registered = python_tests() | fleet_tests() | lane_tests()
     present = {path.name for path in (ROOT / "tests").glob("test_*.py")}
     orphans = sorted(present - registered)
     missing = sorted(python_tests() - present)
     if orphans or missing:
         for name in orphans:
-            print(f"FAIL tests/{name} is in neither PYTHON_TESTS nor tools/run_fleet_tests.sh, so nothing runs it")
+            print(f"FAIL tests/{name} is in neither PYTHON_TESTS, tools/run_fleet_tests.sh nor a CI lane in tools/ci_lanes.py, so nothing runs it")
         for name in missing:
             print(f"FAIL PYTHON_TESTS lists tests/{name}, which does not exist")
         raise SystemExit(1)
-    print(f"PASS every one of {len(present)} Python tests is run by make test or the fleet runner")
+    print(f"PASS every one of {len(present)} Python tests is run by make test, the fleet runner or a CI lane")
 
 
 if __name__ == "__main__":
