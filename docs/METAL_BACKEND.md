@@ -1065,6 +1065,13 @@ the experts in descending order):
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+HY4's all-layer control swaps two experts in every MoE layer
+(`probe_layers=moe_w2`: experts 0 and 1 of each rank's 32 exchanged in layers
+1 to 77): rows 0 and 1 of every layer's attention `gate` swapped moved the
+logits only 1.05 to 1.14 times the floors' KL (+3.78 sigma with 128-position
+blocks, +2.01 with 512), and the expert swap fails at +53.3 sigma (KL 5.2
+times). The single-layer controls stay on layer 11's `gate`.
+
 ### GLM 5.3 Flash on eight ranks
 
 GLM 5.3 Flash (45 layers of 4,096: 34 KDA layers and every fourth layer

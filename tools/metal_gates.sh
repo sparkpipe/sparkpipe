@@ -21,7 +21,7 @@ case $model in
 	k-exaone-2.0) routed=0 prompt_dir=kexaone2 vocab=153600 probe=attn_out layer=11;;
 	ling-3.0-flash|ling-3.0-flash-fin) routed=0 prompt_dir=ling vocab=157184 probe=kda_out layer=12;;
 	solar-open-2) routed=0 prompt_dir=solar_open2 vocab=196608 probe=kda_out layer=13;;
-	hy4-preview) routed=0 prompt_dir=hy4 vocab=120832 probe=gate layer=11;;
+	hy4-preview) routed=0 prompt_dir=hy4 vocab=120832 probe=gate layer=11 probe_layers=moe_w2;;
 	glm-5.3-flash) routed=0 prompt_dir=glm53flash vocab=154880 probe=kda_out layer=12;;
 	glm-5.3-full) routed=0 prompt_dir=glm53full vocab=154880 probe=mla_out layer=11;;
 	ax-k2) routed=0 prompt_dir=axk2 vocab=163840 probe=mla_out layer=11;;
