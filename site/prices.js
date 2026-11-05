@@ -23,7 +23,8 @@
     week: { hc: String(B.weekHC), usd: usd(B.weekHC * bulk.usd), krw: krw(B.weekHC * bulk.krw), effective: usd(B.weekHC * bulk.usd / 168) },
     off: { max: pct(D[D.length - 1].off), list: list, table: table },
     hc: { "small-usd": usd(small.usd), "small-krw": krw(small.krw), "bulk-usd": usd(bulk.usd), "bulk-krw": krw(bulk.krw), "bulk-from": String(bulk.from), months: String(P.hc.validityMonths) },
-    hour: { hc: String(B.hourHC) },
+    hour: { hc: String(B.hourHC), day: String(B.hourHC * 8) },
+    team: { min: usd(B.weekHC * bulk.usd / 5), max: usd(B.weekHC * bulk.usd / 3) },
     demo: { days: String(B.demoDaysAhead), hours: String(B.demoHoursPerWeek) },
     fleets: { pin: String(P.fleets.filter(function (f) { return !f.demo; }).length), demo: String(P.fleets.filter(function (f) { return f.demo; }).length) }
   };
