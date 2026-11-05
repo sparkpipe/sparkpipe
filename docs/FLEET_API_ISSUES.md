@@ -94,6 +94,12 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | --- | --- | --- | --- | --- |
 | M1 | MCP server at `/mcp` (§10) | Claude Code, Codex and OpenCode each call every tool. `run` executes the test suite with the local diff applied on the sandbox host | L | P3, F3 |
 | M2 | `sparkpipe mcp` stdio bridge | A client that only starts local servers uses every tool through it | S | M1, L1 |
+| M3 | Language servers (§10 `definition`, `references`, `hover`, `diagnostics`, `rename_preview`) | On the Customer Zero repository, warm servers for C and C++, Python, Rust, Go and TypeScript answer every tool, and `diagnostics` matches the project's own build within 30 s of a push | L | P3, F3 |
+| M4 | Warm builds and affected tests (§10 `run`) | On the Customer Zero repository, a second `run` of the test suite after a one-line change reuses the build caches and runs only the affected tests, at least five times faster than the first, with the same result as a full run | L | M1, F1 |
+| M5 | Semantic search over code and history (§10 `search_code`, `search_history`) | For 50 written questions about the Customer Zero repository, the right file or commit is in the top five answers for at least 40 of them | M | P3 |
+| M6 | Dependency mirror (§10 `deps`) | The pinned dependency versions of three sample repositories (pip, npm, cargo) are mirrored, hash-checked and searchable; turning the mirror off deletes it | M | P2, P9 |
+| M7 | Headless browser (§10 `browse`) | A scripted check of a web app served by `run` returns screenshots and the console and network errors, with no network beyond the sandbox unless allowed | M | F3 |
+| M8 | Fan-out reading (§10 `map`) | 1,000 files are summarized in under 10 minutes with no decode by the main model, and interactive latency on the main model does not change meanwhile | M | M1 |
 
 ## Draft models
 

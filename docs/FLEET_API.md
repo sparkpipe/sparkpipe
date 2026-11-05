@@ -565,15 +565,20 @@ The product promise is that a team can serve its own model on its own fleet, lis
 
 ## 10. Codebase tools over MCP
 
-The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, OpenCode and any MCP client can call tools that run next to the ingested repository and the sandbox host. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
+The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, OpenCode and any MCP client can call tools that run next to the ingested repository, its indexes and the sandbox host. A search, a type check or a test run is answered on the fleet in milliseconds or seconds, where it would otherwise cost the agent several turns and the laptop several minutes. The tools' indexes, build caches and dependency mirror are working state (§4): kept while the account holds the fleet and deleted with it. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
 
 | Tool | Does | Why it saves time |
 | --- | --- | --- |
 | `search_code` | ripgrep, plus a semantic index built at ingest, over a repository at any commit | Answers in milliseconds from the fleet's copy, with no files shipped back and forth |
+| `search_history` | The commits, messages and diffs that touched a path or match a question ("when and why did this change?"), from the same semantic index | The agent finds why code is the way it is without walking `git log` by hand |
 | `find_symbol`, `references` | Definitions and uses from a tree-sitter index built at ingest | Replaces several grep-and-read turns |
+| `definition`, `hover`, `diagnostics`, `rename_preview` | Answers from language servers kept running for the repository at the account's working commit, with the project's own build settings: clangd, pyright, rust-analyzer, gopls and the TypeScript server, among others | Exact, type-aware answers and compile errors without a build, where grep can only guess |
+| `deps` | The source and docs of the repository's dependencies at the versions its lockfiles pin (pip, npm, cargo, Go modules, Maven), fetched when the account turns the mirror on and searched like the repository | The agent reads the real API of the exact version instead of guessing from memory |
 | `read_file` | A file or line range at a commit | |
 | `pack_info` | Which files and commit a pack holds | The agent knows what is already in its context and does not read it again |
-| `run` | A command in a fresh sandbox microVM on the repository at a commit, with an optional patch (the local `git diff`) applied; no network unless allowed | Builds and test suites run on the fleet's sandbox host while the laptop stays free |
+| `run` | A command in a fresh sandbox microVM on the repository at a commit, with an optional patch (the local `git diff`) applied; no network unless allowed. Build caches (ccache, sccache, pip, npm, cargo, Gradle) persist between runs for the account. With `tests: "affected"`, only the tests the change touches run, from a coverage map a nightly Function refreshes, split across the sandbox host's cores; flaky tests are reported apart | A test loop that takes minutes on a laptop comes back in seconds, while the laptop stays free |
+| `browse` | A headless browser in the sandbox opens a page served by a `run`, or a URL the account allows, follows a short script and returns screenshots and the console and network errors | Checks a web app without the engineer's machine; the model reads the screenshots |
+| `map` | Runs one instruction over many files or chunks at once (summarize, extract, classify, check) with a small model beside the fleet's main model, and returns the collected answers | Fan-out reading spends no turns and no decode time of the main model, which stays on the reasoning |
 | `start_function`, `run_status`, `morning_report` | §7 | |
 | `warm` | §4.2 | |
 

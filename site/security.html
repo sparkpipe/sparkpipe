@@ -73,7 +73,8 @@
   <section id="sandbox">
     <h2>3. Functions and the sandbox</h2>
     <ul>
-      <li>Functions that build or run your code do it on a sandbox host attached to your fleet, never on the machines that serve the model.</li>
+      <li>Functions, and the tools your agent calls, that build, run or browse your code do it on a sandbox host attached to your fleet, never on the machines that serve the model.</li>
+      <li>The tools' indexes, build caches and dependency mirror are working state: kept while you hold the fleet, and deleted with the rest of it.</li>
       <li>Each run gets a fresh virtual machine with no network access unless you allow it, and the virtual machine is destroyed when the run ends.</li>
       <li>Fetch downloads only from the public internet over HTTPS. It refuses private, loopback and link-local addresses and our own hosts, and pins the address it checked. What it downloads is data and is never run; model weights are accepted as safetensors or GGUF, never in pickle formats.</li>
       <li>A Function runs only when you start or schedule it, and what it produces is yours.</li>
