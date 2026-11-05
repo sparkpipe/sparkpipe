@@ -904,11 +904,6 @@ static SparkStatus K3ModelIndexer(SparkK3ModelState *state)
 	}
 	if ( indexed == 0u )
 		return SPARK_STATUS_OK;
-	if ( d->streamed_prefill != 0u )
-	{
-		fprintf(stderr, "sparkpipe_k3: the streamed prefill does not select through the indexer yet; an indexer lane runs without it\n");
-		return SPARK_STATUS_VALIDATION_FAILED;
-	}
 	if ( SparkK3DispatchEnableIndex(d) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: the indexer scratch could not be set up (tp_degree %u, %u MLA layers)\n", d->tp_degree, d->mla_count);

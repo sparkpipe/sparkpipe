@@ -15,6 +15,8 @@
 #define K3_STREAMED_ROW_ALIGN 128u
 #define K3_STREAMED_CHUNKS 8u
 #define K3_STREAMED_KEY_BLOCK 262144u
+#define K3_STREAMED_INDEX_CHUNK_ROWS 128u
+#define K3_STREAMED_SPARSE_ROWS 1024u
 
 static_assert(K3_STREAMED_ROW_ALIGN % K3_STREAMED_CHUNKS == 0u, "every node row of a pass belongs to one of the recurrent chunks");
 static_assert(K3_STREAMED_SHARDS <= LM_CELL_MMA_MAX_SEGMENTS, "one expert down projection can take every shard's weights");
@@ -39,6 +41,8 @@ struct K3Streamed
 	K3StreamedMlaExchange mla;
 	uint32_t *older_context_device;
 	uint32_t *store_sequence_device;
+	uint32_t *index_context_device;
+	uint32_t *key_pages;
 	uint8_t *mla_keys;
 
 	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream);
@@ -56,6 +60,7 @@ static void K3StreamedDestroy(K3Streamed *s)
 	if ( s == 0 )
 		return;
 	cudaFree(s->mla_keys);
+	cudaFree(s->key_pages);
 	LmPassDestroy(&s->pass);
 	delete s;
 }
@@ -188,6 +193,33 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	s->mla.older_context = s->older_context_device = LmPassAlloc<uint32_t>(p, s->dispatch->sequences);
 	s->mla.collective = LmPassRound;
 	s->mla.context = &p->round;
+	if ( s->dispatch->indexed != 0u )
+	{
+		const uint64_t chunk = rows < K3_STREAMED_INDEX_CHUNK_ROWS ? rows : K3_STREAMED_INDEX_CHUNK_ROWS;
+		const uint64_t stride = SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
+		s->mla.index_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_DIM);
+		s->mla.index_keys = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_DIM);
+		s->mla.index_heads_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_HEADS);
+		s->mla.index_heads = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_HEADS);
+		s->mla.index_query = LmPassAlloc<uint16_t>(p, chunk * K3_INDEX_QUERY);
+		s->mla.index_scores = LmPassAlloc<float>(p, chunk * stride);
+		s->mla.index_score_floats = chunk * stride;
+		s->mla.index_send = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
+		s->mla.index_received = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
+		s->mla.index_bitmaps = LmPassAlloc<uint32_t>(p, chunk * 2u * words);
+		s->mla.index_bitmap_words = (uint32_t)words;
+		s->mla.index_selected_local = LmPassAlloc<uint32_t>(p, rows * K3_INDEX_TOPK);
+		s->mla.index_selected = LmPassAlloc<uint32_t>(p, pass * K3_INDEX_TOPK);
+		s->mla.index_error = (LmFrameError *)LmPassAlloc<uint8_t>(p, sizeof(LmFrameError));
+		s->mla.index_context = s->index_context_device = LmPassAlloc<uint32_t>(p, s->dispatch->sequences);
+		s->mla.index_chunk = (uint32_t)chunk;
+		s->mla.zero_rows = LmPassAlloc<uint32_t>(p, pass);
+		s->mla.key_error = (LmKvAccessError *)LmPassAlloc<uint8_t>(p, sizeof(LmKvAccessError));
+		s->mla.sparse_rows = (uint32_t)(pass < K3_STREAMED_SPARSE_ROWS ? pass : K3_STREAMED_SPARSE_ROWS);
+		s->mla.sparse_query = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_MLA_KV_A_DIM);
+		s->mla.sparse_partials = LmPassAlloc<float>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
+		s->mla.sparse_latent = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_KV_LORA_RANK);
+	}
 	if ( p->allocation_count == LM_PASS_MAX_ALLOCATIONS || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 || s->mla.help_values == 0 )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill engine buffers did not fit (%u allocations, %llu bytes placed)\n", p->allocation_count,
@@ -314,6 +346,13 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	return SPARK_STATUS_OK;
 }
 
+__global__ static void K3StreamedIdentityPagesKernel(uint32_t *pages, uint32_t count)
+{
+	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index < count )
+		pages[index] = index;
+}
+
 static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 {
 	const uint64_t older = (uint64_t)SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, (uint32_t)keys) * K3GlobalKv::kSlotBytes;
@@ -340,6 +379,21 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	s->mla.key_block = K3_STREAMED_KEY_BLOCK;
 	s->mla.key_capacity = (uint32_t)keys;
 	s->key_capacity = keys;
+	if ( s->dispatch->indexed != 0u )
+	{
+		const uint64_t pages = (keys + K3GlobalKv::kPageSlots - 1u) / K3GlobalKv::kPageSlots;
+		cudaFree(s->key_pages);
+		s->key_pages = 0;
+		if ( cudaMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != cudaSuccess )
+		{
+			s->key_pages = 0;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		LM_LAUNCH((K3StreamedIdentityPagesKernel), (uint32_t)((pages + 255u) / 256u), 256u, 0, 0, s->key_pages, (uint32_t)pages);
+		if ( cudaDeviceSynchronize() != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		s->mla.key_pages = s->key_pages;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -375,6 +429,11 @@ SparkStatus K3Streamed::Layer(LmPass *p, uint32_t layer, uint64_t dense_item, ui
 	{
 		mla.store.pages = dispatch->mla_cache[layer / 4u];
 		mla.store.shard = dispatch->buffers_host->kv_shard;
+		if ( dispatch->indexed != 0u )
+		{
+			mla.index_store.pages = dispatch->index_cache[layer / 4u];
+			mla.index_store.shard = dispatch->buffers_host->kv_shard;
+		}
 	}
 	if ( cudaEventRecord(p->marks[layer][0], stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -496,6 +555,8 @@ SparkStatus K3Streamed::PassBegin(LmPass *p, const LmPassStep *step, cudaStream_
 		status = LmPassUpload(older_context_device + step->sequence_slot, small + K3_STREAMED_CHUNKS + 6u, sizeof(uint32_t), stream);
 	if ( status == SPARK_STATUS_OK )
 		status = LmPassUpload((void *)mla.older_sequence, small + K3_STREAMED_CHUNKS + 7u, sizeof(uint32_t), stream);
+	if ( status == SPARK_STATUS_OK && index_context_device != 0 )
+		status = LmPassUpload(index_context_device + step->sequence_slot, small + K3_STREAMED_CHUNKS + 5u, sizeof(uint32_t), stream);
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
 	for (row = 0u; row < step->pass_rows && status == SPARK_STATUS_OK; row++)

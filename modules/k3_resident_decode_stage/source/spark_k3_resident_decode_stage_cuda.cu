@@ -449,7 +449,7 @@ int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
 	const uint64_t sizes[] = {
 		rows * K3_INDEX_QUERY * sizeof(uint16_t), rows * K3_INDEX_DIM * sizeof(uint16_t), rows * K3_INDEX_HEADS * sizeof(uint16_t),
 		chunk * stride * sizeof(float), chunk * K3_INDEX_TOPK * sizeof(uint2), (uint64_t)d->tp_degree * chunk * K3_INDEX_TOPK * sizeof(uint2),
-		chunk * words * sizeof(uint32_t), rows * K3_INDEX_TOPK * sizeof(uint32_t), sizeof(LmFrameError)};
+		chunk * 2u * words * sizeof(uint32_t), rows * K3_INDEX_TOPK * sizeof(uint32_t), sizeof(LmFrameError)};
 	uint8_t *carve[sizeof(sizes) / sizeof(sizes[0])];
 	uint64_t total = 0u;
 	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
@@ -948,10 +948,10 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	}
 	if ( d->indexed != 0u )
 		K3LayerIndexPlan(b, context);
-	if ( d->indexed != 0u && (d->streamed_prefill != 0u || rows > d->attention_rows) )
+	if ( d->indexed != 0u && rows > d->attention_rows )
 	{
-		fprintf(stderr, "sparkpipe_k3: refused a %u-row wave: an indexer pack attends through the sharded scatter only, so waves stay within %u "
-			"attention rows and the streamed prefill is off\n", rows, d->attention_rows);
+		fprintf(stderr, "sparkpipe_k3: refused a %u-row wave: an indexer pack's TP16 waves attend through the sharded scatter, so they stay within %u "
+			"attention rows; longer prompts take the streamed prefill\n", rows, d->attention_rows);
 		return SPARK_K3_DISPATCH_ERR_CAPACITY;
 	}
 	if ( d->indexed != 0u )

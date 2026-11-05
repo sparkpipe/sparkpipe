@@ -754,6 +754,7 @@ PYTHON_TESTS := \
 	tests/test_draftd_mtp_kv.py \
 	tests/test_k3_reshard_cells.py \
 	tests/test_k3_reference_indexer.py \
+	tests/test_k3_streamed_mla_index_cuda.py \
 	tests/test_laguna_reference_torch.py \
 	tests/test_python_tests_registered.py \
 	tests/test_spark_pack_common_extents.py \
