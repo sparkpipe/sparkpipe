@@ -19,6 +19,8 @@ try:
 except ImportError:
     HAVE_TORCH = False
 
+from drafter_contract import DrafterContractError, check_licenses, training_sources  # noqa: E402
+
 if HAVE_TORCH:
     from latent_block_drafter import LatentBlockDrafter
     from latent_block_train import CONTEXT_PROJECTOR, LatentBlockTrainer, select, sequences, train, write_checkpoint
@@ -184,13 +186,22 @@ class LatentBlockTrainTest(unittest.TestCase):
         write_stream(source, entries, streams)
         out = os.path.join(self.directory, "run")
         args = argparse.Namespace(drafter=self.directory, target_shard=self.target, embed="embed", head="head", taps=[source], requests="7-8",
-                                  steps=6, anchors=8, lr=1e-3, warmup=2, decay=4.0, clip=1.0, seed=1, log_every=100, out=out)
+                                  steps=6, anchors=8, lr=1e-3, warmup=2, decay=4.0, clip=1.0, seed=1, log_every=100, out=out,
+                                  base_license="the base's license", tap_licenses=["our own recording"])
+        for missing in (dict(base_license=""), dict(tap_licenses=[]), dict(tap_licenses=["a", "b"])):
+            with self.assertRaises(SystemExit, msg=missing):
+                train(argparse.Namespace(**dict(vars(args), **missing)))
+        self.assertFalse(os.path.exists(out))
         train(args)
         with open(os.path.join(out, "TRAINING-RECEIPT.json")) as handle:
             receipt = json.load(handle)
         with open(os.path.join(self.directory, "model.safetensors"), "rb") as handle:
             base = hashlib.sha256(handle.read()).hexdigest()
         self.assertEqual(receipt["base"]["model_sha256"], base)
+        self.assertEqual((receipt["base"]["license"], receipt["origin_sha256"]), ("the base's license", base))
+        with open(source, "rb") as handle:
+            self.assertEqual(receipt["taps"], [{"name": "train.spt2", "bytes": os.path.getsize(source), "sha256": hashlib.sha256(handle.read()).hexdigest(),
+                                                "license": "our own recording"}])
         self.assertEqual(receipt["requests"], [7, 8])
         self.assertEqual(receipt["positions"], 80)
         self.assertEqual(receipt["tap_entries"], [f"o{layer}" for layer in TARGET_LAYERS])
@@ -207,13 +218,50 @@ class LatentBlockTrainTest(unittest.TestCase):
         out = os.path.join(self.directory, "ranks")
         command = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node", "2",
                    os.path.join(ROOT, "tools", "spec_offline", "latent_block_train.py"), "train", "--drafter", self.directory, "--target-shard", self.target,
-                   "--embed", "embed", "--head", "head", "--taps", source, "--steps", "4", "--anchors", "6", "--lr", "1e-3", "--warmup", "1", "--out", out]
+                   "--embed", "embed", "--head", "head", "--taps", source, "--tap-licenses", "ours", "--base-license", "theirs", "--steps", "4", "--anchors", "6", "--lr", "1e-3", "--warmup", "1", "--out", out]
         done = subprocess.run(command, capture_output=True, text=True, env=dict(os.environ, CUDA_VISIBLE_DEVICES=""), timeout=600)
         self.assertEqual(done.returncode, 0, done.stdout[-2000:] + done.stderr[-2000:])
         with open(os.path.join(out, "TRAINING-RECEIPT.json")) as handle:
             receipt = json.load(handle)
         self.assertEqual((receipt["world"], receipt["requests"], receipt["positions"]), (2, [1, 2, 3, 4], sum(30 + request for request in range(1, 5))))
         self.drafter(out)
+
+
+class TrainingSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = os.path.join(self.tmp.name, "base")
+        os.mkdir(self.base)
+        with open(os.path.join(self.base, "model.safetensors"), "wb") as handle:
+            handle.write(b"weights")
+        self.taps = os.path.join(self.tmp.name, "day.spt2")
+        with open(self.taps, "wb") as handle:
+            handle.write(b"taps")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_every_tap_file_and_the_base_need_a_license(self):
+        check_licenses("base", [self.taps], ["taps"])
+        for base_license, licenses in (("", ["taps"]), ("base", []), ("base", ["taps", "more"]), ("base", [" "]), (None, ["taps"])):
+            with self.assertRaises(DrafterContractError, msg=(base_license, licenses)):
+                training_sources(self.base, base_license, [self.taps], licenses)
+
+    def test_sources_name_each_file_its_license_and_the_origin_of_a_retrained_drafter(self):
+        weights = hashlib.sha256(b"weights").hexdigest()
+        sources = training_sources(self.base, "base", [self.taps], ["taps"])
+        self.assertEqual(sources["base"], {"directory": self.base, "model_sha256": weights, "license": "base"})
+        self.assertEqual(sources["taps"], [{"name": "day.spt2", "bytes": 4, "sha256": hashlib.sha256(b"taps").hexdigest(), "license": "taps"}])
+        self.assertEqual(sources["origin_sha256"], weights)
+        receipt = os.path.join(self.base, "TRAINING-RECEIPT.json")
+        with open(receipt, "w") as handle:
+            json.dump({"origin_sha256": "11" * 32}, handle)
+        self.assertEqual(training_sources(self.base, "base", [self.taps], ["taps"])["origin_sha256"], "11" * 32)
+        for content in ({}, [1], {"origin_sha256": "x"}):
+            with open(receipt, "w") as handle:
+                json.dump(content, handle)
+            with self.assertRaises(DrafterContractError, msg=content):
+                training_sources(self.base, "base", [self.taps], ["taps"])
 
 
 if __name__ == "__main__":

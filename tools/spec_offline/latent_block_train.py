@@ -16,6 +16,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from block_drafter import SafeTensors, load_rows, prefix_donor, request_set, requests, rms  # noqa: E402
+from drafter_contract import DrafterContractError, check_licenses, training_sources  # noqa: E402
 from latent_block_drafter import refuse_unsupported, rope_tables, rotate_pairs  # noqa: E402
 from tapstream import FORMS, FRAME, HELLO, frames  # noqa: E402
 
@@ -193,14 +194,6 @@ def sequences(paths, chosen):
     return hello, out
 
 
-def sha256_file(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(16 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def write_checkpoint(trainer, directory, receipt):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -256,6 +249,11 @@ def train(args):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.manual_seed(args.seed)
     world, rank = ranks()
+    try:
+        check_licenses(args.base_license, args.taps, args.tap_licenses)
+        sources = training_sources(args.drafter, args.base_license, args.taps, args.tap_licenses) if rank == 0 else None
+    except DrafterContractError as error:
+        raise SystemExit(str(error))
     trainer = LatentBlockTrainer(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head}, device)
     hello, data = sequences(args.taps, request_set(args.requests))
     if len(data) < world:
@@ -319,8 +317,7 @@ def train(args):
         if rank != 0:
             torch.distributed.barrier()
             return
-    receipt = {"format": RECEIPT_FORMAT, "base": {"directory": str(trainer.directory), "model_sha256": sha256_file(trainer.directory / "model.safetensors")},
-               "target_shard": Path(args.target_shard).name, "taps": [Path(path).name for path in args.taps], "tap_entries": wanted,
+    receipt = {"format": RECEIPT_FORMAT, **sources, "target_shard": Path(args.target_shard).name, "tap_entries": wanted,
                "target_model": hello["model"], "pack_identity": hello["pack_identity"], "world": world,
                "requests": requests_trained, "positions": positions, "frozen": list(CONTEXT_PROJECTOR),
                "steps": args.steps, "anchors": args.anchors, "lr": args.lr, "warmup": args.warmup, "decay": args.decay, "clip": args.clip, "seed": args.seed,
@@ -382,6 +379,8 @@ def main():
     trainer.add_argument("--embed", default="language_model.model.embed_tokens.weight")
     trainer.add_argument("--head", default="language_model.lm_head.weight")
     trainer.add_argument("--taps", nargs="+", required=True)
+    trainer.add_argument("--tap-licenses", nargs="+", required=True, help="the license of each --taps file's content, in the same order")
+    trainer.add_argument("--base-license", required=True, help="the license of the --drafter checkpoint")
     trainer.add_argument("--requests", default="", help="request ids to train on, as a comma list of ids and ranges; all when empty")
     trainer.add_argument("--steps", type=int, default=300)
     trainer.add_argument("--anchors", type=int, default=48, help="blocks per step, drawn from one request")

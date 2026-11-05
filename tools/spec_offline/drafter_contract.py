@@ -1,3 +1,11 @@
+import hashlib
+import json
+import re
+from pathlib import Path
+
+CHUNK = 16 << 20
+SHA256 = re.compile(r"[0-9a-f]{64}")
+RECEIPT = "TRAINING-RECEIPT.json"
 LAYER_WEIGHTS = ("input_layernorm", "post_attention_layernorm", "self_attn.q_a_proj", "self_attn.q_a_layernorm", "self_attn.q_b_proj",
                  "self_attn.kv_a_proj_with_mqa", "self_attn.kv_a_layernorm", "self_attn.kv_b_proj", "self_attn.o_proj",
                  "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj", "attention_conv.kernel_projection", "mlp_conv.kernel_projection")
@@ -55,3 +63,49 @@ def drafter_tensors(config):
         shapes[f"layers.{index}.attention_conv.base_kernel"] = [2, taps, hidden]
         shapes[f"layers.{index}.mlp_conv.base_kernel"] = [2, taps, hidden]
     return shapes
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_identity(path):
+    path = Path(path)
+    return {"name": path.name, "bytes": path.stat().st_size, "sha256": sha256_file(path)}
+
+
+def score_identity(drafter, target_shard, taps, donor_taps):
+    return {"drafter_sha256": sha256_file(Path(drafter) / "model.safetensors"), "target_shard": file_identity(target_shard),
+            "taps": [file_identity(path) for path in taps], "donor_taps": [file_identity(path) for path in donor_taps]}
+
+
+def named(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+def check_licenses(base_license, taps, tap_licenses):
+    if not named(base_license):
+        raise DrafterContractError("the base checkpoint needs its license (--base-license)")
+    if len(tap_licenses) != len(taps) or not all(named(license) for license in tap_licenses):
+        raise DrafterContractError(f"each of the {len(taps)} --taps files needs its license: --tap-licenses names {len(tap_licenses)}, in the same order")
+
+
+def training_sources(base, base_license, taps, tap_licenses):
+    check_licenses(base_license, taps, tap_licenses)
+    base = Path(base)
+    weights = sha256_file(base / "model.safetensors")
+    origin = weights
+    if (base / RECEIPT).exists():
+        try:
+            receipt = json.loads((base / RECEIPT).read_text())
+        except (OSError, ValueError) as error:
+            raise DrafterContractError(f"{base / RECEIPT} is not readable JSON: {error}")
+        origin = receipt.get("origin_sha256") if isinstance(receipt, dict) else None
+        if not isinstance(origin, str) or SHA256.fullmatch(origin) is None:
+            raise DrafterContractError(f"{base / RECEIPT} names no origin_sha256, so the drafter this one descends from is unknown")
+    return {"base": {"directory": str(base), "model_sha256": weights, "license": base_license}, "origin_sha256": origin,
+            "taps": [dict(file_identity(path), license=license) for path, license in zip(taps, tap_licenses)]}

@@ -23,6 +23,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from drafter_contract import score_identity  # noqa: E402
 from tapstream import frames  # noqa: E402
 
 DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32)}
@@ -485,7 +486,8 @@ def main():
     final_column = hello["entries"].index("final")
     slots = list(range(drafter.block)) if args.convention == "shift" else list(range(1, drafter.block))
     report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "window": getattr(drafter, "window", None), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed,
-                      "region": args.region, "requests": args.requests}, "requests": []}
+                      "region": args.region, "requests": args.requests, "max_anchors": args.max_anchors,
+                      **score_identity(args.drafter, args.target_shard, args.taps, args.donor_taps)}, "requests": []}
     rule = None
     if args.temperature > 0.0:
         seed = args.seed - (1 << 64) if args.seed >= (1 << 63) else args.seed

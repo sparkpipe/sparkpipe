@@ -117,9 +117,12 @@ Where it lives:
 - The function keeps a rolling budget the customer sets (default 2 TB, about
   28M positions).
 - The scratch data rule applies unchanged: kept while the customer holds the
-  fleet, wiped when another customer's hour starts and in any case 24 hours
-  after last use. A customer who stops for more than a day loses the drafter
-  unless they exported it.
+  fleet, wiped when another customer's hour starts, and otherwise deleted 24
+  hours after the later of its last use and the end of the hold.
+  `autopilot_drafter.py expire` applies that rule to the drafter store
+  through `tools/serving/working_state.py` (`expired` and its 86,400 s
+  `RETENTION_SECONDS`). A customer who stops for more than a day loses the
+  drafter unless they exported it.
 - Recording runs only on the customer's own lane, only while the function is
   on, and never reaches the hub's disks. Today's draftd `--record-dir` exists
   for SparkPipe's hold corpora on cold storage and must never record a
@@ -271,7 +274,7 @@ The first fine-tune ran without fleet time. Inputs:
 | --- | ---: | ---: | ---: | ---: |
 | Held-out files, replies | 3,203 | 7.373 | 7.449 | +1.0% |
 | Held-out files, file text | 3,363 | 3.827 | 4.143 | +8.3% |
-| of which the 8 prompts recorded from position 0 | 3,200 | 3.943 | 3.999 | +1.4% |
+| of which the 8 prompts recorded from position 0 | 3,200 | 3.941 | 4.001 | +1.5% |
 | of which the 2 recorded mid-sequence | 163 | 1.56, 1.61 | 6.75, 7.16 | |
 | Training files, file text | 4,000 | 3.547 | 6.830 | +93% |
 | Training files, replies | 2,864 | 7.513 | 7.859 | +4.6% |
@@ -283,8 +286,11 @@ What it shows:
    - The 3.69B checkpoint's 86 drafter tensors match the contract.
    - It trains on one GB10 at 48 GiB.
    - The new checkpoint serves through the unchanged scorer and kernels.
-   - The 5.04 GB drafter installs in 8.2 s, exports in 6.8 s and restores on a
-     second scratch in 8.8 s. A different target pack is refused.
+   - UNRECEIPTED: installing the 5.04 GB drafter, exporting it, restoring it
+     on a second scratch and refusing a different target pack were tried on
+     lenovo7 with the first `autopilot_drafter.py`, but no log was kept, so
+     this note claims no times for them. That run's receipt also predates
+     the license and origin fields, so today's `install` refuses it.
 2. **The drafter learns what it trains on.** On the training files' own
    text, acceptance nearly doubles (3.55 to 6.83 tokens per round). A drafter
    trained on the repository at night predicts the code it saw almost word
@@ -293,8 +299,8 @@ What it shows:
    - The +8.3% on held-out file text comes from two short SEARCH/REPLACE
      prompts recorded from mid-sequence. Their text is the instruction
      boilerplate shared with the training prompts.
-   - On the eight complete held-out prompts the change is +1.4%, inside the
-     spread from file to file (-3.1% to +8.9%).
+   - On the eight complete held-out prompts the change is +1.5%, inside the
+     spread from file to file (-3.1% to +9.2%).
    - Replies gain 1.0%; they are mostly copies at 7.4 of 8 already.
    - Whether a whole repository carries over to next-day net-new code is
      still the open measurement.
@@ -303,11 +309,15 @@ What it shows:
 5. **The gate must score replies only.** Prompt text is prefilled, never
    drafted, and its boilerplate inflated the file-text score. `autopilot_drafter.py
    gate` now refuses scores of any region but `reply`.
+6. **The gate has not been run on these scores.** They came from the scorer
+   before it recorded the region, the drafter's sha256 and the tap files, so
+   the current gate refuses them; see the
+   [receipt](../qualification/spec_offline/drafter-finetune-lenovo7-20261101/README.md).
 
 ## The customer-run function
 
-The night's steps are record, prepare, train, evaluate, gate, publish, and,
-on the customer's request, export and restore.
+The night's steps are record, prepare, train, install, evaluate, and the
+gate, which alone publishes; on the customer's request, export and restore.
 
 Built:
 
@@ -322,36 +332,71 @@ Built:
     of the requests, gradients are averaged, and the ranks' weights are
     checked equal before rank 0 writes the checkpoint and
     `TRAINING-RECEIPT.json` (base sha256, tap entries, target pack identity,
-    data, steps, throughput).
+    data, steps, throughput);
+  - `--base-license` and `--tap-licenses` (one per `--taps` file, in order)
+    are required. The receipt names the base with its sha256 and license,
+    each tap file with its bytes, sha256 and license (the tap files hold the
+    target's outputs over the customer's text), and `origin_sha256`: the
+    drafter the chain of fine-tunes started from, taken from the base's own
+    receipt when the base is itself a trained drafter.
 - `latent_block_train.py select`: a tap stream reduced to the named entries
   and requests, for storage and transfer.
 - `tools/spec_offline/block_drafter.py --requests --region`: offline
   acceptance on chosen requests, over the target's replies or the prompts it
-  read.
-- `tools/autopilot_drafter.py`:
-  - `install` places a trained checkpoint under
-    `<scratch>/autopilot/drafter/drafters/<id>`, where the id is the first 16
-    hex digits of the weights' sha256;
-  - `publish` points `published` at a verified drafter;
-  - `export` writes a tar of `MANIFEST.json`, `config.json`,
-    `model.safetensors` and `TRAINING-RECEIPT.json`;
-  - `restore` takes such an archive, on any fleet;
-  - `status` lists the drafters and the published one;
-  - `gate` publishes a candidate only if it beats the incumbent on the
-    replies of held-out hours, and stays within 2% of the base on a general
-    set. It refuses scores of any other region.
+  read. The score's `arm` records the region, the requests, `max_anchors`,
+  the drafter's weights sha256 and the name, bytes and sha256 of the target
+  shard and of every tap and donor tap file.
+- `tools/autopilot_drafter.py`, in `<scratch>/autopilot/drafter/`:
+  - `install` places a trained checkpoint under `drafters/<id>`, where the
+    id is the first 16 hex digits of the weights' sha256;
+  - `gate` is the only way to publish. It takes the candidate's id and four
+    `block_drafter.py --region reply` scores: the candidate and the
+    incumbent on the held-out hours, and the base and the candidate on a
+    general set. It refuses, with exit status 2, unless:
+    - each pair is the same arm, every field but the drafter, with the same
+      anchors per request;
+    - the candidate's scores name the weights in its manifest, the
+      incumbent's the published drafter (the base when none is published),
+      and the base's the candidate's `origin_sha256`;
+    - the held-out score shares no request of a tap file the candidate
+      trained on.
+
+    It then points `published` at the candidate only if the candidate beats
+    the incumbent on held-out replies and stays within 2% of the base on the
+    general set. Otherwise it exits 2 and the incumbent stays. The 2% is a
+    constant;
+  - `export` writes `exports/<id>.tar` holding `MANIFEST.json`,
+    `config.json`, `model.safetensors` and `TRAINING-RECEIPT.json`, for the
+    account API to hand to the customer;
+  - `restore` takes such an archive, on any fleet. The restored drafter
+    serves once the gate publishes it there;
+  - `status` lists the drafters, their last use and the published one;
+  - `expire` deletes every drafter, `incoming/` leftover and export,
+    finished or `.partial`, by the working-state rule of
+    `tools/serving/working_state.py`: 24 hours (`RETENTION_SECONDS`) after
+    the later of its last use and `held_until`, or at once when used before
+    `wiped`. `--directive` names the working-state controller's directive.
+    Without it, the limit is 24 hours after last use. The `published`
+    pointer goes with its drafter. Install, restore, publishing and export
+    record a use. No flag lengthens the 24 hours.
 
   Install and restore refuse:
   - files other than those four;
-  - an unsupported config;
+  - a config, receipt, manifest or weights header that is unsupported or
+    malformed;
   - weights that are not exactly the drafter's tensors (BF16, the config's
     shapes, contiguous);
-  - a receipt that names other weights;
+  - a receipt that names other weights, that lacks a sha256 and license for
+    the base and for every tap file, or that lacks the origin or the trained
+    requests;
   - taps the lane does not stream;
-  - another target pack.
+  - another target pack;
+  - a copy of the same drafter already in the store that no longer matches
+    its manifest.
 
   Restore also refuses links, duplicates, path tricks and a manifest that
-  does not describe its files, and leaves nothing behind when it does.
+  does not describe its files. Every refusal exits 2 and leaves nothing in
+  `incoming/`.
 
 Still to build:
 
@@ -363,8 +408,8 @@ Still to build:
    - pick the repository delta and prefill it;
    - swap K3 out and fan the shards out;
    - run `torchrun` on the sixteen Sparks;
-   - score base, incumbent and candidate on the held-out hours;
-   - gate, install, publish, and swap K3 back.
+   - install the candidate and score base, incumbent and candidate;
+   - gate, which publishes the winner, and swap K3 back.
 
    Multi-node NCCL over the fleet's RoCE is untried. Gradients cross as
    fp32 (10 GB a step), and bf16 buckets would halve that.
@@ -375,16 +420,22 @@ Still to build:
      stops or another customer's hour starts.
    - It refuses a drafter whose manifest names a different base, tap set or
      target pack identity.
+   - Loading it records a use, so a drafter that serves every day does not
+     expire.
    - `hub_draftd.sh` today accepts weights only from the hub's own NVMe, so it
      needs this source added.
 4. **Download and upload.** Moving an exported archive to the customer and
-   an uploaded one onto their fleet is the account API's job: it hands the
-   file to `export` and `restore`.
+   an uploaded one onto their fleet is the account API's job: it takes the
+   file `export` writes and hands an upload to `restore`.
+5. **Expiry on a timer.** Nothing runs `expire` yet, and main has no scratch
+   wiper. The node needs a timer that runs it with the working-state
+   directive at least once a minute, the period of the draft servers'
+   context sweep (`tools/context_retention.py`).
 
-Each fleet will have its own hub (owner, 2026-11-01). The customer's drafter
-therefore serves from their fleet's hub GPU, and no other customer's lane
-ever reaches that daemon. Today's hub GPU is full (two drafters, 32.1 of
-32.6 GB), so a production hub runs the K3 drafter only, or has a larger GPU.
+The customer's drafter serves where the fleet's drafts run, in GPU memory
+only, and no other customer's lane reaches it while it is loaded. That GPU
+is full today (two drafters hold 32.1 of 32.6 GB, above), so serving a
+customer's drafter needs room there first.
 
 Training stays on the customer's Sparks. A full fine-tune needs about 33-61
 GB per device, more than a 32 GB hub GPU holds. Moving the customer's
