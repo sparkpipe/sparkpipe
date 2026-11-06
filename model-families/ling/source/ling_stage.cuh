@@ -196,6 +196,7 @@ __global__ static void LingHeadGateKernel(uint16_t *values, const uint16_t *gate
 	}
 }
 
+template<bool ROUNDED, bool WEIGHTED>
 __global__ static void LingSiluClampPackedKernel(const uint16_t *gate, const uint16_t *up, const float *weight, uint16_t *output, uint32_t width,
 	float limit)
 {
@@ -204,7 +205,11 @@ __global__ static void LingSiluClampPackedKernel(const uint16_t *gate, const uin
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * width + element]);
 		const float u = fminf(fmaxf(LmBf16ToFloat(up[(uint64_t)row * width + element]), -limit), limit);
-		output[(uint64_t)row * width + element] = LmFloatToBf16(fminf(SparkMathSilu(g), limit) * u * weight[row]);
+		const float activated = fminf(ROUNDED ? SparkMathRoundBf16(SparkMathSilu(g)) : SparkMathSilu(g), limit) * u;
+		if constexpr ( WEIGHTED )
+			output[(uint64_t)row * width + element] = LmFloatToBf16(activated * weight[row]);
+		else
+			output[(uint64_t)row * width + element] = LmFloatToBf16(activated);
 	}
 }
 
@@ -454,7 +459,10 @@ struct LingModel
 		const uint32_t rows = step->rows;
 		if ( Linear(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * state->ffn_rows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true, INFINITY);
+		if constexpr ( G::kFfnSiluRounded )
+			LM_LAUNCH((LmSiluRoundedMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true, INFINITY);
+		else
+			LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true, INFINITY);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->ffn_down, state->intermediate, state->partial, rows, state->ffn_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -496,20 +504,28 @@ struct LingModel
 			LmLocalExpertsUp<LmBf16Format>(expert_routes, layer->moe_w3, LmScaleTensorNone(), normed, state->expert_up, G::kHidden,
 				G::kMoeInter, stream, exact) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LingSiluClampPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), LG_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
-			state->packed_weight, state->expert_act, G::kMoeInter, routed_limit > 0.0f ? routed_limit : INFINITY);
+		LingSiluClampPackedKernel<G::kFfnSiluRounded,!G::kExpertWeightAfterDown><<<dim3(Blocks(G::kMoeInter), routes), LG_THREADS, 0, stream>>>(state->expert_gate,
+			state->expert_up, state->packed_weight, state->expert_act, G::kMoeInter, routed_limit > 0.0f ? routed_limit : INFINITY);
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmLocalExpertsDown<LmBf16Format>(expert_routes, layer->moe_w2, LmScaleTensorNone(), state->expert_act, state->expert_out, G::kMoeInter,
 				G::kHidden, stream, exact) != LM_LAUNCH_OK ||
 			Linear(layer->shared_gate_up, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true,
-			shared_limit > 0.0f ? shared_limit : INFINITY);
+		if constexpr ( G::kFfnSiluRounded )
+			LM_LAUNCH((LmSiluRoundedMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true,
+				shared_limit > 0.0f ? shared_limit : INFINITY);
+		else
+			LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true,
+				shared_limit > 0.0f ? shared_limit : INFINITY);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
-			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
+		if constexpr ( G::kExpertWeightAfterDown )
+			LmMoeLocalWeightedFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+				state->route_expert, state->route_weight, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
+		else
+			LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+				state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return Launched();
 	}
 
