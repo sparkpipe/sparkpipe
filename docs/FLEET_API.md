@@ -73,6 +73,16 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - Chat completions streams send an SSE comment line.
   - Non-streamed Messages and Responses requests get their 200 headers at the first keep-alive, then a newline every 10 s before the JSON body; JSON parsers skip leading whitespace. An error after the first newline arrives as the shape's error body under that 200.
 - **Path.** gateway (VPS) → SSH tunnel → the hub's chat layer (`tools/serving/chat_frontend.py`) → the model's `sparkpipe_model_api` → the 16 ranks. All three new API shapes are translated in the chat layer, because the tokenizer, chat templates and tool-call parsers live there (`chat_frontend.py:525`). The gateway passes the new paths through unchanged, with `X-SparkPipe-Account` and `X-SparkPipe-Fleet`.
+- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load.
+- **Class.** A request is `interactive` (the default) or `background`. It names its class with the header `x-sparkpipe-priority: interactive|background`, or with the same key in its body's `metadata` (`"metadata": {"x-sparkpipe-priority": "background"}`, on all three shapes). The header wins when both are sent, and any other value is a 400 `invalid_request`. Claude Code's compaction and auxiliary calls (§3.8), a key made with `--priority background`, `<model>-bulk`, chat-memory jobs and Functions (§7.1) are background.
+  - While background work runs, two sequences stay free for interactive requests. A freed sequence goes to a waiting interactive request first.
+  - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
+  - Background work runs whenever no interactive work is queued or running, so it completes when interactive load stops. The class changes timing only, never the tokens.
+- **Cancel.** `DELETE /v1/requests/{id}` cancels the account's own queued or running request. The id is the `X-SparkPipe-Request` header of the reply, sent when a stream opens.
+  - It answers `{"id", "object": "request", "cancelled": true, "released"}` once the request's sequence is free (`released`), within 5 s.
+  - The cancelled request ends with 409 `request_cancelled` in its own shape: an error response, or an error event on a stream.
+  - Another account's id, or one that is not queued or running, answers 404 `request_not_found`.
+  - Closing the connection cancels the same way. Either way the engine frees the sequence at the end of the submission in flight: a decode step, a chain or one prefill wave. KV already committed follows the retention rules.
 
 ### 3.2 Token-exact replay
 
@@ -612,6 +622,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - Options: scopes (`inference`, `state`, `storage`, `functions`, `models`, `account:read`), `fleet`, `allow_swap`, expiry, and an IP allowlist.
   - `POST /v1/keys/{id}/rotate` issues a new key and keeps the old one valid for an hour.
 - **Fair share.** When several members' requests are waiting, the chat layer shares sequences between members. No member takes more than three quarters of them while another is waiting.
+  - The unit is the member, by the key each request comes with, never the session: the session and agent headers of §3.8 drive affinity and routing, not fair share.
 - **Usage per member** in `/v1/requests` and `sparkpipe stats`.
 - **Audit log.** `GET /v1/audit` lists events, without prompts or replies, kept like the operational records:
   - sign-ins, member and key changes;
@@ -699,7 +710,7 @@ A held fleet is then never lost to a forgotten Sunday.
 | Limit | Value | Where it comes from |
 | --- | --- | --- |
 | Sequences at once | 8 (K3, GLM 5.3), 16 (GLM 5.3 Flash) | `PERFORMANCE_STATUS.md:40` |
-| Sequences kept for interactive use while Functions run | 2 | §7.1 |
+| Sequences kept for interactive use while background work runs | 2 | §3.1, §7.1 |
 | Body size | 32 MiB | §3.1 |
 | Pins | Half the fleet's cache | §4.3 |
 | Context | The model's served window (Fleet List) | |
@@ -708,6 +719,7 @@ A held fleet is then never lost to a forgotten Sunday.
 Errors use each API shape's own error body, with these `type` or `code` values:
 - `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
+- `request_cancelled`, `request_not_found`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
 `context_too_long` is sent in each shape's native form, so the harnesses compact on their own: on Messages, 400 `invalid_request_error` with the message `prompt is too long: N tokens > M maximum`; on Responses and chat completions, 400 with code `context_length_exceeded`.

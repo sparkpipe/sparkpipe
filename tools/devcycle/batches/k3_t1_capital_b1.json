@@ -11,7 +11,7 @@
     {
       "request_id": 1,
       "sequence_id": 1,
-      "priority": 0,
+      "priority": 2,
       "output_token_budget": 4,
       "prompt_token_ids": [1008, 10484, 318, 15383, 387]
     }

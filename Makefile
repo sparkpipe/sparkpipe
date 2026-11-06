@@ -742,6 +742,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_client_fidelity.py \
 	tests/test_count_tokens_check.py \
 	tests/test_chat_frontend_fleet_api.py \
+	tests/test_chat_frontend_interactive_first.py \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
@@ -767,6 +768,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_stagepack_windows.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_model_api_accept.py \
+	tests/test_model_api_cancel.py \
 	tests/test_model_api_utf8.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \
