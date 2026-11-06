@@ -25,8 +25,10 @@ async def measure(harness, tmp, contend):
     corpus = tmp / "corpus.txt"
     corpus.write_text("hello world, the weather in Paris is sunny today. read the file a.txt and list the directory.")
     headers = harness.headers(account="acct-gate")
+    config = tmp / "hub.json"
+    config.write_text(json.dumps({"models": [{"id": "alpha", "cold_prefill": {"points": [[100, 10], [10000, 1000]], "source": "test"}}]}))
     arguments = ["--base", harness.base, "--model", "alpha", "--corpus", str(corpus), "--tokens", "600", "--decode-tokens", "64", "--lead-seconds", "0.05",
-                 "--out", str(tmp / f"gate-{contend}.json")] + [item for name, value in headers.items() for item in ("--header", f"{name}: {value}")]
+                 "--hub-config", str(config), "--out", str(tmp / f"gate-{contend}.json")] + [item for name, value in headers.items() for item in ("--header", f"{name}: {value}")]
     with contextlib.redirect_stdout(io.StringIO()):
         code = await asyncio.get_running_loop().run_in_executor(None, warm_gate_check.main, arguments)
     return code, json.loads((tmp / f"gate-{contend}.json").read_text())
@@ -38,6 +40,10 @@ async def run(tmp, check):
     check(code == 0 and report["matched"] and report["yielded"] and report["interactive"]["overlapped_warm"] and report["warm"]["prompt_tokens"] >= 600 and
           report["real"]["cached_tokens"] == report["warm"]["committed_tokens"] > 0 and report["interactive"]["during_gaps"] > 0,
           f"a warm-up that leaves an interactive stream's pace alone passes, with the next request matching every warmed block: {code} {report}")
+    seed = report["seed"]
+    check(seed["measured_ms"] == 12 and seed["estimate_ms"] == round(0.1 * report["warm"]["prompt_tokens"]) and
+          seed["error"] == round(seed["estimate_ms"] / 12 - 1, 4) and seed["within_10_percent"] is False,
+          f"the report compares the model's cold_prefill seed with the warm-up's measured cold prefill: {seed}")
     async with fixture.Harness(tmp / "contended") as harness:
         code, report = await measure(harness, tmp, 0.05)
     check(code == 1 and report["matched"] and not report["yielded"] and report["interactive"]["delay_steps"] > 1,
@@ -52,7 +58,8 @@ def main():
     if check.failures:
         print(captured.getvalue()[-3000:])
     check.finish("tools/warm_gate_check.py warms a prompt of the asked length, checks the next real request caches every warmed block, and fails "
-                 "when an interactive stream decoding through the warm-up is delayed by more than one decode step")
+                 "when an interactive stream decoding through the warm-up is delayed by more than one decode step; it compares the model's cold_prefill seed "
+                 "with the warm-up's measured cold prefill")
 
 
 if __name__ == "__main__":

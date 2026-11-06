@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import http.client
+import importlib.util
 import json
 import statistics
 import sys
@@ -10,6 +11,19 @@ import urllib.parse
 from pathlib import Path
 
 COUNT_PROMPT = "Count upward from 1, one number per line, and do not stop."
+CACHE_MODULE = Path(__file__).resolve().parent / "serving" / "chat_cache.py"
+
+
+def seed_check(config, model, warm):
+    spec = importlib.util.spec_from_file_location("sparkpipe_chat_cache", CACHE_MODULE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    entry = next((item for item in json.loads(config.read_text())["models"] if item["id"] == model), None)
+    if entry is None or entry.get("cold_prefill") is None or not warm.get("prompt_tokens") or not warm.get("prefill_ms") or warm.get("cached_tokens"):
+        return {"estimate_ms": None, "measured_ms": warm.get("prefill_ms"), "error": None, "within_10_percent": None}
+    estimate = module.PrefillSeed(model, entry["cold_prefill"]).rate(warm["prompt_tokens"]) * warm["prompt_tokens"]
+    error = estimate / warm["prefill_ms"] - 1
+    return {"estimate_ms": round(estimate), "measured_ms": warm["prefill_ms"], "error": round(error, 4), "within_10_percent": abs(error) <= 0.1}
 
 
 class Client:
@@ -68,7 +82,7 @@ def long_body(client, model, corpus, tokens):
     return {"model": model, "messages": [{"role": "user", "content": (text + "\n") * repeats + "\nSummarize the text above in one line."}]}
 
 
-def gate(client, model, corpus, tokens, decode_tokens, lead_seconds):
+def gate(client, model, corpus, tokens, decode_tokens, lead_seconds, config=None):
     body = long_body(client, model, corpus, tokens)
     counter = {"model": model, "messages": [{"role": "user", "content": COUNT_PROMPT}], "max_tokens": decode_tokens, "temperature": 0}
     idle = client.stream("/v1/chat/completions", counter)
@@ -101,6 +115,7 @@ def gate(client, model, corpus, tokens, decode_tokens, lead_seconds):
                               "delay_steps": round((worst - step) / step, 2) if worst is not None and step else None}}
     report["matched"] = (warm_status == 200 and real_status == 200 and isinstance(warm.get("committed_tokens"), int) and
                          isinstance(record.get("cached_tokens"), int) and record["cached_tokens"] >= warm["committed_tokens"])
+    report["seed"] = seed_check(config, model, report["warm"]) if config is not None else None
     report["yielded"] = report["interactive"]["delay_steps"] is not None and report["interactive"]["delay_steps"] <= 1.0 and report["interactive"]["overlapped_warm"]
     return report
 
@@ -116,12 +131,14 @@ def main(argv=None):
     parser.add_argument("--tokens", type=int, default=150000)
     parser.add_argument("--decode-tokens", type=int, default=8192, help="the interactive stream's length; it must outlast the warm-up")
     parser.add_argument("--lead-seconds", type=float, default=1.0, help="how long after the warm-up starts the interactive stream starts")
+    parser.add_argument("--hub-config", type=Path, help="the hub's chat_frontend.json: also compare the model's cold_prefill seed with the warm-up's "
+                        "measured cold prefill (C4)")
     parser.add_argument("--out", type=Path, help="write the report here as JSON")
     arguments = parser.parse_args(argv)
     headers = dict(item.split(":", 1) for item in arguments.header)
     client = Client(arguments.base, Path(arguments.key_file).read_text().strip() if arguments.key_file else None,
                     {name.strip(): value.strip() for name, value in headers.items()})
-    report = gate(client, arguments.model, arguments.corpus, arguments.tokens, arguments.decode_tokens, arguments.lead_seconds)
+    report = gate(client, arguments.model, arguments.corpus, arguments.tokens, arguments.decode_tokens, arguments.lead_seconds, arguments.hub_config)
     text = json.dumps(report, indent=1)
     if arguments.out:
         arguments.out.write_text(text + "\n")
