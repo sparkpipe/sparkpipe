@@ -873,7 +873,9 @@ Related common-code debt:
 - Priority and deadline reach admission, prefill and decode scheduling (the
   batch engine selects by priority, then earliest `deadline_ms`, and a prefill
   or decode submission carries its latest lane deadline to residentd as
-  remaining time), and KV eviction ranks by request priority. Still open:
+  remaining time), and KV eviction ranks by request priority. Priority 2 and
+  above is interactive and runs first; background work yields to it (README
+  "Interactive first"). Still open:
   speculation, gang scheduling and KV snapshot I/O ignore both; the binding's
   restore worker and saver run in queue order (`runtime/stage_kv_binding.c`).
 - Dense projections above sixteen rows (`LM_SKINNY_ROWS_WIDE`,
@@ -1279,11 +1281,32 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
-  fleet swapping and pushes the owner's model out after each reply. Each key
-  runs at most four requests at once, but nothing limits how often a key may
-  start a swap. Which public requests may swap the fleet is an owner
-  decision (serve only the loaded model to keys, or a lower activation
-  priority and a per-key swap rate).
+  fleet swapping and pushes the owner's model out after each reply. No key
+  has a concurrency cap (the fair-share gate shares sequences), and nothing
+  limits how often a key may start a swap. Which public requests may swap the
+  fleet is an owner decision (serve only the loaded model to keys, or a lower
+  activation priority and a per-key swap rate).
+- Interactive first (#1794): what is left after the priority classes, the
+  two kept sequences, background yielding, `DELETE /v1/requests/{id}` and the
+  10 ms disconnect poll.
+  - Fleet-only: the one-step bound on Fleet 1 with a warm-up, a batch job and
+    a Function running; a disconnect and a DELETE freeing the sequence under
+    load, during a prefill; two members flooding requests (C8).
+  - A cancel during an interactive streamed prefill waits for the whole
+    streamed span (minutes at 1M tokens), because the ranks cannot stop a
+    streamed submission. Cancelling inside a wave needs a rank-side abort.
+  - A client learns a request's id only from `X-SparkPipe-Request`, which a
+    stream sends when it opens and a non-streamed reply sends at the end. A
+    request still waiting for a sequence, or a non-streamed one, can be
+    cancelled by DELETE only by a caller that has its id from elsewhere;
+    `GET /v1/requests` lists finished requests only.
+  - Interactive arrivals beyond the two kept sequences wait for a running
+    request to finish: a running background request is never preempted.
+  - The gateway's per-account request limit (`LIMITS["gateway"]`, 6,000
+    requests per 10 minutes in `tools/sparkpipe_pay.py`) answers 429 `busy`
+    at once, which contradicts the Fleet API's rule that a holder's only
+    refusal for load is 429 after 60 s; 64 agents turning every 6 s pass it.
+    Exempting a holder's inference requests is a decision for the owner.
 
 ## Fleet-hours
 

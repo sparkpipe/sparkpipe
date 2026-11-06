@@ -75,6 +75,10 @@ CACHE_BLOCK_TOKENS = 64
 INTERACTIVE_RESERVE = 2
 FAIR_SHARE = 0.75
 PRIORITY_HEADER = "X-SparkPipe-Priority"
+PRIORITY_METADATA = "x-sparkpipe-priority"
+PRIORITY_CLASSES = ("interactive", "background")
+CANCEL_WAIT_SECONDS = 5.0
+REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
 MEMBER_HEADER = "X-SparkPipe-Key"
@@ -313,6 +317,73 @@ class SequenceGate:
     def state(self):
         return {"sequences": self.sequences, "in_use": self.used, "waiting_interactive": sum(waiter.priority >= INTERACTIVE_PRIORITY for waiter in self.waiters),
                 "waiting": len(self.waiters), "scopes": len(self.held)}
+
+
+class LiveRequest:
+    def __init__(self, scope):
+        self.scope = scope
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.queue = None
+
+    def cancel(self):
+        self.cancelled.set()
+        if self.queue is not None:
+            self.queue.put_nowait(("cancelled", None))
+
+    def error(self, request_id):
+        return RequestError(409, "request_cancelled", f"request {request_id} was cancelled with DELETE /v1/requests/{request_id}")
+
+    async def until(self, request_id, admission, release):
+        work = asyncio.ensure_future(admission)
+        stop = asyncio.ensure_future(self.cancelled.wait())
+        try:
+            await asyncio.wait({work, stop}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            await self.withdraw(work, release)
+            raise
+        finally:
+            stop.cancel()
+        if work.done():
+            return work.result()
+        await self.withdraw(work, release)
+        raise self.error(request_id)
+
+    @staticmethod
+    async def withdraw(work, release):
+        work.cancel()
+        outcome = (await asyncio.gather(work, return_exceptions=True))[0]
+        if outcome is None and not work.cancelled():
+            await release()
+
+    async def watch(self, request_id, events):
+        self.queue = asyncio.Queue()
+        if self.cancelled.is_set():
+            self.queue.put_nowait(("cancelled", None))
+
+        async def pump():
+            try:
+                async for event in events:
+                    self.queue.put_nowait(("event", event))
+                self.queue.put_nowait(("done", None))
+            except Exception as error:
+                self.queue.put_nowait(("error", error))
+        producer = asyncio.ensure_future(pump())
+        try:
+            while True:
+                kind, value = await self.queue.get()
+                if kind == "event":
+                    yield value
+                elif kind == "done":
+                    return
+                elif kind == "error":
+                    raise value
+                else:
+                    raise self.error(request_id)
+        finally:
+            self.queue = None
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
 
 
 async def heartbeat(events, interval):
@@ -1590,6 +1661,7 @@ class Frontend:
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
+        self.live = {}
         if config.get("chat_memory") is not None:
             loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
             module = importlib.util.module_from_spec(loader)
@@ -1775,10 +1847,20 @@ class Frontend:
         raise RequestError(409, "model_not_loaded", f"{model.id} is not resident here, and loading it would unload {', '.join(str(item) for item in resident)}; "
                            "ask for a resident model, or use a key with allow_swap", details={"resident": view["resident"]})
 
-    def hinted_priority(self, bulk, headers, key):
+    @staticmethod
+    def metadata_priority(metadata):
+        value = metadata.get(PRIORITY_METADATA) if isinstance(metadata, dict) else None
+        if value is None:
+            return ""
+        if not isinstance(value, str) or value.strip().lower() not in PRIORITY_CLASSES:
+            raise RequestError(400, "invalid_request", f"metadata[{PRIORITY_METADATA!r}] must be interactive or background")
+        return value.strip().lower()
+
+    def hinted_priority(self, bulk, headers, key, metadata=None):
         value = (headers.get(PRIORITY_HEADER) or "").strip().lower()
-        if value not in ("", "interactive", "background"):
+        if value not in ("",) + PRIORITY_CLASSES:
             raise RequestError(400, "invalid_request", f"{PRIORITY_HEADER} must be interactive or background")
+        value = value or self.metadata_priority(metadata)
         if value:
             return INTERACTIVE_PRIORITY if value == "interactive" else BULK_PRIORITY
         if (headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES:
@@ -2327,7 +2409,12 @@ class Frontend:
                           "engine_finish": "stop_string" if outcome["stop_string"] else (finish or "stop"), "token_ids": token_ids,
                           "stop_marker": parser.stop_marker if outcome["stop_string"] else None})
 
-    async def respond(self, model, plan):
+    def respond(self, model, plan):
+        live = self.live.get(plan.get("request_id"))
+        events = self.respond_events(model, plan)
+        return events if live is None else live.watch(plan["request_id"], events)
+
+    async def respond_events(self, model, plan):
         session = plan["session"]
         if session is None:
             async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan, plan.get("timing")):
@@ -2434,7 +2521,7 @@ class Frontend:
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
         started = time.monotonic()
         try:
-            async for chunk in self.engine_events(model, body):
+            async for chunk in self.gated_events(model, body):
                 usage = chunk.get("usage") or usage
                 generated += len(chunk.get("tokens", []))
                 tokens.extend(chunk.get("tokens", []))
@@ -2455,6 +2542,14 @@ class Frontend:
         if parser is not None:
             content.extend(value for kind_, value in parser.finish() if kind_ == "content")
         return "".join(content)
+
+    async def gated_events(self, model, body):
+        await model.sequences.acquire(body["priority"], None)
+        try:
+            async for chunk in self.engine_events(model, body):
+                yield chunk
+        finally:
+            await model.sequences.release()
 
     def usage_block(self, usage, prompt_tokens, plan):
         usage = usage or {}
@@ -2495,7 +2590,7 @@ class Frontend:
             await self.admit_model(model, public, request.headers)
             plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers))
             if "engine_body" in plan:
-                plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public)
+                plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public, body.get("metadata"))
         except RequestError as error:
             return error_response(error)
         self.stamp(plan, started, request.headers)
@@ -2528,16 +2623,49 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
+        live = self.track(plan, scope)
         try:
-            await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None,
-                                          scope, member)
-        except RequestError as error:
-            return failed(error)
-        plan["timing"]["admitted"] = time.monotonic()
-        try:
-            return await answer(request, model, body, plan, started)
+            try:
+                await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
+                                                                            BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member),
+                                 lambda: model.sequences.release(scope, member))
+            except RequestError as error:
+                return failed(error)
+            plan["timing"]["admitted"] = time.monotonic()
+            try:
+                return await answer(request, model, body, plan, started)
+            finally:
+                await model.sequences.release(scope, member)
         finally:
-            await model.sequences.release(scope, member)
+            self.untrack(plan)
+
+    def track(self, plan, scope):
+        live = LiveRequest(scope)
+        self.live[plan["request_id"]] = live
+        return live
+
+    def untrack(self, plan):
+        live = self.live.pop(plan["request_id"], None)
+        if live is not None:
+            live.finished.set()
+
+    async def cancel_request(self, request):
+        key = request.get("public_key")
+        identifier = request.match_info["request_id"]
+        try:
+            scope = self.scope_of(key, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        live = self.live.get(identifier)
+        if live is None or live.scope != scope:
+            return error_response(RequestError(404, "request_not_found", f"this account has no queued or running request {identifier}"))
+        live.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(live.finished.wait()), CANCEL_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        print(json.dumps({"event": "request_cancelled", "request": identifier, "released": live.finished.is_set()}), file=sys.stderr, flush=True)
+        return web.json_response({"id": identifier, "object": "request", "cancelled": True, "released": live.finished.is_set()})
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -2583,6 +2711,7 @@ class Frontend:
             translated = chat_shapes.messages_request(body)
         else:
             translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers))
+        translated["metadata"] = body.get("metadata")
         model, bulk = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
@@ -2626,7 +2755,7 @@ class Frontend:
         plan = self.finish_plan(model, body, messages, tools, kwargs, None, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
-        plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key)
+        plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})})
         if key is not None:
@@ -2994,13 +3123,17 @@ def presented_key(headers):
     return headers.get("X-Api-Key", "").strip() or None
 
 
+def public_path(path):
+    return path in PUBLIC_PATHS or REQUEST_PATH.fullmatch(path) is not None
+
+
 def public_door(frontend):
     @web.middleware
     async def door(request, handler):
         if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
             return await handler(request)
         refuse = anthropic_error_response if request.path in ANTHROPIC_PATHS else (responses_error_response if request.path == "/v1/responses" else error_response)
-        if request.path not in PUBLIC_PATHS:
+        if not public_path(request.path):
             return refuse(RequestError(404, "not_found", "this path is not served to the public API"))
         if request.path in OPEN_PATHS:
             return await handler(request)
@@ -3036,6 +3169,7 @@ def build(frontend):
     app.router.add_put("/v1/models/aliases", frontend.put_aliases)
     app.router.add_get("/v1/codex/models", frontend.codex_models)
     app.router.add_delete("/v1/cache", frontend.delete_cache)
+    app.router.add_delete("/v1/requests/{request_id}", frontend.cancel_request)
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)

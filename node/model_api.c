@@ -38,7 +38,7 @@
 #define API_MAX_INFLIGHT 16u
 
 #define API_DEFAULT_MODEL_ID "sparkpipe-model"
-#define API_WAIT_SLICE_MS 250u
+#define API_WAIT_SLICE_MS 10u
 #define API_STREAM_BATCH_TOKENS 64u
 #define API_UTF8_MAX_SEQUENCE 4u
 #define API_STREAM_EVENT_END "}\n\n"
@@ -1133,6 +1133,7 @@ static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root,
 	bool flag;
 	memset(options,0,sizeof(*options));
 	options->top_p = 1.0f;
+	options->priority = SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE;
 	if ( root < 0 )
 		return 1;
 	member = SparkJsonFindObjectMember(doc,root,"stream");
