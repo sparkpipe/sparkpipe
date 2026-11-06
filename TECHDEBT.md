@@ -1232,6 +1232,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Serving API
 
+- Client setup (#1788), before launch:
+  - The SparkPipe plugin for Claude Code, which setup installs, is not built. The site describes it.
+    - `sparkpipe setup claude-code` writes the settings, the stream idle timeout and the MCP entry.
+    - It has no plugin to install, and the MCP server it registers (`/mcp`, #1805) is not served yet.
+  - The client release check is not scheduled. `tools/client_release_check.py` runs a scripted 3-turn session per tool and writes JSON. Nothing runs it daily against staging or shows its result on the status page.
+  - Not yet run on the fleet: a 50-turn Claude Code task with `run` and `search_code` (H1); Codex and OpenCode sessions (H2, H4).
+  - OpenCode's title and summary requests run at interactive priority, because OpenCode sends no request class.
+
 - `text/tokenizer.c` knows split regexes only by exact string: the GLM
   digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
   digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
