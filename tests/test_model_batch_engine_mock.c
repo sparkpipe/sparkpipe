@@ -3202,8 +3202,11 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 	CHECK(rows <= 2u * submissions + 12u,
 		"model drafts: confident deep drafts that fail stop being verified while the first draft that holds keeps its row");
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_UNAVAILABLE,script,40u,&state,&view,&submissions,&rows,&server);
-	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests > 4u,
-		"model drafts: an unavailable answer declines one round and the engine keeps asking");
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests == 1u,
+		"model drafts: an unavailable answer backs the request off model drafts, so the next 64 tokens ask no drafter");
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_UNAVAILABLE,script,80u,&state,&view,&submissions,&rows,&server);
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && submissions == 0u && server.requests == 2u,
+		"model drafts: after the backoff the engine asks again, and a second unavailable answer doubles the backoff");
 	MockResidentClientSetVerifyRowCost(21u);
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CORRECT,script,80u,&state,&view,&submissions,&rows,&server);
 	MockResidentClientSetVerifyRowCost(1u);
