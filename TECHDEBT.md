@@ -1284,6 +1284,31 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   start a swap. Which public requests may swap the fleet is an owner
   decision (serve only the loaded model to keys, or a lower activation
   priority and a per-key swap rate).
+- `cache_creation_input_tokens` is 0 on Messages: `sparkpipe_model_api`
+  reports the prompt length and the matched prefix, not the prompt tokens
+  the engine commits (`cache_published_token_count` in
+  `runtime/model_batch_engine.c`, which on a recurrent model is reusable
+  only at its checkpoints). Close it by carrying the committed, reusable
+  count in the batch engine's event and the engine's usage, proven by a
+  turn whose next turn's cached count equals what the first reported as
+  created.
+- Claude Code 2.1.308's stream watchdog counts a `ping` for only 30
+  heartbeats in a row, then aborts 300 s later, so a cold prefill longer
+  than about 10 minutes fails unless `sparkpipe setup claude-code` sets
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS` (§3.3 of `docs/FLEET_API.md`). Prove it
+  on Fleet 1 with a 10-minute prefill from a real Claude Code, streamed and
+  not, and Codex's with `stream_idle_timeout_ms` 600000.
+- The Messages and Responses WebSocket and HTTP paths are tested against
+  recorded client shapes and a scripted engine only. Fleet-only: a 150K
+  turn after a 2-hour pause, 100 recorded `count_tokens` against the
+  engine, and WebSocket against HTTP turn times on Fleet 1 from the
+  `turn_ms` records.
+- The WebSocket reads one `response.create` at a time, so a second one
+  waits for the turn before it, and a client that hangs up mid-prefill is
+  noticed at the next 10-second keep-alive. `generate: false` keeps the
+  input on the connection but does not prefill it into the engine.
+- `GET /v1/responses/{id}/input_items` and `POST /v1/responses/{id}/cancel`
+  are not served; nothing runs in the background to cancel.
 
 ## Fleet-hours
 
