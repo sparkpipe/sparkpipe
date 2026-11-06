@@ -347,9 +347,12 @@ Precomputed context only saves time when a real request starts with exactly thos
 
 - **Build.** `POST /v1/packs {"name": "core", "repo": "main", "include": ["src/**", "include/**"], "exclude": [...], "budget_tokens": 400000}`.
   - Files come from an ingested repository (§6). They are ordered by how rarely they changed in the last 90 days, least-changed first, with ties broken by path.
-  - Each file is rendered as `<file path="…" commit="…">…</file>` after a header that names the repository, the commit, and the instruction to read a file before editing it.
+  - Each file is rendered as `<file path="…" commit="…">…</file>` after a header that names the repository and gives the instruction to read a file before editing it. `commit` is the last commit that changed that file.
+  - The snapshot's own commit and its file count come after the last file, not in the header, so a push changes no token before the first changed file.
+  - The header, each file block and the footer are tokenized separately with the model's tokenizer and joined, so a file's tokens never depend on its neighbours.
   - Binary and generated files and anything over the budget are left out and listed in the response.
 - **Alias.** `<model>+<pack>`, for example `kimi-k3+core`.
+- **Placement.** The pack is one system turn before all of the client's messages: before the Messages `system`, a chat request's own system messages and Codex's `instructions`. The template renders it like any system turn. What a template puts ahead of the messages, such as tool declarations, stays ahead of the pack, so the stored pack prefix is shared by requests with the same tools and template settings. Warm-ups therefore render the pack with each tool set recently seen on it.
 - **Refresh.**
   - `POST /v1/packs/{name}/refresh`, or automatically after a push (§6), builds a new version.
   - Only the part after the first changed file has to be prefilled again. For K3 that means everything after the last 16,384-token checkpoint before it, which is why rarely changed files come first.

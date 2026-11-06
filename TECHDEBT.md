@@ -1315,6 +1315,40 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   start a swap. Which public requests may swap the fleet is an owner
   decision (serve only the loaded model to keys, or a lower activation
   priority and a per-key swap rate).
+- Repositories and context packs (#1800) are code and host tests only
+  (`tests/test_context_packs.py`). `deployment/hub/chat_frontend.json` has
+  no `repositories` section yet, so the hub serves no `/v1/repos`, `/git/`
+  or `/v1/packs`. Close it by adding the section with a directory on the
+  hub's local NVMe under `/srv/workspace`. Then run Gate D: the Customer Zero
+  task list with and without a 300K-token pack on K3, with turns, tokens read
+  through tools, wall time and decode speed in `PERFORMANCE_STATUS.md`. On
+  the same run, measure that a refresh after a one-file push prefills only
+  from the 16,384-token checkpoint before that file (`resume_tokens` 16384
+  in K3's model entry).
+- Pack warm-ups are one-token completions, as chat memory's are, until E5's
+  `commit_only` lands; `Frontend.warm_prefix` is the seam it replaces.
+- Templates render tool declarations ahead of the messages, so a pack's
+  stored prefix is shared only by requests with the same tool set. Warm-ups
+  cover the last four tool sets seen on the pack, and the first session with
+  a new tool set prefills the pack once. Putting the pack ahead of the tool
+  block needs a per-template slot; that is the rest of C9's template mapping.
+  A template that refuses a second system turn answers such a pack request
+  with 400 `invalid_messages`.
+- `POST /v1/tokenize` ignores the pack of a `<model>+<pack>` name;
+  `count_tokens` includes it.
+- Still to build for #1800:
+  - the tree-sitter and semantic indexes (P3);
+  - pack trees and resume-boundary padding (P10);
+  - `+auto` (P12);
+  - session evidence (C12);
+  - the `pack.warm` notice as a webhook, which today is only a log line;
+  - `/` in pack names at the gateway;
+  - repository quotas (#1798).
+- Repositories and packs expire through the chat layer's working-state
+  sweep, like the replay store. `tools/working_state_scan.py` is on the
+  unmerged #1692. When it lands, add the repository areas to the scan as a
+  storage place (`.last-use` per area), and follow its separate
+  `storage_wiped` rule for `repos/`.
 - `cache_creation_input_tokens` is 0 on Messages: `sparkpipe_model_api`
   reports the prompt length and the matched prefix, not the prompt tokens
   the engine commits (`cache_published_token_count` in

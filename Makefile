@@ -742,6 +742,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_client_fidelity.py \
 	tests/test_count_tokens_check.py \
 	tests/test_chat_frontend_fleet_api.py \
+	tests/test_context_packs.py \
 	tests/test_chat_frontend_interactive_first.py \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \

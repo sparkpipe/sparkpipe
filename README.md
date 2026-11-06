@@ -700,6 +700,18 @@ Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
 
+**Repositories and context packs.** A customer pushes its repository to the
+fleet with `git push`, authenticated with its SparkPipe key, into a bare copy
+only its account can read. A context pack renders one commit of that
+repository into the same tokens every time, least-changed files first. Each
+push builds and warms the new version in the background, and only the
+tokens after the first changed file are computed again. A request for
+`<model>+<pack>` starts with the pack ahead of the client's own system
+prompt. A session keeps the version it started on, new sessions get a new
+version once it is warm, and the response's `sparkpipe.pack` names the
+version ([`docs/FLEET_API.md`](docs/FLEET_API.md) §5,
+[`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)).
+
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.
