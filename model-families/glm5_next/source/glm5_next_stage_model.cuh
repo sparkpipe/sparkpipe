@@ -642,8 +642,12 @@ struct Glm5NextStage
 		status = Launch(Glm5NextAttentionHead(b, rows, context, sms, stream), "attention head", layer);
 		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
+		{
+			const uint32_t local_stride = Glm5NextLocalStride(state, context), candidates = Glm5NextIndexCandidates(rows, local_stride);
 			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,
-				SparkGlm5NextIndexCpGatherSequences(rows, Glm5NextLocalStride(state, context)), b->index_local_scores, (void *)b->index_gathered_scores);
+				SparkGlm5NextIndexCpGatherSequences(rows, candidates != 0u ? 2u * Glm5NextIndexKeep() : local_stride),
+				candidates != 0u ? (const void *)b->selection_scores : (const void *)b->index_local_scores, (void *)b->index_gathered_scores);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = Launch(Glm5NextAttentionTail(b, rows, context, sms, stream), "attention tail", layer);
 		if ( status == SPARK_STATUS_OK )
