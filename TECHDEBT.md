@@ -23,6 +23,18 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Mesh collectives
 
+- Solar Open 2's TP partials stay FP32 on Metal only (2026-11-06). Its
+  geometry sets `kTpPartialsF32`: the Metal Ling stage writes the attention,
+  KDA, expert and shared partials in FP32 and sums them with
+  `SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32`. CUDA's Ling
+  stage does not read the switch and the device collective has no FP32 sum,
+  so Solar on the fleet still rounds every rank's partial, and every
+  tensor-parallel expert's slice, to BF16 before the sum; on Metal FP32
+  partials cut Solar's paired excess share from 0.036 to 0.026. Closing it
+  needs an FP32 all-reduce in the device collective (twice the bytes per
+  sum, plain and pair-first), FP32 output projections, expert and shared
+  down projections and an FP32 weighted finalize in `ling_stage.cuh` under
+  the switch, and Solar's CUDA gate against its flash-form references.
 - Prefill sums go pair-first (2026-11-02, unproven on the fleet). The stage
   runner turns a family's BF16 all-reduce into the pair-first all-reduce
   (`SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`, chosen by
