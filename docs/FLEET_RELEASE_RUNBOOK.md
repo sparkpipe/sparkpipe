@@ -405,8 +405,9 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   `deployment/hub/model_swap.json`, unit `sparkpipe-swap` from
   `~/sparkpipe-swap`, `127.0.0.1:8440`, every call with the token in
   `/srv/workspace/sparkpipe/swap-controller/token`). It stops the other
-  models, starts the requested model's engines on every node, then its
-  engine API;
+  models with their hub services, starts the requested model's hub
+  services (`hub_start`, the draft server, which the hub's one GPU cannot
+  hold for two models), its engines on every node, then its engine API;
 - one engine API at a time: `sparkpipe_model_api` from the model's
   `~/<model>-kv-api` (`bin/`, `runtime/lib/<adapter>.so`,
   `model_resident.json`), started by the controller as the transient unit
