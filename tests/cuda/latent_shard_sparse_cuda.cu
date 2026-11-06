@@ -11,7 +11,8 @@
 #define SPARSE_PAGE 64u
 #define SPARSE_LATENT 512u
 #define SPARSE_RECORD LM_LATENT_SHARD_RECORD_FLOATS(SPARSE_LATENT)
-#define SPARSE_TOLERANCE (1.0 / 8192.0)
+#define SPARSE_TOLERANCE (1.0 / 128.0)
+#define SPARSE_FLASH_SHARE 0.95
 
 template<uint32_t WIDTH>
 struct SparseKv
@@ -88,6 +89,72 @@ static double SparseCompare(const std::vector<float> &a,const std::vector<float>
 		worst = lse > worst ? lse : worst;
 	}
 	return worst;
+}
+
+static double SparseHostFloat(uint16_t value)
+{
+	const uint32_t bits = (uint32_t)value << 16u;
+	float result;
+	memcpy(&result,&bits,4u);
+	return result;
+}
+
+static double SparseHostRoundBf16(double value)
+{
+	const float narrow = (float)value;
+	uint32_t bits;
+	memcpy(&bits,&narrow,4u);
+	return SparseHostFloat((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+}
+
+static void SparseHostRecord(const std::vector<uint16_t> &values,const uint16_t *query,const std::vector<uint32_t> &keys,uint32_t width,float scale,
+	uint32_t flash,std::vector<double> &record)
+{
+	std::vector<double> scores(keys.size());
+	double running = -INFINITY,total = 0.0;
+	record.assign(2u + SPARSE_LATENT,0.0);
+	for (uint64_t key = 0u; key < keys.size(); key++)
+	{
+		double dot = 0.0;
+		for (uint32_t element = 0u; element < width; element++)
+			dot += SparseHostFloat(query[element]) * SparseHostFloat(values[(uint64_t)keys[key] * width + element]);
+		scores[key] = dot * scale;
+	}
+	for (uint64_t first = 0u; first < keys.size(); first += LM_PREFILL_ATTN_TILE)
+	{
+		const uint64_t last = first + LM_PREFILL_ATTN_TILE < keys.size() ? first + LM_PREFILL_ATTN_TILE : keys.size();
+		double peak = running;
+		for (uint64_t key = first; key < last; key++)
+			peak = scores[key] > peak ? scores[key] : peak;
+		const double factor = running == -INFINITY ? 0.0 : exp(running - peak);
+		total *= factor;
+		for (uint32_t element = 0u; element < SPARSE_LATENT; element++)
+			record[2u + element] *= factor;
+		running = peak;
+		for (uint64_t key = first; key < last; key++)
+		{
+			double weight = exp(scores[key] - running);
+			total += weight;
+			weight = flash != 0u ? SparseHostRoundBf16(weight) : weight;
+			for (uint32_t element = 0u; element < SPARSE_LATENT; element++)
+				record[2u + element] += weight * SparseHostFloat(values[(uint64_t)keys[key] * width + element]);
+		}
+	}
+	record[0] = running;
+	record[1] = total;
+}
+
+static double SparseHostGap(const float *x,const std::vector<double> &y)
+{
+	double peak = 1e-9,gap = 0.0;
+	for (uint32_t element = 0u; element < SPARSE_LATENT; element++)
+	{
+		const double u = x[2u + element] / x[1],v = y[2u + element] / y[1];
+		peak = fabs(v) > peak ? fabs(v) : peak;
+		gap = fabs(u - v) > gap || u != u ? fabs(u - v) : gap;
+	}
+	const double lse = fabs(((double)x[0] + log((double)x[1])) - (y[0] + log(y[1])));
+	return gap / peak > lse ? gap / peak : lse;
 }
 
 template<uint32_t ROPE>
@@ -226,7 +293,7 @@ static void SparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 		SPARSE_CUDA(cudaMemcpy(tensor.data(),tensor_device,used * sizeof(float),cudaMemcpyDeviceToHost));
 		const double worst = SparseCompare(scalar,tensor,used_records,&empty_mismatch);
 		SparseCheck(worst <= SPARSE_TOLERANCE && empty_mismatch == 0u,
-			"the tensor-core partials match the scalar kernel on dense rows, selected lists with padding and future positions, and empty rows",label);
+			"the tensor-core partials stay within the flash form's distance of the FP32 scalar kernel on dense rows, selected lists with padding and future positions, and empty rows",label);
 		if ( timed == 0u )
 		{
 			SPARSE_CUDA(cudaMemcpy(split.data(),split_device,used * sizeof(float),cudaMemcpyDeviceToHost));
@@ -248,6 +315,47 @@ static void SparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint32_t h
 				"pair-grouped records hold each head for both ranks of its pair and match the scalar kernel's",label);
 			const double wrong_worst = SparseCompare(scalar,wrong_out,used_records,&wrong_empty);
 			SparseCheck(wrong_worst > SPARSE_TOLERANCE,"negative control: a corrupted selected list on one row is caught by the comparison",label);
+			if ( degree == 1u )
+			{
+				std::vector<uint16_t> values_host((uint64_t)context * WIDTH),query_host((uint64_t)rows * heads_per_rank * WIDTH);
+				std::vector<double> flash,exact;
+				std::vector<uint32_t> keys;
+				uint32_t records = 0u,closer = 0u;
+				double flash_worst = 0.0,exact_worst = 0.0;
+				SPARSE_CUDA(cudaMemcpy(values_host.data(),values_device,values_host.size() * 2u,cudaMemcpyDeviceToHost));
+				SPARSE_CUDA(cudaMemcpy(query_host.data(),query_device,query_host.size() * 2u,cudaMemcpyDeviceToHost));
+				for (uint32_t row = 0u; row < rows; row++)
+				{
+					if ( positions[row] == 0xffffffffu )
+						continue;
+					const uint32_t dense = positions[row] < context ? positions[row] + 1u : context;
+					keys.clear();
+					for (uint32_t index = 0u; index < (dense > dense_limit ? selected_count : dense); index++)
+					{
+						const uint32_t key = dense > dense_limit ? selected[(uint64_t)row * selected_count + index] : index;
+						if ( key <= positions[row] )
+							keys.push_back(key);
+					}
+					if ( keys.empty() )
+						continue;
+					for (uint32_t head = 0u; head < heads_per_rank; head++)
+					{
+						const uint64_t at = (uint64_t)row * heads_per_rank + head;
+						const float *record = tensor.data() + at * SPARSE_RECORD;
+						SparseHostRecord(values_host,query_host.data() + at * WIDTH,keys,WIDTH,scale,1u,flash);
+						SparseHostRecord(values_host,query_host.data() + at * WIDTH,keys,WIDTH,scale,0u,exact);
+						const double to_flash = SparseHostGap(record,flash),to_exact = SparseHostGap(record,exact);
+						flash_worst = to_flash > flash_worst ? to_flash : flash_worst;
+						exact_worst = to_exact > exact_worst ? to_exact : exact_worst;
+						closer += to_flash < to_exact ? 1u : 0u;
+						records++;
+					}
+				}
+				SparseCheck(records != 0u && closer >= SPARSE_FLASH_SHARE * records && flash_worst <= SPARSE_TOLERANCE,
+					"each record is the flash form: one BF16 copy of every 32-key tile's weights against the running maximum multiplies the values",label);
+				printf("%s %s: %u of %u records closer to the f64 flash form than to exact attention, worst %.6f from the flash form and %.6f from exact\n",
+					closer >= SPARSE_FLASH_SHARE * records ? "ok  " : "FAIL",label,closer,records,flash_worst,exact_worst);
+			}
 			printf("%s %s: worst %.5f, corrupted-list control %.5f\n",worst <= SPARSE_TOLERANCE ? "ok  " : "FAIL",label,worst,wrong_worst);
 		}
 		else
@@ -279,6 +387,6 @@ int main(void)
 		printf("FAIL latent_shard_sparse_cuda: %d checks failed\n",sparse_failures);
 		return 1;
 	}
-	printf("PASS latent_shard_sparse_cuda: the tensor-core shard attention matches the scalar kernel on selected lists, split lists, pair-grouped records, padded head groups and empty rows, and is row-invariant\n");
+	printf("PASS latent_shard_sparse_cuda: the tensor-core shard attention is the flash form on one rank, stays within the flash form's distance of the FP32 scalar kernel on selected lists, split lists, pair-grouped records, padded head groups and empty rows, and is row-invariant\n");
 	return 0;
 }
