@@ -714,6 +714,8 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
 	tests/test_chat_frontend_warm_queue.py \
+	tests/test_chat_frontend_cache_controls.py \
+	tests/test_warm_gate_check.py \
 	tests/test_chat_frontend_tool_call_recovery.py \
 	tests/test_chat_frontend_tagged_calls.py \
 	tests/test_chat_frontend_function_xml_calls.py \
@@ -770,6 +772,7 @@ PYTHON_TESTS := \
 	tests/test_model_api_accept.py \
 	tests/test_model_api_cancel.py \
 	tests/test_model_api_utf8.py \
+	tests/test_model_api_cache_controls.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \
 	tests/test_safetensors_subset.py \

@@ -65,6 +65,7 @@ def load_sibling(name):
 chat_replay = load_sibling("chat_replay")
 chat_shapes = load_sibling("chat_shapes")
 working_state = load_sibling("working_state")
+chat_cache = load_sibling("chat_cache")
 chat_shapes.RequestError = RequestError
 chat_shapes.chat_replay = chat_replay
 KEEPALIVE_SECONDS = 10.0
@@ -78,6 +79,7 @@ PRIORITY_METADATA = "x-sparkpipe-priority"
 PRIORITY_CLASSES = ("interactive", "background")
 CANCEL_WAIT_SECONDS = 5.0
 REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
+PIN_PATH = re.compile(r"/v1/cache/pins/p_[0-9a-f]{24}")
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
 MEMBER_HEADER = "X-SparkPipe-Key"
@@ -101,6 +103,9 @@ GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
 EXPIRY_SWEEP_SECONDS = 60.0
 OWN_SCOPE = "own"
+WARM_FORMATS = {"anthropic": "messages", "openai_responses": "responses", "openai_chat": "chat"}
+PIN_SOURCES = ("request", "prefix", "pack")
+ENGINE_PIN_REFUSALS = frozenset({404, 409, 501, 503})
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -204,6 +209,13 @@ def compact_limit(context, output):
 
 def replayed_tokens(plan):
     return (plan.get("replay") or {}).get("replayed", 0)
+
+
+def commit_flag(body):
+    value = body.get("commit_only")
+    if value is not None and not isinstance(value, bool):
+        raise RequestError(400, "invalid_request", "commit_only must be a boolean")
+    return value is True
 
 
 def raise_exception(message):
@@ -918,6 +930,8 @@ class WarmGate:
 
 
 class Model:
+    cold_prefill = None
+
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
@@ -960,6 +974,10 @@ class Model:
         self.stop_strings = list(spec["stop_tokens"])
         self.openings = OrderedDict()
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
+        try:
+            self.cold_prefill = chat_cache.PrefillSeed(self.id, spec["cold_prefill"]) if spec.get("cold_prefill") is not None else None
+        except ValueError as error:
+            raise SystemExit(f"chat_frontend: {error}")
         sequences = spec.get("sequences")
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
             raise SystemExit(f"chat_frontend: {self.id} needs sequences, the engine's sequences at once (deployment/lanes.json)")
@@ -1116,8 +1134,9 @@ class PathTable(frozenset):
 
 
 PUBLIC_PATHS = PathTable({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
-                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"},
-                         (REQUEST_PATH,))
+                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello",
+                          "/v1/cache/warm", "/v1/cache/pins", "/v1/state"},
+                         (REQUEST_PATH, PIN_PATH))
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
@@ -1757,6 +1776,9 @@ class Frontend:
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
+        self.cache_state = chat_cache.CacheState()
+        self.pins_dirty = set()
+        self.pin_locks = {}
         self.live = {}
         if config.get("chat_memory") is not None:
             loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
@@ -1790,6 +1812,7 @@ class Frontend:
         self.directive_state = (wiped, held_until)
         if not (changed or sweep):
             return 0
+        self.expire_cache_state(wiped, held_until, now)
         try:
             dropped = self.replay.expire(lambda used: working_state.expired(used, wiped, held_until, now))
         except chat_replay.STORE_ERRORS as error:
@@ -1799,6 +1822,13 @@ class Frontend:
             print(json.dumps({"event": "replay_expired", "dropped": dropped, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
         return dropped
 
+    def expire_cache_state(self, wiped, held_until, now):
+        chains, models = self.cache_state.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+        self.pins_dirty.update(models)
+        if chains or models:
+            print(json.dumps({"event": "cache_state_expired", "chains": chains, "pin_models": sorted(models), "wiped": wiped, "held_until": held_until}),
+                  file=sys.stderr, flush=True)
+
     async def expiry_loop(self):
         swept = time.monotonic()
         while True:
@@ -1807,6 +1837,7 @@ class Frontend:
             if sweep:
                 swept = time.monotonic()
             self.expire_working_state(time.time(), sweep)
+            await self.sync_dirty_pins()
 
     def model_for(self, body):
         name = body.get("model")
@@ -2050,13 +2081,16 @@ class Frontend:
         timing = plan["timing"]
         first, last, admitted = timing.get("first"), timing.get("last"), timing.get("admitted", started)
         completion = usage["completion"]
-        prefill_ms = round((first - admitted) * 1000) if first else None
+        prefill_ms = round((first - admitted) * 1000) if first else plan.get("prefill_ms")
+        self.cache_state.record(plan.get("gate", (OWN_SCOPE, None))[0], model.id, plan.get("request_id"), list(plan["engine_body"]["prompt_token_ids"]), time.time())
         if prefill_ms is not None and self.replay is not None:
             self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
         try:
             rate = self.replay.prefill_rate(model.id, usage["prompt"]) if self.replay is not None else None
         except chat_replay.STORE_ERRORS:
             rate = None
+        if rate is None and model.cold_prefill is not None:
+            rate = model.cold_prefill.rate(usage["prompt"])
         engine = result.get("usage") or {}
         drafted = engine.get("draft_tokens")
         session, agent = plan.get("affinity") or (None, None)
@@ -2066,6 +2100,8 @@ class Frontend:
                 "queue_ms": round((admitted - started) * 1000), "prefill_ms": prefill_ms, "ttft_ms": round((first - started) * 1000) if first else None,
                 "output_tokens": completion, "decode_tps": round((completion - 1) / (last - first), 2) if first and last and last > first and completion > 1 else None,
                 "draft_accept": round(engine.get("accepted_draft_tokens", 0) / drafted, 3) if isinstance(drafted, int) and drafted > 0 else None,
+                "draft_tokens": drafted if isinstance(drafted, int) else None, "accepted_draft_tokens": engine.get("accepted_draft_tokens"),
+                "commit_only": bool(plan.get("commit_only")),
                 "cold_prefill_ms_estimate": round(usage["cached"] * rate) if rate is not None else None,
                 "priority": "interactive" if plan["engine_body"].get("priority", INTERACTIVE_PRIORITY) >= INTERACTIVE_PRIORITY else "background",
                 "session": session, "agent": agent, "transport": plan.get("transport", "http"), "turn_ms": round((time.monotonic() - started) * 1000)}
@@ -2321,8 +2357,11 @@ class Frontend:
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
         engine_body["priority"] = request_priority(model, body)
+        commit = commit_flag(body)
+        if commit:
+            engine_body = {"prompt_token_ids": prompt_ids, "stream": True, "commit_only": True, "priority": BULK_PRIORITY}
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
-                "tools": tools, "kwargs": kwargs, "session": session}
+                "tools": tools, "kwargs": kwargs, "session": session, "commit_only": commit}
 
     async def engine_events(self, model, engine_body):
         try:
@@ -2689,7 +2728,7 @@ class Frontend:
     async def chat(self, request):
         started = time.monotonic()
         try:
-            body = await request.json()
+            body = request["warm_body"] if "warm_body" in request else await request.json()
         except json.JSONDecodeError:
             return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         public = request.get("public_key")
@@ -2734,6 +2773,9 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
+        if plan.get("commit_only"):
+            plan["engine_body"]["priority"] = min(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BULK_PRIORITY)
+            answer = self.commit_answer
         live = self.track(plan, scope)
         try:
             try:
@@ -2788,6 +2830,8 @@ class Frontend:
         return usage, record
 
     async def read_body(self, request):
+        if "warm_body" in request:
+            return request["warm_body"]
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -2825,6 +2869,7 @@ class Frontend:
             translated = chat_shapes.messages_request(body)
         else:
             translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers), local)
+        translated["commit_only"] = commit_flag(body)
         model, bulk = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
@@ -2865,7 +2910,8 @@ class Frontend:
             forced_ids = model.vocabulary.encode(opening, True)
             text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
-        body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
+        body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"],
+                    commit_only=translated.get("commit_only", False))
         plan = self.finish_plan(model, body, messages, tools, kwargs, None, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
@@ -3013,6 +3059,8 @@ class Frontend:
             generate = body.pop("generate", True)
             body["stream"] = True
             body, translated, model, bulk, key, scope = await self.translate(request, "responses", body, local)
+            if translated["commit_only"]:
+                raise RequestError(400, "invalid_request", "commit_only is not taken on the WebSocket; send it to POST /v1/responses or POST /v1/cache/warm")
             await self.admit_model(model, key, request.headers)
             if generate is False:
                 await self.socket_warmup(sink, body, translated, local)
@@ -3143,13 +3191,205 @@ class Frontend:
         if request.query.get("storage") not in (None, "false", "true"):
             return error_response(RequestError(400, "invalid_request", "storage is true or false"))
         deleted = self.replay.forget(scope)
+        self.pins_dirty.update(self.cache_state.forget(scope))
+        await self.sync_dirty_pins()
         if key is not None:
             for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
                 del self.public_prefixes[name]
         print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted}), file=sys.stderr, flush=True)
-        return web.json_response({"deleted": ["replay_store", "aliases", "stored_responses"],
+        return web.json_response({"deleted": ["replay_store", "aliases", "stored_responses", "chain_ledger", "pins"],
                                   "not_deleted": ["engine_cache"] + (["storage"] if request.query.get("storage") == "true" else []),
                                   "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+
+    async def commit(self, model, plan):
+        usage, finish = None, None
+        live = self.live.get(plan.get("request_id"))
+        events = self.engine_stream(model, plan["engine_body"], "public_key" in plan)
+        async for chunk in (events if live is None else live.watch(plan["request_id"], events)):
+            if "error" in chunk:
+                raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+            if chunk.get("tokens"):
+                raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine generated tokens for a commit-only request; it needs an engine that takes commit_only")
+            finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+            usage = chunk.get("usage") or usage
+        if finish != "commit" or not isinstance(usage, dict):
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
+        published = usage.get("published_tokens")
+        if isinstance(published, bool) or not isinstance(published, int):
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not report the chain it committed (published_tokens)")
+        engine_ms = usage.get("prefill_ms")
+        measured = (time.monotonic() - plan["timing"].get("admitted", plan["timing"]["arrived"])) * 1000
+        plan["prefill_ms"] = round(engine_ms) if isinstance(engine_ms, (int, float)) and not isinstance(engine_ms, bool) and engine_ms > 0 else round(measured)
+        self.prefix_ledger(model).record(list(plan["engine_body"]["prompt_token_ids"]))
+        return {"usage": usage, "token_ids": [], "finish_reason": "commit", "engine_finish": "commit", "published": published}
+
+    async def commit_answer(self, request, model, body, plan, started):
+        shape = plan.get("shape", "chat")
+        failed = anthropic_error_response if shape == "messages" else responses_error_response if shape == "responses" else error_response
+        try:
+            result = await self.commit(model, plan)
+        except RequestError as error:
+            self.log(model, plan["prompt_tokens"], None, started, None, error.code, plan.get("trace"))
+            return failed(error)
+        usage, record = self.settle(model, plan, result, None, started, request.headers, shape)
+        self.record_public_prefix(model, plan, result)
+        self.log(model, plan["prompt_tokens"], result["usage"], started, None, "commit", plan.get("trace"))
+        return web.json_response({"object": "cache.commit", "model": model.id, "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"],
+                                  "committed_tokens": max(0, result["published"] - usage["cached"]), "prefill_ms": record["prefill_ms"], "sparkpipe": record},
+                                 headers=self.early_headers(model, plan, request.headers))
+
+    async def cache_warm(self, request):
+        try:
+            body = await self.read_body(request)
+            shape = WARM_FORMATS.get(body.pop("format", None))
+            if shape is None:
+                raise RequestError(400, "invalid_request", f"format must be one of {', '.join(sorted(WARM_FORMATS))}")
+            if body.get("commit_only") not in (None, True):
+                raise RequestError(400, "invalid_request", "a warm-up only commits; leave commit_only out or send true")
+        except RequestError as error:
+            return error_response(error)
+        body["commit_only"] = True
+        request["warm_body"] = body
+        if shape == "chat":
+            return await self.chat(request)
+        return await self.harness(request, shape, anthropic_error_response if shape == "messages" else responses_error_response)
+
+    async def engine_capacity(self, model):
+        try:
+            async with self.session.get(model.engine + "/health", timeout=aiohttp.ClientTimeout(total=5)) as response:
+                payload = await response.json(content_type=None)
+                status = response.status
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+            return None
+        capacity = payload.get("kv_capacity_tokens") if status == 200 and isinstance(payload, dict) else None
+        return capacity if isinstance(capacity, int) and not isinstance(capacity, bool) and capacity > 0 else None
+
+    async def sync_pins(self, model):
+        body = {"pins": [{"prompt_token_ids": list(pin.tokens)} for pin in self.cache_state.engine_set(model.id)]}
+        try:
+            async with self.session.put(model.engine + "/v1/cache/pins", json=body, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                status, text = response.status, await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
+        if status == 200:
+            self.pins_dirty.discard(model.id)
+            return
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = {}
+        error = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else {}
+        code, message = error.get("code"), error.get("message")
+        if not isinstance(code, str):
+            status, code, message = (501, "pins_unsupported", f"the {model.id} engine has no pin endpoint") if status == 404 else (status, "engine_error", text.strip())
+        raise RequestError(status if status in ENGINE_PIN_REFUSALS else 502, code, message if isinstance(message, str) else text.strip())
+
+    async def sync_dirty_pins(self):
+        for model_id in sorted(self.pins_dirty):
+            model = self.models.get(model_id)
+            if model is None:
+                self.pins_dirty.discard(model_id)
+                continue
+            try:
+                async with self.pin_locks.setdefault(model_id, asyncio.Lock()):
+                    await self.sync_pins(model)
+            except RequestError as error:
+                if error.code != "engine_unavailable":
+                    self.pins_dirty.discard(model_id)
+                print(json.dumps({"event": "pin_sync_failed", "model": model_id, "code": error.code, "error": error.message}), file=sys.stderr, flush=True)
+
+    async def post_pin(self, request):
+        key = request.get("public_key")
+        try:
+            scope = self.scope_of(key, request.headers)
+            body = await self.read_body(request)
+            named = [name for name in PIN_SOURCES if name in body]
+            if len(named) != 1 or set(body) - set(PIN_SOURCES):
+                raise RequestError(400, "invalid_request", "send exactly one of request (a request id), prefix (a chain id from GET /v1/state) or pack")
+            source = named[0]
+            if not chat_cache.valid_identifier(body[source]):
+                raise RequestError(400, "invalid_request", f"{source} must be an id of 1 to 128 letters, digits and ._:-")
+            if source == "pack":
+                raise RequestError(404, "pack_not_found", f"this fleet has no pack {body['pack']!r}; packs arrive with POST /v1/packs")
+            found = self.cache_state.resolve(scope, **{source: body[source]})
+            if found is None:
+                raise RequestError(404, "chain_not_found", f"this account has no cached chain for {source} {body[source]!r}; see GET /v1/state")
+            model = self.models[found[0]]
+            pin = self.cache_state.make_pin(scope, model.id, found[1], {source: body[source]}, time.time())
+            async with self.pin_locks.setdefault(model.id, asyncio.Lock()):
+                existing = self.cache_state.pin_of(scope, pin.id)
+                if existing is not None:
+                    return web.json_response({"pin": self.cache_state.pin_view(existing), "created": False})
+                capacity = await self.engine_capacity(model)
+                if capacity is None:
+                    raise RequestError(503, "cache_capacity_unknown", f"the {model.id} engine does not report its cache capacity, so no pin can be checked against half of it")
+                total, limit = self.cache_state.pinned_tokens(model.id, pin), capacity // 2
+                if total > limit:
+                    raise RequestError(409, "pin_limit_exceeded", f"pins on {model.id} would hold {total} tokens; pins are limited to half the cache, {limit} of its "
+                                       f"{capacity} device-page tokens", details={"pinned_tokens": total, "limit_tokens": limit, "capacity_tokens": capacity})
+                self.cache_state.add_pin(pin)
+                try:
+                    await self.sync_pins(model)
+                except RequestError:
+                    self.cache_state.remove_pin(scope, pin.id)
+                    raise
+        except RequestError as error:
+            return error_response(error)
+        print(json.dumps({"event": "cache_pinned", "scope": scope, "model": model.id, "pin": pin.id, "tokens": len(pin.tokens), "pinned_tokens": total}),
+              file=sys.stderr, flush=True)
+        return web.json_response({"pin": self.cache_state.pin_view(pin), "created": True, "pinned_tokens": total, "limit_tokens": limit}, status=201)
+
+    async def get_pins(self, request):
+        try:
+            scope = self.scope_of(request.get("public_key"), request.headers)
+        except RequestError as error:
+            return error_response(error)
+        return web.json_response({"object": "list", "data": self.cache_state.view(scope)[1]})
+
+    async def delete_pin(self, request):
+        try:
+            scope = self.scope_of(request.get("public_key"), request.headers)
+        except RequestError as error:
+            return error_response(error)
+        pin = self.cache_state.pin_of(scope, request.match_info["pin_id"])
+        if pin is None:
+            return error_response(RequestError(404, "pin_not_found", f"this account has no pin {request.match_info['pin_id']!r}"))
+        synced = True
+        async with self.pin_locks.setdefault(pin.model, asyncio.Lock()):
+            self.cache_state.remove_pin(scope, pin.id)
+            try:
+                await self.sync_pins(self.models[pin.model])
+            except RequestError as error:
+                synced = False
+                self.pins_dirty.add(pin.model)
+                print(json.dumps({"event": "pin_sync_failed", "model": pin.model, "code": error.code, "error": error.message}), file=sys.stderr, flush=True)
+        return web.json_response({"deleted": pin.id, "engine_synced": synced})
+
+    async def get_state(self, request):
+        key = request.get("public_key")
+        try:
+            scope = self.scope_of(key, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        chains, pins = self.cache_state.view(scope)
+        shown = sorted(self.public_models if key is not None else self.models)
+        capacities = await asyncio.gather(*(self.engine_capacity(self.models[model_id]) for model_id in shown))
+        cache = {model_id: {"capacity_tokens": capacity, "pin_limit_tokens": capacity // 2 if capacity else None,
+                            "pinned_tokens": self.cache_state.scope_pinned_tokens(scope, model_id), "used_tokens": self.cache_state.scope_tokens(scope, model_id)}
+                 for model_id, capacity in zip(shown, capacities)}
+        try:
+            stored = self.replay.held(scope) if self.replay is not None else None
+        except chat_replay.STORE_ERRORS as error:
+            stored = {"error": f"{type(error).__name__}: {error}"}
+        try:
+            resident = await self.resident_ids()
+        except RequestError:
+            resident = None
+        wiped, held_until = self.directive_state or (0, 0)
+        used = [entry["last_used"] for entry in chains + pins] + ([stored["newest_used"]] if isinstance(stored, dict) and stored.get("newest_used") else [])
+        deleted_after = max(max(used), held_until) + working_state.RETENTION_SECONDS if used else None
+        return web.json_response({"object": "state", "resident": resident, "chains": chains, "pins": pins, "cache": cache, "stored": stored,
+                                  "working_state": {"wiped": wiped, "held_until": held_until, "deleted_after": round(deleted_after) if deleted_after else None}})
 
     async def reply_text(self, request, model, body, text):
         identifier = "chatcmpl-" + uuid.uuid4().hex
@@ -3353,6 +3593,11 @@ def build(frontend):
     app.router.add_put("/v1/models/aliases", frontend.put_aliases)
     app.router.add_get("/v1/codex/models", frontend.codex_models)
     app.router.add_delete("/v1/cache", frontend.delete_cache)
+    app.router.add_post("/v1/cache/warm", frontend.cache_warm)
+    app.router.add_get("/v1/cache/pins", frontend.get_pins)
+    app.router.add_post("/v1/cache/pins", frontend.post_pin)
+    app.router.add_delete("/v1/cache/pins/{pin_id}", frontend.delete_pin)
+    app.router.add_get("/v1/state", frontend.get_state)
     app.router.add_delete("/v1/requests/{request_id}", frontend.cancel_request)
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)

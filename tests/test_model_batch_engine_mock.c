@@ -59,6 +59,9 @@ typedef struct TestBatchState
 {
 	uint32_t token_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t completed_events[TEST_MAX_REQUESTS + 1u];
+	uint32_t terminal_draft_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t terminal_accepted_draft_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t terminal_published_tokens[TEST_MAX_REQUESTS + 1u];
 	uint32_t error_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t cancelled_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
@@ -107,6 +110,9 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 	{
 		s->completed_events[id]++;
 		s->total_terminals++;
+		s->terminal_draft_tokens[id] = event->draft_token_count;
+		s->terminal_accepted_draft_tokens[id] = event->accepted_draft_token_count;
+		s->terminal_published_tokens[id] = event->published_token_count;
 	}
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED )
 		s->cancelled_events[id]++;
@@ -662,6 +668,7 @@ static void TestScenarioPartialPrefixAppend(const SparkModelResidentDeployment *
 	TestDriveUntilTerminal(engine,&state,1u,400u);
 	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 1u,
 		"partial: canonical prefix completes exactly once");
+	CHECK(state.terminal_published_tokens[1] == 63u,"partial: a one-token request's completion reports the 63 prompt tokens its chain now holds");
 	TestSubmitPrompt(engine,2u,501u,2u,tokens,64u);
 	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u &&
 		lane.sequence_position == 63u && lane.context_token_count == 64u &&
@@ -690,6 +697,7 @@ static void TestScenarioPartialPrefixAppend(const SparkModelResidentDeployment *
 	TestDriveUntilTerminal(engine,&state,4u,400u);
 	CHECK(state.completed_events[4] == 1u && state.cached_tokens[4] == 64u,
 		"partial: full-page baseline completes without replay");
+	CHECK(state.terminal_published_tokens[4] == 65u,"partial: a request that matched 64 tokens reports the 65-token chain it published");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -2940,12 +2948,15 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"lookup: an edit-style request emits exactly the model's greedy stream");
 	CHECK(submissions != 0u && rows > submissions && view.speculative_verify_lane_count != 0u,"lookup: a repeated passage is verified in multi-row waves");
 	CHECK(view.speculative_accepted_token_count * 2u > view.speculative_draft_token_count && view.speculative_accepted_token_count >= 30u,"lookup: drafts from the repeated passage are accepted");
+	CHECK(state.terminal_draft_tokens[1] == view.speculative_draft_token_count && state.terminal_accepted_draft_tokens[1] == view.speculative_accepted_token_count,
+		"lookup: the request's completion event carries its own draft and accepted counts");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"lookup: every decode lane's input token is a committed model token");
 	TestDraftsDisabled = 1u;
 	TestRunScript(deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
 	TestDraftsDisabled = 0u;
 	CHECK(plain_state.completed_events[1] == 1u && TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u &&
 		plain_view.speculative_draft_token_count == 0u && plain_view.speculative_verify_lane_count == 0u,"lookup: a request that turns speculation off decodes the same greedy stream with no drafts and no verify waves on a verifying adapter");
+	CHECK(plain_state.terminal_draft_tokens[1] == 0u && plain_state.terminal_accepted_draft_tokens[1] == 0u,"lookup: a request with no drafts completes with zero draft counts");
 	TestRunScript(plain_deployment,runtime_root,script,256u,44u,80u,&plain_state,&plain_view,&plain_submissions,&plain_rows);
 	CHECK(TestScriptedOutputMatches(&plain_state,1u,script,44u,80u) != 0u && plain_submissions == 0u && plain_view.speculative_draft_token_count == 0u,"lookup: an adapter without verify decodes the same stream with no verify waves");
 	for (index=0u; index<256u; index++)
@@ -2963,6 +2974,8 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 	TestRunScript(deployment,runtime_root,script,256u,44u,90u,&state,&view,&submissions,&rows);
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,90u) != 0u,"lookup: an edit that diverges from its source still emits exactly the greedy stream");
 	CHECK(view.speculative_accepted_token_count < view.speculative_draft_token_count && view.speculative_accepted_token_count != 0u,"lookup: drafts past a divergence are rejected and earlier ones accepted");
+	CHECK(state.terminal_draft_tokens[1] == view.speculative_draft_token_count && state.terminal_accepted_draft_tokens[1] == view.speculative_accepted_token_count &&
+		state.terminal_accepted_draft_tokens[1] < state.terminal_draft_tokens[1],"lookup: a diverging request's completion counts its rejected drafts");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"lookup: a rejected draft never becomes a lane's input");
 	for (index=44u; index<256u; index++)
 		script[index] = script[(index - 44u) % 40u];

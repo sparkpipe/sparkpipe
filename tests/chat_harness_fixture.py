@@ -82,6 +82,15 @@ class Engine:
         self.committed = []
         self.delay = 0.0
         self.hold = None
+        self.capacity = None
+        self.drafts = None
+        self.commits = True
+        self.pin_sets = []
+        self.pin_reply = (200, {"pinned_pages": 0})
+        self.pace = 0.0
+        self.commit_delay = 0.0
+        self.contend = 0.0
+        self.committing = 0
         self.early_usage = True
         self.cache_all = False
         self.usage = []
@@ -109,8 +118,10 @@ class Engine:
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
+        if body.get("commit_only") and self.commits:
+            return await self.commit(request, prompt, cached)
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
-        ids = ids[:body["max_tokens"]]
+        ids = ids[:body.get("max_tokens", 32)]
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         if self.hold is not None:
@@ -118,20 +129,48 @@ class Engine:
         if self.delay:
             await asyncio.sleep(self.delay)
         for index, token in enumerate(ids):
+            if self.pace:
+                await asyncio.sleep(self.pace + (self.contend if self.committing else 0.0))
             last = index + 1 == len(ids)
             event = {"tokens": [token], "choices": [{"finish_reason": finish if last else None}]}
             if last or (index == 0 and self.early_usage):
                 sent = len(ids) if last else 1
                 event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": sent, "total_tokens": len(prompt) + sent,
                                   "prompt_tokens_details": {"cached_tokens": cached}}
+                if self.drafts is not None:
+                    event["usage"].update(draft_tokens=self.drafts[0], accepted_draft_tokens=self.drafts[1])
             await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt) + list(ids[:-1]))
         await response.write(b"data: [DONE]\n\n")
         await response.write_eof()
         return response
 
+    async def commit(self, request, prompt, cached):
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        if self.hold is not None:
+            await self.hold.wait()
+        self.committing += 1
+        try:
+            await asyncio.sleep(self.commit_delay)
+        finally:
+            self.committing -= 1
+        event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
+                 "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
+                           "draft_tokens": 0, "accepted_draft_tokens": 0, "published_tokens": len(prompt), "prefill_ms": 12.5}}
+        await response.write(("data: " + json.dumps(event) + "\n\n").encode())
+        self.committed.append(list(prompt))
+        await response.write(b"data: [DONE]\n\n")
+        await response.write_eof()
+        return response
+
+    async def pins(self, request):
+        body = await request.json()
+        self.pin_sets.append([list(pin["prompt_token_ids"]) for pin in body["pins"]])
+        return web.json_response(self.pin_reply[1], status=self.pin_reply[0])
+
     async def health(self, request):
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok"} if self.capacity is None else {"status": "ok", "kv_capacity_tokens": self.capacity})
 
 
 class Controller:
@@ -172,6 +211,7 @@ class Harness:
         engine_app = web.Application()
         engine_app.router.add_post("/v1/completions", self.engine.completions)
         engine_app.router.add_get("/health", self.engine.health)
+        engine_app.router.add_put("/v1/cache/pins", self.engine.pins)
         self.engine_runner, engine_base = await serve(engine_app)
         self.controller = Controller(self.active, self.model_ids)
         control_app = web.Application()
@@ -227,6 +267,11 @@ class Harness:
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:
             text = await response.text()
             return response.status, dict(response.headers), text
+
+    async def call(self, method, path, body=None, **headers):
+        async with self.session.request(method, self.base + path, json=body, headers=self.headers(**headers)) as response:
+            text = await response.text()
+            return response.status, json.loads(text) if text else None
 
     def socket(self, path="/v1/responses", **headers):
         return self.session.ws_connect(self.base + path, headers=self.headers(**headers), max_msg_size=0)

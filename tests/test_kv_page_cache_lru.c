@@ -258,6 +258,123 @@ static void LruReleaseAll(LruHarness *h)
 	lru_release_all++;
 }
 
+static SparkKvPageCachePin LruPublishChain(LruHarness *h, uint32_t slot, const SparkKvPageCachePin *prefix, uint32_t pages, uint32_t tag)
+{
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity parent;
+	SparkKvPageCachePin terminal;
+	uint64_t sequence_id;
+	uint32_t index,page,start;
+	sequence_id = h->next_sequence_id++;
+	memset(&parent,0,sizeof(parent));
+	start = prefix != 0 ? prefix->token_count : 0u;
+	if ( prefix != 0 )
+		parent = prefix->identity;
+	for (index=0u; index<pages; index++)
+	{
+		memset(&lane,0,sizeof(lane));
+		lane.request_generation = lane.step_generation = 1u;
+		lane.resident_sequence_slot = slot;
+		lane.sequence_id = sequence_id;
+		lane.sequence_position = start + index * LRU_BLOCK_TOKENS;
+		lane.context_token_count = lane.publish_token_count = start + (index + 1u) * LRU_BLOCK_TOKENS;
+		lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH;
+		if ( index == 0u && prefix != 0 )
+		{
+			lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+			lane.prefix_token_count = prefix->token_count;
+			lane.prefix_identity = prefix->identity;
+		}
+		LruIdentity(&lane.publish_identity,&parent,tag,lane.context_token_count);
+		CHECK(SparkKvPageCacheBeginLane(&h->cache,&lane,&page) == SPARK_STATUS_OK);
+		CHECK(SparkKvPageCacheCompleteLane(&h->cache,&lane) == SPARK_STATUS_OK);
+		parent = lane.publish_identity;
+	}
+	CHECK(SparkKvPageCacheReleaseLane(&h->cache,slot,sequence_id) == SPARK_STATUS_OK);
+	memset(&terminal,0,sizeof(terminal));
+	terminal.token_count = start + pages * LRU_BLOCK_TOKENS;
+	terminal.identity = parent;
+	return(terminal);
+}
+
+static uint32_t LruFlagCount(const LruHarness *h, uint32_t flag, uint32_t value)
+{
+	uint32_t index,count;
+	count = 0u;
+	for (index=0u; index<LRU_BLOCKS; index++)
+		count += (h->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (h->entries[index].flags & flag) == value ? 1u : 0u;
+	return(count);
+}
+
+static uint32_t LruChainPinned(const LruHarness *h, const SparkKvPageCachePin *pin, uint32_t pages)
+{
+	uint32_t index,entry,found;
+	found = SPARK_KV_PAGE_CACHE_NO_INDEX;
+	for (index=0u; index<LRU_BLOCKS; index++)
+		if ( (h->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && h->entries[index].token_count == pin->token_count &&
+			memcmp(&h->entries[index].identity,&pin->identity,sizeof(pin->identity)) == 0 )
+			found = index;
+	for (entry=found, index=0u; entry < LRU_BLOCKS; entry=h->entries[entry].parent_entry_index, index++)
+		if ( (h->entries[entry].flags & (SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID | SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED)) != (SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID | SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED) )
+			return(0u);
+	return(found != SPARK_KV_PAGE_CACHE_NO_INDEX && index == pages ? 1u : 0u);
+}
+
+static void LruPins(void)
+{
+	LruHarness h;
+	SparkKvPageCachePin pins[5],stem,missing;
+	uint32_t pages,chain,swept,index,expired;
+	lru_seed = 0u;
+	lru_step = 0u;
+	LruInit(&h);
+	pins[0] = LruPublishChain(&h,0u,0,3u,1u);
+	stem = pins[0];
+	stem.token_count = 2u * LRU_BLOCK_TOKENS;
+	for (index=0u; index<LRU_BLOCKS && !(h.entries[index].token_count == stem.token_count && (h.entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && h.entries[index].page_count == 2u); index++)
+		;
+	CHECK(index < LRU_BLOCKS);
+	stem.identity = h.entries[index].identity;
+	pins[1] = LruPublishChain(&h,1u,&stem,1u,2u);
+	for (chain=0u; chain<4u; chain++)
+		(void)LruPublishChain(&h,2u + chain % 4u,0,3u,10u + chain);
+	CHECK(LruValidCount(&h) == 16u);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,2u,&pages) == SPARK_STATUS_OK && pages == 4u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED) == 4u);
+	for (swept=0u; LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED,0u) != 0u; swept++)
+	{
+		CHECK(SparkKvPageCacheEvictUnused(&h.cache) == SPARK_STATUS_OK);
+		CHECK(LruChainPinned(&h,&pins[0],3u) != 0u && LruChainPinned(&h,&pins[1],3u) != 0u);
+		LruCheckList(&h);
+	}
+	CHECK(swept == 12u && LruValidCount(&h) == 4u);
+	CHECK(SparkKvPageCacheEvictUnused(&h.cache) == SPARK_STATUS_OK && LruValidCount(&h) == 3u);
+	CHECK(LruChainPinned(&h,&pins[0],3u) + LruChainPinned(&h,&pins[1],3u) == 1u);
+	LruInit(&h);
+	for (chain=0u; chain<4u; chain++)
+		pins[chain] = LruPublishChain(&h,chain,0,3u,20u + chain);
+	pins[4] = LruPublishChain(&h,4u,0,1u,30u);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,4u,&pages) == SPARK_STATUS_OK && pages == LRU_BLOCKS / 2u);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,5u,&pages) == SPARK_STATUS_CAPACITY_EXCEEDED && pages == 0u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED) == LRU_BLOCKS / 2u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PIN_MARK,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PIN_MARK) == 0u);
+	missing = pins[4];
+	missing.token_count += LRU_BLOCK_TOKENS;
+	pins[3] = missing;
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,4u,&pages) == SPARK_STATUS_NOT_FOUND && pages == 0u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED) == LRU_BLOCKS / 2u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PIN_MARK,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PIN_MARK) == 0u);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,1u,&pages) == SPARK_STATUS_OK && pages == 3u);
+	CHECK(LruFlagCount(&h,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED,SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED) == 3u && LruChainPinned(&h,&pins[0],3u) != 0u);
+	for (index=0u; index<LRU_BLOCKS; index++)
+		h.entries[index].used_seconds = 1000u;
+	CHECK(SparkKvPageCacheExpire(&h.cache,1000u + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK && expired == 13u && LruValidCount(&h) == 0u);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,pins,1u,&pages) == SPARK_STATUS_NOT_FOUND);
+	CHECK(SparkKvPageCacheSetPins(&h.cache,0,0u,&pages) == SPARK_STATUS_OK && pages == 0u);
+	CHECK(SparkKvPageCacheSetPins(0,0,0u,&pages) == SPARK_STATUS_INVALID_ARGUMENT);
+	printf("test_kv_page_cache_lru pins: a pinned chain and a branch sharing its stem (4 pages) outlive a sweep of all 12 unpinned pages, then go last; 12 of 24 pages pin, 13 are refused (CAPACITY_EXCEEDED) and an unknown chain is refused (NOT_FOUND), each leaving the pins as they were; pinned pages still expire after 24 hours\n");
+}
+
 static void LruRound(void)
 {
 	LruHarness h;
@@ -304,6 +421,7 @@ int main(void)
 	}
 	CHECK(lru_evictions > 1000u && lru_refusals > 0u && lru_prefix_binds > 1000u && lru_release_all == LRU_ROUNDS / 2u && lru_expired > 1000u && lru_expiry_kept > 1000u);
 	CHECK(SparkKvPageCacheExpire(0,0u,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	LruPins();
 	printf("test_kv_page_cache_lru PASS rounds=%u evictions=%u refusals=%u prefix_binds=%u release_all=%u expired=%u kept_fresh=%u; expiry drops every idle evictable entry unused for 24 hours, chain by chain, and never one used within them\n",LRU_ROUNDS,lru_evictions,lru_refusals,lru_prefix_binds,lru_release_all,lru_expired,lru_expiry_kept);
 	return(0);
 }

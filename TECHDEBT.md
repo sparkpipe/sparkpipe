@@ -1300,6 +1300,47 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `cache/kv_page_store.c`, `cache/kv_snapshot.c` and the lane records, proven
   by two lanes on one node whose combined KV stays under 500 GB while each
   evicts its oldest files.
+- Cache controls (#1792): pins do not reach the ranks yet. The chat layer
+  keeps the pin set and the rank page cache has the rule
+  (`SparkKvPageCacheSetPins`: pinned chains go after every unpinned one, a
+  set over half the device pages is refused), but nothing carries a pin set
+  from `sparkpipe_model_api` to the ranks. `PUT /v1/cache/pins` on the engine
+  answers 501 `pins_unsupported`, so `POST /v1/cache/pins` refuses with that
+  error on the fleet. Close it:
+  - the batch engine computes each pin's chain identity;
+  - a resident IPC message beside the cache hint, an adapter entry and a
+    driver admission flag carry the set to every rank, which applies it with
+    `SparkKvPageCacheSetPins` under the stage binding's lock;
+  - the coordinator's prefix cache marks the same entries so its LRU skips
+    them, and the snapshot store and purge keep them;
+  - proof: on the fleet, a pinned 150K-token chain survives a sweep that
+    clears every unpinned chain.
+- Pins and the chain ledger behind `GET /v1/state` live in the chat layer's
+  memory, so a hub restart loses them; persist them next to the replay
+  store. `used_tokens` in `GET /v1/state` is what the chat layer recorded for
+  the account, not what the engine still holds.
+- `commit_only` runs the request with a budget of one token: the last
+  prefill row still runs the head and samples a token, which
+  `sparkpipe_model_api` drops before it is streamed, counted or cached. A
+  head-free last row needs the serving work to know the request only
+  commits. On a recurrent model (K3) `committed_tokens` counts the published
+  chain, which a later request can resume only at a checkpoint. K3's
+  recurrent checkpoint at the end of a committed prompt and
+  the per-fleet warm budget (`docs/FLEET_API.md` §4.2) are not built. A
+  non-streamed commit sends nothing during a long prefill. Gate B is not
+  run on the fleet: `tools/warm_gate_check.py` warms a 150K-token prompt,
+  checks the next request caches every warmed block, and measures the worst
+  delay of an interactive stream decoding through the warm-up, in decode
+  steps. The engine's background yield is #1816.
+- `cold_prefill` seeds cover the 14 models with a release receipt
+  (`qualification/releases/91c0e6be3/`, 7.4K-token prompts, 2026-10-12) and,
+  for the four core models, the cold prefill of the 2026-10-24 full-window
+  sweep (`qualification/batch-sweep-20261024/`). mimo-v2.6-flash,
+  mimo-v2.6-pro, k-exaone-2.0, a.x-k2 and solar-open-2 have no receipt, so
+  their `cold_prefill_ms_estimate` is null until the hub observes a cold
+  prefill. The release points predate later prefill work, so they
+  overestimate until observations replace them. Fleet check (C4): within
+  10% of a measured cold prefill at 50K, 150K and 500K tokens.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
   fleet swapping and pushes the owner's model out after each reply. No key
@@ -1307,14 +1348,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   start a swap. Which public requests may swap the fleet is an owner
   decision (serve only the loaded model to keys, or a lower activation
   priority and a per-key swap rate).
-- `cache_creation_input_tokens` is 0 on Messages: `sparkpipe_model_api`
-  reports the prompt length and the matched prefix, not the prompt tokens
-  the engine commits (`cache_published_token_count` in
-  `runtime/model_batch_engine.c`, which on a recurrent model is reusable
-  only at its checkpoints). Close it by carrying the committed, reusable
-  count in the batch engine's event and the engine's usage, proven by a
-  turn whose next turn's cached count equals what the first reported as
-  created.
+- `cache_creation_input_tokens` is 0 on Messages. The engine's usage now
+  carries `published_tokens`, the request's chain length in the cache
+  (`cache_published_token_count` in `runtime/model_batch_engine.c`), and
+  warm-ups report `committed_tokens` from it. On a recurrent model that
+  chain is reusable only at its checkpoints, so it is not yet the count
+  Messages may report as created. Close it by reporting the reusable part,
+  proven by a turn whose next turn's cached count equals what the first
+  reported as created.
 - Claude Code 2.1.308's stream watchdog counts a `ping` for only 30
   heartbeats in a row, then aborts 300 s later, so a cold prefill longer
   than about 10 minutes fails unless `sparkpipe setup claude-code` sets
