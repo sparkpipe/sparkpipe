@@ -107,7 +107,7 @@ tensor sizes before each launch.
 | `spark_head_gate` | a per-head scalar gate on a head's values, `bf16(v g)`: `g = bf16(softplus(z))` (`SparkMathSoftplusGate`, Laguna's `GemmaHeadSoftplusGateKernel`) or `g = bf16(sigmoid(z))` (latent attention's head gate, Ling's `LingHeadGateKernel`); with `gate_head_stride` one gate per element read from a row at a head stride and offset (A.X K2's query gate, `LmHeadSigmoidGateKernel`), and `SPARK_HEAD_GATE_SIGMOID` keeps the sigmoid unrounded, `bf16(v sigmoid(z))` |
 | `spark_rmsnorm_bf16` | `bf16(bf16(rms(x)) w)` with a BF16 gain, the normed value rounded before the gain, as CUDA's `LmBf16RmsNormKernel` (MiMo V2.6) |
 | `spark_route_sigmoid_topk` | sigmoid routing with a selection bias (`noaux_tc`), as CUDA's `LmTopkGroupLimitedKernel`: `sigmoid(z)` per expert; with `groups` above one, each group scored by the sum of its two best `sigmoid(z) + bias` and the best `topk_groups` groups kept (first group on ties); the top k of `sigmoid(z) + bias` in the kept groups picked one at a time (lowest index on ties), weights `sigmoid / (sum + 1e-20)` summed in pick order, or with `tree_sum` in the warp tree of CUDA's `LmTopkWarpKernel` (top 8: `((v0+v4)+(v2+v6))+((v1+v5)+(v3+v7))`, GLM 5.3 Flash), times the routed scale |
-| `spark_silu_rounded_mul`, `spark_route_combine_weighted` | the gated SiLU with the activation rounded first, `bf16(bf16(silu(g)) u)`, as `MimoSwigluKernel`; and the routes' outputs times their weights, `fma(bf16(out), w, total)` in route order and rounded once, as `MimoMoeCombineKernel` |
+| `spark_silu_rounded_mul`, `spark_silu_rounded_clamp_mul`, `spark_route_combine_weighted` | the gated SiLU with the activation rounded first, `bf16(bf16(silu(g)) u)`, as `MimoSwigluKernel`, and with the serving limits, `bf16(min(bf16(silu(g)), L) clamp(u, -L, L))`, as CUDA's `LmSiluRoundedMulLimitKernel` (the Ling family); and the routes' outputs times their weights, `fma(bf16(out), w, total)` in route order and rounded once, as `MimoMoeCombineKernel` (`spark_route_combine_weighted_shared` adds the shared expert before the rounding, as `LmMoeLocalWeightedFinalizeKernel`) |
 | `spark_gemv_nvfp4_routed` | each route's NVFP4 expert on its row (`SparkOpsLinearRoutedNvfp4`): E2M1 weights two per byte, low nibble first, with a UE4M3 scale per 16 inputs times the expert's FP32 global scale, in CUDA's skinny arithmetic (`LmSkinnyFormat<LmNvfp4>`) and lane layout: 32 lanes per output row (16 when the input has fewer than 1,024 elements, 8 below 512), each lane taking 32-element chunks in ascending order, each chunk two 16-element FMA chains joined as `fma(s_hi, hi, fma(s_lo, lo, acc))`, the lanes summed by CUDA's xor butterfly; bit-for-bit CUDA's decode result |
 | `spark_hyper_expand`, `spark_group_rmsnorm`, `spark_hyper_gate`, `spark_hyper_mix`, `spark_hyper_inject_weights`, `spark_hyper_inject`, `spark_hyper_key_gate`, `spark_hyper_add` | hyper-connection streams (Qwen 3.8 Flash), each CUDA kernel of `hyper_mix.cuh` with its per-element formula from `kernel_math.cuh` (`SparkMathHyperGate`, `SparkMathHyperMixGate` / `SparkMathHyperMixTerm`, `SparkMathHyperInjectWeight`, `SparkMathHyperInjected`, `SparkMathHyperKeyGate`, `SparkMathHyperAddend`): the residual copied into every stream, a per-stream RMS norm with an FP32 gain, the low-rank gate `bf16(v sigmoid(v))` of `v = bf16(x / 4)`, the stream mix `bf16(sum bf16(bf16(sigmoid(u)) n) / 4)` in stream order, the inject weights `bf16(2 bf16(sigmoid(bf16(bf16(n.w) / 4))))`, the injection `bf16(r + bf16(out w))`, the n-gram key gate and the n-gram residual add `bf16(r + bf16(g + c))` |
 | `spark_hc_mix{8,4}`, `spark_hc_post` | HY4's hyper-connections (CUDA's `HyHcPreKernel`, `HyHcPostKernel`): per row, the flattened streams dotted with each mix's coefficients and with themselves in FP32, `pre_s = sigmoid(m_s r scale0 + base_s) + eps` and, with eight mixes, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s}) + eps` (`r = SparkMathRmsScale` of the sum of squares), the branch input `bf16(sum_s pre_s x_s)` in stream order; four mixes collapse the streams before the head; the post update is `bf16(fma(post_s, out, x_s))`, one rounding |
@@ -946,8 +946,15 @@ The experts are `SparkDeviceSigmoidExperts` with the router named `router`,
 top 8 times 2.5, and the layer's SwiGLU limits from the geometry
 (`RoutedLimit`, `SharedLimit`: 4 for the routed experts from layer 35, 5
 and 7 for the shared expert from layers 34 and 40) through
-`spark_silu_clamp_mul_routed` and `spark_silu_clamp_mul`. The shared expert
-is computed first and joined in route order by `spark_route_combine_shared`.
+`spark_silu_rounded_clamp_mul`. Every FFN takes the publisher's rounding
+(`kFfnSiluRounded`): `modeling_bailing_moe_v3.py` computes
+`down(act_fn(gate(x)) * up(x))` on BF16 tensors, so `silu(g)` rounds before
+the up product (the dense layers take `spark_silu_rounded_mul`). Its
+`moe_infer` multiplies each expert's BF16 output by its FP32 weight and sums
+them in FP32 (`kExpertWeightAfterDown`, `weight_after_down` in the experts
+shape), where both backends had folded the weight into the activation before
+the down projection. The shared expert is computed first and joined in
+route order by `spark_route_combine_weighted_shared`.
 The geometry's shared rows follow the TP degree (`768 / TP`, padded to a
 multiple of 64: 64 rows at TP16 as before, 128 at TP8).
 
@@ -987,7 +994,9 @@ low-rank decay and gate projections (rank 128) and a doubled write strength
 `1e-6` while the gate norm takes the model's `1e-5` (`l2_epsilon`). Each
 rank holds every one of the 320 experts, split by their intermediate width
 (`tensor_parallel` in the experts shape: no routes are skipped, and the
-ranks' partial sums meet in the all-reduce). The geometry's expert and shared
+ranks' partial sums meet in the all-reduce). Its FFNs take the Ling
+publisher's form, as `modular_solar_open2.py` writes it: `silu(g)` rounded
+before the up product, and each expert's BF16 output times its weight. The geometry's expert and shared
 widths follow the TP degree (80 and 128 at TP16 as before, 160 and 192 at
 TP8), and `tools/solar_open2_tp16_pack.py --tp-degree` writes the packs.
 `tools/solar_open2_reference.py` gains the Ling reference's `gate-prompts` and
