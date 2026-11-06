@@ -1397,6 +1397,16 @@ static uint32_t SparkModelBatchChainCheckpoint(const SparkModelBatchEngine *engi
 	return(request->state != SPARK_MODEL_BATCH_REQUEST_READY_DECODE || after / engine->cache_block_token_count > before / engine->cache_block_token_count ? 1u : 0u);
 }
 
+static void SparkModelBatchModelBackoff(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
+{
+	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS )
+		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
+	request->model_backoff_until = request->generated_token_count + request->model_backoff_tokens;
+	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
+		request->model_backoff_tokens *= 2u;
+	engine->model_draft_backoffs++;
+}
+
 static void SparkModelBatchObserveModelRate(
 	SparkModelBatchEngine *engine,
 	SparkModelBatchRequestState *request,
@@ -1416,15 +1426,10 @@ static void SparkModelBatchObserveModelRate(
 		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
 		return;
 	}
-	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS )
-		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
-	request->model_backoff_until = request->generated_token_count + request->model_backoff_tokens;
-	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
-		request->model_backoff_tokens *= 2u;
+	SparkModelBatchModelBackoff(engine,request);
 	request->model_rate_tokens *= 0.5f;
 	request->model_rate_ns *= 0.5f;
 	request->model_rate_frames *= 0.5f;
-	engine->model_draft_backoffs++;
 }
 
 static SparkStatus SparkModelBatchAcceptVerifiedLane(
@@ -3214,6 +3219,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )
 	{
 		engine->model_draft_unavailable++;
+		SparkModelBatchModelBackoff(engine,request);
 		return(0u);
 	}
 	if ( status != SPARK_STATUS_OK )
