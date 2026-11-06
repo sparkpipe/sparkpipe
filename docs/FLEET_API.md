@@ -496,10 +496,10 @@ A Function is software we build and run for the account on a fleet it holds. It 
 ### 7.1 How they run
 
 - **Runner.** A runner for each fleet orchestrates its runs. It calls the fleet's own inference with the account's identity and low priority. Two sequences always stay free for interactive requests, and interactive requests go first.
-- **Sandbox host.** Code that a Function builds or runs (tests, fuzzers, builds, an agent's shell commands) runs on a sandbox host attached to the fleet, never on the Sparks.
+- **Sandbox.** Code that a Function builds or runs (tests, fuzzers, builds, an agent's shell commands) runs in the fleet's sandbox, never on the Sparks.
   - Each run gets a fresh microVM with a copy of the repository and no network unless the run allows it.
-  - The VM is destroyed when the run ends, and the host is wiped at a change of user.
-  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1), so every fleet comes with its own sandbox host.
+  - The VM is destroyed when the run ends, and the fleet's sandbox is wiped at a change of user.
+  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1). So every fleet's sandbox has its own reserved CPU, memory and disk off the Sparks, and shares nothing with another fleet's.
 - **Our agent loop.** Agent Functions use our own agent loop, published with the engine, with read, search, edit and run tools against the sandbox. They never use Claude Code.
 - **API.**
   - `POST /v1/functions/{name}/runs` takes parameters and returns a run id.
@@ -542,7 +542,7 @@ A Function is software we build and run for the account on a fleet it holds. It 
 
 - **Today.**
   - The drafter is fixed per lane (`deployment/lanes.json` `draftd`), and a request can only turn speculation off with `"speculation": false` (`node/model_api.c:1099-1101`).
-  - The K3 drafter runs on the hub's RTX 5090, which has 0.5 GB to spare (`docs/NIGHTLY_DRAFTER.md`, branch `drafter/nightly-retrain`).
+  - The K3 drafter runs where the fleet's drafts run, with 0.5 GB of memory to spare there (`docs/NIGHTLY_DRAFTER.md`, branch `drafter/nightly-retrain`).
 - **API.** `GET /v1/drafters` lists the fleet's drafters, ours and the account's. `PUT /v1/drafters/active {"drafter": "acct-2027-01-12"}` loads one where that fleet's drafts run, replacing the current one.
 - **Training.**
   - The branch measured one GB10 at 16 blocks/s, with 3.2M positions taking about 52 min on 16 nodes (derived).
@@ -710,7 +710,7 @@ Owners are components, so the work splits into parallel sessions with no shared 
 | 3 | Gateway (VPS) | Pass the new paths through, `X-Api-Key`, 32 MiB bodies, key options, the usage-record store and `/v1/requests`, bearer sessions for the CLI | — |
 | 4 | Packs, repositories, storage | Repository ingest, the pack builder, versioned aliases with session affinity, refresh and warm, storage and fetch | 1, 2 |
 | 5 | Function runner | The runner, the Functions that only read code, the morning report | 2, 4 |
-| 6 | Sandbox host | Hardware per fleet, microVMs, the agent loop, the Functions that run code | 5 |
+| 6 | Sandbox | Each fleet's reserved sandbox, microVMs, the agent loop, the Functions that run code | 5 |
 | 7 | CLI | `tools/sparkpipe_cli.py` and its tests | 3; grows with each component |
 | 8 | Drafters | Productize `drafter/nightly-retrain` with the acceptance gate (§8) | 5 |
 | 9 | Customer models | A packer per family (tier A), the driver guide and review (tiers B and C) | 6 |
