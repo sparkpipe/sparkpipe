@@ -738,6 +738,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
 	tests/test_chat_frontend_responses.py \
+	tests/test_chat_frontend_client_fidelity.py \
 	tests/test_chat_frontend_fleet_api.py \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \

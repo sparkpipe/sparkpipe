@@ -12,6 +12,9 @@ ANTHROPIC_TYPES = {400: "invalid_request_error", 401: "authentication_error", 40
 CONTRACT_CODES = frozenset({"fleet_required", "fleet_not_held", "model_not_loaded", "image_not_supported", "context_too_long", "busy",
                             "invalid_request", "invalid_key", "upstream_error"})
 CONTRACT_RENAMES = {"invalid_api_key": "invalid_key", "rate_limited": "busy"}
+ANTHROPIC_NATIVE = {"busy": "rate_limit_error"}
+OPENAI_NATIVE = {"busy": ("requests", "rate_limit_exceeded")}
+UNKNOWN_USAGE = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
 OVERFLOW_CODE = "context_length_exceeded"
 EMPTY_SCHEMA = {"type": "object", "properties": {}}
 CUSTOM_INPUT = "input"
@@ -42,17 +45,25 @@ def anthropic_error_body(error):
     if overflow is not None:
         return {"type": "error", "error": {"type": "invalid_request_error", "message": f"prompt is too long: {overflow[0]} tokens > {overflow[1]} maximum"}}
     code = contract_code(error.code)
-    kind = code if code in CONTRACT_CODES else ANTHROPIC_TYPES.get(error.status, "api_error" if error.status >= 500 else "invalid_request_error")
+    kind = ANTHROPIC_NATIVE.get(code) or (code if code in CONTRACT_CODES else ANTHROPIC_TYPES.get(error.status, "api_error" if error.status >= 500 else "invalid_request_error"))
     detail = {"type": kind, "message": error.message}
     detail.update(getattr(error, "details", None) or {})
     return {"type": "error", "error": detail}
 
 
 def openai_error_body(error):
-    detail = {"message": error.message, "type": "server_error" if error.status >= 500 else "invalid_request_error",
-              "code": contract_code(error.code), "param": None}
+    code = contract_code(error.code)
+    kind, code = OPENAI_NATIVE.get(code, ("server_error" if error.status >= 500 else "invalid_request_error", code))
+    detail = {"message": error.message, "type": kind, "code": code, "param": None}
     detail.update(getattr(error, "details", None) or {})
     return {"error": detail}
+
+
+def socket_error(error, headers=None):
+    event = {"type": "error", "status": error.status, "error": openai_error_body(error)["error"]}
+    if headers:
+        event["headers"] = {name.lower(): value for name, value in headers.items()}
+    return json.dumps(event, ensure_ascii=False)
 
 
 def effort_for(labels, effort, thinking=None, budget=None):
@@ -477,23 +488,23 @@ def responses_request(body):
 
 
 class MessagesTurn:
-    def __init__(self, model_name, prompt_tokens):
+    opens_early = False
+
+    def __init__(self, model_name):
         self.id = handle("msg_")
         self.turn = chat_replay.new_turn()
         self.model_name = model_name
-        self.prompt_tokens = prompt_tokens
         self.blocks = []
         self.current = None
         self.pending = ""
         self.signatures = 0
 
-    def start(self):
-        usage = {"input_tokens": self.prompt_tokens, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
+    def start(self, usage):
         return [sse("message_start", {"type": "message_start", "message": {"id": self.id, "type": "message", "role": "assistant", "model": self.model_name,
                                                                            "content": [], "stop_reason": None, "stop_sequence": None, "usage": usage}})]
 
     def keepalive(self):
-        return sse("ping", {"type": "ping"})
+        return [sse("ping", {"type": "ping"})]
 
     def open(self, block, frames):
         self.close(frames)
@@ -568,8 +579,8 @@ class MessagesTurn:
 
 
 def anthropic_usage(usage):
-    return {"input_tokens": usage["prompt"] - usage["cached"] - usage["committed"], "cache_creation_input_tokens": usage["committed"],
-            "cache_read_input_tokens": usage["cached"], "output_tokens": usage["completion"]}
+    return {"input_tokens": usage["prompt"] - usage["cached"], "cache_creation_input_tokens": 0, "cache_read_input_tokens": usage["cached"],
+            "output_tokens": usage["completion"]}
 
 
 def anthropic_stop(result, stop_marker):
@@ -582,9 +593,16 @@ def anthropic_stop(result, stop_marker):
     return "end_turn", None
 
 
+def socket_frame(kind, payload):
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class ResponsesTurn:
-    def __init__(self, model_name, request, echo):
+    opens_early = True
+
+    def __init__(self, model_name, request, echo, encode=sse):
         self.id = handle("resp_")
+        self.encode = encode
         self.turn = chat_replay.new_turn()
         self.signatures = 0
         self.model_name = model_name
@@ -599,7 +617,7 @@ class ResponsesTurn:
     def frame(self, kind, payload):
         payload = dict(payload, type=kind, sequence_number=self.sequence)
         self.sequence += 1
-        return sse(kind, payload)
+        return self.encode(kind, payload)
 
     def response(self, status, usage=None, telemetry=None, error=None, incomplete=None):
         body = {"id": self.id, "object": "response", "created_at": self.created, "status": status, "model": self.model_name,
@@ -610,12 +628,12 @@ class ResponsesTurn:
             body["sparkpipe"] = telemetry
         return body
 
-    def start(self):
+    def start(self, usage=None):
         return [self.frame("response.created", {"response": self.response("in_progress")}),
                 self.frame("response.in_progress", {"response": self.response("in_progress")})]
 
     def keepalive(self):
-        return b": keep-alive\n\n"
+        return [self.frame("response.in_progress", {"response": self.response("in_progress")})]
 
     def open(self, item, frames):
         self.close(frames)

@@ -660,6 +660,13 @@ The API is OpenAI-compatible:
 - a native tokenizer with no Python in the serving process;
 - streamed responses.
 
+The hub's chat layer (`tools/serving/chat_frontend.py`) also speaks
+Anthropic Messages for Claude Code and OpenAI Responses for Codex, over
+HTTP and WebSocket, with stored responses, the Codex model catalogue and
+usage taken from the engine's own prompt and cache counts
+([`docs/FLEET_API.md`](docs/FLEET_API.md) §3). A full fleet answers each
+client's native 429, and long prefills keep every client's connection open.
+
 Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
