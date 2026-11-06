@@ -24,6 +24,8 @@
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_TILE 128u
 #define STAGE_RUNNER_GRAPH_ROWS SPARK_STAGE_RUNNER_GRAPH_ROWS
+#define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
+#define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
 #define STAGE_RUNNER_GRAPH_KEYS 2u
 #define STAGE_RUNNER_GRAPH_SLOTS (STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
@@ -235,6 +237,8 @@ typedef struct SparkStageRunnerState
 	SparkTpDeviceCollective device_collective;
 	int device_collective_created;
 	uint32_t device_collective_deferred;
+	uint16_t *sum_share;
+	uint64_t sum_share_elements;
 	SparkWeightdLazyPack *lazy_pack;
 	SparkWeightdLeaseSets *lease_sets;
 	uint32_t lease_ahead;
@@ -596,6 +600,15 @@ static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, cudaStrea
 	return status;
 }
 
+static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, uint32_t flags, uint32_t operation, uint32_t stage, uint32_t rows,
+	uint32_t row_elements)
+{
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
+	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL && state->sum_share != 0 && state->device_collective_deferred != 0u &&
+		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
+		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements ? 1u : 0u;
+}
+
 static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
@@ -607,6 +620,15 @@ static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t f
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	operation = StageRunnerSumOperation(state, flags, operation, stage, rows, row_elements);
+	if ( StageRunnerSplitSum(state, flags, operation, stage, rows, row_elements) != 0u )
+	{
+		status = StageRunnerMeshRound(state, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, stage, rows, row_elements,
+			local, state->sum_share);
+		if ( status == SPARK_STATUS_OK )
+			status = StageRunnerMeshRound(state, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, stage, rows / state->tp_degree, row_elements,
+				state->sum_share, full);
+		return status;
+	}
 	if ( stage == SPARK_STAGE_RUNNER_ROUND_FINISH )
 		status = SparkTpDeviceCollectiveFinish(&state->device_collective);
 	else
@@ -923,6 +945,16 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(&state->device_collective,
 			(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr, 0u,0u,0u,0u);
+	if ( status == SPARK_STATUS_OK && state->tp_degree >= STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE )
+	{
+		state->sum_share_elements = (uint64_t)device_config.max_active_sequence_count * state->geometry.hidden / state->tp_degree;
+		if ( state->sum_share_elements != 0u && cudaMalloc((void **)&state->sum_share, (size_t)state->sum_share_elements * sizeof(uint16_t)) != cudaSuccess )
+		{
+			state->sum_share = 0;
+			state->sum_share_elements = 0u;
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		}
+	}
 	if ( status == SPARK_STATUS_OK )
 		StageRunnerSumSelection(state, device_config.max_active_sequence_count);
 	return status;
@@ -2937,6 +2969,10 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 		SparkTpDeviceCollectiveDestroy(&state->device_collective);
 		if ( state->device_collective.implementation != 0 )
 			return;
+		if ( state->sum_share != 0 )
+			(void)cudaFree(state->sum_share);
+		state->sum_share = 0;
+		state->sum_share_elements = 0u;
 		state->device_collective_created = 0;
 	}
 	if ( state->lease_sets != 0 && (SparkStageRunnerReleaseLease(state) != SPARK_STATUS_OK ||
