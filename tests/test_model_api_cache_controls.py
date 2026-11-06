@@ -91,6 +91,7 @@ static void TestEvents(uint64_t id,uint32_t token,uint32_t cached,uint32_t draft
 	event.kind = SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED;
 	event.draft_token_count = drafts;
 	event.accepted_draft_token_count = accepted;
+	event.published_token_count = 4u;
 	api_event(0,&event);
 }
 
@@ -118,7 +119,7 @@ int32_t main(void)
 	assert(strstr(response,"\"finish_reason\":\"commit\"") != 0);
 	assert(strstr(response,"\"tokens\":[]") != 0 && strstr(response,"77") == 0);
 	assert(strstr(response,"\"prompt_tokens\":4,\"completion_tokens\":0,\"total_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":2}") != 0);
-	assert(strstr(response,"\"prefill_ms\":5.250") != 0);
+	assert(strstr(response,"\"published_tokens\":4,\"prefill_ms\":5.250") != 0);
 	fprintf(stdout,"commit_only reply: %s\n",strstr(response,"{"));
 
 	client = TestSend("{\"prompt_token_ids\":[1,2,3,4,5],\"commit_only\":true,\"stream\":true}");

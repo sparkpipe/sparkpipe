@@ -74,7 +74,7 @@ async def commit_only(harness, check):
               f"{path} commit_only answers the commit object, not a reply: {status} {reply[:300]}")
         check(len(sent) == 1 and sent[0].get("commit_only") is True and "max_tokens" not in sent[0] and sent[0]["priority"] == chat_frontend.BULK_PRIORITY,
               f"{path} commit_only sends one commit-only engine request at background priority even with an interactive hint: {sent}")
-        check(body.get("prompt_tokens") == prompt and body.get("cached_tokens") == 0 and body.get("committed_tokens") == prompt // BLOCK * BLOCK and
+        check(body.get("prompt_tokens") == prompt and body.get("cached_tokens") == 0 and body.get("committed_tokens") == prompt and
               body.get("prefill_ms") == 12, f"{path} commit_only returns prompt, cached and committed tokens and the engine's prefill time: {body}")
         record = body.get("sparkpipe") or {}
         check(record.get("output_tokens") == 0 and record.get("commit_only") is True and record.get("prompt_tokens") == prompt and
@@ -84,6 +84,22 @@ async def commit_only(harness, check):
     check(status == 400 and json.loads(reply)["error"]["code"] == "invalid_request", f"commit_only that is not a boolean is a named 400: {reply}")
     status, _, reply = await harness.post("/v1/messages", messages_body("hi", commit_only=1), account=ACCOUNT)
     check(status == 400 and json.loads(reply)["type"] == "error", f"Messages refuses a non-boolean commit_only in its own error shape: {reply}")
+    async with harness.socket(account=ACCOUNT) as socket:
+        await socket.send_json(dict(responses_body("hi", commit_only=True), type="response.create"))
+        event = json.loads((await socket.receive(timeout=20)).data)
+    check(event.get("type") == "error" and event.get("status") == 400 and event["error"]["code"] == "invalid_request",
+          f"the Responses WebSocket refuses commit_only by name instead of answering a commit as a turn: {event}")
+    before = len(engine.requests)
+    engine.hold = asyncio.Event()
+    warm = asyncio.ensure_future(harness.post("/v1/cache/warm", dict(chat_body(text(8, 6)), format="openai_chat"), account=ACCOUNT))
+    while len(engine.requests) == before:
+        await asyncio.sleep(0.01)
+    identifier = next(iter(harness.frontend.live))
+    status, cancelled = await harness.call("DELETE", "/v1/requests/" + identifier, account=ACCOUNT)
+    status_warm, _, reply = await warm
+    engine.hold = None
+    check(status_warm == 409 and json.loads(reply)["error"]["code"] == "request_cancelled",
+          f"DELETE /v1/requests/{{id}} cancels a running warm-up, which ends with 409 request_cancelled: {status} {cancelled} {status_warm} {reply}")
     engine.commits = False
     status, _, reply = await harness.post("/v1/chat/completions", chat_body(text(7, 3), commit_only=True), account=ACCOUNT)
     engine.commits = True
@@ -105,8 +121,11 @@ async def warm_then_match(harness, check):
         record = json.loads(reply).get("sparkpipe") or {}
         check(status == 200 and real["prompt_token_ids"] == engine.requests[before]["prompt_token_ids"],
               f"{fmt}: the warm-up renders exactly the tokens the next real request sends")
-        check(warm["committed_tokens"] >= 3 * BLOCK and record.get("cached_tokens") == warm["committed_tokens"],
-              f"{fmt}: the next real request matches every warmed block ({warm['committed_tokens']} committed, {record.get('cached_tokens')} cached)")
+        reusable = len(real["prompt_token_ids"]) - 1
+        check(warm["cached_tokens"] + warm["committed_tokens"] == len(real["prompt_token_ids"]) >= 3 * BLOCK and engine.usage[-1]["cached_tokens"] == reusable and
+              record.get("cached_tokens") == min(reusable, len(real["prompt_token_ids"]) // BLOCK * BLOCK),
+              f"{fmt}: the next real request reuses every warmed token but the last, and a public key sees it to its 64-token granularity "
+              f"({warm['committed_tokens']} committed, engine {engine.usage[-1]['cached_tokens']}, reported {record.get('cached_tokens')})")
     status, _, reply = await harness.post("/v1/cache/warm", dict(chat_body("hi"), format="openai_completions"), account=ACCOUNT)
     check(status == 400 and json.loads(reply)["error"]["code"] == "invalid_request", f"a warm-up names one of the three formats: {reply}")
     status, _, reply = await harness.post("/v1/cache/warm", dict(chat_body("hi"), format="openai_chat", commit_only=False), account=ACCOUNT)

@@ -19,9 +19,10 @@ def seed_check(config, model, warm):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     entry = next((item for item in json.loads(config.read_text())["models"] if item["id"] == model), None)
-    if entry is None or entry.get("cold_prefill") is None or not warm.get("prompt_tokens") or not warm.get("prefill_ms") or warm.get("cached_tokens"):
+    prefilled = (warm.get("prompt_tokens") or 0) - (warm.get("cached_tokens") or 0)
+    if entry is None or entry.get("cold_prefill") is None or prefilled <= 0 or not warm.get("prefill_ms"):
         return {"estimate_ms": None, "measured_ms": warm.get("prefill_ms"), "error": None, "within_10_percent": None}
-    estimate = module.PrefillSeed(model, entry["cold_prefill"]).rate(warm["prompt_tokens"]) * warm["prompt_tokens"]
+    estimate = module.PrefillSeed(model, entry["cold_prefill"]).rate(warm["prompt_tokens"]) * prefilled
     error = estimate / warm["prefill_ms"] - 1
     return {"estimate_ms": round(estimate), "measured_ms": warm["prefill_ms"], "error": round(error, 4), "within_10_percent": abs(error) <= 0.1}
 
@@ -113,8 +114,11 @@ def gate(client, model, corpus, tokens, decode_tokens, lead_seconds, config=None
               "interactive": {"idle_step_s": step, "idle_ttft_s": idle.get("ttft_s"), "during_ttft_s": during.get("ttft_s"), "during_worst_gap_s": worst,
                               "during_gaps": len(window), "overlapped_warm": bool(arrivals and arrivals[0] < holder["warm_done"] < arrivals[-1]),
                               "delay_steps": round((worst - step) / step, 2) if worst is not None and step else None}}
+    warmed = (warm.get("cached_tokens") or 0) + (warm.get("committed_tokens") or 0)
+    report["warm"]["chain_tokens"] = warmed
     report["matched"] = (warm_status == 200 and real_status == 200 and isinstance(warm.get("committed_tokens"), int) and
-                         isinstance(record.get("cached_tokens"), int) and record["cached_tokens"] >= warm["committed_tokens"])
+                         isinstance(record.get("cached_tokens"), int) and isinstance(record.get("prompt_tokens"), int) and
+                         record["cached_tokens"] >= min(warmed, record["prompt_tokens"] - 1))
     report["seed"] = seed_check(config, model, report["warm"]) if config is not None else None
     report["yielded"] = report["interactive"]["delay_steps"] is not None and report["interactive"]["delay_steps"] <= 1.0 and report["interactive"]["overlapped_warm"]
     return report

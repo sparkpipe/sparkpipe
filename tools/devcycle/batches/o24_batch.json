@@ -11,7 +11,7 @@
     {
       "request_id": 760130,
       "sequence_id": 760130,
-      "priority": 0,
+      "priority": 2,
       "output_token_budget": 24,
       "prompt_token_ids": [
         0, 3476, 477, 18068, 260, 3375, 35312, 3417,

@@ -15,6 +15,9 @@ extern "C" {
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
+#define SPARK_MODEL_BATCH_PRIORITY_BACKGROUND 0u
+#define SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE 2u
+#define SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES 2u
 
 #define SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED 1u
 #define SPARK_MODEL_BATCH_EVENT_TOKEN 2u
@@ -56,6 +59,7 @@ typedef struct SparkModelBatchEvent
 	uint64_t first_dispatch_ns;
 	uint32_t draft_token_count;
 	uint32_t accepted_draft_token_count;
+	uint32_t published_token_count;
 	uint32_t logprob_count;
 	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkModelBatchEvent;

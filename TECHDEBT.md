@@ -873,9 +873,32 @@ Related common-code debt:
 - Priority and deadline reach admission, prefill and decode scheduling (the
   batch engine selects by priority, then earliest `deadline_ms`, and a prefill
   or decode submission carries its latest lane deadline to residentd as
-  remaining time), and KV eviction ranks by request priority. Still open:
+  remaining time), and KV eviction ranks by request priority. Priority 2 and
+  above is interactive and runs first; background work yields to it (README
+  "Interactive first"). Still open:
   speculation, gang scheduling and KV snapshot I/O ignore both; the binding's
   restore worker and saver run in queue order (`runtime/stage_kv_binding.c`).
+- Interactive first (#1794): what is left after the priority classes, the
+  two kept sequences, background yielding, `DELETE /v1/requests/{id}` and the
+  10 ms disconnect poll.
+  - Fleet-only: the one-step bound on Fleet 1 with a warm-up, a batch job and
+    a Function running; a disconnect and a DELETE freeing the sequence under
+    load, during a prefill; two members flooding requests (C8).
+  - A cancel during an interactive streamed prefill waits for the whole
+    streamed span (minutes at 1M tokens), because the ranks cannot stop a
+    streamed submission. Cancelling inside a wave needs a rank-side abort.
+  - A client learns a request's id only from `X-SparkPipe-Request`, which a
+    stream sends when it opens and a non-streamed reply sends at the end. A
+    request still waiting for a sequence, or a non-streamed one, can be
+    cancelled by DELETE only by a caller that has its id from elsewhere;
+    `GET /v1/requests` lists finished requests only.
+  - Interactive arrivals beyond the two kept sequences wait for a running
+    request to finish: a running background request is never preempted.
+  - The gateway's per-account request limit (`LIMITS["gateway"]`, 6,000
+    requests per 10 minutes in `tools/sparkpipe_pay.py`) answers 429 `busy`
+    at once, which contradicts the Fleet API's rule that a holder's only
+    refusal for load is 429 after 60 s; 64 agents turning every 6 s pass it.
+    Exempting a holder's inference requests is a decision for the owner.
 - Dense projections above sixteen rows (`LM_SKINNY_ROWS_WIDE`,
   `inference/kernels/skinny.cuh`) leave the skinny kernel for tensor-core GEMM
   with a different accumulation order. The tensor-core latent attention for
@@ -1300,7 +1323,9 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   prefill row still runs the head and samples a token, which
   `sparkpipe_model_api` drops before it is streamed, counted or cached. A
   head-free last row needs the serving work to know the request only
-  commits. K3's recurrent checkpoint at the end of a committed prompt and
+  commits. On a recurrent model (K3) `committed_tokens` counts the published
+  chain, which a later request can resume only at a checkpoint. K3's
+  recurrent checkpoint at the end of a committed prompt and
   the per-fleet warm budget (`docs/FLEET_API.md` §4.2) are not built. A
   non-streamed commit sends nothing during a long prefill. Gate B is not
   run on the fleet: `tools/warm_gate_check.py` warms a 150K-token prompt,
@@ -1318,11 +1343,36 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   10% of a measured cold prefill at 50K, 150K and 500K tokens.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
-  fleet swapping and pushes the owner's model out after each reply. Each key
-  runs at most four requests at once, but nothing limits how often a key may
+  fleet swapping and pushes the owner's model out after each reply. No key
+  has a concurrency cap, and nothing limits how often a key may
   start a swap. Which public requests may swap the fleet is an owner
   decision (serve only the loaded model to keys, or a lower activation
   priority and a per-key swap rate).
+- `cache_creation_input_tokens` is 0 on Messages. The engine's usage now
+  carries `published_tokens`, the request's chain length in the cache
+  (`cache_published_token_count` in `runtime/model_batch_engine.c`), and
+  warm-ups report `committed_tokens` from it. On a recurrent model that
+  chain is reusable only at its checkpoints, so it is not yet the count
+  Messages may report as created. Close it by reporting the reusable part,
+  proven by a turn whose next turn's cached count equals what the first
+  reported as created.
+- Claude Code 2.1.308's stream watchdog counts a `ping` for only 30
+  heartbeats in a row, then aborts 300 s later, so a cold prefill longer
+  than about 10 minutes fails unless `sparkpipe setup claude-code` sets
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS` (§3.3 of `docs/FLEET_API.md`). Prove it
+  on Fleet 1 with a 10-minute prefill from a real Claude Code, streamed and
+  not, and Codex's with `stream_idle_timeout_ms` 600000.
+- The Messages and Responses WebSocket and HTTP paths are tested against
+  recorded client shapes and a scripted engine only. Fleet-only: a 150K
+  turn after a 2-hour pause, 100 recorded `count_tokens` against the
+  engine, and WebSocket against HTTP turn times on Fleet 1 from the
+  `turn_ms` records.
+- The WebSocket reads one `response.create` at a time, so a second one
+  waits for the turn before it, and a client that hangs up mid-prefill is
+  noticed at the next 10-second keep-alive. `generate: false` keeps the
+  input on the connection but does not prefill it into the engine.
+- `GET /v1/responses/{id}/input_items` and `POST /v1/responses/{id}/cancel`
+  are not served; nothing runs in the background to cancel.
 
 ## Fleet-hours
 

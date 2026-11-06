@@ -38,7 +38,7 @@
 #define API_MAX_INFLIGHT 16u
 
 #define API_DEFAULT_MODEL_ID "sparkpipe-model"
-#define API_WAIT_SLICE_MS 250u
+#define API_WAIT_SLICE_MS 10u
 #define API_STREAM_BATCH_TOKENS 64u
 #define API_UTF8_MAX_SEQUENCE 4u
 #define API_STREAM_EVENT_END "}\n\n"
@@ -83,6 +83,7 @@ typedef struct ApiRequest
 	uint32_t cached_prompt_token_count;
 	uint32_t draft_token_count;
 	uint32_t accepted_draft_token_count;
+	uint32_t published_token_count;
 	uint32_t commit_only;
 	uint64_t first_ready_ns;
 	uint32_t engine_completed;
@@ -333,6 +334,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		r->stale_prefix_recompute_count = ev->stale_prefix_recompute_count;
 		r->draft_token_count = ev->draft_token_count;
 		r->accepted_draft_token_count = ev->accepted_draft_token_count;
+		r->published_token_count = ev->published_token_count;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
 			r->accepted_ns = ev->monotonic_ns;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN && r->first_ready_ns == 0u )
@@ -1099,6 +1101,7 @@ typedef struct ApiStream
 	uint32_t pending_capacity;
 	uint32_t piece_capacity;
 	uint32_t sent_tokens;
+	uint32_t cached_tokens;
 	uint32_t first;
 	size_t escaped_capacity;
 	size_t event_capacity;
@@ -1144,6 +1147,7 @@ static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root,
 	bool flag;
 	memset(options,0,sizeof(*options));
 	options->top_p = 1.0f;
+	options->priority = SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE;
 	if ( root < 0 )
 		return 1;
 	member = SparkJsonFindObjectMember(doc,root,"stream");
@@ -1188,6 +1192,12 @@ static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 	return EngineStopTokenCount + req->stop_token_count;
 }
 
+static void api_usage_counts_json(char *buffer, size_t capacity, uint32_t prompt, uint32_t output, uint32_t cached)
+{
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}}",
+		prompt,output,prompt + output,cached);
+}
+
 static double api_prefill_ms(const ApiRequest *req)
 {
 	uint64_t start = req->first_dispatch_ns != 0u ? req->first_dispatch_ns : req->accepted_ns;
@@ -1196,8 +1206,8 @@ static double api_prefill_ms(const ApiRequest *req)
 
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
 {
-	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u},\"draft_tokens\":%u,\"accepted_draft_tokens\":%u,\"prefill_ms\":%.3f}",
-		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count,req->draft_token_count,req->accepted_draft_token_count,api_prefill_ms(req));
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u},\"draft_tokens\":%u,\"accepted_draft_tokens\":%u,\"published_tokens\":%u,\"prefill_ms\":%.3f}",
+		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count,req->draft_token_count,req->accepted_draft_token_count,req->published_token_count,api_prefill_ms(req));
 }
 
 static uint32_t api_client_gone(int fd)
@@ -1341,6 +1351,7 @@ static uint32_t api_stream_take(ApiRequest *req, ApiStream *stream, uint32_t *to
 	count = count > API_STREAM_BATCH_TOKENS ? API_STREAM_BATCH_TOKENS : count;
 	memcpy(tokens,req->output_token_ids + stream->sent_tokens,(size_t)count * sizeof(uint32_t));
 	stream->sent_tokens += count;
+	stream->cached_tokens = req->cached_prompt_token_count;
 	pthread_mutex_unlock(&S.queue_mutex);
 	return count;
 }
@@ -1377,6 +1388,8 @@ static int api_stream_event(int fd, ApiStream *stream, int chat_format, const Ap
 	(void)snprintf(reason,sizeof(reason),finished != 0 ? "\"%s\"" : "null",finished != 0 ? api_finish_reason(finished) : "");
 	if ( finished != 0 )
 		api_usage_json(usage,sizeof(usage),finished);
+	else if ( stream->first != 0u )
+		api_usage_counts_json(usage,sizeof(usage),req->prompt_count,stream->sent_tokens,stream->cached_tokens);
 	written = chat_format
 		? snprintf(stream->event,stream->event_capacity,"data: {\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{%s\"content\":\"%s\"},\"finish_reason\":%s}]%s,\"tokens\":[",stream->first != 0u ? "\"role\":\"assistant\"," : "",stream->escaped,reason,usage)
 		: snprintf(stream->event,stream->event_capacity,"data: {\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"%s\",\"finish_reason\":%s}]%s,\"tokens\":[",stream->escaped,reason,usage);

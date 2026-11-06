@@ -24,7 +24,7 @@ async def measure(harness, tmp, contend):
     engine.reply(COUNT, "length")
     corpus = tmp / "corpus.txt"
     corpus.write_text("hello world, the weather in Paris is sunny today. read the file a.txt and list the directory.")
-    headers = harness.headers(account="acct-gate")
+    headers = {}
     config = tmp / "hub.json"
     config.write_text(json.dumps({"models": [{"id": "alpha", "cold_prefill": {"points": [[100, 10], [10000, 1000]], "source": "test"}}]}))
     arguments = ["--base", harness.base, "--model", "alpha", "--corpus", str(corpus), "--tokens", "600", "--decode-tokens", "64", "--lead-seconds", "0.05",
@@ -38,11 +38,12 @@ async def run(tmp, check):
     async with fixture.Harness(tmp / "quiet") as harness:
         code, report = await measure(harness, tmp, 0.0)
     check(code == 0 and report["matched"] and report["yielded"] and report["interactive"]["overlapped_warm"] and report["warm"]["prompt_tokens"] >= 600 and
-          report["real"]["cached_tokens"] == report["warm"]["committed_tokens"] > 0 and report["interactive"]["during_gaps"] > 0,
+          report["warm"]["chain_tokens"] == report["warm"]["prompt_tokens"] and
+          report["real"]["cached_tokens"] == report["real"]["prompt_tokens"] - 1 and report["interactive"]["during_gaps"] > 0,
           f"a warm-up that leaves an interactive stream's pace alone passes, with the next request matching every warmed block: {code} {report}")
     seed = report["seed"]
-    check(seed["measured_ms"] == 12 and seed["estimate_ms"] == round(0.1 * report["warm"]["prompt_tokens"]) and
-          seed["error"] == round(seed["estimate_ms"] / 12 - 1, 4) and seed["within_10_percent"] is False,
+    check(seed["measured_ms"] == 12 and seed["estimate_ms"] == round(0.1 * (report["warm"]["prompt_tokens"] - report["warm"]["cached_tokens"])) and
+          seed["error"] == round(0.1 * (report["warm"]["prompt_tokens"] - report["warm"]["cached_tokens"]) / 12 - 1, 4) and seed["within_10_percent"] is False,
           f"the report compares the model's cold_prefill seed with the warm-up's measured cold prefill: {seed}")
     async with fixture.Harness(tmp / "contended") as harness:
         code, report = await measure(harness, tmp, 0.05)

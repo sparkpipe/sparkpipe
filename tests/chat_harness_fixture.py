@@ -91,6 +91,9 @@ class Engine:
         self.commit_delay = 0.0
         self.contend = 0.0
         self.committing = 0
+        self.early_usage = True
+        self.cache_all = False
+        self.usage = []
 
     def tokens(self, text):
         ids = []
@@ -113,7 +116,8 @@ class Engine:
         self.requests.append(body)
         prompt = body["prompt_token_ids"]
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
-        cached = min(cached, len(prompt) - 1)
+        cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
+        self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
         if body.get("commit_only") and self.commits:
             return await self.commit(request, prompt, cached)
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
@@ -129,8 +133,9 @@ class Engine:
                 await asyncio.sleep(self.pace + (self.contend if self.committing else 0.0))
             last = index + 1 == len(ids)
             event = {"tokens": [token], "choices": [{"finish_reason": finish if last else None}]}
-            if last:
-                event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": len(ids), "total_tokens": len(prompt) + len(ids),
+            if last or (index == 0 and self.early_usage):
+                sent = len(ids) if last else 1
+                event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": sent, "total_tokens": len(prompt) + sent,
                                   "prompt_tokens_details": {"cached_tokens": cached}}
                 if self.drafts is not None:
                     event["usage"].update(draft_tokens=self.drafts[0], accepted_draft_tokens=self.drafts[1])
@@ -152,7 +157,7 @@ class Engine:
             self.committing -= 1
         event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
                  "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
-                           "draft_tokens": 0, "accepted_draft_tokens": 0, "prefill_ms": 12.5}}
+                           "draft_tokens": 0, "accepted_draft_tokens": 0, "published_tokens": len(prompt), "prefill_ms": 12.5}}
         await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt))
         await response.write(b"data: [DONE]\n\n")
@@ -267,6 +272,9 @@ class Harness:
         async with self.session.request(method, self.base + path, json=body, headers=self.headers(**headers)) as response:
             text = await response.text()
             return response.status, json.loads(text) if text else None
+
+    def socket(self, path="/v1/responses", **headers):
+        return self.session.ws_connect(self.base + path, headers=self.headers(**headers), max_msg_size=0)
 
     def prompt_text(self, index=-1):
         return self.tokenizer.decode(self.engine.requests[index]["prompt_token_ids"], skip_special_tokens=False)
