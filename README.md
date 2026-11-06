@@ -259,9 +259,11 @@ does not depend on the class.
 - Within a class, higher priority runs first, then the earliest deadline,
   with aging. Background work runs whenever no interactive work is queued
   or in flight.
-- A cancel (a closed connection, or `DELETE /v1/requests/{id}`) takes effect
-  at the end of the submission in flight: one decode step, a chain, or one
-  prefill wave. Committed KV follows the retention rules.
+- A caller cancels its own request by closing the connection or with
+  `DELETE /v1/requests/{id}`, where the id is the reply's
+  `X-SparkPipe-Request`. The cancel takes effect at the end of the
+  submission in flight: one decode step, a chain, or one prefill wave.
+  Committed KV follows the retention rules.
 
 **Streamed prefill for long prompts.** On a lane whose stage config names
 `streamed_prefill` (Kimi K3 today), an interactive prompt of at least
@@ -687,11 +689,9 @@ The API is OpenAI-compatible:
 - a native tokenizer with no Python in the serving process;
 - streamed responses.
 
-Callers name a model, a priority class and a deadline. SparkPipe chooses
+Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
-algorithm. A caller cancels its own request by closing the connection or
-with `DELETE /v1/requests/{id}`, where the id is the reply's
-`X-SparkPipe-Request`.
+algorithm.
 
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
