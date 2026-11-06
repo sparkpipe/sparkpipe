@@ -297,6 +297,27 @@ static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *
     return 0;
 }
 
+static int SparkWeightdMeshLaunchCheck(const char *program, uint32_t mesh_fields)
+{
+    const char *problem = 0;
+    if (weightd_mesh_launch.pair_fields != 0u &&
+        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
+        problem = "--mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags";
+    else if (weightd_mesh_launch.second_rail != 0u && weightd_mesh_launch.pair_fields != 3u)
+        problem = "--mesh-second-rail needs --mesh-pair-interface and --mesh-pair-sgid-index";
+    else if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
+        problem = "--mesh-traffic-class needs the mesh flags";
+    if (problem != 0)
+    {
+        fprintf(stderr,"weightd: %s\n",problem);
+        SparkWeightdUsage(program);
+        return 2;
+    }
+    if (weightd_mesh_launch.second_rail != 0u)
+        SparkWeightdMeshUseSecondRail();
+    return 0;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
@@ -518,25 +539,8 @@ int main(int argument_count, char **arguments)
         return 2;
     }
 
-    if (weightd_mesh_launch.pair_fields != 0u &&
-        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
-    {
-        fprintf(stderr,"weightd: --mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
+    if (SparkWeightdMeshLaunchCheck(arguments[0],mesh_fields) != 0)
         return 2;
-    }
-    if (weightd_mesh_launch.second_rail != 0u && weightd_mesh_launch.pair_fields != 3u)
-    {
-        fprintf(stderr,"weightd: --mesh-second-rail needs --mesh-pair-interface and --mesh-pair-sgid-index\n");
-        SparkWeightdUsage(arguments[0]);
-        return 2;
-    }
-    if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
-    {
-        fprintf(stderr,"weightd: --mesh-traffic-class needs the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
-        return 2;
-    }
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;
@@ -560,8 +564,6 @@ int main(int argument_count, char **arguments)
     }
     if (mesh_fields == 15u)
     {
-        if (weightd_mesh_launch.second_rail != 0u)
-            SparkWeightdMeshUseSecondRail();
         status = SparkWeightdMeshInit(weightd_mesh_launch.rank,
             weightd_mesh_launch.interface_name,weightd_mesh_launch.sgid_index,
             weightd_mesh_launch.mesh_dir,weightd_mesh_launch.rank_mask,
