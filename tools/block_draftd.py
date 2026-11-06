@@ -142,6 +142,18 @@ class RingContext:
         return self.ring.keys.numel() * self.ring.keys.element_size()
 
 
+def reserve_context_memory(context_bytes):
+    if context_bytes <= 0 or not torch.cuda.is_available():
+        return
+    try:
+        held = torch.empty(context_bytes, dtype=torch.uint8, device="cuda")
+    except torch.cuda.OutOfMemoryError as error:
+        raise SystemExit(f"DRAFTD-RESERVE-REFUSED: {context_bytes} context bytes are not free on the GPU ({error}); "
+                         "lower --context-bytes or free the GPU, the server keeps its context memory from start to stop") from error
+    del held
+    print(f"DRAFTD-RESERVE context_bytes={context_bytes} held for this server's contexts", flush=True)
+
+
 def dspark_rule(drafter, sampling):
     seed, inverse_temperature, nucleus, top_k = sampling
     if inverse_temperature == 0.0:
@@ -164,6 +176,7 @@ class Server:
         else:
             self.drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
         self.latent = isinstance(self.drafter, LatentBlockDrafter)
+        reserve_context_memory(args.context_bytes)
         self.layers = list(self.drafter.tap_names) if self.dspark else [f"o{layer}" for layer in self.drafter.layer_ids]
         self.graph = None if self.dspark else LatentDraftGraph(self.drafter) if self.latent else DraftGraph(self.drafter)
         self.max_drafts = self.drafter.max_drafts if self.latent or self.dspark else self.drafter.block
@@ -257,15 +270,11 @@ class Server:
         self.evict()
 
     def expire(self, now):
-        stale = expire_contexts(self.contexts, now)
-        if stale and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        return stale
+        return expire_contexts(self.contexts, now)
 
     def evict(self):
         self.expire(time.monotonic())
-        if evict_contexts(self.contexts, self.args.context_bytes):
-            torch.cuda.empty_cache()
+        evict_contexts(self.contexts, self.args.context_bytes)
 
     def gpu_loop(self):
         pending = None
