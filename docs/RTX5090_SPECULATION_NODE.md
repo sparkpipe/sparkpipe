@@ -73,8 +73,10 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
   `tools/lane_config.py draftd kimi-k3`, which runs `tools/hub_draftd.sh`
   on the hub with the record's unit, source directory, drafter, target
   shard, tap and window. The source directory
-  (`/srv/workspace/sparkpipe/draftd-<sha>`) holds `block_draftd.py` and
-  `spec_offline/` from that commit; the weights are on the hub's NVMe under
+  (`/srv/workspace/sparkpipe/draftd-<sha>`) holds `block_draftd.py`,
+  `context_retention.py`, `serving/working_state.py` and `spec_offline/`
+  from that commit, and the unit runs with `--directive` set to the hub's
+  working-state directive (`docs/WORKING_STATE.md`); the weights are on the hub's NVMe under
   `/srv/workspace/sparkpipe/drafter-weights`. `hub_draftd.sh` refuses a
   path off `/srv/workspace` or `/home`, since inference never reads CephFS
   or cold storage, and `tools/lane_config.py audit` reports a drafter unit

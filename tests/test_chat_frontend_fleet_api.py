@@ -126,9 +126,14 @@ async def gateway_rules(harness, check):
     check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "a key whose priority is background runs below interactive requests")
     engine.reply(ANSWER)
     status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), account="acme",
-                                         **{"X-SparkPipe-Fleet": "F1 <b>evil</b>", "X-Claude-Code-Session-Id": "s" * 500})
+                                         **{"X-SparkPipe-Fleet": "F1 <b>evil</b>"})
+    check(status == 400 and json.loads(text)["error"]["code"] == "wrong_fleet" and "evil" not in text,
+          f"a gateway request naming another fleet, here a malformed one, is refused without echoing the header: {status} {text}")
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), account="acme",
+                                         **{"X-Claude-Code-Session-Id": "s" * 500})
     record = json.loads(text)["sparkpipe"]
-    check(record["fleet"] is None and record["session"] is None, f"header values that are too long or carry other characters are not echoed or logged: {record}")
+    check(record["fleet"] == "F1" and record["session"] is None, f"header values that are too long or carry other characters are not echoed or logged: {record}")
 
     engine.hold = asyncio.Event()
     held = [asyncio.ensure_future(harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hold"}]), account="acme")) for _ in range(2)]
@@ -194,6 +199,8 @@ async def gateway_rules(harness, check):
         deleted = await response.json()
     check(response.status == 200 and "replay_store" in deleted["deleted"] and not (harness.tmp / "state" / "replay" / "account-acme.sqlite").exists() and
           (harness.tmp / "state" / "replay" / "account-bob.sqlite").exists(), f"DELETE /v1/cache deletes the account's replay store and no other: {deleted}")
+    check("engine_cache" in deleted["deleted"] and deleted["not_deleted"] == [] and harness.controller.deletions == [{"account": "acme", "storage": False}],
+          f"and has the fleet controller wipe the engine's cache, without storage: {deleted} {harness.controller.deletions}")
     engine.reply(ANSWER)
     status, _, text = await harness.post("/v1/chat/completions", chat(history), account="acme")
     check(json.loads(text)["sparkpipe"]["replayed_tokens"] == 0, "after DELETE /v1/cache the account's turns no longer replay")

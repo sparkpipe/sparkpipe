@@ -37,6 +37,9 @@ nothing more:
 - prefix reuse happens in the engine; the chat layer keeps one piece of
   request state, the replay store of the Fleet API shapes (below), so a
   structured history renders back to the exact tokens the model generated;
+- it names the account of every request and has the working-state
+  controller admit it before the request takes a sequence (see Working state
+  and held fleets below);
 - while the engine is starting (its 503 says `"status":"starting"`) or is
   unreachable, a request waits in the model's `warm_queue` (`depth`,
   `wait_seconds`, and `activation_url`, which is POSTed once per cold period
@@ -139,7 +142,7 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
+| Swap controller | `tools/serving/model_swap.py` with `tools/serving/working_state_controller.py` and `tools/serving/working_state.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id, "account": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs), `GET /working-state`, `POST /working-state/admit {"account": id}`, `POST /working-state/delete {"account": id, "storage": bool}`; every call needs the controller token (see Control-plane access) |
 | Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
@@ -460,7 +463,25 @@ public models:
 - `cached_tokens` in a public reply counts only prefixes that key itself sent
   (a per-key ledger of 64-token blocks) or that its account's replay store
   holds, so a key cannot test whether someone else sent a prompt. Prefix
-  reuse itself is shared.
+  reuse is per account: the fleet serves one account at a time and wipes at
+  every change of user, and the ledgers are cleared at every handover.
+- A gateway request must also carry `X-SparkPipe-Fleet`, the fleet id the
+  working-state controller serves: 400 `fleet_required` without it and 400
+  `wrong_fleet` for another fleet. The account of a gateway request is the
+  one in `X-SparkPipe-Account`; every other request is the account
+  `sparkpipe`, our own use.
+- Every request is admitted by the controller as its account before it takes
+  a sequence. A refusal reaches the client with the controller's status, code
+  and Retry-After: 503 `fleet_held` during another account's held hour
+  (Retry-After is the end of the holder's contiguous hours), 503
+  `account_service_unavailable` when the account service (the market's
+  holder schedule) has not answered for an hour and the request needs it: a
+  different account, or the current holder past its booked hours as the
+  service last answered. The current holder keeps being served through such
+  an outage. 503 `handover_failed` or `handover_pending` when the
+  fleet could not pass to the account in time. A request cancelled because
+  the fleet passed to another account ends with 503 `fleet_handover` (in a
+  chat stream, as an error event followed by `[DONE]`).
 - A public request for a model that is not resident is served only when no
   model is resident or the controller is already switching to it. Otherwise
   it gets 409 `model_not_loaded` naming the resident models, unless its key
@@ -527,7 +548,7 @@ templates and tool-call parsers already live. `tools/serving/chat_shapes.py`
 | `GET/PUT /v1/models/aliases` | The account's alias table: at most 64 entries, each a name or pattern of at most 128 characters with at most four `*` |
 | `GET /v1/models` | Resident models first, each with `resident`, `context_window`, `max_output_tokens`, `sequences` and the Anthropic list fields, plus the alias table |
 | `GET /v1/codex/models` | The same models as Codex's own catalogue (`model_catalog_url`), below |
-| `DELETE /v1/cache` | Deletes the account's replay store now: its turns, stored responses and alias table |
+| `DELETE /v1/cache` | From the fleet's holder (a gateway request) or our own internal use: cancels the account's running requests, deletes its replay store (turns, stored responses, alias table) and has the working-state controller wipe the engine's cache on the hub and every node; `?storage=true` deletes storage (the scratch areas) too. 503 `delete_incomplete` when the engine or a node does not take the wipe, 409 `not_current_user` when the account does not hold the fleet. A key of our own use deletes only its replay store |
 | `HEAD /api/hello` | 200, no key |
 
 Token-exact replay (§3.2). For every assistant turn it returns, the chat
@@ -575,9 +596,17 @@ directive the working-state controller writes on the hub
 last used before `wiped` (another account started using the fleet), or 24 h
 after the later of its last use and `held_until`, is deleted; an account
 whose rows are all gone has its files removed. A missing directive is
-`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` removes
-the account's files at once; the engine's cache goes at the next change of
-user or by the same 24 h rule, and the answer says so (`not_deleted`).
+`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` from the
+fleet's holder removes the account's files at once and asks the controller
+(`POST /working-state/delete`) to wipe the engine: the controller drains the
+account's requests, moves `wiped` (and `storage_wiped` with
+`?storage=true`) on the hub and every node, and answers only once the engine
+reports the new `wiped`, so the next request is a cold prefill; the nodes
+delete the files at their next sweep (within a minute). A deletion any node
+or the engine does not take answers 503 `delete_incomplete`; the directive
+keeps being pushed, and a repeat of the request completes it. Every deletion
+is recorded in the controller's history and logged (`working_state_deleted`,
+`working_state_delete_done`).
 Responses `store` (true unless the request sets it to false, as in OpenAI's
 API) decides whether the conversation is kept for `previous_response_id`;
 the generated tokens are kept either way. A failed write to the store (disk
@@ -936,8 +965,8 @@ fewer than 32 characters, and answers 401 to any call without
 directory). Its callers:
 
 - the chat layer reads the file named by `controller_token_file` in its
-  config and presents it on warm-queue activations, status and Switch now,
-  and nowhere else: not to the engines and not to SparkPipe Chat's login
+  config and presents it on warm-queue activations, status, Switch now,
+  admissions and working-state polls, and nowhere else: not to the engines and not to SparkPipe Chat's login
   check (`tests/test_chat_frontend_warm_queue.py`,
   `tests/test_chat_frontend_switch_now.py`). It refuses a config whose
   `control` block or activation URLs have no token file;
@@ -964,6 +993,7 @@ Start or restart the two units (hub, as spec):
 install -d -m 2700 /srv/workspace/sparkpipe/swap-controller
 ( umask 077; [ -s /srv/workspace/sparkpipe/swap-controller/token ] || \
   openssl rand -hex 32 > /srv/workspace/sparkpipe/swap-controller/token )
+test -s /srv/workspace/sparkpipe/swap-controller/holders-token  # the bearer token the holder schedule accepts (today the gateway's upstream key), 600
 systemd-run --user --unit=sparkpipe-swap -p WorkingDirectory=/home/spec/sparkpipe-swap \
   /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file /srv/workspace/sparkpipe/swap-controller/token --host 127.0.0.1 --port 8440 >> swap.log 2>&1'
 systemd-run --user --unit=sparkpipe-chat -p MemoryMax=4G -p WorkingDirectory=/home/spec/sparkpipe-chat \
@@ -976,12 +1006,100 @@ nothing. An engine API's `live_requests` is not the test, because a gate's
 scoring talks to the engine API directly, never passes through the chat
 layer and is not interrupted by its restart.
 
+`working_state_controller.py` and `working_state.py` sit next to `model_swap.py`
+in `~/sparkpipe-swap`, and `working_state.py` next to `chat_frontend.py` in
+`~/sparkpipe-chat`; the controller needs aiohttp, the rule only the standard
+library.
+
 Read the controller from a hub shell without putting the token on a command
 line:
 
 ```sh
 printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-controller/token)" | curl -s -H @- localhost:8440/status
+printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-controller/token)" | curl -s -H @- localhost:8440/working-state
 ```
+
+### Working state and held fleets (2026-11-01)
+
+The swap controller loads the working-state controller
+(`tools/serving/working_state.py`, design in
+[WORKING_STATE.md](WORKING_STATE.md)) from the `working_state` block of
+`deployment/hub/model_swap.json`:
+
+| Key | Production | Meaning |
+| --- | --- | --- |
+| `fleet` | `F1` | the fleet id the market and the gateway use |
+| `holders_url` | `https://sparkpipe.ai/market/fleets/F1/holders` | the market's holder schedule |
+| `holders_token_file` | `/srv/workspace/sparkpipe/swap-controller/holders-token` | the bearer token the market's holder schedule accepts, today the gateway's upstream key; 600, at least 32 characters |
+| `state_file` | `/srv/workspace/sparkpipe/swap-controller/working-state.json` | current user, `wiped`, `held_until`; 600, kept across restarts |
+| `hub_directive` | `/home/spec/sparkdata/working-state/directive` | the hub's directive, read by the engine API and the draft servers |
+| `drain_seconds`, `confirm_seconds` | 60, 30 | bounds on a handover's drain and on the engine's confirmation |
+
+A missing block or key stops the controller. A state file others can read,
+or one that is not exactly `user`, `wiped` and `held_until`, stops it too; a
+missing state file means no user yet, so the first account admitted wipes.
+
+- **Holder schedule.** Every 30 s the controller asks
+  `holders_url?from=<slot>&to=<slot>` for the last 25 hours through the next
+  25, with `Authorization: Bearer <holders token>`. Held hours are
+  weekly-plan hours and HC-booked hours. It keeps the last good answer, in
+  the working-state file too, so a restart keeps it. When the last answer is
+  more than an hour old, or there is none, the account service counts as
+  down (logged `working_state_account_service_down`, and
+  `working_state_account_service_back` with the count of refusals when it
+  answers again). While it is down the current user is still admitted, and
+  its model changes still go ahead, for every hour the last answer booked to
+  it, through to the end of that booking. Anything that needs the service is
+  refused with 503 `account_service_unavailable`: another account (a change
+  of user needs the booking check and the wipe), the current user past its
+  cached booking, and every other model change. The view's `schedule` shows
+  `outage`, `serving_until` and `refused_during_outage`. Once the service
+  answers, its answer wins: a new holder's hour starts the handover as
+  usual.
+- **Admission.** `POST /working-state/admit {"account"}` answers 200 with the
+  view below once the account may run: during a held hour only the holder
+  (anyone else gets 503 `fleet_held` with Retry-After at the end of the
+  holder's contiguous hours); outside held hours anyone, after a handover if
+  the account is not the current user. An admission waits for a running
+  handover (bounded by the drain, the confirmation and two node pushes) and
+  then decides again.
+- **Handover.** At the start of another account's held hour, or on an
+  admission for an account other than the current user, the controller
+  stops admitting and shows the handover on `GET /working-state`; the chat
+  layer, which polls that every 2 s, cancels every in-flight request of any
+  other account (and SparkPipe Chat's memory jobs when the new account is
+  not `sparkpipe`) and clears its prefix ledgers. The controller waits until
+  every engine API that answers reports `live_requests` 0 (at most
+  `drain_seconds`, else the handover fails closed and nothing is wiped),
+  sets `wiped` to the next whole second after the drain (always above the
+  last `wiped`) and `held_until` for the new user, saves the state file,
+  writes the hub directive, pushes the node directive to every node over
+  SSH (`mkdir -p`, temporary file, `mv -f` into
+  `~/sparkdata/working-state/directive`) and waits until every engine API
+  that answers 200 reports `working_state_wiped` at or above the new
+  `wiped` (at most `confirm_seconds`, else 503 `handover_failed`). It admits
+  only once the wall clock has passed `wiped`. After a restart the
+  controller confirms the engine again before the first admission.
+- **held_until** is the end of the current user's last held hour that has
+  started: the end of the current hour while held, 0 for an account that
+  holds none. The controller raises it as hours pass and writes and pushes
+  it when it changes.
+- **Nodes.** A node the push cannot reach is listed under `nodes.pending`
+  and retried every minute; every node is pushed again every 5 minutes.
+- **Model changes.** During a held hour `/activate` and `/force` answer 409
+  `fleet_held` unless the body's `account` is the holder. The chat layer
+  sends the waiting request's account with every activation and `sparkpipe`
+  with Switch now.
+- **SparkPipe Chat's memory jobs** run only while the controller's current
+  user is `sparkpipe`, no handover runs and no one else holds the hour.
+- **The draft servers** (`tools/block_draftd.py --directive`, which
+  `tools/hub_draftd.sh` sets to the hub directive) apply the same rule to
+  their contexts every second, with wall-clock last use.
+
+`GET /working-state` shows `fleet`, `user`, `holder` (the account holding
+the current hour), `wiped`, `held_until`, `confirmed`, `handover` (`from`,
+`to`, `phase`: draining, wiping, confirming), `last_handover`, the schedule's
+age and error, and the last node push.
 
 ### Chat memory (K3, 2026-10-14)
 

@@ -397,6 +397,20 @@ that failed and its errno. The cache then drops that entry's saved mark and,
 after an I/O error, saves the entry again, so one failed write never leaves a
 chain that cannot restore.
 
+**Working state on a held fleet.** The hub's working-state controller admits
+every request as its account (the gateway's `X-SparkPipe-Account`, or our
+own use) and keeps a held hour to its holder. At a change of user it drains
+the old user's requests, moves `wiped` on the hub and every node, waits for
+the engine to report it, so no request can reach the old user's cache, and
+then restores our image on every node and records the image hash and the
+restore's time; the nodes delete the old files within a minute. A fleet's
+holder deletes its own working state with `DELETE /v1/cache` (and its
+storage with `?storage=true`); the answer comes once nothing can reach the
+deleted state, or it is 503 `delete_incomplete`.
+`tools/working_state_scan.py` lists every place on a host where working
+state can live and what it holds for an account, a time or in all
+([`docs/WORKING_STATE.md`](docs/WORKING_STATE.md)).
+
 For a model with recurrent state (K3's KDA layers, GLM-5.3 Flash's linear
 attention), a resume point is a page with its state saved beside it:
 - one state on every checkpoint stride (`cache_checkpoint_token_count`,
