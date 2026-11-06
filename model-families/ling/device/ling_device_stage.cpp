@@ -92,6 +92,8 @@ struct LingDevice
 		delta->l2_epsilon = 1e-6f;
 		delta->minimum_log_decay = G::kKdaLowerBound;
 		delta->beta_mode = G::kKdaDoubledBeta ? SPARK_DELTA_BETA_DOUBLED : SPARK_DELTA_BETA_SIGMOID;
+		delta->conv_swish_once = G::kKdaConvRoundedSum ? 0u : 1u;
+		delta->norm_round_once = G::kKdaNormRoundOnce ? 1u : 0u;
 		memset(attention, 0, sizeof(*attention));
 		attention->heads = G::kMlaHeads;
 		attention->nope = G::kNope;

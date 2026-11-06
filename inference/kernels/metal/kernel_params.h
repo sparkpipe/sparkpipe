@@ -103,7 +103,7 @@ typedef struct SparkGatedNormParams
 	uint32_t sigmoid_gate;
 	uint32_t weight_f32;
 	uint32_t round_norm;
-	uint32_t pad;
+	uint32_t round_once;
 } SparkGatedNormParams;
 
 typedef struct SparkBranchNormParams
@@ -203,7 +203,7 @@ typedef struct SparkConvParams
 	uint32_t commit;
 	uint32_t dilation;
 	uint32_t weight_f32;
-	uint32_t pad;
+	uint32_t swish_once;
 } SparkConvParams;
 
 typedef struct SparkDeltaParams

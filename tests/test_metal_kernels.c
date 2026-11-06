@@ -346,7 +346,7 @@ static void TestRmsNormWeightless(uint32_t rows)
 	SparkDeviceFree(&hidden);
 }
 
-static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weight_f32)
+static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weight_f32, uint32_t round_once)
 {
 	enum { HEADS = 48, HEAD = 128, STRIDE = 6144, GATE_STRIDE = 16384, GATE_OFFSET = 10240 };
 	SparkDeviceBuffer input, gate, weight, out;
@@ -378,6 +378,7 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weigh
 	params.sigmoid_gate = sigmoid_gate;
 	params.weight_f32 = weight_f32 != 0u ? 1u : 0u;
 	params.round_norm = weight_f32 == 2u ? 1u : 0u;
+	params.round_once = round_once;
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -409,6 +410,13 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weigh
 							UNIT_BF16 * fabs(y) + fabs(activation) * slack * (1.0 + UNIT_BF16) + (2.0 * FUNCTION_ERROR + 2.0 * UNIT_F32) * fabs(y) + 1e-30);
 						continue;
 					}
+					if ( round_once != 0u )
+					{
+						const double y = Bf16(v[i]) * scale * Bf16(w[i]) * activation;
+						const double tolerance = UNIT_BF16 * fabs(y) + (Gamma(HEAD) + 3.0 * FUNCTION_ERROR + 4.0 * UNIT_F32) * fabs(y);
+						Observe(check,Bf16(o[(uint64_t)row * STRIDE + head * HEAD + i]),y,tolerance);
+						continue;
+					}
 					if ( weight_f32 != 0u )
 					{
 						const double y = Bf16(v[i]) * scale * wf[i] * activation;
@@ -427,9 +435,9 @@ static void TestRmsNormGate(uint32_t rows, uint32_t sigmoid_gate, uint32_t weigh
 			}
 	}
 	snprintf(shape,sizeof(shape),"rows %u, 48 heads x 128, %s gate in fused row%s",rows,sigmoid_gate != 0u ? "sigmoid" : "silu",
-		weight_f32 == 2u ? ", f32 weight, norm rounded" : weight_f32 != 0u ? ", f32 weight" : "");
+		round_once != 0u ? ", bf16 weight, rounded once" : weight_f32 == 2u ? ", f32 weight, norm rounded" : weight_f32 != 0u ? ", f32 weight" : "");
 	Report("rmsnorm_gate",shape,&clean,&corrupted,weight_f32 == 2u ? "bf16(bf16(x r w) act(g)): u|y| + |act| flip slack of the norm rounding + (2*16 + 2) eps32 |y|" :
-		weight_f32 != 0u ? "one bf16 rounding: u|y| + (gamma_128 + 3*16 + 4) eps32 |y|" :
+		weight_f32 != 0u || round_once != 0u ? "one bf16 rounding: u|y| + (gamma_128 + 3*16 + 4) eps32 |y|" :
 		"u|y| + |act(z)| (flip slack of both bf16 roundings, propagated) + (2*16 + 2) eps32 |y|");
 	SparkDeviceFree(&input);
 	SparkDeviceFree(&gate);
@@ -3844,30 +3852,36 @@ static void TestDeltaPrenorm(void)
 	SparkDeviceFree(&out);
 }
 
-static void TestCausalConvF32(void)
+static void TestCausalConvOnce(uint32_t weight_f32)
 {
 	enum { CHANNELS = 4096, ROWS = 40 };
 	SparkDeviceBuffer window, index, begin, input, weight, output;
-	uint16_t *win = (uint16_t *)Shared(&window,(uint64_t)2u * CHANNELS * 4u * 2u,"conv f32 window");
-	uint32_t *slot = (uint32_t *)Shared(&index,4u,"conv f32 slot");
-	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"conv f32 begin");
-	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)ROWS * CHANNELS * 2u,"conv f32 input");
-	float *w = (float *)Shared(&weight,CHANNELS * 4u * 4u,"conv f32 weight");
-	uint16_t *out = (uint16_t *)Shared(&output,(uint64_t)ROWS * CHANNELS * 2u,"conv f32 output");
+	uint16_t *win = (uint16_t *)Shared(&window,(uint64_t)2u * CHANNELS * 4u * 2u,"conv once window");
+	uint32_t *slot = (uint32_t *)Shared(&index,4u,"conv once slot");
+	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"conv once begin");
+	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)ROWS * CHANNELS * 2u,"conv once input");
+	void *w_bytes = Shared(&weight,CHANNELS * 4u * (weight_f32 != 0u ? 4u : 2u),"conv once weight");
+	float *w = (float *)w_bytes;
+	uint16_t *wb = (uint16_t *)w_bytes;
+	uint16_t *out = (uint16_t *)Shared(&output,(uint64_t)ROWS * CHANNELS * 2u,"conv once output");
 	SparkOpsSequences sequences;
 	SparkConvParams params;
 	Check clean, corrupted;
 	uint32_t pass, row, c, tap;
 	FillBf16(in,(uint64_t)ROWS * CHANNELS,1.0);
 	for ( c = 0u; c < CHANNELS * 4u; c++ )
-		w[c] = (float)(Normal() * 0.5);
+		if ( weight_f32 != 0u )
+			w[c] = (float)(Normal() * 0.5);
+		else
+			wb[c] = ToBf16((float)(Normal() * 0.5));
 	memset(&params,0,sizeof(params));
 	params.channels = CHANNELS;
 	params.row_stride = CHANNELS;
 	params.sequences = 1u;
 	params.kernel_taps = 4u;
 	params.commit = 1u;
-	params.weight_f32 = 1u;
+	params.weight_f32 = weight_f32;
+	params.swish_once = weight_f32 != 0u ? 0u : 1u;
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -3875,17 +3889,25 @@ static void TestCausalConvF32(void)
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
-		const float saved = w[777u * 4u + 3u];
+		const float saved = weight_f32 != 0u ? w[777u * 4u + 3u] : Bf16(wb[777u * 4u + 3u]);
 		memset(check,0,sizeof(*check));
 		memset(win,0,(size_t)2u * CHANNELS * 4u * 2u);
 		slot[0] = 1u;
 		rb[0] = 0u;
 		rb[1] = ROWS;
 		if ( pass == 1u )
-			w[777u * 4u + 3u] = saved + 1.0f;
-		if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&input),Whole(&weight),Whole(&output),&params),"causal_conv f32") )
+		{
+			if ( weight_f32 != 0u )
+				w[777u * 4u + 3u] = saved + 1.0f;
+			else
+				wb[777u * 4u + 3u] = ToBf16(saved + 1.0f);
+		}
+		if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&input),Whole(&weight),Whole(&output),&params),"causal_conv once") )
 			break;
-		w[777u * 4u + 3u] = saved;
+		if ( weight_f32 != 0u )
+			w[777u * 4u + 3u] = saved;
+		else
+			wb[777u * 4u + 3u] = ToBf16(saved);
 		for ( row = 0u; row < ROWS; row++ )
 			for ( c = 0u; c < CHANNELS; c++ )
 			{
@@ -3893,14 +3915,16 @@ static void TestCausalConvF32(void)
 				for ( tap = 0u; tap < 4u; tap++ )
 				{
 					const double x = row + tap >= 3u ? Bf16(in[(uint64_t)(row + tap - 3u) * CHANNELS + c]) : 0.0;
-					total += x * w[c * 4u + tap];
-					magnitude += fabs(x * w[c * 4u + tap]);
+					const double weight_value = weight_f32 != 0u ? (double)w[c * 4u + tap] : (double)Bf16(wb[c * 4u + tap]);
+					total += x * weight_value;
+					magnitude += fabs(x * weight_value);
 				}
 				const double y = Silu(total);
 				Observe(check,Bf16(out[(uint64_t)row * CHANNELS + c]),y,UNIT_BF16 * fabs(y) + 2.0 * FUNCTION_ERROR * fabs(y) + 1.2 * Gamma(5u) * magnitude + 1e-30);
 			}
 	}
-	Report("causal_conv_silu_f32","4096 channels, 40 rows, f32 weights",&clean,&corrupted,
+	Report(weight_f32 != 0u ? "causal_conv_silu_f32" : "causal_conv_silu_once",weight_f32 != 0u ? "4096 channels, 40 rows, f32 weights" :
+		"4096 channels, 40 rows, bf16 weights, swish of the fp32 sum",&clean,&corrupted,
 		"bf16(silu(sum x w)) with the fp32 sum unrounded: u|y| + 2*16 eps32 |y| + 1.2 gamma_5 sum|x w|");
 	SparkDeviceFree(&window);
 	SparkDeviceFree(&index);
@@ -5738,11 +5762,12 @@ int main(int argc, char **argv)
 	TestRmsNormResidual(1u,0u);
 	TestRmsNormResidual(64u,0u);
 	TestRmsNormResidual(3u,1u);
-	TestRmsNormGate(1u,0u,0u);
-	TestRmsNormGate(33u,0u,0u);
-	TestRmsNormGate(3u,1u,0u);
-	TestRmsNormGate(5u,1u,1u);
-	TestRmsNormGate(4u,1u,2u);
+	TestRmsNormGate(1u,0u,0u,0u);
+	TestRmsNormGate(33u,0u,0u,0u);
+	TestRmsNormGate(3u,1u,0u,0u);
+	TestRmsNormGate(5u,1u,1u,0u);
+	TestRmsNormGate(4u,1u,2u,0u);
+	TestRmsNormGate(6u,1u,0u,1u);
 	TestHeadRope(1u,24u,0u,512u,"24 query heads in the fused row");
 	TestHeadRope(17u,4u,12288u,256u,"4 key heads in the fused row");
 	{
@@ -5845,7 +5870,8 @@ int main(int argc, char **argv)
 	TestHcCombKernels(3u,0u);
 	TestHcCombKernels(9u,0u);
 	TestCausalConv();
-	TestCausalConvF32();
+	TestCausalConvOnce(1u);
+	TestCausalConvOnce(0u);
 	TestDeltaPrenorm();
 	TestCausalConvDilated();
 	TestGatedDelta();

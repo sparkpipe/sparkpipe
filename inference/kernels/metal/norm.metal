@@ -74,6 +74,13 @@ kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], d
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
 		float value;
+		if ( p.round_once != 0u && p.weight_f32 == 0u )
+		{
+			const float g_once = SparkMathBf16ToFloat(g[i]);
+			y[i] = SparkMathFloatToBf16(SparkMathRmsNormGateOnce(SparkMathBf16ToFloat(x[i]), scale, SparkMathBf16ToFloat(weight[i]),
+				p.sigmoid_gate != 0u ? SparkMathSigmoidFast(g_once) : SparkMathSiluFast(g_once)));
+			continue;
+		}
 		if ( p.weight_f32 != 0u )
 		{
 			value = SparkMathBf16ToFloat(x[i]) * scale * ((device const float *)weight)[i];

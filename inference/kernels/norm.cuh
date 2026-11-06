@@ -273,6 +273,29 @@ static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__r
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSigmoidGateOnceKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.y,head = blockIdx.x,index;
+	uint64_t base;
+	float total = 0.0f,scale,value;
+	if ( row >= rows || head >= heads )
+		return;
+	base = ((uint64_t)row * heads + head) * head_dimension;
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+		output_bf16[base + index] = LmFloatToBf16(SparkMathRmsNormGateOnce(LmBf16ToFloat(input_bf16[base + index]), scale,
+			LmBf16ToFloat(weight_bf16[index]), SparkMathSigmoidFast(LmBf16ToFloat(gate_bf16[base + index]))));
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmHeadRmsNormSiluGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
 {
 	LmHeadRmsNormGateBody<THREADS,LM_GATE_SILU>(input_bf16,gate_bf16,weight_bf16,output_bf16,rows,heads,head_dimension,epsilon);

@@ -85,6 +85,11 @@ SPARK_MATH_FN float SparkMathNormGainRounded(float normed, float gain)
 	return(SparkMathRoundBf16(normed) * gain);
 }
 
+SPARK_MATH_FN float SparkMathRmsNormGateOnce(float value, float scale, float gain, float activation)
+{
+	return(value * scale * gain * activation);
+}
+
 SPARK_MATH_FN float SparkMathAttentionValueWeight(float weight)
 {
 	return(SparkMathRoundBf16(weight));

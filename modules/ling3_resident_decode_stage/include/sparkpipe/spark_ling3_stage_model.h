@@ -67,6 +67,8 @@ struct Ling3Geometry : LingDefaults
 	static constexpr float kNormEpsilon = LG_EPSILON;
 	static constexpr bool kNormRoundFirst = true;
 	static constexpr bool kKdaDoubledBeta = false;
+	static constexpr bool kKdaConvRoundedSum = false;
+	static constexpr bool kKdaNormRoundOnce = true;
 };
 #endif
 

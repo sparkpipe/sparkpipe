@@ -707,7 +707,8 @@ static inline cudaError_t LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t s
 enum LmConvActivation
 {
 	LM_CONV_NONE = 0,
-	LM_CONV_SWISH = 1
+	LM_CONV_SWISH = 1,
+	LM_CONV_SWISH_ONCE = 2
 };
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
@@ -743,6 +744,8 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 				total = LmBf16ToFloat(LmFloatToBf16(total));
 			total = SparkMathSwishFast(total);
 		}
+		if ( ACTIVATION == LM_CONV_SWISH_ONCE )
+			total = SparkMathSwishFast(total);
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 	}
 	if ( commit == 0u )
@@ -830,6 +833,8 @@ static __device__ __forceinline__ void LmCausalConvTiledBody(uint16_t *__restric
 					total = LmBf16ToFloat(LmFloatToBf16(total));
 				total = SparkMathSwishFast(total);
 			}
+			if ( ACTIVATION == LM_CONV_SWISH_ONCE )
+				total = SparkMathSwishFast(total);
 			output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 		}
 		__syncthreads();

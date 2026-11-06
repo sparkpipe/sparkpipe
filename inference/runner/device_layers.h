@@ -61,6 +61,8 @@ typedef struct SparkDeviceChannelDeltaShape
 	uint32_t conv_f32;
 	uint32_t gate_full_rank;
 	float prenorm_epsilon;
+	uint32_t conv_swish_once;
+	uint32_t norm_round_once;
 } SparkDeviceChannelDeltaShape;
 
 typedef struct SparkDeviceChannelDeltaWeights

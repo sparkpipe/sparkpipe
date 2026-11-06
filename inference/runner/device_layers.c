@@ -254,6 +254,7 @@ SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *q
 	conv.kernel_taps = shape->conv_taps;
 	conv.commit = tensors->sequences.commit;
 	conv.weight_f32 = shape->conv_f32;
+	conv.swish_once = shape->conv_swish_once;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsCausalConv(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_WINDOW_POOL,recurrent_layer),&tensors->sequences,
 			scratch->qkv,weights->conv,scratch->qkv,&conv);
@@ -285,6 +286,7 @@ SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *q
 	gate.sigmoid_gate = 1u;
 	gate.weight_f32 = shape->norm_f32;
 	gate.round_norm = shape->norm_round;
+	gate.round_once = shape->norm_round_once;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormGate(stage->ops,queue,scratch->core,scratch->gate,weights->norm,scratch->gated,&gate);
 	if ( status == SPARK_STATUS_OK )

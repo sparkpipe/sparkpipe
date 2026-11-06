@@ -301,7 +301,7 @@ struct LingModel
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
+		LmCausalConvLaunch<G::kConv,(G::kKdaConvRoundedSum ? LM_CONV_SWISH : LM_CONV_SWISH_ONCE),uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
 			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices, rows, stream);
 		LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 			S::kKdaWidth);
@@ -321,8 +321,12 @@ struct LingModel
 			(const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
 			S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
-			state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
+		if constexpr ( G::kKdaNormRoundOnce )
+			LM_LAUNCH((LmHeadRmsNormSigmoidGateOnceKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
+				state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
+		else
+			LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
+				state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
 		if ( Launched() != SPARK_STATUS_OK ||
 			Linear(layer->kda_out, state->kda_mixed, state->partial, rows, S::kKdaWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -585,7 +589,7 @@ struct LingModel
 				continue;
 			uint8_t *state_pool = state->kda_state + (uint64_t)layer->recurrent_index * state->slots * state->kda_state_bytes;
 			uint16_t *window = state->kda_window + (uint64_t)layer->recurrent_index * state->slots * (state->kda_window_bytes / sizeof(uint16_t));
-			LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
+			LmCausalConvLaunch<G::kConv,(G::kKdaConvRoundedSum ? LM_CONV_SWISH : LM_CONV_SWISH_ONCE),uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, ReplayQkv(state, layer), layer->kda_conv,
 				state->qkv, S::kKdaChannels, sequences, 1u, step->sequence_row_indices, rows, stream);
 			LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 				S::kKdaWidth);
