@@ -474,8 +474,11 @@ public models:
   a sequence. A refusal reaches the client with the controller's status, code
   and Retry-After: 503 `fleet_held` during another account's held hour
   (Retry-After is the end of the holder's contiguous hours), 503
-  `holder_schedule_unknown` when the market's holder schedule is unknown or
-  more than an hour old, 503 `handover_failed` or `handover_pending` when the
+  `account_service_unavailable` when the account service (the market's
+  holder schedule) has not answered for an hour and the request needs it: a
+  different account, or the current holder past its booked hours as the
+  service last answered. The current holder keeps being served through such
+  an outage. 503 `handover_failed` or `handover_pending` when the
   fleet could not pass to the account in time. A request cancelled because
   the fleet passed to another account ends with 503 `fleet_handover` (in a
   chat stream, as an error event followed by `[DONE]`).
@@ -1039,9 +1042,20 @@ missing state file means no user yet, so the first account admitted wipes.
 - **Holder schedule.** Every 30 s the controller asks
   `holders_url?from=<slot>&to=<slot>` for the last 25 hours through the next
   25, with `Authorization: Bearer <holders token>`. Held hours are
-  weekly-plan hours and HC-booked hours. It keeps the last good answer; an
-  answer more than an hour old, or none since start, fails every admission
-  and every model change closed (503 `holder_schedule_unknown`).
+  weekly-plan hours and HC-booked hours. It keeps the last good answer, in
+  the working-state file too, so a restart keeps it. When the last answer is
+  more than an hour old, or there is none, the account service counts as
+  down (logged `working_state_account_service_down`, and
+  `working_state_account_service_back` with the count of refusals when it
+  answers again). While it is down the current user is still admitted, and
+  its model changes still go ahead, for every hour the last answer booked to
+  it, through to the end of that booking. Anything that needs the service is
+  refused with 503 `account_service_unavailable`: another account (a change
+  of user needs the booking check and the wipe), the current user past its
+  cached booking, and every other model change. The view's `schedule` shows
+  `outage`, `serving_until` and `refused_during_outage`. Once the service
+  answers, its answer wins: a new holder's hour starts the handover as
+  usual.
 - **Admission.** `POST /working-state/admit {"account"}` answers 200 with the
   view below once the account may run: during a held hour only the holder
   (anyone else gets 503 `fleet_held` with Retry-After at the end of the

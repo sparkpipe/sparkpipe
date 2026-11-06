@@ -407,7 +407,7 @@ hash is the gateway entry in the hub's `api_keys.json`. Copy `working_state.py` 
 `working_state_url` (`deployment/hub/chat_frontend.json`). The order
 matters: the engine API must already report `working_state_wiped` on
 `/health` and the market must already serve the holder schedule, or every
-request fails closed (503 `handover_failed` or `holder_schedule_unknown`).
+request fails closed (503 `handover_failed` or `account_service_unavailable`).
 A draft server's source directory needs `context_retention.py` and
 `serving/working_state.py` beside `block_draftd.py`; `hub_draftd.sh`
 refuses one without them and passes `--directive`.

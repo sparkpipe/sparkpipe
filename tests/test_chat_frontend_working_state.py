@@ -211,9 +211,9 @@ async def run(tmp, failures):
             status, text, retry = await ask(dict(gateway, **{"X-SparkPipe-Account": "ACOTHER", "X-SparkPipe-Fleet": "F1"}))
             check(status == 503 and code(text) == "fleet_held" and retry == "1234" and len(seen) == 3,
                   f"a refused admission reaches the client with the controller's status, code and Retry-After, and nothing runs: {status} {text} {retry}")
-            controller.refusal = (503, "holder_schedule_unknown", "30")
+            controller.refusal = (503, "account_service_unavailable", "30")
             status, text, retry = await ask({})
-            check(status == 503 and code(text) == "holder_schedule_unknown" and retry == "30", f"an unknown holder schedule refuses SparkPipe's own requests too: {status} {text}")
+            check(status == 503 and code(text) == "account_service_unavailable" and retry == "30", f"an unknown holder schedule refuses SparkPipe's own requests too: {status} {text}")
             controller.refusal = None
 
             holder = dict(gateway, **{"X-SparkPipe-Account": "ACONE", "X-SparkPipe-Fleet": "F1"})

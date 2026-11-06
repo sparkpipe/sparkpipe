@@ -22,7 +22,7 @@ HOUR_SECONDS = 3600
 WINDOW_HOURS = 25
 SLOT = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):00Z")
 REQUIRED = ("fleet", "holders_url", "holders_token_file", "state_file", "hub_directive", "restore_command")
-STATE_KEYS = {"user", "since", "wiped", "held_until", "storage_wiped", "restored", "history"}
+STATE_KEYS = {"user", "since", "wiped", "held_until", "storage_wiped", "restored", "history", "schedule"}
 HISTORY_KEEP = 256
 SWEEP_SECONDS = 60
 IMAGE = re.compile(r"image (sha256:[0-9a-f]{64})")
@@ -51,7 +51,7 @@ def load_state(path):
     try:
         mode = os.stat(path).st_mode & 0o777
     except FileNotFoundError:
-        return {"user": None, "since": 0, "wiped": 0, "held_until": 0, "storage_wiped": 0, "restored": 0, "history": []}
+        return {"user": None, "since": 0, "wiped": 0, "held_until": 0, "storage_wiped": 0, "restored": 0, "history": [], "schedule": {"fetched": None, "hours": []}}
     if mode & 0o077:
         raise SystemExit(f"working_state: {path} has mode {mode:o}; the working-state file must be readable by its owner only")
     try:
@@ -61,10 +61,18 @@ def load_state(path):
     if (not isinstance(state, dict) or set(state) != STATE_KEYS or not (state["user"] is None or valid_account(state["user"])) or
             not all(type(state[key]) is int and state[key] >= 0 for key in ("since", "wiped", "held_until", "storage_wiped", "restored")) or
             not state["since"] <= state["storage_wiped"] <= state["wiped"] or not isinstance(state["history"], list) or
-            not all(isinstance(event, dict) for event in state["history"])):
+            not all(isinstance(event, dict) for event in state["history"]) or not valid_schedule(state["schedule"])):
         raise SystemExit(f"working_state: {path} needs exactly user (an account or null), since <= storage_wiped <= wiped, held_until and "
-                         "restored (unix seconds) and history (a list of events)")
+                         "restored (unix seconds), history (a list of events) and schedule (the last good holder schedule: fetched and hours)")
     return state
+
+
+def valid_schedule(schedule):
+    return (isinstance(schedule, dict) and set(schedule) == {"fetched", "hours"} and
+            (schedule["fetched"] is None or (type(schedule["fetched"]) in (int, float) and schedule["fetched"] >= 0)) and
+            isinstance(schedule["hours"], list) and
+            all(isinstance(entry, list) and len(entry) == 2 and type(entry[0]) is int and entry[0] % HOUR_SECONDS == 0 and valid_account(entry[1])
+                for entry in schedule["hours"]))
 
 
 def refusal(status, code, message, retry_after):
@@ -110,8 +118,10 @@ class Controller:
         self.user, self.since, self.wiped, self.held_until = state["user"], state["since"], state["wiped"], state["held_until"]
         self.storage_wiped, self.restored, self.history = state["storage_wiped"], state["restored"], state["history"]
         self.confirmed = None
-        self.hours = {}
-        self.fetched = None
+        self.hours = {start: account for start, account in state["schedule"]["hours"]}
+        self.fetched = state["schedule"]["fetched"]
+        self.outage = False
+        self.outage_refusals = 0
         self.poll_error = None
         self.handover = None
         self.handing = None
@@ -135,6 +145,18 @@ class Controller:
             end += HOUR_SECONDS
         return end
 
+    def serves_in_outage(self, account, now):
+        return self.fetched is not None and account is not None and account == self.user and self.hours.get(hour_floor(now)) == account
+
+    def service_refusal(self, account, now):
+        self.outage_refusals += 1
+        if account is not None and account == self.user:
+            message = ("the account service is not answering, and this account's booked hours on this fleet, as it last answered, do not cover "
+                       "this hour; it is admitted again when the service answers")
+        else:
+            message = "the account service is not answering, so the fleet cannot pass to another account until it answers"
+        return refusal(503, "account_service_unavailable", message, self.POLL_SECONDS)
+
     def held_until_for(self, account, now):
         return max((start + HOUR_SECONDS for start, holder in self.hours.items() if holder == account and start <= now), default=0)
 
@@ -144,7 +166,9 @@ class Controller:
                 "storage_wiped": self.storage_wiped, "confirmed": self.confirmed == self.wiped, "handover": dict(self.handover) if self.handover else None,
                 "last_handover": self.last, "history": self.history[-16:],
                 "schedule": {"fresh": self.fresh(now), "age_s": round(now - self.fetched, 1) if self.fetched is not None else None,
-                             "held_hours": len(self.hours), "error": self.poll_error},
+                             "held_hours": len(self.hours), "error": self.poll_error, "outage": not self.fresh(now),
+                             "serving_until": slot_text(self.held_end(self.user, now)) if not self.fresh(now) and self.serves_in_outage(self.user, now) else None,
+                             "refused_during_outage": self.outage_refusals},
                 "nodes": {"pushed": self.pushed, "pending": list(self.pending)}}
 
     def persist(self):
@@ -153,7 +177,8 @@ class Controller:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w") as handle:
             handle.write(json.dumps({"user": self.user, "since": self.since, "wiped": self.wiped, "held_until": self.held_until,
-                                     "storage_wiped": self.storage_wiped, "restored": self.restored, "history": self.history[-HISTORY_KEEP:]}) + "\n")
+                                     "storage_wiped": self.storage_wiped, "restored": self.restored, "history": self.history[-HISTORY_KEEP:],
+                                     "schedule": {"fetched": self.fetched, "hours": sorted([start, account] for start, account in self.hours.items())}}) + "\n")
         os.replace(temporary, self.state_file)
 
     def accept(self, answer, now):
@@ -167,6 +192,10 @@ class Controller:
             if hours.setdefault(start, entry["account"]) != entry["account"]:
                 raise ValueError(f"hour {entry['start']} has two holders")
         self.hours, self.fetched = hours, now
+        try:
+            self.persist()
+        except OSError as error:
+            print(json.dumps({"event": "working_state_write_failed", "error": str(error)}), file=sys.stderr, flush=True)
 
     async def poll_once(self):
         now = time.time()
@@ -365,11 +394,24 @@ class Controller:
         self.handing = asyncio.ensure_future(self.hand_over(account))
         return self.handing
 
+    def watch_outage(self, now):
+        if not self.fresh(now) and not self.outage:
+            self.outage = True
+            served = self.user if self.serves_in_outage(self.user, now) else None
+            print(json.dumps({"event": "working_state_account_service_down", "last_answer": self.fetched, "error": self.poll_error,
+                              "serving_current_user": served is not None, "until": slot_text(self.held_end(served, now)) if served else None}),
+                  file=sys.stderr, flush=True)
+        elif self.fresh(now) and self.outage:
+            self.outage = False
+            print(json.dumps({"event": "working_state_account_service_back", "refused_during_outage": self.outage_refusals}), file=sys.stderr, flush=True)
+            self.outage_refusals = 0
+
     def tick(self, now):
+        self.watch_outage(now)
         holder = self.holder_at(now)
         if self.handing is None and holder is not None and holder != self.user:
             self.begin(holder)
-        if self.handing is None and self.user is not None and self.fresh(now):
+        if self.handing is None and self.user is not None and self.fetched is not None:
             held_until = max(self.held_until, self.held_until_for(self.user, now))
             if held_until != self.held_until:
                 self.held_until = held_until
@@ -390,8 +432,8 @@ class Controller:
         deadline = time.monotonic() + self.drain_seconds + self.confirm_seconds + 2 * self.PUSH_SECONDS + 10
         while True:
             now = time.time()
-            if not self.fresh(now):
-                return refusal(503, "holder_schedule_unknown", "the fleet's holder schedule is unknown or more than an hour old", self.POLL_SECONDS)
+            if not self.fresh(now) and not self.serves_in_outage(account, now):
+                return self.service_refusal(account, now)
             holder = self.holder_at(now)
             if holder is not None and account != holder:
                 end = self.held_end(holder, now)
@@ -424,10 +466,11 @@ class Controller:
 
     def refuse_swap(self, body):
         now = time.time()
+        account = body.get("account") if isinstance(body, dict) else None
         if not self.fresh(now):
-            return refusal(503, "holder_schedule_unknown", "the fleet's holder schedule is unknown or more than an hour old", self.POLL_SECONDS)
+            return None if self.serves_in_outage(account, now) else self.service_refusal(account, now)
         holder = self.holder_at(now)
-        if holder is not None and (body.get("account") if isinstance(body, dict) else None) != holder:
+        if holder is not None and account != holder:
             end = self.held_end(holder, now)
             return refusal(409, "fleet_held", f"this fleet is held until {slot_text(end)}; only its holder's requests change the model", max(1, math.ceil(end - now)))
         return None

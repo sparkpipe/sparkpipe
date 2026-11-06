@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -129,7 +131,7 @@ async def scenario(state, failures):
 
             check(hub_directive.read_text() == working_state.directive_text(0, 0, 0), "the controller writes the hub directive at start; with no state yet it is the plain 24-hour rule")
             status, code, retry, _ = await admit("sparkpipe")
-            check((status, code) == (503, "holder_schedule_unknown") and retry is not None, f"with no holder schedule every admit fails closed: {status} {code}")
+            check((status, code) == (503, "account_service_unavailable") and retry is not None, f"with no holder schedule every admit fails closed: {status} {code}")
             check(await until(lambda: len(market.asked) >= 2, 5), "the controller polls the market's holder schedule")
             authorization, query = market.asked[0]
             hour = working_state.hour_floor(time.time())
@@ -237,9 +239,9 @@ async def scenario(state, failures):
             market.failing = True
             working.fetched = time.time() - working_state.Controller.STALE_SECONDS - 1
             status, code, _, _ = await admit("sparkpipe")
-            check((status, code) == (503, "holder_schedule_unknown"), f"a holder schedule older than an hour fails every admit closed: {status} {code}")
+            check((status, code) == (503, "account_service_unavailable"), f"a holder schedule older than an hour fails every admit closed: {status} {code}")
             status, error = await activate({"model": "m", "account": "sparkpipe"})
-            check((status, error.get("code")) == (503, "holder_schedule_unknown"), f"and every model change: {status} {error}")
+            check((status, error.get("code")) == (503, "account_service_unavailable"), f"and every model change: {status} {error}")
             async with session.post(base + "/working-state/admit", json={"account": "bad account"}) as response:
                 check(response.status == 400, "an account that is not an id is refused")
     finally:
@@ -417,6 +419,117 @@ async def deletion(state, failures):
         await market_runner.cleanup()
 
 
+async def outage(state, failures):
+    def check(condition, message):
+        if not condition:
+            failures.append(message)
+
+    controller = working_state.Controller
+    controller.POLL_SECONDS, controller.WATCH_SECONDS, controller.CHECK_SECONDS = 0.1, 0.05, 0.05
+    controller.RETRY_SECONDS, controller.REPUSH_SECONDS, controller.PUSH_SECONDS = 0.3, 3600.0, 10.0
+    pathlib.Path(state, "fake_ssh.py").write_text(FAKE_SSH.replace("STATE", repr(state)))
+    working_state_fixture.write_token(state)
+    hub_directive = pathlib.Path(working_state_fixture.block(state)["hub_directive"])
+    stored = pathlib.Path(working_state_fixture.block(state)["state_file"])
+    market, engine = Market(), Engine(hub_directive)
+    market.failing = False
+    hour = working_state.hour_floor(time.time())
+    market.hours = [{"start": slot(hour), "account": "ACONE"}, {"start": slot(hour + 3600), "account": "ACONE"}]
+    market_app = web.Application()
+    market_app.router.add_get("/market/fleets/F1/holders", market.holders)
+    engine_app = web.Application()
+    engine_app.router.add_get("/health", engine.health)
+    market_runner, market_base = await serve(market_app)
+    engine_runner, engine_base = await serve(engine_app)
+    log = io.StringIO()
+
+    async def run(swapper, steps):
+        control_runner, base = await serve(model_swap.build(swapper, TOKEN))
+        try:
+            async with aiohttp.ClientSession(headers={"Authorization": "Bearer " + TOKEN}) as session:
+                async def admit(account):
+                    async with session.post(base + "/working-state/admit", json={"account": account}) as response:
+                        body = await response.json()
+                        return response.status, (body.get("error") or {}).get("code"), body
+
+                async def activate(account):
+                    async with session.post(base + "/activate", json={"model": "m", "account": account}) as response:
+                        return response.status, ((await response.json()).get("error") or {}).get("code")
+
+                async def view():
+                    async with session.get(base + "/working-state") as response:
+                        return await response.json()
+                await steps(swapper.working, admit, activate, view)
+        finally:
+            await control_runner.cleanup()
+
+    async def before(working, admit, activate, view):
+        check(await until(lambda: working.fresh(time.time()) and working.hours.get(hour) == "ACONE", 5), "the schedule names the holder")
+        status, code, _ = await admit("ACONE")
+        check(status == 200 and working.user == "ACONE", f"the holder is admitted while the account service answers: {status} {code}")
+        kept = json.loads(stored.read_text())["schedule"]
+        check([hour, "ACONE"] in kept["hours"] and [hour + 3600, "ACONE"] in kept["hours"] and kept["fetched"] is not None,
+              f"the last good schedule is kept in the working-state file: {kept}")
+        market.failing = True
+        working.fetched = time.time() - working_state.Controller.STALE_SECONDS - 1
+        wiped = working.wiped
+        with contextlib.redirect_stderr(log):
+            check(await until(lambda: working.outage, 5), "the controller notices the outage")
+            status, code, _ = await admit("ACONE")
+            check(status == 200, f"the current holder keeps being served while the account service is down: {status} {code}")
+            status, code, body = await admit("ACTWO")
+            check((status, code) == (503, "account_service_unavailable") and "ACONE" not in json.dumps(body),
+                  f"a new account is refused with account_service_unavailable while it is down, without the holder's id: {status} {code} {body}")
+            status, code, _ = await admit("sparkpipe")
+            check((status, code) == (503, "account_service_unavailable"), f"so is our own use: {status} {code}")
+            status, code = await activate("ACONE")
+            check(status in (200, 202) and code is None, f"the holder's model change still goes ahead: {status} {code}")
+            status, code = await activate("ACTWO")
+            check((status, code) == (503, "account_service_unavailable"), f"another account's model change is refused: {status} {code}")
+            shown = await view()
+            check(shown["schedule"]["outage"] is True and shown["schedule"]["serving_until"] == slot(hour + 7200) and
+                  shown["schedule"]["refused_during_outage"] >= 3, f"the view shows the outage and how long the holder is served: {shown['schedule']}")
+        check(working.user == "ACONE" and working.wiped == wiped, "nothing is wiped and the user does not change during the outage")
+        check("working_state_account_service_down" in log.getvalue(), f"the outage is logged: {log.getvalue()[-400:]}")
+
+    await run(model_swap.Swapper(config(state, market_base, engine_base)), before)
+
+    kept = json.loads(stored.read_text())
+    kept["schedule"]["fetched"] = time.time() - working_state.Controller.STALE_SECONDS - 1
+    stored.write_text(json.dumps(kept))
+    restarted = model_swap.Swapper(config(state, market_base, engine_base))
+    check(restarted.working.hours.get(hour) == "ACONE" and restarted.working.fetched is not None and not restarted.working.fresh(time.time()),
+          "a restarted hub keeps the last good schedule, still over an hour old")
+
+    async def after_restart(working, admit, activate, view):
+        status, code, _ = await admit("ACONE")
+        check(status == 200 and working.confirmed == working.wiped, f"after a hub restart the holder is still served while the service is down: {status} {code}")
+        status, code, _ = await admit("ACTWO")
+        check((status, code) == (503, "account_service_unavailable"), f"and a new account is still refused: {status} {code}")
+        booked = dict(working.hours)
+        working.hours = {start: account for start, account in booked.items() if start < hour}
+        status, code, body = await admit("ACONE")
+        check((status, code) == (503, "account_service_unavailable") and "booked hours" in body["error"]["message"],
+              f"past the end of the cached booking the holder is refused too: {status} {code} {body}")
+        working.hours = booked
+        with contextlib.redirect_stderr(log):
+            market.hours = [{"start": slot(hour), "account": "ACTWO"}]
+            market.failing = False
+            check(await until(lambda: working.user == "ACTWO" and working.confirmed == working.wiped and working.handing is None, 10),
+                  f"when the service answers again its answer wins and the fleet passes to the new holder: {working.user} {working.last}")
+        status, code, _ = await admit("ACTWO")
+        check(status == 200, f"the new holder is admitted: {status} {code}")
+        status, code, _ = await admit("ACONE")
+        check((status, code) == (503, "fleet_held"), f"and the old one is held out as usual: {status} {code}")
+        check(working.outage is False and "working_state_account_service_back" in log.getvalue(), "the end of the outage is logged")
+
+    try:
+        await run(restarted, after_restart)
+    finally:
+        await engine_runner.cleanup()
+        await market_runner.cleanup()
+
+
 def rule(failures):
     expired = working_state.expired
     day = working_state.RETENTION_SECONDS
@@ -449,18 +562,21 @@ def main():
         asyncio.run(scenario(state, failures))
     with tempfile.TemporaryDirectory() as state:
         asyncio.run(deletion(state, failures))
+    with tempfile.TemporaryDirectory() as state:
+        asyncio.run(outage(state, failures))
     for failure in failures:
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
     print("PASS test_model_swap_working_state: the rule wipes at a change of user and keeps state 24 hours past the later of last use and held hours; "
-          "an unknown or stale holder schedule fails every admit closed; a held hour admits only its holder and refuses others with Retry-After "
+          "an unknown or stale holder schedule refuses every account but the current holder; a held hour admits only its holder and refuses others with Retry-After "
           "at the end of the holder's hours and refuses their model changes; a change of user drains live requests, writes wiped and held_until "
           "on the hub and every node, waits for the engine to apply it and only then admits; a failed node push is retried; an engine that never "
           "applies the wipe fails closed; a restart keeps the user, wiped and held_until; every change of user restores the image on every node and "
           "records its hash and time, and a restore that fails or disagrees fails the handover closed; the current user's deletion drains, moves wiped "
           "(and storage_wiped with storage) on the hub and every node, waits for the engine and fails loudly when a node does not take it; "
-          "nobody else can delete")
+          "nobody else can delete; an account-service outage keeps serving the current holder through its cached booking, across a hub restart, "
+          "refuses a new account with account_service_unavailable, and the service's next answer wins")
 
 
 if __name__ == "__main__":

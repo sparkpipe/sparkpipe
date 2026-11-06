@@ -222,9 +222,16 @@ the 500 GB scratch allocation is 250 GB own plus 250 GB of the partner's.
 The controller lives in the swap controller (`tools/serving/working_state_controller.py`,
 loaded by `model_swap.py`, which already owns the node list, SSH and the
 drain). It polls the market's holder schedule every 30 s and keeps the last
-answer. A schedule older than one hour fails closed: every request gets 503
-`holder_schedule_unknown`. It answers `POST /working-state/admit {"account"}`
-from the chat layer:
+good answer, also in its state file so a hub restart keeps it. An outage of
+the account service never refuses the rightful renter (owner, 2026-11-06):
+with no answer for an hour, the current user is still admitted for every
+hour the last answer booked to it, through to the end of that booking, and
+its model changes go ahead. What needs the service is refused with 503
+`account_service_unavailable`: a different account (a change of user needs
+the booking check and the wipe), the current user after its cached booking
+ends, and anyone else's model change. The outage is logged when it starts
+and ends. When the service answers again its answer wins. It answers
+`POST /working-state/admit {"account"}` from the chat layer:
 
 - during a held hour, only the holder is admitted; anyone else gets 503
   `fleet_held` with `Retry-After` at the end of the holder's hours;
