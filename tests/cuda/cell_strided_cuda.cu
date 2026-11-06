@@ -9,6 +9,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/moe_experts.cuh"
+#include "inference/kernels/formats/mxfp8.cuh"
 
 #define CHECK(call) do { cudaError_t status_ = (call); if ( status_ != cudaSuccess ) { printf("FAIL cuda %s: %s\n", #call, cudaGetErrorString(status_)); exit(1); } } while (0)
 #define LAUNCH(call) do { int32_t s_ = (call); if ( s_ != LM_LAUNCH_OK ) { printf("FAIL launch %s: %d\n", #call, s_); exit(1); } } while (0)
@@ -46,17 +47,17 @@ static float Elapsed(cudaEvent_t a, cudaEvent_t b)
 	return ms;
 }
 
-template<uint32_t Codec>
+template<class Format>
 static void Run(const char *name, uint32_t experts_total, uint32_t local, uint32_t top_k, uint32_t hidden, uint32_t inter, uint32_t tokens, uint32_t sms)
 {
-	using Format = typename LmWeightCodec<Codec>::Format;
+	constexpr bool NV = LmCellMmaFormat<Format>::kScales == 2u;
 	const uint32_t routes = tokens * top_k;
-	const uint64_t up_bytes = (uint64_t)local * inter * hidden / 2u, down_bytes = (uint64_t)local * hidden * inter / 2u;
-	const uint64_t global_bytes = (Codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 ? (uint64_t)local * sizeof(float) : 0u);
+	const uint64_t up_bytes = (uint64_t)local * inter * hidden * Format::kStoredBits / 8u, down_bytes = up_bytes;
+	const uint64_t global_bytes = NV ? (uint64_t)local * sizeof(float) : 0u;
 	const uint64_t scale_bytes = global_bytes + (uint64_t)local * inter * hidden / Format::kScaleGroup;
 	std::vector<uint8_t> payload(up_bytes), scales(scale_bytes);
-	for ( uint64_t i = 0; i < up_bytes; ++i ) payload[i] = (uint8_t)Hash(11u + i);
-	for ( uint64_t i = 0; i < scale_bytes; ++i ) scales[i] = Codec == SPARK_WEIGHT_CODEC_NVFP4_E2M1 ? (uint8_t)(40u + Hash(77u + i) % 60u) : (uint8_t)(118u + Hash(77u + i) % 9u);
+	for ( uint64_t i = 0; i < up_bytes; ++i ) payload[i] = Format::kStoredBits == 8u ? (uint8_t)(Hash(11u + i) & 0xbfu) : (uint8_t)Hash(11u + i);
+	for ( uint64_t i = 0; i < scale_bytes; ++i ) scales[i] = NV ? (uint8_t)(40u + Hash(77u + i) % 60u) : (uint8_t)(118u + Hash(77u + i) % 9u);
 	if ( global_bytes != 0u )
 		for ( uint32_t g = 0; g < local; ++g )
 			((float *)scales.data())[g] = 0.5f + (float)(Hash(3u + g) % 1000u) / 1000.0f;
@@ -66,8 +67,10 @@ static void Run(const char *name, uint32_t experts_total, uint32_t local, uint32
 	CHECK(cudaMemcpy(weight, payload.data(), up_bytes, cudaMemcpyHostToDevice));
 	CHECK(cudaMemcpy(weight + up_bytes, payload.data(), down_bytes, cudaMemcpyHostToDevice));
 	CHECK(cudaMemcpy(scale, scales.data(), scale_bytes, cudaMemcpyHostToDevice));
-	const LmScaleTensor up_scale = LmWeightCodecScaleTensor<Codec>(scale, local, inter, hidden);
-	const LmScaleTensor down_scale = LmWeightCodecScaleTensor<Codec>(scale, local, hidden, inter);
+	const LmScaleTensor up_scale = NV ? LmScaleTensorBlockUe4m3F32Global(scale + global_bytes, scale, local, inter, hidden, Format::kScaleGroup) :
+		LmScaleTensorBuild(scale, LM_SCALE_ENCODING_UE8M0, local, inter, hidden, 1u, Format::kScaleGroup);
+	const LmScaleTensor down_scale = NV ? LmScaleTensorBlockUe4m3F32Global(scale + global_bytes, scale, local, hidden, inter, Format::kScaleGroup) :
+		LmScaleTensorBuild(scale, LM_SCALE_ENCODING_UE8M0, local, hidden, inter, 1u, Format::kScaleGroup);
 	std::vector<uint32_t> experts(routes);
 	for ( uint32_t t = 0; t < tokens; ++t )
 		for ( uint32_t j = 0; j < top_k; ++j )
@@ -163,11 +166,13 @@ int main(void)
 	const uint32_t tokens[] = {48u, 256u, 2048u};
 	for ( uint32_t i = 0; i < 3u; ++i )
 	{
-		Run<SPARK_WEIGHT_CODEC_MXFP4_E2M1>("mxfp4", 128u, 8u, 6u, 1024u, 768u, tokens[i], sms);
-		Run<SPARK_WEIGHT_CODEC_NVFP4_E2M1>("nvfp4", 128u, 8u, 6u, 1024u, 768u, tokens[i], sms);
+		Run<LmMxfp4>("mxfp4", 128u, 8u, 6u, 1024u, 768u, tokens[i], sms);
+		Run<LmNvfp4>("nvfp4", 128u, 8u, 6u, 1024u, 768u, tokens[i], sms);
+		Run<LmMxfp8>("mxfp8", 128u, 8u, 6u, 1024u, 768u, tokens[i], sms);
 	}
-	Run<SPARK_WEIGHT_CODEC_MXFP4_E2M1>("mxfp4-wide", 512u, 32u, 10u, 8192u, 2048u, 2048u, sms);
-	Run<SPARK_WEIGHT_CODEC_NVFP4_E2M1>("nvfp4-wide", 512u, 32u, 10u, 8192u, 2048u, 2048u, sms);
+	Run<LmMxfp4>("mxfp4-wide", 512u, 32u, 10u, 8192u, 2048u, 2048u, sms);
+	Run<LmNvfp4>("nvfp4-wide", 512u, 32u, 10u, 8192u, 2048u, 2048u, sms);
+	Run<LmMxfp8>("mxfp8-wide", 512u, 32u, 10u, 8192u, 2048u, 2048u, sms);
 	printf("%s strided cell experts match the verbatim GEMM failures=%d\n", failures == 0 ? "PASS" : "FAIL", failures);
 	return failures != 0;
 }
