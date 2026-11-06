@@ -645,6 +645,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | --- | --- |
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
+| `sparkpipe compare [--days 30] [--claude DIR]... [--codex DIR]...` | What the Claude Code and Codex logs on this machine (`*.jsonl` changed in the last `--days`, under `~/.claude/projects` and `~/.codex/sessions` by default) cost at Anthropic's and OpenAI's API prices, figured as the site's cost check figures it from the same price table (`site/compare-prices.js`). It shows the requests that wrote their context again after a pause and, when signed in, the price of a fleet week from the account. The logs stay on the machine: the only call is `GET /market/state` with the session |
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16) |
 | `sparkpipe setup claude-code`, `setup codex`, `setup opencode` | Writes the client settings and installs the plugins of §3.8 |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
