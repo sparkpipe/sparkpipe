@@ -382,6 +382,11 @@ class Config:
             if item:
                 self.upstreams[fleet] = upstream_field(url.rstrip("/"), "SPARKPIPE_FLEET_UPSTREAMS")
         self.hub = bool(self.pool or self.upstreams)
+        capacity = env.get("SPARKPIPE_GATEWAY_CAPACITY", "").strip()
+        if not re.fullmatch(r"[0-9]{1,12}", capacity) or int(capacity) < 1:
+            raise ValueError("SPARKPIPE_GATEWAY_CAPACITY is required: the requests the gateway serves in 10 minutes, measured with tools/gateway_capacity_check.py "
+                             "(capacity_per_window), a whole number of at least 1. Holders of an active rental share it equally per rented Fleet")
+        self.gateway_capacity = int(capacity)
         self.health_seconds = float(env.get("SPARKPIPE_PAY_HEALTH_SECONDS", "30"))
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
@@ -1219,14 +1224,28 @@ class App:
 
     def throttle(self, kind, who):
         count, window = LIMITS[kind]
+        self.limit((kind, who), count, window, "Too many requests. Wait a few minutes and try again.")
+
+    def limit(self, key, count, window, text):
         now = time.monotonic()
         with self.lock:
-            hits = self.hits[(kind, who)]
+            hits = self.hits[key]
             while hits and hits[0] < now - window:
                 hits.popleft()
             if len(hits) >= count:
-                raise Refusal("Too many requests. Wait a few minutes and try again.", 429, "busy")
+                raise Refusal(text, 429, "busy")
             hits.append(now)
+
+    def throttle_gateway(self, account):
+        holder, rented = self.market.gateway_share(account)
+        if not holder:
+            return self.throttle("gateway", account)
+        window = LIMITS["gateway"][1]
+        rented = max(1, rented)
+        share = max(1, self.cfg.gateway_capacity // rented)
+        fleets = "1 Fleet is" if rented == 1 else f"{rented} Fleets are"
+        self.limit(("gateway-holder", account), share, window,
+                   f"This account used its share of the gateway: {share} requests per {window // 60} minutes while {fleets} rented. Wait a minute and try again.")
 
     def mail(self, to, subject, text):
         if not self.cfg.sandbox:
@@ -2409,7 +2428,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             account, record, via = app.principal(self.headers, self.client_ip(), scope)
             if via == "cookie" and method not in ("GET", "HEAD") and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
-            app.throttle("gateway", account)
+            app.throttle_gateway(account)
             fleet, body = self.admitted(method, path, account, record)
             served, origin = app.market.route(account, fleet) if app.cfg.hub or app.cfg.sandbox else (fleet, None)
         except Refusal as error:

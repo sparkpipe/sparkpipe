@@ -73,7 +73,7 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - Chat completions streams send an SSE comment line.
   - Non-streamed Messages and Responses requests get their 200 headers at the first keep-alive, then a newline every 10 s before the JSON body; JSON parsers skip leading whitespace. An error after the first newline arrives as the shape's error body under that 200.
 - **Path.** gateway (VPS) → SSH tunnel → the hub's chat layer (`tools/serving/chat_frontend.py`) → the model's `sparkpipe_model_api` → the 16 ranks. All three new API shapes are translated in the chat layer, because the tokenizer, chat templates and tool-call parsers live there (`chat_frontend.py:525`). The gateway passes the new paths through unchanged, with `X-SparkPipe-Account` and `X-SparkPipe-Fleet`.
-- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load.
+- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load on the Fleet. The gateway's own limit (§17) is a share of what it can process, so a holder meets it only when the gateway itself is the bottleneck.
 - **Class.** A request is `interactive` (the default) or `background`. It names its class with the header `x-sparkpipe-priority: interactive|background`, or with the same key in its body's `metadata` (`"metadata": {"x-sparkpipe-priority": "background"}`, on all three shapes). The header wins when both are sent, and any other value is a 400 `invalid_request`. Claude Code's compaction and auxiliary calls (§3.8), a key made with `--priority background`, `<model>-bulk`, chat-memory jobs and Functions (§7.1) are background.
   - While background work runs, two sequences stay free for interactive requests. A freed sequence goes to a waiting interactive request first.
   - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
@@ -715,6 +715,14 @@ A held fleet is then never lost to a forgotten Sunday.
 | Pins | Half the fleet's cache | §4.3 |
 | Context | The model's served window (Fleet List) | |
 | Storage | 4 TB per fleet | §6 |
+| Gateway requests, account holding an active rental | `SPARKPIPE_GATEWAY_CAPACITY` / N per 10 minutes, N = Fleets with an active rental now (at least 1) | `throttle_gateway` in `tools/sparkpipe_pay.py`; capacity measured with `tools/gateway_capacity_check.py` |
+| Gateway requests, any other account | 6,000 per 10 minutes | `LIMITS["gateway"]` in `tools/sparkpipe_pay.py` |
+
+The gateway's limits:
+- An account holds an active rental when one of its bookings' hours includes now. Such an account is not subject to the 6,000 limit. Instead, the holders of the N Fleets rented at that moment share the gateway's measured capacity equally, so each gets `SPARKPIPE_GATEWAY_CAPACITY / N` requests in any 10 minutes.
+- `SPARKPIPE_GATEWAY_CAPACITY` is the number of requests the gateway sustains in 10 minutes. It is required: the gateway refuses to start without a whole number of at least 1, and there is no default.
+- It is measured with `tools/gateway_capacity_check.py` against the sandbox or a staging gateway, never production. Set it to the result's `capacity_per_window`, which is the sustained 2xx requests per second over a 60-second run times 600 (docs/PAYMENTS.md).
+- Both limits answer 429 `busy` with `Retry-After: 60` in each shape's error body.
 
 Errors use each API shape's own error body, with these `type` or `code` values:
 - `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;

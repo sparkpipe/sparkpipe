@@ -62,7 +62,7 @@ def site(work, serving=True):
 
 
 def live(work, name, mailbox, upstream=None, extra=None):
-    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+    env = {"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
            "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key"), "SPARKPIPE_PAY_HEALTH_SECONDS": "0"}
     env.update(extra or {})
     if upstream:
@@ -1499,7 +1499,7 @@ def resident_flows(failures, work):
 
 def sandbox_flows(failures, work):
     site(work / "plain-root", serving=False)
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
+    cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
     NOW[0] = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
     server = sp.start(cfg, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
