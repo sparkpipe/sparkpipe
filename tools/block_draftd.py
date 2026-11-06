@@ -11,6 +11,11 @@ of block drafts, each scored by the drafter's confidence head.
 A sequence whose taps start after position 0 (a prefix-cache hit on the
 target) takes the missing context from another sequence that shares those
 tokens. Without a donor the draft attends only to the positions it has.
+A context belongs to the engine session (control generation) and request
+whose taps created it. The API numbers requests from 100001 at every start,
+so a frame from another session or request gets a new context under its
+sequence id instead of writing over a stranger's positions; the old one
+stays as a donor for the prefix its tokens share.
 
 --drafter dspark:CHECKPOINT serves a checkpoint's built-in DSpark drafter
 (spec_offline/dspark_fast.py): taps o36,o37,o38, a 128-position ring of
@@ -170,6 +175,7 @@ class Server:
         self.columns = None
         self.hello = None
         self.work = queue.Queue()
+        self.lock = threading.Lock()
         self.contexts = OrderedDict()
         self.stats = {"frames": 0, "rows": 0, "requests": 0, "drafted": 0, "unavailable": 0, "donor_fills": 0, "gaps": 0, "draft_us": 0}
         self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
@@ -197,7 +203,7 @@ class Server:
                     raw = handle.read(FRAME.size)
                     if len(raw) != FRAME.size:
                         break
-                    (magic, _version, kind, _header, fingerprint, _control, request, _request_generation, sequence, first, _serial,
+                    (magic, _version, kind, _header, fingerprint, control, request, _request_generation, sequence, first, _serial,
                      rows, flags, _tail, entries, payload) = FRAME.unpack(raw)
                     if magic != MAGIC or kind != 2 or fingerprint != hello["fingerprint"] or payload != rows * (4 + row_bytes):
                         print(f"TAP-BAD-FRAME from {peer}: magic {magic:#x} kind {kind} rows {rows} payload {payload}", flush=True)
@@ -212,7 +218,7 @@ class Server:
                         record.write(token_raw)
                         record.write(data)
                         record.flush()
-                    self.work.put(("frame", (sequence, request, first, flags, tokens, data, time.monotonic())))
+                    self.work.put(("frame", (sequence, (control, request), first, flags, tokens, data, time.monotonic())))
             except (OSError, ValueError) as error:
                 print(f"TAP-ERROR {peer}: {error}", flush=True)
             if record is not None:
@@ -235,18 +241,14 @@ class Server:
             self.hello = body
             self.columns = [body["entries"].index(name) for name in self.layers]
             return
-        sequence, _request, first, _flags, tokens, data, arrived = body
+        sequence, owner, first, _flags, tokens, data, arrived = body
         if self.hello is None:
             return
         applying = time.monotonic()
         hidden, count = self.hello["hidden"], len(self.hello["entries"])
         rows = torch.from_numpy(np.frombuffer(data, dtype=np.uint16).reshape(len(tokens), count, hidden).copy()).view(torch.bfloat16)
         taps = rows.to(self.drafter.device)[:, self.columns].reshape(len(tokens), -1)
-        context = self.contexts.get(sequence)
-        if context is None or first == 0:
-            context = RingContext(self.drafter) if self.dspark else LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
-            self.contexts[sequence] = context
-        self.contexts.move_to_end(sequence)
+        context = self.context_for(sequence, owner, first)
         context.write(first, tokens, taps)
         torch.cuda.synchronize()
         self.timing["frames"] += 1
@@ -255,6 +257,21 @@ class Server:
         self.stats["frames"] += 1
         self.stats["rows"] += len(tokens)
         self.evict()
+
+    def new_context(self):
+        return RingContext(self.drafter) if self.dspark else LatentContext(self.drafter) if self.latent else Context(self.drafter, self.args.window)
+
+    def context_for(self, sequence, owner, first):
+        context = self.contexts.get(sequence)
+        if context is not None and first != 0 and getattr(context, "owner", None) != owner:
+            self.contexts[("retired", sequence, getattr(context, "owner", None))] = self.contexts.pop(sequence)
+            context = None
+        if context is None or first == 0:
+            context = self.new_context()
+            context.owner = owner
+            self.contexts[sequence] = context
+        self.contexts.move_to_end(sequence)
+        return context
 
     def expire(self, now):
         stale = expire_contexts(self.contexts, now)
@@ -268,47 +285,51 @@ class Server:
             torch.cuda.empty_cache()
 
     def gpu_loop(self):
-        pending = None
+        pending = []
         next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
         while True:
-            item = None
             if time.monotonic() >= next_sweep:
                 self.expire(time.monotonic())
                 next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
+            wake = min([entry[2] for entry in pending], default=next_sweep)
             try:
-                if pending is None:
-                    item = self.work.get(timeout=max(0.0, next_sweep - time.monotonic()))
-                else:
-                    item = self.work.get(timeout=max(0.0, pending[2] - time.monotonic()))
+                item = self.work.get(timeout=max(0.0, wake - time.monotonic()))
             except queue.Empty:
                 item = None
-            if item is not None and item[0] in ("hello", "frame"):
+            while item is not None:
+                if item[0] in ("hello", "frame"):
+                    try:
+                        self.apply(item)
+                    except RuntimeError as error:
+                        print(f"TAP-APPLY-ERROR: {error}", flush=True)
+                elif item[0] == "draft":
+                    request, slot = item[1]
+                    for entry in [entry for entry in pending if entry[0][0] == request[0]]:
+                        self.finish(entry, None, False)
+                        pending.remove(entry)
+                    self.timing["queue"] += time.monotonic() - slot["enqueued"]
+                    pending.append((request, slot, time.monotonic() + self.args.wait_ms / 1000.0, time.monotonic()))
                 try:
-                    self.apply(item)
-                except RuntimeError as error:
-                    print(f"TAP-APPLY-ERROR: {error}", flush=True)
-            elif item is not None and item[0] == "draft":
-                if pending is not None:
-                    self.finish(pending, None, False)
-                request, slot = item[1]
-                self.timing["queue"] += time.monotonic() - slot["enqueued"]
-                pending = (request, slot, time.monotonic() + self.args.wait_ms / 1000.0, time.monotonic())
-            if pending is None:
-                continue
-            request, slot, deadline, queued = pending
-            if self.covered(request[0], request[2]):
-                self.timing["wait"] += time.monotonic() - queued
-                try:
-                    self.finish(pending, self.draft(request), False)
-                except RuntimeError as error:
-                    print(f"DRAFT-ERROR sequence {request[0]} position {request[2]}: {error}", flush=True)
-                    self.finish(pending, None, True)
-                pending = None
-            elif time.monotonic() >= deadline:
-                self.timing["wait"] += time.monotonic() - queued
-                self.stats["unavailable"] += 1
-                self.finish(pending, None, False)
-                pending = None
+                    item = self.work.get_nowait()
+                except queue.Empty:
+                    item = None
+            waiting = []
+            for entry in pending:
+                request, slot, deadline, queued = entry
+                if self.covered(request[0], request[2]):
+                    self.timing["wait"] += time.monotonic() - queued
+                    try:
+                        self.finish(entry, self.draft(request), False)
+                    except RuntimeError as error:
+                        print(f"DRAFT-ERROR sequence {request[0]} position {request[2]}: {error}", flush=True)
+                        self.finish(entry, None, True)
+                elif time.monotonic() >= deadline:
+                    self.timing["wait"] += time.monotonic() - queued
+                    self.stats["unavailable"] += 1
+                    self.finish(entry, None, False)
+                else:
+                    waiting.append(entry)
+            pending = waiting
 
     @staticmethod
     def finish(pending, result, failed):
@@ -413,7 +434,8 @@ class Server:
                     committed[position] != anchor or depth == 0:
                 status = STATUS_BAD_REQUEST
             else:
-                self.stats["requests"] += 1
+                with self.lock:
+                    self.stats["requests"] += 1
                 slot = {"event": threading.Event(), "result": None, "failed": False, "enqueued": time.monotonic(), "done": None}
                 self.work.put(("draft", ((sequence, anchor, position, committed, min(depth, max_depth), (seed, inverse_temperature, nucleus, top_k)), slot)))
                 if not slot["event"].wait(self.args.wait_ms / 1000.0 + 5.0) or slot["failed"]:
@@ -431,20 +453,24 @@ class Server:
             footer = [0] * 8
             footer[1] = draft_us
             elapsed = int((time.monotonic() - started) * 1e6)
-            self.timing["requests"] += 1
-            self.timing["total"] += elapsed / 1e6
-            if self.timing["requests"] >= 32:
-                t = self.timing
-                per = 1e3 / t['requests']
-                print(f"DRAFTD-TIMING requests={t['requests']} queue_ms={t['queue'] * per:.2f} wait_ms={t['wait'] * per:.2f} compute_ms={t['compute'] * per:.2f} "
-                      f"wake_ms={t['wake'] * per:.2f} total_ms={t['total'] * per:.2f} context={t['context'] // t['requests']} frames={t['frames']} "
-                      f"apply_ms={t['apply'] * 1e3 / max(1, t['frames']):.2f} frame_lag_ms={t['lag'] * 1e3 / max(1, t['frames']):.2f}", flush=True)
-                self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
+            with self.lock:
+                self.report(elapsed)
             reply = DFT3_RESPONSE.pack(DFT3_MAGIC, status, len(nodes), sequence, generation) + b"".join(DFT3_NODE.pack(*n) for n in nodes) + \
                 DFT3_FOOTER.pack(*footer, 0, 0, elapsed, 0)
             connection.sendall(reply)
-            if self.stats["requests"] % 256 == 0 and self.stats["requests"] != 0:
-                print("DRAFTD-STATS " + " ".join(f"{k}={v}" for k, v in self.stats.items()), flush=True)
+
+    def report(self, elapsed):
+        self.timing["requests"] += 1
+        self.timing["total"] += elapsed / 1e6
+        if self.timing["requests"] >= 32:
+            t = self.timing
+            per = 1e3 / t['requests']
+            print(f"DRAFTD-TIMING requests={t['requests']} queue_ms={t['queue'] * per:.2f} wait_ms={t['wait'] * per:.2f} compute_ms={t['compute'] * per:.2f} "
+                  f"wake_ms={t['wake'] * per:.2f} total_ms={t['total'] * per:.2f} context={t['context'] // t['requests']} frames={t['frames']} "
+                  f"apply_ms={t['apply'] * 1e3 / max(1, t['frames']):.2f} frame_lag_ms={t['lag'] * 1e3 / max(1, t['frames']):.2f}", flush=True)
+            self.timing = {"requests": 0, "queue": 0.0, "wait": 0.0, "compute": 0.0, "wake": 0.0, "total": 0.0, "context": 0, "frames": 0, "lag": 0.0, "apply": 0.0}
+        if self.stats["requests"] % 256 == 0 and self.stats["requests"] != 0:
+            print("DRAFTD-STATS " + " ".join(f"{k}={v}" for k, v in self.stats.items()), flush=True)
 
     @staticmethod
     def read_exact(connection, count):
@@ -470,11 +496,14 @@ class Server:
             connection, peer = listener.accept()
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             print(f"DRAFT-CLIENT {peer}", flush=True)
-            try:
-                self.serve(connection)
-            except OSError as error:
-                print(f"DRAFT-CLIENT-ERROR {peer}: {error}", flush=True)
-            connection.close()
+            threading.Thread(target=self.client, args=(connection, peer), daemon=True).start()
+
+    def client(self, connection, peer):
+        try:
+            self.serve(connection)
+        except OSError as error:
+            print(f"DRAFT-CLIENT-ERROR {peer}: {error}", flush=True)
+        connection.close()
 
 
 def main():

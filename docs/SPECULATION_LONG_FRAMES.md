@@ -27,9 +27,22 @@ document is the contract for that path. Measured results are in
   context limit and two tokens before a recurrent checkpoint
   (`cache_checkpoint_token_count`), so a stop or the budget can only be the
   last kept token and a checkpoint is always reached by a plain decode step.
-- No frame while more than one lane is active, while a lane wants logprobs,
-  and at most 8 rows while a prefill waits: a frame costs more than a batched
-  decode step, and co-batched lanes would lose their chains.
+- Several decoding lanes share one frame. The rows are wave-major: every
+  lane's anchor row, then the first draft of each lane that has one, and so
+  on, so a lane with no drafts is one plain row in the frame.
+  `tokens_per_sequence` is the longest lane's d+1. Lanes are planned in turn
+  against the frame they share (each lane's drafts are priced against the
+  rows and expected tokens already in it), and the frame runs only if its
+  expected tokens per second beat the batch's decode chain by 5%; otherwise
+  every lane decodes as a chain. Lookup drafts are planned for batches up to
+  the frame model's 16 lanes (`SPARK_SPECULATION_FRAME_BATCH_LANES`). Model
+  drafts are planned for batches of up to four lanes
+  (`SPARK_MODEL_BATCH_MODEL_DRAFT_LANES`): the engine opens one draft
+  connection per lane and sends every drafting lane's request before it
+  plans the frame, so the drafter round trips overlap instead of running one
+  after another; a request the plan does not use is read and dropped.
+- No frame while a lane wants logprobs, and a frame costs at most two batched
+  decode steps while a prefill waits.
 - Sampled lanes draft too. Each verify row of a sampled lane is sampled with
   the lane's rule at its own position; the draw is keyed by seed, position and
   token, so the kept tokens are the ones plain sampled decode would emit.
@@ -107,7 +120,13 @@ cap.
 - Cost: the wall time of every submission that ran alone (one lane, nothing
   else in flight) feeds a table of frame cost per row bucket and context
   bucket (verify frames, and clean single-lane prefill waves as a prior), and
-  the chain's per-token and single-step cost per context bucket. Missing cells
+  the chain's per-token and single-step cost per context bucket. Batched
+  chains feed a per-step cost per lane count, and shared verify frames feed
+  the frame table with the extra cost of separate sequences removed. Every
+  shared frame logs a `batch_step kind=shared_verify` or `shared_chain` line
+  (lanes, rows, drafts, kept tokens, service and wall time, summed drafter
+  wait), and the periodic `batch_speculation` line adds per-lane-count
+  buckets `bN:n,rows,kept,ms,step_ms` next to the batched chain step cost. Missing cells
   interpolate in rows and borrow the nearest context bucket. Beyond the
   measured sizes a cost scales the nearest one by (rows + 8) / (rows measured
   + 8); a straight line through the two smallest sizes could price a frame

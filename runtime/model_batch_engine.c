@@ -18,8 +18,8 @@
 #include "sparkpipe/spark_speculation_frame.h"
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 
-#define SPARK_MODEL_BATCH_VERIFY_LANES 4u
-#define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 4u
+#define SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE 0u
 #define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
 #define SPARK_MODEL_BATCH_CHAIN_BUDGET_NS 1000000000.0f
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
@@ -127,6 +127,10 @@ typedef struct SparkModelBatchRequestState
 	float model_rate_frames;
 	float model_wait_ns;
 	float trace_draft_wait_ns;
+	uint32_t model_issue_bridge;
+	uint32_t model_issue_depth;
+	uint64_t model_issue_position;
+	uint64_t model_issue_ns;
 	uint64_t trace_completed_ns;
 	uint32_t model_backoff_until;
 	uint32_t model_backoff_tokens;
@@ -193,6 +197,8 @@ struct SparkModelBatchEngine
 	uint64_t draft_token_count;
 	uint64_t accepted_draft_token_count;
 	SparkDraftBridge *draft_bridge;
+	SparkDraftBridge *draft_bridges[SPARK_MODEL_BATCH_MODEL_DRAFT_LANES];
+	uint64_t model_draft_discarded;
 	uint32_t draft_depth;
 	uint32_t draft_wait_ms;
 	float draft_min_confidence;
@@ -201,6 +207,10 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_declined;
 	uint64_t batch_verify_frames;
 	uint64_t batch_draft_declined;
+	uint64_t shared_frame_count[SPARK_SPECULATION_FRAME_BATCH_LANES + 1u];
+	uint64_t shared_frame_rows[SPARK_SPECULATION_FRAME_BATCH_LANES + 1u];
+	uint64_t shared_frame_kept[SPARK_SPECULATION_FRAME_BATCH_LANES + 1u];
+	uint64_t shared_frame_ns[SPARK_SPECULATION_FRAME_BATCH_LANES + 1u];
 	uint64_t model_draft_frames;
 	uint64_t model_draft_tokens;
 	uint64_t model_draft_accepted;
@@ -1593,6 +1603,32 @@ static SparkStatus SparkModelBatchApplyCompletion(
 
 static void SparkModelBatchRecordAdmission(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t work_kind);
 static void SparkModelBatchObserveCost(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion);
+static void SparkModelBatchTraceSharedStep(
+	SparkModelBatchEngine *engine,
+	const SparkModelBatchSubmissionState *submission,
+	const SparkModelServingCompletion *completion)
+{
+	const uint32_t *drafts = SparkModelBatchSubmissionPrefillCounts(engine,submission);
+	const uint32_t lanes = submission->lane_count;
+	uint32_t lane,kept = 0u,drafted = 0u;
+	for (lane=0u; lane<lanes; lane++)
+	{
+		kept += submission->verify != 0u ? SparkModelServingCompletionKeptRows(completion,lane) : submission->steps;
+		drafted += submission->verify != 0u ? drafts[lane] : 0u;
+	}
+	if ( submission->verify != 0u && lanes <= SPARK_SPECULATION_FRAME_BATCH_LANES )
+	{
+		engine->shared_frame_count[lanes]++;
+		engine->shared_frame_rows[lanes] += submission->rows;
+		engine->shared_frame_kept[lanes] += kept;
+		engine->shared_frame_ns[lanes] += completion->service_time_ns;
+	}
+	fprintf(stderr,"batch_step kind=%s lanes=%u rows=%u steps=%u drafts=%u kept=%u service_ms=%.2f wall_ms=%.2f context=%u draft_wait_ms=%.2f\n",
+		submission->verify != 0u ? "shared_verify" : "shared_chain",lanes,submission->rows,submission->steps,drafted,kept,
+		(double)completion->service_time_ns / 1e6,(double)(SparkModelBatchNowNs() - submission->dispatched_ns) / 1e6,submission->context,
+		(double)submission->trace_draft_wait_ns / 1e6);
+}
+
 static void SparkModelBatchTraceStep(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion);
 
 static void SparkModelBatchRecordAdmittedLanes(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
@@ -1955,12 +1991,16 @@ static SparkStatus SparkModelBatchOpenDraftServer(
 	config.max_nodes = server->depth + 1u;
 	config.connect_timeout_ms = SPARK_MODEL_BATCH_MODEL_DRAFT_CONNECT_MS;
 	config.io_timeout_ms = server->wait_ms + SPARK_MODEL_BATCH_MODEL_DRAFT_IO_SLACK_MS;
-	status = SparkDraftBridgeInitialize(&config,&engine->draft_bridge);
-	if ( status != SPARK_STATUS_OK )
+	for (uint32_t bridge=0u; bridge<SPARK_MODEL_BATCH_MODEL_DRAFT_LANES; bridge++)
 	{
-		fprintf(stderr,"batch engine: draft server %s:%u refused its configuration (status %d)\n",server->host,server->port,(int)status);
-		SPARK_RETURN(status);
+		status = SparkDraftBridgeInitialize(&config,&engine->draft_bridges[bridge]);
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"batch engine: draft server %s:%u refused its configuration (status %d)\n",server->host,server->port,(int)status);
+			SPARK_RETURN(status);
+		}
 	}
+	engine->draft_bridge = engine->draft_bridges[0];
 	engine->draft_depth = server->depth;
 	engine->draft_wait_ms = server->wait_ms;
 	engine->draft_min_confidence = server->min_confidence;
@@ -2086,7 +2126,11 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 		engine->prefix_index_loaded = 0u;
 	}
 	free(engine->prefix_index_scratch);
-	SparkDraftBridgeDestroy(engine->draft_bridge);
+	for (uint32_t bridge=0u; bridge<SPARK_MODEL_BATCH_MODEL_DRAFT_LANES; bridge++)
+	{
+		SparkDraftBridgeDestroy(engine->draft_bridges[bridge]);
+		engine->draft_bridges[bridge] = 0;
+	}
 	engine->draft_bridge = 0;
 	SparkModelPipelineClientDestroy(engine->pipeline);
 	free(engine->scratch_prefill_counts);
@@ -3110,6 +3154,107 @@ static uint32_t SparkModelBatchExtendModelDraft(
 	return(extension);
 }
 
+static uint32_t SparkModelBatchDraftLimit(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t draft_limit)
+{
+	const uint32_t position = request->prompt_token_count + request->generated_token_count - 1u;
+	uint32_t limit = draft_limit,checkpoint_remaining;
+	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || request->drafts_disabled != 0u || draft_limit == 0u )
+		return(0u);
+	if ( request->output_token_budget - request->generated_token_count - 1u < limit )
+		limit = request->output_token_budget - request->generated_token_count - 1u;
+	if ( engine->context_tokens < position + 2u )
+		return(0u);
+	if ( engine->context_tokens - position - 2u < limit )
+		limit = engine->context_tokens - position - 2u;
+	if ( engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
+	{
+		checkpoint_remaining = engine->adapter_descriptor->cache_checkpoint_token_count - position % engine->adapter_descriptor->cache_checkpoint_token_count;
+		if ( checkpoint_remaining < 2u )
+			return(0u);
+		if ( checkpoint_remaining - 2u < limit )
+			limit = checkpoint_remaining - 2u;
+	}
+	return(limit);
+}
+
+static uint32_t SparkModelBatchModelDraftDepth(
+	const SparkModelBatchEngine *engine,
+	const SparkModelBatchRequestState *request,
+	uint32_t lanes,
+	uint32_t position,
+	uint32_t limit)
+{
+	const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
+	if ( depth == 0u || SparkModelBatchNowNs() < engine->model_draft_retry_ns || request->generated_token_count < request->model_backoff_until ||
+		!(SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) > 0.0f ||
+		  (lanes > 1u && SparkSpeculationFrameBatchStepCost(&engine->frame_model,lanes,position + 1u) > 0.0f)) )
+		return(0u);
+	return(depth);
+}
+
+static void SparkModelBatchIssueModelDrafts(
+	SparkModelBatchEngine *engine,
+	uint32_t lane_count,
+	uint32_t draft_limit)
+{
+	SparkSpeculationLookupMatch match;
+	uint32_t lane,bridge = 0u;
+	if ( engine->draft_bridge == 0 || lane_count > SPARK_MODEL_BATCH_MODEL_DRAFT_LANES )
+		return;
+	for (lane=0u; lane<lane_count && bridge<SPARK_MODEL_BATCH_MODEL_DRAFT_LANES; lane++)
+	{
+		const uint32_t slot = engine->scratch_request_slots[lane];
+		SparkModelBatchRequestState *request = &engine->requests[slot];
+		const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
+		const uint32_t position = request->prompt_token_count + request->generated_token_count - 1u;
+		const uint32_t limit = SparkModelBatchDraftLimit(engine,request,draft_limit);
+		uint32_t depth;
+		if ( limit == 0u || (SparkSpeculationLookupIndexFind(&request->lookup,tokens,SPARK_MODEL_BATCH_LOOKUP_MAX_MATCH,SPARK_MODEL_BATCH_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK &&
+			match.match_length >= SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_LOOKUP_MATCH) )
+			continue;
+		depth = SparkModelBatchModelDraftDepth(engine,request,lane_count,position,limit);
+		if ( depth == 0u || SparkDraftBridgePending(engine->draft_bridges[bridge]) != 0u )
+			continue;
+		engine->model_draft_rounds++;
+		request->model_issue_ns = SparkModelBatchNowNs();
+		if ( SparkDraftBridgeSendTree(engine->draft_bridges[bridge],SPARK_MODEL_BATCH_MODEL_DRAFT_SPECULATOR,request->sequence_id,request->generation,position,
+			tokens[position],tokens,position + 1u,0,0u,depth,engine->draft_wait_ms,depth,
+			request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,depth + 1u) != SPARK_STATUS_OK )
+		{
+			engine->model_draft_failures++;
+			engine->model_draft_retry_ns = SparkModelBatchNowNs() + SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS;
+			fprintf(stderr,"batch engine: model draft request could not be sent; model drafts pause for %llu s\n",
+				(unsigned long long)(SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS / UINT64_C(1000000000)));
+			return;
+		}
+		request->model_issue_bridge = ++bridge;
+		request->model_issue_depth = depth;
+		request->model_issue_position = position;
+	}
+}
+
+static void SparkModelBatchDrainModelDrafts(
+	SparkModelBatchEngine *engine,
+	uint32_t lane_count)
+{
+	SparkDraftBridgeNode nodes[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH + 1u];
+	SparkDraftBridgeProposalInfo info;
+	uint32_t lane,count;
+	for (lane=0u; lane<lane_count; lane++)
+	{
+		SparkModelBatchRequestState *request = &engine->requests[engine->scratch_request_slots[lane]];
+		if ( request->model_issue_bridge == SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE )
+			continue;
+		(void)SparkDraftBridgeReceiveTree(engine->draft_bridges[request->model_issue_bridge - 1u],nodes,SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH + 1u,&count,&info);
+		engine->model_draft_wait_us += (SparkModelBatchNowNs() - request->model_issue_ns) / 1000u;
+		request->model_issue_bridge = SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE;
+		engine->model_draft_discarded++;
+	}
+}
+
 static uint32_t SparkModelBatchPlanModelDraft(
 	SparkModelBatchEngine *engine,
 	const SparkModelBatchPlan *plan,
@@ -3120,21 +3265,34 @@ static uint32_t SparkModelBatchPlanModelDraft(
 {
 	SparkDraftBridgeNode nodes[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH + 1u];
 	SparkDraftBridgeProposalInfo info;
-	const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
+	const uint32_t issued = request->model_issue_bridge != SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE && request->model_issue_position == position ? 1u : 0u;
+	const uint32_t full_depth = issued != 0u ? request->model_issue_depth : SparkModelBatchModelDraftDepth(engine,request,plan->lanes,position,limit);
+	const uint32_t depth = full_depth < limit ? full_depth : limit;
 	const uint64_t started = SparkModelBatchNowNs();
 	uint32_t count = 0u, drafts = 0u, index;
 	float expected = 1.0f, path = 1.0f, all_accepted = 0.0f, wait_ns = 0.0f;
 	SparkStatus status;
-	if ( depth == 0u || started < engine->model_draft_retry_ns || request->generated_token_count < request->model_backoff_until ||
-		!(SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) > 0.0f) )
+	if ( depth == 0u && issued == 0u )
 		return(0u);
-	engine->model_draft_rounds++;
 	memset(&info,0,sizeof(info));
-	status = SparkDraftBridgeProposeTree(engine->draft_bridge,SPARK_MODEL_BATCH_MODEL_DRAFT_SPECULATOR,request->sequence_id,request->generation,position,
-		tokens[position],tokens,position + 1u,0,0u,depth,engine->draft_wait_ms,depth,
-		request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,nodes,depth + 1u,&count,&info);
-	engine->model_draft_wait_us += (SparkModelBatchNowNs() - started) / 1000u;
-	request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
+	if ( request->model_issue_bridge != SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE && request->model_issue_position == position )
+	{
+		const uint64_t issued = request->model_issue_ns;
+		SparkDraftBridge *bridge = engine->draft_bridges[request->model_issue_bridge - 1u];
+		request->model_issue_bridge = SPARK_MODEL_BATCH_NO_DRAFT_BRIDGE;
+		status = SparkDraftBridgeReceiveTree(bridge,nodes,SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH + 1u,&count,&info);
+		engine->model_draft_wait_us += (SparkModelBatchNowNs() - issued) / 1000u;
+		request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
+	}
+	else
+	{
+		engine->model_draft_rounds++;
+		status = SparkDraftBridgeProposeTree(engine->draft_bridge,SPARK_MODEL_BATCH_MODEL_DRAFT_SPECULATOR,request->sequence_id,request->generation,position,
+			tokens[position],tokens,position + 1u,0,0u,depth,engine->draft_wait_ms,depth,
+			request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,nodes,depth + 1u,&count,&info);
+		engine->model_draft_wait_us += (SparkModelBatchNowNs() - started) / 1000u;
+		request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
+	}
 	request->trace_draft_wait_ns = request->model_wait_ns;
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )
 	{
@@ -3215,28 +3373,12 @@ static uint32_t SparkModelBatchPlanDraft(
 	SparkSpeculationFrameRequest frame;
 	SparkSpeculationFrameChoice choice;
 	SparkModelBatchPlan plan = *shared;
-	uint32_t position,limit,checkpoint_remaining,index;
+	uint32_t position,limit,index;
 	const uint32_t *tokens = SparkModelBatchRequestTokens(engine,slot);
 	request->draft_count = 0u;
 	request->trace_draft_wait_ns = 0.0f;
-	if ( engine->verify_capable == 0u || request->sampling.logprobs != 0u || request->drafts_disabled != 0u || draft_limit == 0u )
-		return(0u);
 	position = request->prompt_token_count + request->generated_token_count - 1u;
-	limit = draft_limit;
-	if ( request->output_token_budget - request->generated_token_count - 1u < limit )
-		limit = request->output_token_budget - request->generated_token_count - 1u;
-	if ( engine->context_tokens < position + 2u )
-		return(0u);
-	if ( engine->context_tokens - position - 2u < limit )
-		limit = engine->context_tokens - position - 2u;
-	if ( engine->adapter_descriptor->cache_checkpoint_token_count != 0u )
-	{
-		checkpoint_remaining = engine->adapter_descriptor->cache_checkpoint_token_count - position % engine->adapter_descriptor->cache_checkpoint_token_count;
-		if ( checkpoint_remaining < 2u )
-			return(0u);
-		if ( checkpoint_remaining - 2u < limit )
-			limit = checkpoint_remaining - 2u;
-	}
+	limit = SparkModelBatchDraftLimit(engine,request,draft_limit);
 	if ( limit == 0u )
 		return(0u);
 	if ( request->priority < engine->served_priority )
@@ -3289,6 +3431,7 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 	float tokens,frame_ns,step_ns;
 	if ( SparkModelBatchPlanLimits(engine,lane_count,&rows_left,&draft_limit) == 0u )
 		return(stride);
+	SparkModelBatchIssueModelDrafts(engine,lane_count,draft_limit < rows_left ? draft_limit : rows_left);
 	memset(&plan,0,sizeof(plan));
 	for (lane=0u; lane<lane_count; lane++)
 	{
@@ -3336,7 +3479,7 @@ static uint32_t SparkModelBatchPlanBatchDrafts(
 	return(stride);
 }
 
-static uint32_t SparkModelBatchPlanDrafts(
+static uint32_t SparkModelBatchPlanFrameDrafts(
 	SparkModelBatchEngine *engine,
 	uint32_t lane_count)
 {
@@ -3348,12 +3491,13 @@ static uint32_t SparkModelBatchPlanDrafts(
 		engine->requests[engine->scratch_request_slots[lane]].draft_count = 0u;
 		engine->requests[engine->scratch_request_slots[lane]].model_draft_rows = 0u;
 	}
-	if ( engine->verify_capable == 0u || lane_count > SPARK_MODEL_BATCH_VERIFY_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
+	if ( engine->verify_capable == 0u || lane_count > SPARK_SPECULATION_FRAME_BATCH_LANES || engine->scratch_row_capacity < lane_count || SparkModelBatchNeedsSingleStep(engine,lane_count) != 0u )
 		return(1u);
 	if ( lane_count > 1u )
 		return(SparkModelBatchPlanBatchDrafts(engine,lane_count));
 	if ( SparkModelBatchPlanLimits(engine,1u,&rows_left,&draft_limit) == 0u )
 		return(1u);
+	SparkModelBatchIssueModelDrafts(engine,1u,draft_limit < rows_left ? draft_limit : rows_left);
 	slot = engine->scratch_request_slots[0];
 	memset(&plan,0,sizeof(plan));
 	plan.lanes = 1u;
@@ -3363,6 +3507,15 @@ static uint32_t SparkModelBatchPlanDrafts(
 	count = SparkModelBatchPlanDraft(engine,&plan,&engine->requests[slot],slot,draft_limit < rows_left ? draft_limit : rows_left);
 	engine->scratch_prefill_counts[0] = count;
 	return(count + 1u);
+}
+
+static uint32_t SparkModelBatchPlanDrafts(
+	SparkModelBatchEngine *engine,
+	uint32_t lane_count)
+{
+	const uint32_t stride = SparkModelBatchPlanFrameDrafts(engine,lane_count);
+	SparkModelBatchDrainModelDrafts(engine,lane_count);
+	return(stride);
 }
 
 static void SparkModelBatchBuildDecodeRows(
@@ -3584,9 +3737,15 @@ static void SparkModelBatchTraceStep(
 {
 	const char *kind;
 	uint32_t kept;
-	if ( engine->verify_capable == 0u || submission->lane_count != 1u ||
+	if ( engine->verify_capable == 0u ||
 		(submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL) )
 		return;
+	if ( submission->lane_count != 1u )
+	{
+		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+			SparkModelBatchTraceSharedStep(engine,submission,completion);
+		return;
+	}
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 	{
 		kind = "prefill";
@@ -3632,6 +3791,8 @@ static void SparkModelBatchRecordSubmission(
 		const SparkModelBatchRequestState *traced = &engine->requests[engine->scratch_request_slots[0]];
 		state->trace_gap_ns = traced->trace_completed_ns != 0u && now_ns > traced->trace_completed_ns ? (float)(now_ns - traced->trace_completed_ns) : 0.0f;
 		state->trace_draft_wait_ns = traced->trace_draft_wait_ns;
+		for (lane=1u; lane<lane_count; lane++)
+			state->trace_draft_wait_ns += engine->requests[engine->scratch_request_slots[lane]].trace_draft_wait_ns;
 	}
 	inflight_state = SparkModelBatchInflightStateForWork(state->work_kind);
 	for (lane=0u; lane<lane_count; lane++)
@@ -3958,7 +4119,7 @@ static void SparkModelBatchImportPeerPrefixes(SparkModelBatchEngine *engine)
 
 static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 {
-	char line[1536];
+	char line[3072];
 	size_t used;
 	uint32_t bucket;
 	engine->frame_logged = engine->verify_lane_count;
@@ -3973,12 +4134,19 @@ static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 				(double)engine->frame_kept[bucket] / (double)engine->frame_count[bucket],
 				engine->frame_timed[bucket] != 0u ? (double)engine->frame_ns[bucket] / (double)engine->frame_timed[bucket] / 1e6 : 0.0);
 	if ( engine->draft_bridge != 0 && used < sizeof(line) )
-		used += (size_t)snprintf(line + used,sizeof(line) - used," model rounds=%llu frames=%llu drafted=%llu kept_drafts=%llu extended=%llu extension_drafts=%llu extension_kept=%llu declined=%llu unavailable=%llu backoffs=%llu failed=%llu wait_ms=%.2f",
+		used += (size_t)snprintf(line + used,sizeof(line) - used," model rounds=%llu frames=%llu drafted=%llu kept_drafts=%llu extended=%llu extension_drafts=%llu extension_kept=%llu declined=%llu unavailable=%llu backoffs=%llu failed=%llu discarded=%llu wait_ms=%.2f",
 			(unsigned long long)engine->model_draft_rounds,(unsigned long long)engine->model_draft_frames,(unsigned long long)engine->model_draft_tokens,
 			(unsigned long long)engine->model_draft_accepted,(unsigned long long)engine->model_extension_frames,(unsigned long long)engine->model_extension_tokens,
 			(unsigned long long)engine->model_extension_accepted,(unsigned long long)engine->model_draft_declined,(unsigned long long)engine->model_draft_unavailable,
-			(unsigned long long)engine->model_draft_backoffs,(unsigned long long)engine->model_draft_failures,
+			(unsigned long long)engine->model_draft_backoffs,(unsigned long long)engine->model_draft_failures,(unsigned long long)engine->model_draft_discarded,
 			engine->model_draft_rounds != 0u ? (double)engine->model_draft_wait_us / (double)engine->model_draft_rounds / 1e3 : 0.0);
+	for (bucket=2u; bucket<=SPARK_SPECULATION_FRAME_BATCH_LANES && used < sizeof(line); bucket++)
+		if ( engine->shared_frame_count[bucket] != 0u )
+			used += (size_t)snprintf(line + used,sizeof(line) - used," b%u:n=%llu,rows=%.1f,kept=%.1f,ms=%.1f,step_ms=%.1f",bucket,
+				(unsigned long long)engine->shared_frame_count[bucket],(double)engine->shared_frame_rows[bucket] / (double)engine->shared_frame_count[bucket],
+				(double)engine->shared_frame_kept[bucket] / (double)engine->shared_frame_count[bucket],
+				(double)engine->shared_frame_ns[bucket] / (double)engine->shared_frame_count[bucket] / 1e6,
+				SparkSpeculationFrameBatchStepCost(&engine->frame_model,bucket,2048u) / 1e6);
 	fprintf(stderr,"%s\n",line);
 }
 

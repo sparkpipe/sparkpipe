@@ -82,8 +82,9 @@ window in which every stream decodes, both repeats:
     run with the earlier span-keyed reservation decoded one request at a
     time (`kimi-k3.span-reservation.jsonl`).
 - Arms:
-  - "No speculation" sends `"speculation": false`. Batches of two or more
-    never speculate.
+  - "No speculation" sends `"speculation": false`. These builds predate
+    shared verify frames (d00a97286), so their batches of two or more did
+    not speculate; current batches do (see "Speculation").
   - GLM 5.3 Flash did not speculate when this ran, so its two B1 rows are one arm.
   - GLM 5.3 Full streams 221 token events for each 256-token answer.
 - Overlap: one owner request (a 32K-token turn) reached DeepSeek V4.1 Flash

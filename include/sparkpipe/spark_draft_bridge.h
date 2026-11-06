@@ -79,6 +79,30 @@ SparkStatus SparkDraftBridgeInitialize(
     SparkDraftBridge **bridge_out);
 void SparkDraftBridgeDestroy(
     SparkDraftBridge *bridge);
+SparkStatus SparkDraftBridgeSendTree(
+    SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    const uint32_t *committed_token_ids,
+    uint32_t committed_token_count,
+    const void *tap_rows,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    uint32_t node_capacity);
+uint32_t SparkDraftBridgePending(
+    const SparkDraftBridge *bridge);
+SparkStatus SparkDraftBridgeReceiveTree(
+    SparkDraftBridge *bridge,
+    SparkDraftBridgeNode *nodes_out,
+    uint32_t node_capacity,
+    uint32_t *node_count_out,
+    SparkDraftBridgeProposalInfo *info_out);
 SparkStatus SparkDraftBridgeProposeTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
