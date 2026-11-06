@@ -693,6 +693,17 @@ logits differ by exactly the reference floor (KL 0.0420 against a to b's
 0.0419) gave -2.88 and +1.89 sigma; with 512-position blocks they give -1.78
 and +1.09. The gate prompts hold 5,636 positions, about a dozen blocks.
 
+The longer blocks widen the error for the controls too, and every required
+control must still fail. Where two rows of the probe swapped in every layer
+move the logits barely more than the floors, the model's all-layer control
+takes its own tensor (`probe_layers` in `tools/metal_gates.sh`): MiMo Pro and
+HY4 exchange experts 0 and 1 of every MoE layer's `moe_w2` (+13.74 and +53.3
+sigma, where their `attn_out` and attention `gate` swaps gave -0.82 and
++2.01), and Qwen 3.8 Flash swaps rows 0 and 1 of every layer's
+hyper-connection `mlp_hc_down`, which every token passes through (+19.4
+sigma, KL 4.1 to 4.4 times; its `moe_shared_down` swap gave +1.52 and a
+`moe_router` swap +6.24).
+
 The orderings are only exchangeable when the three variants sit about equally
 far apart, so the receipt lists all six floors (`multi_floor.floors`, mean KL
 and top-1 per ordered pair). For Solar Open 2 they do: A to B 0.078 and 0.084
