@@ -197,15 +197,16 @@ async def run(tmp, check):
         status, _, text = await harness.post("/v1/messages", stream_body())
         engine.delay = 0.0
         names = [name for name, _ in fixture.sse_events(text)]
-        check(status == 200 and names[0] == "message_start" and names[1:3] == ["ping", "ping"] and names[-1] == "message_stop",
-              f"a long prefill sends ping events after message_start until the first token: {names}")
+        opened = names.index("message_start") if "message_start" in names else -1
+        check(status == 200 and opened >= 2 and set(names[:opened]) == {"ping"} and "ping" not in names[opened:] and names[-1] == "message_stop",
+              f"a long prefill sends ping events until the first token, which opens the message with the engine's counts: {names}")
 
         chat_frontend.BUSY_WAIT_SECONDS = 0.3
         engine.hold = asyncio.Event()
         held = [asyncio.ensure_future(harness.post("/v1/messages", dict(stream_body(), stream=False))) for _ in range(2)]
         await asyncio.sleep(0.1)
         status, headers, text = await harness.post("/v1/messages", dict(stream_body(), stream=False))
-        check(status == 429 and headers.get("Retry-After", "").isdigit() and headers.get("x-should-retry") == "true" and json.loads(text)["error"]["type"] == "busy",
+        check(status == 429 and headers.get("Retry-After", "").isdigit() and headers.get("x-should-retry") == "true" and json.loads(text)["error"]["type"] == "rate_limit_error",
               f"when every sequence is in use the request waits, then gets 429 with an integer retry-after and x-should-retry: {status} {headers} {text}")
         engine.hold.set()
         results = await asyncio.gather(*held)
@@ -231,7 +232,7 @@ def main():
                  "matches the cache to the end of the previous reply, survives a dropped thinking block and a restart, and never overrides an edited turn; "
                  "mid-conversation system messages render in place; unknown fields, metadata, cache_control and anthropic-beta are ignored; count_tokens "
                  "is exact; 409 model_not_loaded unless allow_swap; claude-* and claude-haiku-* aliases; hint headers set priority and affinity; pings "
-                 "keep a long prefill open; a full fleet answers 429 with retry-after")
+                 "keep a long prefill open before message_start; a full fleet answers 429 rate_limit_error with retry-after")
 
 
 if __name__ == "__main__":

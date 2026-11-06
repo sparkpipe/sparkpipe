@@ -71,10 +71,13 @@ KEEPALIVE_SECONDS = 10.0
 BUSY_WAIT_SECONDS = 60.0
 BUSY_RETRY_AFTER_SECONDS = 5
 RESIDENCY_CACHE_SECONDS = 1.0
-CACHE_BLOCK_TOKENS = 64
 INTERACTIVE_RESERVE = 2
 FAIR_SHARE = 0.75
 PRIORITY_HEADER = "X-SparkPipe-Priority"
+PRIORITY_METADATA = "x-sparkpipe-priority"
+PRIORITY_CLASSES = ("interactive", "background")
+CANCEL_WAIT_SECONDS = 5.0
+REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
 MEMBER_HEADER = "X-SparkPipe-Key"
@@ -176,6 +179,7 @@ EFFORT_DESCRIPTIONS = {"none": "No reasoning", "minimal": "Minimal reasoning", "
                        "medium": "Balanced speed and reasoning depth", "high": "Deeper reasoning for complex problems",
                        "xhigh": "Extra reasoning depth", "max": "The most reasoning the model does"}
 CODEX_TRUNCATION = {"mode": "tokens", "limit": 10000}
+CODEX_COMPACT_SHARE = 0.9
 
 
 def effort_order(efforts):
@@ -190,8 +194,13 @@ def codex_entry(model, index, resident, instructions):
             "supported_reasoning_levels": [{"effort": effort, "description": EFFORT_DESCRIPTIONS.get(effort, effort)} for effort in efforts],
             "shell_type": "unified_exec", "visibility": "list", "supported_in_api": True, "priority": index, "support_verbosity": False,
             "truncation_policy": dict(CODEX_TRUNCATION), "experimental_supported_tools": [], "apply_patch_tool_type": "freeform",
-            "context_window": model.context_tokens, "max_context_window": model.context_tokens,
+            "context_window": model.context_tokens, "max_context_window": model.context_tokens, "effective_context_window_percent": 100,
+            "auto_compact_token_limit": compact_limit(model.context_tokens, model.max_output_tokens),
             "input_modalities": ["text", "image"] if model.images else ["text"], "base_instructions": instructions}
+
+
+def compact_limit(context, output):
+    return context - output if 0 < output < context else int(context * CODEX_COMPACT_SHARE)
 
 
 def replayed_tokens(plan):
@@ -290,7 +299,8 @@ class SequenceGate:
                 return
             self.waiters.remove(waiter)
             self.grant()
-            raise RequestError(429, "busy", f"all {self.sequences} sequences were in use for {timeout:g} s", retry_after=BUSY_RETRY_AFTER_SECONDS)
+            raise RequestError(429, "busy", f"all {self.sequences} sequences were in use for {timeout:g} s; try again in {BUSY_RETRY_AFTER_SECONDS}s",
+                               retry_after=BUSY_RETRY_AFTER_SECONDS)
         except asyncio.CancelledError:
             if waiter.future.done():
                 self.free(scope, member)
@@ -314,6 +324,83 @@ class SequenceGate:
     def state(self):
         return {"sequences": self.sequences, "in_use": self.used, "waiting_interactive": sum(waiter.priority >= INTERACTIVE_PRIORITY for waiter in self.waiters),
                 "waiting": len(self.waiters), "scopes": len(self.held)}
+
+
+class StreamSink:
+    streamed = True
+
+    def __init__(self, request, headers):
+        self.request, self.headers, self.response = request, headers, None
+
+    async def write(self, frames):
+        if self.response is None:
+            self.response = web.StreamResponse(headers=dict(self.headers, **{"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}))
+            await self.response.prepare(self.request)
+        for frame in frames:
+            await self.response.write(frame)
+
+    async def failed(self, error, frames, refuse, shaped):
+        if self.response is None:
+            return refuse(error)
+        await self.write(frames)
+        return self.response
+
+    async def done(self, reply):
+        await self.response.write_eof()
+        return self.response
+
+
+class BodySink:
+    streamed = False
+    PAD = b"\n"
+
+    def __init__(self, request, headers):
+        self.request, self.headers, self.response = request, headers, None
+
+    async def keepalive(self):
+        if self.response is None:
+            self.response = web.StreamResponse(headers=dict(self.headers, **{"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-cache"}))
+            await self.response.prepare(self.request)
+        await self.response.write(self.PAD)
+
+    async def failed(self, error, frames, refuse, shaped):
+        if self.response is None:
+            return refuse(error)
+        await self.response.write(json.dumps(shaped(error), ensure_ascii=False).encode())
+        await self.response.write_eof()
+        return self.response
+
+    async def done(self, reply):
+        if self.response is None:
+            return web.json_response(reply, headers=self.headers)
+        await self.response.write(json.dumps(reply, ensure_ascii=False).encode())
+        await self.response.write_eof()
+        return self.response
+
+
+class SocketSink:
+    streamed = True
+
+    def __init__(self, socket):
+        self.socket, self.sent = socket, 0
+
+    async def write(self, frames):
+        for frame in frames:
+            await self.socket.send_str(frame)
+            self.sent += 1
+
+    async def refuse(self, error):
+        await self.socket.send_str(chat_shapes.socket_error(error, error_headers(error)))
+
+    async def failed(self, error, frames, refuse, shaped):
+        if self.sent == 0:
+            await self.refuse(error)
+        else:
+            await self.write(frames)
+        return None
+
+    async def done(self, reply):
+        return None
 
 
 async def heartbeat(events, interval):
@@ -341,6 +428,73 @@ async def heartbeat(events, interval):
             except (asyncio.CancelledError, StopAsyncIteration, Exception):
                 pass
         await iterator.aclose()
+
+
+class LiveRequest:
+    def __init__(self, scope):
+        self.scope = scope
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.queue = None
+
+    def cancel(self):
+        self.cancelled.set()
+        if self.queue is not None:
+            self.queue.put_nowait(("cancelled", None))
+
+    def error(self, request_id):
+        return RequestError(409, "request_cancelled", f"request {request_id} was cancelled with DELETE /v1/requests/{request_id}")
+
+    async def until(self, request_id, admission, release):
+        work = asyncio.ensure_future(admission)
+        stop = asyncio.ensure_future(self.cancelled.wait())
+        try:
+            await asyncio.wait({work, stop}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            await self.withdraw(work, release)
+            raise
+        finally:
+            stop.cancel()
+        if work.done():
+            return work.result()
+        await self.withdraw(work, release)
+        raise self.error(request_id)
+
+    @staticmethod
+    async def withdraw(work, release):
+        work.cancel()
+        outcome = (await asyncio.gather(work, return_exceptions=True))[0]
+        if outcome is None and not work.cancelled():
+            await release()
+
+    async def watch(self, request_id, events):
+        self.queue = asyncio.Queue()
+        if self.cancelled.is_set():
+            self.queue.put_nowait(("cancelled", None))
+
+        async def pump():
+            try:
+                async for event in events:
+                    self.queue.put_nowait(("event", event))
+                self.queue.put_nowait(("done", None))
+            except Exception as error:
+                self.queue.put_nowait(("error", error))
+        producer = asyncio.ensure_future(pump())
+        try:
+            while True:
+                kind, value = await self.queue.get()
+                if kind == "event":
+                    yield value
+                elif kind == "done":
+                    return
+                elif kind == "error":
+                    raise value
+                else:
+                    raise self.error(request_id)
+        finally:
+            self.queue = None
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
 
 
 def longest_marker_prefix(text, markers):
@@ -952,8 +1106,19 @@ def canonical_citations(messages, wrapper):
     return messages, {}
 
 
-PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
-                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"})
+class PathTable(frozenset):
+    def __new__(cls, paths, patterns=()):
+        table = super().__new__(cls, paths)
+        table.patterns = tuple(patterns)
+        return table
+
+    def __contains__(self, path):
+        return frozenset.__contains__(self, path) or any(pattern.fullmatch(path) is not None for pattern in self.patterns)
+
+
+PUBLIC_PATHS = PathTable({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
+                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"},
+                         (REQUEST_PATH,))
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
@@ -961,6 +1126,8 @@ PUBLIC_BODY_BYTES_PER_TOKEN = 16
 PUBLIC_BODY_OVERHEAD_BYTES = 1 << 20
 PUBLIC_BODY_MIN_BYTES = 32 << 20
 PUBLIC_KEY_PREFIX_BLOCKS = 1 << 16
+SOCKET_MESSAGE_BYTES = 256 << 20
+STORED_RESPONSE_PATH = re.compile(r"/v1/responses/[A-Za-z0-9_.:-]{1,128}")
 STATUS_VIEW_FIELDS = ("state", "phase", "swap_elapsed_s", "phase_elapsed_s", "force_requested")
 DRAINING_VIEW_FIELDS = ("live_requests", "waited_s", "limit_s", "quiet_s", "quiet_needed_s")
 HISTORY_VIEW_FIELDS = ("finished", "seconds", "forced", "ok")
@@ -1598,6 +1765,7 @@ class Frontend:
         self.session = None
         self.memory = None
         self.tool_call_faults = {}
+        self.live = {}
         if config.get("chat_memory") is not None:
             loader = importlib.util.spec_from_file_location("sparkpipe_chat_memory", Path(__file__).with_name("chat_memory.py"))
             module = importlib.util.module_from_spec(loader)
@@ -1890,10 +2058,21 @@ class Frontend:
         raise RequestError(409, "model_not_loaded", f"{model.id} is not resident here, and loading it would unload {', '.join(str(item) for item in resident)}; "
                            "ask for a resident model, or use a key with allow_swap", details={"resident": view["resident"]})
 
-    def hinted_priority(self, bulk, headers, key):
+    @staticmethod
+    def metadata_priority(metadata):
+        names = [name for name in metadata if isinstance(name, str) and name.lower() == PRIORITY_METADATA] if isinstance(metadata, dict) else []
+        value = metadata[names[0]] if names else None
+        if value is None:
+            return ""
+        if not isinstance(value, str) or value.strip().lower() not in PRIORITY_CLASSES:
+            raise RequestError(400, "invalid_request", f"metadata[{PRIORITY_METADATA!r}] must be interactive or background")
+        return value.strip().lower()
+
+    def hinted_priority(self, bulk, headers, key, metadata=None):
         value = (headers.get(PRIORITY_HEADER) or "").strip().lower()
-        if value not in ("", "interactive", "background"):
+        if value not in ("",) + PRIORITY_CLASSES:
             raise RequestError(400, "invalid_request", f"{PRIORITY_HEADER} must be interactive or background")
+        value = value or self.metadata_priority(metadata)
         if value:
             return INTERACTIVE_PRIORITY if value == "interactive" else BULK_PRIORITY
         if (headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES:
@@ -2004,7 +2183,7 @@ class Frontend:
                 "draft_accept": round(engine.get("accepted_draft_tokens", 0) / drafted, 3) if isinstance(drafted, int) and drafted > 0 else None,
                 "cold_prefill_ms_estimate": round(usage["cached"] * rate) if rate is not None else None,
                 "priority": "interactive" if plan["engine_body"].get("priority", INTERACTIVE_PRIORITY) >= INTERACTIVE_PRIORITY else "background",
-                "session": session, "agent": agent}
+                "session": session, "agent": agent, "transport": plan.get("transport", "http"), "turn_ms": round((time.monotonic() - started) * 1000)}
 
     def early_headers(self, model, plan, headers):
         shown = {"X-SparkPipe-Request": plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
@@ -2017,9 +2196,14 @@ class Frontend:
 
     def normalized_usage(self, plan, result, reasoning_tokens=0):
         block = self.usage_block(result.get("usage"), plan["prompt_tokens"], plan)
-        prompt, cached = block["prompt_tokens"], block["prompt_tokens_details"]["cached_tokens"]
-        committed = min(max(0, prompt // CACHE_BLOCK_TOKENS * CACHE_BLOCK_TOKENS - cached), prompt - cached)
-        return {"prompt": prompt, "cached": cached, "committed": committed, "completion": block["completion_tokens"], "reasoning": reasoning_tokens}
+        return {"prompt": block["prompt_tokens"], "cached": block["prompt_tokens_details"]["cached_tokens"], "completion": block["completion_tokens"],
+                "reasoning": reasoning_tokens}
+
+    def opening_usage(self, plan):
+        engine = plan["timing"].get("engine_usage")
+        if engine is None:
+            return dict(chat_shapes.UNKNOWN_USAGE)
+        return chat_shapes.anthropic_usage(self.normalized_usage(plan, {"usage": engine}))
 
     async def health(self, request):
         states = {}
@@ -2325,6 +2509,7 @@ class Frontend:
         step = model.vocabulary.decoder()
         finish = None
         usage = None
+        closed = False
         token_ids = []
         ends = []
         start = None
@@ -2332,8 +2517,10 @@ class Frontend:
         stop_string = False
         logprobs = engine_body.get("logprobs")
         stream = self.engine_stream(model, engine_body, public, account)
+        chunks = 0
         try:
             async for chunk in stream:
+                chunks += 1
                 if "error" in chunk:
                     raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
                 if timing is not None and chunk.get("tokens"):
@@ -2354,7 +2541,10 @@ class Frontend:
                     ends.append(written)
                 choices = chunk.get("choices") or [{}]
                 finish = choices[0].get("finish_reason") or finish
-                usage = chunk.get("usage") or usage
+                if chunk.get("usage"):
+                    usage, closed = chunk["usage"], choices[0].get("finish_reason") is not None
+                    if timing is not None and chunks == 1:
+                        timing.setdefault("engine_usage", usage)
                 if start is None:
                     start = parser.fed
                 for event in parser.feed("".join(text)):
@@ -2381,7 +2571,7 @@ class Frontend:
                     outcome["fault"] = event[1]
                     break
                 yield event
-        outcome.update(token_ids=token_ids, finish=finish, usage=usage, stop_string=stop_string)
+        outcome.update(token_ids=token_ids, finish=finish, usage=usage, usage_final=closed, stop_string=stop_string)
         fault = outcome.get("fault")
         if fault is not None:
             base = parser.fed if start is None else start
@@ -2437,13 +2627,21 @@ class Frontend:
             if "cached_tokens" in details:
                 details["cached_tokens"] = min(details["cached_tokens"], len(prompt))
                 usage["prompt_tokens_details"] = details
+        elif usage and not outcome["usage_final"]:
+            usage["completion_tokens"] = len(token_ids)
+            usage["total_tokens"] = usage.get("prompt_tokens", len(prompt)) + len(token_ids)
         self.prefix_ledger(model).record(prompt + token_ids)
         finish = outcome["finish"]
         yield ("finish", {"finish_reason": "tool_calls" if parser.calls else (finish or "stop"), "usage": usage or None,
                           "engine_finish": "stop_string" if outcome["stop_string"] else (finish or "stop"), "token_ids": token_ids,
                           "stop_marker": parser.stop_marker if outcome["stop_string"] else None})
 
-    async def respond(self, model, plan):
+    def respond(self, model, plan):
+        live = self.live.get(plan.get("request_id"))
+        events = self.respond_events(model, plan)
+        return events if live is None else live.watch(plan["request_id"], events)
+
+    async def respond_events(self, model, plan):
         session = plan["session"]
         if session is None:
             async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan, plan.get("timing"), plan.get("account")):
@@ -2554,7 +2752,7 @@ class Frontend:
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
         started = time.monotonic()
         try:
-            async for chunk in self.engine_events(model, body):
+            async for chunk in self.gated_events(model, body):
                 usage = chunk.get("usage") or usage
                 generated += len(chunk.get("tokens", []))
                 tokens.extend(chunk.get("tokens", []))
@@ -2575,6 +2773,14 @@ class Frontend:
         if parser is not None:
             content.extend(value for kind_, value in parser.finish() if kind_ == "content")
         return "".join(content)
+
+    async def gated_events(self, model, body):
+        await model.sequences.acquire(body["priority"], None)
+        try:
+            async for chunk in self.engine_events(model, body):
+                yield chunk
+        finally:
+            await model.sequences.release()
 
     def usage_block(self, usage, prompt_tokens, plan):
         usage = usage or {}
@@ -2615,7 +2821,7 @@ class Frontend:
             await self.admit_model(model, public, request.headers)
             plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers))
             if "engine_body" in plan:
-                plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public)
+                plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public, body.get("metadata"))
         except RequestError as error:
             return error_response(error)
         self.stamp(plan, started, request.headers)
@@ -2653,13 +2859,15 @@ class Frontend:
         plan.setdefault("trace", {})["account"] = account
         task = asyncio.current_task()
         self.running[task] = account
+        live = self.track(plan, scope)
         try:
             try:
                 if scope.startswith("account:"):
                     await self.check_fleet(request.headers.get(FLEET_HEADER))
                 await self.admit(account)
-                await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None,
-                                              scope, member)
+                await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
+                                                                            BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member),
+                                 lambda: model.sequences.release(scope, member))
             except RequestError as error:
                 return failed(error)
             except asyncio.CancelledError:
@@ -2678,8 +2886,37 @@ class Frontend:
             finally:
                 await model.sequences.release(scope, member)
         finally:
+            self.untrack(plan)
             self.running.pop(task, None)
             self.revoked.pop(task, None)
+
+    def track(self, plan, scope):
+        live = LiveRequest(scope)
+        self.live[plan["request_id"]] = live
+        return live
+
+    def untrack(self, plan):
+        live = self.live.pop(plan["request_id"], None)
+        if live is not None:
+            live.finished.set()
+
+    async def cancel_request(self, request):
+        key = request.get("public_key")
+        identifier = request.match_info["request_id"]
+        try:
+            scope = self.scope_of(key, request.headers)
+        except RequestError as error:
+            return error_response(error)
+        live = self.live.get(identifier)
+        if live is None or live.scope != scope:
+            return error_response(RequestError(404, "request_not_found", f"this account has no queued or running request {identifier}"))
+        live.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(live.finished.wait()), CANCEL_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        print(json.dumps({"event": "request_cancelled", "request": identifier, "released": live.finished.is_set()}), file=sys.stderr, flush=True)
+        return web.json_response({"id": identifier, "object": "request", "cancelled": True, "released": live.finished.is_set()})
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -2699,9 +2936,11 @@ class Frontend:
             raise RequestError(400, "invalid_request", "the request body must be a JSON object")
         return body
 
-    def responses_input(self, translated, scope, member):
+    def responses_input(self, translated, scope, member, local=None):
         previous = []
-        if translated["previous_response_id"] is not None:
+        if local is not None and local.get("id") is not None and translated["previous_response_id"] == local["id"]:
+            previous = list(local["chain"])
+        elif translated["previous_response_id"] is not None:
             try:
                 previous = self.replay.response_messages(scope, member, translated["previous_response_id"])
             except chat_replay.STORE_ERRORS as error:
@@ -2712,22 +2951,24 @@ class Frontend:
                 raise RequestError(400, "previous_response_not_found", f"there is no stored response {translated['previous_response_id']!r} for this account")
         system = [{"role": "system", "content": translated["instructions"]}] if translated["instructions"] else []
         translated["stored_from"] = len(system) + len(previous)
+        translated["chain_from"] = len(system)
         translated["messages"] = system + previous + translated["input_messages"]
         if len(translated["messages"]) == len(system):
             raise RequestError(400, "invalid_request", "input must hold at least one item")
         return translated
 
-    async def translate(self, request, shape):
+    async def translate(self, request, shape, body=None, local=None):
         key = request.get("public_key")
         scope = self.scope_of(key, request.headers)
-        body = await self.read_body(request)
+        body = await self.read_body(request) if body is None else body
         if shape == "messages":
             translated = chat_shapes.messages_request(body)
         else:
-            translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers))
+            translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers), local)
         model, bulk = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
+        translated["metadata"] = body.get("metadata")
         return body, translated, model, bulk, key, scope
 
     def harness_plan(self, model, translated, scope, headers, key, bulk):
@@ -2768,7 +3009,7 @@ class Frontend:
         plan = self.finish_plan(model, body, messages, tools, kwargs, None, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
-        plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key)
+        plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})})
         if key is not None:
@@ -2802,32 +3043,34 @@ class Frontend:
 
     async def harness_answer(self, request, model, body, plan, started):
         shape, translated = plan["shape"], plan["translated"]
-        failed = anthropic_error_response if shape == "messages" else responses_error_response
+        sink = plan.get("sink")
         if shape == "messages":
-            turn = chat_shapes.MessagesTurn(translated["model"], plan["prompt_tokens"])
+            failed, shaped = anthropic_error_response, chat_shapes.anthropic_error_body
+            turn = chat_shapes.MessagesTurn(translated["model"])
         else:
-            turn = chat_shapes.ResponsesTurn(translated["model"], translated, self.responses_echo(body, translated))
+            failed, shaped = responses_error_response, chat_shapes.openai_error_body
+            turn = chat_shapes.ResponsesTurn(translated["model"], translated, self.responses_echo(body, translated),
+                                             chat_shapes.socket_frame if isinstance(sink, SocketSink) else chat_shapes.sse)
         headers = self.early_headers(model, plan, request.headers)
-        stream = translated["stream"]
-        response, result, reasoning, first = None, {}, [], None
+        if sink is None:
+            sink = StreamSink(request, headers) if translated["stream"] else BodySink(request, headers)
+        result, reasoning, first, opened = {}, [], None, False
 
-        async def write(frames):
-            for frame in frames:
-                await response.write(frame)
-
-        async def open_stream():
-            nonlocal response
-            response = web.StreamResponse(headers=dict(headers, **{"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}))
-            await response.prepare(request)
-            await write(turn.start())
+        async def open_turn():
+            nonlocal opened
+            if not opened:
+                opened = True
+                await sink.write(turn.start(self.opening_usage(plan)))
 
         try:
             async for kind, value in heartbeat(self.respond(model, plan), KEEPALIVE_SECONDS):
                 if kind == "keepalive":
-                    if stream:
-                        if response is None:
-                            await open_stream()
-                        await response.write(turn.keepalive())
+                    if not sink.streamed:
+                        await sink.keepalive()
+                        continue
+                    if turn.opens_early:
+                        await open_turn()
+                    await sink.write(turn.keepalive())
                     continue
                 if kind == "finish":
                     result = value
@@ -2837,23 +3080,22 @@ class Frontend:
                 first = first or time.monotonic()
                 if kind == "reasoning":
                     reasoning.append(value)
-                if stream and response is None:
-                    await open_stream()
-                frames = turn.feed(kind, value)
-                if stream:
-                    await write(frames)
+                if sink.streamed:
+                    await open_turn()
+                    await sink.write(turn.feed(kind, value))
+                else:
+                    turn.feed(kind, value)
         except RequestError as error:
             self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, error.code, plan.get("trace"))
-            if response is None:
-                return failed(error)
-            await write(turn.failure(error))
-            return response
+            return await sink.failed(error, turn.failure(error), failed, shaped)
         except (ConnectionResetError, aiohttp.ClientConnectionResetError):
             self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, "client_gone", plan.get("trace"))
-            return response
+            return getattr(sink, "response", None)
         except asyncio.CancelledError:
             self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, "client_gone", plan.get("trace"))
             raise
+        if sink.streamed:
+            await open_turn()
         reasoning_tokens = len(model.vocabulary.encode("".join(reasoning), False)) if reasoning else 0
         usage = self.normalized_usage(plan, result, reasoning_tokens)
         if shape == "messages":
@@ -2865,24 +3107,93 @@ class Frontend:
             close = lambda record: turn.finish(incomplete, chat_shapes.responses_usage(usage), record)
             whole = lambda record: turn.body(incomplete, chat_shapes.responses_usage(usage), record)
         record = self.request_record(model, plan, result, usage, started, request.headers)
-        frames = close(record) if stream else None
-        reply = None if stream else whole(record)
+        frames = close(record) if sink.streamed else []
+        reply = whole(record)
         assistant = turn.assistant()
         self.replay_record(model, plan, assistant, result, message_handles(assistant), turn.turn)
-        if shape == "responses" and translated["store"]:
-            own = translated["messages"][translated["stored_from"]:] + [assistant]
-            self.store_safely(plan, self.replay.put_response, plan["scope"], plan.get("member"), turn.id, translated["previous_response_id"], model.id, own)
+        if shape == "responses":
+            plan["outcome"] = {"id": turn.id, "chain": translated["messages"][translated["chain_from"]:] + [assistant]}
+            if translated["store"]:
+                own = translated["messages"][translated["stored_from"]:] + [assistant]
+                self.store_safely(plan, self.replay.put_response, plan["scope"], plan.get("member"), turn.id, translated["previous_response_id"], model.id, own,
+                                  reply)
         print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
               file=sys.stderr, flush=True)
         self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         self.record_public_prefix(model, plan, result)
-        if not stream:
-            return web.json_response(reply, headers=headers)
-        if response is None:
-            await open_stream()
-        await write(frames)
-        await response.write_eof()
-        return response
+        if sink.streamed:
+            await sink.write(frames)
+        return await sink.done(reply)
+
+    async def responses_socket(self, request):
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return responses_error_response(RequestError(405, "method_not_allowed", "POST a response, or open a WebSocket on /v1/responses"))
+        limit = self.public_body_limit() if request.get("public_key") is not None else SOCKET_MESSAGE_BYTES
+        socket = web.WebSocketResponse(max_msg_size=limit)
+        await socket.prepare(request)
+        local = {"id": None, "chain": []}
+        async for message in socket:
+            if message.type == aiohttp.WSMsgType.TEXT:
+                await self.socket_turn(request, socket, message.data, local)
+            elif message.type == aiohttp.WSMsgType.BINARY:
+                await SocketSink(socket).refuse(RequestError(400, "invalid_request", "send response.create as a JSON text message"))
+        return socket
+
+    async def socket_turn(self, request, socket, text, local):
+        started = time.monotonic()
+        sink = SocketSink(socket)
+        try:
+            try:
+                event = json.loads(text)
+            except json.JSONDecodeError:
+                raise RequestError(400, "invalid_request", "a WebSocket message must be a JSON object")
+            if not isinstance(event, dict) or event.get("type") != "response.create":
+                raise RequestError(400, "invalid_request", "send response.create messages on this WebSocket")
+            body = dict(event["response"]) if isinstance(event.get("response"), dict) else {key: value for key, value in event.items() if key != "type"}
+            generate = body.pop("generate", True)
+            body["stream"] = True
+            body, translated, model, bulk, key, scope = await self.translate(request, "responses", body, local)
+            await self.admit_model(model, key, request.headers)
+            if generate is False:
+                await self.socket_warmup(sink, body, translated, local)
+                return
+            plan = self.harness_plan(model, translated, scope, request.headers, key, bulk)
+        except RequestError as error:
+            await sink.refuse(error)
+            return
+        self.stamp(plan, started, request.headers, translated.get("affinity"))
+        plan.update(shape="responses", translated=translated, request_body=body, sink=sink, transport="websocket")
+        refused = await self.admitted(request, model, body, plan, started, self.harness_answer, lambda error: error)
+        if isinstance(refused, RequestError):
+            await sink.refuse(refused)
+        elif "outcome" in plan:
+            local.update(plan["outcome"])
+
+    async def socket_warmup(self, sink, body, translated, local):
+        turn = chat_shapes.ResponsesTurn(translated["model"], translated, self.responses_echo(body, translated), chat_shapes.socket_frame)
+        await sink.write(turn.start())
+        await sink.write(turn.finish(None, chat_shapes.responses_usage({"prompt": 0, "cached": 0, "completion": 0, "reasoning": 0}), None))
+        local.update(id=turn.id, chain=translated["messages"][translated["chain_from"]:])
+
+    async def stored_response(self, request):
+        key = request.get("public_key")
+        identifier = request.match_info["response_id"]
+        try:
+            scope = self.scope_of(key, request.headers)
+            if request.method == "DELETE":
+                found = self.replay.delete_response(scope, identifier) or None
+            else:
+                found = self.replay.response_body(scope, identifier)
+        except RequestError as error:
+            return responses_error_response(error)
+        except chat_replay.STORE_ERRORS as error:
+            print(json.dumps({"event": "replay_store_failed", "action": "stored_response", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return responses_error_response(RequestError(503, "store_unavailable", "the stored responses could not be read; try again"))
+        if found is None:
+            return responses_error_response(RequestError(404, "not_found", f"there is no stored response {identifier!r} for this account"))
+        if request.method == "DELETE":
+            return web.json_response({"id": identifier, "object": "response", "deleted": True})
+        return web.json_response(found)
 
     async def count_tokens(self, request):
         try:
@@ -3176,8 +3487,9 @@ def public_door(frontend):
     async def door(request, handler):
         if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
             return await handler(request)
-        refuse = anthropic_error_response if request.path in ANTHROPIC_PATHS else (responses_error_response if request.path == "/v1/responses" else error_response)
-        if request.path not in PUBLIC_PATHS:
+        stored = STORED_RESPONSE_PATH.fullmatch(request.path) is not None
+        refuse = anthropic_error_response if request.path in ANTHROPIC_PATHS else (responses_error_response if request.path == "/v1/responses" or stored else error_response)
+        if request.path not in PUBLIC_PATHS and not stored:
             return refuse(RequestError(404, "not_found", "this path is not served to the public API"))
         if request.path in OPEN_PATHS:
             return await handler(request)
@@ -3207,12 +3519,16 @@ def build(frontend):
     app.router.add_post("/v1/messages", frontend.messages)
     app.router.add_post("/v1/messages/count_tokens", frontend.count_tokens)
     app.router.add_post("/v1/responses", frontend.responses)
+    app.router.add_get("/v1/responses", frontend.responses_socket)
+    app.router.add_get("/v1/responses/{response_id}", frontend.stored_response)
+    app.router.add_delete("/v1/responses/{response_id}", frontend.stored_response)
     app.router.add_post("/v1/tokenize", frontend.tokenize)
     app.router.add_post("/v1/detokenize", frontend.detokenize)
     app.router.add_get("/v1/models/aliases", frontend.get_aliases)
     app.router.add_put("/v1/models/aliases", frontend.put_aliases)
     app.router.add_get("/v1/codex/models", frontend.codex_models)
     app.router.add_delete("/v1/cache", frontend.delete_cache)
+    app.router.add_delete("/v1/requests/{request_id}", frontend.cancel_request)
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)

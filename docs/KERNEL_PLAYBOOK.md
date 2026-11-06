@@ -89,8 +89,6 @@ Rules for whoever implements the contract:
   - `SparkLmValidateLinearContract` again, for NVFP4 when `input_dimension`
     is not a multiple of 16.
   - The native FP8 linear, when `input_dimension` is not a multiple of 128.
-  - `SparkLmHostLaunchBatchedLinearMloop`, when `input_dimension` is not a
-    multiple of `SPARK_LM_TILE_K`.
 
   State the alignment in the contract.
 - **Row stride has no default.** `LmFusedResidualRmsNormKernel` takes an
@@ -464,10 +462,10 @@ that disagrees on it fails to build. The consumers are:
 
   Otherwise they choose `FLAT_8`.
 - **Mloop.**
-  - `SparkLmExpertTileMloopKernel` (dense BF16) gives one CTA
-    `SPARK_LM_MLOOP_GROUP` (8) m-tiles of one n-tile. Each k-stage weight
-    strip is staged once for all of them.
-  - `SparkLmExpertTileAllMloopKernel` is the grouped-expert version.
+  - `SparkLmExpertTileAllMloopKernel` (grouped experts) gives one CTA
+    eight m-tiles (`M_GROUP`) of one n-tile. Each k-stage weight strip is
+    staged once for all of them. Its dense BF16 sibling had no callers left
+    and was removed with #927.
   - **Why (4187f90^).** At B=256 the plain grid launched about 122K mostly
     empty CTAs, at about 1.25 µs each. That was the measured collapse to
     233 GB/s.

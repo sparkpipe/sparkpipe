@@ -236,8 +236,37 @@ decode step time it has measured at that context. A lane whose steps are slow
 (one that leases experts every step, for example) then wastes at most that
 second of steps after a stop token.
 
+**Interactive first.** Every request is interactive or background. The
+class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
+and above is interactive, which is what a request gets when it names
+nothing; below is background. The chat layer maps `x-sparkpipe-priority:
+interactive|background` (a header, or the same key in the request's
+`metadata`), Claude Code's compaction and auxiliary calls, a background
+key, `<model>-bulk` and chat-memory jobs onto these priorities. Greedy output
+does not depend on the class.
+
+- While background work runs, `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES`
+  (2) resident sequences stay free for interactive requests: background
+  requests bind at most the rest, and at least one on an engine of two or
+  fewer. The chat layer's sequence gate keeps the same two.
+- While an interactive request has work queued or in flight, the engine
+  dispatches no submission that carries only background work. Background
+  decode lanes may ride in an interactive decode step; a background prefill
+  waits for its next wave. So an interactive arrival waits at most for the
+  submissions already in flight.
+- A background prompt never takes the streamed prefill, which cannot yield;
+  it runs as waves.
+- Within a class, higher priority runs first, then the earliest deadline,
+  with aging. Background work runs whenever no interactive work is queued
+  or in flight.
+- A caller cancels its own request by closing the connection or with
+  `DELETE /v1/requests/{id}`, where the id is the reply's
+  `X-SparkPipe-Request`. The cancel takes effect at the end of the
+  submission in flight: one decode step, a chain, or one prefill wave.
+  Committed KV follows the retention rules.
+
 **Streamed prefill for long prompts.** On a lane whose stage config names
-`streamed_prefill` (Kimi K3 today), a prompt of at least
+`streamed_prefill` (Kimi K3 today), an interactive prompt of at least
 `streamed_prefill_min_tokens` tokens takes a different path:
 - Every token but the last runs through the streamed prefill. The last token
   then runs as a one-row wave that samples. On a model with recurrent state
@@ -677,6 +706,13 @@ The API is OpenAI-compatible:
 - text or token-ID prompts;
 - a native tokenizer with no Python in the serving process;
 - streamed responses.
+
+The hub's chat layer (`tools/serving/chat_frontend.py`) also speaks
+Anthropic Messages for Claude Code and OpenAI Responses for Codex, over
+HTTP and WebSocket, with stored responses, the Codex model catalogue and
+usage taken from the engine's own prompt and cache counts
+([`docs/FLEET_API.md`](docs/FLEET_API.md) §3). A full fleet answers each
+client's native 429, and long prefills keep every client's connection open.
 
 Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective

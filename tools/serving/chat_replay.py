@@ -34,13 +34,14 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS handles (handle TEXT PRIMARY KEY, turn TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS handles_turn ON handles (turn)",
     "CREATE TABLE IF NOT EXISTS responses (id TEXT PRIMARY KEY, parent TEXT, model TEXT NOT NULL, member TEXT NOT NULL, messages TEXT NOT NULL, "
-    "bytes INTEGER NOT NULL, used REAL NOT NULL)",
+    "bytes INTEGER NOT NULL, used REAL NOT NULL, body TEXT)",
     "CREATE INDEX IF NOT EXISTS responses_used ON responses (used)",
     "CREATE TABLE IF NOT EXISTS aliases (one INTEGER PRIMARY KEY CHECK (one = 1), aliases TEXT NOT NULL, bytes INTEGER NOT NULL, used REAL NOT NULL)",
 )
 PREFILL_SCHEMA = ("CREATE TABLE IF NOT EXISTS prefill (model TEXT NOT NULL, bucket INTEGER NOT NULL, ms_per_token REAL NOT NULL, "
                   "samples INTEGER NOT NULL, PRIMARY KEY (model, bucket))",)
 TABLES = ("turns", "responses", "aliases")
+ADDED_COLUMNS = (("responses", "body", "TEXT"),)
 
 
 def canonical(value):
@@ -163,10 +164,17 @@ def connect(path, schema):
     return db
 
 
+def widen(db):
+    for table, column, kind in ADDED_COLUMNS:
+        if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    return db
+
+
 class ScopeStore:
     def __init__(self, path):
         self.path = path
-        self.db = connect(path, SCHEMA)
+        self.db = widen(connect(path, SCHEMA))
         self.bytes = sum(self.db.execute(f"SELECT COALESCE(SUM(bytes), 0) FROM {table}").fetchone()[0] for table in TABLES)
 
     def oldest(self):
@@ -306,15 +314,30 @@ class ReplayStore:
         stores = self.scopes.values() if scope is None else [self.scopes[scope]] if scope in self.scopes else []
         return sum(store.db.execute("SELECT COUNT(*) FROM turns").fetchone()[0] for store in stores)
 
-    def put_response(self, scope, member, response_id, parent, model_id, messages):
+    def put_response(self, scope, member, response_id, parent, model_id, messages, body=None):
         text = json.dumps(messages, ensure_ascii=False)
-        size = len(text.encode()) + len(response_id)
+        shown = json.dumps(body, ensure_ascii=False) if body is not None else None
+        size = len(text.encode()) + len(response_id) + (len(shown.encode()) if shown is not None else 0)
         store = self.store(scope, True)
         old = store.db.execute("SELECT bytes FROM responses WHERE id = ?", (response_id,)).fetchone()
-        store.db.execute("INSERT OR REPLACE INTO responses (id, parent, model, member, messages, bytes, used) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                         (response_id, parent, model_id, member_key(member), text, size, time.time()))
+        store.db.execute("INSERT OR REPLACE INTO responses (id, parent, model, member, messages, bytes, used, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                         (response_id, parent, model_id, member_key(member), text, size, time.time(), shown))
         store.bytes += size - (old[0] if old else 0)
         self.evict()
+
+    def response_body(self, scope, response_id):
+        store = self.store(scope)
+        if store is None:
+            return None
+        row = store.db.execute("SELECT body FROM responses WHERE id = ? AND body IS NOT NULL", (response_id,)).fetchone()
+        if row is None:
+            return None
+        store.touch("responses", "id", response_id, time.time())
+        return json.loads(row[0])
+
+    def delete_response(self, scope, response_id):
+        store = self.store(scope)
+        return store is not None and store.drop_rows("responses", "id = ?", (response_id,)) > 0
 
     def response_messages(self, scope, member, response_id):
         store = self.store(scope)
