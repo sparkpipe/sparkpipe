@@ -75,16 +75,28 @@ public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
 `deployment/lanes.json`) in the chat layer, a keyed request waits up to 60 s
 for one and then gets 429 `busy` with an integer `Retry-After` and
 `x-should-retry: true`. Background requests (`<model>-bulk`,
-`X-SparkPipe-Priority: background`, Claude Code's compaction and auxiliary
-calls) leave two sequences for interactive ones, and a freed sequence goes to
-a waiting interactive request first. Among waiters of the same priority, a
+`X-SparkPipe-Priority: background` or `metadata["x-sparkpipe-priority"]`,
+Claude Code's compaction and auxiliary calls, and chat-memory jobs, which
+take a sequence at the gate like any request) leave two sequences for
+interactive ones, and a freed sequence goes to a waiting interactive request
+first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
 own requests) holding the fewest sequences, then to the member (the gateway's
 `X-SparkPipe-Key`) holding the fewest, then to the first to arrive; an account
 or member already holding three quarters of the sequences takes no more
 while another one waits (C8). There is no per-key cap besides this. A caller
-cancels a request by closing its connection, whether it is still queued or
-already streaming:
+cancels a request by closing its connection, or with `DELETE
+/v1/requests/{id}` for a request of its own scope (the id is the reply's
+`X-SparkPipe-Request`), whether it is still queued or already streaming:
+
+- `DELETE /v1/requests/{id}` sets the request's cancel, which ends its wait
+  at the gate or its engine stream at once. The request answers 409
+  `request_cancelled` in its own shape (an error response, or an error event
+  then `[DONE]` on a stream). The DELETE answers `{"id", "object":
+  "request", "cancelled": true, "released"}` once the request has given its
+  sequence back, waiting at most 5 s (`CANCEL_WAIT_SECONDS`); an id of
+  another scope or one not running answers 404 `request_not_found`. The
+  chat layer keeps the running ids in `Frontend.live` (`LiveRequest`).
 
 - LiteLLM runs with `general_settings.cancel_on_disconnect: true`, so a
   client that goes away cancels LiteLLM's upstream call; mid-stream LiteLLM
@@ -95,17 +107,26 @@ already streaming:
   connection cancels its handler and closes the engine request; it logs
   `"finish_reason": "client_gone"`. Its engine session has no connection
   cap (aiohttp's default capped it at 100 requests in flight).
-- `model_api` polls each waiting connection every 250 ms and cancels the
-  engine request of a client that has gone (`api_await`).
+- `model_api` polls each waiting connection every 10 ms
+  (`API_WAIT_SLICE_MS`), and at every token, and cancels the engine request
+  of a client that has gone (`api_await`). The engine stops it at the end of
+  the submission in flight: a decode step, a chain or one prefill wave.
 - `model_api` and the chat layer raise their open-files soft limit to the
   hard limit at start and log it (`open files limit`). LiteLLM cannot, so
   its units start with `-p LimitNOFILE=524288`. When `model_api` still runs
   out of descriptors, `accept` waits 50 ms between retries and logs once.
 
-The engine orders queued work by priority and then by deadline. The chat
-layer sends priority 2 for interactive requests, 1 for a request to
+The engine orders queued work by class, then priority, then deadline. The
+chat layer sends priority 2 (`SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE`) for
+interactive requests, 1 for background requests and a request to
 `<model>-bulk` (every model has that second name at both LiteLLM doors
-and in `/v1/models`) and 0 for the memory curator. Bulk work fills idle
+and in `/v1/models`) and 0 for the memory curator; `model_api` gives a
+request that names no priority 2. Below 2 is background: the engine keeps
+`SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES` (2) resident
+sequences free for interactive requests, dispatches nothing that carries
+only background work while interactive work is queued or in flight
+(background decode lanes ride in interactive decode steps), and never
+streams a background prefill. Bulk work fills idle
 capacity and is preempted, by checkpoint and requeue, when interactive
 work needs its pages (PR #1500). The warm queue in front of a starting engine is
 separate: it still answers 503 when full or after `wait_seconds`.
@@ -210,7 +231,7 @@ Optional request fields:
 | `max_tokens` | output budget, default 32, cap 8192 |
 | `stop_token_ids` | extra stop tokens, added to the model's EOS set |
 | `stream` | `true` answers `text/event-stream`: one `data:` event per batch of new tokens (`text_completion` or `chat.completion.chunk` with a text or `delta.content` piece that never splits a UTF-8 sequence), a final event with `finish_reason` and `usage`, then `data: [DONE]` |
-| `priority` | unsigned integer; higher runs first, with aging in the batch engine so lower priorities cannot starve |
+| `priority` | unsigned integer; 2 (the default) and above is interactive, below is background. Interactive work runs first; within a class higher runs first, with aging, and background runs whenever no interactive work is queued or in flight |
 | `deadline_ms` | relative deadline; queued requests are submitted earliest-deadline first within a priority, and a request still running at its deadline is cancelled and answered `504` with code `deadline_exceeded` (or an error event on a stream) |
 | `temperature` | `0` (the default) decodes greedily; `0.0001` to `2` samples from softmax(logits / T) with Gumbel-max noise keyed by (seed, position, token) |
 | `seed` | unsigned 64-bit; the same seed, prompt and deployment reproduce a sampled completion token for token. Without one, the API draws a random seed and logs it |
@@ -506,7 +527,10 @@ templates and tool-call parsers already live. `tools/serving/chat_shapes.py`
 | `GET/PUT /v1/models/aliases` | The account's alias table: at most 64 entries, each a name or pattern of at most 128 characters with at most four `*` |
 | `GET /v1/models` | Resident models first, each with `resident`, `context_window`, `max_output_tokens`, `sequences` and the Anthropic list fields, plus the alias table |
 | `GET /v1/codex/models` | The same models as Codex's own catalogue (`model_catalog_url`), below |
-| `DELETE /v1/cache` | Deletes the account's replay store now: its turns, stored responses and alias table |
+| `POST /v1/repos`, `GET /v1/repos[/{name}]`, `DELETE /v1/repos/{name}` | The account's bare repositories on the hub, below; deleting one deletes the packs built from it |
+| `/git/{name}.git/...` | git's smart HTTP protocol (`info/refs`, `git-upload-pack`, `git-receive-pack`) through `git http-backend`, with the key as the Basic password |
+| `POST /v1/packs`, `GET /v1/packs[/{name}]`, `DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh` | Context packs, below |
+| `DELETE /v1/cache` | Deletes the account's replay store and packs now: its turns, stored responses, alias table and pack versions; with `?storage=true`, its repositories too |
 | `HEAD /api/hello` | 200, no key |
 
 Token-exact replay (§3.2). For every assistant turn it returns, the chat
@@ -575,8 +599,9 @@ the most specific pattern wins. Patterns match by finding their literal
 pieces in order, so matching is linear in the name. When the controller does
 not answer, the chat layer logs the error (`control_unavailable`) and uses
 the residency it last read; with none, it answers 503 `control_unavailable`
-without the controller's detail. `<model>+<pack>` answers 404 `pack_not_found`
-until packs exist (C9). Until the controller runs several models at once
+without the controller's detail. `<model>+<pack>` runs on the account's pack
+(below) and answers 404 `pack_not_found` when the account has no such pack
+for that model. Until the controller runs several models at once
 (E18), a model fits next to the resident ones only when none is resident;
 E18 adds the per-node memory check to the controller's status for this
 rule to read.
@@ -594,21 +619,23 @@ prompt. The non-streamed body and the last stream event carry the
 `prefill_ms`, `ttft_ms`, `output_tokens`, `decode_tps`, `draft_accept`,
 `cold_prefill_ms_estimate`, `priority`, `session`, `agent`), and the chat
 layer logs it as a `request_record` line. `X-SparkPipe-Request`, `-Model`,
-`-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms` and `-Fleet` come with the
+`-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms`, `-Fleet` and `-Pack` come with the
 headers. `cold_prefill_ms_estimate` applies the measured cold prefill rate
 of the model near this prompt length (cold requests of 512 tokens or more,
 in quarter-octave length buckets, used within two buckets) to the cached
 tokens; with no measurement near that length it is null. `draft_accept` is
-null until the engine reports draft and accepted tokens per request, and
-`pack` until packs exist.
+null until the engine reports draft and accepted tokens per request. `pack`
+names the pack version the request ran on (`core@3672dbc4f1f9`), or is null.
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
-`"priority": "background"`, `<model>-bulk`, and Claude Code's
-`x-claude-code-request-class` `compaction` and `auxiliary` run at bulk
-priority; everything else is interactive. The record's `session` is
-`X-Claude-Code-Session-Id`, OpenCode's `x-session-affinity` or Codex's
-`prompt_cache_key`; `agent` is `x-claude-code-agent-id` or OpenCode's
-`x-parent-session-id`.
+`"priority": "background"`, `<model>-bulk`, Claude Code's
+`x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's
+`x-openai-subagent: compact` run at bulk priority; everything else is
+interactive. The record's `session` is `X-Claude-Code-Session-Id`,
+OpenCode's `x-session-affinity`, Codex's `prompt_cache_key`, or the
+`session_id` in Claude Code's `metadata.user_id` (a JSON string, or the
+`_session_<id>` suffix of older releases) when no header names one;
+`agent` is `x-claude-code-agent-id` or OpenCode's `x-parent-session-id`.
 
 Context overflow (§17). A prompt longer than the model's window is refused
 in each shape's native form, so the harnesses compact on their own: Messages
@@ -664,6 +691,70 @@ created with mode 700, the gateway key refused without
 `X-SparkPipe-Account` (400 `account_required`) and served with it, and every
 VPS file equal to the commit. No directive exists yet, so rows expire 24 h
 after their last use until the working-state controller writes one.
+
+### Repositories and context packs (2026-11-06)
+
+`docs/FLEET_API.md` §5.1 and §6. The code is `tools/serving/context_packs.py`,
+next to `chat_frontend.py`; the routes exist when the config has
+
+```json
+"repositories": {"directory": "/srv/workspace/<customer area>", "max_push_bytes": 1073741824, "max_repositories": 16, "max_packs": 16}
+```
+
+The directory must be on the hub's local NVMe, never CephFS or cold storage:
+packs are read on every request that names one. Each scope (the gateway
+account, or a direct key) has its own area, `<directory>/account-<id>/` or
+`key-<id>/`, holding `repos/<name>.git` and `packs/<name>/`, and a
+`.last-use` file. Another account's lookups resolve inside its own area, so
+it gets 404 for a name that exists elsewhere.
+
+- **Push.** `git remote add fleet https://sparkpipe.ai/pay/api/git/main.git`
+  and `git push fleet main`, with any user name and the SparkPipe key as the
+  password. The gateway turns the Basic credential into its pool key and the
+  account header; on the hub, a keyed `/git/` request without a valid key
+  gets 401 with `WWW-Authenticate: Basic`. The chat layer runs
+  `git http-backend` for the smart protocol only, with no system or global git
+  config and hooks off. A push over `max_push_bytes` answers 413, whether it
+  carries a `Content-Length` or comes chunked; the bare copy also sets
+  `receive.maxInputSize` and `receive.fsckObjects`. After a push that moves a
+  ref, the chat layer points an unborn `HEAD` at the only branch and refreshes
+  every pack built from that repository.
+- **Build.** `POST /v1/packs {"name", "repo", "budget_tokens", "include",
+  "exclude", "ref", "model"}` (`include` defaults to `**`, `ref` to `HEAD`,
+  `model` to the first resident model) answers 202 and builds in the
+  background. Files are ordered by how often they changed on the first-parent
+  history in the 90 days before the commit's own time, then by path, so the
+  same commit gives the same order on any day. Secrets, vendored trees, lock
+  files and generated stubs are never packed (the anticipator's default
+  exclusions); binary, generated and over-budget files are listed under
+  `left_out`. The version is `<pack>@` and 12 hex digits of the token
+  digest; its token ids are stored as `versions/<digest>.ids` beside the
+  record.
+- **Refresh.** A push or `POST /v1/packs/{name}/refresh` builds the new
+  version, then warms it in the background class (the priority
+  `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
+  as a one-token completion whose prompt is the template's prefix and the
+  pack (`warm_prefix`, which `commit_only` replaces once E5 lands). It warms
+  once for each of the last four tool sets and template settings requests
+  used on the pack, or once with none. The engine's prefix cache reuses every
+  token before the first changed file; `last_refresh` reports that file, its
+  token offset (`changed_at`) and, per warm-up, the prompt and cached tokens
+  and `resume_from`, the model's `resume_tokens` boundary (default 64) before
+  the change. The alias moves to the new version only when every warm-up is
+  done, and a `pack.warm` line is logged. A refresh that arrives during one
+  runs once more after it.
+- **Sessions.** The first request of a session pins the current warm
+  version, or, before any version is warm, the newest built one; with no
+  version built yet it answers 409 `pack_building`. The session is
+  `X-Claude-Code-Session-Id`, `x-session-affinity`, `X-Session-Id` or Codex's
+  `prompt_cache_key`; without one, the first system and first user message.
+  Versions that are not current and that no session used for 24 hours are
+  dropped at the next refresh, with their pins.
+- **Deletion.** Areas follow the working-state rule: at a change of user, or
+  24 h after the last booked hour, the expiry sweep deletes every area last
+  used before it, repositories and packs together. `DELETE /v1/cache`
+  deletes the packs, and `?storage=true` the whole area. Deleting a pack or
+  an area cancels its refresh, and a refresh never writes into a deleted pack.
 
 ## SparkPipe Chat (Open WebUI, sparkpipe.ai:8443)
 

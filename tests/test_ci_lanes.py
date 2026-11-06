@@ -27,6 +27,7 @@ def check_classification(failures):
         (["deployment/vps/chat-local/index.html"], True),
         (["deployment/vps/sparkpipe-public-api.conf"], True),
         (["tools/sparkpipe_cli.py", "tools/sparkpipe_cli_build.py", "tests/test_sparkpipe_cli.py"], False),
+        (["tools/client_release_check.py", "tests/test_client_release_check.py"], False),
         (["tools/sparkpipe_cli.py", "tools/serving/chat_frontend.py"], True),
         (["tools/ci_lanes.py"], False),
         (["tests/test_ci_lanes.py", "tools/ci_lanes.py"], False),
