@@ -3,12 +3,15 @@ from pathlib import Path
 
 FLEET = "F1"
 HOLDERS_TOKEN = "m" * 40
+IMAGE = "sha256:" + "ab" * 32
+RESTORE_COMMAND = "printf 'image %s\\n' " + IMAGE
 
 
 def block(directory, holders_url="http://127.0.0.1:9/holders"):
     directory = Path(directory)
     return {"fleet": FLEET, "holders_url": holders_url, "holders_token_file": str(directory / "holders-token"),
-            "state_file": str(directory / "working-state.json"), "hub_directive": str(directory / "hub-home" / "sparkdata" / "working-state" / "directive")}
+            "state_file": str(directory / "working-state.json"), "hub_directive": str(directory / "hub-home" / "sparkdata" / "working-state" / "directive"),
+            "restore_command": RESTORE_COMMAND}
 
 
 def write_token(directory):

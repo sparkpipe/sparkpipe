@@ -1592,7 +1592,7 @@ class Frontend:
         self.residency_task = None
         self.control_error = None
         self.running = {}
-        self.revoked = set()
+        self.revoked = {}
         self.working = None
         self.working_task = None
         self.session = None
@@ -1694,7 +1694,7 @@ class Frontend:
         cancelled = 0
         for task, account in list(self.running.items()):
             if account != target and task not in self.revoked:
-                self.revoked.add(task)
+                self.revoked[task] = RequestError(503, "fleet_handover", "the fleet passed to another account, so this request was cancelled")
                 task.cancel()
                 cancelled += 1
         if self.memory is not None and target != working_state.OWN_ACCOUNT:
@@ -1704,12 +1704,34 @@ class Frontend:
                   file=sys.stderr, flush=True)
 
     def handover_error(self, task):
-        if task not in self.revoked:
+        error = self.revoked.pop(task, None)
+        if error is None or task.uncancel():
             return None
-        self.revoked.discard(task)
-        if task.uncancel():
-            return None
-        return RequestError(503, "fleet_handover", "the fleet passed to another account, so this request was cancelled")
+        return error
+
+    def cancel_account(self, account, keep):
+        cancelled = 0
+        for task, owner in list(self.running.items()):
+            if owner == account and task is not keep and task not in self.revoked:
+                self.revoked[task] = RequestError(503, "cache_deleted", "the account deleted its working state, so this request was cancelled")
+                task.cancel()
+                cancelled += 1
+        return cancelled
+
+    async def delete_working_state(self, account, storage):
+        try:
+            async with self.session.post(self.control["working_state_url"] + "/delete", json={"account": account, "storage": storage}, headers=self.controller_headers,
+                                         timeout=aiohttp.ClientTimeout(total=ADMIT_SECONDS)) as response:
+                payload = await response.json(content_type=None)
+                retry_after = response.headers.get("Retry-After")
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            raise RequestError(503, "control_unavailable", f"the fleet controller could not delete the working state: {error}")
+        if response.status == 200 and isinstance(payload, dict) and isinstance(payload.get("deleted"), list):
+            return payload
+        error = payload.get("error") if isinstance(payload, dict) else None
+        error = error if isinstance(error, dict) else {}
+        status = response.status if response.status in (409, 503) else 502
+        raise RequestError(status, str(error.get("code") or "delete_failed"), str(error.get("message") or f"the fleet controller answered {response.status}"), retry_after)
 
     async def read_working_state(self):
         async with self.session.get(self.control["working_state_url"], headers=self.controller_headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
@@ -2654,7 +2676,7 @@ class Frontend:
                 await model.sequences.release(scope, member)
         finally:
             self.running.pop(task, None)
-            self.revoked.discard(task)
+            self.revoked.pop(task, None)
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -2942,18 +2964,41 @@ class Frontend:
         key = request.get("public_key")
         try:
             scope = self.scope_of(key, request.headers)
+            if request.query.get("storage") not in (None, "false", "true"):
+                raise RequestError(400, "invalid_request", "storage is true or false")
+            storage = request.query.get("storage") == "true"
+            if scope.startswith("account:"):
+                await self.check_fleet(request.headers.get(FLEET_HEADER))
         except RequestError as error:
             return error_response(error)
-        if request.query.get("storage") not in (None, "false", "true"):
-            return error_response(RequestError(400, "invalid_request", "storage is true or false"))
+        account = self.account_of(scope)
+        fleet = key is None or scope.startswith("account:")
+        cancelled = self.cancel_account(account, asyncio.current_task()) if fleet else 0
         deleted = self.replay.forget(scope)
         if key is not None:
             for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
                 del self.public_prefixes[name]
-        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted}), file=sys.stderr, flush=True)
-        return web.json_response({"deleted": ["replay_store", "aliases", "stored_responses"],
-                                  "not_deleted": ["engine_cache"] + (["storage"] if request.query.get("storage") == "true" else []),
-                                  "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+        removed = ["replay_store", "aliases", "stored_responses"]
+        if not fleet:
+            print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "engine": False}), file=sys.stderr, flush=True)
+            return web.json_response({"deleted": removed, "not_deleted": ["engine_cache"] + (["storage"] if storage else []),
+                                      "note": "this key is SparkPipe's own use, which shares the fleet's cache with the rest of that use; only the fleet's "
+                                              "holder, through the gateway, deletes the engine's cache and storage"})
+        try:
+            engine = await self.delete_working_state(account, storage)
+        except RequestError as error:
+            print(json.dumps({"event": "working_state_delete_failed", "scope": scope, "account": account, "storage": storage, "replay": deleted,
+                              "cancelled": cancelled, "code": error.code, "error": error.message}), file=sys.stderr, flush=True)
+            error.details = {"deleted": removed}
+            return error_response(error)
+        self.prefixes = {}
+        self.public_prefixes = {}
+        print(json.dumps({"event": "working_state_deleted", "scope": scope, "account": account, "storage": storage, "replay": deleted, "cancelled": cancelled,
+                          "engine": True, "wiped": engine.get("wiped"), "storage_wiped": engine.get("storage_wiped")}), file=sys.stderr, flush=True)
+        return web.json_response({"deleted": removed + ["prefix_ledgers"] + [name for name in engine["deleted"] if name not in removed],
+                                  "not_deleted": [], "cancelled_requests": cancelled, "wiped": engine.get("wiped"), "storage_wiped": engine.get("storage_wiped"),
+                                  "files_deleted_within_s": engine.get("files_deleted_within_s"),
+                                  "note": "no request can reach the deleted state from now on; the nodes delete its files at their next sweep"})
 
     async def reply_text(self, request, model, body, text):
         identifier = "chatcmpl-" + uuid.uuid4().hex

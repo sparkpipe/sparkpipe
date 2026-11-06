@@ -148,8 +148,14 @@ async def scenario(state, failures):
             check(node_directive(state, "n0") == node_directive(state, "n1") == working_state.directive_text(first, 0, first), "and on every node, written whole")
             check(not list(pathlib.Path(state, "nodes", "n0", "sparkdata", "working-state").glob("*.tmp*")), "the node write leaves no temporary file")
             stored = pathlib.Path(working_state_fixture.block(state)["state_file"])
-            check(stored.stat().st_mode & 0o777 == 0o600 and json.loads(stored.read_text()) == {"user": "sparkpipe", "wiped": first, "held_until": 0},
-                  f"the hub keeps the current user, wiped and held_until in a private file: {oct(stored.stat().st_mode)} {stored.read_text()}")
+            kept = json.loads(stored.read_text())
+            check(stored.stat().st_mode & 0o777 == 0o600 and {key: kept[key] for key in ("user", "since", "wiped", "held_until", "storage_wiped", "restored")} ==
+                  {"user": "sparkpipe", "since": first, "wiped": first, "held_until": 0, "storage_wiped": first, "restored": first},
+                  f"the hub keeps the current user, its start, wiped, held_until, storage_wiped and the restored start in a private file: {oct(stored.stat().st_mode)} {stored.read_text()}")
+            handover = kept["history"][-1]
+            check(handover["kind"] == "handover" and handover["ok"] and handover["to"] == "sparkpipe" and handover["image"] == working_state_fixture.IMAGE and
+                  isinstance(handover["restore_seconds"], float) and handover["restored_at"] >= first - 1,
+                  f"the handover's record carries the restored image's hash and the restore's time: {handover}")
             check(engine.applied >= first, "the engine confirmed the wipe before the admit returned")
             status, _, _, _ = await admit("sparkpipe")
             check(status == 200 and working.wiped == first, "the current user is admitted again without another wipe")
@@ -198,13 +204,17 @@ async def scenario(state, failures):
             check(await until(lambda: working.hours.get(hour) == "ACNEXT", 5), "the controller follows a changed holder schedule")
             status, code, _, body = await admit("ACNEXT")
             third = working.wiped
-            check(status == 200 and body["user"] == "ACNEXT" and third > second, f"a held hour that changes hands passes the fleet to the new holder: {status} {code} {body}")
+            check((status, code) == (503, "handover_failed") and "n1" in body["error"]["message"] and working.user == "ACNEXT" and third > second,
+                  f"a held hour that changes hands wipes for the new holder, but a node the image cannot be restored on fails the handover closed: {status} {code} {body}")
             check(node_directive(state, "n0") == working_state.directive_text(third, hour + 3600, third) and node_directive(state, "n1") == working_state.directive_text(second, hour + 3600, second),
                   "a node that cannot be reached keeps its old directive while the reachable ones take the new one")
-            check((await view())["nodes"]["pending"] == ["n1"], "the failed node is listed as pending")
+            check((await view())["nodes"]["pending"] == ["n1"] and working.last["nodes_pending"] == ["n1"], "the failed node is listed as pending, in the view and the record")
             pathlib.Path(state, "down-n1").unlink()
             check(await until(lambda: node_directive(state, "n1") == working_state.directive_text(third, hour + 3600, third), 5), "the push to a failed node is retried until it lands")
             check(await until(lambda: working.pending == [], 2), "and the node leaves the pending list")
+            status, code, _, body = await admit("ACNEXT")
+            check(status == 200 and body["user"] == "ACNEXT" and working.wiped == third and working.restored == third,
+                  f"once the node is back the holder is admitted without another wipe, after the restore: {status} {code} {body}")
 
             engine.follow = False
             market.hours = []
@@ -240,6 +250,9 @@ async def scenario(state, failures):
     restarted = model_swap.Swapper(config(state, market_base, engine_base))
     check((restarted.working.user, restarted.working.wiped, restarted.working.held_until) == ("sparkpipe", fourth, 0),
           "a restarted controller keeps the current user, wiped and held_until")
+    check(restarted.working.restored == restarted.working.since == fourth and restarted.working.history and
+          all(event.get("image") == working_state_fixture.IMAGE for event in restarted.working.history if event.get("ok") and event["from"] != event["to"]),
+          "a restarted controller keeps the restore and the history of handovers with their image hashes")
     check(restarted.working.confirmed is None, "a restarted controller confirms the engine again before it admits")
     late = restarted.working
     late.user, late.held_until = "ACLATE", 0
@@ -260,7 +273,7 @@ async def scenario(state, failures):
     except SystemExit as error:
         check("owner only" in str(error), f"the refusal names the mode problem: {error}")
     stored.chmod(0o600)
-    stored.write_text('{"user": "sparkpipe"}')
+    stored.write_text('{"user": "sparkpipe", "since": 5, "wiped": 4, "held_until": 0, "storage_wiped": 4, "restored": 0, "history": []}')
     try:
         model_swap.Swapper(config(state, market_base, engine_base))
         check(False, "a malformed working-state file stops the controller")
@@ -279,6 +292,129 @@ async def scenario(state, failures):
         check(False, "a config without working_state stops the controller")
     except SystemExit as error:
         check("working_state" in str(error), f"the refusal names working_state: {error}")
+
+
+async def deletion(state, failures):
+    def check(condition, message):
+        if not condition:
+            failures.append(message)
+
+    controller = working_state.Controller
+    controller.POLL_SECONDS, controller.WATCH_SECONDS, controller.CHECK_SECONDS = 0.1, 0.05, 0.05
+    controller.RETRY_SECONDS, controller.REPUSH_SECONDS, controller.PUSH_SECONDS = 0.3, 3600.0, 10.0
+    pathlib.Path(state, "fake_ssh.py").write_text(FAKE_SSH.replace("STATE", repr(state)))
+    working_state_fixture.write_token(state)
+    hub_directive = pathlib.Path(working_state_fixture.block(state)["hub_directive"])
+    market, engine = Market(), Engine(hub_directive)
+    market.failing = False
+    market_app = web.Application()
+    market_app.router.add_get("/market/fleets/F1/holders", market.holders)
+    engine_app = web.Application()
+    engine_app.router.add_get("/health", engine.health)
+    market_runner, market_base = await serve(market_app)
+    engine_runner, engine_base = await serve(engine_app)
+    images = {host: "image " + working_state_fixture.IMAGE for host in ("n0", "n1")}
+
+    def place_images():
+        for host, line in images.items():
+            home = pathlib.Path(state, "nodes", host)
+            home.mkdir(parents=True, exist_ok=True)
+            (home / "image").write_text("restoring\n" + line + "\n")
+
+    place_images()
+    settings = config(state, market_base, engine_base)
+    settings["working_state"]["restore_command"] = 'cat "$HOME/image"'
+    swapper = model_swap.Swapper(settings)
+    working = swapper.working
+    control_runner, base = await serve(model_swap.build(swapper, TOKEN))
+    try:
+        async with aiohttp.ClientSession(headers={"Authorization": "Bearer " + TOKEN}) as session:
+            async def admit(account):
+                async with session.post(base + "/working-state/admit", json={"account": account}) as response:
+                    body = await response.json()
+                    return response.status, (body.get("error") or {}).get("code"), body
+
+            async def delete(body):
+                async with session.post(base + "/working-state/delete", json=body) as response:
+                    payload = await response.json()
+                    return response.status, (payload.get("error") or {}).get("code"), payload
+
+            check(await until(lambda: working.fresh(time.time()), 5), "the schedule is known")
+            images["n1"] = "image sha256:" + "cd" * 32
+            place_images()
+            status, code, _ = await admit("ACONE")
+            check((status, code) == (503, "handover_failed") and working.user == "ACONE" and working.restored != working.since,
+                  f"nodes that report different images after the restore fail the handover closed: {status} {code}")
+            check("different images" in working.last["error"] and working.last["ok"] is False, f"the record says why: {working.last}")
+            images["n1"] = "no image line"
+            place_images()
+            status, code, _ = await admit("ACONE")
+            check((status, code) == (503, "handover_failed") and "not image sha256" in working.last["error"], f"a node that prints no image fails it closed: {working.last}")
+            images["n1"] = "image " + working_state_fixture.IMAGE
+            place_images()
+            status, code, body = await admit("ACONE")
+            check(status == 200 and working.restored == working.since and body["last_handover"]["image"] == working_state_fixture.IMAGE,
+                  f"once every node reports the released image the account is admitted and the record carries its hash: {status} {code} {body.get('last_handover')}")
+            since, first = working.since, working.wiped
+            restores = [event for event in working.history if event.get("image")]
+            check(len(restores) == 1 and restores[0]["restore_seconds"] >= 0 and restores[0]["restored_at"] >= since - 1,
+                  f"the restore's time is recorded with the hash: {restores}")
+            status, _, _ = await admit("ACONE")
+            check(status == 200 and len([event for event in working.history if event.get("image")]) == 1, "the same user is admitted again without another restore")
+
+            status, code, _ = await delete({"account": "ACTWO", "storage": False})
+            check((status, code) == (409, "not_current_user") and working.wiped == first, f"an account that is not the fleet's user cannot delete: {status} {code}")
+            status, code, _ = await delete({"account": "ACONE", "storage": "yes"})
+            check(status == 400 and working.wiped == first, f"storage must be true or false: {status} {code}")
+
+            engine.live = 1
+            pending = asyncio.ensure_future(delete({"account": "ACONE", "storage": False}))
+            await asyncio.sleep(0.4)
+            check(not pending.done() and working.wiped == first, "a deletion waits for the account's live requests to drain before it wipes")
+            engine.live = 0
+            status, code, body = await asyncio.wait_for(pending, 10)
+            second = working.wiped
+            check(status == 200 and second > first and body["wiped"] == second and body["storage_wiped"] == since and "storage" not in body["deleted"] and
+                  "engine_cache" in body["deleted"] and working.user == "ACONE" and working.since == since,
+                  f"a cache deletion moves wiped, keeps storage_wiped and the user: {status} {code} {body}")
+            check(hub_directive.read_text() == working_state.directive_text(second, 0, since) and
+                  node_directive(state, "n0") == node_directive(state, "n1") == working_state.directive_text(second, 0, since),
+                  f"the hub and every node take the new wiped with storage_wiped unchanged: {node_directive(state, 'n0')!r}")
+            check(engine.applied >= second, "the deletion returns only after the engine applied it")
+            status, code, body = await delete({"account": "ACONE", "storage": True})
+            third = working.wiped
+            check(status == 200 and third > second and body["storage_wiped"] == third and "storage" in body["deleted"] and working.storage_wiped == third,
+                  f"a deletion with storage moves storage_wiped too: {status} {code} {body}")
+            kinds = [(event["kind"], event.get("storage"), event["ok"]) for event in working.history if event["kind"] == "delete"]
+            check(kinds == [("delete", False, True), ("delete", True, True)], f"each deletion is recorded: {kinds}")
+            check(len([event for event in working.history if event.get("image")]) == 1, "a deletion is not a change of user and restores nothing")
+
+            pathlib.Path(state, "down-n1").touch()
+            status, code, body = await delete({"account": "ACONE", "storage": False})
+            check((status, code) == (503, "delete_incomplete") and "n1" in body["error"]["message"] and working.history[-1]["ok"] is False and
+                  working.history[-1]["nodes_pending"] == ["n1"], f"a deletion a node does not take fails loudly and names the node: {status} {code} {body}")
+            pathlib.Path(state, "down-n1").unlink()
+            check(await until(lambda: working.pending == [] and node_directive(state, "n1") == working_state.directive_text(working.wiped, 0, third), 5),
+                  "the directive still reaches the node once it is back")
+            status, code, _ = await delete({"account": "ACONE", "storage": False})
+            check(status == 200, f"and the deletion then completes: {status} {code}")
+
+            engine.follow = False
+            status, code, body = await delete({"account": "ACONE", "storage": False})
+            check((status, code) == (503, "delete_incomplete") and "working_state_wiped" in body["error"]["message"],
+                  f"a deletion the engine does not apply fails loudly: {status} {code} {body}")
+            engine.follow = True
+            status, code, _ = await admit("ACONE")
+            check(status == 200, f"once the engine applies it the account is admitted again: {status} {code}")
+
+            market.hours = [{"start": slot(working_state.hour_floor(time.time())), "account": "ACTWO"}]
+            check(await until(lambda: working.user == "ACTWO" and working.confirmed == working.wiped, 10), "the next account's held hour passes the fleet to it")
+            check(working.since == working.wiped == working.storage_wiped and working.restored == working.since and working.history[-1]["image"] == working_state_fixture.IMAGE,
+                  f"a change of user moves wiped and storage_wiped together and restores the image again: {working.history[-1]}")
+    finally:
+        await control_runner.cleanup()
+        await engine_runner.cleanup()
+        await market_runner.cleanup()
 
 
 def rule(failures):
@@ -311,6 +447,8 @@ def main():
     rule(failures)
     with tempfile.TemporaryDirectory() as state:
         asyncio.run(scenario(state, failures))
+    with tempfile.TemporaryDirectory() as state:
+        asyncio.run(deletion(state, failures))
     for failure in failures:
         print("FAIL", failure)
     if failures:
@@ -319,7 +457,10 @@ def main():
           "an unknown or stale holder schedule fails every admit closed; a held hour admits only its holder and refuses others with Retry-After "
           "at the end of the holder's hours and refuses their model changes; a change of user drains live requests, writes wiped and held_until "
           "on the hub and every node, waits for the engine to apply it and only then admits; a failed node push is retried; an engine that never "
-          "applies the wipe fails closed; a restart keeps the user, wiped and held_until")
+          "applies the wipe fails closed; a restart keeps the user, wiped and held_until; every change of user restores the image on every node and "
+          "records its hash and time, and a restore that fails or disagrees fails the handover closed; the current user's deletion drains, moves wiped "
+          "(and storage_wiped with storage) on the hub and every node, waits for the engine and fails loudly when a node does not take it; "
+          "nobody else can delete")
 
 
 if __name__ == "__main__":

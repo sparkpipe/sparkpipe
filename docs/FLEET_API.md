@@ -282,7 +282,7 @@ Warm-ups are used:
 
 ### 4.4 `DELETE /v1/cache`
 
-Deletes the account's working-state cache on that fleet now, as clause 6.2 of the Agreement allows ("earlier when Customer asks"). With `?storage=true`, the customer storage goes too.
+Deletes the account's working-state cache on that fleet now, as clause 6.2 of the Agreement allows ("earlier when Customer asks"). With `?storage=true`, the customer storage goes too. The answer comes once nothing can reach the deleted state: the engine has applied the wipe and every node has the directive (`docs/WORKING_STATE.md`, Deletion on request); otherwise it is 503 `delete_incomplete` and the request can be repeated.
 
 ### 4.5 Resident models and aliases
 

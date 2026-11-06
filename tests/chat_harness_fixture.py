@@ -135,11 +135,30 @@ class Controller:
                        "models": [{"id": model_id, "active": model_id == active} for model_id in models]}
         self.activations = []
         self.fail = False
+        self.working = {"fleet": "F1", "user": "sparkpipe", "holder": None, "wiped": 100, "held_until": 0, "confirmed": True, "handover": None}
+        self.admitted = []
+        self.deletions = []
 
     async def get_status(self, request):
         if self.fail:
             return web.Response(status=502, text="Cannot connect to host 127.0.0.1:8440 ssl:default [Connect call failed]")
         return web.json_response(self.status)
+
+    async def working_state(self, request):
+        return web.json_response(self.working)
+
+    async def admit(self, request):
+        account = (await request.json())["account"]
+        self.admitted.append(account)
+        self.working = dict(self.working, user=account)
+        return web.json_response(self.working)
+
+    async def delete(self, request):
+        body = await request.json()
+        self.deletions.append(body)
+        self.working = dict(self.working, wiped=self.working["wiped"] + 1)
+        return web.json_response({"deleted": ["engine_cache", "snapshots", "mirror", "prefix_index"] + (["storage"] if body.get("storage") else []),
+                                  "wiped": self.working["wiped"], "storage_wiped": self.working["wiped"] if body.get("storage") else 0})
 
 
 async def serve(app):
@@ -171,6 +190,9 @@ class Harness:
         self.controller = Controller(self.active, self.model_ids)
         control_app = web.Application()
         control_app.router.add_get("/status", self.controller.get_status)
+        control_app.router.add_get("/working-state", self.controller.working_state)
+        control_app.router.add_post("/working-state/admit", self.controller.admit)
+        control_app.router.add_post("/working-state/delete", self.controller.delete)
         self.control_runner, control_base = await serve(control_app)
         keys = self.tmp / "api_keys.json"
         if not keys.exists():
@@ -187,7 +209,7 @@ class Harness:
             token = self.tmp / "controller-token"
             token.write_text("t" * 40)
             token.chmod(0o600)
-            config.update(controller_token_file="controller-token", control={"status_url": control_base + "/status"})
+            config.update(controller_token_file="controller-token", control={"status_url": control_base + "/status", "working_state_url": control_base + "/working-state"})
         if self.replay_store:
             config["replay"] = {"directory": "state/replay", "budget_bytes": 1 << 26, "directive": "working-state/directive"}
         (self.tmp / "codex_instructions.md").write_text(CODEX_INSTRUCTIONS)

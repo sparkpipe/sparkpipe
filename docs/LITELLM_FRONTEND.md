@@ -121,7 +121,7 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py` with `tools/serving/working_state.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id, "account": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs), `GET /working-state`, `POST /working-state/admit {"account": id}`, `POST /working-state/delete {"account": id, "storage": bool}`; every call needs the controller token (see Control-plane access) |
+| Swap controller | `tools/serving/model_swap.py` with `tools/serving/working_state_controller.py` and `tools/serving/working_state.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id, "account": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs), `GET /working-state`, `POST /working-state/admit {"account": id}`, `POST /working-state/delete {"account": id, "storage": bool}`; every call needs the controller token (see Control-plane access) |
 | Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
@@ -524,7 +524,7 @@ templates and tool-call parsers already live. `tools/serving/chat_shapes.py`
 | `GET/PUT /v1/models/aliases` | The account's alias table: at most 64 entries, each a name or pattern of at most 128 characters with at most four `*` |
 | `GET /v1/models` | Resident models first, each with `resident`, `context_window`, `max_output_tokens`, `sequences` and the Anthropic list fields, plus the alias table |
 | `GET /v1/codex/models` | The same models as Codex's own catalogue (`model_catalog_url`), below |
-| `DELETE /v1/cache` | Deletes the account's replay store now: its turns, stored responses and alias table |
+| `DELETE /v1/cache` | From the fleet's holder (a gateway request) or our own internal use: cancels the account's running requests, deletes its replay store (turns, stored responses, alias table) and has the working-state controller wipe the engine's cache on the hub and every node; `?storage=true` deletes storage (the scratch areas) too. 503 `delete_incomplete` when the engine or a node does not take the wipe, 409 `not_current_user` when the account does not hold the fleet. A key of our own use deletes only its replay store |
 | `HEAD /api/hello` | 200, no key |
 
 Token-exact replay (§3.2). For every assistant turn it returns, the chat
@@ -572,9 +572,17 @@ directive the working-state controller writes on the hub
 last used before `wiped` (another account started using the fleet), or 24 h
 after the later of its last use and `held_until`, is deleted; an account
 whose rows are all gone has its files removed. A missing directive is
-`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` removes
-the account's files at once; the engine's cache goes at the next change of
-user or by the same 24 h rule, and the answer says so (`not_deleted`).
+`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` from the
+fleet's holder removes the account's files at once and asks the controller
+(`POST /working-state/delete`) to wipe the engine: the controller drains the
+account's requests, moves `wiped` (and `storage_wiped` with
+`?storage=true`) on the hub and every node, and answers only once the engine
+reports the new `wiped`, so the next request is a cold prefill; the nodes
+delete the files at their next sweep (within a minute). A deletion any node
+or the engine does not take answers 503 `delete_incomplete`; the directive
+keeps being pushed, and a repeat of the request completes it. Every deletion
+is recorded in the controller's history and logged (`working_state_deleted`,
+`working_state_delete_done`).
 Responses `store` (true unless the request sets it to false, as in OpenAI's
 API) decides whether the conversation is kept for `previous_response_id`;
 the generated tokens are kept either way. A failed write to the store (disk
@@ -974,8 +982,10 @@ nothing. An engine API's `live_requests` is not the test, because a gate's
 scoring talks to the engine API directly, never passes through the chat
 layer and is not interrupted by its restart.
 
-`working_state.py` sits next to `model_swap.py` in `~/sparkpipe-swap` and next
-to `chat_frontend.py` in `~/sparkpipe-chat`; both load it.
+`working_state_controller.py` and `working_state.py` sit next to `model_swap.py`
+in `~/sparkpipe-swap`, and `working_state.py` next to `chat_frontend.py` in
+`~/sparkpipe-chat`; the controller needs aiohttp, the rule only the standard
+library.
 
 Read the controller from a hub shell without putting the token on a command
 line:

@@ -402,7 +402,7 @@ on the hub as spec: put the bearer token the market's holder schedule
 accepts in `/srv/workspace/sparkpipe/swap-controller/holders-token`
 (`umask 077`, at least 32 characters). Today that is the gateway's upstream
 key, the secret in the payment service's `SPARKPIPE_POOL_KEY_FILE`, whose
-hash is the gateway entry in the hub's `api_keys.json`. Copy `working_state.py` into `~/sparkpipe-swap` and
+hash is the gateway entry in the hub's `api_keys.json`. Copy `working_state.py` and `working_state_controller.py` into `~/sparkpipe-swap` and
 `~/sparkpipe-chat`, and give the chat layer's config the
 `working_state_url` (`deployment/hub/chat_frontend.json`). The order
 matters: the engine API must already report `working_state_wiped` on

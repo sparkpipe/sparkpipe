@@ -122,12 +122,71 @@ other than the fleet's current user arrives:
    applied `wiped` on `/health`. The controller waits for that before it
    admits the new user. From then on nothing can match the old user's
    prefixes, so no node can restore or reuse them.
-5. Nodes delete the old pages and files at their next sweep (at most 60 s).
+5. It restores our image: it runs `restore_command` on every node, which
+   checks the node's release against the release's hashes and prints
+   `image sha256:<hex>`. Every node must answer and all must name the same
+   image, or the handover fails closed and the new user is not admitted.
+   The handover's record carries the image hash, the restore's time in
+   seconds and when it finished (`image`, `restore_seconds`,
+   `restored_at`). A failed restore is retried at the next admission
+   without another wipe.
+6. Nodes delete the old pages and files at their next sweep (at most 60 s).
    That is the lazy delete; it is safe because step 4 already made them
    unreachable.
 
 A directive the controller fails to push to a node is retried every minute.
-Until it lands, that node keeps old state a little longer, but unreachable.
+Until it lands, that node keeps old state a little longer, but unreachable;
+the handover's record lists the node in `nodes_pending` and the controller
+logs `working_state_deletion_pending`. The restore of step 5 needs every
+node, so a node the controller cannot reach also keeps the new user out.
+
+Every handover and deletion is kept in the controller's state file
+(`history`, the last 256), with its account, times, outcome and, for a
+handover, the image record.
+
+### Deletion on request
+
+`DELETE /v1/cache` from the fleet's current user goes to the controller as
+`POST /working-state/delete {"account", "storage"}`:
+
+1. The chat layer cancels the account's running requests (503
+   `cache_deleted`) and deletes its replay store.
+2. The controller drains the engine, moves `wiped` to the next second (and
+   `storage_wiped` with it when `storage` is true), writes the directive on
+   the hub and every node, and waits for the engine to report the new
+   `wiped`.
+3. It answers 200 only when the engine applied it and every node took the
+   directive; otherwise 503 `delete_incomplete`, naming the nodes. The nodes'
+   sweeps delete the files within a minute.
+
+A deletion is not a change of user: `since` (the start of the user's time on
+the fleet) and the restored image stay. Any other account gets 409
+`not_current_user`. A key of our own use that is not the gateway deletes only
+its replay store, because it shares the fleet's cache with the rest of our
+use.
+
+### Scan
+
+`tools/working_state_scan.py` lists every place where working state can live
+on one host and what it holds, as JSON:
+
+- on a node, under the serving user's home: snapshot stores (`*.kvs`,
+  `*.kvst`, temporaries, in every shard), the scratch area, the pair
+  mirror's copies of the partner's stores and scratch, prefix index files
+  (`prefix_index*.spi`) and the KV ledger's spill backings (reported, not
+  attributable: a running lane's spill file has no name and its records go
+  with its page cache);
+- on the hub, with `--replay` and `--records`: the replay store by account
+  and the request records (kept a year, not working state, never selected);
+  `--taps` adds a draft server's tap records.
+
+It selects state with `--all`, `--before T` (cached state last used before
+T), `--storage-before T`, or `--account A` (A's replay store, and with
+`--controller-state` everything last used during A's time on the fleet). It
+also judges every item by the host's directive (`--expect-swept` fails on
+any item the directive expires, allowing `--grace` seconds, 120 by default,
+for the sweeps). `--expect-none` fails when anything is selected. It needs
+`working_state.py` next to it, or in `serving/` beside it.
 
 ### Scratch
 
@@ -160,7 +219,7 @@ the 500 GB scratch allocation is 250 GB own plus 250 GB of the partner's.
 
 ### Exclusivity on the hub
 
-The controller lives in the swap controller (`tools/serving/working_state.py`,
+The controller lives in the swap controller (`tools/serving/working_state_controller.py`,
 loaded by `model_swap.py`, which already owns the node list, SSH and the
 drain). It polls the market's holder schedule every 30 s and keeps the last
 answer. A schedule older than one hour fails closed: every request gets 503
@@ -250,7 +309,9 @@ A dedicated fleet needs neither.
    user, the 24-hour rule from the later of last use and held hours, and no
    hit on the old user's prefixes after a handover.
 2. The hub: the controller, the account header, admission, cancellation,
-   swap refusal, the draft servers' contexts. Tests against a fake market,
-   fake nodes and a fake engine.
+   swap refusal, the draft servers' contexts, the image restore record,
+   deletion on request and the scan. Tests against a fake market, fake nodes
+   and a fake engine, and the scan against fixture homes purged by the C
+   purge.
 3. The mirror and rebuild, and the node agent's calls. Tests: push, delete,
    rebuild with times kept, and the partner's purge of mirrored files.

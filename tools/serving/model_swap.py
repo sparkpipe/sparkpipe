@@ -12,7 +12,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
-LOADER = importlib.util.spec_from_file_location("sparkpipe_working_state", Path(__file__).with_name("working_state.py"))
+LOADER = importlib.util.spec_from_file_location("sparkpipe_working_state_controller", Path(__file__).with_name("working_state_controller.py"))
 working_state = importlib.util.module_from_spec(LOADER)
 LOADER.loader.exec_module(working_state)
 
@@ -425,6 +425,7 @@ def build(swapper, token):
     app.router.add_post("/deactivate", swapper.deactivate)
     app.router.add_get("/working-state", swapper.working.view_route)
     app.router.add_post("/working-state/admit", swapper.working.admit_route)
+    app.router.add_post("/working-state/delete", swapper.working.delete_route)
     return app
 
 

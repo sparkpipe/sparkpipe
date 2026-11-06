@@ -383,6 +383,7 @@ SHELL_TESTS := \
 	tests/test_deploy_restart_scope.sh
 PYTHON_TESTS := \
 	tests/test_working_state_twin.py \
+	tests/test_working_state_scan.py \
 	tests/test_telemetry_auxiliary.py \
 	tests/test_telemetry_stop.py \
 	tests/test_telemetry_fleet.py \

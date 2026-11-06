@@ -39,7 +39,9 @@
   "state_file": "/srv/workspace/sparkpipe/swap-controller/working-state.json",
   "hub_directive": "/home/spec/sparkdata/working-state/directive",
   "drain_seconds": 60,
-  "confirm_seconds": 30
+  "confirm_seconds": 30,
+  "restore_command": "cd \"$HOME/sparkdata/core\" && awk 'NF == 2 {print $1 \"  \" $2}' .applied_manifest | sha256sum --check --quiet --strict - && printf 'image sha256:%s\\n' \"$(sha256sum < .applied_manifest | cut -d' ' -f1)\"",
+  "restore_seconds": 600
  },
  "models": [
   {

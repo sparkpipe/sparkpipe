@@ -194,6 +194,8 @@ async def gateway_rules(harness, check):
         deleted = await response.json()
     check(response.status == 200 and "replay_store" in deleted["deleted"] and not (harness.tmp / "state" / "replay" / "account-acme.sqlite").exists() and
           (harness.tmp / "state" / "replay" / "account-bob.sqlite").exists(), f"DELETE /v1/cache deletes the account's replay store and no other: {deleted}")
+    check("engine_cache" in deleted["deleted"] and deleted["not_deleted"] == [] and harness.controller.deletions == [{"account": "acme", "storage": False}],
+          f"and has the fleet controller wipe the engine's cache, without storage: {deleted} {harness.controller.deletions}")
     engine.reply(ANSWER)
     status, _, text = await harness.post("/v1/chat/completions", chat(history), account="acme")
     check(json.loads(text)["sparkpipe"]["replayed_tokens"] == 0, "after DELETE /v1/cache the account's turns no longer replay")

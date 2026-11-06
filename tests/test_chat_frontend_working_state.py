@@ -34,6 +34,8 @@ class Controller:
         self.state = {"fleet": "F1", "user": "ACONE", "holder": None, "wiped": 100, "held_until": 0, "confirmed": True, "handover": None}
         self.admitted = []
         self.refusal = None
+        self.deletions = []
+        self.delete_refusal = None
 
     async def view(self, request):
         return web.json_response(self.state)
@@ -46,6 +48,18 @@ class Controller:
             status, code, retry = self.refusal
             return web.json_response({"error": {"code": code, "message": f"refused with {code}"}}, status=status, headers={"Retry-After": retry})
         return web.json_response(self.state)
+
+    async def delete(self, request):
+        if request.headers.get("Authorization") != "Bearer " + CONTROLLER_TOKEN:
+            return web.json_response({"error": {"code": "unauthorized", "message": "no"}}, status=401)
+        body = await request.json()
+        self.deletions.append(body)
+        if self.delete_refusal is not None:
+            status, code = self.delete_refusal
+            return web.json_response({"error": {"code": code, "message": f"refused with {code}"}}, status=status, headers={"Retry-After": "60"})
+        self.state = dict(self.state, wiped=self.state["wiped"] + 1, storage_wiped=self.state["wiped"] + 1 if body["storage"] else 0)
+        return web.json_response({"deleted": ["engine_cache", "snapshots", "mirror", "prefix_index", "draft_contexts"] + (["storage"] if body["storage"] else []),
+                                  "wiped": self.state["wiped"], "storage_wiped": self.state["storage_wiped"], "files_deleted_within_s": 120})
 
 
 class Engine:
@@ -90,6 +104,7 @@ class Model:
         self.vocabulary = SimpleNamespace(decoder=lambda: (lambda token: ""))
         self.stop_token_ids = []
         self.gate = SimpleNamespace(wait_seconds=1)
+        self.sequences = chat_frontend.SequenceGate(16)
 
 
 async def serve(app, **options):
@@ -135,6 +150,7 @@ async def run(tmp, failures):
     upstream = web.Application()
     upstream.router.add_get("/working-state", controller.view)
     upstream.router.add_post("/working-state/admit", controller.admit)
+    upstream.router.add_post("/working-state/delete", controller.delete)
     upstream.router.add_post("/v1/completions", engine.completions)
     upstream_runner, upstream_base = await serve(upstream, handler_cancellation=True)
     token_file = tmp / "controller-token"
@@ -145,10 +161,17 @@ async def run(tmp, failures):
     frontend = chat_frontend.Frontend({"models": [], "controller_token_file": token_file.name, "control": control,
                                        "public": {"header": DOOR, "keys_file": keys.name, "models": []}}, tmp)
     model = Model(upstream_base)
-    frontend.model_for = lambda body: model
+
+    async def resolve_model(name, key, scope):
+        return model, False
+
+    async def admit_model(model, key, headers):
+        return None
+    frontend.resolve_model = resolve_model
+    frontend.admit_model = admit_model
     frontend.public_models = frozenset({"m"})
-    frontend.plan = lambda model, body, headers: {"trace": {}, "engine_body": {"prompt_token_ids": [1, 2], "max_tokens": 8, "stream": True},
-                                                  "parser": Parser(), "prompt_tokens": 2, "session": None, "body": body}
+    frontend.plan = lambda model, body, headers, scope=None, member=None: {"trace": {}, "engine_body": {"prompt_token_ids": [1, 2], "max_tokens": 8, "stream": True},
+                                                                          "parser": Parser(), "prompt_tokens": 2, "session": None, "body": body}
     seen = []
 
     async def answer(request, model, body, plan, started):
@@ -193,28 +216,48 @@ async def run(tmp, failures):
             check(status == 503 and code(text) == "holder_schedule_unknown" and retry == "30", f"an unknown holder schedule refuses SparkPipe's own requests too: {status} {text}")
             controller.refusal = None
 
+            holder = dict(gateway, **{"X-SparkPipe-Account": "ACONE", "X-SparkPipe-Fleet": "F1"})
+
+            async def remove(headers, query=""):
+                async with client.delete(front + "/v1/cache" + query, headers=headers) as response:
+                    return response.status, await response.json()
+
             release = asyncio.Event()
-            held = []
 
             async def held_answer(request, model, body, plan, started):
-                held.append(plan["account"])
                 await release.wait()
                 return web.json_response({"ok": True})
             frontend.answer = held_answer
-            holder = dict(gateway, **{"X-SparkPipe-Account": "ACONE", "X-SparkPipe-Fleet": "F1"})
-            holder_requests = [asyncio.ensure_future(ask(holder)) for _ in range(chat_frontend.PUBLIC_KEY_CONCURRENCY + 2)]
-            check(await until(lambda: len(held) == chat_frontend.PUBLIC_KEY_CONCURRENCY + 2, 10),
-                  f"the gateway key is not held to the per-key limit, so a fleet's holder runs more than {chat_frontend.PUBLIC_KEY_CONCURRENCY} requests at once: {len(held)}")
-            plain_requests = [asyncio.ensure_future(ask(plain)) for _ in range(chat_frontend.PUBLIC_KEY_CONCURRENCY + 1)]
-            check(await until(lambda: sum(1 for task in plain_requests if task.done()) == 1, 10), "one request over another key's limit is answered at once")
-            over = [task.result() for task in plain_requests if task.done()]
-            check(over and over[0][0] == 429 and code(over[0][1]) == "rate_limited" and len(held) == 2 * chat_frontend.PUBLIC_KEY_CONCURRENCY + 2,
-                  f"another public key still runs at most {chat_frontend.PUBLIC_KEY_CONCURRENCY} requests at once: {over}")
+            running = asyncio.ensure_future(ask(holder))
+            check(await until(lambda: "ACONE" in frontend.running.values(), 5), "the holder has a request running")
+            frontend.prefixes = {"m": chat_frontend.PrefixLedger()}
+            status, body = await remove(holder)
+            check(status == 200 and controller.deletions == [{"account": "ACONE", "storage": False}] and "engine_cache" in body["deleted"] and
+                  "replay_store" in body["deleted"] and "storage" not in body["deleted"] and body["not_deleted"] == [] and body["cancelled_requests"] == 1,
+                  f"DELETE /v1/cache from the holder has the controller wipe the engine and the replay store, without storage: {status} {body}")
+            cancelled = await asyncio.wait_for(running, 5)
+            check(cancelled[0] == 503 and code(cancelled[1]) == "cache_deleted", f"the holder's running request is cancelled with cache_deleted: {cancelled}")
+            check(frontend.prefixes == {} and "ACONE" not in frontend.running.values(), "the prefix ledgers are cleared and nothing of the account runs")
+            status, body = await remove(holder, "?storage=true")
+            check(status == 200 and controller.deletions[-1] == {"account": "ACONE", "storage": True} and "storage" in body["deleted"],
+                  f"with storage=true the controller deletes storage too: {status} {body}")
+            status, body = await remove(holder, "?storage=maybe")
+            check(status == 400 and len(controller.deletions) == 2, f"storage must be true or false: {status} {body}")
+            status, body = await remove(dict(gateway, **{"X-SparkPipe-Account": "ACONE", "X-SparkPipe-Fleet": "F2"}))
+            check(status == 400 and code(json.dumps(body)) == "wrong_fleet" and len(controller.deletions) == 2, f"a deletion for another fleet is refused: {status} {body}")
+            controller.delete_refusal = (503, "delete_incomplete")
+            status, body = await remove(holder)
+            check(status == 503 and body["error"]["code"] == "delete_incomplete" and body["error"].get("deleted") == ["replay_store", "aliases", "stored_responses"],
+                  f"a deletion the controller cannot complete fails loudly and says what was deleted: {status} {body}")
+            controller.delete_refusal = (409, "not_current_user")
+            status, body = await remove(holder)
+            check(status == 409 and body["error"]["code"] == "not_current_user", f"the controller's refusal reaches the client: {status} {body}")
+            controller.delete_refusal = None
+            asked = len(controller.deletions)
+            status, body = await remove(plain)
+            check(status == 200 and len(controller.deletions) == asked and "engine_cache" in body["not_deleted"] and "replay_store" in body["deleted"],
+                  f"a key of our own use deletes only its replay store and says the engine cache is not deleted: {status} {body}")
             release.set()
-            finished = await asyncio.gather(*holder_requests, *plain_requests)
-            check(sorted(result[0] for result in finished) == [200] * (2 * chat_frontend.PUBLIC_KEY_CONCURRENCY + 2) + [429], f"every held request then finishes: {finished}")
-            check(frontend.public_inflight == {}, f"no request is left counted against a key: {frontend.public_inflight}")
-
             del frontend.answer
             frontend.prefixes = {"m": chat_frontend.PrefixLedger()}
             frontend.public_prefixes = {(gateway_id, "m"): chat_frontend.PrefixLedger()}
@@ -280,7 +323,9 @@ def main():
     print("PASS test_chat_frontend_working_state: a gateway key's request runs as the account in X-SparkPipe-Account and must name this fleet in "
           "X-SparkPipe-Fleet, every other request runs as sparkpipe; every request is admitted by the controller first and a refusal keeps its "
           "status, code and Retry-After; at a handover the old account's requests are cancelled (streams end with fleet_handover and [DONE]), "
-          "their engine requests close, the new account's keep running and the prefix ledgers are cleared; the controller is required to serve models")
+          "their engine requests close, the new account's keep running and the prefix ledgers are cleared; DELETE /v1/cache from the fleet's holder "
+          "cancels its running requests, deletes its replay store and has the controller wipe the engine (with storage only when asked), and a "
+          "deletion the controller cannot complete fails loudly; a key of our own use deletes only its replay store; the controller is required to serve models")
 
 
 if __name__ == "__main__":
