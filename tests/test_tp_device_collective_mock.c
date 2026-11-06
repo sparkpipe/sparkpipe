@@ -1052,6 +1052,11 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
         SparkTpMeshAllToAllChunks(526336u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 65u &&
         SparkTpMeshAllToAllChunks(4210688u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 514u,
         "peer all-to-all rounds for 1/8/128/129/512/1024 kv_shard rows are 1/1/5/5/17/33 (slice routes 65 at 128 rows, 514 at 1024)");
+    CHECK(SparkTpMeshAllToAllPipelined(131072u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshAllToAllPipelined(131073u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshPipelineChunks(131073u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(8421376u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 129u,
+        "an all-to-all of three half-slot chunks or more runs pipelined, and it takes one round per half slot");
     memset(request,0,sizeof(*request));
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0,"peer-route collective destroys");

@@ -906,9 +906,11 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     }
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
     {
-        chunks = (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ?
-            SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) :
-            SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes);
+        chunks = (slice_routes & SPARK_TP_MESH_ROUTES_PEER) == 0u ?
+            SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes) :
+            SparkTpMeshAllToAllPipelined(elements,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u ?
+            SparkTpMeshPipelineChunks(elements,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+            SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
         phases = 1u;
         if ( chunks == 0u )
             return SPARK_STATUS_INVALID_ARGUMENT;
