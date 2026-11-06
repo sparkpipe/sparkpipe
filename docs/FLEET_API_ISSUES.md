@@ -4,11 +4,17 @@ The build list for `docs/FLEET_API.md`. Everything here ships for 4 January 2027
 
 Each issue is one piece of work with a test that closes it. Sizes: **S** is up to a week, **M** one to two weeks, **L** three to four weeks. Issues of different components touch different files, so they can run as parallel sessions. "Needs" lists the issues that must land first.
 
+State on 6 November 2026:
+
+- **Merged to main:** G8 auto-extend (#1763), G11 uptime records and the downtime credit (#1767), G12 failover (#1769), and the CLI's L1, L3 and L4 (#1749).
+- **Built on main, gate not yet run:** C1 `/v1/messages`, C2 `/v1/responses` and C5's endpoints.
+- **Everything else is open.** An open PR names the IDs it closes, and its merge moves them to the first line.
+
 ## Engine and working state
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| E1 | Merge working state: held-hours retention, wipe at a change of user, pair mirror (#1691, #1692) | A customer's cache survives a 14-hour gap with the fleet held, and is gone within a minute of another account's first request | M | |
+| E1 | Merge working state: held-hours retention, wipe at a change of user, pair mirror (#1691, #1692) | A customer's cache survives a 14-hour gap with the fleet held. It is gone within a minute of another account's first request, and within 24 hours of the holder's last booked hour when nobody else books the fleet | M | |
 | E2 | Snapshot store at the full per-node budget (500 GB own, 500 GB partner) | Capacity, write and restore rates and crash recovery measured at the full budget and recorded in `PERFORMANCE_STATUS.md`. Today only 8 GiB per rank is proven | L | E1 |
 | E3 | Prefix index survives a release and a restart | After a hub release and a coordinator restart, a 150K conversation's next turn is a cache hit | M | E1 |
 | E4 | Bound K3's recurrent-state store | A 3,000-request K3 conversation runs to the end; today it fails after about 977 | M | |
@@ -26,6 +32,7 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | E18 | Several resident models per fleet | A per-node memory budget for each model's weights and cache. A set that fits loads side by side (GLM 5.3 with GLM 5.3 Flash), and each model serves at once with its own cache pool. A request for one never evicts the other's cache, and a set that does not fit is refused with the numbers | L | E15 |
 | E16 | Move working state between held fleets of the same build | `POST /v1/state/move` copies snapshots and storage, and the moved conversation's next turn is a hit on the new fleet | M | E2 |
 | E17 | Images on vision-capable models | An image block in each of the three API shapes is answered by a vision model, and refused with `image_not_supported` by others | M | C1, C2 |
+| E19 | Restore a fleet to our own image at a change of user | Before a new holder's first hour, every node of the fleet runs our released image again, checked against the release's hashes. A file the previous holder's driver or Function left anywhere outside its working state and storage is gone, and the restore is recorded with the image hash | M | E1 |
 
 ## Chat layer (hub)
 
@@ -84,10 +91,12 @@ Each issue is one piece of work with a test that closes it. Sizes: **S** is up t
 | --- | --- | --- | --- | --- |
 | F1 | Function runner (one per fleet) | Runs, schedules in the account's time zone, logs, results and the morning report, all at background priority | L | E8 |
 | F2 | Functions that read code and call the model | Review the day's changes, second opinions, ask the whole codebase, keep docs current, morning report, benchmark your repository, resume sessions, prefill ahead, scheduled model, rebuild after a loss: each runs on the Customer Zero repository (Gate E) | L | F1, P4 |
-| F3 | Sandbox host per fleet | Hardware chosen and installed per fleet. Firecracker microVMs with the repository copied in and no network by default, destroyed after each run, and the host wiped at a change of user | L | |
+| F3 | A sandbox for each fleet | Firecracker microVMs with the repository copied in and no network by default, destroyed after each run. Each fleet's sandbox has its own reserved CPU, memory and disk, shares nothing with another fleet's, and is wiped at a change of user | L | |
 | F4 | Agent loop | Our own loop, published with the engine, with read, search, edit and run tools against the sandbox, finishing a 20-task list on the Customer Zero repository | L | F3 |
 | F5 | Functions that run code | Tests and fuzzing, confirmed findings, security audit, overnight agent, codebase-wide change, evaluate models: each runs on the Customer Zero repository (Gate E) | L | F3, F4 |
 | F6 | Batch jobs (§11) | A 10,000-request JSONL file runs overnight at background priority, ordered by shared prefix, with results in storage | M | F1 |
+| F7 | Train an adapter (§7.2) | An adapter for an offered model and one for a customer model train from a dataset in storage, land in storage, and serve on their base model through all three API shapes | L | F1, X1 |
+| F8 | Make training data (§7.2) | A dataset lands in storage, generated only from models whose licence allows training another model on their outputs. A model without that licence is refused by name, and the licence list is published | M | F1 |
 
 ## Codebase tools over MCP
 

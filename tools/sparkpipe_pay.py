@@ -974,18 +974,51 @@ class Guard:
             self.sweep()
 
 
-def probe_health(hub):
+def hub_answer(hub, path):
     connection = http.client.HTTPConnection(hub[0], hub[1], timeout=HEALTH_TIMEOUT)
     try:
-        connection.request("GET", hub[2] + "/health")
+        connection.request("GET", hub[2] + path)
         response = connection.getresponse()
-        body = response.read(65536)
-        found = json.loads(body or b"{}") if response.status == 200 else {}
-        return response.status == 200 and isinstance(found, dict) and found.get("ok") is True, f"HTTP {response.status}"
-    except (OSError, ValueError, http.client.HTTPException) as error:
-        return False, f"{type(error).__name__}: {error}"[:200]
+        body = response.read(1 << 20)
+        try:
+            found = json.loads(body or b"{}")
+        except ValueError:
+            found = None
+        return response.status, found if isinstance(found, dict) else None
     finally:
         connection.close()
+
+
+def fleet_up(health, control):
+    status, view = control
+    models = (health or {}).get("models")
+    answers = {name: isinstance(entry, dict) and entry.get("status") == 200 for name, entry in (models.items() if isinstance(models, dict) else [])}
+    named = lambda names: ", ".join(sorted(names)) or "no model"
+    if health is None:
+        return False, "the hub's /health did not answer"
+    if status == 404:
+        return health.get("ok") is True, "every model answers" if health.get("ok") is True else f"{named(n for n, up in answers.items() if not up)} not answering, without model control"
+    if status != 200 or view is None:
+        return any(answers.values()), f"model control unavailable; {named(n for n, up in answers.items() if up)} answering"
+    if view.get("state") == "swapping":
+        return True, f"swapping to {view.get('target') or 'another model'}"
+    resident = [entry.get("id") for entry in view.get("models") or [] if isinstance(entry, dict) and entry.get("active") is True and isinstance(entry.get("id"), str)]
+    if not resident:
+        return view.get("state") == "idle", "no model resident; a request loads one" if view.get("state") == "idle" else f"no model resident after a {view.get('state')} swap"
+    failing = [name for name in resident if not answers.get(name)]
+    return not failing, f"{named(failing)} not answering" if failing else f"{named(resident)} answering"
+
+
+def probe_health(hub):
+    try:
+        health = hub_answer(hub, "/health")[1]
+    except (OSError, http.client.HTTPException) as error:
+        return False, f"{type(error).__name__}: {error}"[:200]
+    try:
+        control = hub_answer(hub, "/v1/sparkpipe/status")
+    except (OSError, http.client.HTTPException):
+        control = (0, None)
+    return fleet_up(health, control)
 
 
 class Uptime:

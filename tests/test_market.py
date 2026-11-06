@@ -146,9 +146,14 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
     def generic(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
-        if self.path == "/health" and self.command == "GET":
-            healthy = getattr(self.server, "healthy", True)
-            return self.answer(200 if healthy else 503, {"ok": healthy})
+        if self.path in ("/health", "/v1/sparkpipe/status") and self.command == "GET":
+            getattr(self.server, "probes", []).append(self.path)
+            if self.path == "/v1/sparkpipe/status":
+                control = getattr(self.server, "control", None)
+                return self.answer(*control) if control else self.answer(404, {"error": {"type": "not_found", "message": "this front end has no model control"}})
+            models = getattr(self.server, "models", None) or {"kimi-k3": 200 if getattr(self.server, "healthy", True) else 503}
+            ok = all(code == 200 for code in models.values())
+            return self.answer(200 if ok else 503, {"ok": ok, "models": {name: {"status": code} for name, code in models.items()}})
         self.record(body)
         fleet = self.headers.get("X-SparkPipe-Fleet")
         if self.path == "/v1/chat/completions":
@@ -1576,6 +1581,51 @@ def erase_flows(failures, app, m, port, mailbox, O, X, owner, other, owner_key, 
         failures.append(f"an erasure is not recorded in the ledger and the audit log and emailed to the owner, or does not replay: {lines} {mailed} {logged}")
 
 
+def view(state, active=None, target=None):
+    return 200, {"state": state, "active": active, "target": target, "models": [{"id": name, "active": name == active} for name in ("glm-5.3", "kimi-k3")]}
+
+
+def resident_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    hub_ = tp.serve(FakeUpstream, seen=[], calls=[], probes=[])
+    server, app, port = live(work, "resident", mailbox, hub_)
+    saved, sp.UPTIME_GAP_SECONDS = sp.UPTIME_GAP_SECONDS, 10 ** 9
+    try:
+        cases = [({"glm-5.3": 200, "kimi-k3": 503}, view("idle", "glm-5.3"), True), ({"glm-5.3": 503, "kimi-k3": 200}, view("idle", "glm-5.3"), False),
+                 ({"glm-5.3": 503, "kimi-k3": 503}, view("swapping", None, "kimi-k3"), True), ({"glm-5.3": 503, "kimi-k3": 503}, view("idle"), True),
+                 ({"glm-5.3": 503, "kimi-k3": 503}, view("failed"), False), ({"glm-5.3": 200, "kimi-k3": 503}, view("failed", "glm-5.3"), True),
+                 ({"glm-5.3": 200, "kimi-k3": 503}, None, False), ({"glm-5.3": 200, "kimi-k3": 200}, None, True),
+                 ({"glm-5.3": 200, "kimi-k3": 503}, (503, {"error": {"type": "control_unavailable"}}), True), ({"glm-5.3": 503, "kimi-k3": 503}, (503, {}), False)]
+        wrong = []
+        for models, control, expected in cases:
+            hub_.models, hub_.control = models, control
+            found = sp.probe_health(app.cfg.upstream("F3"))
+            if found[0] is not expected:
+                wrong.append((models, control, found))
+        if wrong:
+            failures.append(f"a Fleet is not judged up exactly when every resident model answers its /health entry, during a swap, or with nothing resident and no failed swap: {wrong}")
+        hub_.models, hub_.control, hub_.probes[:] = {"glm-5.3": 200, "kimi-k3": 503}, view("idle", "glm-5.3"), []
+        for minutes in (0, 20, 40):
+            probe(app, kst(2027, 1, 12, 10) + timedelta(minutes=minutes))
+        hub_.control = view("swapping", "glm-5.3", "kimi-k3")
+        hub_.models = {"glm-5.3": 503, "kimi-k3": 503}
+        probe(app, kst(2027, 1, 12, 11))
+        steady = public_status(port)[1]["F3"]
+        hub_.control = view("idle", "kimi-k3")
+        probe(app, kst(2027, 1, 12, 11, 10))
+        probe(app, kst(2027, 1, 12, 11, 30))
+        broken = public_status(port)[1]["F3"]
+        if (steady["status"], steady["incidents"], broken["status"], broken["since"]) != ("up", [], "down", market.stamp(kst(2027, 1, 12, 11))) or not broken["incidents"][0]["creditable"]:
+            failures.append(f"a Fleet with one model resident is shown down because another configured model does not answer, a swap is counted as an outage, or a failing resident model is not: {steady} {broken}")
+        if set(hub_.probes) != {"/health", "/v1/sparkpipe/status"} or hub_.calls:
+            failures.append(f"a probe asks the hub for more than /health and /v1/sparkpipe/status: {set(hub_.probes)} {hub_.calls[:2]}")
+    finally:
+        sp.UPTIME_GAP_SECONDS = saved
+        server.shutdown()
+        hub_.shutdown()
+        mailbox.shutdown()
+
+
 def sandbox_flows(failures, work):
     site(work / "plain-root", serving=False)
     cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
@@ -1662,6 +1712,7 @@ def main():
         extension_flows(failures, work)
         notice_flows(failures, work)
         uptime_flows(failures, work)
+        resident_flows(failures, work)
         failover_flows(failures, work)
         team_flows(failures, work)
         sandbox_flows(failures, work)
@@ -1671,7 +1722,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; teams: members invited by email with the admin or member role who join with their own email code, keys that belong to a member, members who cannot book, pay or join the waitlist and reach only inference and Functions, admins who manage keys and webhooks but not members, usage records and an audit log per member with the hub's own events, role changes, removal that revokes keys and sessions, and invitations that lapse after 7 days or when cancelled; the records of an account's requests deleted on its owner's request or the operator's command, never taken in again for the time before (DPA 9.3); the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, a team member, and reset; and the ledger replays")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, up when every resident model answers or a swap is under way, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; teams: members invited by email with the admin or member role who join with their own email code, keys that belong to a member, members who cannot book, pay or join the waitlist and reach only inference and Functions, admins who manage keys and webhooks but not members, usage records and an audit log per member with the hub's own events, role changes, removal that revokes keys and sessions, and invitations that lapse after 7 days or when cancelled; the records of an account's requests deleted on its owner's request or the operator's command, never taken in again for the time before (DPA 9.3); the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, a team member, and reset; and the ledger replays")
     return 0
 
 

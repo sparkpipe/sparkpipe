@@ -49,6 +49,7 @@ LIGHT_PATHS = (
     "NOTICE",
     ".gitignore",
     ".gitattributes",
+    ".mailmap",
     ".updaterepo-policy",
     ".github/pull_request_template.md",
     ".github/ISSUE_TEMPLATE/*",
