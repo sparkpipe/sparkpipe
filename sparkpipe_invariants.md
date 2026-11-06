@@ -197,6 +197,17 @@ changes to common code. Track implementation evidence in
   review, let CI run, and test pinned PR builds on Sparks in parallel. Do not
   serialize hardware testing behind CI completion or merge. Retain and resolve
   failures from both; neither a CI pass nor a Spark pass cancels the other gate.
+- **No symbolic links to data.** Packs, digests, configuration and customer
+  storage are named by absolute path and digest in configuration, never
+  reached through a symbolic link. A copy, `scp`, `rsync` or cleanup that
+  follows a link writes into the data behind it (#1207). Tools create no
+  link in a release root, a lane root, a scratch directory or customer
+  storage: scratch and fixture files are real files, a small file is copied
+  and a large one is named by path. A hard link is no alternative for
+  aliasing. The one allowed link is a system toolkit's own alias, such as
+  `/usr/local/cuda`. `tests/test_no_symlinks.py` rejects a link in the
+  repository and link-creating code outside `tests/`; its `PENDING` list of
+  tools still to convert may only shrink.
 
 ## 7. Topology and communication
 
