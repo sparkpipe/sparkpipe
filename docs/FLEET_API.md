@@ -224,7 +224,7 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
   - `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`;
   - a `modelOverrides` entry, so `/model` lists our models.
 - **Priority from hint headers.** With hint headers on, Claude Code marks each request as main, subagent, compaction or auxiliary. Compaction and auxiliary requests run at background priority, and main requests at interactive priority.
-- **Affinity.** `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity (§5) and routing between fleets (§14). Fair share (§12) is between members, by the key each request comes with, not between sessions.
+- **Affinity.** `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12).
 - **The SparkPipe plugin for Claude Code**, from our plugin marketplace on GitHub, bundles:
   - the MCP server of §10;
   - slash commands: `/sparkpipe:status`, `/sparkpipe:report`, `/sparkpipe:stats`, `/sparkpipe:run` (tests on the sandbox host with the local diff) and `/sparkpipe:fn`;
@@ -609,6 +609,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - Options: scopes (`inference`, `state`, `storage`, `functions`, `models`, `account:read`), `fleet`, `allow_swap`, expiry, and an IP allowlist.
   - `POST /v1/keys/{id}/rotate` issues a new key and keeps the old one valid for an hour.
 - **Fair share.** When several members' requests are waiting, the chat layer shares sequences between members. No member takes more than three quarters of them while another is waiting.
+  - The unit is the member, by the key each request comes with, never the session: the session and agent headers of §3.8 drive affinity and routing, not fair share.
 - **Usage per member** in `/v1/requests` and `sparkpipe stats`.
 - **Audit log.** `GET /v1/audit` lists events, without prompts or replies, kept like the operational records:
   - sign-ins, member and key changes;

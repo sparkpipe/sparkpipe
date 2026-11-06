@@ -623,8 +623,7 @@ tokens; with no measurement near that length it is null. `draft_accept` is
 null until the engine reports draft and accepted tokens per request, and
 `pack` until packs exist.
 
-Priority and affinity (§3.8). `X-SparkPipe-Priority: background` (or
-`metadata["x-sparkpipe-priority"]`, which the header overrides), a key with
+Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
 `"priority": "background"`, `<model>-bulk`, and Claude Code's
 `x-claude-code-request-class` `compaction` and `auxiliary` run at bulk
 priority; everything else is interactive. The record's `session` is
