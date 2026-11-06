@@ -624,12 +624,14 @@ null until the engine reports draft and accepted tokens per request, and
 `pack` until packs exist.
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
-`"priority": "background"`, `<model>-bulk`, and Claude Code's
-`x-claude-code-request-class` `compaction` and `auxiliary` run at bulk
-priority; everything else is interactive. The record's `session` is
-`X-Claude-Code-Session-Id`, OpenCode's `x-session-affinity` or Codex's
-`prompt_cache_key`; `agent` is `x-claude-code-agent-id` or OpenCode's
-`x-parent-session-id`.
+`"priority": "background"`, `<model>-bulk`, Claude Code's
+`x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's
+`x-openai-subagent: compact` run at bulk priority; everything else is
+interactive. The record's `session` is `X-Claude-Code-Session-Id`,
+OpenCode's `x-session-affinity`, Codex's `prompt_cache_key`, or the
+`session_id` in Claude Code's `metadata.user_id` (a JSON string, or the
+`_session_<id>` suffix of older releases) when no header names one;
+`agent` is `x-claude-code-agent-id` or OpenCode's `x-parent-session-id`.
 
 Context overflow (§17). A prompt longer than the model's window is refused
 in each shape's native form, so the harnesses compact on their own: Messages

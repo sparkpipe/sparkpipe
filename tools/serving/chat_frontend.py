@@ -87,6 +87,8 @@ HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 FLEET_VALUE = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REQUEST_CLASS_HEADER = "x-claude-code-request-class"
 BACKGROUND_CLASSES = frozenset({"compaction", "auxiliary"})
+SUBAGENT_HEADER = "x-openai-subagent"
+BACKGROUND_SUBAGENTS = frozenset({"compact"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
 AGENT_HEADERS = ("x-claude-code-agent-id", "x-parent-session-id")
 DEFAULT_ALIASES = {"claude-*": None, "gpt-*": None}
@@ -109,6 +111,11 @@ def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=Fa
 
 def clean_header(value, pattern=HEADER_VALUE):
     return value if isinstance(value, str) and pattern.fullmatch(value) is not None else None
+
+
+def harness_background(headers):
+    return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES
+            or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in BACKGROUND_SUBAGENTS)
 
 
 def glob_match(pattern, name):
@@ -1960,7 +1967,7 @@ class Frontend:
         value = value or self.metadata_priority(metadata)
         if value:
             return INTERACTIVE_PRIORITY if value == "interactive" else BULK_PRIORITY
-        if (headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES:
+        if harness_background(headers):
             return BULK_PRIORITY
         if key is not None and key.get("priority") == "background":
             return BULK_PRIORITY

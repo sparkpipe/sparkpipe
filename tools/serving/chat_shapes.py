@@ -22,6 +22,7 @@ BUDGET_EFFORTS = ((4096, "low"), (16384, "medium"))
 EFFORT_FALLBACKS = {"max": ("high",), "xhigh": ("high",), "minimal": ("minimal", "low"), "none": ("minimal", "low")}
 HANDLES = "replay_handles"
 AFFINITY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+SESSION_MARK = "_session_"
 
 
 def handle(prefix):
@@ -288,7 +289,7 @@ def messages_request(body):
     request.update(model=body["model"], messages=messages, tools=anthropic_tools(body.get("tools")), tool_choice=anthropic_tool_choice(body.get("tool_choice")),
                    effort=output.get("effort"), thinking=thinking.get("type"), budget=thinking.get("budget_tokens"),
                    max_tokens=body.get("max_tokens"), stops=stop_list(body.get("stop_sequences"), "stop_sequences"), sampling=sampling(body),
-                   stream=bool(body.get("stream")), custom_tools=frozenset())
+                   stream=bool(body.get("stream")), custom_tools=frozenset(), affinity=metadata_session(body.get("metadata")))
     return request
 
 
@@ -446,6 +447,20 @@ def responses_tool_choice(choice):
 
 def clean_affinity(value):
     return value if isinstance(value, str) and AFFINITY.fullmatch(value) is not None else None
+
+
+def metadata_session(metadata):
+    user = metadata.get("user_id") if isinstance(metadata, dict) else None
+    if not isinstance(user, str):
+        return None
+    try:
+        found = json.loads(user)
+    except ValueError:
+        found = None
+    if isinstance(found, dict):
+        return clean_affinity(found.get("session_id"))
+    _, mark, session = user.rpartition(SESSION_MARK)
+    return clean_affinity(session) if mark else None
 
 
 def responses_request(body):

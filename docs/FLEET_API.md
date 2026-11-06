@@ -106,7 +106,7 @@ Anthropic Messages, streaming and non-streaming. What Claude Code sends and how 
 - **Content blocks.** `text` and `tool_use`. `tool_result`, whose content is a string or blocks. `thinking` with `signature`, replayed per §3.2. `image` only on models that take images; otherwise 400 `image_not_supported`.
 - **Tools.** `tools` with `input_schema`, and `tool_choice` set to `auto`, `any`, `tool` or `none`, mapped to the model's tool-call format by the chat layer's parsers. `defer_loading` and `tool_reference` (MCP tool search) are not supported; the setup turns that beta off.
 - **Reasoning.** `thinking` (`enabled` with `budget_tokens`, or `adaptive`) and `output_config.effort` map to the model's reasoning switch and, where the model has one, its budget. Otherwise they are ignored.
-- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. `metadata` and unknown fields are accepted and ignored, and `anthropic-beta` headers are ignored.
+- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read only for the session id in `user_id` (§3.8).
 - **Response.** `id`, `content` blocks, and `stop_reason`: `end_turn`, `tool_use`, `max_tokens` or `stop_sequence`.
   - **Usage:**
     - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key itself sent, in 64-token blocks);
@@ -131,12 +131,14 @@ CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 CLAUDE_CODE_ATTRIBUTION_HEADER=0
+CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
 ```
 
 - **The Haiku alias points at a small resident model** when one fits next to the main model (GLM 5.3 Flash beside GLM 5.3, for example), and at the main model otherwise. Claude Code's background calls therefore never load a model that does not fit. The alias table catches any other `claude-*` name as well.
 - **The context limit is the model's served window.** Claude Code otherwise assumes 200K.
 - **The attribution header is turned off,** so the first system block stays the same from session to session.
-- **Long prefills need `CLAUDE_STREAM_IDLE_TIMEOUT_MS`.** Claude Code 2.1.308 counts a `ping` towards its stream watchdog for only 30 heartbeats in a row (300 s), then aborts 300 s later, so a cold prefill longer than about 10 minutes fails with the default. The setup should set `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000`, which moves the abort to about 35 minutes.
+- **The stream idle timeout is 30 minutes.** Claude Code 2.1.308 counts a `ping` towards its stream watchdog for only 30 heartbeats in a row (300 s), then aborts 300 s later, so a cold prefill longer than about 10 minutes would fail with the default. Setup sets `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000`, which moves the abort to about 35 minutes.
+- **The fleet's MCP server (§10) is registered at user scope:** `mcpServers.sparkpipe` (`type: "http"`, the `/mcp` URL and the key as a bearer header) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, the file `claude mcp add --scope user` writes. Claude Code 2.1.308's `claude mcp get sparkpipe` lists it from both places.
 - **Every Claude Code release is tested** against this endpoint before we tell customers to upgrade, because Anthropic does not test Claude Code against other models ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)).
 - **Claude Code's terms keep it on the customer's own machine.** Functions never run Claude Code on our servers (§7).
 
@@ -214,6 +216,8 @@ Every response carries what it cost in time:
 - **Tokens.** `POST /v1/tokenize` and `POST /v1/detokenize` with the model's tokenizer and chat template, so tools can count and place context exactly.
 - **Cancellation.** A client disconnect, or `DELETE /v1/requests/{id}`, stops generation within one decode step and frees the sequence. Agents interrupt often; an abandoned generation must not hold a sequence.
 - **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
+  - **One name, two places.** A client that can set headers sends the `X-SparkPipe-Priority` header. One that can only set body fields sends the same name as a key of the request's `metadata` object, `"metadata": {"x-sparkpipe-priority": "background"}`, on any of the three shapes. The header wins when both are present. The chat layer reads the header today; reading the `metadata` key lands with the priority classes (E8, #1794).
+  - **Harness hints.** Without either, the harness's own marks decide: Claude Code's `x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's `x-openai-subagent: compact`, run at background priority; everything else is interactive.
 - **Images** on models that take them, in all three API shapes.
 - **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
 
@@ -231,13 +235,23 @@ We support these three as deeply as each one allows:
 
 Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completions works too, without a setup command or a release check.
 
+**Undo.** Each setup records, per file, the backup of the version it first replaced (`setup.json` beside the CLI's `config.json`). `sparkpipe setup <harness> --undo`, or `sparkpipe setup --undo` for all three, puts back the pre-setup value of every key setup owns and keeps every other setting as it is now, including what the user or the tool wrote since. Claude Code adds permissions to `settings.json` and rewrites `~/.claude.json` all the time, so restoring whole files would lose them. A file setup created is removed when nothing else was written into it. The undo needs no network and no key, backs up the file it changes, and refuses, changing nothing, when the recorded backup is gone.
+
+**Release check.** `tools/client_release_check.py --endpoint <staging> --tool claude-code=<release> --tool codex=<release> --tool opencode=<release> --out result.json` (`latest` resolves through `npm view`), with the staging key in `SPARKPIPE_API_KEY`:
+- installs each release with `npm install --prefix` into a temporary directory, never globally, and gives each tool a fresh temporary home;
+- runs `sparkpipe setup <harness>` against a local relay (the proxy of §15 with a recorder), so the tool only ever holds the relay's one-time key and the staging key reaches only the fleet;
+- runs a three-turn session in a scratch repository (read a file, recall it, run a shell command) through each tool's non-interactive mode (`claude -p`, `codex exec`, `opencode run`), with `HTTPS_PROXY` pointing at a recorder that refuses and lists every other host;
+- writes the result as JSON, with one boolean per check: installed, setup, every turn finished, the session kept, the answers, tool calls, cache hits after the first turn, an MCP handshake answered, the affinity key on every inference request, Claude Code's hint headers, and no OpenCode request to opencode.ai. It also lists the request classes and background requests the relay saw, and the outside hosts each tool tried. It exits 0 only when every check passes.
+
+The timer that runs it within a day of each release, and the internal status page, are run by the lead (H6).
+
 **Claude Code** (Anthropic Messages, §3.3)
 - **Setup.** `sparkpipe setup claude-code` writes the environment of §3.3, with three additions:
   - `CLAUDE_CODE_SUBAGENT_MODEL` set to the same model, so subagents never swap the fleet;
   - `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`;
   - a `modelOverrides` entry, so `/model` lists our models.
-- **Priority from hint headers.** With hint headers on, Claude Code marks each request as main, subagent, compaction or auxiliary. Compaction and auxiliary requests run at background priority, and main requests at interactive priority.
-- **Affinity.** `x-claude-code-session-id` and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12).
+- **Priority from hint headers.** With hint headers on, Claude Code marks each request with `x-claude-code-request-class`. Claude Code 2.1.308 sends `main`, `subagent`, `workflow`, `compaction`, `auxiliary` and `side_reply`: `compaction` and `auxiliary` (titles, summaries, quota checks and the other calls outside the main thread and its subagents) run at background priority, and the rest at interactive priority.
+- **Affinity.** `X-Claude-Code-Session-Id`, which Claude Code 2.1.308 sends on every request, and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12). Without the header, the session is the `session_id` in `metadata.user_id`, a JSON string in 2.1.x and a `_session_<id>` suffix in older releases.
 - **The SparkPipe plugin for Claude Code**, from our plugin marketplace on GitHub, bundles:
   - the MCP server of §10;
   - slash commands: `/sparkpipe:status`, `/sparkpipe:report`, `/sparkpipe:stats`, `/sparkpipe:run` (tests on the sandbox host with the local diff) and `/sparkpipe:fn`;
@@ -254,7 +268,7 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
     - `[agents]` with `default_subagent_model` set to the same model, and `max_concurrent_threads_per_session` set to the fleet's sequences less the main thread's.
 
   It merges into `config.toml` without changing any other setting, and refuses, leaving the file as it was, when it cannot. The profile file is SparkPipe's own and is rewritten whole.
-- **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing.
+- **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing. Its local compaction runs as a subagent marked `x-openai-subagent: compact`, which runs at background priority.
 - **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn.
 
 **OpenCode** (Anthropic Messages through its `@ai-sdk/anthropic` provider, so tools and reasoning keep full fidelity)
@@ -600,7 +614,7 @@ The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with t
 | `start_function`, `run_status`, `morning_report` | §7 | |
 | `warm` | §4.2 | |
 
-Setup is written by `sparkpipe setup` and the plugins (§3.8). For Claude Code that is `claude mcp add --transport http sparkpipe https://sparkpipe.ai/pay/api/mcp --header "Authorization: Bearer <key>"`; for Codex, `[mcp_servers.sparkpipe]` in its profile; for OpenCode, a remote MCP entry in `opencode.json`. Other clients use the stdio bridge.
+Setup is written by `sparkpipe setup` and the plugins (§3.8). For Claude Code that is the user-scope `mcpServers.sparkpipe` entry in `~/.claude.json` that `claude mcp add --scope user --transport http sparkpipe https://sparkpipe.ai/pay/api/mcp --header "Authorization: Bearer <key>"` would write; for Codex, `[mcp_servers.sparkpipe]` in `config.toml`; for OpenCode, a remote MCP entry in `opencode.json`. Other clients use the stdio bridge.
 
 ## 11. Batch jobs
 
@@ -670,7 +684,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16) |
-| `sparkpipe setup claude-code`, `setup codex`, `setup opencode` | Writes the client settings and installs the plugins of §3.8 |
+| `sparkpipe setup claude-code`, `setup codex`, `setup opencode`, `setup [<harness>] --undo` | Writes the client settings and installs the plugins of §3.8; `--undo` restores the keys setup owns (§3.8) |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
 | `sparkpipe models resident [names]`, `aliases` | §4.5 |
 | `sparkpipe repo add NAME` (prints the push URL) | §6 |
@@ -688,7 +702,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe models add`, `models rm` | §9 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke` | Keys, with `--fleet` and `--allow-swap` |
 | `sparkpipe wipe [--storage]` | §4.4 |
-| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `127.0.0.1` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers. It forwards only the inference paths of §2 and `/mcp`, including the `/v1/responses` WebSocket. Clients send a random key it prints at each start, and it refuses requests addressed to another host name or carrying an `Origin`, so other local users and web pages cannot borrow the account's key |
+| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `127.0.0.1` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers. It forwards only the inference paths of §2, the alias table `GET /v1/models/aliases` that `sparkpipe setup` reads, and `/mcp`, including the `/v1/responses` WebSocket. Clients send a random key it prints at each start, and it refuses requests addressed to another host name or carrying an `Origin`, so other local users and web pages cannot borrow the account's key |
 | `sparkpipe mcp` | The stdio MCP bridge (§10) |
 | `sparkpipe batch submit FILE`, `batch ls`, `batch get ID` | §11 |
 | `sparkpipe team invite EMAIL --role`, `team ls`, `audit` | §12 |

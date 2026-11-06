@@ -165,6 +165,12 @@ async def run(tmp, check):
         check([message["role"] for message in translated] == ["user", "assistant", "tool"] and translated[1]["tool_calls"][0]["id"] == "call_x1" and
               set(translated[1][chat_frontend.chat_shapes.HANDLES]) == {"rs_x1", "msg_x1", "rs_x2", "fc_x1", "call_x1"},
               f"every item of the turn is kept, with its handles: {translated}")
+    async with fixture.Harness(tmp) as harness:
+        for subagent, wanted in (("compact", chat_frontend.BULK_PRIORITY), ("review", chat_frontend.INTERACTIVE_PRIORITY), (None, chat_frontend.INTERACTIVE_PRIORITY)):
+            harness.engine.reply(ANSWER)
+            status, _, text = await harness.post("/v1/responses", request([user("Summarize the session.")], stream=False), **({"x-openai-subagent": subagent} if subagent else {}))
+            check(status == 200 and harness.engine.requests[-1]["priority"] == wanted and json.loads(text)["sparkpipe"]["session"] == "session-7",
+                  f"a Codex request with x-openai-subagent {subagent} runs at priority {wanted} and keeps its prompt_cache_key session: {harness.engine.requests[-1]['priority']}")
 
 
 def main():
