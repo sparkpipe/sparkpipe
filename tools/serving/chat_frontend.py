@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import base64
 import codecs
 import copy
 import functools
@@ -10,6 +11,7 @@ import json
 import os
 import re
 import resource
+import subprocess
 import sys
 import time
 import uuid
@@ -65,6 +67,8 @@ def load_sibling(name):
 chat_replay = load_sibling("chat_replay")
 chat_shapes = load_sibling("chat_shapes")
 working_state = load_sibling("working_state")
+context_packs = load_sibling("context_packs")
+context_packs.RequestError = RequestError
 chat_shapes.RequestError = RequestError
 chat_shapes.chat_replay = chat_replay
 KEEPALIVE_SECONDS = 10.0
@@ -127,7 +131,7 @@ def glob_match(pattern, name):
 def template_spans(pieces):
     spans, offset = [], 0
     for text, special in pieces:
-        spans.append((offset, offset + len(text), special))
+        spans.append((offset, offset + len(text), special is True))
         offset += len(text)
     return spans
 
@@ -156,7 +160,11 @@ def encode_span(model, pieces, begin, end):
     ids, offset = [], 0
     for text, special in pieces:
         low, high = max(begin, offset), min(end, offset + len(text))
-        if low < high:
+        if low < high and not isinstance(special, bool):
+            if (low, high) != (offset, offset + len(text)):
+                raise RequestError(400, "invalid_messages", "a replayed turn overlaps the pack")
+            ids.extend(special)
+        elif low < high:
             ids.extend(model.renderer.cache.encode(text[low - offset:high - offset], special, model.context_tokens))
         offset += len(text)
     return ids
@@ -617,7 +625,7 @@ def uncarry(pieces, carried, expected):
 def encode_pieces(cache, text, pieces, room):
     ids = []
     for piece, special in pieces:
-        ids.extend(cache.encode(piece, special, room - len(ids)))
+        ids.extend(cache.encode(piece, special, room - len(ids)) if isinstance(special, bool) else special)
     return text, ids
 
 
@@ -810,6 +818,9 @@ class Model:
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
             raise SystemExit(f"chat_frontend: {self.id} needs sequences, the engine's sequences at once (deployment/lanes.json)")
         self.sequences = SequenceGate(sequences)
+        self.resume_tokens = spec.get("resume_tokens", CACHE_BLOCK_TOKENS)
+        if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % CACHE_BLOCK_TOKENS:
+            raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {CACHE_BLOCK_TOKENS}: the positions a cached prefix resumes from")
         self.images = spec.get("images", False) is True
         self.memory = spec.get("chat_memory", {})
         if not isinstance(self.memory, dict):
@@ -825,10 +836,25 @@ class Model:
             raise SystemExit(f"chat_frontend: {self.id} declares {text!r} but its tokenizer has no such token")
         return token
 
-    def render(self, messages, tools, kwargs):
+    def render(self, messages, tools, kwargs, pack=None):
         context = dict(self.template_defaults)
         context.update(kwargs)
-        return self.renderer.render(messages, tools, context, self.context_tokens - 1)
+        if pack is None:
+            return self.renderer.render(messages, tools, context, self.context_tokens - 1)
+        text, pieces = self.renderer.pieces(messages, tools, context)
+        return encode_pieces(self.renderer.cache, text, context_packs.splice(text, pieces, pack), self.context_tokens - 1)
+
+    def pack_prefix(self, version, ids, tools, kwargs):
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        messages = [context_packs.pack_message(version), {"role": "user", "content": context_packs.PACK_PROBE}]
+        text, pieces = self.renderer.pieces(messages, tools, context)
+        prefix = []
+        for piece, special in context_packs.splice(text, pieces, ids):
+            if not isinstance(special, bool):
+                return prefix + list(special), len(prefix)
+            prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
+        raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
 
     def generation_prompt(self, tools, kwargs):
         key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
@@ -953,6 +979,9 @@ def canonical_citations(messages, wrapper):
 
 PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
                           "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"})
+WORKSPACE_NAME = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
+PUBLIC_ROUTES = re.compile(rf"/v1/repos(/{WORKSPACE_NAME})?|/v1/packs(/{WORKSPACE_NAME}(/refresh)?)?|/git/{WORKSPACE_NAME}\.git/(info/refs|git-upload-pack|git-receive-pack)")
+GIT_PATH = re.compile(rf"/git/{WORKSPACE_NAME}\.git/.*")
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
@@ -1579,6 +1608,17 @@ class Frontend:
         self.replay = chat_replay.ReplayStore(base / replay["directory"] if replay.get("directory") else None,
                                               int(replay.get("budget_bytes", chat_replay.DEFAULT_BUDGET_BYTES)))
         self.directive = base / replay["directive"] if replay.get("directive") else None
+        repositories = config.get("repositories")
+        self.workspace = None
+        if repositories is not None:
+            fields = {"directory", "max_push_bytes", "max_repositories", "max_packs"}
+            if not isinstance(repositories, dict) or set(repositories) != fields or not isinstance(repositories["directory"], str) or not all(
+                    isinstance(repositories[field], int) and not isinstance(repositories[field], bool) and repositories[field] > 0 for field in fields - {"directory"}):
+                raise SystemExit("chat_frontend: repositories needs exactly directory (on the hub's local NVMe), max_push_bytes, max_repositories and max_packs")
+            self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
+                                                     repositories["max_packs"])
+        self.pack_tasks = set()
+        self.scope_keys = {}
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
@@ -1611,9 +1651,10 @@ class Frontend:
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
-        for task in (self.prune_task, self.expiry_task):
+        for task in (self.prune_task, self.expiry_task, *self.pack_tasks):
             if task is not None:
                 task.cancel()
+        await asyncio.gather(*self.pack_tasks, return_exceptions=True)
         await self.session.close()
 
     def expire_working_state(self, now, sweep):
@@ -1622,6 +1663,14 @@ class Frontend:
         self.directive_state = (wiped, held_until)
         if not (changed or sweep):
             return 0
+        if self.workspace is not None:
+            try:
+                areas = self.workspace.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+            except OSError as error:
+                print(json.dumps({"event": "workspace_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+                areas = []
+            if areas:
+                print(json.dumps({"event": "workspace_expired", "areas": areas, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
         try:
             dropped = self.replay.expire(lambda used: working_state.expired(used, wiped, held_until, now))
         except chat_replay.STORE_ERRORS as error:
@@ -1742,8 +1791,13 @@ class Frontend:
             raise RequestError(404, "model_not_found", f"a model name has at most {ALIAS_PATTERN_LENGTH} characters; served: {sorted(allowed)}")
         if isinstance(name, str) and PACK_SEPARATOR in name:
             base, _, pack = name.partition(PACK_SEPARATOR)
-            await self.resolve_model(base, key, scope, aliased)
-            raise RequestError(404, "pack_not_found", f"this fleet has no pack {pack!r}; build one with POST /v1/packs")
+            model, bulk, _ = await self.resolve_model(base, key, scope, aliased)
+            definition = self.workspace.definition(self.scope_directory(scope), pack) if self.workspace is not None and context_packs.NAME.fullmatch(pack) else None
+            if definition is None:
+                raise RequestError(404, "pack_not_found", f"this fleet has no pack {pack!r}; build one with POST /v1/packs")
+            if definition["model"] != model.id:
+                raise RequestError(404, "pack_not_found", f"pack {pack!r} is built for {definition['model']}; ask for {definition['model']}+{pack}")
+            return model, bulk, pack
         try:
             model = self.model_for({"model": name})
         except RequestError:
@@ -1751,7 +1805,7 @@ class Frontend:
         if model is not None:
             if key is not None and model.id not in allowed:
                 raise RequestError(404, "model_not_found", f"model {name!r} is not served here; served: {sorted(allowed)}")
-            return model, name != model.id and isinstance(name, str) and name.endswith(BULK_SUFFIX)
+            return model, name != model.id and isinstance(name, str) and name.endswith(BULK_SUFFIX), None
         found, target = self.alias_target(self.alias_table(scope), name) if isinstance(name, str) and not aliased else (False, None)
         if not found:
             raise RequestError(404, "model_not_found", f"model {name!r} is not served here and no alias names it; served: {sorted(allowed)}")
@@ -1793,7 +1847,7 @@ class Frontend:
         agent = next((clean_header(headers.get(name)) for name in AGENT_HEADERS if clean_header(headers.get(name))), None)
         return session, agent
 
-    def replay_render(self, model, messages, tools, kwargs, scope, member, contexts):
+    def replay_render(self, model, messages, tools, kwargs, scope, member, contexts, pack_ids=None):
         found = []
         try:
             for index, message in enumerate(messages):
@@ -1819,6 +1873,8 @@ class Frontend:
         context.update(kwargs)
         try:
             text, pieces = model.renderer.pieces(marked, tools, context)
+            if pack_ids is not None:
+                pieces = context_packs.splice(text, pieces, pack_ids)
         except RequestError:
             return None
         spans = template_spans(pieces)
@@ -1881,7 +1937,7 @@ class Frontend:
         engine = result.get("usage") or {}
         drafted = engine.get("draft_tokens")
         session, agent = plan.get("affinity") or (None, None)
-        return {"request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": None,
+        return {"request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": plan.get("pack"),
                 "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"], "prefill_tokens": usage["prompt"] - usage["cached"],
                 "replayed_tokens": replayed_tokens(plan),
                 "queue_ms": round((admitted - started) * 1000), "prefill_ms": prefill_ms, "ttft_ms": round((first - started) * 1000) if first else None,
@@ -1898,6 +1954,8 @@ class Frontend:
         fleet = clean_header(headers.get(FLEET_HEADER), FLEET_VALUE)
         if fleet:
             shown["X-SparkPipe-Fleet"] = fleet
+        if plan.get("pack"):
+            shown["X-SparkPipe-Pack"] = plan["pack"]
         return shown
 
     def normalized_usage(self, plan, result, reasoning_tokens=0):
@@ -2012,7 +2070,131 @@ class Frontend:
                  "sequences": model.sequences.sequences, "reasoning_efforts": effort_order(model.reasoning_effort), "resident": model.id in resident}
                 for model in shown for name in (model.id, model.id + BULK_SUFFIX)]
         return web.json_response({"object": "list", "data": data, "has_more": False, "first_id": data[0]["id"] if data else None,
-                                  "last_id": data[-1]["id"] if data else None, "aliases": self.alias_table(scope), "packs": [], "custom_models": []})
+                                  "last_id": data[-1]["id"] if data else None, "aliases": self.alias_table(scope), "packs": self.pack_list(scope),
+                                  "custom_models": []})
+
+    def pack_list(self, scope):
+        if self.workspace is None:
+            return []
+        scope_dir = self.scope_directory(scope)
+        shown = []
+        for name in self.workspace.pack_names(scope_dir):
+            entry = self.workspace.describe_pack(scope_dir, name)
+            shown.append({"id": entry["alias"], "pack": name, "model": entry["definition"]["model"], "version": entry["current"], "state": entry["state"]})
+        return shown
+
+    @staticmethod
+    def scope_directory(scope):
+        return chat_replay.scope_file(scope)[:-len(".sqlite")]
+
+    def note_key(self, scope, key):
+        if key is not None and scope is not None:
+            self.scope_keys.setdefault(scope, set()).add(key["id"])
+
+    def pack_request(self, scope, pack, headers, key, fallback=None):
+        if pack is None:
+            return None
+        if scope is None:
+            raise RequestError(404, "pack_not_found", "packs are served to API keys; send the request with one")
+        self.note_key(scope, key)
+        session, _ = self.affinity(headers, fallback)
+        return {"scope": scope, "name": pack, "session": session}
+
+    def choose_pack(self, pack_request, messages, tools, kwargs):
+        scope_dir, name = self.scope_directory(pack_request["scope"]), pack_request["name"]
+        key = "session:" + pack_request["session"] if pack_request["session"] else context_packs.first_messages_key(messages)
+        version = self.workspace.pin(scope_dir, name, key, time.time())
+        if version is None:
+            self.schedule_refresh(pack_request["scope"], name, "first_request")
+            raise RequestError(409, "pack_building", f"pack {name!r} has no version yet; it is being built from its repository", retry_after=30)
+        self.workspace.remember_profile(scope_dir, name, tools, kwargs)
+        self.workspace.touch(scope_dir)
+        return version, self.workspace.ids(scope_dir, name, version)
+
+    def schedule_refresh(self, scope, name, reason):
+        key = (self.scope_directory(scope), name)
+        running = self.workspace.refreshes.get(key)
+        if running is not None:
+            running["again"] = True
+            return False
+        entry = {"again": False, "reason": reason}
+        self.workspace.refreshes[key] = entry
+        entry["task"] = asyncio.ensure_future(self.refresh_pack(scope, name, entry))
+        self.pack_tasks.add(entry["task"])
+        entry["task"].add_done_callback(self.pack_tasks.discard)
+        return True
+
+    async def refresh_pack(self, scope, name, entry):
+        scope_dir = self.scope_directory(scope)
+        try:
+            while True:
+                entry["again"] = False
+                await self.refresh_once(scope, scope_dir, name, entry["reason"])
+                if not entry["again"]:
+                    break
+                entry["reason"] = "again"
+        except asyncio.CancelledError:
+            raise
+        except (RequestError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+            text = error.message if isinstance(error, RequestError) else f"{type(error).__name__}: {error}"
+            print(json.dumps({"event": "pack_refresh_failed", "scope": scope, "pack": name, "error": text}), file=sys.stderr, flush=True)
+            if self.workspace.definition(scope_dir, name) is not None:
+                self.workspace.state(scope_dir, name)["last_refresh"] = {"ok": False, "error": text, "finished": time.time()}
+                self.workspace.save(scope_dir, name)
+        finally:
+            if self.workspace.refreshes.get((scope_dir, name)) is entry:
+                del self.workspace.refreshes[(scope_dir, name)]
+
+    async def refresh_once(self, scope, scope_dir, name, reason):
+        definition = self.workspace.definition(scope_dir, name)
+        if definition is None:
+            return
+        model = self.models.get(definition["model"])
+        repository = self.workspace.repository(scope_dir, definition["repo"])
+        if model is None or repository is None:
+            raise RequestError(409, "pack_source_missing", f"pack {name!r} needs repository {definition['repo']!r} and model {definition['model']!r}")
+        started = time.monotonic()
+        record, ids = await asyncio.to_thread(context_packs.build, repository, definition, model.id, lambda text: model.vocabulary.encode(text, False))
+        built = time.monotonic() - started
+        state = self.workspace.state(scope_dir, name)
+        previous_version = state["current"]
+        report = {"ok": True, "reason": reason, "version": record["version"], "previous": previous_version, "commit": record["commit"],
+                  "tokens": record["tokens"], "files": len(record["files"]), "left_out": len(record["left_out"]), "build_seconds": round(built, 3)}
+        if record["version"] == previous_version:
+            state["last_refresh"] = dict(report, unchanged=True, finished=time.time())
+            self.workspace.save(scope_dir, name)
+            return
+        previous = self.workspace.record(scope_dir, name, previous_version) if previous_version else None
+        changed_path, changed_at = context_packs.first_change(previous, record)
+        self.workspace.store(scope_dir, name, record, ids, time.time())
+        warmed = []
+        for profile in list(state["profiles"]) or [{"tools": None, "kwargs": {}}]:
+            prompt, prefix_tokens = model.pack_prefix(record["version"], ids, profile["tools"], profile["kwargs"])
+            usage = await self.warm_prefix(model, prompt, scope)
+            warmed.append(dict(usage, prefix_tokens=prefix_tokens,
+                               resume_from=context_packs.resume_point(prefix_tokens, changed_at, model.resume_tokens) if previous else 0))
+        self.workspace.mark_warm(scope_dir, name, record["version"], warmed, time.time())
+        state["last_refresh"] = dict(report, first_changed=changed_path, changed_at=changed_at if previous else 0, warmed=warmed, finished=time.time())
+        self.workspace.save(scope_dir, name)
+        print(json.dumps(dict(state["last_refresh"], event="pack.warm", scope=scope, pack=name)), file=sys.stderr, flush=True)
+
+    async def warm_prefix(self, model, ids, scope):
+        started = time.monotonic()
+        await model.sequences.acquire(BACKGROUND_PRIORITY, None, scope, None)
+        usage = {}
+        try:
+            body = {"prompt_token_ids": list(ids), "max_tokens": 1, "stream": True, "stop_token_ids": model.stop_token_ids,
+                    "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
+            async for chunk in self.engine_stream(model, body, True):
+                usage = chunk.get("usage") or usage
+        finally:
+            await model.sequences.release(scope, None)
+        self.prefix_ledger(model).record(list(ids))
+        owners = set(self.scope_keys.get(scope, ())) | ({scope[len("key:"):]} if scope.startswith("key:") else set())
+        for owner in owners:
+            self.public_prefixes.setdefault((owner, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS)).record(list(ids))
+        return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
+                "seconds": round(time.monotonic() - started, 3)}
 
     async def codex_models(self, request):
         if self.codex_instructions is None:
@@ -2036,7 +2218,7 @@ class Frontend:
         plan = self.plan(model, body, None)
         return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
 
-    def plan(self, model, body, headers, scope=None, member=None):
+    def plan(self, model, body, headers, scope=None, member=None, pack_request=None):
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
@@ -2099,10 +2281,16 @@ class Frontend:
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
+        pack = None
+        if pack_request is not None and session is None:
+            pack = self.choose_pack(pack_request, messages, tools, kwargs)
+            messages = [context_packs.pack_message(pack[0])] + messages
         contexts = chat_replay.context_digests(model.id, tools, kwargs, messages) if scope is not None and session is None else None
-        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts) if contexts is not None else None
-        plan = self.finish_plan(model, body, messages, tools, kwargs, session, (replay["text"], replay["ids"]) if replay is not None else None)
-        plan.update(replay=replay, scope=scope if contexts is not None else None, member=member, replay_context=contexts[-1] if contexts else None)
+        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts, pack and pack[1]) if contexts is not None else None
+        rendered = (replay["text"], replay["ids"]) if replay is not None else (model.render(messages, tools, kwargs, pack[1]) if pack else None)
+        plan = self.finish_plan(model, body, messages, tools, kwargs, session, rendered)
+        plan.update(replay=replay, scope=scope if contexts is not None else None, member=member, replay_context=contexts[-1] if contexts else None,
+                    pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
         trace.update(seen_tokens=seen, seen_of=seen_of)
@@ -2491,9 +2679,10 @@ class Frontend:
             return web.json_response(error_body("invalid_json", "the request body must be a JSON object"), status=400)
         try:
             scope = self.scope_of(public, request.headers) if public is not None else None
-            model, bulk = await self.resolve_model(body.get("model"), public, scope or OWN_SCOPE)
+            model, bulk, pack = await self.resolve_model(body.get("model"), public, scope or OWN_SCOPE)
             await self.admit_model(model, public, request.headers)
-            plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers))
+            plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers),
+                             self.pack_request(scope, pack, request.headers, public))
             if "engine_body" in plan:
                 plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public)
         except RequestError as error:
@@ -2583,13 +2772,15 @@ class Frontend:
             translated = chat_shapes.messages_request(body)
         else:
             translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers))
-        model, bulk = await self.resolve_model(translated["model"], key, scope)
+        model, bulk, pack = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
+        translated["pack_request"] = self.pack_request(scope, pack, request.headers, key, translated.get("affinity"))
         return body, translated, model, bulk, key, scope
 
     def harness_plan(self, model, translated, scope, headers, key, bulk):
         messages = normalize_messages(translated["messages"])
+        pack = None
         tools = translated["tools"] or None
         choice = translated["tool_choice"]
         forced = False
@@ -2611,10 +2802,13 @@ class Frontend:
         if effort is not None:
             kwargs.update(model.reasoning_effort[effort])
         member = self.member_of(key, headers)
+        if translated.get("pack_request") is not None:
+            pack = self.choose_pack(translated["pack_request"], messages, tools, kwargs)
+            messages = [context_packs.pack_message(pack[0])] + messages
         contexts = chat_replay.context_digests(model.id, tools, kwargs, messages)
-        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts)
+        replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts, pack and pack[1])
         messages = without_handles(messages)
-        text, ids = (replay["text"], replay["ids"]) if replay is not None else model.render(messages, tools, kwargs)
+        text, ids = (replay["text"], replay["ids"]) if replay is not None else model.render(messages, tools, kwargs, pack and pack[1])
         forced_ids = []
         if forced:
             reasoning = model.reasoning
@@ -2628,7 +2822,7 @@ class Frontend:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key)
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
-                    trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})})
+                    trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         if key is not None:
             plan["public_key"] = key
             plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replayed_tokens(plan))
@@ -2755,7 +2949,7 @@ class Frontend:
         try:
             scope = self.scope_of(key, request.headers)
             body = await self.read_body(request)
-            model, _ = await self.resolve_model(body.get("model"), key, scope)
+            model, _, _ = await self.resolve_model(body.get("model"), key, scope)
             if isinstance(body.get("text"), str):
                 ids = model.vocabulary.encode(body["text"], False)
             elif isinstance(body.get("messages"), list):
@@ -2774,7 +2968,7 @@ class Frontend:
         key = request.get("public_key")
         try:
             body = await self.read_body(request)
-            model, _ = await self.resolve_model(body.get("model"), key, self.scope_of(key, request.headers))
+            model, _, _ = await self.resolve_model(body.get("model"), key, self.scope_of(key, request.headers))
             tokens = body.get("tokens")
             if not isinstance(tokens, list) or not all(isinstance(token, int) and not isinstance(token, bool) and token >= 0 for token in tokens):
                 raise RequestError(400, "invalid_request", "tokens must be an array of token ids")
@@ -2829,14 +3023,153 @@ class Frontend:
             return error_response(error)
         if request.query.get("storage") not in (None, "false", "true"):
             return error_response(RequestError(400, "invalid_request", "storage is true or false"))
+        storage = request.query.get("storage") == "true"
         deleted = self.replay.forget(scope)
         if key is not None:
             for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
                 del self.public_prefixes[name]
-        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted}), file=sys.stderr, flush=True)
-        return web.json_response({"deleted": ["replay_store", "aliases", "stored_responses"],
-                                  "not_deleted": ["engine_cache"] + (["storage"] if request.query.get("storage") == "true" else []),
+        removed = ["replay_store", "aliases", "stored_responses"]
+        if self.workspace is not None:
+            scope_dir = self.scope_directory(scope)
+            if storage:
+                self.workspace.delete_area(scope_dir)
+                removed += ["packs", "repositories"]
+            else:
+                self.workspace.delete_packs(scope_dir)
+                removed.append("packs")
+        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage}), file=sys.stderr, flush=True)
+        return web.json_response({"deleted": removed,
+                                  "not_deleted": ["engine_cache"] + (["storage"] if storage and self.workspace is None else []),
                                   "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+
+    def workspace_scope(self, request):
+        if self.workspace is None:
+            raise RequestError(404, "not_configured", "this fleet keeps no repositories or packs")
+        scope = self.scope_of(request.get("public_key"), request.headers)
+        self.note_key(scope, request.get("public_key"))
+        return scope, self.scope_directory(scope)
+
+    async def create_repository(self, request):
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            body = await self.read_body(request)
+            if set(body) - {"name"}:
+                raise RequestError(400, "invalid_request", "a repository takes only a name")
+            described = self.workspace.create_repository(scope_dir, body.get("name"))
+        except RequestError as error:
+            return error_response(error)
+        print(json.dumps({"event": "repository_created", "scope": scope, "repository": described["name"]}), file=sys.stderr, flush=True)
+        return web.json_response(described, status=201)
+
+    async def list_repositories(self, request):
+        try:
+            _, scope_dir = self.workspace_scope(request)
+            data = [self.workspace.describe_repository(scope_dir, name) for name in self.workspace.repository_names(scope_dir)]
+        except RequestError as error:
+            return error_response(error)
+        return web.json_response({"object": "list", "data": data})
+
+    async def get_repository(self, request):
+        try:
+            _, scope_dir = self.workspace_scope(request)
+            return web.json_response(self.workspace.describe_repository(scope_dir, request.match_info["name"]))
+        except RequestError as error:
+            return error_response(error)
+
+    async def delete_repository(self, request):
+        name = request.match_info["name"]
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            packs = [pack for pack in self.workspace.pack_names(scope_dir) if self.workspace.definition(scope_dir, pack)["repo"] == name]
+            self.workspace.delete_repository(scope_dir, name)
+            for pack in packs:
+                self.workspace.delete_pack(scope_dir, pack)
+        except RequestError as error:
+            return error_response(error)
+        print(json.dumps({"event": "repository_deleted", "scope": scope, "repository": name, "packs": packs}), file=sys.stderr, flush=True)
+        return web.json_response({"deleted": name, "packs_deleted": packs})
+
+    async def create_pack(self, request):
+        key = request.get("public_key")
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            body = await self.read_body(request)
+            allowed = sorted(self.public_models if key is not None else self.models)
+            resident = [model_id for model_id in await self.resident_ids() if model_id in allowed]
+            definition = context_packs.definition_valid(body, allowed, resident[0] if resident else None, lambda model_id: self.models[model_id].context_tokens)
+            self.workspace.define(scope_dir, definition)
+        except RequestError as error:
+            return error_response(error)
+        self.schedule_refresh(scope, definition["name"], "defined")
+        return web.json_response(self.workspace.describe_pack(scope_dir, definition["name"]), status=202)
+
+    async def list_packs(self, request):
+        try:
+            _, scope_dir = self.workspace_scope(request)
+            data = [self.workspace.describe_pack(scope_dir, name) for name in self.workspace.pack_names(scope_dir)]
+        except RequestError as error:
+            return error_response(error)
+        return web.json_response({"object": "list", "data": data})
+
+    async def get_pack(self, request):
+        try:
+            _, scope_dir = self.workspace_scope(request)
+            return web.json_response(self.workspace.describe_pack(scope_dir, context_packs.valid_name(request.match_info["name"], "pack")))
+        except RequestError as error:
+            return error_response(error)
+
+    async def delete_pack(self, request):
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            name = context_packs.valid_name(request.match_info["name"], "pack")
+            self.workspace.delete_pack(scope_dir, name)
+        except RequestError as error:
+            return error_response(error)
+        return web.json_response({"deleted": name})
+
+    async def refresh_pack_now(self, request):
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            name = context_packs.valid_name(request.match_info["name"], "pack")
+            if self.workspace.definition(scope_dir, name) is None:
+                raise RequestError(404, "pack_not_found", f"there is no pack {name!r}; build one with POST /v1/packs")
+        except RequestError as error:
+            return error_response(error)
+        started = self.schedule_refresh(scope, name, "requested")
+        return web.json_response(dict(self.workspace.describe_pack(scope_dir, name), queued=not started), status=202)
+
+    async def git_route(self, request):
+        name, tail = request.match_info["name"], request.match_info["tail"]
+        try:
+            scope, scope_dir = self.workspace_scope(request)
+            context_packs.valid_name(name, "repository")
+            if tail not in context_packs.GIT_TAILS:
+                raise RequestError(404, "not_found", "the fleet serves git's smart HTTP protocol only")
+            if (tail == "info/refs") != (request.method in ("GET", "HEAD")) or (tail == "info/refs" and request.query.get("service") not in context_packs.GIT_SERVICES):
+                raise RequestError(404, "not_found", "the fleet serves git's smart HTTP protocol only")
+            repository = self.workspace.repository(scope_dir, name)
+            if repository is None:
+                raise RequestError(404, "repository_not_found", f"there is no repository {name!r}; create it with POST /v1/repos")
+            if request.content_length is not None and request.content_length > self.workspace.max_push_bytes:
+                raise RequestError(413, "push_too_large", f"a push carries at most {self.workspace.max_push_bytes} bytes on this fleet")
+            pushing = tail == "git-receive-pack"
+            before = self.workspace.refs(repository) if pushing else None
+            user = self.member_of(request.get("public_key"), request.headers) or scope
+            response, status, code, _, received = await context_packs.git_backend(request, repository.parent, name, tail, user, self.workspace.max_push_bytes)
+        except RequestError as error:
+            return error_response(error)
+        self.workspace.touch(scope_dir)
+        if pushing and status == 200 and code == 0:
+            after = self.workspace.refs(repository)
+            if after != before:
+                self.workspace.settle_head(repository)
+                packs = [pack for pack in self.workspace.pack_names(scope_dir) if self.workspace.definition(scope_dir, pack)["repo"] == name]
+                for pack in packs:
+                    self.schedule_refresh(scope, pack, "push")
+                print(json.dumps({"event": "repository_pushed", "scope": scope, "repository": name, "bytes": received,
+                                  "refs": sorted(ref for ref in set(before) | set(after) if before.get(ref) != after.get(ref)), "refreshing": packs}),
+                      file=sys.stderr, flush=True)
+        return response
 
     async def reply_text(self, request, model, body, text):
         identifier = "chatcmpl-" + uuid.uuid4().hex
@@ -2991,6 +3324,11 @@ def presented_key(headers):
     authorization = headers.get("Authorization", "")
     if authorization.startswith("Bearer "):
         return authorization[len("Bearer "):].strip()
+    if authorization[:6].lower() == "basic ":
+        try:
+            return base64.b64decode(authorization[6:].strip(), validate=True).decode().partition(":")[2].strip() or None
+        except (ValueError, UnicodeDecodeError):
+            return None
     return headers.get("X-Api-Key", "").strip() or None
 
 
@@ -3000,16 +3338,21 @@ def public_door(frontend):
         if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
             return await handler(request)
         refuse = anthropic_error_response if request.path in ANTHROPIC_PATHS else (responses_error_response if request.path == "/v1/responses" else error_response)
-        if request.path not in PUBLIC_PATHS:
+        if request.path not in PUBLIC_PATHS and PUBLIC_ROUTES.fullmatch(request.path) is None:
             return refuse(RequestError(404, "not_found", "this path is not served to the public API"))
         if request.path in OPEN_PATHS:
             return await handler(request)
         presented = presented_key(request.headers)
         entry = frontend.public_keys.lookup(presented) if presented else None
+        git_path = GIT_PATH.fullmatch(request.path) is not None
         if entry is None:
-            return refuse(RequestError(401, "invalid_api_key", "send a valid SparkPipe API key as Authorization: Bearer sk-sp-... or X-Api-Key: sk-sp-..."))
+            refused = refuse(RequestError(401, "invalid_api_key", "send a valid SparkPipe API key as Authorization: Bearer sk-sp-... or X-Api-Key: sk-sp-..."
+                                          + (", or as the password of git's HTTP Basic authentication" if git_path else "")))
+            if git_path:
+                refused.headers["WWW-Authenticate"] = 'Basic realm="SparkPipe"'
+            return refused
         request["public_key"] = entry
-        if request.method in ("POST", "PUT"):
+        if request.method in ("POST", "PUT") and not git_path:
             if request.content_length is None:
                 return refuse(RequestError(411, "length_required", "send the request body with a Content-Length"))
             limit = frontend.public_body_limit()
@@ -3036,6 +3379,16 @@ def build(frontend):
     app.router.add_put("/v1/models/aliases", frontend.put_aliases)
     app.router.add_get("/v1/codex/models", frontend.codex_models)
     app.router.add_delete("/v1/cache", frontend.delete_cache)
+    app.router.add_post("/v1/repos", frontend.create_repository)
+    app.router.add_get("/v1/repos", frontend.list_repositories)
+    app.router.add_get("/v1/repos/{name}", frontend.get_repository)
+    app.router.add_delete("/v1/repos/{name}", frontend.delete_repository)
+    app.router.add_post("/v1/packs", frontend.create_pack)
+    app.router.add_get("/v1/packs", frontend.list_packs)
+    app.router.add_get("/v1/packs/{name}", frontend.get_pack)
+    app.router.add_delete("/v1/packs/{name}", frontend.delete_pack)
+    app.router.add_post("/v1/packs/{name}/refresh", frontend.refresh_pack_now)
+    app.router.add_route("*", "/git/{name}.git/{tail:.*}", frontend.git_route)
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)

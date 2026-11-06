@@ -151,8 +151,9 @@ async def serve(app):
 
 
 class Harness:
-    def __init__(self, tmp, models=("alpha", "beta"), active="alpha", sequences=2, replay_store=True, control=True):
+    def __init__(self, tmp, models=("alpha", "beta"), active="alpha", sequences=2, replay_store=True, control=True, extra=None):
         self.tmp = tmp
+        self.extra = dict(extra or {})
         self.model_ids = models
         self.active = active
         self.sequences = sequences
@@ -192,6 +193,7 @@ class Harness:
             config["replay"] = {"directory": "state/replay", "budget_bytes": 1 << 26, "directive": "working-state/directive"}
         (self.tmp / "codex_instructions.md").write_text(CODEX_INSTRUCTIONS)
         config["codex"] = {"instructions_file": "codex_instructions.md"}
+        config.update(self.extra)
         self.frontend = chat_frontend.Frontend(config, self.tmp)
         self.front_runner, self.base = await serve(chat_frontend.build(self.frontend))
         self.session = aiohttp.ClientSession()
