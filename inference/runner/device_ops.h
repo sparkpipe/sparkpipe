@@ -154,6 +154,9 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ROUTE_SIGMOID_PINNED,
 	SPARK_OPS_ROUTE_SQRT_SOFTPLUS_PINNED,
 	SPARK_OPS_SILU_ROUNDED_CLAMP_MUL,
+	SPARK_OPS_RANK_SUM_F32,
+	SPARK_OPS_GEMV_ROUTED_F32,
+	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -209,6 +212,7 @@ SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params);
 SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params);
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
+SparkStatus SparkOpsRankSumF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,
 	uint32_t width);
@@ -251,6 +255,8 @@ SparkStatus SparkOpsRouteTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
 	SparkTensor output, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params);

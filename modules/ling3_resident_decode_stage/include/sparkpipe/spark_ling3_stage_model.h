@@ -71,6 +71,7 @@ struct Ling3Geometry : LingDefaults
 	static constexpr bool kKdaNormRoundOnce = true;
 	static constexpr bool kFfnSiluRounded = true;
 	static constexpr bool kExpertWeightAfterDown = true;
+	static constexpr bool kTpPartialsF32 = false;
 };
 #endif
 

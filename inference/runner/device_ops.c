@@ -137,7 +137,10 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_route_combine_weighted_shared",
 	"spark_route_sigmoid_pinned",
 	"spark_route_sqrt_softplus_pinned",
-	"spark_silu_rounded_clamp_mul"
+	"spark_silu_rounded_clamp_mul",
+	"spark_rank_sum_f32",
+	"spark_gemv_routed_f32",
+	"spark_route_combine_weighted_shared_f32"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -434,6 +437,26 @@ static SparkStatus OpsRankCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
 {
 	return(OpsRankCombine(ops,queue,SPARK_OPS_RANK_SUM_BF16,"rank_sum_bf16",lanes,full,ranks,elements,2u));
+}
+
+SparkStatus SparkOpsRankSumF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
+{
+	SparkRankParams params;
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( ranks == 0u || elements == 0u || elements > UINT32_MAX )
+		return(OpsRefuse("rank_sum_f32","ranks and at most 2^32 elements are required"));
+	status = OpsNeed("rank_sum_f32","lanes",lanes,(uint64_t)ranks * elements * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("rank_sum_f32","full",full,elements * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&params,0,sizeof(params));
+	params.elements = elements;
+	params.ranks = ranks;
+	bindings[0] = OpsBind(lanes,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(full,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_RANK_SUM_F32,(uint32_t)((elements + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,2u));
 }
 
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
@@ -1303,6 +1326,29 @@ SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQ
 	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
+SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status;
+	if ( params->rows == 0u || params->top_k == 0u || params->top_k > SPARK_ROUTE_MAX_TOP_K || params->width == 0u )
+		return(OpsRefuse("route_combine_weighted_shared_f32","rows, a top-k of at most 16 and a width are required"));
+	status = OpsNeed("route_combine_weighted_shared_f32","expert outputs",expert_out,(uint64_t)params->rows * params->top_k * params->width * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","shared",shared,(uint64_t)params->rows * params->width * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","output",output,(uint64_t)params->rows * params->width * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
+}
+
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params)
 {
@@ -1928,13 +1974,13 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkDeviceBinding bindings[4];
 	SparkStatus status;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
-		params->route_divisor == 0u || params->output_f32 != 0u || expert_count == 0u )
-		return(OpsRefuse("linear_routed","routes, an input width that is a multiple of 8, a source row per route divisor and BF16 output are required"));
+		params->route_divisor == 0u || expert_count == 0u )
+		return(OpsRefuse("linear_routed","routes, an input width that is a multiple of 8 and a source row per route divisor are required"));
 	status = OpsNeed("linear_routed","input",x,OpsRowsBytes(sources,params->input_stride,K,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear_routed","weight",w,(uint64_t)expert_count * N * K * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("linear_routed","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
+		status = OpsNeed("linear_routed","output",y,OpsRowsBytes(params->rows,params->output_stride,N,params->output_f32 != 0u ? 4u : 2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear_routed","experts",experts,(uint64_t)params->rows * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
@@ -1943,8 +1989,8 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
-		bindings,4u));
+	return(OpsLaunch(ops,queue,params->output_f32 != 0u ? SPARK_OPS_GEMV_ROUTED_F32 : SPARK_OPS_GEMV_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,
+		params->rows,1u,128u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsLinearRoutedFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,

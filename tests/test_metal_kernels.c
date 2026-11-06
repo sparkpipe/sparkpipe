@@ -1280,6 +1280,110 @@ static void TestLinearRouted(uint32_t rows)
 	SparkDeviceFree(&single);
 }
 
+static void TestTpPartialsF32(uint32_t rows)
+{
+	enum { K = 2816u, N = 704u, EXPERTS = 16u, TOP = 8u };
+	const uint32_t routes = rows * TOP;
+	SparkDeviceBuffer x, w, y, experts, single, weights, shared, combined;
+	uint16_t *xv = (uint16_t *)Shared(&x,(uint64_t)rows * K * sizeof(uint16_t),"f32 routed x");
+	uint16_t *wv = (uint16_t *)Shared(&w,(uint64_t)EXPERTS * N * K * sizeof(uint16_t),"f32 routed w");
+	float *yv = (float *)Shared(&y,(uint64_t)routes * N * sizeof(float),"f32 routed y");
+	uint32_t *ev = (uint32_t *)Shared(&experts,routes * sizeof(uint32_t),"f32 routed experts");
+	float *sv = (float *)Shared(&single,(uint64_t)N * sizeof(float),"f32 routed single");
+	float *rv = (float *)Shared(&weights,routes * sizeof(float),"f32 route weights");
+	float *hv = (float *)Shared(&shared,(uint64_t)rows * N * sizeof(float),"f32 shared");
+	float *cv = (float *)Shared(&combined,(uint64_t)rows * N * sizeof(float),"f32 combined");
+	SparkGemvParams params, alone;
+	SparkRouteParams route;
+	Check clean, corrupted;
+	char shape[64];
+	uint32_t pass, row, n, k;
+	FillBf16(xv,(uint64_t)rows * K,1.0);
+	FillBf16(wv,(uint64_t)EXPERTS * N * K,1.0 / sqrt((double)K));
+	for ( n = 0u; n < routes; n++ )
+	{
+		ev[n] = n % 5u == 2u ? SPARK_ROUTE_SKIP : (n * 7u + 3u) % EXPERTS;
+		rv[n] = (float)fabs(Normal()) / (float)TOP;
+	}
+	for ( n = 0u; n < rows * N; n++ )
+		hv[n] = (float)Normal();
+	memset(&params,0,sizeof(params));
+	params.rows = routes;
+	params.input_dimension = K;
+	params.output_dimension = N;
+	params.input_stride = K;
+	params.output_stride = N;
+	params.route_divisor = TOP;
+	params.output_f32 = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint32_t victim = routes - 1u;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + 1u) % EXPERTS;
+		if ( !Run(SparkOpsLinearRouted(&ops,queue,Whole(&x),Whole(&w),Whole(&y),Whole(&experts),EXPERTS,&params),"linear_routed f32") )
+			break;
+		if ( pass == 1u )
+			ev[victim] = (ev[victim] + EXPERTS - 1u) % EXPERTS;
+		for ( n = 0u; n < routes; n++ )
+		{
+			if ( ev[n] == SPARK_ROUTE_SKIP )
+			{
+				for ( k = 0u; k < N; k++ )
+					Observe(check,yv[(uint64_t)n * N + k] == 0.0f ? 0.0 : 1.0,0.0,0.0);
+				continue;
+			}
+			alone = params;
+			alone.rows = 1u;
+			alone.route_divisor = 0u;
+			if ( !Run(SparkOpsLinear(&ops,queue,SparkTensorSlice(Whole(&x),(uint64_t)(n / TOP) * K * sizeof(uint16_t),K * sizeof(uint16_t)),
+				SparkTensorSlice(Whole(&w),(uint64_t)ev[n] * N * K * sizeof(uint16_t),(uint64_t)N * K * sizeof(uint16_t)),Whole(&single),&alone),
+				"f32 linear for one expert") )
+				break;
+			for ( k = 0u; k < N; k++ )
+				Observe(check,yv[(uint64_t)n * N + k] == sv[k] ? 0.0 : 1.0,0.0,0.0);
+		}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 8, K 2816 -> N 704, every 5th route skipped",rows);
+	Report("linear_routed_f32",shape,&clean,&corrupted,"exact: each route's f32 output equals the one-row f32 GEMV of its expert, a skipped route +0");
+	memset(&route,0,sizeof(route));
+	route.rows = rows;
+	route.top_k = TOP;
+	route.width = N;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const float saved = hv[(uint64_t)rows * N - 1u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			hv[(uint64_t)rows * N - 1u] = saved + 1.0f;
+		if ( !Run(SparkOpsRouteCombineWeightedSharedF32(&ops,queue,Whole(&y),Whole(&weights),Whole(&shared),Whole(&combined),&route),
+			"route_combine_weighted_shared_f32") )
+			break;
+		hv[(uint64_t)rows * N - 1u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( n = 0u; n < N; n++ )
+			{
+				float total = 0.0f;
+				for ( k = 0u; k < TOP; k++ )
+					total = fmaf(yv[((uint64_t)row * TOP + k) * N + n],rv[row * TOP + k],total);
+				total += hv[(uint64_t)row * N + n];
+				Observe(check,cv[(uint64_t)row * N + n] == total ? 0.0 : 1.0,0.0,0.0);
+			}
+	}
+	snprintf(shape,sizeof(shape),"rows %u x top 8, width 704",rows);
+	Report("route_combine_weighted_shared_f32",shape,&clean,&corrupted,"exact: an FP32 FMA chain in route order plus the f32 shared expert, unrounded");
+	SparkDeviceFree(&x);
+	SparkDeviceFree(&w);
+	SparkDeviceFree(&y);
+	SparkDeviceFree(&experts);
+	SparkDeviceFree(&single);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&shared);
+	SparkDeviceFree(&combined);
+}
+
 static void TestLinearRoutedSkip(uint32_t rows)
 {
 	enum { K = 2816u, N = 704u, EXPERTS = 16u, TOP = 8u };
@@ -1665,6 +1769,33 @@ static void TestRankKernels(uint32_t ranks, uint32_t rows, uint32_t width)
 		}
 	}
 	Report("rank_sum_bf16",shape,&clean,&corrupted,"exact: an f32 sum from +0 over ranks 0..N-1 and one rounding to bf16, CUDA's all-reduce order");
+	{
+		SparkDeviceBuffer wide_lanes;
+		float *flv = (float *)Shared(&wide_lanes,(uint64_t)ranks * elements * sizeof(float),"rank f32 lanes");
+		for ( i = 0u; i < (uint64_t)ranks * elements; i++ )
+			flv[i] = (float)ldexp(Normal(),(int)(NextRandom() % 24u) - 12);
+		for ( pass = 0u; pass < 2u; pass++ )
+		{
+			Check *check = pass == 0u ? &clean : &corrupted;
+			const uint64_t victim = (uint64_t)(ranks - 1u) * elements + 5u;
+			const float saved = flv[victim];
+			memset(check,0,sizeof(*check));
+			if ( pass == 1u )
+				flv[victim] = saved + 64.0f;
+			if ( !Run(SparkOpsRankSumF32(&ops,queue,Whole(&wide_lanes),Whole(&full),ranks,elements),"rank_sum_f32") )
+				break;
+			flv[victim] = saved;
+			for ( i = 0u; i < elements; i++ )
+			{
+				float total = 0.0f;
+				for ( rank = 0u; rank < ranks; rank++ )
+					total += flv[(uint64_t)rank * elements + i];
+				Observe(check,fv[i] == ToBf16(total) ? 0.0 : 1.0,0.0,0.0);
+			}
+		}
+		Report("rank_sum_f32",shape,&clean,&corrupted,"exact: an f32 sum of the ranks' f32 partials from +0 over ranks 0..N-1 and one rounding to bf16");
+		SparkDeviceFree(&wide_lanes);
+	}
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
 		Check *check = pass == 0u ? &clean : &corrupted;
@@ -4656,7 +4787,7 @@ static void TestAttnRes(uint32_t rows, uint32_t sources)
 		memset(check,0,sizeof(*check));
 		memset(mix_check,0,sizeof(*mix_check));
 		if ( pass == 1u )
-			pv[poke] = ToBf16(Bf16(saved) * -6.0f + 9.0f);
+			pv[poke] = ToBf16(Bf16(saved) + 64.0f);
 		if ( !Run(SparkOpsAttnResScore(&ops,queue,Whole(&bank),Whole(&partial),Whole(&weight),Whole(&scores),&params),"attnres_score") )
 			break;
 		if ( pass == 1u )
@@ -5780,6 +5911,7 @@ int main(int argc, char **argv)
 	TestHeadGateElements(3u,8u,0u);
 	TestHeadGateElements(5u,1u,1u);
 	TestLinearRoutedSkip(3u);
+	TestTpPartialsF32(3u);
 	TestRmsNormResidual(1u,0u);
 	TestRmsNormResidual(64u,0u);
 	TestRmsNormResidual(3u,1u);

@@ -130,18 +130,19 @@ static SparkStatus RunnerRound(void *context, void *device_queue, uint32_t opera
 	SparkDeviceQueue *queue = (SparkDeviceQueue *)device_queue;
 	const uint32_t degree = runner->tp_degree;
 	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : runner->geometry.hidden);
+	const uint32_t wide = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32 ? 1u : 0u;
 	const uint64_t lane_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? (uint64_t)rows * 8u :
-		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? elements / degree * 2u : elements * 2u;
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? elements / degree * 2u : wide != 0u ? elements * 4u : elements * 2u;
 	const uint64_t local_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ||
 		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 ? (uint64_t)degree * lane_bytes : lane_bytes;
 	const uint64_t full_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER ||
-		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? (uint64_t)degree * lane_bytes : lane_bytes;
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? (uint64_t)degree * lane_bytes : wide != 0u ? elements * 2u : lane_bytes;
 	SparkDeviceRange source, destination;
 	SparkTensor lanes, out;
 	SparkStatus status;
 	if ( degree < 2u || runner->config.collective == 0 || stage != SPARK_STAGE_RUNNER_ROUND_ALL || rows == 0u || queue != runner->queue ||
 		(operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 && elements % degree != 0u) ||
-		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER || operation > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER )
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER || (operation > SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER && wide == 0u) )
 	{
 		fprintf(stderr,"device_stage_runner: rank %u cannot run collective %u (degree %u, stage %u, %u rows); a device round is a whole round on the "
 			"rank's queue\n",runner->tp_rank,operation,degree,stage,rows);
@@ -166,6 +167,8 @@ static SparkStatus RunnerRound(void *context, void *device_queue, uint32_t opera
 	out.bytes = full_bytes;
 	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 )
 		return(SparkOpsRankMaxU64(runner->ops,queue,lanes,out,degree,rows));
+	if ( wide != 0u )
+		return(SparkOpsRankSumF32(runner->ops,queue,lanes,out,degree,elements));
 	return(SparkOpsRankSumBf16(runner->ops,queue,lanes,out,degree,lane_bytes / 2u));
 }
 

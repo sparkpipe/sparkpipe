@@ -290,6 +290,22 @@ kernel void spark_route_combine_weighted_shared(constant SparkRouteParams &p [[b
 	output[(ulong)row * p.width + index] = SparkMathFloatToBf16(total);
 }
 
+kernel void spark_route_combine_weighted_shared_f32(constant SparkRouteParams &p [[buffer(0)]], device const float *expert_out [[buffer(1)]],
+	device const float *weights [[buffer(2)]], device const float *shared [[buffer(3)]], device float *output [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint row = group.y, index = group.x * group_size.x + tid;
+	if ( index >= p.width )
+		return;
+	float total = 0.0f;
+	for ( uint k = 0u; k < p.top_k; k++ )
+	{
+		const ulong route = (ulong)row * p.top_k + k;
+		total = fma(expert_out[route * p.width + index], weights[route], total);
+	}
+	output[(ulong)row * p.width + index] = total + shared[(ulong)row * p.width + index];
+}
+
 template <uint SCORE>
 static inline void SparkRouteScores(constant SparkRouteParams &p, device const float *logits, device const float *bias, threadgroup float *score,
 	threadgroup float *selection, uint row, uint tid, uint threads)

@@ -218,6 +218,26 @@ SparkStatus SparkDeviceChannelDeltaBind(SparkDeviceStage *stage, const SparkStag
 	return(status);
 }
 
+static SparkStatus LinearOut(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor x, uint32_t x_stride, const SparkDeviceWeight *w, SparkTensor y,
+	uint32_t y_stride, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_f32)
+{
+	SparkGemvParams params;
+	if ( output_f32 == 0u )
+		return(SparkDeviceLinearWeight(stage,queue,x,x_stride,w,y,y_stride,rows,input_dimension,output_dimension));
+	if ( w->scale.bytes != 0u )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"an FP32 partial needs a BF16 projection"));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.input_dimension = input_dimension;
+	params.output_dimension = output_dimension;
+	params.input_stride = x_stride;
+	params.output_stride = y_stride;
+	params.projection = stage->shape->projection;
+	params.row_exact = stage->step_exact;
+	params.output_f32 = 1u;
+	return(SparkOpsLinear(stage->ops,queue,x,w->values,y,&params));
+}
+
 SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceChannelDeltaShape *shape,
 	const SparkDeviceStepTensors *tensors, const SparkDeviceChannelDeltaWeights *weights, uint32_t recurrent_layer,
 	const SparkDeviceChannelDeltaScratch *scratch, SparkTensor normed, SparkTensor output)
@@ -290,7 +310,7 @@ SparkStatus SparkDeviceChannelDelta(SparkDeviceStage *stage, SparkDeviceQueue *q
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsRmsNormGate(stage->ops,queue,scratch->core,scratch->gate,weights->norm,scratch->gated,&gate);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceLinearWeight(stage,queue,scratch->gated,width,&weights->out,output,hidden,rows,width,hidden);
+		status = LinearOut(stage,queue,scratch->gated,width,&weights->out,output,hidden,rows,width,hidden,shape->output_f32);
 	return(status);
 }
 
@@ -508,7 +528,7 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 			status = SparkOpsHeadGate(stage->ops,queue,scratch->gated,scratch->gate,&head_gate);
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceLinearWeight(stage,queue,scratch->gated,heads_out,&weights->out,output,hidden,rows,heads_out,hidden);
+		status = LinearOut(stage,queue,scratch->gated,heads_out,&weights->out,output,hidden,rows,heads_out,hidden,shape->output_f32);
 	return(status);
 }
 
@@ -831,8 +851,25 @@ SparkStatus SparkDeviceGatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue
 	return(SparkDeviceGatedFfnLimits(stage,queue,ffn,activation,limit,0.0f,tensors,weights,scratch,normed,output));
 }
 
+static SparkStatus GatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, float up_limit,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output,
+	uint32_t output_f32);
+
+SparkStatus SparkDeviceGatedFfnF32(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output)
+{
+	return(GatedFfn(stage,queue,ffn,activation,limit,0.0f,tensors,weights,scratch,normed,output,1u));
+}
+
 SparkStatus SparkDeviceGatedFfnLimits(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, float up_limit,
 	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output)
+{
+	return(GatedFfn(stage,queue,ffn,activation,limit,up_limit,tensors,weights,scratch,normed,output,0u));
+}
+
+static SparkStatus GatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, float up_limit,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output,
+	uint32_t output_f32)
 {
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows;
 	SparkSiluMulParams silu;
@@ -848,16 +885,17 @@ SparkStatus SparkDeviceGatedFfnLimits(SparkDeviceStage *stage, SparkDeviceQueue 
 	silu.up_limit = up_limit;
 	status = SparkOpsGatedMul(stage->ops,queue,scratch->gate_up,scratch->act,&silu,activation);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceLinearWeight(stage,queue,scratch->act,ffn,&weights->down,output,hidden,rows,ffn,hidden);
+		status = LinearOut(stage,queue,scratch->act,ffn,&weights->down,output,hidden,rows,ffn,hidden,output_f32);
 	return(status);
 }
 
 uint64_t SparkDeviceExpertsScratchBytes(const SparkDeviceStage *stage, const SparkDeviceExpertsShape *shape, uint32_t part)
 {
 	const uint64_t rows = stage->max_rows, routes = rows * shape->top_k, hidden = stage->shape->hidden;
+	const uint64_t element = shape->output_f32 != 0u ? sizeof(float) : sizeof(uint16_t);
 	const uint64_t bytes[] = { rows * hidden * sizeof(uint16_t), rows * shape->experts * sizeof(float), routes * sizeof(uint32_t),
 		routes * sizeof(float), rows * hidden * sizeof(uint16_t), routes * 2u * shape->intermediate * sizeof(uint16_t),
-		routes * shape->intermediate * sizeof(uint16_t), routes * hidden * sizeof(uint16_t), (routes + 1u) * hidden * sizeof(uint16_t) };
+		routes * shape->intermediate * sizeof(uint16_t), routes * hidden * element, (routes + 1u) * hidden * element };
 	return(part < sizeof(bytes) / sizeof(bytes[0]) ? bytes[part] : 0u);
 }
 
@@ -1003,6 +1041,7 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 {
 	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate, local = route->local_experts;
 	const uint64_t table = (uint64_t)routes * sizeof(uint32_t), expert_bytes = (uint64_t)inter * hidden * sizeof(uint16_t);
+	const uint64_t element = shape->output_f32 != 0u ? sizeof(float) : sizeof(uint16_t);
 	uint32_t *offsets, expert, total = 0u;
 	SparkSiluMulParams gated;
 	SparkGemvParams projection;
@@ -1041,8 +1080,9 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 			SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),
 			scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceFill(queue,SparkTensorSlice(scratch->sorted,(uint64_t)total * hidden * sizeof(uint16_t),(uint64_t)hidden * sizeof(uint16_t)).range,0u,
-			(uint64_t)hidden * sizeof(uint16_t));
+		status = SparkDeviceFill(queue,SparkTensorSlice(scratch->sorted,(uint64_t)total * hidden * element,(uint64_t)hidden * element).range,0u,
+			(uint64_t)hidden * element);
+	projection.output_f32 = shape->output_f32;
 	for ( expert = 0u; status == SPARK_STATUS_OK && expert < local; expert++ )
 	{
 		const uint32_t first = offsets[expert], count = offsets[expert + 1u] - first;
@@ -1053,10 +1093,11 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 		projection.output_dimension = projection.output_stride = hidden;
 		status = SparkOpsLinear(stage->ops,queue,SparkTensorSlice(scratch->act,(uint64_t)first * inter * sizeof(uint16_t),(uint64_t)count * inter * sizeof(uint16_t)),
 			SparkTensorSlice(weights->down,(uint64_t)expert * expert_bytes,expert_bytes),
-			SparkTensorSlice(scratch->sorted,(uint64_t)first * hidden * sizeof(uint16_t),(uint64_t)count * hidden * sizeof(uint16_t)),&projection);
+			SparkTensorSlice(scratch->sorted,(uint64_t)first * hidden * element,(uint64_t)count * hidden * element),&projection);
 	}
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsGather(stage->ops,queue,scratch->sorted,SparkTensorAt(&stage->route_tables,4u * table,table),scratch->out,routes,hidden,total + 1u);
+		status = SparkOpsGather(stage->ops,queue,scratch->sorted,SparkTensorAt(&stage->route_tables,4u * table,table),scratch->out,routes,
+			hidden * (uint32_t)(element / sizeof(uint16_t)),total + 1u);
 	return(status);
 }
 
@@ -1065,6 +1106,7 @@ static SparkStatus ExpertsRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *q
 {
 	const uint32_t hidden = stage->shape->hidden, routes = rows * shape->top_k, inter = shape->intermediate;
 	SparkGemvParams gate = ExpertsRouted(routes,shape->top_k,hidden,hidden,inter,2u * inter), down = ExpertsRouted(routes,1u,inter,inter,hidden,hidden);
+	down.output_f32 = shape->output_f32;
 	SparkSiluMulParams gated;
 	SparkStatus status = SPARK_STATUS_OK;
 	route->local_experts = shape->tensor_parallel != 0u ? shape->experts : shape->experts / stage->tp_degree;
@@ -1287,6 +1329,8 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	SparkNormParams norm;
 	SparkRouteParams route;
 	SparkStatus status;
+	if ( shape->output_f32 != 0u )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"softmax-routed experts combine BF16 outputs"));
 	memset(&routed,0,sizeof(routed));
 	routed.rows = rows;
 	routed.dimension = hidden;
@@ -1376,6 +1420,9 @@ SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue 
 			SparkOpsRouteSigmoid(stage->ops,queue,scratch->logits,weights->bias,scratch->experts,scratch->weights,&route);
 	if ( status == SPARK_STATUS_OK )
 		status = ExpertsRoutedFfn(stage,queue,shape,rows,weights,scratch,normed,&route);
+	if ( status == SPARK_STATUS_OK && shape->output_f32 != 0u )
+		return(shape->weight_after_down != 0u ? SparkOpsRouteCombineWeightedSharedF32(stage->ops,queue,scratch->out,scratch->weights,shared,output,&route) :
+			SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"FP32 expert partials take the route weight after the down projection"));
 	if ( status == SPARK_STATUS_OK )
 		status = shape->weight_after_down != 0u ? SparkOpsRouteCombineWeightedShared(stage->ops,queue,scratch->out,scratch->weights,shared,output,&route) :
 			SparkOpsRouteCombineShared(stage->ops,queue,scratch->out,shared,output,&route);

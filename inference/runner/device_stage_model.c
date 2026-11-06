@@ -493,6 +493,16 @@ SparkStatus SparkDeviceStageAllReduceWidth(SparkDeviceStage *stage, SparkDeviceQ
 	return(StageRound(stage,queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,count,width == stage->shape->hidden ? 0u : width,rows,rows));
 }
 
+SparkStatus SparkDeviceStageAllReduceF32(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor partial, SparkTensor rows, uint32_t count)
+{
+	const uint64_t elements = (uint64_t)count * stage->shape->hidden;
+	if ( count == 0u || partial.bytes < elements * sizeof(float) || rows.bytes < elements * sizeof(uint16_t) )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"an FP32 all-reduce reads whole FP32 rows and writes whole BF16 rows"));
+	if ( stage->tp_degree <= 1u )
+		return(SparkOpsRankSumF32(stage->ops,queue,partial,rows,1u,elements));
+	return(StageRound(stage,queue,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32,count,0u,partial,rows));
+}
+
 SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,
 	uint32_t count, uint32_t width)
 {
