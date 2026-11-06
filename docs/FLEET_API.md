@@ -37,7 +37,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Anticipator | `GET/PUT /v1/anticipator`, `GET /v1/anticipator/plan`, `POST /v1/anticipator/plan/approve`, `PUT /v1/anticipator/focus`, `GET /v1/anticipator/report` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, git over HTTPS at `/git/{repo}.git` |
 | Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `GET /v1/storage/changes`, `POST /v1/export`, `POST /v1/restore` |
-| Fetch | `POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
+| Fetch | `GET/POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
 | Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` |
 | Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` |
 | Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` |
@@ -154,6 +154,7 @@ base_url = "https://sparkpipe.ai/pay/api/v1"
 env_key = "SPARKPIPE_API_KEY"
 wire_api = "responses"
 stream_idle_timeout_ms = 600000
+model_catalog_url = "https://sparkpipe.ai/pay/api/v1/codex/models"
 ```
 
 ### 3.5 `POST /v1/chat/completions`
@@ -222,12 +223,14 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 - **Status line.** `sparkpipe statusline` shows the fleet, the resident models, the cached share of the last turn and the prefill avoided today.
 
 **Codex** (OpenAI Responses, §3.4)
-- **Setup.** `sparkpipe setup codex` writes a `[profiles.sparkpipe]` profile and the provider of §3.4, with:
-  - `model_context_window` and `model_auto_compact_token_limit` set from the model;
-  - `model_catalog_url` pointing at `GET /v1/codex/models`, a Codex-native catalogue of our models with context windows and reasoning settings;
-  - `agents.default_subagent_model` set to the same model;
-  - `agents.max_concurrent_threads_per_session` set to fit the fleet's sequences;
-  - `[mcp_servers.sparkpipe]` for §10.
+- **Setup.** `sparkpipe setup codex` writes two files in `$CODEX_HOME` (`~/.codex`):
+  - In `config.toml`: the `model`, `model_provider` and provider of §3.4, whose `model_catalog_url` points at `GET /v1/codex/models`, a Codex-native catalogue of our models with context windows and reasoning settings. Also `[mcp_servers.sparkpipe]` for §10, with `bearer_token_env_var = "SPARKPIPE_API_KEY"`.
+  - The profile `sparkpipe.config.toml`, which `codex --profile sparkpipe` lays over `config.toml` (Codex 0.134.0 and later read profiles only from such files, with top-level keys, not from `[profiles.<name>]` tables). It holds:
+    - `model` and `model_provider`;
+    - `model_context_window` and `model_auto_compact_token_limit` (the context window minus the output limit), set from the model;
+    - `[agents]` with `default_subagent_model` set to the same model, and `max_concurrent_threads_per_session` set to the fleet's sequences less the main thread's.
+
+  It merges into `config.toml` without changing any other setting, and refuses, leaving the file as it was, when it cannot. The profile file is SparkPipe's own and is rewritten whole.
 - **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing.
 - **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn.
 
@@ -235,10 +238,13 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 - **Setup.** `sparkpipe setup opencode` writes `opencode.json`:
   - the provider, with `baseURL` and `{env:SPARKPIPE_API_KEY}`;
   - `limit.context` and `limit.output` per model;
-  - the subagent model set to the same model;
+  - the subagent model set to the same model (the `general` and `explore` agents, and `compaction`);
+  - `small_model` and the hidden `title` and `summary` agents on the fleet's background model, so titles and summaries never go to another provider;
   - the remote MCP server of §10;
-  - `prune` off, because pruning rewrites history and misses the cache;
+  - `prune` off, because pruning rewrites history and misses the cache. Off is OpenCode's default and the key is deprecated in OpenCode 2, so setup only turns off a `prune` the file turned on;
   - `"share": "disabled"`, so sessions are never uploaded outside Korea.
+
+  These are OpenCode 1's keys (`provider`, `small_model`, `agent`, `mcp`), which OpenCode 2 still reads.
 - **The SparkPipe plugin for OpenCode** does what the Claude Code plugin does: it warms on session start, reports status and adds the fleet commands.
 - **models.dev.** Our models and their served context windows are published there, so OpenCode knows them without any manual setting.
 
@@ -446,7 +452,7 @@ Customer storage is on the fleet's nodes: 500 GB per node, mirrored to the pair 
 
 Terabytes move between the fleet and the source over the fleet's own line, while the customer's machine sends only the request. An engineer on a plane can start a 1.5 TB model download, or a repository and its datasets, and get a notification when it is in storage.
 
-- **Request.** `POST /v1/fetch {"source": "hf://org/model@revision", "to": "models/x/", "include": ["*.safetensors", "*.json"], "then": "pack"}`, with the source's token in the `X-SparkPipe-Source-Token` header when the source needs one, returns a fetch id at once. `GET /v1/fetch/{id}` reports files, bytes, rate and checks; `DELETE` cancels. `sparkpipe fetch` is the same in the CLI.
+- **Request.** `POST /v1/fetch {"source": "hf://org/model@revision", "to": "models/x/", "include": ["*.safetensors", "*.json"], "then": "pack"}`, with the source's token in the `X-SparkPipe-Source-Token` header when the source needs one, returns a fetch id at once. `GET /v1/fetch` lists the account's fetches as `{"data": [...]}`, each with `id`, `state`, `source`, `to`, `bytes` and `total_bytes`. `GET /v1/fetch/{id}` reports files, bytes, rate and checks; `DELETE` cancels. `sparkpipe fetch` and `sparkpipe fetch ls` are the same in the CLI.
 - **Sources:**
   - `hf://` models and datasets, pinned to a revision (resolved to a commit hash when the fetch starts);
   - `s3://` and S3-compatible buckets (R2, GCS through S3 compatibility, MinIO), through presigned URLs or a key sent with the request;
@@ -490,10 +496,10 @@ A Function is software we build and run for the account on a fleet it holds. It 
 ### 7.1 How they run
 
 - **Runner.** A runner for each fleet orchestrates its runs. It calls the fleet's own inference with the account's identity and low priority. Two sequences always stay free for interactive requests, and interactive requests go first.
-- **Sandbox host.** Code that a Function builds or runs (tests, fuzzers, builds, an agent's shell commands) runs on a sandbox host attached to the fleet, never on the Sparks.
+- **Sandbox.** Code that a Function builds or runs (tests, fuzzers, builds, an agent's shell commands) runs in the fleet's sandbox, never on the Sparks.
   - Each run gets a fresh microVM with a copy of the repository and no network unless the run allows it.
-  - The VM is destroyed when the run ends, and the host is wiped at a change of user.
-  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1), so every fleet comes with its own sandbox host.
+  - The VM is destroyed when the run ends, and the fleet's sandbox is wiped at a change of user.
+  - The Sparks have about 11 GB of memory to spare with K3 loaded, and a CPU tenant slows decode by more than a third (§1). So every fleet's sandbox has its own reserved CPU, memory and disk off the Sparks, and shares nothing with another fleet's.
 - **Our agent loop.** Agent Functions use our own agent loop, published with the engine, with read, search, edit and run tools against the sandbox. They never use Claude Code.
 - **API.**
   - `POST /v1/functions/{name}/runs` takes parameters and returns a run id.
@@ -536,7 +542,7 @@ A Function is software we build and run for the account on a fleet it holds. It 
 
 - **Today.**
   - The drafter is fixed per lane (`deployment/lanes.json` `draftd`), and a request can only turn speculation off with `"speculation": false` (`node/model_api.c:1099-1101`).
-  - The K3 drafter runs on the hub's RTX 5090, which has 0.5 GB to spare (`docs/NIGHTLY_DRAFTER.md`, branch `drafter/nightly-retrain`).
+  - The K3 drafter runs where the fleet's drafts run, with 0.5 GB of memory to spare there (`docs/NIGHTLY_DRAFTER.md`, branch `drafter/nightly-retrain`).
 - **API.** `GET /v1/drafters` lists the fleet's drafters, ours and the account's. `PUT /v1/drafters/active {"drafter": "acct-2027-01-12"}` loads one where that fleet's drafts run, replacing the current one.
 - **Training.**
   - The branch measured one GB10 at 16 blocks/s, with 3.2M positions taking about 52 min on 16 nodes (derived).
@@ -607,13 +613,14 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 | Event | When |
 | --- | --- |
-| `booking.deadline` | 48 h and 6 h before 00:00 on the Sunday of the last booked week, while the next week is not booked |
+| `booking.deadline` | 72 h, 48 h, 6 h and 2 h before 00:00 on the Sunday of the last booked week, while the next week is not booked; early when auto-extend cannot book (§16), and when it stops |
 | `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
 | `run.finished`, `run.failed`, `report.ready` | §7 |
 | `fetch.finished`, `fetch.failed`, `fetch.needs_token` | §6.1, §6.2 |
 | `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
 | `models.changed` | A model loaded or unloaded on the fleet |
 | `downtime.credited` | HC credited for downtime or maintenance |
+| `fleet.failover` | A held fleet is down and requests go to a free fleet without working state (Agreement 15.7), and when that ends |
 | `working_state.lost` | A node pair lost part of the working state: what was lost, the rebuild credit under clause 6.6 (24 hours of the fleet), and the rebuild run started |
 
 ## 14. Several fleets
@@ -657,7 +664,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 | `sparkpipe models add`, `models rm` | §9 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke` | Keys, with `--fleet` and `--allow-swap` |
 | `sparkpipe wipe [--storage]` | §4.4 |
-| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `localhost` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers |
+| `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `127.0.0.1` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers. It forwards only the inference paths of §2 and `/mcp`, including the `/v1/responses` WebSocket. Clients send a random key it prints at each start, and it refuses requests addressed to another host name or carrying an `Origin`, so other local users and web pages cannot borrow the account's key |
 | `sparkpipe mcp` | The stdio MCP bridge (§10) |
 | `sparkpipe batch submit FILE`, `batch ls`, `batch get ID` | §11 |
 | `sparkpipe team invite EMAIL --role`, `team ls`, `audit` | §12 |
@@ -668,7 +675,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 The account endpoints already exist in the payment service under `/market/...`: state, quote and book weeks, book hours, the waitlist, keys and the ledger (`docs/FLEET_BOOKINGS.md`). For the CLI they also accept `Authorization: Bearer <session>` from the email-code sign-in, besides the page's cookie. Keys gain the options of §12.
 
-**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC.
+**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC. It is on by default, one week ahead, from the first week an account books or the waitlist grants it on a fleet; `weeks_ahead: 0`, or one click on the account page, turns it off.
 - It books each new week as soon as the rules allow, at the discount for the weeks held.
 - If the balance runs short, it sends `booking.deadline` early, with the HC needed.
 
@@ -686,7 +693,7 @@ A held fleet is then never lost to a forgotten Sunday.
 | Storage | 4 TB per fleet | §6 |
 
 Errors use each API shape's own error body, with these `type` or `code` values:
-- `fleet_required`, `fleet_not_held`, `model_not_loaded`;
+- `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
@@ -703,7 +710,7 @@ Owners are components, so the work splits into parallel sessions with no shared 
 | 3 | Gateway (VPS) | Pass the new paths through, `X-Api-Key`, 32 MiB bodies, key options, the usage-record store and `/v1/requests`, bearer sessions for the CLI | — |
 | 4 | Packs, repositories, storage | Repository ingest, the pack builder, versioned aliases with session affinity, refresh and warm, storage and fetch | 1, 2 |
 | 5 | Function runner | The runner, the Functions that only read code, the morning report | 2, 4 |
-| 6 | Sandbox host | Hardware per fleet, microVMs, the agent loop, the Functions that run code | 5 |
+| 6 | Sandbox | Each fleet's reserved sandbox, microVMs, the agent loop, the Functions that run code | 5 |
 | 7 | CLI | `tools/sparkpipe_cli.py` and its tests | 3; grows with each component |
 | 8 | Drafters | Productize `drafter/nightly-retrain` with the acceptance gate (§8) | 5 |
 | 9 | Customer models | A packer per family (tier A), the driver guide and review (tiers B and C) | 6 |

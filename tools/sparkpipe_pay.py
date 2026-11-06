@@ -101,6 +101,11 @@ WEBHOOK_WORKERS = 4
 CHUNK = re.compile(rb"[0-9A-Fa-f]{1,8}")
 WEBHOOK_SCHEMES = ("https",)
 WEBHOOKS_PER_ACCOUNT = 10
+HEALTH_TIMEOUT = 10
+UPTIME_GAP_SECONDS = 90
+UPTIME_MONTHS_SHOWN = 4
+UPTIME_DAYS_SHOWN = 90
+UPTIME_YEARS = 5
 OWN = {}
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length", "expect"}
 DROPPED = HOP | {"authorization", "x-api-key", "cookie", "forwarded", "x-real-ip"}
@@ -328,6 +333,13 @@ def time_field(value, label):
     raise Refusal(f"Give {label} as a UTC time such as 2027-01-05T09:00:00Z or a date such as 2027-01-05.", 400, "invalid_request")
 
 
+def upstream_field(text, name):
+    found = urllib.parse.urlsplit(text)
+    if found.scheme != "http" or not found.hostname:
+        raise ValueError(f"{name} names the hub's chat layer over the tunnel, such as http://127.0.0.1:18081/v1")
+    return found.hostname, found.port or 80, found.path[:-3] if found.path.endswith("/v1") else found.path.rstrip("/")
+
+
 def read_secret(path):
     if not path:
         return b""
@@ -361,12 +373,16 @@ class Config:
         self.toss = bool(self.toss_client and self.toss_secret)
         self.pool_upstream = env.get("SPARKPIPE_POOL_UPSTREAM", "").rstrip("/")
         self.pool_key = read_secret(env.get("SPARKPIPE_POOL_KEY_FILE")).decode()
-        upstream = urllib.parse.urlsplit(self.pool_upstream)
-        if self.pool_upstream and (upstream.scheme != "http" or not upstream.hostname):
-            raise ValueError("SPARKPIPE_POOL_UPSTREAM is the hub's chat layer over the tunnel, such as http://127.0.0.1:18081/v1")
-        self.hub = bool(self.pool_upstream)
-        self.hub_host, self.hub_port = upstream.hostname, upstream.port or 80
-        self.hub_root = upstream.path[:-3] if upstream.path.endswith("/v1") else upstream.path.rstrip("/")
+        self.pool = upstream_field(self.pool_upstream, "SPARKPIPE_POOL_UPSTREAM") if self.pool_upstream else None
+        self.upstreams = {}
+        for item in re.split(r"[\s,]+", env.get("SPARKPIPE_FLEET_UPSTREAMS", "").strip()):
+            fleet, _, url = item.partition("=")
+            if item and not (re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fleet) and url):
+                raise ValueError("SPARKPIPE_FLEET_UPSTREAMS lists FLEET=URL pairs, such as F1=http://127.0.0.1:18081/v1 F3=http://127.0.0.1:18083/v1")
+            if item:
+                self.upstreams[fleet] = upstream_field(url.rstrip("/"), "SPARKPIPE_FLEET_UPSTREAMS")
+        self.hub = bool(self.pool or self.upstreams)
+        self.health_seconds = float(env.get("SPARKPIPE_PAY_HEALTH_SECONDS", "30"))
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
         self.mail_from = env.get("SPARKPIPE_PAY_MAIL_FROM", "SparkPipe <noreply@sparkpipe.ai>")
@@ -379,6 +395,9 @@ class Config:
 
     def path(self, name):
         return os.path.join(self.data, name)
+
+    def upstream(self, fleet):
+        return self.upstreams.get(fleet) or self.pool
 
     def pricing(self):
         with open(os.path.join(self.site, "pricing.js"), encoding="utf-8") as handle:
@@ -903,6 +922,99 @@ class Guard:
             self.sweep()
 
 
+def probe_health(hub):
+    connection = http.client.HTTPConnection(hub[0], hub[1], timeout=HEALTH_TIMEOUT)
+    try:
+        connection.request("GET", hub[2] + "/health")
+        response = connection.getresponse()
+        body = response.read(65536)
+        found = json.loads(body or b"{}") if response.status == 200 else {}
+        return response.status == 200 and isinstance(found, dict) and found.get("ok") is True, f"HTTP {response.status}"
+    except (OSError, ValueError, http.client.HTTPException) as error:
+        return False, f"{type(error).__name__}: {error}"[:200]
+    finally:
+        connection.close()
+
+
+class Uptime:
+    def __init__(self, app):
+        self.app = app
+        self.folder = app.cfg.path("uptime")
+        private_folder(self.folder)
+        self.lock = threading.Lock()
+        self.state = Records(os.path.join(self.folder, "state.json"))
+        self.recent = [span for name in self.months()[-UPTIME_MONTHS_SHOWN:] for span in complete_lines(os.path.join(self.folder, name))]
+
+    def months(self):
+        return sorted(name for name in os.listdir(self.folder) if re.fullmatch(r"\d{4}-\d{2}\.jsonl", name))
+
+    def close(self, span, moment):
+        span = dict(span, end=market.stamp(moment))
+        path = os.path.join(self.folder, span["end"][:7] + ".jsonl")
+        with private_append(path) as handle:
+            trim(handle, path)
+            handle.write((json.dumps(span, separators=(",", ":")) + "\n").encode())
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.recent.append(span)
+
+    def observe(self, fleet, up, moment, detail="", watch=True):
+        with self.lock:
+            entry = self.state.get(fleet) or {"good": None, "open": None, "first": market.stamp(moment)}
+            good = market.stamp_time(entry["good"]) if entry["good"] else None
+            gap = watch and good is not None and moment - good > timedelta(seconds=max(UPTIME_GAP_SECONDS, 3 * self.app.cfg.health_seconds))
+            if up:
+                if entry["open"]:
+                    self.close(entry["open"], moment)
+                elif gap:
+                    self.close({"span": new_id("DT"), "fleet": fleet, "start": entry["good"], "cause": "gateway"}, moment)
+                entry = dict(entry, good=market.stamp(moment), open=None)
+            elif not entry["open"]:
+                entry = dict(entry, open={"span": new_id("DT"), "fleet": fleet, "start": entry["good"] if watch and good else market.stamp(moment), "cause": "gateway" if gap else "sandbox" if not watch else "probe"})
+            self.state.put(fleet, dict(entry, detail=detail[:200], seen=market.stamp(moment)))
+
+    def spans(self, since):
+        with self.lock:
+            closed = [span for span in self.recent if span["end"] >= market.stamp(since)]
+            return closed + [dict(entry["open"], end=None) for entry in self.state.values() if entry.get("open")]
+
+    def entry(self, fleet):
+        return self.state.get(fleet)
+
+    def probe_all(self):
+        pricing, seen = self.app.cfg.pricing(), {}
+        for fleet in self.app.market.fleets(pricing):
+            hub = self.app.cfg.upstream(fleet["id"])
+            if fleet["serving"] and hub:
+                if hub not in seen:
+                    seen[hub] = probe_health(hub)
+                self.observe(fleet["id"], seen[hub][0], self.app.market.now(), seen[hub][1])
+
+    def run(self):
+        while True:
+            time.sleep(self.app.cfg.health_seconds)
+            try:
+                self.probe_all()
+            except Exception as error:
+                log(f"uptime probe: {error}")
+
+    def clear(self):
+        with self.lock:
+            for name in self.months():
+                os.remove(os.path.join(self.folder, name))
+            self.recent = []
+            self.state.keep(lambda record: False)
+
+    def prune(self, now):
+        cutoff = market.months_later(now, -12 * UPTIME_YEARS).strftime("%Y-%m")
+        with self.lock:
+            for name in self.months():
+                if name[:7] < cutoff:
+                    os.remove(os.path.join(self.folder, name))
+            shown = market.stamp(now - timedelta(days=UPTIME_DAYS_SHOWN + 1))
+            self.recent = [span for span in self.recent if span["end"] >= shown]
+
+
 def text_field(value, label, size):
     if not isinstance(value, str) or not value.strip() or len(value) > size or any(ord(c) < 32 for c in value):
         raise Refusal(f"Enter the {label}.")
@@ -1070,6 +1182,7 @@ class App:
         self.sessions = Records(cfg.path("sessions.json"))
         self.guard = Guard()
         self.notifier = Notifier(self)
+        self.uptime = Uptime(self)
 
     def throttle(self, kind, who):
         count, window = LIMITS[kind]
@@ -1098,6 +1211,7 @@ class App:
             self.book = Book(self.book.path)
             self.hooks.keep(lambda record: False)
             self.sessions.keep(lambda record: False)
+            self.uptime.clear()
         with self.lock:
             self.codes.clear()
         return {"reset": True}
@@ -1516,6 +1630,7 @@ class App:
         }
         sandbox = {
             "/market/sandbox/clock": lambda: self.market.move_clock(market.count_field(body.get("hours"), "number of hours", 9600)),
+            "/market/sandbox/fleet": lambda: self.market.sandbox_fleet(body),
             "/market/sandbox/reset": self.reset,
         }
         if path in actions:
@@ -1934,6 +2049,7 @@ class App:
         self.usage.prune(clock())
         self.notices.prune(self.market.now())
         self.notifier.deliveries.prune(clock())
+        self.uptime.prune(self.market.now())
         self.sessions.keep(lambda record: stamp_time(record["expires"]) > clock())
         self.notifier.sweep(self.market.now())
 
@@ -2056,6 +2172,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "/account": lambda: app.summary(app.need(self.headers)),
             "/market/state": lambda: app.market_state(app.signed_in(self.headers)),
             "/market/ledger": lambda: app.ledger(app.need(self.headers)),
+            "/status": app.market.status_page,
             "/toss/config": app.toss_config,
             "/swift/config": app.swift_config,
         }
@@ -2261,31 +2378,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("gateway", account)
             fleet, body = self.admitted(method, path, account, record)
+            served, origin = app.market.route(account, fleet) if app.cfg.hub or app.cfg.sandbox else (fleet, None)
         except Refusal as error:
             return self.api_error(error, shape, path)
         if app.cfg.sandbox:
-            return self.sandboxed(method, path, body, fleet, shape)
-        if not app.cfg.hub:
-            return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
-        target = app.cfg.hub_root + path + ("?" + parts.query if parts.query else "")
-        headers = self.upstream_headers(account, record, fleet)
-        ip, upstream = self.client_ip(), []
-        self.cutoff = False
-        watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip), lambda: self.cut(upstream))
-        try:
-            if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
-                return self.tunnel(target, headers, shape, upstream)
-            self.forward(method, target, headers, body, shape, path, upstream)
-        finally:
-            app.guard.done(watch)
+            return self.sandboxed(method, path, body, served, shape, origin)
+        while True:
+            hub = app.cfg.upstream(served)
+            if not hub:
+                return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
+            target = hub[2] + path + ("?" + parts.query if parts.query else "")
+            headers = self.upstream_headers(account, record, served, origin)
+            ip, upstream = self.client_ip(), []
+            self.cutoff = False
+            watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip, served), lambda: self.cut(upstream))
+            try:
+                if method == "GET" and "websocket" in (self.headers.get("Upgrade") or "").lower():
+                    return self.tunnel(hub, target, headers, shape, upstream)
+                if self.forward(hub, method, target, headers, body, shape, path, upstream, origin):
+                    return
+            finally:
+                app.guard.done(watch)
+            if origin:
+                return self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"), shape, path)
+            app.uptime.observe(fleet, False, app.market.now(), "the gateway could not connect")
+            try:
+                served, origin = app.market.route(account, fleet)
+            except Refusal as error:
+                return self.api_error(error, shape, path)
 
-    def still(self, account, fleet, scope, ip):
+    def still(self, account, fleet, scope, ip, served):
         app = self.server.app
         try:
             found = app.principal(self.headers, ip, scope)[0]
         except Refusal:
             return None
-        return app.market.hold_left(account, fleet) if found == account else None
+        if found != account:
+            return None
+        left = app.market.hold_left(account, fleet)
+        return left if served == fleet else min(left, app.market.failover_left(served, app.market.now()))
 
     def cut(self, upstream):
         self.cutoff = True
@@ -2295,7 +2426,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def upstream_headers(self, account, record, fleet):
+    def upstream_headers(self, account, record, fleet, origin=None):
         app = self.server.app
         found = [(name, value) for name, value in self.headers.items()
                  if TOKEN.fullmatch(name) and "\r" not in value and "\n" not in value and name.lower() not in DROPPED and not name.lower().startswith("x-forwarded-")
@@ -2305,14 +2436,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                   ("X-SparkPipe-Allow-Swap", "1" if not record or record["allow_swap"] else "0")]
         if record and record["priority"] and not self.headers.get("X-SparkPipe-Priority"):
             found.append(("X-SparkPipe-Priority", record["priority"]))
+        if origin:
+            found.append(("X-SparkPipe-Failover-From", origin))
         return found
 
-    def forward(self, method, target, headers, body, shape, path, upstream):
-        app = self.server.app
-        connection = http.client.HTTPConnection(app.cfg.hub_host, app.cfg.hub_port, timeout=900)
+    def forward(self, hub, method, target, headers, body, shape, path, upstream, origin=None):
+        connection = http.client.HTTPConnection(hub[0], hub[1], timeout=900)
         started = False
         try:
             connection.connect()
+        except OSError as error:
+            log(f"fleet upstream {method} {'/'.join(path.split('/')[:3])}: {error}")
+            connection.close()
+            return False
+        try:
             upstream.append(connection.sock)
             connection.putrequest(method, target, skip_accept_encoding=True)
             for name, value in headers:
@@ -2335,6 +2472,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for name, value in response.getheaders():
                 if name.lower() not in RESPONSE_DROPPED:
                     self.send_header(name, value)
+            if origin:
+                self.send_header("X-SparkPipe-Failover-From", origin)
             self.end_headers()
             started = True
             while True:
@@ -2349,17 +2488,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             connection.close()
             self.close_connection = True
+        return True
 
-    def tunnel(self, target, headers, shape, sockets):
-        app = self.server.app
+    def tunnel(self, hub, target, headers, shape, sockets):
         try:
-            upstream = socket.create_connection((app.cfg.hub_host, app.cfg.hub_port), timeout=30)
+            upstream = socket.create_connection((hub[0], hub[1]), timeout=30)
         except OSError as error:
             log(f"fleet upstream websocket: {error}")
             return self.api_error(Refusal("The Fleet did not answer. Try again in a minute.", 502, "upstream_error"), shape)
         sockets.append(upstream)
         try:
-            lines = [f"GET {target} HTTP/1.1", f"Host: {app.cfg.hub_host}:{app.cfg.hub_port}", "Connection: Upgrade", f"Upgrade: {self.headers.get('Upgrade')}"]
+            lines = [f"GET {target} HTTP/1.1", f"Host: {hub[0]}:{hub[1]}", "Connection: Upgrade", f"Upgrade: {self.headers.get('Upgrade')}"]
             upstream.sendall(("\r\n".join(lines + [f"{name}: {value}" for name, value in headers]) + "\r\n\r\n").encode("latin-1"))
             reply = b""
             while b"\r\n\r\n" not in reply and len(reply) < 65536:
@@ -2399,7 +2538,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 (upstream if side is client else client).sendall(data)
 
-    def sandboxed(self, method, path, body, fleet, shape):
+    def sandboxed(self, method, path, body, fleet, shape, origin=None):
         app = self.server.app
         pricing = app.cfg.pricing()
         if method == "GET" and path == "/v1/models":
@@ -2414,7 +2553,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise Refusal("Choose one of the models: " + ", ".join(m["id"] for m in pricing["models"]) + ".", 404, "model_not_found")
         except Refusal as error:
             return self.api_error(error, shape, path)
-        self.simulated(found, found["messages"], {"model": found["model"], "fleet": fleet})
+        self.simulated(found, found["messages"], {"model": found["model"], "fleet": fleet, "failover_from": origin})
 
     def stream_head(self):
         self.send_response(200)
@@ -2432,7 +2571,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         text, tokens_in, tokens_out = market.simulate(ticket["model"], ticket["fleet"], messages, min(max(limit, 1), 512))
         made, ident = int(time.time()), "chatcmpl-" + secrets.token_hex(12)
         usage = {"prompt_tokens": tokens_in, "completion_tokens": tokens_out, "total_tokens": tokens_in + tokens_out}
-        note = {"fleet": ticket["fleet"]}
+        note = dict({"fleet": ticket["fleet"]}, **({"failover_from": ticket["failover_from"]} if ticket.get("failover_from") else {}))
         if body.get("stream") is True:
             self.stream_head()
             for word in text.split(" "):
@@ -2453,6 +2592,8 @@ def start(cfg, port=None):
     for _ in range(WEBHOOK_WORKERS):
         threading.Thread(target=app.notifier.run, daemon=True).start()
     threading.Thread(target=app.guard.run, daemon=True).start()
+    if cfg.hub and cfg.health_seconds > 0 and not cfg.sandbox:
+        threading.Thread(target=app.uptime.run, daemon=True).start()
     app.usage.prune(clock())
     app.notices.prune(app.market.now())
     app.notifier.deliveries.prune(clock())
@@ -2509,6 +2650,21 @@ def credit(app, argv):
     lot = app.market.downtime_credit(account, credits, argv[4].strip()[:200])
     flush(app)
     print(f"credited {lot['hc']} HC to {argv[2]} under clause 4.4, lot {lot['lot']}, lapsing {lot['expires']}; the customer is told by downtime.credited")
+    return 0
+
+
+def uptime(app, argv):
+    try:
+        start, end = (market.stamp_field(value if "T" in value else value + "T00:00:00Z", "time") for value in argv[3:5])
+        app.market.fleet_field(app.cfg.pricing(), argv[2])
+    except Refusal as error:
+        print(error, file=sys.stderr)
+        return 2
+    found = [s for s in app.uptime.spans(start) if s["fleet"] == argv[2] and s["start"] < market.stamp(end)]
+    entry = app.uptime.entry(argv[2])
+    print(f"{argv[2]}: records since {entry['first'] if entry else 'never'}, last probe {entry.get('seen') if entry else 'none'}; {len(found)} periods without a good probe from {market.stamp(start)} to {market.stamp(end)}")
+    for s in sorted(found, key=lambda s: s["start"]):
+        print(f"{s['span']} {s['start']} to {s['end'] or 'now'} ({s['cause']})")
     return 0
 
 
@@ -2575,6 +2731,7 @@ COMMANDS = {
     ("maintenance", 5): lambda cfg, app, argv: maintenance(app, argv),
     ("credit", 5): lambda cfg, app, argv: credit(app, argv),
     ("refund", 6): lambda cfg, app, argv: refund(app, argv),
+    ("uptime", 5): lambda cfg, app, argv: uptime(app, argv),
     ("refund", 9): lambda cfg, app, argv: refund(app, argv),
     ("tax-invoices", 2): lambda cfg, app, argv: tax_invoices(app, argv),
     ("tax-invoice", 4): lambda cfg, app, argv: tax_invoice(app, argv),
@@ -2594,7 +2751,7 @@ def main(argv):
     if command:
         return command(cfg, App(cfg, Book(cfg.path("ledger.jsonl"))), argv)
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON|uptime FLEET FROM TO]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app
