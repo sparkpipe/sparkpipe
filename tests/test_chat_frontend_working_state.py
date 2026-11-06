@@ -274,9 +274,10 @@ async def run(tmp, failures):
                                 streamed.append(line.decode().strip())
                         return response.status
 
+                new_stream = asyncio.ensure_future(ask(new, True))
+                await asyncio.sleep(0.3)
                 old_stream = asyncio.ensure_future(stream(old))
                 old_whole = asyncio.ensure_future(ask(old))
-                new_stream = asyncio.ensure_future(ask(new, True))
                 check(await until(lambda: engine.open == 3 and any("partial" in line for line in streamed), 10), f"three requests reach the engine: {engine.open}")
                 controller.state = dict(controller.state, handover={"from": "ACONE", "to": "ACTWO", "phase": "draining"})
                 status = await asyncio.wait_for(old_stream, 10)

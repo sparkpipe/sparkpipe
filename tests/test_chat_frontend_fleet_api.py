@@ -126,9 +126,14 @@ async def gateway_rules(harness, check):
     check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "a key whose priority is background runs below interactive requests")
     engine.reply(ANSWER)
     status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), account="acme",
-                                         **{"X-SparkPipe-Fleet": "F1 <b>evil</b>", "X-Claude-Code-Session-Id": "s" * 500})
+                                         **{"X-SparkPipe-Fleet": "F1 <b>evil</b>"})
+    check(status == 400 and json.loads(text)["error"]["code"] == "wrong_fleet" and "evil" not in text,
+          f"a gateway request naming another fleet, here a malformed one, is refused without echoing the header: {status} {text}")
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hi"}]), account="acme",
+                                         **{"X-Claude-Code-Session-Id": "s" * 500})
     record = json.loads(text)["sparkpipe"]
-    check(record["fleet"] is None and record["session"] is None, f"header values that are too long or carry other characters are not echoed or logged: {record}")
+    check(record["fleet"] == "F1" and record["session"] is None, f"header values that are too long or carry other characters are not echoed or logged: {record}")
 
     engine.hold = asyncio.Event()
     held = [asyncio.ensure_future(harness.post("/v1/chat/completions", chat([{"role": "user", "content": "hold"}]), account="acme")) for _ in range(2)]

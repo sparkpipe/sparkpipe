@@ -1663,7 +1663,7 @@ class Frontend:
             except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as error:
                 raise RequestError(503, "control_unavailable", f"the fleet controller did not say which fleet it serves: {error}")
         if fleet != self.working.get("fleet"):
-            raise RequestError(400, "wrong_fleet", f"this door serves fleet {self.working.get('fleet')}, not {fleet}")
+            raise RequestError(400, "wrong_fleet", f"this door serves fleet {self.working.get('fleet')}, not the one {FLEET_HEADER} names")
 
     async def admit(self, account):
         try:
@@ -1684,6 +1684,9 @@ class Frontend:
 
     def observe(self, state):
         handover = state.get("handover")
+        if (not isinstance(handover, dict) and self.working is not None and isinstance(state.get("wiped"), int) and
+                isinstance(self.working.get("wiped"), int) and state["wiped"] < self.working["wiped"]):
+            return
         target = handover.get("to") if isinstance(handover, dict) else state.get("user")
         changed = self.working is None or state.get("wiped") != self.working.get("wiped")
         self.working = state
@@ -2993,6 +2996,8 @@ class Frontend:
             return error_response(error)
         self.prefixes = {}
         self.public_prefixes = {}
+        if self.working is not None and isinstance(engine.get("wiped"), int):
+            self.working = dict(self.working, wiped=engine["wiped"], storage_wiped=engine.get("storage_wiped"))
         print(json.dumps({"event": "working_state_deleted", "scope": scope, "account": account, "storage": storage, "replay": deleted, "cancelled": cancelled,
                           "engine": True, "wiped": engine.get("wiped"), "storage_wiped": engine.get("storage_wiped")}), file=sys.stderr, flush=True)
         return web.json_response({"deleted": removed + ["prefix_ledgers"] + [name for name in engine["deleted"] if name not in removed],
@@ -3108,12 +3113,6 @@ class Frontend:
                     calls += 1
                 elif kind == "finish":
                     result = value
-            usage = self.usage_block(result.get("usage"), prompt_tokens, plan)
-            await response.write(chunk({}, result.get("finish_reason"), usage))
-            if include_usage:
-                payload = {"id": identifier, "object": "chat.completion.chunk", "created": created, "model": model.id, "choices": [], "usage": usage}
-                await response.write(("data: " + json.dumps(payload) + "\n\n").encode())
-            await response.write(b"data: [DONE]\n\n")
         except RequestError as error:
             if response is None:
                 return error_response(error)
