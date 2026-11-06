@@ -2401,8 +2401,10 @@ class Frontend:
         stop_string = False
         logprobs = engine_body.get("logprobs")
         stream = self.engine_stream(model, engine_body, public)
+        chunks = 0
         try:
             async for chunk in stream:
+                chunks += 1
                 if "error" in chunk:
                     raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
                 if timing is not None and chunk.get("tokens"):
@@ -2425,7 +2427,7 @@ class Frontend:
                 finish = choices[0].get("finish_reason") or finish
                 if chunk.get("usage"):
                     usage, closed = chunk["usage"], choices[0].get("finish_reason") is not None
-                    if timing is not None:
+                    if timing is not None and chunks == 1:
                         timing.setdefault("engine_usage", usage)
                 if start is None:
                     start = parser.fed
