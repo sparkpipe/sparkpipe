@@ -357,8 +357,12 @@ for example while spill backings hold the quota. A running lane's backing
 holds every logical page past the one sequence its pool's minimum keeps
 resident (15 to 96 GiB per lane at today's lane records), because a pool that
 other lanes hold at its minimum parks everything else. weightd's purge records
-stopped lanes' stores in the ledger every minute and deletes files unused for
-24 hours. The pair partner's working-state mirror is not counted
+stopped lanes' stores in the ledger every minute and deletes files by the
+working-state rule: last used before the fleet's current user started, or
+before that user's last deletion of its cache, or 24 hours after the later of
+their last use and the user's last held hour
+([`docs/WORKING_STATE.md`](docs/WORKING_STATE.md)). Held hours never beat the
+quota. The pair partner's working-state mirror is not counted
 ([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). A write the store cannot complete is logged with the step
 that failed and its errno. The cache then drops that entry's saved mark and,
 after an I/O error, saves the entry again, so one failed write never leaves a

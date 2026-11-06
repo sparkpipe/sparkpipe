@@ -142,7 +142,7 @@ static void LruEvict(LruHarness *h)
 static void LruExpire(LruHarness *h)
 {
 	const uint64_t now = UINT64_C(2000000000),ages[3] = {0u,SPARK_KV_RETENTION_SECONDS - 60u,SPARK_KV_RETENTION_SECONDS};
-	const SparkWorkingStateDirective directives[3] = {{0u,0u},{now - 600u,0u},{0u,now - 30u}};
+	const SparkWorkingStateDirective directives[3] = {{0u,0u,0u},{now - 600u,0u,now - 600u},{0u,now - 30u,0u}};
 	const SparkWorkingStateDirective *directive = &directives[LruRand(3u)];
 	uint32_t index,fresh[LRU_BLOCKS],valid_before,expired = UINT32_MAX;
 	for (index=0u; index<LRU_BLOCKS; index++)

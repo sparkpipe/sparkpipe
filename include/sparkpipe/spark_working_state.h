@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_WORKING_STATE_DIRECTIVE_VERSION 1u
+#define SPARK_WORKING_STATE_DIRECTIVE_VERSION 2u
 #define SPARK_WORKING_STATE_DIRECTIVE_BYTES_MAX 256u
 #define SPARK_WORKING_STATE_PATH_BYTES 1024u
 #define SPARK_WORKING_STATE_SECONDS_MAX UINT64_C(1099511627776)
@@ -23,6 +23,7 @@ typedef struct SparkWorkingStateDirective
 {
 	uint64_t wiped_seconds;
 	uint64_t held_until_seconds;
+	uint64_t storage_wiped_seconds;
 } SparkWorkingStateDirective;
 
 typedef struct SparkWorkingStatePurgeResult
@@ -41,6 +42,7 @@ SparkStatus SparkWorkingStateDirectiveParse(const char *text,uint32_t bytes,Spar
 SparkStatus SparkWorkingStateDirectiveRead(const char *path,SparkWorkingStateDirective *directive);
 uint32_t SparkWorkingStateDirectiveEqual(const SparkWorkingStateDirective *left,const SparkWorkingStateDirective *right);
 uint32_t SparkWorkingStateExpired(const SparkWorkingStateDirective *directive,uint64_t used_seconds,uint64_t now_seconds);
+uint32_t SparkWorkingStateStorageExpired(const SparkWorkingStateDirective *directive,uint64_t used_seconds,uint64_t now_seconds);
 SparkStatus SparkWorkingStatePurgeScratchArea(const char *area,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkWorkingStatePurgeResult *result);
 SparkStatus SparkWorkingStatePurgeScratch(const char *home,const SparkWorkingStateDirective *directive,uint64_t now_seconds,SparkWorkingStatePurgeResult *result);
 

@@ -14,7 +14,7 @@
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
 
-static const char SparkWorkingStateHeader[] = "sparkpipe-working-state 1\n";
+static const char SparkWorkingStateHeader[] = "sparkpipe-working-state 2\n";
 
 SparkStatus SparkWorkingStateOwnerRoot(char *path,uint32_t capacity)
 {
@@ -75,7 +75,9 @@ SparkStatus SparkWorkingStateDirectiveParse(const char *text,uint32_t bytes,Spar
 	cursor = text + sizeof(SparkWorkingStateHeader) - 1u;
 	end = text + bytes;
 	if ( SparkWorkingStateParseLine(&cursor,end,"wiped",&parsed.wiped_seconds) == 0u ||
-		SparkWorkingStateParseLine(&cursor,end,"held_until",&parsed.held_until_seconds) == 0u || cursor != end )
+		SparkWorkingStateParseLine(&cursor,end,"held_until",&parsed.held_until_seconds) == 0u ||
+		SparkWorkingStateParseLine(&cursor,end,"storage_wiped",&parsed.storage_wiped_seconds) == 0u || cursor != end ||
+		parsed.storage_wiped_seconds > parsed.wiped_seconds )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	*directive = parsed;
 	return(SPARK_STATUS_OK);
@@ -118,17 +120,28 @@ SparkStatus SparkWorkingStateDirectiveRead(const char *path,SparkWorkingStateDir
 
 uint32_t SparkWorkingStateDirectiveEqual(const SparkWorkingStateDirective *left,const SparkWorkingStateDirective *right)
 {
-	return(left->wiped_seconds == right->wiped_seconds && left->held_until_seconds == right->held_until_seconds ? 1u : 0u);
+	return(left->wiped_seconds == right->wiped_seconds && left->held_until_seconds == right->held_until_seconds &&
+		left->storage_wiped_seconds == right->storage_wiped_seconds ? 1u : 0u);
 }
 
-uint32_t SparkWorkingStateExpired(const SparkWorkingStateDirective *directive,uint64_t used_seconds,uint64_t now_seconds)
+static uint32_t SparkWorkingStateExpiredSince(const SparkWorkingStateDirective *directive,uint64_t wiped_seconds,uint64_t used_seconds,uint64_t now_seconds)
 {
 	uint64_t since = used_seconds;
-	if ( directive != 0 && used_seconds < directive->wiped_seconds )
+	if ( used_seconds < wiped_seconds )
 		return(1u);
 	if ( directive != 0 && directive->held_until_seconds > since )
 		since = directive->held_until_seconds;
 	return(since + SPARK_KV_RETENTION_SECONDS <= now_seconds ? 1u : 0u);
+}
+
+uint32_t SparkWorkingStateExpired(const SparkWorkingStateDirective *directive,uint64_t used_seconds,uint64_t now_seconds)
+{
+	return(SparkWorkingStateExpiredSince(directive,directive != 0 ? directive->wiped_seconds : 0u,used_seconds,now_seconds));
+}
+
+uint32_t SparkWorkingStateStorageExpired(const SparkWorkingStateDirective *directive,uint64_t used_seconds,uint64_t now_seconds)
+{
+	return(SparkWorkingStateExpiredSince(directive,directive != 0 ? directive->storage_wiped_seconds : 0u,used_seconds,now_seconds));
 }
 
 static void SparkWorkingStateEmpty(int directory,dev_t device,uint32_t depth,SparkWorkingStatePurgeResult *result)
@@ -201,7 +214,7 @@ SparkStatus SparkWorkingStatePurgeScratchArea(const char *area,const SparkWorkin
 	used = (uint64_t)info.st_mtime;
 	if ( fstatat(directory,SPARK_WORKING_STATE_LAST_USE_NAME,&stamp,AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(stamp.st_mode) )
 		used = (uint64_t)stamp.st_mtime;
-	if ( SparkWorkingStateExpired(directive,used,now_seconds) != 0u )
+	if ( SparkWorkingStateStorageExpired(directive,used,now_seconds) != 0u )
 	{
 		SparkWorkingStateEmpty(directory,info.st_dev,0u,result);
 		result->emptied_areas++;

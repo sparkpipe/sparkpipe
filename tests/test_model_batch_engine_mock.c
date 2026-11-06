@@ -1441,7 +1441,7 @@ static void TestWriteWorkingState(uint64_t wiped,uint64_t held_until)
 	(void)snprintf(temporary,sizeof(temporary),"%s.next",TestWorkingStatePath());
 	file = fopen(temporary,"w");
 	assert(file != 0);
-	fprintf(file,"sparkpipe-working-state 1\nwiped %llu\nheld_until %llu\n",(unsigned long long)wiped,(unsigned long long)held_until);
+	fprintf(file,"sparkpipe-working-state 2\nwiped %llu\nheld_until %llu\nstorage_wiped %llu\n",(unsigned long long)wiped,(unsigned long long)held_until,(unsigned long long)wiped);
 	assert(fclose(file) == 0 && rename(temporary,TestWorkingStatePath()) == 0);
 }
 

@@ -1617,7 +1617,7 @@ class Frontend:
         await self.session.close()
 
     def expire_working_state(self, now, sweep):
-        wiped, held_until = working_state.read_directive(self.directive) if self.directive is not None else (0, 0)
+        wiped, held_until, _ = working_state.read_directive(self.directive) if self.directive is not None else (0, 0, 0)
         changed = (wiped, held_until) != self.directive_state
         self.directive_state = (wiped, held_until)
         if not (changed or sweep):

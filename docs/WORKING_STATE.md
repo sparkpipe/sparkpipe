@@ -72,20 +72,29 @@ The hub's working-state controller writes the fleet's retention facts to
 user that runs the engines (the same home weightd's purge walks):
 
 ```text
-sparkpipe-working-state 1
+sparkpipe-working-state 2
 wiped 1764550800
 held_until 1764554400
+storage_wiped 1764550800
 ```
 
-`wiped` is when the fleet's current user started using it; `held_until` is
-the end of that user's last held hour (during a held hour, the end of that
-hour; 0 when it has none). One function decides every deletion,
+`wiped` is when the fleet's current user started using it, or the last time
+that user deleted its cache (`DELETE /v1/cache`); `held_until` is the end of
+that user's last held hour (during a held hour, the end of that hour; 0 when
+it has none); `storage_wiped` is when the current user started, or the last
+time it deleted its storage (`DELETE /v1/cache?storage=true`), never later
+than `wiped`. One function decides every deletion,
 `SparkWorkingStateExpired` in `cache/working_state.c` and its twin in
-`tools/serving/working_state.py`: state last used at `used` is deleted when
+`tools/serving/working_state.py`: cached state last used at `used` is
+deleted when
 
 ```text
 used < wiped  or  now >= max(used, held_until) + 86400
 ```
+
+Storage (the scratch areas, own and mirrored) follows the same rule with
+`storage_wiped` in place of `wiped` (`SparkWorkingStateStorageExpired`,
+`storage_expired`), so deleting the cache keeps the user's files.
 
 Every sweep that applies retention today applies this instead: the
 coordinator's prefix cache and index (and peer index imports), the page

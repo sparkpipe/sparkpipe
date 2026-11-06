@@ -1603,7 +1603,7 @@ static void SnapTestWorkingState(const char *directory)
 {
 	SparkKvSnapshotStore store;
 	SparkKvSnapshotKey before,after,held,reopened;
-	SparkWorkingStateDirective directive;
+	SparkWorkingStateDirective directive = {0u,0u,0u};
 	SparkKvSnapshotPurgeResult result;
 	const uint64_t day = SPARK_KV_RETENTION_SECONDS,file_bytes = 2u * SPARK_KV_SNAPSHOT_ALIGNMENT;
 	char home[1200],lane[1200],purge[1200],shard[1200];
@@ -1668,7 +1668,7 @@ static void SnapTestWorkingState(const char *directory)
 static void SnapTestHeldQuota(const char *directory)
 {
 	SparkKvSnapshotStore store;
-	SparkWorkingStateDirective directive;
+	SparkWorkingStateDirective directive = {0u,0u,0u};
 	const uint64_t day = SPARK_KV_RETENTION_SECONDS;
 	uint64_t one_file = 0u;
 	directive.wiped_seconds = 0u;

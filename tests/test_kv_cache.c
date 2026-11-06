@@ -1388,7 +1388,7 @@ static void SparkTestPrefixCacheRetention(void)
 	SparkPrefixCacheLookup lookup;
 	uint32_t tokens[12u],index,count,added,skipped,expired;
 	uint64_t now = (uint64_t)time(0);
-	const SparkWorkingStateDirective wipe = {now + 1u,0u},held = {0u,now + 3600u},held_past = {0u,now - 60u};
+	const SparkWorkingStateDirective wipe = {now + 1u,0u,now + 1u},held = {0u,now + 3600u,0u},held_past = {0u,now - 60u,0u};
 	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
 	for (index=0u; index<12u; index++)
 		tokens[index] = 6000u + index;
