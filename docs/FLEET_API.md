@@ -116,11 +116,13 @@ CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000
 CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 CLAUDE_CODE_ATTRIBUTION_HEADER=0
+CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000
 ```
 
 - **The Haiku alias points at a small resident model** when one fits next to the main model (GLM 5.3 Flash beside GLM 5.3, for example), and at the main model otherwise. Claude Code's background calls therefore never load a model that does not fit. The alias table catches any other `claude-*` name as well.
 - **The context limit is the model's served window.** Claude Code otherwise assumes 200K.
 - **The attribution header is turned off,** so the first system block stays the same from session to session.
+- **The stream idle timeout is 30 minutes.** Claude Code 2.1.308 aborts a stream that has carried only `ping` events for about 610 s, so a cold prefill of ten minutes or more would be cut off before its first token. `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000` keeps the stream open.
 - **The fleet's MCP server (§10) is registered at user scope:** `mcpServers.sparkpipe` (`type: "http"`, the `/mcp` URL and the key as a bearer header) in `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, the file `claude mcp add --scope user` writes. Claude Code 2.1.308's `claude mcp get sparkpipe` lists it from both places.
 - **Every Claude Code release is tested** against this endpoint before we tell customers to upgrade, because Anthropic does not test Claude Code against other models ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)).
 - **Claude Code's terms keep it on the customer's own machine.** Functions never run Claude Code on our servers (§7).

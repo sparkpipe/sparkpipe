@@ -343,7 +343,7 @@ def check_units(failures):
     env = cli.claude_env(cli.API, KEY, "kimi-k3+core", "kimi-k3+core", 1000000)
     spec = {"ANTHROPIC_BASE_URL": "https://sparkpipe.ai/pay/api", "ANTHROPIC_AUTH_TOKEN": KEY, "ANTHROPIC_MODEL": "kimi-k3+core", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k3+core",
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-            "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1"}
+            "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1", "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1800000"}
     expect(failures, env == spec, f"the Claude Code environment differs from FLEET_API.md 3.3 and 3.8: {env}")
     provider = dict(cli.codex_tables(cli.API)[0][1])
     expect(failures, provider == {"name": "SparkPipe", "base_url": "https://sparkpipe.ai/pay/api/v1", "env_key": "SPARKPIPE_API_KEY", "wire_api": "responses", "stream_idle_timeout_ms": 600000,
@@ -571,7 +571,7 @@ def check_setup_claude_code(failures, home, fake):
            "the Claude Code state file holding the MCP key is readable by others, or keeps no backup")
     env = {"ANTHROPIC_BASE_URL": fake.url, "ANTHROPIC_AUTH_TOKEN": KEY, "ANTHROPIC_MODEL": "kimi-k3+core", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.3-flash",
            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-           "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1"}
+           "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1", "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1800000"}
     overrides = {"claude-opus-4-6": "arn:x", "claude-opus-5-5": "kimi-k3+core", "claude-sonnet-5-5": "kimi-k3+core", "claude-fable-5-1": "kimi-k3+core", "claude-haiku-5-5": "glm-5.3-flash"}
     expect(failures, code == 0 and after == {"permissions": {"allow": ["Bash(ls)"]}, "env": dict({"FOO": "bar"}, **env), "modelOverrides": overrides, "theme": "dark"},
            f"setup claude-code writes {after} ({code} {err})")
@@ -836,7 +836,7 @@ def check_setup_undo(failures, home, fake):
     opencode = home.home / ".config" / "opencode" / "opencode.json"
     for path in (settings, codex, opencode):
         path.parent.mkdir(parents=True, exist_ok=True)
-    settings_before = {"env": {"FOO": "bar", "ANTHROPIC_MODEL": "claude-opus-5-5"}, "modelOverrides": {"claude-opus-4-6": "arn:x"}, "theme": "dark"}
+    settings_before = {"env": {"FOO": "bar", "ANTHROPIC_MODEL": "claude-opus-5-5", "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "90000"}, "modelOverrides": {"claude-opus-4-6": "arn:x"}, "theme": "dark"}
     state_before = {"numStartups": 41, "mcpServers": {"github": {"type": "stdio", "command": "gh-mcp"}}}
     opencode_before = {"theme": "tokyonight", "agent": {"general": {"temperature": 0.2}}, "compaction": {"auto": True, "prune": True}}
     settings.write_text(json.dumps(settings_before))
@@ -849,6 +849,8 @@ def check_setup_undo(failures, home, fake):
         home.run("setup", harness)
         home.run("setup", harness)
     added = json.loads(settings.read_text())
+    expect(failures, added["env"]["CLAUDE_STREAM_IDLE_TIMEOUT_MS"] == "1800000" and added["env"]["FOO"] == "bar",
+           f"setup claude-code does not give Claude Code a 30-minute stream idle timeout, so a long prefill sending only pings is cut off: {added['env']}")
     added["permissions"] = {"allow": ["Bash(npm test)"]}
     settings.write_text(json.dumps(added))
     grown = json.loads(state.read_text())

@@ -39,6 +39,7 @@ UPSTREAM_TIMEOUT = 900
 BODY_LIMIT = 32 * 1024 * 1024
 CHUNK = 65536
 PROXY_PORT = 8790
+STREAM_IDLE_MS = 1800000
 PLATFORM = sys.platform
 TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -1131,6 +1132,7 @@ def claude_env(api, key, main, haiku, context):
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
         "CLAUDE_CODE_SUBAGENT_MODEL": main,
         "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
+        "CLAUDE_STREAM_IDLE_TIMEOUT_MS": str(STREAM_IDLE_MS),
     }
 
 
