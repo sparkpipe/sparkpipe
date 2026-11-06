@@ -11,6 +11,7 @@ MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
 MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-roceP2p1s0f0}"
 MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"
+MESH_SECOND_RAIL="${SPARK_MESH_SECOND_RAIL:-}"
 MESH_TRAFFIC_CLASS=106
 MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
@@ -58,6 +59,11 @@ case $? in
     0) MESH_PAIRED=1 ;;
     1) MESH_PAIRED="" ;;
     *) exit 2 ;;
+esac
+case "$MESH_SECOND_RAIL" in
+    "") ;;
+    1) MESH_PAIRED=1 ;;
+    *) echo "fleet agent: SPARK_MESH_SECOND_RAIL must be 1 or unset, not '$MESH_SECOND_RAIL'" >&2; exit 2 ;;
 esac
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
@@ -950,6 +956,7 @@ ensure_weightd() {
         --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE"
         --mesh-sgid-index "$MESH_SGID_INDEX")
     [ -z "$MESH_PAIRED" ] || command+=(--mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX")
+    [ -z "${MESH_SECOND_RAIL:-}" ] || command+=(--mesh-second-rail)
     command+=(--mesh-traffic-class "$MESH_TRAFFIC_CLASS")
     systemctl --user reset-failed "$WEIGHTD_UNIT" >/dev/null 2>&1
     reason=$("${command[@]}" 2>&1) || {
