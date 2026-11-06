@@ -433,6 +433,7 @@ PYTHON_TESTS := \
 	tests/test_metal_kernels.py \
 	tests/test_metal_bf16_convert.py \
 	tests/test_dry_law.py \
+	tests/test_no_symlinks.py \
 	tests/test_ci_lanes.py \
 	tests/test_device_stage_tables.py \
 	tests/test_geometry_required_switches.py \
@@ -723,6 +724,7 @@ PYTHON_TESTS := \
 	tests/test_model_swap_memory_guard.py \
 	tests/test_model_swap_shared_label.py \
 	tests/test_model_swap_failures.py \
+	tests/test_model_swap_hub_services.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
 	tests/test_stage_lane_setup.py \
@@ -741,7 +743,11 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
 	tests/test_chat_frontend_responses.py \
+	tests/test_chat_frontend_client_fidelity.py \
+	tests/test_count_tokens_check.py \
 	tests/test_chat_frontend_fleet_api.py \
+	tests/test_context_packs.py \
+	tests/test_chat_frontend_interactive_first.py \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
@@ -749,6 +755,8 @@ PYTHON_TESTS := \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
 	tests/test_block_draftd_retention.py \
+	tests/test_block_draftd_reserve.py \
+	tests/test_block_draftd_owner.py \
 	tests/test_dspark_serving.py \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
@@ -769,6 +777,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_stagepack_windows.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_model_api_accept.py \
+	tests/test_model_api_cancel.py \
 	tests/test_model_api_utf8.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \

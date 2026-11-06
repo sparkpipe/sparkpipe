@@ -63,7 +63,7 @@ def main() -> int:
         "requests": [{
             "request_id": args.context,
             "sequence_id": args.context,
-            "priority": 0,
+            "priority": 2,
             "output_token_budget": args.budget,
             "prompt_token_ids": prompt,
         }],

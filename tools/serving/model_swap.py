@@ -52,6 +52,7 @@ class Swapper:
         self.drain_quiet_seconds = float(config.get("drain_quiet_seconds", 0))
         self.node_seconds = float(config.get("node_seconds", 240))
         self.release_seconds = float(config.get("release_seconds", 60))
+        self.hub_seconds = float(config.get("hub_seconds", 120))
         self.models = {}
         for spec in config["models"]:
             require(spec, ("id", "kv_label", "node_memory_bytes", "node_reclaim", "node_start", "node_ready", "node_stop", "api_start", "api_stop", "health"), f"model {spec.get('id')!r}")
@@ -201,12 +202,21 @@ class Swapper:
         if code != 0:
             raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
         self.check(await self.fan(model["node_stop"], self.node_seconds, {}), f"{model['id']} engine stop")
+        if model.get("hub_stop"):
+            code, text = await self.local(model["hub_stop"], self.hub_seconds)
+            if code != 0:
+                raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
 
     async def release(self, label):
         self.check(await self.fan(self.drop_kv, 60, {"label": label}), f"KV pool {label} release")
 
     async def start(self, model):
         run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        if model.get("hub_start"):
+            self.enter("starting hub services")
+            code, text = await self.local(model["hub_start"], self.hub_seconds)
+            if code != 0:
+                raise SwapError(f"{model['id']} hub service start exit {code}: {text[-300:]}")
         self.enter("starting engines")
         self.check(await self.fan(model["node_start"], 120, {"run_id": run_id}), f"{model['id']} engine start")
         self.enter("waiting for ranks")

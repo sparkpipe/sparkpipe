@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Run the tensor-core latent shard attention against the scalar partial kernel on selected-key lists, split lists,
-pair-grouped records, padded head groups and empty rows on an sm_121 device, and check that it is row-invariant."""
+"""Run the tensor-core latent shard attention on an sm_121 device: on one rank against an f64 model of the flash form, and
+within the flash form's distance of the FP32 scalar partial kernel on selected-key lists, split lists, pair-grouped records,
+padded head groups and empty rows; check that it is row-invariant."""
 import sys
 from pathlib import Path
 

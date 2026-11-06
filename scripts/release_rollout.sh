@@ -155,6 +155,8 @@ case "$step" in
     n=$(residentds); [ "$n" = 0 ] || { echo "residentds running: $n"; exit 1; }
     for id in $MODELS; do
       stamp "lane records $id"
+      released=$(fan "cd \$HOME/$(field $id lane)/root && \$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack \"\$(cut -c1-64 packs/pack.sha256)\" > /dev/null 2>&1; echo reclaim=\$?" | awk '{print $2}' | sort | uniq -c | one_variant "$id release of the pack its lane names")
+      echo "$released" | grep -q ' 16 reclaim=0$' || { echo "$released"; echo "RECORDS-FAILED $id: weightd did not free the cold arena of the pack this lane names, which no lane names once its record changes the pack"; exit 1; }
       python3 "$KIT/../tools/lane_config.py" push "$id" || { echo "RECORDS-FAILED $id"; exit 1; }
     done
     scp -q "$KIT/../deployment/hub/model_swap.json" rtx5090:sparkpipe-swap/model_swap.json.release-$SHA && hub "cd ~/sparkpipe-swap && mv model_swap.json.release-$SHA model_swap.json && echo controller config $SHA" && controller_restart || { echo "RECORDS-FAILED controller config"; exit 1; } ;;
