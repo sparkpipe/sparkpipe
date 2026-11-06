@@ -84,7 +84,7 @@ def batch_files(prompts: dict, max_tokens: int, capacity: int, max_context: int,
                       "max_context_tokens": max_context, "max_prefill_rows_per_submission": capacity,
                       "maximum_messages_per_rank_per_progress": 8, "maximum_new_submissions_per_progress": capacity,
                       "stop_token_ids": [],
-                      "requests": [{"request_id": start + index + 1, "sequence_id": start + index + 1, "priority": 0,
+                      "requests": [{"request_id": start + index + 1, "sequence_id": start + index + 1, "priority": 2,
                                     "output_token_budget": max_tokens, "prompt_token_ids": case["prompt_token_ids"]}
                                    for index, case in enumerate(chunk)]})
     return files

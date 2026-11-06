@@ -1180,11 +1180,12 @@ static void TestModelBatchEnginePriority(
 	TestModelBatchWaitIdle(engine,16u);
 	assert(state.accepted_count == 17u);
 	assert(state.token_count == 17u);
-	assert(state.first_prefill_lane_count == 16u);
-	assert(state.first_prefill_row_count == 16u);
+	assert(state.first_prefill_lane_count == 1u);
+	assert(state.first_prefill_row_count == 1u);
 	assert(state.completed_count == 16u);
 	assert(state.cancelled_count == 1u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	printf("test_model_pipeline_client: an interactive request takes the first prefill wave alone; sixteen background requests wait for it instead of riding in its wave\n");
 }
 
 static void TestModelBatchEngineDeadlineOrder(
