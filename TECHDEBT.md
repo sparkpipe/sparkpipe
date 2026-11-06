@@ -1302,7 +1302,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   head-free last row needs the serving work to know the request only
   commits. K3's recurrent checkpoint at the end of a committed prompt and
   the per-fleet warm budget (`docs/FLEET_API.md` §4.2) are not built. A
-  non-streamed commit sends nothing during a long prefill.
+  non-streamed commit sends nothing during a long prefill. Gate B is not
+  run on the fleet: `tools/warm_gate_check.py` warms a 150K-token prompt,
+  checks the next request caches every warmed block, and measures the worst
+  delay of an interactive stream decoding through the warm-up, in decode
+  steps. The engine's background yield is #1816.
 - `cold_prefill` seeds cover the 14 models with a release receipt
   (`qualification/releases/91c0e6be3/`, 7.4K-token prompts, 2026-10-12) and,
   for the four core models, the cold prefill of the 2026-10-24 full-window

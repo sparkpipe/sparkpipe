@@ -87,6 +87,10 @@ class Engine:
         self.commits = True
         self.pin_sets = []
         self.pin_reply = (200, {"pinned_pages": 0})
+        self.pace = 0.0
+        self.commit_delay = 0.0
+        self.contend = 0.0
+        self.committing = 0
 
     def tokens(self, text):
         ids = []
@@ -121,6 +125,8 @@ class Engine:
         if self.delay:
             await asyncio.sleep(self.delay)
         for index, token in enumerate(ids):
+            if self.pace:
+                await asyncio.sleep(self.pace + (self.contend if self.committing else 0.0))
             last = index + 1 == len(ids)
             event = {"tokens": [token], "choices": [{"finish_reason": finish if last else None}]}
             if last:
@@ -139,6 +145,11 @@ class Engine:
         await response.prepare(request)
         if self.hold is not None:
             await self.hold.wait()
+        self.committing += 1
+        try:
+            await asyncio.sleep(self.commit_delay)
+        finally:
+            self.committing -= 1
         event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
                  "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
                            "draft_tokens": 0, "accepted_draft_tokens": 0, "prefill_ms": 12.5}}
