@@ -1606,7 +1606,7 @@ static void SnapTestWorkingState(const char *directory)
 	SparkWorkingStateDirective directive = {0u,0u,0u};
 	SparkKvSnapshotPurgeResult result;
 	const uint64_t day = SPARK_KV_RETENTION_SECONDS,file_bytes = 2u * SPARK_KV_SNAPSHOT_ALIGNMENT;
-	char home[1200],lane[1200],purge[1200],shard[1200];
+	char home[1200],lane[1210],purge[1220],shard[1230];
 	uint64_t now;
 	SnapKey(&before,0x61u,0x01u,4u);
 	SnapKey(&after,0x61u,0x02u,4u);
