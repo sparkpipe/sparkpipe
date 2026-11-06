@@ -2247,6 +2247,27 @@ static void TestMimoKernels(uint32_t rows)
 	}
 	snprintf(shape,sizeof(shape),"rows %u, ffn 2048",rows);
 	Report("silu_rounded_mul",shape,&clean,&corrupted,"bf16(bf16(silu(g)) u): u|y| + |u| flip slack of the silu rounding");
+	silu.limit = 3.0f;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		const uint16_t saved = gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u];
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u] = ToBf16(Bf16(saved) - 4.0f);
+		if ( !Run(SparkOpsGatedMul(&ops,queue,Whole(&gate_up),Whole(&act),&silu,SPARK_GATED_SILU_ROUNDED_CLAMP),"silu_rounded_clamp_mul") )
+			break;
+		gv[(uint64_t)(rows - 1u) * 2u * FFN + 7u] = saved;
+		for ( row = 0u; row < rows; row++ )
+			for ( i = 0u; i < FFN; i++ )
+			{
+				const double g = Bf16(gv[(uint64_t)row * 2u * FFN + i]), u = fmin(fmax(Bf16(gv[(uint64_t)row * 2u * FFN + FFN + i]),-3.0),3.0);
+				const double activated = fmin(RoundBf16(Silu(g)),3.0), y = RoundBf16(activated * u);
+				Observe(check,Bf16(av[(uint64_t)row * FFN + i]),y,UNIT_BF16 * fabs(y) + fabs(u) * FlipSlack(Silu(g),2.0 * FUNCTION_ERROR));
+			}
+	}
+	silu.limit = 0.0f;
+	Report("silu_rounded_clamp_mul",shape,&clean,&corrupted,"bf16(min(bf16(silu(g)), 3) clamp(u, 3)): u|y| + |u| flip slack of the silu rounding");
 	memset(&route,0,sizeof(route));
 	route.rows = rows;
 	route.top_k = TOP;

@@ -119,13 +119,14 @@ struct LingDevice
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;
 		experts->intermediate = G::kMoeInter;
-		experts->activation = SPARK_GATED_SILU_CLAMP;
+		experts->activation = G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED_CLAMP : SPARK_GATED_SILU_CLAMP;
 		experts->epsilon = G::kNormEpsilon;
 		experts->routed_scale = G::kRouteScale;
 		experts->groups = G::kGroups;
 		experts->topk_groups = G::kTopkGroups;
 		experts->router = "router";
 		experts->tensor_parallel = G::kLocalExperts == G::kExperts ? 1u : 0u;
+		experts->weight_after_down = G::kExpertWeightAfterDown ? 1u : 0u;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -314,8 +315,8 @@ struct LingDevice
 
 	static SparkStatus Dense(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, SPARK_GATED_SILU, 0.0f, &frame.t, &layer.ffn, &state->ffn_scratch, state->normed,
-			state->partial);
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED : SPARK_GATED_SILU, 0.0f, &frame.t, &layer.ffn,
+			&state->ffn_scratch, state->normed, state->partial);
 	}
 
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer, uint32_t index)
@@ -323,7 +324,8 @@ struct LingDevice
 		const float routed = G::RoutedLimit(index), shared = G::SharedLimit(index);
 		SparkDeviceExpertsShape shape = state->experts_shape;
 		shape.limit = routed > 0.0f ? routed : INFINITY;
-		SparkStatus status = SparkDeviceGatedFfn(&state->stage, frame.queue, G::kSharedRows, SPARK_GATED_SILU_CLAMP, shared > 0.0f ? shared : INFINITY,
+		SparkStatus status = SparkDeviceGatedFfn(&state->stage, frame.queue, G::kSharedRows, G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED_CLAMP : SPARK_GATED_SILU_CLAMP,
+			shared > 0.0f ? shared : INFINITY,
 			&frame.t, &layer.shared, &state->ffn_scratch, state->normed, state->shared_out);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceSigmoidExperts(&state->stage, frame.queue, &shape, &frame.t, index, &layer.experts, &state->experts, state->normed,

@@ -69,6 +69,8 @@ struct Ling3Geometry : LingDefaults
 	static constexpr bool kKdaDoubledBeta = false;
 	static constexpr bool kKdaConvRoundedSum = false;
 	static constexpr bool kKdaNormRoundOnce = true;
+	static constexpr bool kFfnSiluRounded = true;
+	static constexpr bool kExpertWeightAfterDown = true;
 };
 #endif
 

@@ -136,7 +136,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_hc_site_clamped",
 	"spark_route_combine_weighted_shared",
 	"spark_route_sigmoid_pinned",
-	"spark_route_sqrt_softplus_pinned"
+	"spark_route_sqrt_softplus_pinned",
+	"spark_silu_rounded_clamp_mul"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1106,8 +1107,9 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	SparkStatus status;
 	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
 		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_ROUNDED && activation != SPARK_GATED_SILU_CLAMP &&
-		activation != SPARK_GATED_SILU_GATE_LIMIT && activation != SPARK_GATED_SITU) ||
-		((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT || activation == SPARK_GATED_SITU) && !(params->limit > 0.0f)) )
+		activation != SPARK_GATED_SILU_GATE_LIMIT && activation != SPARK_GATED_SITU && activation != SPARK_GATED_SILU_ROUNDED_CLAMP) ||
+		((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT || activation == SPARK_GATED_SITU ||
+		activation == SPARK_GATED_SILU_ROUNDED_CLAMP) && !(params->limit > 0.0f)) )
 		return(OpsRefuse("gated_mul","rows, an input stride that holds the gate and up halves, a known activation and its positive limit are required"));
 	status = OpsNeed("gated_mul","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
 	if ( status == SPARK_STATUS_OK )
@@ -1118,7 +1120,8 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL : activation == SPARK_GATED_SILU_ROUNDED ? SPARK_OPS_SILU_ROUNDED_MUL :
 		activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL : activation == SPARK_GATED_SILU_GATE_LIMIT ? SPARK_OPS_SILU_GATE_LIMIT_MUL :
-		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
+		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : activation == SPARK_GATED_SILU_ROUNDED_CLAMP ? SPARK_OPS_SILU_ROUNDED_CLAMP_MUL : SPARK_OPS_SILU_MUL,
+		(params->dimension + 255u) / 256u,
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 

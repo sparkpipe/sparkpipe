@@ -1037,7 +1037,8 @@ static SparkStatus ExpertsGroupedFfn(SparkDeviceStage *stage, SparkDeviceQueue *
 	gated.output_stride = inter;
 	gated.limit = shape->limit;
 	if ( status == SPARK_STATUS_OK && total != 0u )
-		status = SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),
+		status = shape->weight_after_down != 0u ? SparkOpsGatedMul(stage->ops,queue,scratch->gate_up,scratch->act,&gated,shape->activation) :
+			SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,SparkTensorAt(&stage->route_tables,3u * table,(uint64_t)total * sizeof(float)),
 			scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceFill(queue,SparkTensorSlice(scratch->sorted,(uint64_t)total * hidden * sizeof(uint16_t),(uint64_t)hidden * sizeof(uint16_t)).range,0u,
@@ -1086,7 +1087,8 @@ static SparkStatus ExpertsRoutedFfn(SparkDeviceStage *stage, SparkDeviceQueue *q
 	gated.output_stride = inter;
 	gated.limit = shape->limit;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,scratch->weights,scratch->act,&gated,shape->activation);
+		status = shape->weight_after_down != 0u ? SparkOpsGatedMul(stage->ops,queue,scratch->gate_up,scratch->act,&gated,shape->activation) :
+			SparkOpsGatedMulRouted(stage->ops,queue,scratch->gate_up,scratch->weights,scratch->act,&gated,shape->activation);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsLinearRouted(stage->ops,queue,scratch->act,weights->down,scratch->out,scratch->experts,route->local_experts,&down);
 	return(status);
@@ -1316,7 +1318,8 @@ SparkStatus SparkDeviceExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue,
 	if ( status == SPARK_STATUS_OK )
 		status = ExpertsRoutedFfn(stage,queue,shape,rows,weights,scratch,scratch->normed,&route);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsRouteCombine(stage->ops,queue,scratch->out,output,&route);
+		status = shape->weight_after_down != 0u ? SparkOpsRouteCombineWeighted(stage->ops,queue,scratch->out,scratch->weights,output,&route) :
+			SparkOpsRouteCombine(stage->ops,queue,scratch->out,output,&route);
 	return(status);
 }
 
@@ -1374,7 +1377,8 @@ SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue 
 	if ( status == SPARK_STATUS_OK )
 		status = ExpertsRoutedFfn(stage,queue,shape,rows,weights,scratch,normed,&route);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsRouteCombineShared(stage->ops,queue,scratch->out,shared,output,&route);
+		status = shape->weight_after_down != 0u ? SparkOpsRouteCombineWeightedShared(stage->ops,queue,scratch->out,scratch->weights,shared,output,&route) :
+			SparkOpsRouteCombineShared(stage->ops,queue,scratch->out,shared,output,&route);
 	return(status);
 }
 

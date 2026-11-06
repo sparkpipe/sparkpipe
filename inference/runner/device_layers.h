@@ -242,6 +242,7 @@ typedef struct SparkDeviceExpertsShape
 	float limit;
 	const char *router;
 	uint32_t tensor_parallel;
+	uint32_t weight_after_down;
 } SparkDeviceExpertsShape;
 
 typedef struct SparkDeviceExpertsWeights

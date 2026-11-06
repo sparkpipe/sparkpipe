@@ -46,6 +46,7 @@ kernel void spark_gated_mul(constant SparkSiluMulParams &p [[buffer(0)]], device
 	const float gate = SparkMathBf16ToFloat(source[index]), up = SparkMathBf16ToFloat(source[p.dimension + index]);
 	const float activated = ACTIVATION == SPARK_GATED_GELU_TANH ? SparkMathRoundBf16(SparkMathGeluTanh(gate)) * up :
 		ACTIVATION == SPARK_GATED_SILU_ROUNDED ? SparkMathRoundBf16(SparkMathSilu(gate)) * up :
+		ACTIVATION == SPARK_GATED_SILU_ROUNDED_CLAMP ? SparkMathClampedGlu(SparkMathRoundBf16(SparkMathSilu(gate)), up, p.limit) :
 		ACTIVATION == SPARK_GATED_SILU_CLAMP ? SparkMathClampedGlu(SparkMathSiluFast(gate), up, p.limit) :
 		ACTIVATION == SPARK_GATED_SILU_GATE_LIMIT ? SparkMathGateLimitedGlu(gate, up, p.limit) :
 		ACTIVATION == SPARK_GATED_SITU ? SparkMathSitu(gate, up, p.limit, p.up_limit) : SparkMathSilu(gate) * up;
@@ -62,6 +63,9 @@ template [[host_name("spark_silu_rounded_mul")]] kernel void spark_gated_mul<SPA
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 template [[host_name("spark_silu_clamp_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
+	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
+template [[host_name("spark_silu_rounded_clamp_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_ROUNDED_CLAMP>(constant SparkSiluMulParams &p [[buffer(0)]],
 	device const ushort *input [[buffer(1)]], device ushort *output [[buffer(2)]], uint2 group [[threadgroup_position_in_grid]],
 	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]]);
 template [[host_name("spark_silu_gate_limit_mul")]] kernel void spark_gated_mul<SPARK_GATED_SILU_GATE_LIMIT>(constant SparkSiluMulParams &p [[buffer(0)]],

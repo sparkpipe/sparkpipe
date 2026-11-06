@@ -47,6 +47,8 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr bool kKdaDoubledBeta = true;
 	static constexpr bool kKdaConvRoundedSum = true;
 	static constexpr bool kKdaNormRoundOnce = true;
+	static constexpr bool kFfnSiluRounded = true;
+	static constexpr bool kExpertWeightAfterDown = true;
 	static constexpr uint32_t kConv = 4u;
 	static constexpr float kKdaLowerBound = -5.0f;
 	static constexpr uint32_t kAttention = LING_ATTENTION_GQA;
