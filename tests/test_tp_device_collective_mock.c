@@ -376,7 +376,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         "unknown wait mode fails instead of silently selecting spin");
     config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"hardware create");
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     CHECK(SparkTpDeviceCollectiveAllToAllSupported(&collective) == 0u,
         "a created collective reports all-to-all unsupported until its mesh region is attached, even when weightd advertises slice routes");
     request->capabilities = 0u;
@@ -401,7 +401,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_UNSUPPORTED,
         "a weightd missing one route the regimes use fails attach");
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mesh,2u,64u,0u,0) == SPARK_STATUS_OK,
         "failed hardware preparation retains ownership for retry");
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,777u) == SPARK_STATUS_OK,"hardware chain key");
@@ -465,7 +465,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
         "a later change of the wait cell's capability word cannot change the algorithm");
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     {
         char path_log[] = "/tmp/spark-tp-path-XXXXXX";
         int fd = mkstemp(path_log),saved = dup(2);
@@ -730,6 +730,7 @@ typedef struct PairMesh
 } PairMesh;
 
 static PairMesh pair_mesh;
+static uint64_t pair_mesh_capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
 
 static float PairFloat(uint16_t bits)
 {
@@ -845,7 +846,7 @@ static uint32_t PairCollective(SparkTpDeviceCollectiveConfig config,void *mesh,u
     config.combine_gather_bf16_function = 0;
     config.combine_fused_bf16_function = 0;
     memset(request,0,sizeof(*request));
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = pair_mesh_capabilities;
     base[0] = 1024u;
     base[1] = packed;
     base[2] = degree;
@@ -856,6 +857,18 @@ static uint32_t PairCollective(SparkTpDeviceCollectiveConfig config,void *mesh,u
     if ( ready != 0u && rank == 0u )
         ready = SparkTpDeviceCollectiveChainKey(collective,900u + degree) == SPARK_STATUS_OK ? 1u : 0u;
     return(ready);
+}
+
+static void PairLinkAbsent(SparkTpDeviceCollectiveConfig config,void *mesh,uint32_t degree,uint32_t rows,uint32_t width)
+{
+    SparkTpDeviceCollective collective;
+    pair_mesh_capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    CHECK(PairCollective(config,mesh,degree,0u,rows,width,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE,&collective) != 0u,
+        "a hardware collective attaches to a weightd without a pair link");
+    CHECK(SparkTpDeviceCollectiveSupportsPairAllReduce(&collective,rows,0u) == 0u,
+        "without a pair link, as on two switched rails, a sum takes the flat routes");
+    SparkTpDeviceCollectiveDestroy(&collective);
+    pair_mesh_capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
 }
 
 static void PairRefusal(SparkTpDeviceCollective *collective,uint32_t rows,uint32_t row_elements,uint16_t *buffer,const char *name)
@@ -905,6 +918,7 @@ static void TestPairAllReduce(SparkTpDeviceCollectiveConfig config,void *mesh)
         cuda_stub_mesh_hardware_prepare_result = 0;
         cuda_stub_mesh_hardware_launch_result = 0;
         cuda_stub_mesh_hardware_hook = PairMeshLaunch;
+        PairLinkAbsent(config,mesh,degree,rows,width);
         for ( pass = 0u; pass < 2u; pass++ )
         {
             SparkTpDeviceCollective collective;
@@ -995,7 +1009,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
     cuda_stub_mesh_hardware_prepare_result = 0;
     cuda_stub_mesh_hardware_launch_result = 0;
     memset(request,0,sizeof(*request));
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_OK,"peer-route collective create");
     mock_staging_map_status = SPARK_STATUS_IO_ERROR;
     calls = mock_staging_map_calls;
@@ -1041,7 +1055,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
         cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
         cuda_stub_mesh_hardware_staging == mock_staging_mapping,
         "a lane whose capability word changes after attach keeps the routes and staging fixed at attach");
-    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
+    request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     CHECK(SparkTpMeshAllToAllPeerChunks(4112u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
         SparkTpMeshAllToAllPeerChunks(32896u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
         SparkTpMeshAllToAllPeerChunks(526336u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&

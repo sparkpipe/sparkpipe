@@ -871,7 +871,8 @@ static void SparkWeightdMeshAdvertiseLane(uint32_t lane)
     uint32_t index;
     requests = (SparkWeightdMeshWaitRequest *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_OFFSET);
     for (index=2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index<2u * (lane + 1u) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
-        __atomic_store_n(&requests[index].capabilities,(uint64_t)SPARK_WEIGHTD_MESH_CAPABILITIES,__ATOMIC_RELEASE);
+        __atomic_store_n(&requests[index].capabilities,(uint64_t)SPARK_WEIGHTD_MESH_CAPABILITIES |
+            (weightd_mesh.pair_protection_domain != 0 && weightd_mesh.second_rail == 0u ? (uint64_t)SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK : UINT64_C(0)),__ATOMIC_RELEASE);
 }
 
 static uint32_t SparkWeightdMeshDoorbellShippable(uint32_t index);
