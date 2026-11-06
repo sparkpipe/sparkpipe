@@ -67,7 +67,7 @@
    },
    "draftd": {
     "unit": "sparkpipe-draftd",
-    "source": "/srv/workspace/sparkpipe/draftd-5903345aa",
+    "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
     "drafter": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3-dflash2-lightseek-e77935fb",
     "target_shard": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3/model-00094-of-000096.safetensors",
     "window": 4096,
@@ -122,7 +122,7 @@
    },
    "draftd": {
     "unit": "sparkpipe-draftd-dsv41",
-    "source": "/srv/workspace/sparkpipe/draftd-99c1cf7aa",
+    "source": "/srv/workspace/sparkpipe/draftd-760a73b19",
     "drafter": "dspark:/srv/workspace/sparkpipe/drafter-weights/deepseek-v4.1-flash-1017",
     "window": 4096,
     "context_bytes": 8589934592,
