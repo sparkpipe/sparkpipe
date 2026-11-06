@@ -690,10 +690,12 @@ static int32_t Glm5NextKdaRecur(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 		b->sequence_row_indices, rows, stream) != cudaSuccess )
 		return LM_LAUNCH_ERR_LAUNCH;
 	if constexpr ( LM_WARP_LANES == 32u )
-		LM_LAUNCH((LmDeltaRuleColumnKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>), dim3(sequences, heads, G5N_KDA_VALUE / LM_WARP_LANES),
-			LM_DELTA_COLUMN_THREADS, 0, stream, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index, b->sequence_row_begin, kept,
-			b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u, sequences, commit,
-			b->sequence_row_indices);
+	{
+		if ( LmDeltaRuleLaunch<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>(rows, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index,
+				b->sequence_row_begin, kept, b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u,
+				sequences, commit, b->sequence_row_indices, stream) != cudaSuccess )
+			return LM_LAUNCH_ERR_LAUNCH;
+	}
 	else
 		LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
 			dim3(sequences, heads, G5N_KDA_VALUE / G5N_KDA_DELTA_COLUMNS), G5N_THREADS, G5N_KDA_KEY * G5N_KDA_DELTA_COLUMNS * sizeof(float), stream,
