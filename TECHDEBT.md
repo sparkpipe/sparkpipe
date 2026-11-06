@@ -10,16 +10,35 @@ purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
 accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
-## Dual-fabric topology contract
+## Dual-rail topology contract
 
-- Replace the legacy ring/single-switch/dual-switch topology modes with one
-  schema that represents the CRS804 rail plus eight pairwise direct links.
-- Generate supported four-, eight-, and sixteen-Spark profiles from the same
-  schema, requiring complete direct pairs at every size.
-- Generate pinned interface, address, direct-partner, and communicator tables
-  for all sixteen ranks from that schema.
-- Remove obsolete topology examples and release switches after all consumers
-  use the combined-fabric contract.
+- The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
+  `cisco0` on port 0, [FLEET_FABRIC.md](docs/FLEET_FABRIC.md)); there are no
+  direct pair links. Replace the legacy ring/single-switch/dual-switch topology
+  modes with one schema for two all-to-all rails, and generate the four-,
+  eight-, and sixteen-Spark profiles and the pinned interface, address and
+  communicator tables from it.
+- weightd uses rail 2 only for the `rank ^ 1` partner (`--mesh-pair-interface`,
+  `MESH_LINK_MAP` in the agent, still labelled 200 Gb/s). Every other peer goes
+  over rail 1, so rail 2 sits idle for 14 of 15 peers. Spread every peer's
+  traffic over both rails.
+- Mesh collectives write to all fifteen peers at once. That fifteen-to-one
+  incast holds rail 2 all-to-all at 88 of 98 Gb/s a node and gives small
+  messages a 0.65-1.3 ms p99 behind PFC pauses. Permutation-scheduled steps
+  (rotation or pairwise halving and doubling) measured 98 Gb/s a node and a
+  30 us p99. Schedule bulk collectives as permutations, and send
+  latency-critical small messages in the rail 2 fast class (traffic class 202).
+  The CRS804 has no second lossless class.
+- The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
+  which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
+  node; release main's agent, which has that default, and drop the override.
+- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
+  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
+  run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
+  another switch port to find out which end is at fault.
+- `tools/dsv41_flash_gen_deployment.py` still names `10.10.200.4-7` as its
+  rail 0, which no longer exists.
 
 ## Mesh collectives
 
