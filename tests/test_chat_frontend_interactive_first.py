@@ -62,6 +62,8 @@ async def priority_rules(harness, check):
               "a Responses request whose metadata says background runs below interactive requests"),
              ("/v1/chat/completions", chat("hi", metadata={"x-sparkpipe-priority": "background"}), {}, chat_frontend.BULK_PRIORITY,
               "a chat completions request whose metadata says background runs below interactive requests"),
+             ("/v1/messages", messages("hi", metadata={"X-SparkPipe-Priority": "background"}), {}, chat_frontend.BULK_PRIORITY,
+              "the metadata key matches the header's name in any case"),
              ("/v1/messages", messages("hi", metadata={"x-sparkpipe-priority": "background"}), {"X-SparkPipe-Priority": "interactive"},
               chat_frontend.INTERACTIVE_PRIORITY, "the x-sparkpipe-priority header wins over the same field in metadata"),
              ("/v1/messages", messages("hi", metadata={"user_id": "user_x"}), {}, chat_frontend.INTERACTIVE_PRIORITY,

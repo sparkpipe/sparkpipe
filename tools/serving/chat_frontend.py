@@ -319,6 +319,33 @@ class SequenceGate:
                 "waiting": len(self.waiters), "scopes": len(self.held)}
 
 
+async def heartbeat(events, interval):
+    iterator = events.__aiter__()
+    pending = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=interval)
+            if not done:
+                yield ("keepalive", None)
+                continue
+            task, pending = pending, None
+            try:
+                item = task.result()
+            except StopAsyncIteration:
+                return
+            yield item
+    finally:
+        if pending is not None:
+            pending.cancel()
+            try:
+                await pending
+            except (asyncio.CancelledError, StopAsyncIteration, Exception):
+                pass
+        await iterator.aclose()
+
+
 class LiveRequest:
     def __init__(self, scope):
         self.scope = scope
@@ -384,33 +411,6 @@ class LiveRequest:
             self.queue = None
             producer.cancel()
             await asyncio.gather(producer, return_exceptions=True)
-
-
-async def heartbeat(events, interval):
-    iterator = events.__aiter__()
-    pending = None
-    try:
-        while True:
-            if pending is None:
-                pending = asyncio.ensure_future(iterator.__anext__())
-            done, _ = await asyncio.wait({pending}, timeout=interval)
-            if not done:
-                yield ("keepalive", None)
-                continue
-            task, pending = pending, None
-            try:
-                item = task.result()
-            except StopAsyncIteration:
-                return
-            yield item
-    finally:
-        if pending is not None:
-            pending.cancel()
-            try:
-                await pending
-            except (asyncio.CancelledError, StopAsyncIteration, Exception):
-                pass
-        await iterator.aclose()
 
 
 def longest_marker_prefix(text, markers):
@@ -1022,8 +1022,19 @@ def canonical_citations(messages, wrapper):
     return messages, {}
 
 
-PUBLIC_PATHS = frozenset({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
-                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"})
+class PathTable(frozenset):
+    def __new__(cls, paths, patterns=()):
+        table = super().__new__(cls, paths)
+        table.patterns = tuple(patterns)
+        return table
+
+    def __contains__(self, path):
+        return frozenset.__contains__(self, path) or any(pattern.fullmatch(path) is not None for pattern in self.patterns)
+
+
+PUBLIC_PATHS = PathTable({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
+                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"},
+                         (REQUEST_PATH,))
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 PUBLIC_KEY_PREFIX = "sk-sp-"
@@ -1849,7 +1860,8 @@ class Frontend:
 
     @staticmethod
     def metadata_priority(metadata):
-        value = metadata.get(PRIORITY_METADATA) if isinstance(metadata, dict) else None
+        names = [name for name in metadata if isinstance(name, str) and name.lower() == PRIORITY_METADATA] if isinstance(metadata, dict) else []
+        value = metadata[names[0]] if names else None
         if value is None:
             return ""
         if not isinstance(value, str) or value.strip().lower() not in PRIORITY_CLASSES:
@@ -2711,10 +2723,10 @@ class Frontend:
             translated = chat_shapes.messages_request(body)
         else:
             translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers))
-        translated["metadata"] = body.get("metadata")
         model, bulk = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
+        translated["metadata"] = body.get("metadata")
         return body, translated, model, bulk, key, scope
 
     def harness_plan(self, model, translated, scope, headers, key, bulk):
@@ -3123,17 +3135,13 @@ def presented_key(headers):
     return headers.get("X-Api-Key", "").strip() or None
 
 
-def public_path(path):
-    return path in PUBLIC_PATHS or REQUEST_PATH.fullmatch(path) is not None
-
-
 def public_door(frontend):
     @web.middleware
     async def door(request, handler):
         if frontend.public_header is None or request.headers.get(frontend.public_header) is None:
             return await handler(request)
         refuse = anthropic_error_response if request.path in ANTHROPIC_PATHS else (responses_error_response if request.path == "/v1/responses" else error_response)
-        if not public_path(request.path):
+        if request.path not in PUBLIC_PATHS:
             return refuse(RequestError(404, "not_found", "this path is not served to the public API"))
         if request.path in OPEN_PATHS:
             return await handler(request)
