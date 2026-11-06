@@ -557,8 +557,18 @@ def check_setup_claude_code(failures, home, fake):
     path.parent.mkdir()
     before = {"permissions": {"allow": ["Bash(ls)"]}, "env": {"FOO": "bar", "ANTHROPIC_MODEL": "claude-opus-5-5"}, "modelOverrides": {"claude-opus-4-6": "arn:x"}, "theme": "dark"}
     path.write_text(json.dumps(before))
+    state = home.home / ".claude.json"
+    state_before = {"numStartups": 41, "projects": {"/repo": {"allowedTools": []}}, "mcpServers": {"github": {"type": "stdio", "command": "gh-mcp"}}}
+    state.write_text(json.dumps(state_before))
+    state.chmod(0o644)
     code, out, err = home.run("setup", "claude-code")
     after = json.loads(path.read_text())
+    server = {"type": "http", "url": fake.url + "/mcp", "headers": {"Authorization": "Bearer " + KEY}}
+    written = json.loads(state.read_text())
+    expect(failures, code == 0 and written == dict(state_before, mcpServers={"github": {"type": "stdio", "command": "gh-mcp"}, "sparkpipe": server}),
+           f"setup claude-code registers the fleet's MCP server in ~/.claude.json beside the other servers and state: {written}")
+    expect(failures, stat.S_IMODE(state.stat().st_mode) == 0o600 and [json.loads(p.read_text()) for p in backups(state)] == [state_before],
+           "the Claude Code state file holding the MCP key is readable by others, or keeps no backup")
     env = {"ANTHROPIC_BASE_URL": fake.url, "ANTHROPIC_AUTH_TOKEN": KEY, "ANTHROPIC_MODEL": "kimi-k3+core", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-5.3-flash",
            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
            "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1"}
@@ -579,6 +589,20 @@ def check_setup_claude_code(failures, home, fake):
     expect(failures, code == 0 and other["ANTHROPIC_MODEL"] == other["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == other["CLAUDE_CODE_SUBAGENT_MODEL"] == "glm-5.3-flash"
            and other["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "200000" and "ANTHROPIC_API_KEY is also set" in out and not backups(elsewhere / "settings.json"),
            f"setup claude-code --model and CLAUDE_CONFIG_DIR: {other} {out}")
+    expect(failures, json.loads((elsewhere / ".claude.json").read_text()) == {"mcpServers": {"sparkpipe": server}} and json.loads(state.read_text())["mcpServers"]["sparkpipe"] == server,
+           "with CLAUDE_CONFIG_DIR the MCP server goes into $CLAUDE_CONFIG_DIR/.claude.json")
+    legacy = home.root / "legacy-config"
+    legacy.mkdir()
+    (legacy / ".config.json").write_text(json.dumps({"numStartups": 2}))
+    code, _, _ = home.run("setup", "claude-code", env={"CLAUDE_CONFIG_DIR": str(legacy)})
+    expect(failures, code == 0 and json.loads((legacy / ".config.json").read_text()) == {"numStartups": 2, "mcpServers": {"sparkpipe": server}} and not (legacy / ".claude.json").exists(),
+           "a Claude Code install that still reads the legacy .config.json gets the MCP server there")
+    broken_state = home.root / "broken-state"
+    broken_state.mkdir()
+    (broken_state / ".claude.json").write_text('{"mcpServers": ')
+    code, _, err = home.run("setup", "claude-code", env={"CLAUDE_CONFIG_DIR": str(broken_state)})
+    expect(failures, code == 1 and "not valid JSON" in err and not (broken_state / "settings.json").exists() and (broken_state / ".claude.json").read_text() == '{"mcpServers": ',
+           f"setup claude-code writes the settings although it cannot read .claude.json: {err}")
     fake.route("GET", "/v1/models/aliases", (200, {}, {"aliases": {"claude-*": None, "gpt-*": None}, "first_resident": "glm-5.3-flash"}))
     resident = home.root / "resident.json"
     code, _, err = home.run("setup", "claude-code", "--settings", resident)
@@ -741,6 +765,130 @@ def check_setup_opencode(failures, home, fake):
     path.write_text('{"mcp": "none"}')
     code, _, _ = home.run("setup", "opencode")
     expect(failures, code == 1 and path.read_text() == '{"mcp": "none"}', "setup opencode replaces an mcp that is not an object")
+
+
+def conforms(value, shape, where):
+    if isinstance(shape, dict):
+        if not isinstance(value, dict):
+            return [f"{where} is not an object"]
+        found = []
+        for name, inner in shape.items():
+            if name == "*":
+                for key, item in value.items():
+                    found += conforms(item, inner, f"{where}.{key}")
+            elif name not in value:
+                found.append(f"{where}.{name} is missing")
+            else:
+                found += conforms(value[name], inner, f"{where}.{name}")
+        return found
+    if isinstance(shape, tuple):
+        return [] if value in shape else [f"{where} is {value!r}, not one of {shape}"]
+    if shape is int:
+        return [] if isinstance(value, int) and not isinstance(value, bool) and value > 0 else [f"{where} is not a positive integer"]
+    return [] if isinstance(value, shape) else [f"{where} is not a {shape.__name__}"]
+
+
+CLAUDE_SETTINGS_SHAPE = {"env": {"ANTHROPIC_BASE_URL": str, "ANTHROPIC_AUTH_TOKEN": str, "ANTHROPIC_MODEL": str, "ANTHROPIC_DEFAULT_HAIKU_MODEL": str, "*": str},
+                         "modelOverrides": {"*": str}}
+CLAUDE_STATE_SHAPE = {"mcpServers": {"sparkpipe": {"type": ("http",), "url": str, "headers": {"*": str}}}}
+CODEX_SHAPE = {"model": str, "model_provider": ("sparkpipe",),
+               "model_providers": {"sparkpipe": {"name": str, "base_url": str, "env_key": str, "wire_api": ("responses",), "stream_idle_timeout_ms": int, "model_catalog_url": str}},
+               "mcp_servers": {"sparkpipe": {"url": str, "bearer_token_env_var": str}}}
+CODEX_PROFILE_SHAPE = {"model": str, "model_provider": ("sparkpipe",), "model_context_window": int, "model_auto_compact_token_limit": int,
+                       "agents": {"default_subagent_model": str, "max_concurrent_threads_per_session": int}}
+OPENCODE_SHAPE = {"$schema": ("https://opencode.ai/config.json",), "model": str, "small_model": str, "share": ("manual", "auto", "disabled"),
+                  "provider": {"sparkpipe": {"npm": ("@ai-sdk/anthropic",), "name": str, "options": {"baseURL": str, "apiKey": str},
+                                             "models": {"*": {"name": str, "limit": {"context": int, "output": int}}}}},
+                  "agent": {name: {"model": str} for name in ("general", "explore", "compaction", "title", "summary")},
+                  "mcp": {"sparkpipe": {"type": ("remote",), "url": str, "headers": {"*": str}, "enabled": bool}}}
+
+
+@scenario
+def check_setup_schemas(failures, home, fake):
+    home.signed_in(fake.url)
+    fake.route("GET", "/v1/models", (200, {}, MODELS))
+    fake.route("GET", "/v1/models/aliases", (200, {}, ALIASES))
+    for harness in ("claude-code", "codex", "opencode"):
+        code, _, err = home.run("setup", harness)
+        expect(failures, code == 0, f"setup {harness} on a fresh home: {err}")
+    settings = json.loads((home.home / ".claude" / "settings.json").read_text())
+    state = json.loads((home.home / ".claude.json").read_text())
+    codex = tomllib.loads((home.home / ".codex" / "config.toml").read_text())
+    profile = tomllib.loads((home.home / ".codex" / "sparkpipe.config.toml").read_text())
+    opencode = json.loads((home.home / ".config" / "opencode" / "opencode.json").read_text())
+    problems = (conforms(settings, CLAUDE_SETTINGS_SHAPE, "settings.json") + conforms(state, CLAUDE_STATE_SHAPE, ".claude.json") + conforms(codex, CODEX_SHAPE, "config.toml")
+                + conforms(profile, CODEX_PROFILE_SHAPE, "sparkpipe.config.toml") + conforms(opencode, OPENCODE_SHAPE, "opencode.json"))
+    models = set(opencode["provider"]["sparkpipe"]["models"])
+    named = [opencode["model"], opencode["small_model"]] + [agent["model"] for agent in opencode["agent"].values()]
+    problems += [f"opencode.json names {name}, which its provider does not list" for name in named if name.partition("/")[0] != "sparkpipe" or name.partition("/")[2] not in models]
+    problems += [] if 0 < profile["model_auto_compact_token_limit"] < profile["model_context_window"] else ["the Codex compaction limit is not below its context window"]
+    problems += [] if settings["env"]["ANTHROPIC_BASE_URL"] + "/mcp" == state["mcpServers"]["sparkpipe"]["url"] else ["the Claude Code MCP server is not on the fleet's API"]
+    expect(failures, not problems, f"the written configs do not match each tool's documented keys: {problems}")
+
+
+@scenario
+def check_setup_undo(failures, home, fake):
+    home.signed_in(fake.url)
+    fake.route("GET", "/v1/models", (200, {}, MODELS))
+    fake.route("GET", "/v1/models/aliases", (200, {}, ALIASES))
+    settings, state = home.home / ".claude" / "settings.json", home.home / ".claude.json"
+    codex, profile = home.home / ".codex" / "config.toml", home.home / ".codex" / "sparkpipe.config.toml"
+    opencode = home.home / ".config" / "opencode" / "opencode.json"
+    for path in (settings, codex, opencode):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    settings_before = {"env": {"FOO": "bar", "ANTHROPIC_MODEL": "claude-opus-5-5"}, "modelOverrides": {"claude-opus-4-6": "arn:x"}, "theme": "dark"}
+    state_before = {"numStartups": 41, "mcpServers": {"github": {"type": "stdio", "command": "gh-mcp"}}}
+    opencode_before = {"theme": "tokyonight", "agent": {"general": {"temperature": 0.2}}, "compaction": {"auto": True, "prune": True}}
+    settings.write_text(json.dumps(settings_before))
+    state.write_text(json.dumps(state_before))
+    codex.write_text(CODEX_BEFORE)
+    opencode.write_text(json.dumps(opencode_before))
+    code, out, _ = home.run("setup", "--undo")
+    expect(failures, code == 0 and "nothing to undo" in out and settings.read_text() == json.dumps(settings_before), f"setup --undo before any setup: {out}")
+    for harness in ("claude-code", "codex", "opencode"):
+        home.run("setup", harness)
+        home.run("setup", harness)
+    added = json.loads(settings.read_text())
+    added["permissions"] = {"allow": ["Bash(npm test)"]}
+    settings.write_text(json.dumps(added))
+    grown = json.loads(state.read_text())
+    grown.update(numStartups=42, projects={"/repo": {"hasTrustDialogAccepted": True}})
+    state.write_text(json.dumps(grown))
+    codex.write_text(codex.read_text() + '\n[mcp_servers.linear]\nurl = "https://linear.example/mcp"\n')
+    changed = json.loads(opencode.read_text())
+    changed["theme"] = "gruvbox"
+    opencode.write_text(json.dumps(changed))
+    asked = len(fake.requests)
+    code, out, err = home.run("setup", "claude-code", "--undo")
+    expect(failures, code == 0 and json.loads(settings.read_text()) == dict(settings_before, permissions={"allow": ["Bash(npm test)"]}),
+           f"setup claude-code --undo restores the settings it replaced and keeps the permission added since: {settings.read_text()} {err}")
+    expect(failures, json.loads(state.read_text()) == dict(state_before, numStartups=42, projects={"/repo": {"hasTrustDialogAccepted": True}}),
+           f"setup claude-code --undo removes the MCP server and keeps the state Claude Code wrote since: {state.read_text()}")
+    expect(failures, len(fake.requests) == asked and "Restored" in out, f"setup --undo asks the fleet for something: {fake.requests[asked:]} {out}")
+    expect(failures, tomllib.loads(codex.read_text())["model_providers"]["sparkpipe"]["name"] == "SparkPipe", "setup claude-code --undo touches the Codex config")
+    code, out, _ = home.run("setup", "claude-code", "--undo")
+    expect(failures, code == 0 and "nothing to undo" in out, f"a second setup claude-code --undo: {out}")
+    code, out, err = home.run("setup", "--undo")
+    wanted = tomllib.loads(CODEX_BEFORE)
+    wanted["mcp_servers"]["linear"] = {"url": "https://linear.example/mcp"}
+    expect(failures, code == 0 and tomllib.loads(codex.read_text()) == wanted and "# my codex config" in codex.read_text() and not profile.exists(),
+           f"setup --undo restores config.toml, keeps the server added since and removes the profile it created:\n{codex.read_text()}\n{err}")
+    expect(failures, json.loads(opencode.read_text()) == dict(opencode_before, theme="gruvbox"), f"setup --undo restores opencode.json and keeps the theme changed since: {opencode.read_text()}")
+    expect(failures, cli.read_json(home.home / ".config" / "sparkpipe" / "setup.json") == {"files": {}}, "setup --undo leaves records of files it restored")
+    fresh = home.root / "fresh-claude"
+    home.run("setup", "claude-code", env={"CLAUDE_CONFIG_DIR": str(fresh)})
+    made = sorted(p.name for p in fresh.iterdir() if not p.name.endswith(".bak"))
+    code, out, _ = home.run("setup", "claude-code", "--undo", env={"CLAUDE_CONFIG_DIR": str(fresh)})
+    expect(failures, made == [".claude.json", "settings.json"] and code == 0 and not (fresh / "settings.json").exists() and not (fresh / ".claude.json").exists() and "Removed" in out,
+           f"setup claude-code --undo removes the files setup created: {made} {out}")
+    home.run("setup", "opencode")
+    original = cli.setup_files(cli.read_json(home.home / ".config" / "sparkpipe" / "setup.json"))[os.path.realpath(opencode)]["original"]
+    os.unlink(original)
+    text = opencode.read_text()
+    code, _, err = home.run("setup", "opencode", "--undo")
+    expect(failures, code == 1 and "backup" in err and "Nothing was changed" in err and opencode.read_text() == text, f"setup --undo without the backup: {err}")
+    code, _, err = home.run("setup")
+    expect(failures, code == 1 and "Name a harness" in err, f"setup without a harness: {err}")
 
 
 def check_tokens(failures):
@@ -1225,7 +1373,7 @@ def check_package(failures):
 
 def main():
     failures = []
-    for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode,
+    for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_schemas, check_setup_undo,
                   check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_package):
         try:
             check(failures)
@@ -1236,7 +1384,8 @@ def main():
     if failures:
         return 1
     print("sparkpipe CLI: login by email code to a revocable bearer session and one key per machine; keys, status, bookings by week and hour priced before confirmation, "
-          "and the waitlist with terms; setup of Claude Code, Codex (config.toml and the sparkpipe profile file) and OpenCode merged into existing settings with a backup, idempotent, "
+          "and the waitlist with terms; setup of Claude Code (settings and its MCP server), Codex (config.toml and the sparkpipe profile file) and OpenCode merged into existing settings with a backup, idempotent, "
+          "matching each tool's documented keys, and undone key by key, keeping settings written since; "
           "refusing files it cannot merge safely; tokens only in the macOS keychain or secret-tool, never on a command line; fetch, ls, resume and cancel sending a token only to its own host "
           "and following no redirect; storage sync by pages of changes, resuming from the last whole page, skipping files it already has, confined to the destination, to a directory or s3://; "
           "the proxy taking only its own local key, local host names and no web pages, forwarding only inference paths and the Responses WebSocket, retrying 429 and streaming; "

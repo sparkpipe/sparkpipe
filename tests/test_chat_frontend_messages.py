@@ -190,6 +190,17 @@ async def run(tmp, check):
         record = json.loads(text)["sparkpipe"]
         check(engine.requests[-1]["priority"] == chat_frontend.INTERACTIVE_PRIORITY and record["session"] == "s-1" and record["agent"] == "a-2" and record["priority"] == "interactive",
               f"a subagent request stays interactive and its session and agent ids reach the record: {record}")
+        user_id = json.dumps({"device_id": "d" * 64, "account_uuid": "", "session_id": "0c6f1d2e-5b7a-4c3d-9e8f-1a2b3c4d5e6f"})
+        for metadata, wanted in (({"user_id": user_id}, "0c6f1d2e-5b7a-4c3d-9e8f-1a2b3c4d5e6f"),
+                                 ({"user_id": "user_" + "a" * 64 + "_account__session_7d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a"}, "7d1e2f3a-4b5c-6d7e-8f9a-0b1c2d3e4f5a"),
+                                 ({"user_id": json.dumps({"session_id": "bad id\r\n"})}, None), ({"user_id": "u1"}, None), ({"user_id": 7}, None), (None, None)):
+            engine.reply(ANSWER)
+            _, _, text = await harness.post("/v1/messages", dict(stream_body(), stream=False, **({"metadata": metadata} if metadata is not None else {})))
+            record = json.loads(text)["sparkpipe"]
+            check(record["session"] == wanted, f"metadata.user_id {metadata} gives the session {wanted}: {record}")
+        engine.reply(ANSWER)
+        _, _, text = await harness.post("/v1/messages", dict(stream_body(), stream=False, metadata={"user_id": user_id}), **{"X-Claude-Code-Session-Id": "s-9"})
+        check(json.loads(text)["sparkpipe"]["session"] == "s-9", "the X-Claude-Code-Session-Id header wins over metadata.user_id")
 
         chat_frontend.KEEPALIVE_SECONDS = 0.1
         engine.delay = 0.45
