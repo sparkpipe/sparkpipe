@@ -71,6 +71,19 @@
     "key_end": "</arg_key>",
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7387,
+      8881
+     ],
+     [
+      1048325,
+      3565172
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/glm-5.3.jsonl (case ttft6000: prompt_tokens over prefill_tok_s) and qualification/batch-sweep-20261024/glm-5.3.jsonl (case warm: seconds over the prompt_tokens it prefilled, cached_tokens excluded)"
    }
   },
   {
@@ -122,6 +135,19 @@
     "key_end": "</arg_key>",
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7388,
+      8431
+     ],
+     [
+      130361,
+      270599
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/glm-5.3-flash.jsonl (case ttft6000: prompt_tokens over prefill_tok_s) and qualification/batch-sweep-20261024/glm-5.3-flash.jsonl (case warm: seconds over the prompt_tokens it prefilled, cached_tokens excluded)"
    }
   },
   {
@@ -200,7 +226,20 @@
    ],
    "end_markers": [
     "<|close|>message<|sep|>"
-   ]
+   ],
+   "cold_prefill": {
+    "points": [
+     [
+      7384,
+      14996
+     ],
+     [
+      1048273,
+      4580897
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/kimi-k3.jsonl (case ttft6000: prompt_tokens over prefill_tok_s) and qualification/batch-sweep-20261024/kimi-k3.span-reservation.jsonl (case warm: seconds over the prompt_tokens it prefilled, cached_tokens excluded)"
+   }
   },
   {
    "id": "qwen3.8-27b",
@@ -258,6 +297,15 @@
     "function_end": "</function>",
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      3994
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/qwen3.8-27b.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -325,7 +373,20 @@
    "content_markers": [
     "<｜DSML｜ calls>",
     "\n</｜DSML｜ calls>"
-   ]
+   ],
+   "cold_prefill": {
+    "points": [
+     [
+      7384,
+      41483
+     ],
+     [
+      1047883,
+      821316
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/deepseek-v4.1-flash.jsonl (case ttft6000: prompt_tokens over prefill_tok_s) and qualification/batch-sweep-20261024/deepseek-v4.1-flash.short-answers.jsonl (case warm: seconds over the prompt_tokens it prefilled, cached_tokens excluded)"
+   }
   },
   {
    "id": "qwen3.8-max",
@@ -370,6 +431,15 @@
     "function_end": "</function>",
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      213757
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/qwen3.8-max.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -428,6 +498,15 @@
     "function_end": "</function>",
     "parameter_start": "<parameter=",
     "parameter_end": "</parameter>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      20677
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/qwen3.8-flash.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -481,6 +560,15 @@
     "end": "<tool_call|>",
     "name_prefix": "call:",
     "string_delimiter": "<|\"|>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      8870
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/gemma-4-31b.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -534,6 +622,15 @@
     "end": "<tool_call|>",
     "name_prefix": "call:",
     "string_delimiter": "<|\"|>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      4002
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/gemma-4-26b-a4b.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -590,7 +687,16 @@
    "content_markers": [
     "<tool_calls:opensource>",
     "</tool_calls:opensource>"
-   ]
+   ],
+   "cold_prefill": {
+    "points": [
+     [
+      7384,
+      138537
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/hy4-preview.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
+   }
   },
   {
    "id": "ling-3.0-flash",
@@ -644,6 +750,15 @@
     "key_end": "</arg_key>",
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      4884
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/ling-3.0-flash.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -704,7 +819,16 @@
    "content_markers": [
     "<atem:function_calls>",
     "</atem:function_calls>"
-   ]
+   ],
+   "cold_prefill": {
+    "points": [
+     [
+      7384,
+      6228
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/muse-glimmer-30b.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
+   }
   },
   {
    "id": "ling-3.0-flash-fin",
@@ -758,6 +882,15 @@
     "key_end": "</arg_key>",
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7396,
+      4772
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/ling-3.0-flash-fin.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {
@@ -812,6 +945,15 @@
     "key_end": "</arg_key>",
     "value_start": "<arg_value>",
     "value_end": "</arg_value>"
+   },
+   "cold_prefill": {
+    "points": [
+     [
+      7669,
+      9922
+     ]
+    ],
+    "source": "qualification/releases/91c0e6be3/laguna-s-2.1.jsonl (case ttft6000: prompt_tokens over prefill_tok_s)"
    }
   },
   {

@@ -82,6 +82,11 @@ class Engine:
         self.committed = []
         self.delay = 0.0
         self.hold = None
+        self.capacity = None
+        self.drafts = None
+        self.commits = True
+        self.pin_sets = []
+        self.pin_reply = (200, {"pinned_pages": 0})
 
     def tokens(self, text):
         ids = []
@@ -105,8 +110,10 @@ class Engine:
         prompt = body["prompt_token_ids"]
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = min(cached, len(prompt) - 1)
+        if body.get("commit_only") and self.commits:
+            return await self.commit(request, prompt, cached)
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
-        ids = ids[:body["max_tokens"]]
+        ids = ids[:body.get("max_tokens", 32)]
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         if self.hold is not None:
@@ -119,14 +126,35 @@ class Engine:
             if last:
                 event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": len(ids), "total_tokens": len(prompt) + len(ids),
                                   "prompt_tokens_details": {"cached_tokens": cached}}
+                if self.drafts is not None:
+                    event["usage"].update(draft_tokens=self.drafts[0], accepted_draft_tokens=self.drafts[1])
             await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt) + list(ids[:-1]))
         await response.write(b"data: [DONE]\n\n")
         await response.write_eof()
         return response
 
+    async def commit(self, request, prompt, cached):
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        if self.hold is not None:
+            await self.hold.wait()
+        event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
+                 "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
+                           "draft_tokens": 0, "accepted_draft_tokens": 0, "prefill_ms": 12.5}}
+        await response.write(("data: " + json.dumps(event) + "\n\n").encode())
+        self.committed.append(list(prompt))
+        await response.write(b"data: [DONE]\n\n")
+        await response.write_eof()
+        return response
+
+    async def pins(self, request):
+        body = await request.json()
+        self.pin_sets.append([list(pin["prompt_token_ids"]) for pin in body["pins"]])
+        return web.json_response(self.pin_reply[1], status=self.pin_reply[0])
+
     async def health(self, request):
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok"} if self.capacity is None else {"status": "ok", "kv_capacity_tokens": self.capacity})
 
 
 class Controller:
@@ -167,6 +195,7 @@ class Harness:
         engine_app = web.Application()
         engine_app.router.add_post("/v1/completions", self.engine.completions)
         engine_app.router.add_get("/health", self.engine.health)
+        engine_app.router.add_put("/v1/cache/pins", self.engine.pins)
         self.engine_runner, engine_base = await serve(engine_app)
         self.controller = Controller(self.active, self.model_ids)
         control_app = web.Application()
@@ -222,6 +251,11 @@ class Harness:
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:
             text = await response.text()
             return response.status, dict(response.headers), text
+
+    async def call(self, method, path, body=None, **headers):
+        async with self.session.request(method, self.base + path, json=body, headers=self.headers(**headers)) as response:
+            text = await response.text()
+            return response.status, json.loads(text) if text else None
 
     def prompt_text(self, index=-1):
         return self.tokenizer.decode(self.engine.requests[index]["prompt_token_ids"], skip_special_tokens=False)

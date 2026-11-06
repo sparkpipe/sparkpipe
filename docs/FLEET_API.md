@@ -181,7 +181,13 @@ Every response carries what it cost in time:
 }
 ```
 
-`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
+`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed.
+- **Rate source.** The rate is the hub's own observation of cold prefills for the model (the nearest length bucket within two of the prompt's, from requests at least 90% cold). Before the first observation, it is interpolated from the points in the model's hub entry, `cold_prefill` in `deployment/hub/chat_frontend.json`. Each point is a receipt's measured cold prefill: release `91c0e6be3` at 7.4K tokens for 14 models, and the 2026-10-24 full-window sweep for the four core models. A model with neither has a null estimate.
+- **Draft counts.** `draft_accept` is the request's accepted drafts over its drafted tokens, from the engine's per-request counters, which the record also carries as `draft_tokens` and `accepted_draft_tokens`. It is null when nothing was drafted.
+- `pack` is null until packs exist (§5).
+- `commit_only` is true for a warm-up (§4.2).
+
+`GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
 
 ### 3.7 More inference features
 
@@ -252,7 +258,7 @@ Any other tool that speaks Anthropic Messages, OpenAI Responses or chat completi
 
 ### 4.1 `GET /v1/state`
 
-Returns:
+Built so far: `chains` (the account's cached prompt chains, each with its id, model, tokens, `pinned`, `pinned_tokens` and `last_used`), `pins`, `cache` (per model: `capacity_tokens` from the engine's `/health`, `pin_limit_tokens`, the account's `pinned_tokens` and `used_tokens`), `stored` (the replay store's items, bytes and last use, counted as `tools/working_state_scan.py` counts them), `resident`, and `working_state` (`wiped`, `held_until`, and `deleted_after`, when the account's working state would be deleted if it stopped holding the fleet). The design:
 - the resident models, their memory use and the alias table;
 - cache use against capacity: device pages, snapshot store and mirror state;
 - pins, packs and their warm status;
@@ -267,7 +273,8 @@ Prefills a prompt and commits it to the cache without generating anything.
 - **Body.** The body is a Messages, Responses or chat request (`format`: `anthropic`, `openai_responses` or `openai_chat`). It is rendered exactly as a real request would be, so the warmed prefix is the prefix a later request will match.
 - **Response.** `prompt_tokens`, `cached_tokens`, `committed_tokens` and `prefill_ms`.
 - **Priority and limit.** Warm requests run at low priority: they wait for interactive requests and never delay them. They count against a per-fleet budget of the cache, published on the Fleet List.
-- **Build.** The engine gets a commit-only request flag. Until then the chat layer sends `max_tokens` 1 and discards the token, as chat memory does (`tools/serving/chat_memory.py:1358-1365`).
+- **Build.** The engine takes `commit_only: true` on `/v1/completions`: it runs the prompt with a one-token budget, drops the sampled token before it is streamed, counted or cached, and answers `finish_reason` `commit` with the usage and `prefill_ms`. With `max_tokens` or `logprobs` it answers 400 `commit_only_conflict`. The chat layer takes `commit_only: true` on all three shapes, as `POST /v1/cache/warm` does with `format`. Both answer `{"object": "cache.commit", "prompt_tokens", "cached_tokens", "committed_tokens", "prefill_ms", "sparkpipe"}`, never a stream, and record the request like any other. An engine that generates instead answers 502 `commit_only_unsupported`.
+- **Priority.** A warm-up runs at background priority whatever the request asks (`X-SparkPipe-Priority: background`), at the hub's gate and in the engine.
 
 Warm-ups are used:
 - by the CLI and Functions after a handover, a release or a pack refresh;
@@ -278,7 +285,11 @@ Warm-ups are used:
 - **`POST /v1/cache/pins {"request": "r_…"}` or `{"pack": "core"}`** pins the prompt prefix of a past request or warm-up, or a pack's current version. A pinned chain is evicted only when the cache would otherwise refuse a request, and then after every unpinned chain.
 - **Limits.** Pins are limited to half the fleet's cache.
 - **`GET` and `DELETE`** list and remove pins.
-- **Build.** The page cache already evicts by priority (`TECHDEBT.md:608-630`). Pins add a priority the coordinator's LRU skips (`cache/prefix_cache.c:739-800`).
+- **Body.** Exactly one of `{"request": "r_…"}`, `{"prefix": "c_…"}` (a chain id from `GET /v1/state`) or `{"pack": "core"}`. A new pin answers 201 with the pin; pinning a pinned chain answers 200 with `created: false`. `DELETE /v1/cache/pins/{id}` answers `{"deleted", "engine_synced"}`.
+- **Which half.** "Half the cache" is half of the engine's device-page tier, `kv_capacity_tokens` on its `/health`, counted over every pin on that model, with shared prefixes counted once.
+- **Errors.** 409 `pin_limit_exceeded` (with `pinned_tokens`, `limit_tokens`, `capacity_tokens`), 404 `chain_not_found`, `pin_not_found` and `pack_not_found`, 503 `cache_capacity_unknown` when the engine reports no capacity, and the engine's own refusals, 501 `pins_unsupported` until the engine carries pins to its ranks.
+- **Scope and lifetime.** Pins and chains belong to the account (or key) that made them; another one sees and removes none of them. They are deleted with the working state: at a change of user, after the 24-hour rule, and by `DELETE /v1/cache`. The chat layer hands the engine the whole pin set for a model at every change.
+- **Build.** The rank page cache has the rule: `SparkKvPageCacheSetPins` marks the pinned chains, its LRU and resident victims skip them while any unpinned entry can go, and it refuses a set over half its device pages. Carrying the set from the engine to every rank, and to the coordinator's LRU (`cache/prefix_cache.c`), the snapshot store and the purge, is still to build (`TECHDEBT.md`, Serving API).
 
 ### 4.4 `DELETE /v1/cache`
 
@@ -695,7 +706,8 @@ A held fleet is then never lost to a forgotten Sunday.
 Errors use each API shape's own error body, with these `type` or `code` values:
 - `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
-- `invalid_request`, `invalid_key`, `upstream_error`.
+- `invalid_request`, `invalid_key`, `upstream_error`;
+- `pin_limit_exceeded`, `chain_not_found`, `pin_not_found`, `pins_unsupported`, `cache_capacity_unknown`, `commit_only_unsupported`.
 
 `context_too_long` is sent in each shape's native form, so the harnesses compact on their own: on Messages, 400 `invalid_request_error` with the message `prompt is too long: N tokens > M maximum`; on Responses and chat completions, 400 with code `context_length_exceeded`.
 

@@ -348,6 +348,16 @@ class ReplayStore:
         store.db.execute("INSERT OR REPLACE INTO aliases (one, aliases, bytes, used) VALUES (1, ?, ?, ?)", (text, len(text.encode()), time.time()))
         store.bytes += len(text.encode()) - (old[0] if old else 0)
 
+    def held(self, scope):
+        store = self.store(scope)
+        items, size, oldest, newest = 0, 0, None, None
+        for table in TABLES if store is not None else ():
+            for used, bytes_ in store.db.execute(f"SELECT used, bytes FROM {table}"):
+                items, size = items + 1, size + int(bytes_ or 0)
+                oldest = float(used) if oldest is None else min(oldest, float(used))
+                newest = float(used) if newest is None else max(newest, float(used))
+        return {"items": items, "bytes": size, "oldest_used": oldest, "newest_used": newest}
+
     def forget(self, scope):
         store = self.scopes.pop(scope, None)
         if store is None:

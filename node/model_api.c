@@ -62,6 +62,7 @@ typedef struct ApiOptions
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint32_t drafts_disabled;
+	uint32_t commit_only;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -80,6 +81,10 @@ typedef struct ApiRequest
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
 	uint32_t cached_prompt_token_count;
+	uint32_t draft_token_count;
+	uint32_t accepted_draft_token_count;
+	uint32_t commit_only;
+	uint64_t first_ready_ns;
 	uint32_t engine_completed;
 	volatile uint32_t output_token_count;
 	volatile int done;
@@ -245,6 +250,8 @@ static void api_term_signal(int signal_number)
 
 static const char *api_finish_reason(const ApiRequest *req)
 {
+	if ( req->commit_only != 0u )
+		return "commit";
 	return req->output_token_count >= req->max_tokens ? "length" : "stop";
 }
 
@@ -324,9 +331,13 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		r->cached_prompt_token_count = ev->cached_prompt_token_count;
 		r->first_dispatch_ns = ev->first_dispatch_ns;
 		r->stale_prefix_recompute_count = ev->stale_prefix_recompute_count;
+		r->draft_token_count = ev->draft_token_count;
+		r->accepted_draft_token_count = ev->accepted_draft_token_count;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
 			r->accepted_ns = ev->monotonic_ns;
-		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
+		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN && r->first_ready_ns == 0u )
+			r->first_ready_ns = ev->monotonic_ns;
+		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN && r->commit_only == 0u)
 		{
 			uint32_t stop_index;
 			int is_request_stop = 0;
@@ -1145,6 +1156,10 @@ static int api_parse_serving_options(const SparkJsonDocument *doc, int32_t root,
 	member = SparkJsonFindObjectMember(doc,root,"deadline_ms");
 	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&options->deadline_ms) != SPARK_STATUS_OK || options->deadline_ms == 0u) )
 		return 0;
+	member = SparkJsonFindObjectMember(doc,root,"commit_only");
+	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&flag) != SPARK_STATUS_OK )
+		return 0;
+	options->commit_only = member >= 0 && flag ? 1u : 0u;
 	return api_parse_sampling_options(doc,root,options);
 }
 
@@ -1173,10 +1188,16 @@ static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
 	return EngineStopTokenCount + req->stop_token_count;
 }
 
+static double api_prefill_ms(const ApiRequest *req)
+{
+	uint64_t start = req->first_dispatch_ns != 0u ? req->first_dispatch_ns : req->accepted_ns;
+	return req->first_ready_ns > start && start != 0u ? (double)(req->first_ready_ns - start) / 1e6 : 0.0;
+}
+
 static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
 {
-	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}}",
-		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count);
+	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u},\"draft_tokens\":%u,\"accepted_draft_tokens\":%u,\"prefill_ms\":%.3f}",
+		req->prompt_count,req->output_token_count,req->prompt_count + req->output_token_count,req->cached_prompt_token_count,req->draft_token_count,req->accepted_draft_token_count,api_prefill_ms(req));
 }
 
 static uint32_t api_client_gone(int fd)
@@ -1348,7 +1369,7 @@ static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t c
 
 static int api_stream_event(int fd, ApiStream *stream, int chat_format, const ApiRequest *req, uint32_t first_token, const uint32_t *tokens, uint32_t count, const ApiRequest *finished)
 {
-	char usage[160],reason[24];
+	char usage[320],reason[24];
 	size_t length;
 	uint32_t index;
 	int written;
@@ -1423,7 +1444,7 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 {
 	uint32_t stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,text_capacity = 1u,text_bytes = 0u;
-	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[160],err[160];
+	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[320],err[160];
 	size_t escaped_capacity,escaped_length = 0u,response_capacity,logprobs_capacity,logprobs_length = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
 	stop_count = api_stop_list(req,stops);
@@ -1658,7 +1679,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		free(prompt);
 		free(prompt_text);
 		send_response(fd, 400,
-			"{\"error\":{\"message\":\"stream must be a boolean; priority, deadline_ms and seed "
+			"{\"error\":{\"message\":\"stream and commit_only must be booleans; priority, deadline_ms and seed "
 			"must be unsigned integers, deadline_ms nonzero; temperature must be 0 or between "
 			"0.0001 and 2; top_p must be above 0 and at most 1; top_k must be an unsigned "
 			"integer of at most 1048576; logprobs must be an unsigned integer of at most 20\","
@@ -1666,6 +1687,17 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 		return;
 	}
 	SparkJsonDocumentDestroy(&doc);
+	if (options.commit_only != 0u && (mt >= 0 || options.logprobs != 0u))
+	{
+		free(prompt);
+		free(prompt_text);
+		send_response(fd, 400,
+			"{\"error\":{\"message\":\"commit_only commits the prompt and generates nothing, so it takes no max_tokens or logprobs\","
+			"\"type\":\"invalid_request_error\",\"code\":\"commit_only_conflict\"}}");
+		return;
+	}
+	if (options.commit_only != 0u)
+		max_tokens = 1u;
 	if (prompt_text != 0 && prompt != 0)
 	{
 		free(prompt_text);
@@ -1792,6 +1824,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
 	req->drafts_disabled = options.drafts_disabled;
+	req->commit_only = options.commit_only;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;
@@ -1895,6 +1928,8 @@ static void *api_connection(void *arg)
 		 strcmp(path, "/v1/chat/completions") == 0))
 		handle_completion(fd, body, body_len,
 			strcmp(path, "/v1/chat/completions") == 0);
+	else if (strcmp(method, "PUT") == 0 && strcmp(path, "/v1/cache/pins") == 0)
+		send_response(fd, 501, "{\"error\":{\"message\":\"this engine cannot carry pins to its ranks' page caches yet\",\"type\":\"server_error\",\"code\":\"pins_unsupported\"}}");
 	else
 		send_response(fd, 404, "{\"error\":\"not found\"}");
 	free(body_base);

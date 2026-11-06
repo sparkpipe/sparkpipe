@@ -664,6 +664,29 @@ Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
 
+The chat layer adds cache controls for the account that holds the fleet
+([`docs/FLEET_API.md`](docs/FLEET_API.md) §3.6 and §4):
+
+- **Warm-ups.** `commit_only: true` on chat completions, Messages and
+  Responses, or `POST /v1/cache/warm` with any of the three bodies, prefills
+  and commits the prompt without generating. It runs at background priority
+  and answers `prompt_tokens`, `cached_tokens`, `committed_tokens` and
+  `prefill_ms`. It is rendered exactly as the real request, so the next real
+  request with that prompt matches every warmed block.
+- **Pins.** `POST /v1/cache/pins` pins the prompt chain of a past request or
+  of a chain listed by `GET /v1/state`. A pinned chain is evicted only after
+  every unpinned one, pins are limited to half of the engine's device-page
+  cache, and they are deleted with the working state at a change of user.
+- **State.** `GET /v1/state` lists the account's cached chains (tokens,
+  pinned, last use), its pins, each model's cache capacity and use, and its
+  stored replay state as a scan of the store finds it.
+- **Telemetry.** Every response carries a `sparkpipe` object: the prompt,
+  cached and prefilled tokens, timings, the engine's per-request draft and
+  accepted counts, and `cold_prefill_ms_estimate`, the wait the cache saved.
+  The estimate uses the hub's observed cold prefill rate for the model at
+  that length, and before the first observation the measured points the
+  model's hub entry names (`cold_prefill`, from release receipts).
+
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,
 policy and user interfaces belong above the API.

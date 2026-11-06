@@ -22,6 +22,8 @@ extern "C" {
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE UINT32_C(0x00000008)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED_STATE UINT32_C(0x00000010)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PERSIST_STATE UINT32_C(0x00000020)
+#define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PINNED UINT32_C(0x00000040)
+#define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PIN_MARK UINT32_C(0x00000080)
 #define SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES 64u
 #define SPARK_KV_PAGE_CACHE_RECENT_STATES 4u
 #define SPARK_KV_PAGE_CACHE_SNAPSHOT_KIND_PAGES 2u
@@ -69,6 +71,14 @@ typedef struct SparkKvPageCacheSequence
 	SparkModelDriverCacheIdentity mutable_block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 }
 SparkKvPageCacheSequence;
+
+typedef struct SparkKvPageCachePin
+{
+	uint32_t token_count;
+	uint32_t reserved0;
+	SparkModelDriverCacheIdentity identity;
+}
+SparkKvPageCachePin;
 
 typedef struct SparkKvPageCacheSnapshotLink
 {
@@ -313,6 +323,7 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
+SparkStatus SparkKvPageCacheSetPins(SparkKvPageCache *cache,const SparkKvPageCachePin *pins,uint32_t pin_count,uint32_t *pinned_pages_out);
 SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries);
 SparkStatus SparkKvPageCacheDemoteState(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count);
 void SparkKvPageCacheSpillStates(SparkKvPageCache *cache);

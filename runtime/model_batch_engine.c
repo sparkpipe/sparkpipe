@@ -120,6 +120,8 @@ typedef struct SparkModelBatchRequestState
 	uint32_t draft_run_drafts;
 	uint32_t draft_run_source;
 	uint32_t draft_proven;
+	uint32_t verified_draft_token_count;
+	uint32_t verified_accepted_token_count;
 	SparkSpeculationHazard draft_hazards[SPARK_SPECULATION_FRAME_CLASSES];
 	uint32_t draft_tokens[SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE];
 	float model_rate_tokens;
@@ -648,6 +650,8 @@ static void SparkModelBatchEmit(
 	event.request_handle = request->handle;
 	event.stale_prefix_recompute_count = request->stale_prefix_recompute_count;
 	event.first_dispatch_ns = request->first_dispatch_ns;
+	event.draft_token_count = request->verified_draft_token_count;
+	event.accepted_draft_token_count = request->verified_accepted_token_count;
 	event.logprob_count = logprob_count;
 	if ( logprob_count != 0u )
 		memcpy(event.logprobs,logprobs,(size_t)logprob_count * sizeof(event.logprobs[0]));
@@ -1406,6 +1410,8 @@ static SparkStatus SparkModelBatchAcceptVerifiedLane(
 		engine->frame_kept[SparkSpeculationFrameRowBucket(draft_count + 1u)] += accepted + 1u;
 		engine->draft_token_count += draft_count;
 		engine->accepted_draft_token_count += accepted;
+		request->verified_draft_token_count += draft_count;
+		request->verified_accepted_token_count += accepted;
 		if ( SparkSpeculationFrameClassIsModel(request->draft_class) != 0u )
 		{
 			const uint32_t model_rows = request->model_draft_rows < draft_count ? request->model_draft_rows : draft_count;
