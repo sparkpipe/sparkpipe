@@ -37,14 +37,20 @@ exec /bin/sh -c "$*"
 PURGE_PROBE = r"""
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include "sparkpipe/spark_kv_snapshot.h"
 int main(int argc, char **argv) {
     SparkKvSnapshotPurgeResult result;
-    SparkWorkingStateDirective directive = {0u, 0u};
+    SparkWorkingStateDirective directive = {0u, 0u, 0u};
+    SparkKvLedger ledger;
+    char path[1200];
     SparkStatus status;
     if (argc != 3 && argc != 4) return 2;
     if (argc == 4) directive.wiped_seconds = strtoull(argv[3], 0, 10);
-    status = SparkKvSnapshotPurgeTree(argv[1], &directive, strtoull(argv[2], 0, 10), &result);
+    snprintf(path, sizeof(path), "%s/.purge-probe-ledger", argv[1]);
+    if (SparkKvLedgerOpen(&ledger, path, 1ull << 40) != SPARK_STATUS_OK) return 3;
+    status = SparkKvSnapshotPurgeTree(&ledger, argv[1], &directive, strtoull(argv[2], 0, 10), &result);
+    unlink(path);
     printf("%d %u %llu\n", (int)status, result.stores, (unsigned long long)result.deleted_files);
     return status == SPARK_STATUS_OK ? 0 : 1;
 }
@@ -73,7 +79,7 @@ class WorkingStateMirror(unittest.TestCase):
         probe.write_text(PURGE_PROBE)
         cls.purge = Path(cls.build.name) / "purge"
         subprocess.run(["cc", "-std=c11", "-D_GNU_SOURCE", "-D_DARWIN_C_SOURCE", "-Wall", "-Wextra", "-Werror",
-                        "-Iinclude", "cache/kv_snapshot_purge.c", "cache/working_state.c", str(probe), "-o", str(cls.purge)],
+                        "-Iinclude", "cache/kv_snapshot_purge.c", "cache/kv_ledger.c", "cache/working_state.c", "src/spark_status.c", str(probe), "-o", str(cls.purge)],
                        cwd=ROOT, check=True)
 
     @classmethod
