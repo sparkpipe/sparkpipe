@@ -181,8 +181,11 @@ async def pack_rules(harness, work, shas, scope_dir, bare, check):
     status, _, pack = await call(harness, "GET", "/v1/packs/core")
     v1 = pack["current"]
     warm = engine.requests[-1]
-    check(warm["max_tokens"] == 1 and warm["priority"] == chat_frontend.BACKGROUND_PRIORITY,
-          f"the warm-up asks the engine for one token at background priority: {warm['max_tokens']} {warm['priority']}")
+    await ask(harness, [{"role": "user", "content": "tagged"}], model="alpha", **{"X-SparkPipe-Priority": "background"})
+    tagged = engine.requests[-1]["priority"]
+    check(warm["max_tokens"] == 1 and warm["priority"] == tagged < chat_frontend.INTERACTIVE_PRIORITY,
+          f"the warm-up asks the engine for one token in the background class a request gets from X-SparkPipe-Priority: background: "
+          f"{warm['max_tokens']} {warm['priority']} {tagged}")
     check([entry["path"] for entry in pack["files"]] == ["README.md", "src/core.py", "src/util.py", "docs/guide.md", "src/hot.py"],
           f"files are ordered least-changed in the 90 days before the commit, ties by path, so old README edits count for nothing: {[entry['path'] for entry in pack['files']]}")
     check(sorted((entry["path"], entry["reason"]) for entry in pack["left_out"]) == [("assets/logo.png", "binary"), ("big.txt", "over_budget"), ("gen/out.py", "generated")],

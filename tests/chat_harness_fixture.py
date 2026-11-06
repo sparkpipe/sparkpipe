@@ -82,6 +82,9 @@ class Engine:
         self.committed = []
         self.delay = 0.0
         self.hold = None
+        self.early_usage = True
+        self.cache_all = False
+        self.usage = []
 
     def tokens(self, text):
         ids = []
@@ -104,7 +107,8 @@ class Engine:
         self.requests.append(body)
         prompt = body["prompt_token_ids"]
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
-        cached = min(cached, len(prompt) - 1)
+        cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
+        self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
         ids = ids[:body["max_tokens"]]
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
@@ -116,8 +120,9 @@ class Engine:
         for index, token in enumerate(ids):
             last = index + 1 == len(ids)
             event = {"tokens": [token], "choices": [{"finish_reason": finish if last else None}]}
-            if last:
-                event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": len(ids), "total_tokens": len(prompt) + len(ids),
+            if last or (index == 0 and self.early_usage):
+                sent = len(ids) if last else 1
+                event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": sent, "total_tokens": len(prompt) + sent,
                                   "prompt_tokens_details": {"cached_tokens": cached}}
             await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt) + list(ids[:-1]))
@@ -224,6 +229,9 @@ class Harness:
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:
             text = await response.text()
             return response.status, dict(response.headers), text
+
+    def socket(self, path="/v1/responses", **headers):
+        return self.session.ws_connect(self.base + path, headers=self.headers(**headers), max_msg_size=0)
 
     def prompt_text(self, index=-1):
         return self.tokenizer.decode(self.engine.requests[index]["prompt_token_ids"], skip_special_tokens=False)

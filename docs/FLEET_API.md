@@ -66,8 +66,23 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - A request for a model that fits next to the resident ones loads it without unloading anything; the request waits 16–79 s.
   - A request for a model that would need another one unloaded answers 409 `model_not_loaded`, naming the resident models, unless the key has `allow_swap`. A fleet never loses a model, or its cache, by accident.
 - **Size.** Request bodies up to 32 MiB. The gateway's cap rises from 8 MiB (`tools/sparkpipe_pay.py`), because a 1M-token conversation is about 4 MB of text before images.
-- **Busy.** When all sequences are in use, the request waits up to 60 s for one, then answers 429 with an integer `retry-after` and `x-should-retry: true`. During long prefills, streams send keep-alive events every 10 s: `ping` on Messages and an SSE comment line on the others. Clients with idle timeouts therefore stay connected.
+- **Busy.** When all sequences are in use, the request waits up to 60 s for one, then answers 429 with an integer `retry-after` and `x-should-retry: true`, in the error each client retries: `rate_limit_error` on Messages, `rate_limit_exceeded` (type `requests`, with "try again in 5s" in the message, which Codex parses) on Responses, and `busy` on chat completions. Over the WebSocket the same refusal is an `error` event with `status` 429 and a `retry-after` header entry.
+- **Keep-alives.** During long prefills the chat layer sends something every 10 s:
+  - Messages streams send `ping` events. `message_start` waits for the first token, so it carries the engine's prompt and cache counts.
+  - Responses streams, over SSE or WebSocket, repeat `response.in_progress`. Codex's SSE reader skips comment lines, so a comment would not reset its `stream_idle_timeout_ms`.
+  - Chat completions streams send an SSE comment line.
+  - Non-streamed Messages and Responses requests get their 200 headers at the first keep-alive, then a newline every 10 s before the JSON body; JSON parsers skip leading whitespace. An error after the first newline arrives as the shape's error body under that 200.
 - **Path.** gateway (VPS) → SSH tunnel → the hub's chat layer (`tools/serving/chat_frontend.py`) → the model's `sparkpipe_model_api` → the 16 ranks. All three new API shapes are translated in the chat layer, because the tokenizer, chat templates and tool-call parsers live there (`chat_frontend.py:525`). The gateway passes the new paths through unchanged, with `X-SparkPipe-Account` and `X-SparkPipe-Fleet`.
+- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load.
+- **Class.** A request is `interactive` (the default) or `background`. It names its class with the header `x-sparkpipe-priority: interactive|background`, or with the same key in its body's `metadata` (`"metadata": {"x-sparkpipe-priority": "background"}`, on all three shapes). The header wins when both are sent, and any other value is a 400 `invalid_request`. Claude Code's compaction and auxiliary calls (§3.8), a key made with `--priority background`, `<model>-bulk`, chat-memory jobs and Functions (§7.1) are background.
+  - While background work runs, two sequences stay free for interactive requests. A freed sequence goes to a waiting interactive request first.
+  - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
+  - Background work runs whenever no interactive work is queued or running, so it completes when interactive load stops. The class changes timing only, never the tokens.
+- **Cancel.** `DELETE /v1/requests/{id}` cancels the account's own queued or running request. The id is the `X-SparkPipe-Request` header of the reply, sent when a stream opens.
+  - It answers `{"id", "object": "request", "cancelled": true, "released"}` once the request's sequence is free (`released`), within 5 s.
+  - The cancelled request ends with 409 `request_cancelled` in its own shape: an error response, or an error event on a stream.
+  - Another account's id, or one that is not queued or running, answers 404 `request_not_found`.
+  - Closing the connection cancels the same way. Either way the engine frees the sequence at the end of the submission in flight: a decode step, a chain or one prefill wave. KV already committed follows the retention rules.
 
 ### 3.2 Token-exact replay
 
@@ -94,16 +109,16 @@ Anthropic Messages, streaming and non-streaming. What Claude Code sends and how 
 - **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. `metadata` and unknown fields are accepted and ignored, and `anthropic-beta` headers are ignored.
 - **Response.** `id`, `content` blocks, and `stop_reason`: `end_turn`, `tool_use`, `max_tokens` or `stop_sequence`.
   - **Usage:**
-    - `cache_read_input_tokens` is the prompt tokens matched in the cache;
-    - `cache_creation_input_tokens` is the prompt tokens newly committed;
+    - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key itself sent, in 64-token blocks);
+    - `cache_creation_input_tokens` is 0 until the engine reports the prompt tokens it commits;
     - `input_tokens` is the rest;
     - `output_tokens` is what was generated.
 
-    The sum of the three input fields is always the prompt length.
-- **Stream.** `message_start`, `content_block_start/delta/stop` (`text_delta`, `input_json_delta`, `thinking_delta`, `signature_delta`), `message_delta` with cumulative usage, `message_stop`, `ping`, and `error`. The stream never ends before `message_delta`.
+    The prompt length and the cache count are the engine's own, never a count made in the chat layer. The sum of the three input fields is always the prompt length, in `message_start` and in `message_delta`: Claude Code keeps a `message_start` field wherever the `message_delta` field is 0, so both carry the same numbers. An engine that reports its counts only at the end gets zeros in `message_start`.
+- **Stream.** `ping` while the prompt is prefilled, then `message_start`, `content_block_start/delta/stop` (`text_delta`, `input_json_delta`, `thinking_delta`, `signature_delta`), `message_delta` with cumulative usage, `message_stop`, and `error`. The stream never ends before `message_delta`.
 - **Errors.** Errors use Anthropic's body, `{"type":"error","error":{"type","message"}}`. 429 and 529 carry `retry-after`.
 
-`POST /v1/messages/count_tokens` returns the exact count, using the model's tokenizer and template. `HEAD /api/hello` answers 200. `GET /v1/models` lists the resident models, the other offered models, the account's pack aliases and its custom models.
+`POST /v1/messages/count_tokens` returns the exact count: the length of the token ids the same request would send the engine, replay included. `HEAD /api/hello` answers 200. `GET /v1/models` lists the resident models, the other offered models, the account's pack aliases and its custom models.
 
 **Claude Code setup** (written by `sparkpipe setup claude-code`):
 
@@ -121,6 +136,7 @@ CLAUDE_CODE_ATTRIBUTION_HEADER=0
 - **The Haiku alias points at a small resident model** when one fits next to the main model (GLM 5.3 Flash beside GLM 5.3, for example), and at the main model otherwise. Claude Code's background calls therefore never load a model that does not fit. The alias table catches any other `claude-*` name as well.
 - **The context limit is the model's served window.** Claude Code otherwise assumes 200K.
 - **The attribution header is turned off,** so the first system block stays the same from session to session.
+- **Long prefills need `CLAUDE_STREAM_IDLE_TIMEOUT_MS`.** Claude Code 2.1.308 counts a `ping` towards its stream watchdog for only 30 heartbeats in a row (300 s), then aborts 300 s later, so a cold prefill longer than about 10 minutes fails with the default. The setup should set `CLAUDE_STREAM_IDLE_TIMEOUT_MS=1800000`, which moves the abort to about 35 minutes.
 - **Every Claude Code release is tested** against this endpoint before we tell customers to upgrade, because Anthropic does not test Claude Code against other models ([LLM gateway docs](https://code.claude.com/docs/en/llm-gateway.md)).
 - **Claude Code's terms keep it on the customer's own machine.** Functions never run Claude Code on our servers (§7).
 
@@ -132,7 +148,13 @@ OpenAI Responses, which is the only wire format Codex supports for custom provid
   - `input` as a string or items: `message`, `function_call`, `function_call_output` and `reasoning`;
   - `instructions` and function `tools`;
   - `tool_choice`, `parallel_tool_calls`, `max_output_tokens`, `temperature`, `top_p`, `stream`, `store` and `previous_response_id`.
-- **Previous responses.** `previous_response_id` works for responses stored as working state, which is the default here. `store: false` stores no response for later reference, but the replay store of §3.2 still keeps the generated tokens. `prompt_cache_key` is accepted and ignored.
+- **Previous responses.** `previous_response_id` works for responses stored as working state, which is the default here. `store: false` stores no response for later reference, but the replay store of §3.2 still keeps the generated tokens. `prompt_cache_key` is the session: it reaches the telemetry record as `session` and drives affinity (§3.8).
+- **Stored responses.** `GET /v1/responses/{id}` returns a stored response as it was answered, and `DELETE /v1/responses/{id}` deletes it. Both answer 404 for another account's id. Stored responses are working state (§4): `DELETE /v1/cache`, a wipe at a change of user and the 24-hour retention remove them.
+- **WebSocket.** `GET /v1/responses` with a WebSocket upgrade is Codex's transport for `supports_websockets`. Each `response.create` message carries the request body and gets the same events as the SSE stream, one JSON text message each.
+  - A `previous_response_id` that names the connection's last response works even with `store: false`.
+  - `generate: false` keeps the input on the connection without generating.
+  - Errors before a response starts are `error` events with `status`, the error body and the `retry-after` header.
+  - The telemetry record's `transport` (`http` or `websocket`) and `turn_ms` compare the two transports.
 - **Stream events:**
   - `response.created` and `response.in_progress`;
   - `response.output_item.added` and `response.content_part.added`;
@@ -140,7 +162,8 @@ OpenAI Responses, which is the only wire format Codex supports for custom provid
   - `response.function_call_arguments.delta` and `response.function_call_arguments.done`;
   - `response.reasoning_summary_text.delta`, where the model reasons;
   - `response.output_item.done`, `response.completed` and `error`.
-- **Usage:** `input_tokens`, `input_tokens_details.cached_tokens`, `output_tokens` and `output_tokens_details.reasoning_tokens`.
+- **Usage:** `input_tokens` (the engine's prompt length), `input_tokens_details.cached_tokens` (the engine's cache count), `output_tokens` and `output_tokens_details.reasoning_tokens`.
+- **Catalogue.** `GET /v1/codex/models` gives each model's served window from its lane record as `context_window`, `effective_context_window_percent` 100 and `auto_compact_token_limit` (the window less the output limit), so Codex needs no manual window setting.
 
 **Codex setup** (written by `sparkpipe setup codex` into `~/.codex/config.toml`):
 
@@ -602,6 +625,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - Options: scopes (`inference`, `state`, `storage`, `functions`, `models`, `account:read`), `fleet`, `allow_swap`, expiry, and an IP allowlist.
   - `POST /v1/keys/{id}/rotate` issues a new key and keeps the old one valid for an hour.
 - **Fair share.** When several members' requests are waiting, the chat layer shares sequences between members. No member takes more than three quarters of them while another is waiting.
+  - The unit is the member, by the key each request comes with, never the session: the session and agent headers of §3.8 drive affinity and routing, not fair share.
 - **Usage per member** in `/v1/requests` and `sparkpipe stats`.
 - **Audit log.** `GET /v1/audit` lists events, without prompts or replies, kept like the operational records:
   - sign-ins, member and key changes;
@@ -689,7 +713,7 @@ A held fleet is then never lost to a forgotten Sunday.
 | Limit | Value | Where it comes from |
 | --- | --- | --- |
 | Sequences at once | 8 (K3, GLM 5.3), 16 (GLM 5.3 Flash) | `PERFORMANCE_STATUS.md:40` |
-| Sequences kept for interactive use while Functions run | 2 | §7.1 |
+| Sequences kept for interactive use while background work runs | 2 | §3.1, §7.1 |
 | Body size | 32 MiB | §3.1 |
 | Pins | Half the fleet's cache | §4.3 |
 | Context | The model's served window (Fleet List) | |
@@ -698,9 +722,12 @@ A held fleet is then never lost to a forgotten Sunday.
 Errors use each API shape's own error body, with these `type` or `code` values:
 - `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
+- `request_cancelled`, `request_not_found`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
 
 `context_too_long` is sent in each shape's native form, so the harnesses compact on their own: on Messages, 400 `invalid_request_error` with the message `prompt is too long: N tokens > M maximum`; on Responses and chat completions, 400 with code `context_length_exceeded`.
+
+`busy` is sent in the native form too, so the harnesses retry on their own: on Messages, 429 `rate_limit_error`; on Responses, 429 with type `requests` and code `rate_limit_exceeded`; on chat completions, 429 with code `busy`. Each carries `retry-after` and `x-should-retry: true` (§3.1).
 
 ## 18. Build order and acceptance tests
 

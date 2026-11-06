@@ -75,16 +75,28 @@ public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
 `deployment/lanes.json`) in the chat layer, a keyed request waits up to 60 s
 for one and then gets 429 `busy` with an integer `Retry-After` and
 `x-should-retry: true`. Background requests (`<model>-bulk`,
-`X-SparkPipe-Priority: background`, Claude Code's compaction and auxiliary
-calls) leave two sequences for interactive ones, and a freed sequence goes to
-a waiting interactive request first. Among waiters of the same priority, a
+`X-SparkPipe-Priority: background` or `metadata["x-sparkpipe-priority"]`,
+Claude Code's compaction and auxiliary calls, and chat-memory jobs, which
+take a sequence at the gate like any request) leave two sequences for
+interactive ones, and a freed sequence goes to a waiting interactive request
+first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
 own requests) holding the fewest sequences, then to the member (the gateway's
 `X-SparkPipe-Key`) holding the fewest, then to the first to arrive; an account
 or member already holding three quarters of the sequences takes no more
 while another one waits (C8). There is no per-key cap besides this. A caller
-cancels a request by closing its connection, whether it is still queued or
-already streaming:
+cancels a request by closing its connection, or with `DELETE
+/v1/requests/{id}` for a request of its own scope (the id is the reply's
+`X-SparkPipe-Request`), whether it is still queued or already streaming:
+
+- `DELETE /v1/requests/{id}` sets the request's cancel, which ends its wait
+  at the gate or its engine stream at once. The request answers 409
+  `request_cancelled` in its own shape (an error response, or an error event
+  then `[DONE]` on a stream). The DELETE answers `{"id", "object":
+  "request", "cancelled": true, "released"}` once the request has given its
+  sequence back, waiting at most 5 s (`CANCEL_WAIT_SECONDS`); an id of
+  another scope or one not running answers 404 `request_not_found`. The
+  chat layer keeps the running ids in `Frontend.live` (`LiveRequest`).
 
 - LiteLLM runs with `general_settings.cancel_on_disconnect: true`, so a
   client that goes away cancels LiteLLM's upstream call; mid-stream LiteLLM
@@ -95,17 +107,26 @@ already streaming:
   connection cancels its handler and closes the engine request; it logs
   `"finish_reason": "client_gone"`. Its engine session has no connection
   cap (aiohttp's default capped it at 100 requests in flight).
-- `model_api` polls each waiting connection every 250 ms and cancels the
-  engine request of a client that has gone (`api_await`).
+- `model_api` polls each waiting connection every 10 ms
+  (`API_WAIT_SLICE_MS`), and at every token, and cancels the engine request
+  of a client that has gone (`api_await`). The engine stops it at the end of
+  the submission in flight: a decode step, a chain or one prefill wave.
 - `model_api` and the chat layer raise their open-files soft limit to the
   hard limit at start and log it (`open files limit`). LiteLLM cannot, so
   its units start with `-p LimitNOFILE=524288`. When `model_api` still runs
   out of descriptors, `accept` waits 50 ms between retries and logs once.
 
-The engine orders queued work by priority and then by deadline. The chat
-layer sends priority 2 for interactive requests, 1 for a request to
+The engine orders queued work by class, then priority, then deadline. The
+chat layer sends priority 2 (`SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE`) for
+interactive requests, 1 for background requests and a request to
 `<model>-bulk` (every model has that second name at both LiteLLM doors
-and in `/v1/models`) and 0 for the memory curator. Bulk work fills idle
+and in `/v1/models`) and 0 for the memory curator; `model_api` gives a
+request that names no priority 2. Below 2 is background: the engine keeps
+`SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES` (2) resident
+sequences free for interactive requests, dispatches nothing that carries
+only background work while interactive work is queued or in flight
+(background decode lanes ride in interactive decode steps), and never
+streams a background prefill. Bulk work fills idle
 capacity and is preempted, by checkpoint and requeue, when interactive
 work needs its pages (PR #1500). The warm queue in front of a starting engine is
 separate: it still answers 503 when full or after `wait_seconds`.
@@ -210,7 +231,7 @@ Optional request fields:
 | `max_tokens` | output budget, default 32, cap 8192 |
 | `stop_token_ids` | extra stop tokens, added to the model's EOS set |
 | `stream` | `true` answers `text/event-stream`: one `data:` event per batch of new tokens (`text_completion` or `chat.completion.chunk` with a text or `delta.content` piece that never splits a UTF-8 sequence), a final event with `finish_reason` and `usage`, then `data: [DONE]` |
-| `priority` | unsigned integer; higher runs first, with aging in the batch engine so lower priorities cannot starve |
+| `priority` | unsigned integer; 2 (the default) and above is interactive, below is background. Interactive work runs first; within a class higher runs first, with aging, and background runs whenever no interactive work is queued or in flight |
 | `deadline_ms` | relative deadline; queued requests are submitted earliest-deadline first within a priority, and a request still running at its deadline is cancelled and answered `504` with code `deadline_exceeded` (or an error event on a stream) |
 | `temperature` | `0` (the default) decodes greedily; `0.0001` to `2` samples from softmax(logits / T) with Gumbel-max noise keyed by (seed, position, token) |
 | `seed` | unsigned 64-bit; the same seed, prompt and deployment reproduce a sampled completion token for token. Without one, the API draws a random seed and logs it |
@@ -708,7 +729,8 @@ it gets 404 for a name that exists elsewhere.
   digest; its token ids are stored as `versions/<digest>.ids` beside the
   record.
 - **Refresh.** A push or `POST /v1/packs/{name}/refresh` builds the new
-  version, then warms it at background priority, through the sequence gate,
+  version, then warms it in the background class (the priority
+  `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
   as a one-token completion whose prompt is the template's prefix and the
   pack (`warm_prefix`, which `commit_only` replaces once E5 lands). It warms
   once for each of the last four tool sets and template settings requests
