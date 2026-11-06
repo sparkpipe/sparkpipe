@@ -551,13 +551,6 @@ struct QwenHybridModel
 				heads, 1u, sequences, commit, step->sequence_row_indices, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return Launched();
-		}
-#endif
-		LM_LAUNCH((LmDeltaRuleColumnKernel<QH_THREADS,QH_KEY_DIM,QH_VALUE_DIM,float>), dim3(sequences,heads,QH_VALUE_DIM / LM_WARP_LANES),
-			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index, step->sequence_row_begin,
-			kept, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
-			heads, 1u, sequences, commit, step->sequence_row_indices);
-		return Launched();
 	}
 
 	static SparkStatus Gdn(State *state, const Frame &frame, const QwenHybridLayer &entry)
