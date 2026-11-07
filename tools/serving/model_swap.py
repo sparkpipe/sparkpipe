@@ -167,7 +167,8 @@ class Swapper:
         status, payload = await self.health(model)
         return status == 200 and payload.get("connected_ranks") == len(self.nodes)
 
-    async def drain(self, model):
+    async def drain(self, model, quiet=None):
+        quiet = self.drain_quiet_seconds if quiet is None else quiet
         started = time.time()
         deadline = started + self.drain_seconds
         quiet_since = None
@@ -181,27 +182,27 @@ class Swapper:
                 if status == 0:
                     return
                 live = payload.get("live_requests") or 0
-                if not live and (payload.get("idle_ms") or 0) >= self.drain_quiet_seconds * 1000:
+                if not live and (payload.get("idle_ms") or 0) >= quiet * 1000:
                     return
                 if live:
                     quiet_since = None
                 else:
                     quiet_since = quiet_since or time.time()
-                    if time.time() - quiet_since >= self.drain_quiet_seconds:
+                    if time.time() - quiet_since >= quiet:
                         if time.time() - started >= 1:
                             print(json.dumps({"event": "swap_drained", "model": model["id"], "waited_s": round(time.time() - started, 1)}), file=sys.stderr, flush=True)
                         return
                 self.draining = {"model": model["id"], "live_requests": live, "waited_s": round(time.time() - started, 1),
                                  "quiet_s": round(time.time() - quiet_since, 1) if quiet_since else 0.0,
-                                 "quiet_needed_s": self.drain_quiet_seconds, "limit_s": self.drain_seconds}
+                                 "quiet_needed_s": quiet, "limit_s": self.drain_seconds}
                 await asyncio.sleep(1)
             print(json.dumps({"event": "swap_drain_expired", "model": model["id"], "drain_seconds": self.drain_seconds}), file=sys.stderr, flush=True)
         finally:
             self.draining = None
 
-    async def stop(self, model, drain=True):
+    async def stop(self, model, drain=True, quiet=None):
         if drain:
-            await self.drain(model)
+            await self.drain(model, quiet)
         code, text = await self.local(model["api_stop"], 60)
         if code != 0:
             raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
@@ -295,7 +296,7 @@ class Swapper:
         try:
             self.active = None
             self.enter("stopping engines")
-            await self.stop(model)
+            await self.stop(model, quiet=0.0)
             self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
             await self.start(fill_lane)
             self.enter("streaming the prompt")

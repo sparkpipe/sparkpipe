@@ -34,9 +34,10 @@ async def scenario(fail_fill=False):
         up = pathlib.Path(state, "up")
         up.touch()
         received = []
+        live = [1, 1]
 
         async def health(request):
-            return web.json_response({"connected_ranks": 2 if up.exists() else 0, "live_requests": 0, "idle_ms": 60000})
+            return web.json_response({"connected_ranks": 2 if up.exists() else 0, "live_requests": live.pop(0) if live else 0, "idle_ms": 0})
 
         async def completions(request):
             body = await request.json()
@@ -59,7 +60,7 @@ async def scenario(fail_fill=False):
                  "fill": {"checkpoint_tokens": 16, "node_start": "START fill", "api_start": f"echo fill >> {order}; touch {up}"}}
         swapper = model_swap.Swapper({
             "nodes": ["n0", "n1"], "ssh": [sys.executable, os.path.join(state, "fake_ssh.py")], "drop_kv": "DROP {label}", "memory_probe": "PROBE", "memory_margin_bytes": GIB,
-            "ready_seconds": 5, "api_seconds": 5, "drain_seconds": 5, "node_seconds": 10, "models": [entry],
+            "ready_seconds": 5, "api_seconds": 5, "drain_seconds": 20, "drain_quiet_seconds": 30, "node_seconds": 10, "models": [entry],
         })
         control = web.AppRunner(model_swap.build(swapper, "secret"))
         await control.setup()
@@ -75,6 +76,7 @@ async def scenario(fail_fill=False):
                 status, record = response.status, await response.json()
         log = [line.split(" ", 1)[1] for line in pathlib.Path(state, "ssh.log").read_text().splitlines() if line.startswith("n0 ")]
         api = order.read_text().split() if order.exists() else []
+        assert not live and record["start_s"] < 10, (live, record)
         result = (short, unknown, status, record, received, log, api, swapper.state, swapper.active)
         await control.cleanup()
         await runner.cleanup()
@@ -93,7 +95,7 @@ def main():
     short, unknown, status, record, received, log, api, state, active = asyncio.run(scenario(fail_fill=True))
     assert status == 502 and not record["ok"] and "streamed fill answered 500" in record["error"], record
     assert state == "failed", state
-    print("PASS test_model_swap_fill: the prompt fills to its last checkpoint on the fill lane, then the decode lane reloads; a failed fill fails loudly")
+    print("PASS test_model_swap_fill: the prompt fills to its last checkpoint on the fill lane, then the decode lane reloads; the stop waits for live replies but not the quiet window of a model switch; a failed fill fails loudly")
     return 0
 
 
