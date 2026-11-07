@@ -2552,6 +2552,8 @@ class Frontend:
                         event = json.loads(data)
                     except json.JSONDecodeError:
                         raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                    if isinstance(event.get("error"), dict) and event["error"].get("code") == "long_fill":
+                        raise RequestError(409, "long_fill", event["error"].get("message", ""))
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
