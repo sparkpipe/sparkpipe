@@ -586,11 +586,20 @@ whenever the launch fills the GPU (`flash_api.cpp`'s
 `num_splits_heuristic`: batch x heads x ceil(rows / 64) at least 0.8 x 2 x
 the SM count), which every gate prefill chunk does; smaller launches split
 the keys into 128-key blocks by the GPU's SM count. Metal walked
-its 64-key tiles forward and split rows longer than 1,024 keys into
-partitions; it now walks back and runs prefill as one partition, and
-`test_metal_kernels` models the backward walk (the forward-walking kernel
-fails three of its prefill cases). The references' flash form
-(`tools/reference_flash.py`) walks the same way. Decode keeps its 128-key
+its 64-key tiles forward and split every row longer than 1,024 keys into
+partitions. It now walks back, and takes FA2's rule for when to split:
+`OpsAttentionFillsDevice` counts the launch's query blocks (each
+sequence's rows in `SPARK_ATTENTION_BLOCK_ROWS` blocks) times its heads,
+and at 0.8 x 2 x the GPU's core count or more (`compute_units`, read from
+the device at `SparkDeviceOpsOpen`; the M5 Ultra has 64) prefill runs as
+one partition; below it the keys split into 1,024-key partitions, each
+walked back, which `spark_attention_combine` merges. The choice depends on
+the launch's shape and the device alone. Solar's gate prefill chunks
+(1,024 rows, 8 heads per rank) are 256 blocks and run whole; only a
+chunk of fewer than 385 rows splits, as design's 59-row tail does, and
+FA2 would split it too. `test_metal_kernels` models both sides (the
+forward-walking kernel fails three of its prefill cases). The references'
+flash form (`tools/reference_flash.py`) walks the same way, whole. Decode keeps its 128-key
 partitions: FA2's KV-cache path, like its small prefill launches, uses
 128-key blocks split by the GPU's SM count, so it has no single form to
 follow.

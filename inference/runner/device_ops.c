@@ -224,6 +224,8 @@ SparkStatus SparkDeviceOpsOpen(SparkDeviceOps *ops, const char *library_path)
 		status = SparkDeviceAllocate(&ops->error,SPARK_DEVICE_SPACE_SHARED_COHERENT,16u,"device ops error word");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceAllocate(&ops->partial,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,SPARK_OPS_PARTIAL_BYTES,"device ops split partials");
+	if ( status == SPARK_STATUS_OK )
+		ops->compute_units = SparkDeviceGetProperties() != 0 ? SparkDeviceGetProperties()->compute_units : 0u;
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"device_ops: cannot open %s: %s %s\n",library_path,SparkDeviceLastError()->operation,SparkDeviceLastError()->text);
@@ -937,6 +939,20 @@ static uint32_t OpsAttentionShapeKnown(const SparkAttentionParams *params)
 	return(value == key && (key == SPARK_OPS_ATTENTION_HEAD_DIM || key == SPARK_OPS_ATTENTION_WIDE_HEAD_DIM || key == SPARK_OPS_ATTENTION_NARROW_HEAD_DIM) ? 1u : 0u);
 }
 
+static uint32_t OpsAttentionFillsDevice(const SparkDeviceOps *ops, const SparkAttentionParams *params, const uint32_t *host_sequence_of_row)
+{
+	const uint32_t block_rows = SPARK_ATTENTION_BLOCK_ROWS(params->head_dimension);
+	uint64_t blocks = 0u;
+	uint32_t begin, end;
+	for ( begin = 0u; begin < params->rows; begin = end )
+	{
+		for ( end = begin + 1u; end < params->rows && host_sequence_of_row[end] == host_sequence_of_row[begin]; end++ )
+			continue;
+		blocks += (end - begin + block_rows - 1u) / block_rows;
+	}
+	return(blocks * params->heads * 5u >= (uint64_t)ops->compute_units * 8u ? 1u : 0u);
+}
+
 static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkDeviceBinding *bindings,
 	const SparkAttentionParams *params, const uint32_t *host_sequence_of_row)
 {
@@ -959,7 +975,7 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions)
 {
 	const uint64_t decode = (uint64_t)rows * ((positions + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS);
-	const uint64_t prefill = (uint64_t)rows;
+	const uint64_t prefill = (uint64_t)rows * ((positions + SPARK_ATTENTION_PREFILL_PARTITION_KEYS - 1u) / SPARK_ATTENTION_PREFILL_PARTITION_KEYS);
 	return((decode > prefill ? decode : prefill) * heads * (head_dimension + 2u) * sizeof(float));
 }
 
@@ -992,7 +1008,8 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 		return(OpsRefuse("attention","every row's position must lie inside its sequence's pages"));
 	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE || params->row_exact != 0u ? 1u : 0u;
 	launch.partition_keys = decode != 0u ? SPARK_ATTENTION_DECODE_PARTITION_KEYS :
-		(longest + SPARK_ATTENTION_BLOCK_KEYS - 1u) / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS;
+		OpsAttentionFillsDevice(ops,params,host_sequence_of_row) != 0u ? (longest + SPARK_ATTENTION_BLOCK_KEYS - 1u) / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS :
+		SPARK_ATTENTION_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
 	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * (OpsAttentionValueDimension(params) + 2u) * sizeof(float));

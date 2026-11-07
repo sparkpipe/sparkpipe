@@ -4232,6 +4232,7 @@ typedef struct AttentionFixture
 } AttentionFixture;
 
 enum { ATT_SLOTS = 64, ATT_MAX_DIM = 512 };
+enum { ATT_DECODE = 0, ATT_PREFILL_WHOLE = 1, ATT_PREFILL_SPLIT = 2 };
 
 typedef struct AttentionCase
 {
@@ -4325,11 +4326,12 @@ static double AttentionSlack(double value, double spread, double flips, double m
 static double AttentionValueWeight(const double *score, const double *slack, uint32_t base, uint32_t first, uint32_t key, uint32_t end, uint32_t prefill,
 	double best, double *flip)
 {
-	const uint32_t partition = SPARK_ATTENTION_DECODE_PARTITION_KEYS, tile = key / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS;
+	const uint32_t partition = prefill == ATT_PREFILL_SPLIT ? SPARK_ATTENTION_PREFILL_PARTITION_KEYS : SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	const uint32_t tile = key / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS;
 	const uint32_t start = prefill != 0u ? tile : key / partition * partition;
 	const uint32_t begin = start > first ? start : first;
 	const uint32_t partition_end = key / partition * partition + partition < end ? key / partition * partition + partition : end;
-	const uint32_t stop = prefill != 0u ? end : partition_end;
+	const uint32_t stop = prefill == ATT_PREFILL_WHOLE ? end : partition_end;
 	double peak = -INFINITY, peak_slack = 0.0, weight;
 	uint32_t k;
 	for ( k = begin; k < stop; k++ )
@@ -4436,8 +4438,10 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	uint32_t *sequence, *position, row, head, d, pass;
 	double ref[ATT_MAX_DIM], tolerance[ATT_MAX_DIM];
 	Check clean, corrupted;
-	char shape[128], window[24], values_text[32];
-	const uint32_t sequences = prefill != 0u ? 2u : 1u;
+	char shape[192], window[24], values_text[32];
+	const uint32_t sequences = prefill != 0u ? 2u : 1u, block_rows = SPARK_ATTENTION_BLOCK_ROWS(att.dim);
+	const uint64_t blocks = (uint64_t)sequences * ((rows / sequences + block_rows - 1u) / block_rows) * att.heads;
+	const uint32_t mode = prefill == 0u ? ATT_DECODE : blocks * 5u >= (uint64_t)SparkDeviceGetProperties()->compute_units * 8u ? ATT_PREFILL_WHOLE : ATT_PREFILL_SPLIT;
 	memset(&f,0,sizeof(f));
 	AttentionFill(&f,context,sequences);
 	query = (uint16_t *)Shared(&f.query,(uint64_t)rows * att.heads * att.dim * 2u,"attention query");
@@ -4514,7 +4518,7 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 		for ( row = 0u; row < rows; row++ )
 			for ( head = 0u; head < att.heads; head++ )
 			{
-				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,prefill,ref,
+				AttentionReference(&f,query + (uint64_t)row * att.heads * att.dim,gate + (uint64_t)row * params.gate_stride,sequence[row],position[row],head,mode,ref,
 					tolerance);
 				for ( d = 0u; d < AttVdim(); d++ )
 					Observe(check,Bf16(output[((uint64_t)row * att.heads + head) * AttVdim() + d]),ref[d],tolerance[d]);
@@ -4524,7 +4528,8 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	if ( att.window != 0u )
 		snprintf(window,sizeof(window),", window %u",att.window);
 	snprintf(values_text,sizeof(values_text),", values %u%s",att.vdim,att.sinks != 0u ? ", sinks" : "");
-	snprintf(shape,sizeof(shape),"%s rows %u, context %u, %u q / %u kv heads x %u%s%s",prefill != 0u ? "prefill" : "decode",rows,context,att.heads,att.kv,
+	snprintf(shape,sizeof(shape),"%s rows %u, context %u, %u q / %u kv heads x %u%s%s",mode == ATT_DECODE ? "decode" : mode == ATT_PREFILL_WHOLE ? "prefill, one partition" :
+		"prefill, split",rows,context,att.heads,att.kv,
 		att.dim,window,att.vdim != 0u ? values_text : att.gate == SPARK_ATTENTION_GATE_SIGMOID_BF16 ? ", bf16 gate" :
 		att.gate != 0u ? "" : ", no gate");
 	Report(prefill != 0u ? "attention_prefill" : "attention_decode",shape,&clean,&corrupted,
@@ -6034,6 +6039,7 @@ int main(int argc, char **argv)
 	TestAttention(8192u,4u,0u);
 	TestAttention(300u,40u,1u);
 	TestAttention(2048u,64u,1u);
+	TestAttention(2048u,256u,1u);
 	{
 		const AttentionCase qwen = att, sliding = { 16u, 8u, 256u, 8192u, 6144u, 1024u, 0u, 1.0f, 0u, 0u, 0u }, full = { 16u, 2u, 512u, 10240u, 9216u, 0u, 0u, 1.0f, 0u, 0u, 0u },
 			muse_sliding = { 32u, 2u, 128u, 4608u, 4352u, 2048u, SPARK_ATTENTION_GATE_SIGMOID_BF16, 0.08838834764831845f, 1u, 0u, 0u },

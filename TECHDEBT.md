@@ -1492,8 +1492,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   reference-floor gate yet (its entry under Production qualification).
 - Prefill attention follows FlashAttention-2's plain forward on Metal and
   in most references, not yet on CUDA (2026-11-07). FA2 walks a row's
-  64-key tiles from the diagonal back to the first key and never splits
-  the keys. CUDA's prefill kernels all walk forward: `LmGqaShardTiledKernel`
+  64-key tiles from the diagonal back to the first key, unsplit whenever
+  the launch fills the GPU (`num_splits_heuristic`), which Metal follows. CUDA's prefill kernels all walk forward: `LmGqaShardTiledKernel`
   (64-key tiles to head size 192, 32 above; Solar, Gemma 4, K-EXAONE,
   Laguna, Muse, MiMo, Qwen 3.8, K3), `LmLatentShardPrefillKernel` and
   `LmLatentAttentionPrefillKernel` (32), `LmAttentionBlockPartialKernel`
