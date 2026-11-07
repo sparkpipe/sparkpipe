@@ -120,7 +120,7 @@ async def run(tmp):
                 check(response.status == 404 and body["error"]["message"].endswith("served: ['open']"), "a public key cannot reach an internal model, and the served list it gets names only the public ones")
             planned = []
 
-            def plan(model, body, headers, scope=None, member=None, pack_request=None):
+            def plan(model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
                 planned.append(headers)
                 raise chat_frontend.RequestError(400, "planned", "stop after planning")
             frontend.plan = plan
@@ -146,7 +146,7 @@ async def run(tmp):
             release = asyncio.Event()
             answered = []
 
-            def plan_ok(model, body, headers, scope=None, member=None, pack_request=None):
+            def plan_ok(model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
                 return {"trace": {}, "engine_body": {"prompt_token_ids": list(range(128))}, "prompt_tokens": 128}
 
             async def answer_wait(request, model, body, plan, started):
@@ -191,7 +191,7 @@ async def run(tmp):
                 async def run(self, model, identity, messages, name, argument, memory_off):
                     raise chat_frontend.RequestError(503, "engine_unavailable", "the engine is switching")
             frontend.commands = FailingCommands()
-            frontend.plan = lambda model, body, headers, scope=None, member=None, pack_request=None: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+            frontend.plan = lambda model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
             async with session.post(base + "/v1/chat/completions", json={"model": "open", "messages": [{"role": "user", "content": "/compact 50%"}]}) as response:
                 text = await response.text()
                 failed = json.loads(text) if response.content_type == "application/json" else {"error": {"code": text[:60]}}
