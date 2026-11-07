@@ -1,5 +1,6 @@
 SPARKPIPE_WEIGHTD_SOURCES := \
 	runtime/spark_weightd.c \
+	runtime/spark_weightd_memory.c \
 	runtime/spark_weightd_manifest.c \
 	runtime/spark_weightd_lease.c \
 	runtime/spark_weightd_attach.c \
