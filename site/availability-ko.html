@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe 예약 현황</title>
+<meta name="description" content="SparkPipe 모든 플릿의 시간별·주별 실시간 예약 현황, 그리고 다른 고객과의 경쟁 속에서 플릿을 얻고 지키고 잃는 방법: 고정, 대기 명단, 쌍, 시간 플릿.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/availability.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/availability-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/availability.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="availability.css?v=2">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">예약 현황</span></a>
+    <nav class="nav-links" aria-label="섹션">
+      <a href="#board">보드</a>
+      <a href="#rules">작동 방식</a>
+      <a href="#game">전략</a>
+      <a href="fleets-ko.html">플릿 목록</a>
+      <a href="market.html" hreflang="en">내 계정</a>
+      <a href="index-ko.html">홈</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="availability.html?lang=en" hreflang="en" lang="en">EN</a><a href="availability-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>예약 현황</h1>
+    <p class="effective" id="av-now" aria-live="polite">예약 현황을 불러오는 중…</p>
+    <p>4쌍, 8개 플릿의 실시간 예약 현황입니다. 각 행은 플릿, 각 열은 한국 표준시의 1시간 또는 1주입니다. 무엇이 언제까지 예약되어 있는지는 보이지만, 누가 예약했는지는 보이지 않습니다. 아직 구축 중인 플릿은 줄무늬로 표시되며, 서비스를 시작하면 열립니다.</p>
+    <nav class="av-modes" aria-label="데이터"><a id="av-mode-live" href="availability-ko.html">실시간</a><a id="av-mode-sandbox" href="availability-ko.html?sandbox">샌드박스</a></nav>
+    <p class="av-note av-sandbox-only" id="av-sandbox"></p>
+    <ul class="av-chips" id="av-chips" aria-live="polite"></ul>
+  </section>
+
+  <section id="board" class="av-wide">
+    <div class="av-bar">
+      <h2>보드</h2>
+      <div class="av-views" role="group" aria-label="보기"><button type="button" data-av-view="hours" aria-pressed="true">앞으로 14일, 시간별</button><button type="button" data-av-view="weeks" aria-pressed="false">앞으로 52주</button></div>
+    </div>
+    <div class="av-frame"><div class="av-rows" id="av-rows"></div><div class="av-scroll" id="av-board"></div></div>
+    <p class="av-detail" id="av-detail" aria-live="polite">시간 칸을 가리키거나 누르면 그것이 무엇을 뜻하는지 보여 드립니다.</p>
+    <ul class="av-legend" id="av-legend"></ul>
+    <details>
+      <summary>보드를 글로 읽기</summary>
+      <ul id="av-text"></ul>
+    </details>
+    <p class="av-note">점선 세로줄은 다음 일요일 00:00(KST)입니다. 모든 보유자의 다음 주 예약 마감이자 대기 명단이 배정되는 시각입니다. 같은 정보가 <span class="mono">https://sparkpipe.ai/availability.txt</span>에, JSON으로는 <span class="mono">https://sparkpipe.ai/pay/api/market/state</span>에 있습니다.</p>
+  </section>
+
+  <section id="rules">
+    <h2>플릿을 얻고, 지키고, 잃는 방법</h2>
+    <ol class="av-steps">
+      <li><h3>모든 쌍은 두 반쪽</h3><p>플릿은 Spark 16대씩 두 개가 하나의 32포트 100 Gb/s 스위치에 연결된 쌍으로 구성됩니다. <b>A 반쪽</b>은 주 단위로 빌립니다. <b>B 반쪽</b>은 <b>시간 플릿</b>으로, 누구나 최대 <span data-hourfleet="days">7</span>일 앞까지, 계정당 1주에 <span data-hourfleet="hours">24</span>시간까지 시간 단위로 예약할 수 있습니다.</p></li>
+      <li><h3>A 플릿 얻기</h3><p>다음 주에 비어 있는 A 플릿은 먼저 예약하는 계정이 월요일부터 고정합니다. 모든 A 플릿이 보유되어 있으면, 최소 <span data-week="hc">144</span> HC를 잠가 <b>대기 명단</b>에 들어갑니다. 매주 일요일 00:00(KST)에, 보유자가 다음 주를 예약하지 않은 A 플릿은 <b>가장 큰 잠금</b>에, 같으면 먼저 들어온 계정에 넘어갑니다. 그 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다.</p></li>
+      <li><h3>지키기</h3><p>고정된 플릿은 고객만의 것입니다. 다른 누구도 그 시간이나 앞으로의 주를 예약할 수 없습니다. 마지막으로 예약한 주의 일요일 00:00(KST) 전에 다음 주를 예약하면 계속 보유하며, 자동 연장이 대신 해 줍니다. 어떤 예약도 다른 고객이나 저희에 의해 밀려나지 않습니다.</p></li>
+      <li><h3>잃기</h3><p>그 일요일 마감을 놓치면 플릿은 그날 밤 대기 명단이나 먼저 예약하는 계정에 넘어갑니다. 캐시와 저장공간은 다음 고객의 첫 시간이 시작될 때까지 남았다가 삭제됩니다.</p></li>
+      <li><h3>쌍 추가</h3><p>A 플릿을 보유하면 같은 주 동안 그 B 반쪽도 고정해 Spark 32대, 4 TB 메모리의 한 클러스터로 쓸 수 있습니다. 플릿의 최소 4분의 1은 시간 예약용으로 남아야 하므로 B 반쪽은 한 번에 절반만 고정할 수 있습니다. 먼저 고정하는 보유자가 가져가며, 다른 플릿처럼 연장하면 계속 보유합니다.</p></li>
+      <li><h3>약정에 대한 할인</h3><p>한 플릿에서 보유한 주가 많을수록 새로 예약하는 모든 주와 모든 시간이 저렴해집니다: <span data-off="list">4주 이상 5%, 13주 이상 10%, 26주 이상 15%, 52주 20%</span>. 대기 명단에 있는 동안 시간 예약에는 잠금이 받을 할인이 적용되며, 플릿을 배정받기 전에 나오면 그 할인은 잠금에서 상환됩니다.</p></li>
+    </ol>
+  </section>
+
+  <section id="game">
+    <h2>플릿이 부족할 때 이것이 뜻하는 것</h2>
+    <p>모든 고객은 같은 보드에서 같은 규칙으로 경쟁합니다. 미리 계획해 둘 만한 결과는 다음과 같습니다.</p>
+    <ul>
+      <li><b>플릿은 저절로 돌아오지 않습니다.</b> 계속 예약하는 보유자는 원하는 만큼 플릿을 보유합니다. 모든 A 플릿이 보유되면 들어가는 길은 대기 명단뿐이며, 대기 명단은 먼저 온 순서가 아니라 가장 큰 잠금 순서입니다.</li>
+      <li><b>잠금이 클수록 더 빨리 배정받고 주당 더 적게 냅니다.</b> 배정되면 잠금 전체가 그 주 수에 대한 할인으로 주를 예약하므로, 26주 잠금은 4주 잠금보다 앞서면서 모든 주에 15% 할인을 받습니다.</li>
+      <li><b>미리 예약하는 것이 보호 수단입니다.</b> 예약한 주는 아무도 가져갈 수 없습니다. 플릿을 잃는 유일한 경우는 일요일 마감을 넘기는 것이므로, 자동 연장으로 여러 주를 미리 예약해 두고 그만큼의 HC를 유지하세요.</li>
+      <li><b>쌍은 보드에서 가장 귀합니다.</b> B 반쪽은 한 번에 절반만 고정할 수 있습니다. 4 TB가 필요하다면 쌍이 열려 있을 때 고정하세요. 보유한 뒤에는 연장하는 동안 아무도 가져갈 수 없습니다.</li>
+      <li><b>시간 예약은 선착순입니다.</b> <span data-hourfleet="days">7</span>일 앞까지 열리고 계정당 1주에 <span data-hourfleet="hours">24</span>시간으로 제한되어 한 팀이 모두 가져갈 수 없으며, 플릿의 최소 4분의 1은 항상 시간 예약용으로 남습니다.</li>
+      <li><b>모두가 같은 보드를 봅니다.</b> 무엇이 언제까지 보유되어 있는지, 대기 중인 잠금 수와 열린 쌍의 수를 보여 주지만 누가 보유했는지는 보여 주지 않습니다. 자신의 대기 순위는 <a href="market.html" hreflang="en">계정 페이지</a>에 있습니다.</li>
+    </ul>
+    <p>이 규칙은 <a href="agreement-ko.html">SparkPipe 고객 계약</a>(제14조~제16조)이 정하며, 플릿은 <a href="fleets-ko.html">플릿 목록</a>에 있습니다.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="푸터"><a href="index-ko.html">홈</a><a href="market.html" hreflang="en">내 계정</a><a href="fleets-ko.html">플릿 목록</a><a href="status-ko.html">상태</a><a href="terms-ko.html">약관</a><a href="privacy-ko.html">개인정보처리방침</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
+<script src="availability.js?v=4"></script>
+</body>
+</html>

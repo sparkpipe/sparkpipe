@@ -1364,6 +1364,7 @@ class Market:
     def fleet_view(self, pricing, listed, fleet, now):
         return dict(listed, serving=fleet["serving"], status=self.status(fleet, now), firstWeek=self.first_open(pricing, fleet, now),
                     booked=merged((b["begins"], b["ends"]) for b in self.on_fleet(fleet["id"]) if b["ends"] > now),
+                    pinned=merged((b["begins"], b["ends"]) for b in self.on_fleet(fleet["id"]) if b["ends"] > now and b["kind"] == "week"),
                     maintenance=merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK)))
 
     def public(self):
