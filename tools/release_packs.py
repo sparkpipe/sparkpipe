@@ -41,7 +41,11 @@ def main() -> int:
                 if not (name.startswith("adapter.") and name.endswith(".json")):
                     continue
                 host = name[len("adapter."):-len(".json")]
-                pack = json.loads(pathlib.Path(out, name).read_text()).get("stage_pack_path")
+                adapter = json.loads(pathlib.Path(out, name).read_text())
+                pack = adapter.get("stage_pack_path")
+                partner = adapter.get("streamed_prefill", {}).get("partner_pack")
+                if partner:
+                    print(host, partner, partner + ".sha256")
                 if pack:
                     digest = digest_file(pack, lanes[record]["runtime_root"].format(host=host))
                     if any(character.isspace() for character in pack + digest):
