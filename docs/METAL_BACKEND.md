@@ -218,6 +218,38 @@ The model interface is used with these meanings on a device backend:
 - `round` is the collective of a tensor-parallel rank (below). A TP1 runner
   never sees one: `SparkDeviceStageAllReduce` returns at once on one rank.
 
+## Serving through the common stack
+
+A Studio serves through the same processes and code as the fleet: the model
+API and batch engine, the resident daemon, the stage serving adapter
+(`inference/runner/stage_serving_adapter.c`) and the KV binding
+(`runtime/stage_kv_binding.c`) with the prefix cache, page cache and snapshot
+tiers. Nothing in that path is written twice. What differs per backend lies
+below the stage-runner API (`include/sparkpipe/spark_stage_runner.h`) and the
+device API:
+
+- **The runner.** The stage-runner API has two implementations, chosen at
+  link time per target: the CUDA runner (`inference/runner/stage_runner.cu`)
+  and the device runner, which implements it over `SparkDeviceStageRunner`.
+  A dispatch runs as one or more runner steps: prefill and decode rows,
+  decode chains (each step's sampled token feeds the next) and verify frames
+  (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
+  runner's queue (`SparkStageRunnerQueue`) through the device API instead of
+  on a CUDA stream.
+- **Memory.** The KV binding allocates its page table, staging pages and
+  recurrent-state buffers with the device API and copies with it. The pool is
+  weightd's on CUDA, adopted into the device API (`SparkDeviceAdopt`), and one
+  device buffer on a Studio. The runner reads the binding's pool and page
+  table through `attach_kv`, so pages are shared between sequences with
+  copy-on-write, and a resumed sequence's recurrent state is restored into its
+  slot before its first row.
+- **Sampling.** Distribution rows are sampled on the device with the formulas
+  the CUDA sampler uses (`inference/kernels/kernel_math.cuh`), so a seed gives
+  the same token on both backends.
+
+A request therefore resumes from the longest prefix the cache holds, on a
+Studio as on the fleet, and computes only the rest.
+
 ## Tensor parallel ranks
 
 A runner opened with `tp_degree` N > 1 is one rank of N. It reads its own

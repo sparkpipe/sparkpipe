@@ -210,6 +210,11 @@ SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
+{
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,"the host backend holds only memory it allocated, registered or mapped"));
+}
+
 SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd, uint64_t offset)
 {
 	HostAllocation *host = (HostAllocation *)calloc(1u,sizeof(*host));
@@ -325,6 +330,12 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	}
 	queue->backend = host;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
+{
+	(void)native;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_adopt",queue->owner,0,"the host backend runs only the queues it created"));
 }
 
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
