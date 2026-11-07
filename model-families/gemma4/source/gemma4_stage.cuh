@@ -556,12 +556,12 @@ struct GemmaModel
 		return Launched();
 	}
 
-	static SparkStatus Tap(const State *state, uint32_t index, const uint16_t *hidden, uint32_t rows, cudaStream_t stream)
+	static SparkStatus Tap(const State *state, uint32_t index, const uint16_t *hidden, uint32_t rows, uint32_t row_offset, cudaStream_t stream)
 	{
 		if ( state->tap_slab == 0 || state->tap_output[index] < 0 )
 			return SPARK_STATUS_OK;
 		LM_LAUNCH((LmCopyRowsStridedKernel<GM_THREADS>), dim3((G::kHidden + GM_THREADS - 1u) / GM_THREADS, rows), GM_THREADS, 0, stream,
-			hidden, state->tap_slab + (uint64_t)state->tap_output[index] * G::kHidden, rows, G::kHidden, state->tap_stride);
+			hidden, state->tap_slab + (uint64_t)row_offset * state->tap_stride + (uint64_t)state->tap_output[index] * G::kHidden, rows, G::kHidden, state->tap_stride);
 		return Launched();
 	}
 
@@ -671,7 +671,7 @@ struct GemmaModel
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
 	{
-		const SparkStatus status = Tap(state, index, frame.step->hidden_bf16, frame.step->rows, frame.stream);
+		const SparkStatus status = Tap(state, index, frame.step->hidden_bf16, frame.step->rows, frame.step->tap_row_offset, frame.stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( state->services->layer_done != 0 )

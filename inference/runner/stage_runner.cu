@@ -1881,7 +1881,7 @@ static uint32_t StageRunnerLanesSplit(const SparkStageRunnerState *state, const 
 {
 	const uint32_t first = in->rows / 2u / STAGE_RUNNER_LANE_ALIGN * STAGE_RUNNER_LANE_ALIGN;
 	uint32_t index;
-	if ( state->lanes.created == 0u || state->tap_plan.entry_count != 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
+	if ( state->lanes.created == 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
 		in->host_sequence_of_row == 0 || (state->resident == 0u && state->geometry.experts != 0u) ||
 		first < STAGE_RUNNER_LANE_MIN_ROWS || in->rows - first < STAGE_RUNNER_LANE_MIN_ROWS ||
 		in->host_sequence_of_row[0] >= state->lanes.context_entries )
@@ -1929,6 +1929,7 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 	b->step.token_ids = in->token_ids != 0 ? in->token_ids + first : 0;
 	b->step.host_positions = in->host_positions + first;
 	b->step.host_sequence_of_row = in->host_sequence_of_row + first;
+	b->step.tap_row_offset = first;
 	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES && status == SPARK_STATUS_OK; ++index )
 		status = state->model_interface->lane(state->model, index, &lanes->lane[index].step, &lanes->lane[index].services,
 			&lanes->lane[index].model);
@@ -2820,9 +2821,8 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	state->tap_plan = plan;
 	state->tap_final_entry = final_entry;
 	StageRunnerGraphDrop(state);
-	fprintf(stderr, "sparkpipe_stage_runner: taps entries=%u capture=%u row_bytes=%llu slab_bytes=%llu chain_bytes=%llu%s\n", entry_count, plan.capture,
-		(unsigned long long)(stride * sizeof(uint16_t)), (unsigned long long)(capture != 0u ? slab_bytes : 0u), (unsigned long long)(capture != 0u ? chain_bytes : 0u),
-		state->model_interface->lane != 0 ? "; a wave does not split into lanes while a tap plan is set" : "");
+	fprintf(stderr, "sparkpipe_stage_runner: taps entries=%u capture=%u row_bytes=%llu slab_bytes=%llu chain_bytes=%llu\n", entry_count, plan.capture,
+		(unsigned long long)(stride * sizeof(uint16_t)), (unsigned long long)(capture != 0u ? slab_bytes : 0u), (unsigned long long)(capture != 0u ? chain_bytes : 0u));
 	return SPARK_STATUS_OK;
 }
 

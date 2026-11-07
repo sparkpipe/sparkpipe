@@ -305,12 +305,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   turn, and each DSA layer exchanges fp32 attention records (126 KB a row)
   and gathers the queries (63 KB a row) on top of the index scores, which grow
   with the context.
-- A wave does not split into lanes while a tap plan is set
-  (`StageRunnerLanesSplit`): the model writes its tap rows by step row, and a
-  lane's rows start at an offset the tap plan does not carry. A tapped lane
-  model (A.X K2 and GLM Full on the GLM stage; Gemma once its lanes land)
-  therefore prefills whole waves while a drafter is fed. Give each lane its
-  slab row offset so taps and lanes run together.
 
 ## Prefill
 

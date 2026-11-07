@@ -2067,7 +2067,7 @@ struct GlmModel
 		return state->tap_active != 0u && (state->tap_output[layer] >= 0 || (layer + 1u == S::kLayers && state->tap_final >= 0)) ? 1u : 0u;
 	}
 
-	static SparkStatus Tap(State *state, const GlmWave *wave, uint32_t layer, const uint16_t *hidden, cudaStream_t stream)
+	static SparkStatus Tap(State *state, const GlmWave *wave, uint32_t layer, const uint16_t *hidden, uint32_t row_offset, cudaStream_t stream)
 	{
 		const int16_t entries[2] = { state->tap_output[layer], layer + 1u == S::kLayers ? state->tap_final : (int16_t)-1 };
 		const uint16_t *source = state->residual, *addend = hidden;
@@ -2089,7 +2089,7 @@ struct GlmModel
 			if ( entries[index] >= 0 )
 				LM_LAUNCH((LmSumRowsStridedKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, wave->rows), GLM_THREADS, 0, stream,
 					source, addend, wave->ordered != 0u ? state->order + wave->first : (const uint32_t *)0,
-					state->tap_slab + (wave->ordered != 0u ? 0u : (uint64_t)wave->first * state->tap_stride) + (uint64_t)entries[index] * S::kHidden, wave->rows,
+					state->tap_slab + (uint64_t)row_offset * state->tap_stride + (wave->ordered != 0u ? 0u : (uint64_t)wave->first * state->tap_stride) + (uint64_t)entries[index] * S::kHidden, wave->rows,
 					S::kHidden, state->tap_stride);
 		return GlmLaunched() != LM_LAUNCH_OK ? Fail("tap", layer, LM_LAUNCH_ERR_LAUNCH) : SPARK_STATUS_OK;
 	}
@@ -2207,7 +2207,7 @@ struct GlmModel
 
 	static SparkStatus LayerDone(State *state, Frame &frame, uint32_t layer)
 	{
-		const SparkStatus status = Tap(state, &frame.wave, layer, frame.hidden, frame.stream);
+		const SparkStatus status = Tap(state, &frame.wave, layer, frame.hidden, frame.step->tap_row_offset, frame.stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( state->services->layer_done != 0 )
