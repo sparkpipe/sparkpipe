@@ -378,7 +378,7 @@ class Config:
         for item in re.split(r"[\s,]+", env.get("SPARKPIPE_FLEET_UPSTREAMS", "").strip()):
             fleet, _, url = item.partition("=")
             if item and not (re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fleet) and url):
-                raise ValueError("SPARKPIPE_FLEET_UPSTREAMS lists FLEET=URL pairs, such as F1=http://127.0.0.1:18081/v1 F3=http://127.0.0.1:18083/v1")
+                raise ValueError("SPARKPIPE_FLEET_UPSTREAMS lists FLEET=URL pairs, such as F1B=http://127.0.0.1:18081/v1 F1A=http://127.0.0.1:18083/v1")
             if item:
                 self.upstreams[fleet] = upstream_field(url.rstrip("/"), "SPARKPIPE_FLEET_UPSTREAMS")
         self.hub = bool(self.pool or self.upstreams)

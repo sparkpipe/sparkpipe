@@ -25,7 +25,7 @@
     hc: { "small-usd": usd(small.usd), "small-krw": krw(small.krw), "bulk-usd": usd(bulk.usd), "bulk-krw": krw(bulk.krw), "bulk-from": String(bulk.from), months: String(P.hc.validityMonths) },
     hour: { hc: String(B.hourHC), day: String(B.hourHC * 8) },
     team: { min: usd(B.weekHC * bulk.usd / 5), max: usd(B.weekHC * bulk.usd / 3) },
-    hourfleet: { days: String(B.hourFleetDaysAhead), hours: String(B.hourFleetHoursPerWeek) },
+    hourfleet: { days: String(B.hourFleetDaysAhead), hours: String(B.hourFleetHoursPerWeek), free: String(B.freeHourFleets) },
     fleets: { pin: String(P.fleets.filter(function (f) { return !f.hourFleet; }).length), hour: String(P.fleets.filter(function (f) { return f.hourFleet; }).length) }
   };
   Object.keys(values).forEach(function (key) {

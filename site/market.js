@@ -142,9 +142,13 @@
       const open = !own && f.firstWeek ? `available from ${kstDay(f.firstWeek)}` : '';
       const status = own ? 'Pinned to you' : [statusText[f.status] || f.status, open].filter(Boolean).join(', ');
       const detail = own ? (() => { const box = document.createElement('div'); box.append(cell('p', yours), autoExtendControl(own)); return box; })() : yours;
-      return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : status, detail]);
+      return row([f.name, (f.kind || '-') + (f.pair ? ` · pairs with ${(st.fleets.find((x) => x.id === f.pair) || { name: f.pair }).name}` : ''), String(f.rate), f.serving === false ? 'Not serving yet' : status, detail]);
     }), 'No fleet is listed yet.');
-    fillSelect('weeks-fleet', st.fleets.filter((f) => (mine(f.id) && mine(f.id).canExtend) || (!mine(f.id) && f.firstWeek)).map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : ' (pin from ' + kstDay(f.firstWeek) + ')')]));
+    const nameOf = (id) => (st.fleets.find((f) => f.id === id) || { name: id }).name;
+    const pairable = (f) => !mine(f.id) && f.hourFleet && f.pair && mine(f.pair) && st.pairs && st.pairs.open > 0;
+    fillSelect('weeks-fleet', st.fleets.filter((f) => (mine(f.id) && mine(f.id).canExtend) || (!mine(f.id) && f.firstWeek) || pairable(f))
+      .map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : pairable(f) ? ' (pin as the pair of ' + nameOf(f.pair) + ')' : ' (pin from ' + kstDay(f.firstWeek) + ')')]));
+    $('pairs-open').textContent = st.pairs && st.pairs.limit ? `Pairs open to pin for next week: ${st.pairs.open} of ${st.pairs.limit}.` : '';
     fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.hourFleet || f.status === 'free')).map((f) => [f.id, f.name + (f.hourFleet ? ' (Hour Fleet)' : ' (available this week)')]));
     fillSelect('try-model', (st.models || P.models).map((m) => [m.id, m.name]));
     fill('discounts', P.bookings.discounts.map((d) => row([`${d.weeks} or more`, pct(d.off)])), '');

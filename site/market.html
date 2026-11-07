@@ -108,12 +108,13 @@
 <div class="tab-panel" role="tabpanel" data-panel="fleets">
 <section class="card">
   <h2>Fleets</h2>
-  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday.</p>
+  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday. Fleets come in pairs on a shared switch: hold an A fleet and you can also pin its B fleet for the weeks you hold the A fleet, so the two run as one 32-Spark, 4 TB cluster. At least <span data-hourfleet="free">2</span> Hour Fleets always stay open for hours.</p>
+  <p class="num muted" id="pairs-open"></p>
   <div class="scroll"><table><thead><tr><th>Fleet</th><th>Machines</th><th>Rate</th><th>Status</th><th>Yours</th></tr></thead><tbody id="fleets"></tbody></table></div>
 </section>
 <section class="card">
   <h2>Book weeks</h2>
-  <p class="muted">Pin an available fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking.</p>
+  <p class="muted">Pin an available fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking. To pin your fleet's pair, choose it here: it runs for weeks you hold your fleet, at your fleet's discount.</p>
   <form class="form" id="weeks" novalidate>
     <div class="row">
       <label>Fleet<select id="weeks-fleet"></select></label>
@@ -166,7 +167,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="api" hidden>
 <section class="card">
   <h2>Use your fleet</h2>
-  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F1A"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="mk-grid">
     <div class="form">

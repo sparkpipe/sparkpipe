@@ -58,7 +58,7 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
 - **Keys.** Send the key as `Authorization: Bearer <key>` or `X-Api-Key: <key>`, because Claude Code sends the second when `ANTHROPIC_API_KEY` is set. A key belongs to one account. It can be limited to one fleet (`fleet`) and may be allowed to switch models (`allow_swap`, off by default). Keys are created on the account page or with `sparkpipe keys create`.
 - **Which fleet.** A request goes to a fleet the account holds at that moment.
   - The fleet is the key's `fleet` if it has one.
-  - Otherwise it is the `X-SparkPipe-Fleet` header, or the existing body field `"sparkpipe": {"fleet": "F3"}` on chat completions.
+  - Otherwise it is the `X-SparkPipe-Fleet` header, or the existing body field `"sparkpipe": {"fleet": "F1A"}` on chat completions.
   - Otherwise, if the account holds exactly one fleet, that one.
   - Holding several fleets and naming none answers 409 `fleet_required`.
 - **Which model.** `model` names an offered model (`kimi-k3`), a pack alias (`kimi-k3+core`, §5) or an alias from the fleet's alias table (§4.5). A fleet keeps several models resident when they fit (§4.5).
@@ -198,7 +198,7 @@ Every response carries what it cost in time:
 
 ```json
 "sparkpipe": {
-  "request": "r_7Q2…", "fleet": "F3", "model": "kimi-k3", "pack": "core@a41f09",
+  "request": "r_7Q2…", "fleet": "F1A", "model": "kimi-k3", "pack": "core@a41f09",
   "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580,
   "queue_ms": 0, "prefill_ms": 1240, "ttft_ms": 1310,
   "output_tokens": 912, "decode_tps": 15.8, "draft_accept": 0.71,
@@ -676,7 +676,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
   - When the booking starts, the account's packs are warmed on that fleet in the background.
   - Uses: a big refactor, a parallel review, or an overnight batch on a second fleet.
 - **Packs** are warmed on every fleet that serves their alias.
-- **Moving working state.** `POST /v1/state/move {"from": "F3", "to": "F4"}` copies the snapshot store and the storage between two held fleets of the same model build and topology over the facility network. A fleet change or a long repair then costs no cache.
+- **Moving working state.** `POST /v1/state/move {"from": "F1A", "to": "F2A"}` copies the snapshot store and the storage between two held fleets of the same model build and topology over the facility network. A fleet change or a long repair then costs no cache.
 
 ## 15. CLI
 
@@ -716,7 +716,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 The account endpoints already exist in the payment service under `/market/...`: state, quote and book weeks, book hours, the waitlist, keys and the ledger (`docs/FLEET_BOOKINGS.md`). For the CLI they also accept `Authorization: Bearer <session>` from the email-code sign-in, besides the page's cookie. Keys gain the options of §12.
 
-**Auto-extend.** `PUT /market/auto-extend {"fleet": "F3", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC. It is on by default, one week ahead, from the first week an account books or the waitlist grants it on a fleet; `weeks_ahead: 0`, or one click on the account page, turns it off.
+**Auto-extend.** `PUT /market/auto-extend {"fleet": "F1A", "weeks_ahead": 4}` keeps that many weeks booked ahead from the account's HC. It is on by default, one week ahead, from the first week an account books or the waitlist grants it on a fleet; `weeks_ahead: 0`, or one click on the account page, turns it off.
 - It books each new week as soon as the rules allow, at the discount for the weeks held.
 - If the balance runs short, it sends `booking.deadline` early, with the HC needed.
 

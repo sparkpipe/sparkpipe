@@ -10,7 +10,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 1.1. In this Agreement:
 
-- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. An **Hour Fleet** is a Fleet that the Fleet List marks as one; it is booked only by the hour.
+- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. An **Hour Fleet** is a Fleet that the Fleet List marks as one; it is booked by the hour, and pinned only under clause 15.8. The Fleet List may pair a Fleet with an Hour Fleet (its **pair**).
 - **Rate** means the number that the Fleet List gives each Fleet, which we set and may change as clause 9.2 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise. A booking is priced at the Rate published when it is made.
 - **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for bookings.
 - **Booking** means the right to use one entire Fleet for an hour (an **Hour**, clause 14) or for a Week (clause 15).
@@ -118,7 +118,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 9.1. We may change this Agreement by publishing a new version and emailing Customer. A new version applies to Orders and Bookings made after Customer accepts it, and we accept no further Order or Booking from Customer until it has. HC already bought, and Bookings already made, stay under the version in force when they were made, unless Customer accepts a newer version for them.
 
-9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks held (clauses 14.2 and 15.2); the Rates on the Fleet List and which Fleets are Hour Fleets; how far ahead Hours on Hour Fleets may be booked and how many Hours on Hour Fleets each account may hold in a Week (clause 14.1); and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
+9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks held (clauses 14.2 and 15.2); the Rates on the Fleet List, which Fleets are Hour Fleets and which are paired, and how many Hour Fleets stay open for Hours in every Week (clause 15.8); how far ahead Hours on Hour Fleets may be booked and how many Hours on Hour Fleets each account may hold in a Week (clause 14.1); and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
 
 ## 10. Ending, refunds and survival
 
@@ -184,7 +184,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 15. Weeks and pinned Fleets
 
-15.1. **Pinning.** A Week booked on a Fleet pins that Fleet to Customer for the Week. While a Fleet is pinned, it is Customer's alone and nobody else may book any of its hours. An Hour Fleet is never pinned.
+15.1. **Pinning.** A Week booked on a Fleet pins that Fleet to Customer for the Week. While a Fleet is pinned, it is Customer's alone and nobody else may book any of its hours. An Hour Fleet is pinned only under clause 15.8.
 
 15.2. **Price.** Each Week costs the HC we publish for a Week, times the Fleet's Rate, less the discount we publish for the number of Customer's booked Weeks on that Fleet that have not ended, counting the Weeks being booked. The discount applies to the Weeks being booked.
 
@@ -197,6 +197,8 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 15.6. **Use.** A booked Week is consumed as it occurs, whether or not it is used, and clauses 14.3 and 14.4 apply to it. Customer needs no further order to use a Fleet pinned to it.
 
 15.7. If a Fleet that Customer holds cannot serve, including under maintenance (clause 4.3), we serve Customer on another Fleet that is free, without its working state, or credit the hours under clause 4.4.
+
+15.8. **Pairs.** While Customer holds Weeks of a Fleet that the Fleet List pairs with an Hour Fleet, Customer, and only Customer, may also pin that Hour Fleet for any of those Weeks in which it is free. Each such Week costs the HC we publish for a Week, times the Hour Fleet's Rate, less the discount we publish for the number of Customer's booked Weeks on the paired Fleet that have not ended, counting the current Week. A pinned pair is kept and extended like any pinned Fleet, never beyond Customer's Weeks of the paired Fleet. We keep at least the number of Hour Fleets we publish open for Hours in every Week, and refuse a pin that would leave fewer.
 
 ## 16. Waitlist
 

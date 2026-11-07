@@ -4,24 +4,14 @@ window.SP_PRICING = {
   "hoursFrom": "2026-12-01",
   "weeksFrom": "2027-01-04",
   "fleets": [
-    {
-      "id": "F1",
-      "name": "Fleet 1",
-      "kind": "16 Sparks",
-      "state": "serving",
-      "rate": 1,
-      "hourFleet": true,
-      "storageTB": 4
-    },
-    {
-      "id": "F3",
-      "name": "Fleet 3",
-      "kind": "16 Sparks",
-      "state": "building",
-      "rate": 1,
-      "hourFleet": false,
-      "storageTB": 4
-    }
+    {"id": "F1A", "name": "Fleet 1A", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": false, "pair": "F1B", "storageTB": 4},
+    {"id": "F1B", "name": "Fleet 1B", "kind": "16 Sparks", "state": "serving", "rate": 1, "hourFleet": true, "pair": "F1A", "storageTB": 4},
+    {"id": "F2A", "name": "Fleet 2A", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": false, "pair": "F2B", "storageTB": 4},
+    {"id": "F2B", "name": "Fleet 2B", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": true, "pair": "F2A", "storageTB": 4},
+    {"id": "F3A", "name": "Fleet 3A", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": false, "pair": "F3B", "storageTB": 4},
+    {"id": "F3B", "name": "Fleet 3B", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": true, "pair": "F3A", "storageTB": 4},
+    {"id": "F4A", "name": "Fleet 4A", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": false, "pair": "F4B", "storageTB": 4},
+    {"id": "F4B", "name": "Fleet 4B", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": true, "pair": "F4A", "storageTB": 4}
   ],
   "models": [
     { "id": "kimi-k3", "name": "Kimi K3", "decode": 16.2, "prefill": 590 },
@@ -84,6 +74,7 @@ window.SP_PRICING = {
     "maxWeeksAhead": 52,
     "hourFleetDaysAhead": 7,
     "hourFleetHoursPerWeek": 24,
+    "freeHourFleets": 2,
     "maintenanceHoursPerWeek": 3
   }
 };
