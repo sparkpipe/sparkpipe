@@ -540,6 +540,8 @@ PYTHON_TESTS := \
 	tests/test_site.py \
 	tests/test_pay.py \
 	tests/test_market.py \
+	tests/test_gateway_holder_cap.py \
+	tests/test_gateway_capacity_check.py \
 	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
@@ -730,6 +732,7 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_setup.py \
 	tests/test_stage_lane_dense_setup.py \
 	tests/test_release_packs.py \
+	tests/test_release_long_fill.py \
 	tests/test_reasoning_effort_choice.py \
 	tests/test_stage_lane_pack_identity.py \
 	tests/test_glm53_flash_warm_identity.py \
@@ -751,6 +754,7 @@ PYTHON_TESTS := \
 	tests/test_context_packs.py \
 	tests/test_chat_frontend_interactive_first.py \
 	tests/test_chat_replay_store.py \
+	tests/test_anticipator.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
