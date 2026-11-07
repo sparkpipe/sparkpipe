@@ -420,23 +420,18 @@ static SparkStatus WeightStreamPollAll(SparkWeightStream *stream, WeightStreamCa
 	return status;
 }
 
-static uint32_t WeightStreamRoundPeers(const SparkWeightStreamConfig *config, uint32_t round, uint32_t sign, uint32_t *peers)
-{
-	uint32_t count = 0u,offset;
-	for (offset=2u * round + 1u; offset<=2u * round + 2u && offset<config->ranks; offset++)
-		peers[count++] = (config->rank + (sign != 0u ? config->ranks - offset : offset)) % config->ranks;
-	return count;
-}
-
 static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t send_offset, uint64_t send_pitch, uint64_t bytes, uint64_t landing_offset, uint32_t tag)
 {
 	const SparkWeightStreamConfig *config = &stream->config;
-	const uint32_t chunks = (uint32_t)((bytes + config->chunk_bytes - 1u) / config->chunk_bytes),rounds = config->ranks / 2u;
-	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],sends[2] = {0u,0u},receives[2] = {0u,0u},peers[2],round,count,index,peer,moved;
+	const uint32_t chunks = (uint32_t)((bytes + config->chunk_bytes - 1u) / config->chunk_bytes);
+	uint32_t next_chunk[SPARK_WEIGHT_STREAM_MAX_RANKS],expected[2] = {0u,0u},peer,moved;
 	uint64_t start,mine;
 	WeightStreamCall call;
 	SparkStatus status;
 	memset(next_chunk,0,sizeof(next_chunk));
+	for (peer=0u; peer<config->ranks; peer++)
+		if ( peer != config->rank )
+			expected[WeightStreamLinkOf(stream,peer)] += chunks;
 	status = WeightStreamCallBegin(stream,&call,tag);
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
@@ -449,45 +444,35 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
 	start = WeightStreamNowNs();
-	for (round=0u; round<rounds; round++)
+	while ( call.done[WEIGHT_STREAM_FABRIC] < expected[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < expected[WEIGHT_STREAM_PAIR] ||
+		call.got[WEIGHT_STREAM_FABRIC] < expected[WEIGHT_STREAM_FABRIC] || call.got[WEIGHT_STREAM_PAIR] < expected[WEIGHT_STREAM_PAIR] )
 	{
-		count = WeightStreamRoundPeers(config,round,1u,peers);
-		for (index=0u; index<count; index++)
-			receives[WeightStreamLinkOf(stream,peers[index])] += chunks;
-		count = WeightStreamRoundPeers(config,round,0u,peers);
-		for (index=0u; index<count; index++)
-			sends[WeightStreamLinkOf(stream,peers[index])] += chunks;
-		while ( call.done[WEIGHT_STREAM_FABRIC] < sends[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < sends[WEIGHT_STREAM_PAIR] ||
-			call.got[WEIGHT_STREAM_FABRIC] < receives[WEIGHT_STREAM_FABRIC] || call.got[WEIGHT_STREAM_PAIR] < receives[WEIGHT_STREAM_PAIR] )
+		do
 		{
-			do
+			moved = 0u;
+			for (peer=0u; peer<config->ranks && status == SPARK_STATUS_OK; peer++)
 			{
-				moved = 0u;
-				for (index=0u; index<count && status == SPARK_STATUS_OK; index++)
-				{
-					const uint32_t link = WeightStreamLinkOf(stream,peers[index]),chunk = next_chunk[peers[index]];
-					peer = peers[index];
-					if ( chunk >= chunks || (call.ready[link] & (1u << peer)) == 0u || stream->links[link].outstanding[peer] >= config->depth )
-						continue;
-					status = WeightStreamWrite(stream,peer,send_offset + (uint64_t)peer * send_pitch + (uint64_t)chunk * config->chunk_bytes,
-						landing_offset + (uint64_t)config->rank * bytes + (uint64_t)chunk * config->chunk_bytes,WeightStreamChunkLength(bytes,config->chunk_bytes,chunk),
-						WeightStreamImmediate(tag,config->rank,0u,chunk));
-					next_chunk[peer]++;
-					moved++;
-				}
+				const uint32_t link = WeightStreamLinkOf(stream,peer),chunk = next_chunk[peer];
+				if ( peer == config->rank || chunk >= chunks || (call.ready[link] & (1u << peer)) == 0u || stream->links[link].outstanding[peer] >= config->depth )
+					continue;
+				status = WeightStreamWrite(stream,peer,send_offset + (uint64_t)peer * send_pitch + (uint64_t)chunk * config->chunk_bytes,
+					landing_offset + (uint64_t)config->rank * bytes + (uint64_t)chunk * config->chunk_bytes,WeightStreamChunkLength(bytes,config->chunk_bytes,chunk),
+					WeightStreamImmediate(tag,config->rank,0u,chunk));
+				next_chunk[peer]++;
+				moved++;
 			}
-			while ( moved != 0u && status == SPARK_STATUS_OK );
-			if ( status == SPARK_STATUS_OK )
-				status = WeightStreamPollAll(stream,&call);
-			if ( status != SPARK_STATUS_OK )
-				return WeightStreamFail(stream,status);
-			if ( WeightStreamNowNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
-			{
-				fprintf(stderr,"weight_stream: rank %u transfer tag %u stalled at round %u: done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",config->rank,tag,round,
-					call.done[WEIGHT_STREAM_FABRIC],sends[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],sends[WEIGHT_STREAM_PAIR],call.got[WEIGHT_STREAM_FABRIC],
-					receives[WEIGHT_STREAM_FABRIC],call.got[WEIGHT_STREAM_PAIR],receives[WEIGHT_STREAM_PAIR],call.ready[WEIGHT_STREAM_FABRIC],call.ready[WEIGHT_STREAM_PAIR]);
-				return WeightStreamFail(stream,SPARK_STATUS_IO_ERROR);
-			}
+		}
+		while ( moved != 0u && status == SPARK_STATUS_OK );
+		if ( status == SPARK_STATUS_OK )
+			status = WeightStreamPollAll(stream,&call);
+		if ( status != SPARK_STATUS_OK )
+			return WeightStreamFail(stream,status);
+		if ( WeightStreamNowNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
+		{
+			fprintf(stderr,"weight_stream: rank %u transfer tag %u stalled: done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",config->rank,tag,
+				call.done[WEIGHT_STREAM_FABRIC],expected[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],expected[WEIGHT_STREAM_PAIR],call.got[WEIGHT_STREAM_FABRIC],
+				expected[WEIGHT_STREAM_FABRIC],call.got[WEIGHT_STREAM_PAIR],expected[WEIGHT_STREAM_PAIR],call.ready[WEIGHT_STREAM_FABRIC],call.ready[WEIGHT_STREAM_PAIR]);
+			return WeightStreamFail(stream,SPARK_STATUS_IO_ERROR);
 		}
 	}
 	return SPARK_STATUS_OK;
