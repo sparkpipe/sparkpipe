@@ -1391,9 +1391,11 @@ class Memory:
             self.jobs.pop(model.id, None)
             return
         if job["kind"] == "rounds":
-            await self.rounds(model, job)
-            if job in queue:
-                queue.remove(job)
+            try:
+                await self.rounds(model, job)
+            finally:
+                if job in queue:
+                    queue.remove(job)
             return
         try:
             done = await self.curate(model, job)
