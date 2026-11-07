@@ -20,6 +20,7 @@ from latent_block_drafter import LATENT_ATTENTION_CHUNK, DrafterContractError, L
 
 LOG2E = 1.4426950408889634
 SAMPLED_CANDIDATES = 32
+MARKOV_CANDIDATES = 2048
 
 
 def refuse_unsupported(config):
@@ -159,23 +160,30 @@ class K3DsparkDrafter(LatentBlockDrafter):
         return rms(residual, self.norm, self.eps).to(torch.bfloat16)
 
     def propose(self, y, anchor_token, sampling=None, position=None, sampled=None):
-        logits = (y @ self.head.t()).float()
+        count = min(MARKOV_CANDIDATES, self.head.shape[0])
+        unary, candidates = torch.topk((y @ self.head.t()).float(), count, -1)
+        edges = torch.index_select(self.markov_next, 0, candidates.view(-1)).view(y.shape[0], count, -1).float()
         hidden = y.float()
         previous = torch.as_tensor(anchor_token, device=y.device).view(())
         tokens, scores = [], []
         for step in range(self.block):
             vector = torch.index_select(self.markov_previous, 0, previous.view(1))[0].float()
-            row = logits[step] + vector @ self.markov_next.float().t()
-            choice = torch.argmax(row)
+            row = unary[step] + edges[step] @ vector
+            slot = torch.argmax(row)
             if sampling is not None:
-                values, candidates = torch.topk(row, SAMPLED_CANDIDATES)
-                picked = torch.index_select(candidates, 0, coupled_candidates(values, candidates, sampling, position + step).view(1))[0]
-                choice = torch.where(sampled, picked, choice)
+                values, order = torch.topk(row, min(SAMPLED_CANDIDATES, count))
+                picked = coupled_candidates(values, torch.index_select(candidates[step], 0, order), sampling, position + step)
+                slot = torch.where(sampled, torch.index_select(order, 0, picked.view(1))[0], slot)
+            choice = torch.index_select(candidates[step], 0, slot.view(1))[0]
             features = torch.cat((hidden[step], vector))
             scores.append(torch.sigmoid(self.confidence_weight @ features + self.confidence_bias).view(1))
             tokens.append(choice.view(1))
             previous = choice
         return torch.cat(tokens), torch.cat(scores)
+
+    def slot_logits(self, y, slot, previous):
+        vector = self.markov_previous[int(previous)].float()
+        return (y[slot] @ self.head.t()).float() + vector @ self.markov_next.float().t()
 
     def sequential(self, y, base, anchor_token, slots):
         with torch.no_grad():
