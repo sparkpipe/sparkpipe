@@ -1,9 +1,21 @@
 # Context memory: an optimized context rebuilt in the background
 
-Status: design, 2026-11-07. It supersedes the stem and pre-warm scheduling of
-[CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and the API. The
-ledger, curator, expand and search tools, tool-output forms and store described
-there stay.
+Status, 2026-11-07: built for SparkPipe Chat; agent rounds and the API are
+next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
+the API. The ledger, curator, expand and search tools, tool-output forms, stem,
+pre-warm and store described there stay.
+
+What is built (`tools/serving/chat_memory.py`):
+- A pre-warm that finishes records its layout (the committed exchanges, the
+  groups and the tool-output forms it rendered) as the chat's newest base
+  (store record `base`).
+- A new turn is laid out from the newest base whose exchanges its history
+  holds: those exchanges are in the ledger, and every later exchange, even
+  one the curator has committed since, stays raw. A turn's layout stays
+  frozen for its follow-ups, as before. A chat with no base yet uses its
+  latest commits.
+- `tests/test_chat_memory_session.py` holds a commit raw while its pre-warm
+  runs and in the ledger for the first turn after it.
 
 ## Goal
 
