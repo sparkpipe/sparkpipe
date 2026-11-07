@@ -257,22 +257,56 @@ def install(fail_host, process=None):
     return body
 
 
-def records(work, fleet, state, model_lanes, extra, old_wd):
-    shims = work / "push-shims"
-    shims.mkdir()
-    (shims / "python3").write_text(f"""#!/usr/bin/env bash
-case "$*" in *lane_config.py\\ push\\ *) echo "${{@: -1}}" >> "$FAKE_FLEET/push.log"; exit 0 ;; esac
+def records(busy_host):
+    def body(work, fleet, state, model_lanes, extra, old_wd):
+        shims = work / "push-shims"
+        shims.mkdir()
+        (shims / "python3").write_text(f"""#!/usr/bin/env bash
+case "$*" in *lane_config.py\\ push\\ *) echo "push ${{@: -1}}" >> "$FAKE_FLEET/order.log"; exit 0 ;; esac
 exec {sys.executable} "$@"
 """)
-    (shims / "python3").chmod(0o755)
-    result = run("records", fleet, work, old_wd, state, PATH=f"{shims}:{work / 'shims'}:{os.environ['PATH']}")
-    check(result.returncode == 0 and "RECORDS-FAILED" not in result.stdout, "records failed on a healthy fleet", result)
-    pushed = (fleet / "push.log").read_text().split()
-    lanes = sorted(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"])
-    check(sorted(pushed) == lanes, f"records pushed {sorted(pushed)}, not every lane record", result)
-    check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == (ROOT / "deployment" / "hub" / "model_swap.json").read_text(),
-          "records did not install the release's controller config", result)
-    check("model_swap.py --config model_swap.json" in (fleet / "systemd-run.log").read_text(), "records did not restart the controller", result)
+        (shims / "python3").chmod(0o755)
+        records_by_lane = {}
+        for record, lane in json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"].items():
+            records_by_lane[lane["runtime_root"].format(host="HOST")[len("/home/HOST/"):-len("/root")]] = record
+        named = {}
+        for index in range(16):
+            host = f"spark{HEX[index]}"
+            for lane, _ in model_lanes:
+                digest = hashlib.sha256(f"{host} {lane}".encode()).hexdigest()
+                named[(host, records_by_lane[lane])] = digest
+                packs = fleet / host / lane / "root" / "packs"
+                packs.mkdir(parents=True, exist_ok=True)
+                (packs / "pack.sha256").write_text(f"{digest}  rank{index}.spstage\n")
+            warm = fleet / host / "sparkdata" / "swap" / "weightd_warm"
+            warm.write_text(f"""#!/usr/bin/env bash
+echo "reclaim {host} $(basename "$(dirname "$PWD")") $*" >> "$FAKE_FLEET/order.log"
+[ "$1" = /tmp/spark_weightd.sock ] && [ "$2" = --reclaim-pack ] && [ $# = 3 ] || exit 2
+exit {3 if host == busy_host else 0}
+""")
+            warm.chmod(0o755)
+        result = run("records", fleet, work, old_wd, state, PATH=f"{shims}:{work / 'shims'}:{os.environ['PATH']}")
+        order = (fleet / "order.log").read_text().splitlines() if (fleet / "order.log").exists() else []
+        pushed = [line.split()[1] for line in order if line.startswith("push ")]
+        if busy_host:
+            check(result.returncode != 0 and "RECORDS-FAILED" in result.stdout, f"records went on although weightd on {busy_host} reported the lane's pack busy", result)
+            check(pushed == [], f"records pushed {pushed} although the lane's current pack was not freed", result)
+            return
+        check(result.returncode == 0 and "RECORDS-FAILED" not in result.stdout, "records failed on a healthy fleet", result)
+        lanes = sorted(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"])
+        check(sorted(pushed) == lanes, f"records pushed {sorted(pushed)}, not every lane record", result)
+        for record in pushed:
+            position = order.index(f"push {record}")
+            for index in range(16):
+                host = f"spark{HEX[index]}"
+                line = [entry for entry in order if entry.startswith(f"reclaim {host} ") and entry.endswith(f" {named[(host, record)]}")]
+                check(len(line) == 1 and order.index(line[0]) < position,
+                      f"{host} did not free the cold arena of the pack {record}'s lane named before its new record was pushed: {line}", result)
+                check(line[0].split()[3:5] == ["/tmp/spark_weightd.sock", "--reclaim-pack"], f"{host} freed {record}'s pack with {line[0]}, not --reclaim-pack", result)
+        check((fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").read_text() == (ROOT / "deployment" / "hub" / "model_swap.json").read_text(),
+              "records did not install the release's controller config", result)
+        check("model_swap.py --config model_swap.json" in (fleet / "systemd-run.log").read_text(), "records did not restart the controller", result)
+    return body
 
 
 fleet_case("stage verifies all 16 nodes", stage(""))
@@ -282,7 +316,8 @@ fleet_case("install puts one identical release on all 16 nodes and the hub", ins
 fleet_case("install fails when one node has no staged release", install("spark9"))
 fleet_case("install is not blocked by a process that only names the residentd binary",
            install("", "pgrep -f bin/sparkpipe_model_residentd"))
-fleet_case("records writes every lane's rendered files and installs and restarts the release's controller config", records)
+fleet_case("records frees each lane's current pack on all 16 nodes, then writes every lane's rendered files and installs and restarts the release's controller config", records(""))
+fleet_case("records stops before any push when one node's weightd holds the lane's current pack", records("spark9"))
 fleet_case("install refuses while a residentd runs", install("", "./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index 6"))
 fleet_case("stage fails when one node is not staged", stage("spark9"))
 fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, state, lanes: (state / "utc").unlink()))
@@ -293,4 +328,4 @@ fleet_case("rollback refuses when a hub API backup is missing",
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records pushes every lane record and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready")
+print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready")

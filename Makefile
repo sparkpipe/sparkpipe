@@ -385,6 +385,7 @@ PYTHON_TESTS := \
 	tests/test_telemetry_stop.py \
 	tests/test_telemetry_fleet.py \
 	tests/test_telemetry_dashboard.py \
+	tests/test_telemetry_alert.py \
 	tests/test_stray_fixture_processes.py \
 	tests/test_fixture_reaping.py \
 	tests/test_kv_binding_async_source.py \
@@ -415,6 +416,7 @@ PYTHON_TESTS := \
 	tests/test_ab_fleet.py \
 	tests/test_ab_campaign_plans.py \
 	tests/test_spark_queue.py \
+	tests/test_sparkcp.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
 	tests/test_gemma4_smoke_manifest.py \
@@ -432,7 +434,9 @@ PYTHON_TESTS := \
 	tests/test_metal_kernels.py \
 	tests/test_metal_bf16_convert.py \
 	tests/test_dry_law.py \
+	tests/test_no_symlinks.py \
 	tests/test_ci_lanes.py \
+	tests/test_no_weight_links.py \
 	tests/test_device_stage_tables.py \
 	tests/test_geometry_required_switches.py \
 	tests/test_family_defines_single_source.py \
@@ -538,6 +542,8 @@ PYTHON_TESTS := \
 	tests/test_site.py \
 	tests/test_pay.py \
 	tests/test_market.py \
+	tests/test_gateway_holder_cap.py \
+	tests/test_gateway_capacity_check.py \
 	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
 	tests/test_weightd_spine_budget.py \
@@ -722,11 +728,19 @@ PYTHON_TESTS := \
 	tests/test_model_swap_memory_guard.py \
 	tests/test_model_swap_shared_label.py \
 	tests/test_model_swap_failures.py \
+	tests/test_model_swap_hub_services.py \
 	tests/test_stage_lane_kv_labels.py \
 	tests/test_stage_lane_stop.py \
 	tests/test_stage_lane_setup.py \
+	tests/test_stage_lane_dense_setup.py \
+	tests/test_release_packs.py \
+	tests/test_release_long_fill.py \
+	tests/test_reasoning_effort_choice.py \
 	tests/test_stage_lane_pack_identity.py \
+	tests/test_glm53_flash_warm_identity.py \
 	tests/test_lane_tools.py \
+	tests/test_lane_direct_packs.py \
+	tests/test_launchers_name_real_files.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
 	tests/test_chat_commands.py \
@@ -736,14 +750,21 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
 	tests/test_chat_frontend_responses.py \
+	tests/test_chat_frontend_client_fidelity.py \
+	tests/test_count_tokens_check.py \
 	tests/test_chat_frontend_fleet_api.py \
+	tests/test_context_packs.py \
+	tests/test_chat_frontend_interactive_first.py \
 	tests/test_chat_replay_store.py \
+	tests/test_anticipator.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
 	tests/test_block_draftd_retention.py \
+	tests/test_block_draftd_reserve.py \
+	tests/test_block_draftd_owner.py \
 	tests/test_dspark_serving.py \
 	tests/test_keyed_draft_capture.py \
 	tests/test_draftd_mtp_kv.py \
@@ -762,6 +783,7 @@ PYTHON_TESTS := \
 	tests/test_mimo26_stagepack_windows.py \
 	tests/test_model_api_queue_lifetime.py \
 	tests/test_model_api_accept.py \
+	tests/test_model_api_cancel.py \
 	tests/test_model_api_utf8.py \
 	tests/test_no_python_in_production.py \
 	tests/test_rtx5090_spec_node.py \
@@ -785,6 +807,7 @@ PYTHON_TESTS := \
 	tests/test_motif_schedule.py \
 	tests/test_motif3_pack.py \
 	tests/test_lane_run_log.py \
+	tests/test_local_tokenizers.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_weightd_map_fd_ownership.py \

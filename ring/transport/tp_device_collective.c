@@ -147,6 +147,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     volatile uint64_t *published_host_cell;
     uint32_t capture_armed;
     uint32_t pair_gather;
+    uint32_t pair_link;
     uint32_t pair_first;
     uint32_t round_rebased;
     uint64_t cell_mirror;
@@ -906,9 +907,11 @@ static SparkStatus SparkTpDeviceCollectivePhases(const SparkTpDeviceCollectiveIm
     }
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL )
     {
-        chunks = (slice_routes & SPARK_TP_MESH_ROUTES_PEER) != 0u ?
-            SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) :
-            SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes);
+        chunks = (slice_routes & SPARK_TP_MESH_ROUTES_PEER) == 0u ?
+            SparkTpMeshAllToAllChunks(elements,implementation->tp_degree,implementation->slot_bytes) :
+            SparkTpMeshAllToAllPipelined(elements,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u ?
+            SparkTpMeshPipelineChunks(elements,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+            SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
         phases = 1u;
         if ( chunks == 0u )
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1003,7 +1006,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && implementation->pair_gather != 0u )
         slice_routes |= SPARK_TP_MESH_ROUTES_PAIR;
     if ( operation != 2u ) elements *= SparkTpDeviceCollectiveRowElements(implementation,submission);
-    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 && implementation->pair_first != 0u &&
+    if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 && implementation->pair_first != 0u && implementation->pair_link != 0u &&
          SparkTpMeshScatterPairFirst(elements,implementation->tp_degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u )
         slice_routes |= SPARK_TP_MESH_ROUTES_PAIR_FIRST;
     if ( operation == 0u )
@@ -1012,7 +1015,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
              submission->local_device == submission->full_device )
             return SPARK_STATUS_INVALID_ARGUMENT;
         elements *= implementation->tp_degree;
-        if ( (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) == 0u && SparkTpDeviceCollectiveReduceScatterReady(implementation) != 0u &&
+        if ( (slice_routes & SPARK_TP_MESH_ROUTES_PAIR) == 0u && implementation->pair_link != 0u && SparkTpDeviceCollectiveReduceScatterReady(implementation) != 0u &&
              SparkTpMeshGatherPairFirst(elements,implementation->tp_degree,implementation->slot_bytes,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) != 0u )
             slice_routes |= SPARK_TP_MESH_ROUTES_PAIR_FIRST;
     }
@@ -2052,7 +2055,7 @@ uint64_t SparkTpDeviceCollectiveDeviceRoundsDone(
 static SparkStatus SparkTpDeviceCollectivePairShare(SparkTpDeviceCollectiveImplementation *implementation)
 {
     const uint64_t elements = (uint64_t)implementation->max_active_sequence_count * implementation->local_hidden_dimension / implementation->tp_degree;
-    if ( implementation->tp_degree < 4u || (implementation->tp_degree & 1u) != 0u || implementation->pair_share != 0 )
+    if ( implementation->tp_degree < 4u || (implementation->tp_degree & 1u) != 0u || implementation->pair_share != 0 || implementation->pair_link == 0u )
         return SPARK_STATUS_OK;
     if ( cudaMalloc((void **)&implementation->pair_share,(size_t)(elements * sizeof(uint16_t))) != 0 )
     {
@@ -2101,6 +2104,7 @@ static SparkStatus SparkTpDeviceCollectivePrepareHardware(
                 implementation->tp_rank,band,(unsigned long long)capabilities,(unsigned long long)SPARK_WEIGHTD_MESH_CAPABILITIES);
             return SPARK_STATUS_UNSUPPORTED;
         }
+        implementation->pair_link = (capabilities & SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK) != 0u ? 1u : 0u;
     }
     if ( implementation->staging_device != 0 )
         return SparkTpDeviceCollectivePairShare(implementation);

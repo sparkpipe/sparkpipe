@@ -321,10 +321,10 @@ struct LingModel
 			cudaMemcpyAsync(ReplayWriteGate(state, layer), state->write_gate, (uint64_t)rows * S::kKdaRankHeads * sizeof(float),
 				cudaMemcpyDeviceToDevice, stream) != cudaSuccess) )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
-			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index, step->sequence_row_begin,
-			(const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
-			S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices);
+		if ( LmDeltaRuleLaunch<LG_THREADS,G::kKdaDim,G::kKdaDim,float>(step->rows, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index,
+				step->sequence_row_begin, (const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
+				S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices, stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if constexpr ( G::kKdaNormRoundOnce )
 			LM_LAUNCH((LmHeadRmsNormSigmoidGateOnceKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,

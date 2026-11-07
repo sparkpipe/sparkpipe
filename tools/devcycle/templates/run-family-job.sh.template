@@ -115,7 +115,8 @@ done
 #   - runtime_root/kv_backing_directory become per-job private paths
 #   - control/transport/collective/session listeners remap into this lane's
 #     reserved ranges; unknown listener keys fail closed
-#   - packs/ holds exactly one *.sha256 digest sidecar for weightd attach
+#   - the private stage config names the real pack; packs/ holds one copied
+#     *.sha256 digest for weightd attach and no link
 #   - collective_identifier derives from the attempt id (+ lane offset)
 python3 - "$ROOT" "$RANK" "$SIZE" "$CONTROL_BASE" "$COLLECTIVE_BASE" \
          "$TRANSPORT_BASE" "$SESSION_BASE" "$ATTEMPT" "$LANE" \
@@ -158,7 +159,13 @@ for r, node in enumerate(value["nodes"]):
 
 config_name = value["nodes"][rank]["adapter_configuration_path"]
 source_root = Path(deployment["nodes"][rank]["runtime_root"])
-config = load(source_root / config_name)
+
+def direct(path):
+    if path.is_symlink() or not path.is_file():
+        fail(f"{path} is missing, not a regular file or a symlink; name the real file directly")
+    return path
+
+config = load(direct(source_root / config_name))
 
 PORT_NAMES = {"listen_port", "peer_ports", "session_ports", "session_ports_hc", "draft_bridge_port"}
 
@@ -194,17 +201,13 @@ runtime.mkdir(parents=True, exist_ok=True)
 pack_path = config["stage_pack_path"]
 if Path(pack_path).is_absolute() or ".." in Path(pack_path).parts:
     fail("pack escapes runtime root")
-source_pack = source_root / pack_path
-if not source_pack.is_file():
-    fail(f"stage pack missing: {source_pack}")
+source_pack = direct(source_root / pack_path)
+digest = direct(Path(str(source_pack) + ".sha256"))
+direct(Path(str(source_pack) + ".experts"))
+config["stage_pack_path"] = str(source_pack)
 pack_dir = runtime / "packs"
 pack_dir.mkdir()
-pack_dir.joinpath(source_pack.name).symlink_to(source_pack.resolve())
-for suffix in (".sha256", ".experts"):
-    sidecar = Path(str(source_pack) + suffix)
-    if not sidecar.is_file():
-        fail(f"missing pack sidecar {suffix} - generate the family expert manifest first")
-    pack_dir.joinpath(sidecar.name).write_bytes(sidecar.read_bytes())
+pack_dir.joinpath("pack.sha256").write_bytes(digest.read_bytes())
 digests = sorted(pack_dir.glob("*.sha256"))
 if len(digests) != 1:
     fail(f"packs/ must contain exactly one *.sha256 digest, found {len(digests)}")
@@ -244,9 +247,8 @@ fi
 # the resident attaches; the set is model-families/<family>/smoke_experts.json).
 if [ -n "$WORKING_SET" ]; then
   CONFIG_REL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["nodes"][int(sys.argv[2])]["adapter_configuration_path"])' "$ROOT/deployment.json" "$RANK")"
-  PACK_REL="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$CONFIG_REL")"
+  PACK="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stage_pack_path"])' "$ROOT/runtime/$CONFIG_REL")"
   REVISION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model_revision","0"))' "$ROOT/runtime/$CONFIG_REL")"
-  PACK="$ROOT/runtime/$PACK_REL"
   SHA="$(cut -d' ' -f1 "$PACK.sha256")"
   "$EXEC_PREFIX/weightd_warm" "$WEIGHTD_SOCKET" "$PACK" "$SHA" "$REVISION" "$SIZE" \
     --wset "$WORKING_SET" 300 >"$ROOT/warm.log" 2>&1

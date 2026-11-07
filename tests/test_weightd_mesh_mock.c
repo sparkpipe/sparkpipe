@@ -2167,6 +2167,58 @@ static void test_load_pace_while_serving(uint64_t pace)
     (void)unlink(other);
 }
 
+static void test_status(SparkWeightdIpcMeshStatusResult *status);
+
+static void test_mesh_second_rail(uint32_t local_rank)
+{
+    TestMeshRecord record;
+    SparkStubIbvPostedWork work;
+    SparkWeightdIpcMeshStatusResult status;
+    uint32_t rank,peer,first,second,a,b,partner = local_rank ^ 1u;
+    for (a = 0u; a < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; a++)
+        for (b = 0u; b < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; b++)
+            if (a != b)
+                CHECK(((SparkWeightdMeshSecondRailPeers(a,0xffffu) >> (b < a ? b : b - 1u)) & 1u) ==
+                    ((SparkWeightdMeshSecondRailPeers(b,0xffffu) >> (a < b ? a : a - 1u)) & 1u),
+                    "both ends of a link pick the same rail");
+    CHECK(__builtin_popcount(SparkWeightdMeshSecondRailPeers(local_rank,0xffffu)) == 8 &&
+        SparkWeightdMeshSecondRailPeers(0u,0x000fu) == 0x5u,"eight of fifteen peers ride the second rail; rank 0 of four sends to ranks 1 and 3 on it");
+    test_rank_mask = 0xffffu & ~(1u << partner);
+    test_clean_dir();
+    (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
+    for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+        if (rank != local_rank && rank != partner)
+            CHECK(test_write_record(rank,9u) == 0,"second rail case writes peer records");
+    SparkWeightdMeshUseSecondRail();
+    CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,
+        test_rank_mask,"rocep1s0f0",3u,104u) == SPARK_STATUS_BUSY,"a second rail needs no partner rank in the mesh");
+    CHECK(weightd_mesh.rail_peers == SparkWeightdMeshSecondRailPeers(local_rank,test_rank_mask) &&
+        __builtin_popcount(weightd_mesh.rail_peers) == 7,"without the partner seven of fourteen peers ride the second rail");
+    SparkWeightdMeshPoll();
+    CHECK(SparkWeightdMeshReady() == 1u,"second rail mesh wires");
+    for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+    {
+        if (rank == local_rank || rank == partner)
+            continue;
+        peer = rank < local_rank ? rank : rank - 1u;
+        second = (rank + local_rank) & 1u;
+        CHECK(test_read_record(rank,&record) == 0 &&
+            weightd_mesh.qp_info[peer].rkey == (second != 0u ? record.pair_rkey : record.rkey),
+            "a peer of the other parity is wired through the second rail, one of the same parity through the first");
+        first = spark_stub_ibv_posted_count();
+        CHECK(SparkWeightdMeshPostWrite(rank,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+            spark_stub_ibv_posted(first,&work) == 0 &&
+            work.lkey == (second != 0u ? weightd_mesh.pair_recv_mr->lkey : weightd_mesh.recv_mr->lkey),
+            "a write posts with the registration of its peer's rail");
+    }
+    test_status(&status);
+    CHECK(status.pair_rank == UINT32_MAX,"a second rail offers no pair-first routes");
+    weightd_mesh_second_rail = 0u;
+    test_rank_mask = 0xffffu;
+    test_clean_dir();
+    (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
+}
+
 static void test_mesh_pair_link(uint32_t local_rank)
 {
     TestMeshRecord own_record,partner_record,other_record;
@@ -2824,6 +2876,7 @@ int main(void)
     (void)unlink(path);
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
     test_mesh_pair_link(local_rank);
+    test_mesh_second_rail(local_rank);
     fprintf(stderr,"%s: %u checks, %u failures\n",
         "test_weightd_mesh_mock",test_checks,test_failures);
     return test_failures != 0u ? 1 : 0;

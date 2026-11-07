@@ -1,17 +1,18 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 3 ]; then
-	echo "usage: $0 GATE_OUT_DIR PROMPTS_JSON VOCAB" >&2
+if [ "$#" -ne 4 ]; then
+	echo "usage: $0 GATE_OUT_DIR PROMPTS_JSON VOCAB REFERENCE_DIR" >&2
 	exit 2
 fi
 out=$1
 prompts=$2
 vocab=$3
+ref_dir=$4
 names=$(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts")
 present() {
 	for name in $names; do
-		[ -f "$out/ref/$name.ref_$1.logits" ] || return 1
+		[ -f "$ref_dir/$name.ref_$1.logits" ] || return 1
 	done
 	return 0
 }
@@ -26,14 +27,14 @@ floor_set() {
 		for reference in $set_variants; do
 			for other in $set_variants; do
 				[ "$other" = "$reference" ] && continue
-				./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_$reference.logits" "$out/ref/$name.ref_$other.logits" \
+				./build/logit_compare "$prompts" "$name" "$vocab" "$ref_dir/$name.ref_$reference.logits" "$ref_dir/$name.ref_$other.logits" \
 					"$tag:$reference:$other" "$split" - "$out/compare/$kl/$name.$reference.$other.f64" >> "$out/compare/compare.jsonl"
 			done
 			for pair in $candidates; do
 				dir=${pair%%:*}
 				label=${pair#*:}
 				[ -f "$out/$dir/$name.metal.logits" ] || continue
-				./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_$reference.logits" "$out/$dir/$name.metal.logits" \
+				./build/logit_compare "$prompts" "$name" "$vocab" "$ref_dir/$name.ref_$reference.logits" "$out/$dir/$name.metal.logits" \
 					"$tag:$reference:$label" "$split" - "$out/compare/$kl/$name.$reference.$label.f64" >> "$out/compare/compare.jsonl"
 			done
 		done

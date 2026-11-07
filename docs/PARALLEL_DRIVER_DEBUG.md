@@ -281,9 +281,12 @@ deployment_sha256, source_commit, exact environment, and hashes for the
 three executables under `executables`. Each `ranks` entry supplies
 model_device_bytes and an `assets` path-to-hash map. Include driver, adapter,
 transport, configuration, collective backend library, tokenizer assets when
-used, the pack digest sidecar and expert manifest. Pack bytes are shared
-read-only through private symlinks; per-job configuration, working-set files,
-mesh records, backing cache, sockets and logs live under the attempt root.
+used, the pack digest sidecar and expert manifest. The private configuration
+names the real pack by its path, and the pinned assets (binaries, the digest,
+the working set) are copied: nothing under the attempt root is a link, and a
+pinned asset or pack that is missing or a symlink refuses the run. Per-job
+configuration, working-set files, mesh records, backing cache, sockets and
+logs live under the attempt root.
 Use a pinned independently qualified token reference; recording the candidate's
 own output is not numerical validation.
 

@@ -82,6 +82,15 @@ def main():
         worse["above_floor_blocks"] = [[128, 128] for _ in range(4)]
         worse["above_floor_positions"] = 512
         check("a candidate above the floor at every position has paired +inf and fails", summary.paired(worse)[2] == math.inf)
+        reference = work / "reference"
+        reference.mkdir()
+        (work / "metal").mkdir()
+        (work / "metal" / "greedy.metal.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "generated": [1, 2, 3]}]}))
+        (reference / "greedy.ref.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "variant": variant, "generated": generated}
+                                                                         for variant, generated in (("a", [1, 2, 4]), ("h", [1, 2, 3]))]}))
+        table = summary.greedy_table(work, reference)["synthetic"]
+        check("the greedy table reads the reference directory it is given, never a link under the output",
+              not (work / "ref").exists() and table["metal_matches_reference_a_tokens"] == 2 and table["metal_matches_reference_h_tokens"] == 3)
     long_base = [[generator.gauss(0.0, 2.0) for _ in range(VOCAB)] for _ in range(MULTI_POSITIONS)]
     for row in long_base:
         row[generator.randrange(VOCAB)] += 8.0

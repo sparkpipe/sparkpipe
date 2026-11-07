@@ -312,7 +312,8 @@ one comms model, recipes not hand-built drivers.
 
 ## HOW WORK IS RUN (2026-09-28)
 
-Claude is lead dev and the operator merges PRs by hand; PRs may stack.
+Claude is lead dev and merges a PR once it works and the operator gives
+permission; PRs may stack.
 Drivers are developed in parallel while common code improves, and the
 operator sets how many agents run. The coordinator regime of 2026-08-30 no
 longer applies: the agent cap, the 15-minute cycle and burst approval.

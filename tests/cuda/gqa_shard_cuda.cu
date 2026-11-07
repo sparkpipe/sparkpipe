@@ -483,6 +483,10 @@ int main(void)
 	ProbeTiled<16u,256u,256u>(32u,2u,70u,5000u,16u,9u,1u,1024u,0u,false);
 	ProbeTiled<4u,256u,256u>(24u,2u,40u,3000u,16u,1u,1u,0u,64u,false);
 	ProbeTiled<4u,128u,512u>(32u,2u,33u,2048u,16u,4u,1u,0u,0u,false);
+	ProbeTiled<4u,512u,512u>(32u,2u,33u,2048u,16u,4u,1u,0u,0u,false);
+	ProbeTiled<4u,512u,512u>(32u,4u,1u,4096u,16u,11u,1u,0u,0u,false);
+	ProbeTiled<2u,512u,512u>(16u,2u,40u,3000u,16u,3u,1u,1024u,0u,false);
+	ProbeTiled<4u,512u,512u>(32u,1u,1024u,32768u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<4u,256u,256u>(24u,1u,1u,65536u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<4u,256u,256u>(24u,1u,2048u,65536u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<8u,128u,128u>(64u,1u,2048u,131072u,16u,0u,1u,0u,0u,true);
@@ -492,6 +496,6 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads, 192/128 key/value heads, per-head sink logits in the merge denominator; where the flash form (each rank's weights rounded to bf16 against its running maximum, per key in the scalar kernel and per key tile in the tiled one) and exact attention round to different bf16 outputs, the output takes the flash form's at least 95% of the time and the exact form's at most 2%; the tiled kernel agrees with the scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks\n");
+	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads (tiled, with the query read per k-step), 192/128 key/value heads, per-head sink logits in the merge denominator; where the flash form (each rank's weights rounded to bf16 against its running maximum, per key in the scalar kernel and per key tile in the tiled one) and exact attention round to different bf16 outputs, the output takes the flash form's at least 95% of the time and the exact form's at most 2%; the tiled kernel agrees with the scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks\n");
 	return 0;
 }

@@ -13,7 +13,11 @@ lane_log_file() {
 lane_log_prelude() {
   local host="$1" log
   log="$(lane_log_file "$2")"
-  printf "mkdir -p logs && if [ -e %s ]; then echo '%s: %s already holds %s; refusing to overwrite it' >&2; exit 2; fi && if [ -f residentd.log ] && [ ! -L residentd.log ]; then mv residentd.log logs/residentd-before-%s.log; fi && ln -sfn %s residentd.log" "$log" "$LANE_TOOL" "$host" "$log" "$2" "$log"
+  printf "mkdir -p logs && if [ -e %s ]; then echo '%s: %s already holds %s; refusing to overwrite it' >&2; exit 2; fi && if [ -L residentd.log ]; then rm -f residentd.log; elif [ -f residentd.log ]; then mv residentd.log logs/residentd-before-%s.log; fi" "$log" "$LANE_TOOL" "$host" "$log" "$2"
+}
+
+lane_latest_log() {
+  printf '"$(ls -t %s/logs/residentd-*.log 2>/dev/null | head -1)"' "$1"
 }
 
 lane_archive() {

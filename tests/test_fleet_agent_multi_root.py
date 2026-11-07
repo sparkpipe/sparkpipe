@@ -16,6 +16,11 @@ PROD = "prod.fp8.tp16"
 DEV = "dev-l4"
 PACK_SHA = "ab" * 32
 
+
+def deployment(ranks, named="config/stage_{rank:02d}.json"):
+    nodes = [{"rank_index": rank, "adapter_configuration_path": named.format(rank=rank)} for rank in range(ranks)]
+    return json.dumps({"nodes": nodes}) + "\n"
+
 STUB = r'''
 #include <signal.h>
 #include <stdio.h>
@@ -154,7 +159,7 @@ class FleetAgentMultiRoot(unittest.TestCase):
         (self.prod / "config").mkdir()
         (self.prod / "lib").mkdir()
         shutil.copy2(self.stub, self.prod / "bin" / "sparkpipe_model_residentd")
-        (self.prod / "model_resident.json").write_text("{}\n")
+        (self.prod / "model_resident.json").write_text(deployment(16))
         for index in range(16):
             (self.prod / "config" / f"stage_{index:02d}.json").write_text("{}\n")
 
@@ -165,7 +170,7 @@ class FleetAgentMultiRoot(unittest.TestCase):
         for sub in ("bin", "config", "lib"):
             (self.dev / sub).mkdir(parents=True)
         (self.dev / "bin" / "sparkpipe_model_residentd").symlink_to(release / "bin" / "sparkpipe_model_residentd")
-        (self.dev / "model_resident.json").write_text("{}\n")
+        (self.dev / "model_resident.json").write_text(deployment(4))
         for index in range(4):
             (self.dev / "config" / f"stage_{index:02d}.json").write_text("{}\n")
         (self.dev / "config" / "rank_index_10").write_text("2\n")
@@ -217,7 +222,7 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         self.assertEqual(pid, prod_pid)
         self.assertEqual(args, ["--deployment", "model_resident.json", "--rank-index", "10"])
         self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "<unset>")
-        self.assertEqual(os.readlink(self.prod / "config" / "stage.json"), "stage_10.json")
+        self.assertFalse(os.path.lexists(self.prod / "config" / "stage.json"))
         pid, args, env = self.launch(self.dev)
         self.assertEqual(pid, dev_pid)
         self.assertLess(dev_pid, prod_pid)
@@ -228,12 +233,20 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         self.assertEqual(env["TEST_MODEL_SWITCH"], "a b=c")
         self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "<unset>")
         self.assertEqual(env["LD_LIBRARY_PATH"], str(self.dev / "lib"))
-        self.assertEqual(os.readlink(self.dev / "config" / "stage.json"), "stage_02.json")
+        self.assertFalse(os.path.lexists(self.dev / "config" / "stage.json"))
         units = (self.home / "systemd-run.log").read_text().splitlines()
         self.assertEqual(len(units), 1)
         self.assertIn("--unit=sp-agent-dev-l4", units[0])
         self.assertIn("-p MemoryMax=40G -p MemorySwapMax=0", units[0])
         self.assertIn("--working-directory=" + str(self.dev), units[0])
+
+    def test_start_removes_an_older_stage_link_and_links_nothing(self):
+        for root, stage in ((self.prod, "stage_10.json"), (self.dev, "stage_02.json")):
+            (root / "config" / "stage.json").symlink_to(stage)
+        self.start_both()
+        for root in (self.prod, self.dev):
+            self.assertEqual([path for path in (root / "config").iterdir() if path.is_symlink()], [])
+            self.assertFalse(os.path.lexists(root / "config" / "stage.json"))
 
     def test_production_root_passes_only_an_explicit_expert_pool_cap(self):
         result = self.run_agent(f'''
@@ -407,11 +420,19 @@ echo "STATE $(root_state {DEV}) $(root_pid {PROD})"
             "line": (lambda: self.write_agent_env(extra="export X=1\n"), "not KEY=VALUE"),
             "index": (lambda: (self.dev / "config" / "rank_index_10").write_text("two\n"), "rank index"),
             "stage": (lambda: (self.dev / "config" / "rank_index_10").write_text("7\n"), "stage_07.json missing"),
+            "shared stage name": (lambda: (self.dev / "model_resident.json").write_text(deployment(4, "config/stage.json")),
+                                  "names 'config/stage.json' for rank index 2, not config/stage_02.json"),
+            "no node": (lambda: (self.dev / "model_resident.json").write_text(deployment(2)), "names '' for rank index 2"),
+            "linked stage": (self.link_dev_stage, "config/stage_02.json is a symlink"),
         }
         for label, (mutate, reason) in cases.items():
             with self.subTest(case=label):
                 self.write_agent_env()
                 (self.dev / "config" / "rank_index_10").write_text("2\n")
+                (self.dev / "model_resident.json").write_text(deployment(4))
+                stage = self.dev / "config" / "stage_02.json"
+                stage.unlink()
+                stage.write_text("{}\n")
                 mutate()
                 result = self.run_agent(f'''
 start_root {PROD} && wait_ready {PROD} || exit 4
@@ -423,6 +444,13 @@ report
                 self.assertIn("STATE blocked-config", result.stdout)
                 self.assertIn(reason, self.heartbeat()["roots"][DEV]["reason"])
                 self.assertFalse((self.dev / "launch.txt").exists())
+
+    def link_dev_stage(self):
+        stage = self.dev / "config" / "stage_02.json"
+        real = self.dev / "config" / "stage_02.real.json"
+        real.write_text("{}\n")
+        stage.unlink()
+        stage.symlink_to(real.name)
 
     def test_roots_file_entries_without_a_layout_are_never_production(self):
         for name in ("agent.env", "config/env_10.env", "config/rank_index_10"):

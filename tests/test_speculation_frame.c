@@ -105,10 +105,10 @@ static void TestChoose(void)
 	SparkSpeculationFrameObserveChain(&model,8u,2048u,8u * 35000000ull);
 	SparkSpeculationFrameObserveChain(&model,1u,2048u,57000000ull);
 	SparkSpeculationFrameChoose(&model,0,&request,&choice);
-	assert(choice.drafts == SPARK_SPECULATION_FRAME_PROBE_DRAFTS && choice.probe == 1u);
+	assert(choice.drafts == 1u && choice.probe == 1u);
 	request.feasible = 5u;
 	SparkSpeculationFrameChoose(&model,0,&request,&choice);
-	assert(choice.drafts == 5u && choice.probe == 1u);
+	assert(choice.drafts == 1u && choice.probe == 1u);
 	request.feasible = 255u;
 	SparkSpeculationFrameObserveFrame(&model,2u,2048u,67000000ull);
 	SparkSpeculationFrameObserveFrame(&model,33u,2048u,234000000ull);
@@ -143,6 +143,68 @@ static void TestChoose(void)
 	request.sampled = 1u;
 	SparkSpeculationFrameChoose(&model,0,&request,&choice);
 	assert(choice.probe == 1u);
+}
+
+static void TestProbe(void)
+{
+	SparkSpeculationFrameModel model;
+	SparkSpeculationFrameRequest request;
+	SparkSpeculationFrameChoice choice;
+	SparkSpeculationHazard fresh,other;
+	uint32_t index;
+	memset(&model,0,sizeof(model));
+	memset(&request,0,sizeof(request));
+	memset(&fresh,0,sizeof(fresh));
+	memset(&other,0,sizeof(other));
+	request.feasible = 255u;
+	request.context = 2048u;
+	request.match_length = 64u;
+	SparkSpeculationFrameObserveChain(&model,8u,2048u,8u * 35000000ull);
+	SparkSpeculationFrameObserveChain(&model,1u,2048u,57000000ull);
+	SparkSpeculationFrameObserveFrame(&model,2u,2048u,36000000ull);
+	SparkSpeculationFrameObserveFrame(&model,9u,2048u,36500000ull);
+	SparkSpeculationFrameObserveFrame(&model,17u,2048u,60000000ull);
+	SparkSpeculationFrameObserveFrame(&model,64u,2048u,150000000ull);
+	SparkSpeculationFrameObserveFrame(&model,256u,2048u,500000000ull);
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 8u && choice.probe == 1u && choice.frame_ns <= SPARK_SPECULATION_FRAME_MARGIN * 35e6f);
+	request.feasible = 5u;
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 5u && choice.probe == 1u);
+	request.feasible = 255u;
+	for (index=0u; index<20u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(64u,0u)],255u,255u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	SparkSpeculationFrameChoose(&model,0,&request,&choice);
+	assert(choice.drafts == 255u && choice.probe == 0u);
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 8u && choice.probe == 1u);
+	SparkSpeculationHazardObserve(&fresh,8u,0u,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 8u && choice.probe == 1u);
+	SparkSpeculationHazardObserve(&fresh,8u,3u,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+	request.proven_drafts = 3u;
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == SPARK_SPECULATION_FRAME_GROWTH * 3u && choice.probe == 0u);
+	request.match_length = 32u;
+	for (index=0u; index<20u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(32u,0u)],255u,255u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	SparkSpeculationFrameChoose(&model,&other,&request,&choice);
+	assert(choice.drafts != 0u && choice.drafts <= SPARK_SPECULATION_FRAME_GROWTH * 3u && choice.probe == 0u);
+	request.match_length = 64u;
+	request.proven_drafts = 16u;
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == SPARK_SPECULATION_FRAME_GROWTH * 16u && choice.probe == 0u);
+	request.proven_drafts = 255u;
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 255u && choice.probe == 0u);
+	memset(&fresh,0,sizeof(fresh));
+	request.proven_drafts = 0u;
+	request.match_length = 3u;
+	for (index=0u; index<40u; index++)
+		SparkSpeculationHazardObserve(&model.classes[SparkSpeculationFrameClass(3u,0u)],8u,0u,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+	SparkSpeculationFrameChoose(&model,&fresh,&request,&choice);
+	assert(choice.drafts == 0u);
+	printf("probe frames: a class the engine has not seen, or a request with no accepted draft in a class the engine would speculate on, gets a probe of the drafts whose frame costs at most the margin over a plain step; a rejected probe keeps the cap, the first accepted draft lifts it, after which a request's frames in every class grow at most to %u times the deepest draft it has had accepted in any class, and a class the engine knows fails never probes\n",SPARK_SPECULATION_FRAME_GROWTH);
 }
 
 static void TestBatch(void)
@@ -199,7 +261,7 @@ static void TestBatch(void)
 	request.base_rows = 1u;
 	request.base_tokens = 1.0f;
 	SparkSpeculationFrameChoose(&model,0,&request,&shared);
-	assert(shared.drafts == SPARK_SPECULATION_FRAME_PROBE_DRAFTS && shared.probe == 1u && shared.frame_ns > 40e6f);
+	assert(shared.drafts == 1u && shared.probe == 1u && shared.frame_ns > 40e6f);
 }
 
 static void TestMinimum(void)
@@ -289,6 +351,7 @@ int main(void)
 	TestCost();
 	TestMinimum();
 	TestChoose();
+	TestProbe();
 	TestBatch();
 	TestStale();
 	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame; a frame shared by several lanes prices drafts against the rows and tokens already in it, with the extra cost of separate sequences learned from batch steps; a cost not refreshed for %u frames yields to its fresh neighbours and is replaced when measured again: ok\n",SPARK_SPECULATION_FRAME_STALE_FRAMES);

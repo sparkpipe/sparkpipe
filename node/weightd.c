@@ -23,6 +23,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     const char *pair_interface_name, uint32_t pair_sgid_index, uint32_t traffic_class);
 uint32_t SparkWeightdMeshReady(void);
 void SparkWeightdMeshDoorbellLoop(int32_t doorbell_cpu);
+void SparkWeightdMeshUseSecondRail(void);
 
 typedef struct SparkWeightdMeshLaunch
 {
@@ -34,6 +35,7 @@ typedef struct SparkWeightdMeshLaunch
     const char *pair_interface_name;
     uint32_t pair_sgid_index;
     uint32_t pair_fields;
+    uint32_t second_rail;
     uint32_t traffic_class;
     uint32_t traffic_class_set;
     int32_t doorbell_cpu;
@@ -156,6 +158,7 @@ static void SparkWeightdUsage(const char *program)
         "  --mesh-interface <name>  verbs device name to bind\n"
         "  --mesh-sgid-index <n>    source GID index 0..255\n"
         "  --mesh-pair-interface <name> --mesh-pair-sgid-index <n>  verbs device and GID of the point-to-point link to partner rank (rank ^ 1); traffic to the partner uses it\n"
+        "  --mesh-second-rail       the --mesh-pair-interface port is switched like --mesh-interface: traffic to every rank whose parity differs from ours uses it, and no pair-first routes are offered\n"
         "  --mesh-traffic-class <n> RoCE traffic class 0..255 of every mesh QP (DSCP << 2 plus ECN bits); selects the switch and NIC priority\n"
         "  --mesh-dir <path>        record exchange dir (env SPARK_WEIGHTD_MESH_DIR, default /tmp/weightd-mesh; use a per-deployment dir when two weightd-line daemons share the host)\n"
         "  --load-pace-bytes-per-second <n>  pack, spine and expert load rate while another lane is serving (env SPARK_WEIGHTD_LOAD_PACE_BYTES_PER_SECOND); without it such a load is refused\n"
@@ -294,6 +297,27 @@ static int SparkWeightdKvSettings(int argument_count,char **arguments,uint64_t *
     return 0;
 }
 
+static int SparkWeightdMeshLaunchCheck(const char *program, uint32_t mesh_fields)
+{
+    const char *problem = 0;
+    if (weightd_mesh_launch.pair_fields != 0u &&
+        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
+        problem = "--mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags";
+    else if (weightd_mesh_launch.second_rail != 0u && weightd_mesh_launch.pair_fields != 3u)
+        problem = "--mesh-second-rail needs --mesh-pair-interface and --mesh-pair-sgid-index";
+    else if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
+        problem = "--mesh-traffic-class needs the mesh flags";
+    if (problem != 0)
+    {
+        fprintf(stderr,"weightd: %s\n",problem);
+        SparkWeightdUsage(program);
+        return 2;
+    }
+    if (weightd_mesh_launch.second_rail != 0u)
+        SparkWeightdMeshUseSecondRail();
+    return 0;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
@@ -402,6 +426,8 @@ int main(int argument_count, char **arguments)
             weightd_mesh_launch.pair_interface_name = arguments[++index];
             weightd_mesh_launch.pair_fields |= 1u;
         }
+        else if (strcmp(arguments[index], "--mesh-second-rail") == 0)
+            weightd_mesh_launch.second_rail = 1u;
         else if (strcmp(arguments[index], "--mesh-pair-sgid-index") == 0 &&
             index + 1 < argument_count)
         {
@@ -513,19 +539,8 @@ int main(int argument_count, char **arguments)
         return 2;
     }
 
-    if (weightd_mesh_launch.pair_fields != 0u &&
-        (weightd_mesh_launch.pair_fields != 3u || mesh_fields != 15u))
-    {
-        fprintf(stderr,"weightd: --mesh-pair-interface and --mesh-pair-sgid-index go together and need the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
+    if (SparkWeightdMeshLaunchCheck(arguments[0],mesh_fields) != 0)
         return 2;
-    }
-    if (weightd_mesh_launch.traffic_class_set != 0u && mesh_fields != 15u)
-    {
-        fprintf(stderr,"weightd: --mesh-traffic-class needs the mesh flags\n");
-        SparkWeightdUsage(arguments[0]);
-        return 2;
-    }
     memset(&config, 0, sizeof(config));
     config.socket_path = socket_path;
     config.device_bytes_max = device_bytes_max;

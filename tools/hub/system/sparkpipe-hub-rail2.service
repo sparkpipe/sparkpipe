@@ -1,0 +1,14 @@
+[Unit]
+Description=SparkPipe hub rail 2: lossless RoCE QoS on enp175s0f1np1 (DSCP trust, PFC priorities 3 and 6)
+BindsTo=sys-subsystem-net-devices-enp175s0f1np1.device
+After=sys-subsystem-net-devices-enp175s0f1np1.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=-/usr/sbin/ethtool -A enp175s0f1np1 rx off tx off
+ExecStart=/usr/sbin/dcb app replace dev enp175s0f1np1 dscp-prio 26:3 48:6 50:6
+ExecStart=/usr/sbin/dcb pfc set dev enp175s0f1np1 prio-pfc 3:on 6:on
+
+[Install]
+WantedBy=sys-subsystem-net-devices-enp175s0f1np1.device

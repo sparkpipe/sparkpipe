@@ -36,7 +36,7 @@ static __host__ __device__ constexpr uint32_t LmLatentShardPrefillSharedBytes(vo
 {
 	return(2u * LM_PREFILL_ATTN_TILE * DIM * 2u
 		+ 2u * LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE * 4u
-		+ 2u * LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
+		+ LM_LATENT_SHARD_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
 		+ 3u * LM_LATENT_SHARD_QUERIES * 4u
 		+ 2u * LM_PREFILL_ATTN_TILE * 8u);
 }
@@ -82,8 +82,7 @@ void LmLatentShardPrefillKernel(
 	uint8_t *keys = lm_shard_prefill_shared;
 	float *score_parts = (float *)(keys + 2u * TILE * ROW_BYTES);
 	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE);
-	uint16_t *weight_low = weight_high + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE;
-	float *running_max = (float *)(weight_low + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
+	float *running_max = (float *)(weight_high + QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
 	float *running_sum = running_max + QUERIES;
 	float *rescale = running_sum + QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + QUERIES);
@@ -269,7 +268,6 @@ void LmLatentShardPrefillKernel(
 		{
 			const uint32_t local = tile * TILE + lane;
 			float value[WARP_QUERIES], peak[WARP_QUERIES], previous_max[WARP_QUERIES], next_max[WARP_QUERIES], weight[WARP_QUERIES], scale[WARP_QUERIES], total[WARP_QUERIES];
-			uint16_t high;
 #pragma unroll
 			for (index = 0u; index < WARP_QUERIES; index++)
 			{
@@ -301,9 +299,7 @@ void LmLatentShardPrefillKernel(
 			for (index = 0u; index < WARP_QUERIES; index++)
 			{
 				q = warp * WARP_QUERIES + index;
-				high = LmFloatToBf16(weight[index]);
-				weight_high[q * LM_PREFILL_ATTN_WEIGHT_STRIDE + lane] = high;
-				weight_low[q * LM_PREFILL_ATTN_WEIGHT_STRIDE + lane] = LmFloatToBf16(weight[index] - LmBf16ToFloat(high));
+				weight_high[q * LM_PREFILL_ATTN_WEIGHT_STRIDE + lane] = LmFloatToBf16(weight[index]);
 			}
 			__syncwarp();
 			if (lane == 0u)
@@ -318,7 +314,7 @@ void LmLatentShardPrefillKernel(
 		}
 		__syncthreads();
 		{
-			uint32_t a_high[2][4], a_low[2][4], b[4], first[2], second[2];
+			uint32_t a_high[2][4], b[4], first[2], second[2];
 #pragma unroll
 			for (m = 0u; m < 2u; m++)
 			{
@@ -340,7 +336,6 @@ void LmLatentShardPrefillKernel(
 				{
 					const uint32_t a_row = m * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
 					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high[m]);
-					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_low + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_low[m]);
 				}
 #pragma unroll
 				for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
@@ -354,9 +349,7 @@ void LmLatentShardPrefillKernel(
 					for (m = 0u; m < 2u; m++)
 					{
 						LmMmaBf16(output[m][frag], a_high[m], first);
-						LmMmaBf16(output[m][frag], a_low[m], first);
 						LmMmaBf16(output[m][frag + 1u], a_high[m], second);
-						LmMmaBf16(output[m][frag + 1u], a_low[m], second);
 					}
 				}
 			}

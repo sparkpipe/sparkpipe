@@ -34,6 +34,7 @@ SPARK_NODE_COUNT = len(SPARK_NODES)
 DEFAULT_NODES = ",".join(SPARK_NODES + tuple("%s=%s" % (node,node) for node in AUXILIARY_NODES))
 TELEMETRY_DIR = "/tmp/ds4_telemetry"
 MAC_TELEMETRY_DIR = os.path.join(TELEMETRY_DIR,"mac")
+SAMPLE_STALE_AFTER_S = 30.0
 NODE_TELEMETRY_CSV = "node_telemetry.csv"
 NODE_TELEMETRY_SUMMARY = "node_telemetry.summary.json"
 QUEUE_RATE_WINDOW_S = float(os.environ.get("DS4_QUEUE_RATE_WINDOW_S","1800"))
