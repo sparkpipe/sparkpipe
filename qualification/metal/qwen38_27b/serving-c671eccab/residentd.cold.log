@@ -1,0 +1,307 @@
+model_residentd: kv_partition / free_bytes=172243120128 node_kv_ledger=/Users/m5u0/.sparkpipe-kv-ledger; the node's own KV on disk shares the ledger's quota (500000000000 bytes by default)
+qwen38_27b_stage adapter: rows=1024 shared_rows=1024 head_rows=64
+qwen38_27b_stage kv pool device bytes=4294983680 pages=1024 page_table_bytes=4096
+qwen38_27b_stage kv backing /Users/m5u0/serve/q27-root/kvcache bytes=4303355904 pages=1026 node_quota=500000000000 node_used=7260872704 snapshot_bytes=2957516800 backing_bytes=4303355904 status=ok
+qwen38_27b_stage kv capacity pages=1024/1024 tokens=65536 margin_bytes=0 event=attach resident_tokens=65536 chunks=0/0
+qwen38_27b_stage kv binding recurrent lane_bytes=154927104 state_slots=27 state_memory_bytes=4183031808 page_store_backing_bytes=4303355904 kept_states=newest 4 plus every 16384 tokens status=ok
+qwen38_27b_stage kv write meter: every spill, state and snapshot write is counted; KV-WRITE-ALERT above 21474836480 bytes in an hour
+qwen38_27b_stage kv node quota ledger=/Users/m5u0/.sparkpipe-kv-ledger quota_bytes=500000000000 used_bytes=4303355904 snapshot_bytes=0 snapshot_stores=1 backing_bytes=4303355904 backing_stores=1
+qwen38_27b_stage kv snapshot store directory=/Users/m5u0/serve/q27-root/kvsnapshot node_quota_bytes=500000000000 queue_bytes=9915596800 file_bytes=154931200 used_bytes=0 files=0 matching_files=0 foreign_layout_files=0 orphans=0 evicted_at_open=0 expired_at_open=0 expired_bytes_at_open=0 removed_temporaries=0 removed_legacy=0 driver=/Users/m5u0/serve/q27-root/lib/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib identity_us=7723 layout=9483dba989f00feba94a297dfe346efb0a6b71aa36966147ff0db53773f31007
+qwen38_27b_stage kv binding async completion_records=1 copy_on_write=device copy_queue=own restore=worker
+qwen38_27b_stage kv binding logical_pages=1280 physical_pages=1024 pages_per_sequence=256 page_bytes=4194304 regions=1 context_shard=0/1 layout=9483dba989f00feba94a297dfe346efb0a6b71aa36966147ff0db53773f31007
+model_residentd adapter_max_sequence_positions=16384
+model_residentd ready rank=0 stage=0 inflight=4 active=4 rows=1024 resident=4 adapter=qwen38_27b-bf16-tp1 model=Qwen/Qwen3.8-27B revision=qwen38_27b-bf16-tp1 tcp=127.0.0.1:23400
+FLUSH-TRACE fd=14 wrote=592 of 592 remaining=1
+SUBMIT-ARRIVED id=1000001 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=1
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=1
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=1
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=1
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=1
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=1
+model_residentd submission_rejected status=3 id=1000001 kind=1 rows=1 lanes=1 last_id=0
+SUBMISSION-REJECTED id=1000001 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000001 lane=0 slot=0 request=100001/1 step=1000001 sequence=100001 position=1099 context=1100 flags=0xf prefix=1099/1 publish=1100/1
+SUBMISSION-REJECTED-ROW id=1000001 row=0 lane=0 sequence=100001 position=1099
+SUBMIT-RESULT-TRACE id=1000001 status=3 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000002 bytes=25456 decision=1
+SUBMIT-RESULT-TRACE id=1000002 status=0 queued=1 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+DECISION id=1000002 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:1152 status=3 count=1
+ERRSITE cache/kv_page_store.c:1152 status=3 count=2
+ERRSITE cache/kv_page_store.c:1152 status=3 count=3
+ERRSITE cache/kv_page_store.c:1152 status=3 count=4
+ERRSITE cache/kv_page_store.c:1152 status=3 count=5
+ERRSITE cache/kv_page_store.c:1152 status=3 count=6
+ERRSITE cache/kv_page_store.c:1152 status=3 count=7
+ERRSITE cache/kv_page_store.c:1152 status=3 count=8
+FLUSH-TRACE fd=14 wrote=72 of 72 remaining=3
+FLUSH-TRACE fd=14 wrote=228 of 228 remaining=2
+FLUSH-TRACE fd=14 wrote=480 of 480 remaining=1
+SUBMIT-RESULT-TRACE id=1000003 status=0 queued=1 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+ERRSITE cache/kv_page_store.c:880 status=15 count=1
+FLUSH-TRACE fd=14 wrote=228 of 228 remaining=1
+SUBMIT-RESULT-TRACE id=1000004 status=0 queued=1 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+FLUSH-TRACE fd=14 wrote=228 of 228 remaining=1
+SUBMIT-RESULT-TRACE id=1000005 status=0 queued=1 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=1
+ERRSITE cache/kv_page_store.c:925 status=15 count=1
+FLUSH-TRACE fd=14 wrote=256 of 256 remaining=1
+SUBMIT-RESULT-TRACE id=1000006 status=0 queued=1 output_count=1 fd=14
+SUBMIT-RESULT-TRACE id=1000007 status=0 queued=1 output_count=1 fd=14
+SUBMIT-ARRIVED id=1000008 bytes=400 decision=1
+SUBMIT-RESULT-TRACE id=1000008 status=0 queued=1 output_count=1 fd=14
+DECISION id=1000008 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000009 bytes=400 decision=1
+SUBMIT-RESULT-TRACE id=1000009 status=0 queued=1 output_count=1 fd=14
+DECISION id=1000009 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=2
+ERRSITE cache/kv_page_store.c:911 status=15 count=2
+ERRSITE cache/kv_page_store.c:925 status=15 count=2
+SUBMIT-ARRIVED id=1000010 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=2
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=2
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=2
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=2
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=2
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=2
+model_residentd submission_rejected status=3 id=1000010 kind=1 rows=1 lanes=1 last_id=1000009
+SUBMISSION-REJECTED id=1000010 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000010 lane=0 slot=0 request=100002/2 step=1000010 sequence=100002 position=1799 context=1800 flags=0xf prefix=1799/1 publish=1800/1
+SUBMISSION-REJECTED-ROW id=1000010 row=0 lane=0 sequence=100002 position=1799
+SUBMIT-RESULT-TRACE id=1000010 status=3 queued=2 output_count=1 fd=14
+SUBMIT-ARRIVED id=1000011 bytes=25456 decision=1
+SUBMIT-RESULT-TRACE id=1000011 status=0 queued=1 output_count=1 fd=14
+DECISION id=1000011 decision=1 status=0 slot=0
+SUBMIT-RESULT-TRACE id=1000012 status=0 queued=1 output_count=1 fd=14
+ERRSITE cache/kv_page_store.c:880 status=15 count=3
+ERRSITE cache/kv_page_store.c:911 status=15 count=3
+ERRSITE cache/kv_page_store.c:925 status=15 count=3
+SUBMIT-ARRIVED id=1000017 bytes=400 decision=1
+DECISION id=1000017 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000018 bytes=400 decision=1
+DECISION id=1000018 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=4
+ERRSITE cache/kv_page_store.c:911 status=15 count=4
+ERRSITE cache/kv_page_store.c:925 status=15 count=4
+SUBMIT-ARRIVED id=1000019 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=3
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=3
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=3
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=3
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=3
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=3
+model_residentd submission_rejected status=3 id=1000019 kind=1 rows=1 lanes=1 last_id=1000018
+SUBMISSION-REJECTED id=1000019 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000019 lane=0 slot=0 request=100003/3 step=1000019 sequence=100003 position=699 context=700 flags=0xf prefix=699/1 publish=700/1
+SUBMISSION-REJECTED-ROW id=1000019 row=0 lane=0 sequence=100003 position=699
+SUBMIT-ARRIVED id=1000020 bytes=17496 decision=1
+DECISION id=1000020 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=5
+ERRSITE cache/kv_page_store.c:911 status=15 count=5
+ERRSITE cache/kv_page_store.c:925 status=15 count=5
+SUBMIT-ARRIVED id=1000023 bytes=400 decision=1
+DECISION id=1000023 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000028 bytes=400 decision=1
+DECISION id=1000028 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000029 bytes=400 decision=1
+DECISION id=1000029 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=6
+ERRSITE cache/kv_page_store.c:911 status=15 count=6
+ERRSITE cache/kv_page_store.c:925 status=15 count=6
+SUBMIT-ARRIVED id=1000030 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=4
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=4
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=4
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=4
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=4
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=4
+model_residentd submission_rejected status=3 id=1000030 kind=1 rows=1 lanes=1 last_id=1000029
+SUBMISSION-REJECTED id=1000030 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000030 lane=0 slot=0 request=100004/4 step=1000030 sequence=100004 position=702 context=703 flags=0xf prefix=702/1 publish=703/1
+SUBMISSION-REJECTED-ROW id=1000030 row=0 lane=0 sequence=100004 position=702
+SUBMIT-ARRIVED id=1000031 bytes=472 decision=1
+ERRSITE cache/kv_page_store.c:901 status=15 count=1
+ERRSITE cache/kv_page_store.c:925 status=15 count=7
+ERRSITE cache/kv_page_store.c:911 status=15 count=7
+ERRSITE cache/kv_page_store.c:925 status=15 count=8
+DECISION id=1000031 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=7
+ERRSITE cache/kv_page_store.c:911 status=15 count=8
+SUBMIT-ARRIVED id=1000033 bytes=400 decision=1
+DECISION id=1000033 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000034 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=5
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=5
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=5
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=5
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=5
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=5
+model_residentd submission_rejected status=3 id=1000034 kind=1 rows=1 lanes=1 last_id=1000033
+SUBMISSION-REJECTED id=1000034 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000034 lane=0 slot=0 request=100005/5 step=1000034 sequence=100005 position=2039 context=2040 flags=0xf prefix=2039/1 publish=2040/1
+SUBMISSION-REJECTED-ROW id=1000034 row=0 lane=0 sequence=100005 position=2039
+SUBMIT-ARRIVED id=1000035 bytes=25456 decision=1
+DECISION id=1000035 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=8
+SUBMIT-ARRIVED id=1000039 bytes=400 decision=1
+DECISION id=1000039 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000042 bytes=400 decision=1
+DECISION id=1000042 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000043 bytes=400 decision=1
+DECISION id=1000043 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000044 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=6
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=6
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=6
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=6
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=6
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=6
+model_residentd submission_rejected status=3 id=1000044 kind=1 rows=1 lanes=1 last_id=1000043
+SUBMISSION-REJECTED id=1000044 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000044 lane=0 slot=0 request=100006/6 step=1000044 sequence=100006 position=1111 context=1112 flags=0xf prefix=1111/1 publish=1112/1
+SUBMISSION-REJECTED-ROW id=1000044 row=0 lane=0 sequence=100006 position=1111
+SUBMIT-ARRIVED id=1000045 bytes=688 decision=1
+ERRSITE cache/kv_page_store.c:901 status=15 count=2
+DECISION id=1000045 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000049 bytes=400 decision=1
+DECISION id=1000049 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000050 bytes=400 decision=1
+DECISION id=1000050 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000051 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000051 kind=1 rows=1 lanes=1 last_id=1000050
+SUBMIT-ARRIVED id=1000052 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=7
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=7
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=7
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=7
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=7
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=7
+model_residentd submission_rejected status=3 id=1000052 kind=1 rows=1 lanes=1 last_id=1000050
+SUBMISSION-REJECTED id=1000052 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000052 lane=0 slot=0 request=100007/7 step=1000052 sequence=100007 position=1811 context=1812 flags=0xf prefix=1811/1 publish=1812/1
+SUBMISSION-REJECTED-ROW id=1000052 row=0 lane=0 sequence=100007 position=1811
+SUBMIT-ARRIVED id=1000053 bytes=688 decision=1
+DECISION id=1000053 decision=1 status=0 slot=0
+STAGE-WAVE-HOST tag=qwen38_27b_stage rank=0 prefill_waves=16 admit_ms=0.0 submit_ms=341.3 capture_ms=0.0 sync_ms=2.1 finish_ms=25.5
+SUBMIT-ARRIVED id=1000057 bytes=400 decision=1
+DECISION id=1000057 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000058 bytes=400 decision=1
+DECISION id=1000058 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000059 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000059 kind=1 rows=1 lanes=1 last_id=1000058
+SUBMIT-ARRIVED id=1000060 bytes=424 decision=1
+ERRSITE cache/kv_page_cache.c:968 status=3 count=8
+ERRSITE cache/kv_page_cache.c:1010 status=3 count=8
+ERRSITE cache/kv_page_cache.c:1247 status=3 count=8
+ERRSITE cache/kv_page_cache.c:2210 status=3 count=8
+ERRSITE cache/kv_page_cache.c:3687 status=3 count=8
+ERRSITE runtime/stage_kv_binding.c:1878 status=3 count=8
+model_residentd submission_rejected status=3 id=1000060 kind=1 rows=1 lanes=1 last_id=1000058
+SUBMISSION-REJECTED id=1000060 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000060 lane=0 slot=0 request=100008/8 step=1000060 sequence=100008 position=711 context=712 flags=0xf prefix=711/1 publish=712/1
+SUBMISSION-REJECTED-ROW id=1000060 row=0 lane=0 sequence=100008 position=711
+SUBMIT-ARRIVED id=1000061 bytes=648 decision=1
+DECISION id=1000061 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000066 bytes=400 decision=1
+DECISION id=1000066 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000067 bytes=400 decision=1
+DECISION id=1000067 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000068 bytes=424 decision=1
+model_residentd submission_rejected status=3 id=1000068 kind=1 rows=1 lanes=1 last_id=1000067
+SUBMISSION-REJECTED id=1000068 kind=1 status=not_found lanes=1/1 rows=1 tokens_per_sequence=1 position=0
+SUBMISSION-REJECTED-LANE id=1000068 lane=0 slot=0 request=100009/9 step=1000068 sequence=100009 position=2051 context=2052 flags=0xf prefix=2051/1 publish=2052/1
+SUBMISSION-REJECTED-ROW id=1000068 row=0 lane=0 sequence=100009 position=2051
+SUBMIT-ARRIVED id=1000069 bytes=720 decision=1
+ERRSITE cache/kv_page_store.c:901 status=15 count=3
+DECISION id=1000069 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000073 bytes=400 decision=1
+DECISION id=1000073 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000074 bytes=400 decision=1
+DECISION id=1000074 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000075 bytes=424 decision=1
+DECISION id=1000075 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000079 bytes=400 decision=1
+DECISION id=1000079 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000080 bytes=400 decision=1
+DECISION id=1000080 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000081 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:901 status=15 count=4
+DECISION id=1000081 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000085 bytes=400 decision=1
+DECISION id=1000085 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000086 bytes=400 decision=1
+DECISION id=1000086 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000087 bytes=424 decision=1
+DECISION id=1000087 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000091 bytes=400 decision=1
+DECISION id=1000091 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000092 bytes=400 decision=1
+DECISION id=1000092 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000093 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:901 status=15 count=5
+SUBMIT-ARRIVED id=1000094 bytes=616 decision=1
+SUBMIT-ARRIVED id=1000095 bytes=424 decision=1
+DECISION id=1000093 decision=1 status=0 slot=0
+DECISION id=1000094 decision=1 status=0 slot=1
+DECISION id=1000095 decision=1 status=0 slot=2
+SUBMIT-ARRIVED id=1000097 bytes=400 decision=1
+DECISION id=1000097 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000100 bytes=400 decision=1
+DECISION id=1000100 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000106 bytes=568 decision=1
+DECISION id=1000106 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000108 bytes=400 decision=1
+DECISION id=1000108 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000110 bytes=400 decision=1
+DECISION id=1000110 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000111 bytes=400 decision=1
+DECISION id=1000111 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000112 bytes=424 decision=1
+DECISION id=1000112 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000116 bytes=400 decision=1
+DECISION id=1000116 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000117 bytes=400 decision=1
+DECISION id=1000117 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000118 bytes=424 decision=1
+DECISION id=1000118 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000122 bytes=400 decision=1
+DECISION id=1000122 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000123 bytes=400 decision=1
+DECISION id=1000123 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000124 bytes=424 decision=1
+DECISION id=1000124 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000126 bytes=400 decision=1
+DECISION id=1000126 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000131 bytes=400 decision=1
+DECISION id=1000131 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000132 bytes=400 decision=1
+DECISION id=1000132 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000133 bytes=424 decision=1
+DECISION id=1000133 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000135 bytes=400 decision=1
+DECISION id=1000135 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000138 bytes=400 decision=1
+DECISION id=1000138 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000139 bytes=400 decision=1
+DECISION id=1000139 decision=1 status=0 slot=0
+model_residentd client closed: peer eof fd=14
+model_residentd_exit rank=0 stage=0 passes=393 adapter_ops=196 max_ops_per_pass=1
+qwen38_27b_stage kv snapshot store close saved_entries=9 unsaved_entries=0 ineligible_entries=0 used_bytes=2957516800 files=130 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_bytes=0 status=ok
+qwen38_27b_stage kv binding states records=16 slots=27 superseded=0 pressure_demoted=0 spill_queued=0 checkpoint_persists=9 dropped_unsaved=0 rekeyed=0 pinned_skips=0 dedup_lost=0 promoted=7 staged_drops=12
+qwen38_27b_stage kv binding lock site=admit count=386 mean_us=4.0 max_us=74.0
+qwen38_27b_stage kv binding lock site=reset count=0 mean_us=0.0 max_us=0.0
+qwen38_27b_stage kv binding lock site=continuity count=87 mean_us=0.6 max_us=3.0
+qwen38_27b_stage kv binding lock site=claim count=174 mean_us=0.1 max_us=1.0
+qwen38_27b_stage kv binding lock site=finish count=192 mean_us=1.5 max_us=42.0
+qwen38_27b_stage kv binding lock site=publish count=44 mean_us=0.6 max_us=2.0
+qwen38_27b_stage kv binding lock site=save count=149 mean_us=4.0 max_us=28.0
+qwen38_27b_stage kv binding lock site=restore count=25 mean_us=1.3 max_us=6.0
+qwen38_27b_stage kv binding completions=87 entry_max_us=1.0 queue_mean_us=5955.6 queue_max_us=64822.0 copy_on_write=0
+qwen38_27b_stage kv binding arena evicted=0 park_failures=0 park_backing_full=0 park_stalls=0 store_writes=0 store_reads=0 backing_pages=0 backing_reclaims=0 backing_full=0 backing_full_queued=0 degraded=0 degraded_entries=0 degraded_discards=0 park_stall_queued=0
+qwen38_27b_stage kv binding restore worker jobs=9 hints=25 hinted_jobs=9 pending_answers=2 imported_pages=0

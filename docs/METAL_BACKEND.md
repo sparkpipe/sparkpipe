@@ -268,6 +268,34 @@ device API:
 A request therefore resumes from the longest prefix the cache holds, on a
 Studio as on the fleet, and computes only the rest.
 
+**Build.** `make build/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib`
+links the 27B glue (`QWEN38_27B_DEVICE_STAGE`), the stage serving adapter,
+the device serving runner (`inference/runner/device_serving_runner.c`), the
+KV binding, its copier, the claims and the cache with the device runner and
+the Qwen 3.8 device stage, against the Metal device library only. The
+serving path's calls into weightd's KV pool and lane client and into the
+CUDA mesh are CUDA-host services; a host that runs no weightd links
+`runtime/spark_weightd_absent.c` and
+`ring/transport/tp_device_collective_absent.c`, which answer each call
+`SPARK_STATUS_UNSUPPORTED`, as the host device backend refuses what it
+cannot do. The adapter never reaches them there: a runner that maps its own
+pack takes the device pool and refuses `device_collective`. A deployment
+root holds the adapter in `lib/` and the device library with
+`sparkpipe_kernels.metallib` in `lib/runtime_libs/`; the deployment names
+no weightd and no chat template, since the chat layer renders prompts and
+sends token ids.
+
+**Proven** on one M5 Ultra
+([receipt](../qualification/metal/qwen38_27b/serving-c671eccab/RECEIPT.json),
+`tools/serving_greedy_check.py`): through `sparkpipe_model_api` and
+`sparkpipe_model_residentd`, greedy tokens equal `metal_stage_run`'s token
+for token when both split the prefill alike (one of four prompts sits on a
+0.019-nat tie that a different split decides). A continuation from a cached
+prefix equals the uninterrupted run (I27), prompts resume from the snapshot
+store after both processes restart, a seed repeats its draw, and concurrent
+requests equal the same requests alone. One sequence decodes 18.1 tokens a
+second.
+
 ## Tensor parallel ranks
 
 A runner opened with `tp_degree` N > 1 is one rank of N. It reads its own
