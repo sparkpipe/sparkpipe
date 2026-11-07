@@ -392,11 +392,11 @@ Every night, the anticipator chooses which leaves to build and keep warm for the
 4. **Hints.** What the customer says tomorrow is about: `sparkpipe anticipate focus src/consensus/** "allocator migration"`, a task list file, or pinned leaves.
 
 **Planning.**
-- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf.
+- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf: directories, pairs of directories, and each recent session's working set.
 - **Score.** Each candidate is scored as:
   - the expected uses tomorrow (recent sessions on those files, decayed by age, raised by hints)
   - × the prefill time a use would save (its tokens at the model's measured cold prefill rate)
-  - − the night's prefill time to build it
+  - − the night's prefill time to build it, counted at a tenth of a daytime wait, since night prefill runs on an idle fleet
   - − the cache it takes.
 - **Selection.** The plan is chosen greedily by score per gigabyte of new cache, counting shared roots and trunks once, until the night's compute budget or the cache budget runs out.
 - **Output.** Every planned leaf lists its files, the signals behind it, its expected uses and its build time.
