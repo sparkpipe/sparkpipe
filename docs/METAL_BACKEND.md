@@ -235,14 +235,26 @@ device API:
   decode chains (each step's sampled token feeds the next) and verify frames
   (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
   runner's queue (`SparkStageRunnerQueue`) through the device API instead of
-  on a CUDA stream.
+  on a CUDA stream; the CUDA runner adopts its execution stream as that queue
+  (`SparkDeviceQueueAdopt`).
 - **Memory.** The KV binding allocates its page table, staging pages and
-  recurrent-state buffers with the device API and copies with it. The pool is
-  weightd's on CUDA, adopted into the device API (`SparkDeviceAdopt`), and one
-  device buffer on a Studio. The runner reads the binding's pool and page
-  table through `attach_kv`, so pages are shared between sequences with
-  copy-on-write, and a resumed sequence's recurrent state is restored into its
-  slot before its first row.
+  recurrent-state buffers with the device API and copies with it. Before it
+  loads its configuration, the adapter reads the flags the linked runner
+  always sets (`SparkStageRunnerImplementationFlags`). The CUDA runner sets
+  none: the adapter takes weightd's attach environment, and the KV pool is
+  weightd's, adopted into the device API (`SparkDeviceAdopt`), with the
+  shared prefix window, the seal a restarted engine reattaches, and the
+  thread that grows and shrinks the pool. The device runner sets
+  `SPARK_STAGE_RUNNER_FLAG_OWN_PACK`: the adapter reads no weightd
+  environment, refuses `streamed_prefill` and `device_collective`, and the
+  KV pool is one `DEVICE_PRIVATE` buffer at the full physical page count
+  (`SPARK_STAGE_KV_POOL_SOURCE_DEVICE`), with no shared window, no reattach
+  and no resizing; a prefix outlives a restart through the snapshot store.
+  Either way the KV layout takes its pack identity from
+  `SparkStageRunnerPackIdentity`. The runner reads the binding's pool and
+  page table through `attach_kv`, so pages are shared between sequences with
+  copy-on-write, and a resumed sequence's recurrent state is restored into
+  its slot before its first row.
 - **Sampling.** Distribution rows are sampled on the device with the formulas
   the CUDA sampler uses (`inference/kernels/kernel_math.cuh`), so a seed gives
   the same token on both backends.

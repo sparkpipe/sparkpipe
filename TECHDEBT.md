@@ -1546,7 +1546,10 @@ and the multidev docs on 2026-09-28. Line numbers are in
 - The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
   has buffers in the five spaces, register and map_file, queues, events and
   kernel launch, with host, CUDA and Metal backends built as one shared
-  library each. Only the contract tests and the Metal stage runner use it.
+  library each. The contract tests, the Metal stage runner and the common
+  serving path use it: the stage serving adapter, the KV binding and its
+  copy-on-write copier allocate, copy and wait only through it, and the CUDA
+  stage runner adopts its execution stream as a device queue.
   Production modules call the CUDA runtime directly and own their streams,
   graphs and allocations; move them behind the device layer so a module
   target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
@@ -1559,6 +1562,21 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `SparkStageRunnerKv`. The Metal model reads them as a `SparkDeviceQueue *`
   and device addresses. Convert them to `SparkDeviceQueue *` and
   `SparkDeviceAddress` in one ABI change with every consumer.
+- The stage-runner API (`include/sparkpipe/spark_stage_runner.h`) still
+  carries CUDA streams type-erased: `SparkStageRunnerConfiguration.execution_stream`,
+  which the stage serving adapter forwards from residentd, and the `stream`
+  of `SparkStageRunnerRecurrentCopy`, which the adapter maps back from the
+  runner's queue (the configured stream for a queued copy, 0 for a
+  synchronous one). A device runner runs on its own queue and has no use for
+  either. Pass `SparkDeviceQueue *` there in the same ABI change.
+- The KV binding's weightd pool path calls weightd's CUDA VMM client
+  (`runtime/spark_weightd_kv_pool.c`), which a host without CUDA links
+  through the CUDA stub (`PENDING_BUILD` in `tests/test_device_neutral.py`).
+  A runner that maps its own pack gets a fixed pool instead, one device
+  buffer: no shared prefix window between engines, no reattach across a
+  restart and no resizing against the node budget. Moving KV pool sizing
+  onto the device layer (the `make_resident`/`evict` bullet below) gives
+  both sources one sizing path.
 - The Metal kernels (`inference/kernels/metal/`) implement the operations of
   the CUDA kernels (`inference/kernels/`) a second time, in Metal. The
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
