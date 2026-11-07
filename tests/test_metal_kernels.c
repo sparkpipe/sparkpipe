@@ -4325,11 +4325,11 @@ static double AttentionSlack(double value, double spread, double flips, double m
 static double AttentionValueWeight(const double *score, const double *slack, uint32_t base, uint32_t first, uint32_t key, uint32_t end, uint32_t prefill,
 	double best, double *flip)
 {
-	const uint32_t partition = prefill != 0u ? SPARK_ATTENTION_PREFILL_PARTITION_KEYS : SPARK_ATTENTION_DECODE_PARTITION_KEYS;
-	const uint32_t begin = key / partition * partition > first ? key / partition * partition : first;
+	const uint32_t partition = SPARK_ATTENTION_DECODE_PARTITION_KEYS, tile = key / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS;
+	const uint32_t start = prefill != 0u ? tile : key / partition * partition;
+	const uint32_t begin = start > first ? start : first;
 	const uint32_t partition_end = key / partition * partition + partition < end ? key / partition * partition + partition : end;
-	const uint32_t stop = prefill != 0u ? ((key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS < end ?
-		(key / SPARK_ATTENTION_BLOCK_KEYS + 1u) * SPARK_ATTENTION_BLOCK_KEYS : end) : partition_end;
+	const uint32_t stop = prefill != 0u ? end : partition_end;
 	double peak = -INFINITY, peak_slack = 0.0, weight;
 	uint32_t k;
 	for ( k = begin; k < stop; k++ )
