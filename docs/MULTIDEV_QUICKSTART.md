@@ -235,8 +235,9 @@ python3 "$Q" sync --repo CHECKOUT --id dev-model-001 \
 Use the printed checkout path and build coherent family artifacts through the
 queue (CUDA validation needs GPU admission). The family wrapper prepares a
 private deployment under `$SPARK_QUEUE_RUNTIME_ROOT` and keeps children in its
-queue cgroup. Its runtime `packs/` directory must contain exactly one valid
-`*.sha256` digest ([WEIGHTD_SUPERVISED_STARTUP.md](WEIGHTD_SUPERVISED_STARTUP.md)).
+queue cgroup. Its private stage config names the real pack by its path, and
+its runtime `packs/` directory holds exactly one valid `*.sha256` digest, a
+copy, and no link ([WEIGHTD_SUPERVISED_STARTUP.md](WEIGHTD_SUPERVISED_STARTUP.md)).
 Keep ports, runtime, KV and logs private. The resident launch uses the common
 executable:
 

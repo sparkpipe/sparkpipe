@@ -2,6 +2,7 @@
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
 . "$KIT/rollover_lib.sh"
+. "$KIT/../tools/lane_run_log.sh"
 RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
 RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
 activate() {
@@ -163,7 +164,7 @@ case "$step" in
   qualify)
     for id in ${ONLY:-$MODELS}; do
       stamp "qualify $id"
-      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' \$HOME/$(field $id lane)/root/residentd.log | tail -2" | head -8; continue; fi
+      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' $(lane_latest_log "\$HOME/$(field $id lane)/root") | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
       hub "cd $RD/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --models-endpoint http://127.0.0.1:8433 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
@@ -172,7 +173,7 @@ case "$step" in
         [ -n "$eff" ] && hub "cd $RD/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi
       hub "cd $RD/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
-      fan "grep -a -c -i -E 'error|fail|fault|abort' \$HOME/$(field $id lane)/root/residentd.log" | awk '{s+=$2} END {print "rank log error lines:", s}'
+      fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
   rollback)
