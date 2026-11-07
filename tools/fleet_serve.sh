@@ -89,7 +89,7 @@ start() {
         ready=0
         err=""
         for h in "${HOSTS[@]}"; do
-            line=$($SSH "$h" "tail -1 '$(rr "$h")'/residentd.log 2>/dev/null" 2>/dev/null || true)
+            line=$($SSH "$h" "tail -1 '$(rr "$h")'/$(lane_log_file "$run_id") 2>/dev/null" 2>/dev/null || true)
             case "$line" in
                 *"model_residentd ready"*) ready=$((ready+1)) ;;
                 *usage*|*error*|*failed*|*Mismatch*) err="$err [$h] $line" ;;
@@ -105,7 +105,7 @@ start() {
         fi
         sleep 1
     done
-    echo "TIMEOUT not-ready (see residentd.log per host)"
+    echo "TIMEOUT not-ready (see $(lane_log_file "$run_id") per host)"
     return 1
 }
 
