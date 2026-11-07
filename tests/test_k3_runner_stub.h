@@ -22,6 +22,8 @@ static SparkStatus test_recurrent_status = SPARK_STATUS_OK;
 static SparkStatus test_pack_status = SPARK_STATUS_OK;
 static SparkStatus test_check_status = SPARK_STATUS_OK;
 static uint32_t test_check_calls;
+static SparkDeviceQueue *test_runner_queue;
+static uint32_t test_implementation_flags;
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 {
@@ -180,4 +182,15 @@ SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t
 		return(test_pack_status);
 	memset(digest, 0x5a, digest_bytes);
 	return(SPARK_STATUS_OK);
+}
+
+SparkDeviceQueue *SparkStageRunnerQueue(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(test_runner_queue);
+}
+
+uint32_t SparkStageRunnerImplementationFlags(void)
+{
+	return(test_implementation_flags);
 }
