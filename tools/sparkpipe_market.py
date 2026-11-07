@@ -413,14 +413,26 @@ class Market:
                 return weeks, off, price
         return None
 
-    def hour_discount(self, rules, account, now):
+    def held_discount(self, rules, account, now):
         pinned = {b["fleet"] for b in self.st.bookings.values() if b["account"] == account and b["kind"] == "week" and b["ends"] > now}
         weeks, fleet = max(((self.weeks_left(account, fleet_id, now)[0], fleet_id) for fleet_id in pinned), default=(0, None))
-        found = {"discount": self.discount(rules, weeks), "weeks": weeks, "basis": "held" if weeks else None, "fleet": fleet}
+        return weeks, fleet, self.discount(rules, weeks)
+
+    def hour_discount(self, rules, account, now):
+        weeks, fleet, off = self.held_discount(rules, account, now)
+        found = {"discount": off, "weeks": weeks, "basis": "held" if weeks else None, "fleet": fleet}
         waiting = self.lock_plan(rules, self.st.locked(account), Decimal(1), 0) if account in self.st.locks else None
-        if waiting and waiting[1] > found["discount"]:
+        if waiting and waiting[1] > off:
             found = {"discount": waiting[1], "weeks": waiting[0], "basis": "waitlist", "fleet": None}
         return found
+
+    def waitlist_repay(self, account):
+        lock = self.st.locks.get(account)
+        if not lock:
+            return Decimal(0), []
+        joined = stamp_time(lock["joined"])
+        mine = sorted((b for b in self.st.bookings.values() if b["account"] == account and b.get("waitlist_saving") and stamp_time(b["now"]) >= joined), key=lambda b: b["booking"])
+        return sum((Decimal(b["waitlist_saving"]) for b in mine), Decimal(0)), [b["booking"] for b in mine]
 
     def discount_view(self, found):
         return dict(found, discount=format(found["discount"], "f"))
@@ -461,10 +473,15 @@ class Market:
     def hour_plan(self, pricing, account, fleet, start, hours, now):
         end = start + HOUR * hours
         self.check_hours(pricing, account, fleet, start, end, now)
-        found = self.hour_discount(pricing["bookings"], account, now)
-        price = hc(Decimal(hours) * Decimal(str(pricing["bookings"]["hourHC"])) * fleet["rate"] * (1 - found["discount"]))
-        return {"fleet": fleet["id"], "start": slot_text(start), "end": slot_text(end), "hours": hours, "discount": format(found["discount"], "f"), "weeks": found["weeks"],
+        rules = pricing["bookings"]
+        found = self.hour_discount(rules, account, now)
+        base = Decimal(hours) * Decimal(str(rules["hourHC"])) * fleet["rate"]
+        price = hc(base * (1 - found["discount"]))
+        plan = {"fleet": fleet["id"], "start": slot_text(start), "end": slot_text(end), "hours": hours, "discount": format(found["discount"], "f"), "weeks": found["weeks"],
                 "basis": found["basis"], "price": text_hc(price)}
+        if found["basis"] == "waitlist":
+            plan["waitlist_saving"] = text_hc(hc(base * (1 - self.held_discount(rules, account, now)[2])) - price)
+        return plan
 
     def check_first(self, pricing, fleet, first, now):
         gate = self.gate(pricing, "weeksFrom")
@@ -527,7 +544,7 @@ class Market:
             now = self.now()
             self.advance(now)
             plan = self.hour_plan(pricing, account, fleet, start, hours, now)
-            ident = self.pay(account, fleet, "hour", start, slot_time(plan["end"]), Decimal(plan["price"]), now, {"hours": hours, "discount": plan["discount"]})
+            ident = self.pay(account, fleet, "hour", start, slot_time(plan["end"]), Decimal(plan["price"]), now, {key: plan[key] for key in ("hours", "discount", "waitlist_saving") if key in plan})
             self.confirmed(self.st.bookings[ident], now)
             return self.booking_view(self.st.bookings[ident], now)
 
@@ -582,13 +599,18 @@ class Market:
 
     def leave(self, account):
         with self.book.lock:
-            self.advance(self.now())
+            now = self.now()
+            self.advance(now)
             if account not in self.st.locks:
                 raise Refusal("This account is not on the waitlist.", 404)
             places = self.positions()
-            self.book.append("unlock", {"account": account, "hc": text_hc(self.st.locked(account)), "reason": "leave", "now": stamp(self.now())})
-            self.moved(places, self.now(), {account})
-        return {"locked": text_hc(0), "position": None}
+            owed, refs = self.waitlist_repay(account)
+            self.book.append("unlock", {"account": account, "hc": text_hc(self.st.locked(account)), "reason": "leave", "now": stamp(now)})
+            repaid = hc(min(owed, self.st.balance(account, stamp(now))))
+            if repaid > 0:
+                self.book.append("hc_debit", {"account": account, "hc": text_hc(repaid), "reason": "waitlist_discount", "ref": ",".join(refs), "now": stamp(now)})
+            self.moved(places, now, {account})
+        return {"locked": text_hc(0), "position": None, "repaid": text_hc(repaid)}
 
     def lapse_at(self, now):
         moment = stamp(now)
@@ -1309,7 +1331,7 @@ class Market:
 
     def booking_view(self, b, now):
         state = "ended" if b["ends"] <= now else "live" if b["begins"] <= now else "upcoming"
-        shown = {key: b.get(key) for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "source", "unlocked")}
+        shown = {key: b.get(key) for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "waitlist_saving", "source", "unlocked")}
         return dict(shown, created=b["now"], state=state)
 
     def pinned_view(self, account, pricing, now):
@@ -1336,6 +1358,7 @@ class Market:
                 "position": self.position(account),
                 "joined": st.locks[account]["joined"] if account in st.locks else None,
                 "discount": self.discount_view(self.hour_discount(pricing["bookings"], account, now)),
+                "waitlistRepay": text_hc(self.waitlist_repay(account)[0]) if account in st.locks else None,
                 "lots": [{"lot": l["lot"], "hc": text_hc(l["hc"]), "first": l["first"], "expires": l["expires"], "source": l["source"], "ref": l["ref"], "issued": l["issued"], "expired": l["expires"] <= moment} for l in st.lots[account]],
                 "bookings": [self.booking_view(b, now) for b in mine],
                 "pinned": self.pinned_view(account, pricing, now),

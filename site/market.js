@@ -211,7 +211,8 @@
     const start = $('hours-start').value ? slotFromLocal($('hours-start').value) : '';
     const hours = Math.floor(Number($('hours-count').value) || 0);
     quoteInto('hours-quote', '/market/quote-hours', fleet && start && hours >= 1 ? { fleet, start, hours } : null,
-      (q) => `${q.hours} hour${q.hours === 1 ? '' : 's'} on ${q.fleet} from ${kst(q.start)} KST: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off for ${discountFor({ basis: q.basis, weeks: q.weeks })}` : ''}.`);
+      (q) => `${q.hours} hour${q.hours === 1 ? '' : 's'} on ${q.fleet} from ${kst(q.start)} KST: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off for ${discountFor({ basis: q.basis, weeks: q.weeks })}` : ''}.`
+        + (Number(q.waitlist_saving) ? ` If you leave the waitlist before it gives you a fleet, the ${hc(q.waitlist_saving)} HC saved is repaid from your lock.` : ''));
   }
 
   async function refresh() {
@@ -288,7 +289,12 @@
     e.preventDefault();
     act('m-waitlist', () => spend('/market/waitlist', { lock: String(Math.floor(Number($('lock-hc').value) || 0)) }), (r) => `${hc(r.locked)} HC locked. Your position: ${r.position}.`);
   });
-  $('leave').addEventListener('click', () => act('m-waitlist', () => call('POST', '/market/waitlist/leave', {}), () => 'You left the waitlist, and your HC is unlocked.'));
+  $('leave').addEventListener('click', () => {
+    const owed = Number((S.state && S.state.account && S.state.account.waitlistRepay) || 0);
+    if (owed && !confirm(`Leaving now repays ${hc(owed)} HC, what the waitlist discount saved on hours you booked while waiting, from your lock. Leave the waitlist?`)) return;
+    act('m-waitlist', () => call('POST', '/market/waitlist/leave', {}),
+      (r) => (Number(r.repaid) ? `You left the waitlist: ${hc(r.repaid)} HC of waitlist discount repaid, the rest of your HC unlocked.` : 'You left the waitlist, and your HC is unlocked.'));
+  });
   document.querySelectorAll('[data-clock]').forEach((b) => b.addEventListener('click', () => act('m-clock', () => call('POST', '/market/sandbox/clock', { hours: Number(b.dataset.clock) }), (r) => `Service time is now ${kst(r.now)} KST.`)));
   $('reset').addEventListener('click', () => {
     if (!confirm('Reset the sandbox for everyone? All sandbox accounts, HC and bookings are cleared.')) return;

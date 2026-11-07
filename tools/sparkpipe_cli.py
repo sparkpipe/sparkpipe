@@ -627,9 +627,14 @@ def waitlist_lock(ctx):
 
 def waitlist_leave(ctx):
     client = ctx.client()
-    confirm(ctx, "Leave the waitlist and unlock your HC? You lose your position.")
+    confirm(ctx, "Leave the waitlist and unlock your HC? You lose your position, and what the waitlist discount saved on hours booked while waiting is repaid from your lock.")
     found = client.call("POST", "/market/waitlist/leave", {}, auth="session")
-    emit(ctx, found, ["Left the waitlist; your HC is unlocked."])
+    repaid = found.get("repaid")
+    try:
+        owed = Decimal(str(repaid)) if repaid is not None else Decimal(0)
+    except InvalidOperation:
+        owed = Decimal(0)
+    emit(ctx, found, [f"Left the waitlist; {repaid} HC of waitlist discount was repaid from your lock and the rest of your HC is unlocked." if owed > 0 else "Left the waitlist; your HC is unlocked."])
     return 0
 
 

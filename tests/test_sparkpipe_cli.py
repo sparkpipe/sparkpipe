@@ -545,6 +545,9 @@ def check_book(failures, home, fake):
     expect(failures, code == 1 and len(fake.find("POST", "/market/waitlist")) == 1, "a lock that is not a number is sent")
     code, out, _ = home.run("waitlist", "leave", answers=["yes"])
     expect(failures, code == 0 and fake.find("POST", "/market/waitlist/leave")[0]["body"] == {}, "waitlist leave")
+    fake.route("POST", "/market/waitlist/leave", (200, {}, {"locked": "0.000000", "position": None, "repaid": "0.300000"}))
+    code, out, _ = home.run("waitlist", "leave", "--yes")
+    expect(failures, code == 0 and "0.300000 HC of waitlist discount was repaid" in out, f"leaving the waitlist does not say what its discount repaid: {out}")
 
 
 @scenario

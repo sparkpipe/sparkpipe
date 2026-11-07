@@ -200,7 +200,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 16. Waitlist
 
-16.1. **Joining.** Customer may join the waitlist by locking at least the HC we publish for a Week from its balance. Locked HC cannot be spent while it is locked. Customer may add to its lock, or leave the waitlist and unlock all of it, at any time.
+16.1. **Joining.** Customer may join the waitlist by locking at least the HC we publish for a Week from its balance. Locked HC cannot be spent while it is locked. Customer may add to its lock, or leave the waitlist and unlock all of it, at any time. If Customer leaves, the lock first repays the HC by which the discount of clause 14.2(b) lowered the price of the Hours Customer booked since it joined, beyond the discount of clause 14.2(a). Only leaving repays: a lock that books Weeks under clause 16.3, or that we unlock under clause 16.4, repays nothing.
 
 16.2. **Order.** The waitlist is ordered by the HC locked, largest first, and at equal locks by the time of joining. We show each customer only its own position.
 
