@@ -207,8 +207,22 @@ class Swapper:
             if code != 0:
                 raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
 
-    async def release(self, label):
-        self.check(await self.fan(self.drop_kv, 60, {"label": label}), f"KV pool {label} release")
+    async def stop_all(self, models):
+        for model in models:
+            await self.drain(model)
+        for model, (code, text) in zip(models, await asyncio.gather(*(self.local(model["api_stop"], 60) for model in models))):
+            if code != 0:
+                raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
+        joined = " && ".join(f"( {model['node_stop']} )" for model in models)
+        self.check(await self.fan(joined, self.node_seconds, {}), f"{len(models)} models' engine stop")
+        stopping = [model for model in models if model.get("hub_stop")]
+        for model, (code, text) in zip(stopping, await asyncio.gather(*(self.local(model["hub_stop"], self.hub_seconds) for model in stopping))):
+            if code != 0:
+                raise SwapError(f"{model['id']} hub service stop exit {code}: {text[-300:]}")
+
+    async def release(self, labels):
+        joined = " && ".join(f"( {substitute(self.drop_kv, {'label': label})} )" for label in labels)
+        self.check(await self.fan(joined, 60, {}), f"KV pool release of {', '.join(labels)}")
 
     async def start(self, model):
         run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
@@ -260,14 +274,12 @@ class Swapper:
             else:
                 self.active = None
                 others = [other for other in self.models.values() if other["id"] != target]
-                for other in others:
-                    self.enter(f"stopping {other['id']}")
-                    await self.stop(other)
+                self.enter("stopping engines")
+                await self.stop_all(others)
                 self.enter(f"clearing {target}")
                 await self.stop(model)
-                for label in dict.fromkeys(other["kv_label"] for other in others):
-                    self.enter(f"releasing KV pool {label}")
-                    await self.release(label)
+                self.enter("releasing KV pools")
+                await self.release(list(dict.fromkeys(other["kv_label"] for other in others)))
                 self.enter("checking memory")
                 before = await self.admit(model)
                 await self.start(model)
@@ -300,12 +312,10 @@ class Swapper:
         previous = self.active
         try:
             self.active = None
-            for model in self.models.values():
-                self.enter(f"stopping {model['id']}")
-                await self.stop(model)
-            for label in dict.fromkeys(model["kv_label"] for model in self.models.values()):
-                self.enter(f"releasing KV pool {label}")
-                await self.release(label)
+            self.enter("stopping engines")
+            await self.stop_all(list(self.models.values()))
+            self.enter("releasing KV pools")
+            await self.release(list(dict.fromkeys(model["kv_label"] for model in self.models.values())))
             for model in self.models.values():
                 self.enter(f"reclaiming {model['id']} cold arenas")
                 self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
