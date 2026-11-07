@@ -30,8 +30,7 @@ DEFAULT_SERVER_IP = "192.168.50.128"
 DEFAULT_ROOT_DEVICE = "/dev/nvme0n1p2"
 RESCUE_MASKED_UNITS = (
     "ds4-switched-fabric.service",
-    "ds4-direct-pair-fabric.service",
-    "ds4-direct-pair-fabric-p2.service",
+    "ds4-rail2-fabric.service",
 )
 DEFAULT_RECOVERY_IDENTITY = Path.home() / ".ssh" / "sparkpipe_fleet_root"
 DEFAULT_PROBE_NODES = ("spark0","spark2","spark3","spark4","spark5","spark6","spark7")

@@ -1,19 +1,20 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 3 ]; then
-	echo "usage: $0 GATE_OUT_DIR PROMPTS_JSON VOCAB" >&2
+if [ "$#" -ne 4 ]; then
+	echo "usage: $0 GATE_OUT_DIR PROMPTS_JSON VOCAB REFERENCE_DIR" >&2
 	exit 2
 fi
 out=$1
 prompts=$2
 vocab=$3
+ref_dir=$4
 names=$(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts")
 variants=""
 for variant in a b h; do
 	present=1
 	for name in $names; do
-		[ -f "$out/ref/$name.ref_$variant.logits" ] || present=0
+		[ -f "$ref_dir/$name.ref_$variant.logits" ] || present=0
 	done
 	[ "$present" = 1 ] && variants="$variants $variant"
 done
@@ -29,12 +30,12 @@ for name in $names; do
 	for reference in $variants; do
 		for other in $variants; do
 			[ "$other" = "$reference" ] && continue
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_$reference.logits" "$out/ref/$name.ref_$other.logits" \
+			./build/logit_compare "$prompts" "$name" "$vocab" "$ref_dir/$name.ref_$reference.logits" "$ref_dir/$name.ref_$other.logits" \
 				"mf:$reference:$other" "$split" - "$out/compare/kl/$name.$reference.$other.f64" >> "$out/compare/compare.jsonl"
 		done
 		for label in metal metal_rows64 control control_layers control_rotate control_experts; do
 			[ -f "$out/$label/$name.metal.logits" ] || continue
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_$reference.logits" "$out/$label/$name.metal.logits" \
+			./build/logit_compare "$prompts" "$name" "$vocab" "$ref_dir/$name.ref_$reference.logits" "$out/$label/$name.metal.logits" \
 				"mf:$reference:$label" "$split" - "$out/compare/kl/$name.$reference.$label.f64" >> "$out/compare/compare.jsonl"
 		done
 	done

@@ -245,6 +245,19 @@ async def isolation_rules(harness, check):
     status, _, text = await harness.post("/v1/detokenize", {"model": "alpha", "tokens": json.loads(text)["tokens"]}, account="acme", **{"X-SparkPipe-Key": "k_one"})
     check("Read it." in json.loads(text)["text"], "the member who made the turn sees it rendered from its stored tokens")
 
+    engine.reply(CALL_REPLY)
+    status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "Read notes.txt"}]), account="acme", **{"X-SparkPipe-Member": "MBALICE", "X-SparkPipe-Key": "k_laptop"})
+    call = json.loads(text)["choices"][0]["message"]["tool_calls"][0]
+    notes = [{"role": "user", "content": "Read notes.txt"}, {"role": "assistant", "content": "Checking.", "tool_calls": [call]}, {"role": "tool", "tool_call_id": call["id"], "content": "hello"}]
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat(notes), account="acme", **{"X-SparkPipe-Member": "MBALICE", "X-SparkPipe-Key": "k_ci"})
+    check(json.loads(text)["sparkpipe"]["replayed_tokens"] > 0, "a member's turn replays for the same member's other key, so a team member is one member whatever key it uses")
+    engine.reply(ANSWER)
+    status, _, text = await harness.post("/v1/chat/completions", chat(notes), account="acme", **{"X-SparkPipe-Member": "MBBOB", "X-SparkPipe-Key": "k_laptop"})
+    check(json.loads(text)["sparkpipe"]["replayed_tokens"] == 0, "the gateway's member header, not the key, decides whose turn replays")
+    check(chat_frontend.Frontend.member_of({"gateway": True}, {"X-SparkPipe-Member": "MBALICE", "X-SparkPipe-Key": "k_ci"}) == "MBALICE" and chat_frontend.Frontend.member_of({"gateway": True}, {"X-SparkPipe-Key": "k_ci"}) == "k_ci",
+          "fair share counts the gateway's member, and the key when the gateway names no member")
+
     working = frontend.replay.find
 
     def unreadable(*arguments, **options):
@@ -420,7 +433,7 @@ def main():
                  "background keys run below interactive ones; bad header values are not echoed; a failed controller falls back to the last residency and "
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
                  "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
-                 "its own conversation's turn and only for its own member, also through tokenize; an unreadable store falls back to a normal render; a key "
+                 "its own conversation's turn and only for its own member (the gateway's X-SparkPipe-Member, across that member's keys), also through tokenize; an unreadable store falls back to a normal render; a key "
                  "made with --priority background runs below interactive requests")
 
 

@@ -2,6 +2,8 @@
 set -eu
 
 ARM=laguna-s-2.1.bf16.tp8pp2
+LANE_TOOL=lag_t1_launch
+. "$(dirname "$0")/lane_weights.sh"
 PROMPT_IDS=$1
 NEW_TOKENS=$2
 API_PORT=18733
@@ -27,8 +29,9 @@ for rank in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
 		set -eu
 		root=\$HOME/sparkdata/$ARM
 		mkdir -p \$root/runs
-		cd \$root/config && ln -sf stage_$(printf '%02d' "$rank").json stage.json
 		cd \$root
+		$(lane_config_check "$host" config/model_resident.json "$rank")
+		if [ -L config/stage.json ]; then rm -f config/stage.json; fi
 		SPARK_WEIGHTD_SOCKET=/run/sparkpipe-weightsd/weightsd.sock \
 		SPARK_LAGUNA_T1=1 \
 		nohup bin/sparkpipe_model_residentd --deployment config/model_resident.json --rank-index $rank \

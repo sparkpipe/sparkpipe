@@ -79,7 +79,7 @@ def resident_deployment():
             "runtime_root": f"/home/{host}/sparkdata/{ARM}",
             "node_target": NODE_TARGET,
             "transport_host": host,
-            "adapter_configuration_path": "config/stage.json",
+            "adapter_configuration_path": "config/stage_%02d.json" % rank,
             "kv_backing_directory": f"/home/{host}/kvcache/{ARM}",
             "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.

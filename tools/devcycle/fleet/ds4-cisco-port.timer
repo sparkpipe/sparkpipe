@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the DS4 Cisco fabric port outside the boot-critical path
+
+[Timer]
+OnBootSec=30
+Unit=ds4-cisco-port.service
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target

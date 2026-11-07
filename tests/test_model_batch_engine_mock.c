@@ -3213,8 +3213,8 @@ static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployme
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && submissions != 0u && submissions <= 10u && server.requests == submissions,
 		"model drafts: frames that turn out slower than chains back the request off to chains, with no draft requests during the backoff");
 	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_CLOSE,script,40u,&state,&view,&submissions,&rows,&server);
-	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests == 1u,
-		"model drafts: a broken draft server pauses model drafts and decoding continues");
+	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,40u) != 0u && submissions == 0u && server.requests == 3u,
+		"model drafts: a failed draft request backs off only its own request, 8 tokens then doubling, and decoding continues");
 	{
 		SparkModelResidentDeployment drafted = *deployment;
 		static char host[] = "127.0.0.1";

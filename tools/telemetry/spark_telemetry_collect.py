@@ -15,8 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Tuple
 
 try:
+    from . import spark_telemetry_alert as alert
     from . import spark_telemetry_common as telemetry
 except ImportError:
+    import spark_telemetry_alert as alert
     import spark_telemetry_common as telemetry
 
 
@@ -35,6 +37,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ssh-control-dir", default="")
     p.add_argument("--ssh-control-persist", type=int, default=0)
     p.add_argument("--fetch-workers", type=int, default=telemetry.SPARK_NODE_COUNT)
+    p.add_argument("--alert-state", default="")
+    p.add_argument("--alert-host", default="rtx5090")
+    p.add_argument("--alert-mail-script", default="/srv/workspace/sparkpipe/telemetry-alert/spark_telemetry_mail.py")
     return(p.parse_args())
 
 
@@ -397,7 +402,10 @@ def collect_once(args: argparse.Namespace) -> Dict[str,object]:
         write_node_rows(os.path.join(raw_dir,name + ".csv"),text,rows,args.tail_lines)
         all_rows[name] = rows
     queue = telemetry.read_ds4_api_queue(args.ds4_api_url,args.ds4_api_timeout)
-    return(write_combined(args.out_dir,all_rows,errors,queue,fetch_errors,stale_nodes))
+    summary = write_combined(args.out_dir,all_rows,errors,queue,fetch_errors,stale_nodes)
+    if args.alert_state:
+        alert.notify_dead_nodes(summary,args.alert_state,args.alert_host,args.alert_mail_script,args.ssh_config)
+    return(summary)
 
 
 def main() -> int:
