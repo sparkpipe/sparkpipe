@@ -48,7 +48,6 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_SPECULATOR 2u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_CONNECT_MS 200u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_IO_SLACK_MS 100u
-#define SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS UINT64_C(5000000000)
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_CALIBRATION_DECAY 0.98f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN 0.3f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR 0.3f
@@ -56,6 +55,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FRAMES 6.0f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_RATE_FLOOR 0.97f
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS 64u
+#define SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS 8u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS 1024u
 
 _Static_assert(SPARK_STATUS_EVICT_DENIED < SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT,"every status must have its own rejection counter");
@@ -210,7 +210,6 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_wait_us;
 	uint64_t model_draft_unavailable;
 	uint64_t model_draft_backoffs;
-	uint64_t model_draft_retry_ns;
 	float model_depth_predicted[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	float model_depth_observed[SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH];
 	SparkModelServingLane *scratch_lanes;
@@ -1397,14 +1396,19 @@ static uint32_t SparkModelBatchChainCheckpoint(const SparkModelBatchEngine *engi
 	return(request->state != SPARK_MODEL_BATCH_REQUEST_READY_DECODE || after / engine->cache_block_token_count > before / engine->cache_block_token_count ? 1u : 0u);
 }
 
-static void SparkModelBatchModelBackoff(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
+static void SparkModelBatchModelBackoffFrom(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request, uint32_t first)
 {
-	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS )
-		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
+	if ( request->model_backoff_tokens < first )
+		request->model_backoff_tokens = first;
 	request->model_backoff_until = request->generated_token_count + request->model_backoff_tokens;
 	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
 		request->model_backoff_tokens *= 2u;
 	engine->model_draft_backoffs++;
+}
+
+static void SparkModelBatchModelBackoff(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
+{
+	SparkModelBatchModelBackoffFrom(engine,request,SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS);
 }
 
 static void SparkModelBatchObserveModelRate(
@@ -3205,7 +3209,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	uint32_t count = 0u, drafts = 0u, index;
 	float expected = 1.0f, path = 1.0f, all_accepted = 0.0f, wait_ns = 0.0f;
 	SparkStatus status;
-	if ( depth == 0u || started < engine->model_draft_retry_ns || request->generated_token_count < request->model_backoff_until ||
+	if ( depth == 0u || request->generated_token_count < request->model_backoff_until ||
 		!(SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) > 0.0f) )
 		return(0u);
 	engine->model_draft_rounds++;
@@ -3225,9 +3229,9 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	if ( status != SPARK_STATUS_OK )
 	{
 		engine->model_draft_failures++;
-		engine->model_draft_retry_ns = SparkModelBatchNowNs() + SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS;
-		fprintf(stderr,"batch engine: model draft request failed (status %d, server status %u); model drafts pause for %llu s\n",(int)status,info.server_status,
-			(unsigned long long)(SPARK_MODEL_BATCH_MODEL_DRAFT_RETRY_NS / UINT64_C(1000000000)));
+		SparkModelBatchModelBackoffFrom(engine,request,SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS);
+		fprintf(stderr,"batch_model_draft_failed status=%d server_status=%u request=%llu backoff_tokens=%u failures=%llu\n",(int)status,info.server_status,
+			(unsigned long long)request->request_id,request->model_backoff_tokens,(unsigned long long)engine->model_draft_failures);
 		return(0u);
 	}
 	{
