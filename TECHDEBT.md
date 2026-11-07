@@ -1470,13 +1470,26 @@ and the multidev docs on 2026-09-28. Line numbers are in
     paired test of the models near its limit is within reach of
     reduction-order noise; the code keeps `exp`. The gate's floor now
     carries that noise: reference variant h (`tools/reference_device_error.py`)
-    adds a GPU's measured exp and tanh error to variant b's reduction order,
+    adds a GPU's measured exp and tanh error, and its matrix unit's FP32
+    accumulation error, to variant b's reduction order,
     because the floor of reduction order alone (a against b) failed the
     reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
     the gate now judges every candidate against all three variants a, b
     and h, each the reference in turn ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)),
     and the references that hold only a and h are getting b;
   Kernel bodies (the schedules) stay per backend.
+- HY4's gate references hold a b that never split a matrix product
+  (2026-11-07). From f06f138b7, which gave `tools/hy4_reference.py` its b
+  variant, until 6e9f4b535, the tool set its product chunk to 1,024 and then
+  overwrote it with its 32 MiB read size, so b reversed the reductions and the
+  expert order but took every product whole, as a does. Metal's HY4 gate
+  (`hy4-ref-fl`: +1.30 sigma on the 512-position rule, KL 1.05, 0.99 and 1.03
+  times the floors) judged against that b. Its floors sat close together (a to
+  b 0.0291 nats, a to h 0.0275, b to h 0.0314), so the missing product-order
+  noise did not visibly tighten them, but HY4 is not proven until b and h are
+  recomputed with the fixed tool (h now also carries the GPU accumulation
+  error) and Metal's HY4 logits are re-judged against them. CUDA's HY4 has no
+  reference-floor gate yet (its entry under Production qualification).
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
   Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
