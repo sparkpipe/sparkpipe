@@ -36,7 +36,10 @@ What is built (`tools/serving/chat_memory.py`):
   settings the conversation will continue with: Qwen 3.8's template opens its
   system block with the reasoning effort, so a base warmed at another effort
   shares nothing past the first few tokens with the next request, which then
-  prefills the whole layout cold.
+  prefills the whole layout cold. The import checks its memory identity once,
+  when it arrives, and opens every batch as that identity: a long history
+  takes as long as its batches do, past the life of the token it was sent
+  with.
 
 ## Goal
 
