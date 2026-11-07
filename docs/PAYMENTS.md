@@ -168,6 +168,7 @@ On the VPS, back up `/var/www/html`, `/opt/sparkpipe-pay/*.py`, the ledgers and 
   - `release ORDER` fetches a `mismatch` invoice again and, once CoinPayments says `completed`, issues the HC the amount received covers at the order's price per HC.
   - `credit EMAIL HC NOTE` adds a lot of HC under clause 4.4 and tells the customer by `downtime.credited`, with the note, always by email. The service credits downtime it records by itself; this is for a customer's records that ours do not cover (clause 4.4, second sentence).
   - `uptime FLEET FROM TO` (UTC dates or times) lists a Fleet's down periods in a window from the uptime records.
+  - `erase-records EMAIL NOTE` deletes the records of an account's requests on its written request (DPA clause 9.3: within 30 days), with the request as the note, and emails the owner (`docs/FLEET_BOOKINGS.md`, Usage records). It also emails `SPARKPIPE_PAY_NOTIFY` the chat layer's `--erase-records` command, to run on each hub within the same 30 days (`docs/LITELLM_FRONTEND.md`).
   - `swift-confirm REFERENCE USD [NOTE]` and `swift-cancel REFERENCE REASON` are under SWIFT bank transfers above; `refund` takes SWIFT orders too.
   - `maintenance FLEET YYYY-MM-DD [HOURS]` schedules maintenance in the Week starting on that Monday (`docs/FLEET_BOOKINGS.md`).
   - `refund`, `tax-invoices` and `tax-invoice` are under Toss Payments above.
