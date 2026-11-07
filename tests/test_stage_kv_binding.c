@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 
 #include <assert.h>
 #include <pthread.h>
@@ -12,9 +13,11 @@
 #include <unistd.h>
 
 #include "cuda_runtime_api.h"
+#include "runtime/device/device_backend.h"
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
+#include "sparkpipe/spark_stage_module_claims.h"
 #include "sparkpipe/spark_weight_codec.h"
 #include "tests/test_stderr_capture.h"
 #include "tests/test_weightd_kv_server.h"
@@ -55,6 +58,7 @@ typedef struct TestHook
 	pthread_mutex_t mutex;
 	pthread_cond_t condition;
 	uint32_t block_kind_mask;
+	uint32_t block_sync;
 	uint32_t active;
 	uint32_t release;
 	uint64_t sleep_ns;
@@ -73,8 +77,13 @@ static char SNAPSHOT_DIRECTORY[64];
 static char LEDGER_PATH[96];
 static SparkStageKvConfiguration CONFIGURATION;
 static uint64_t NEXT_ID = 1u;
-static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
 static atomic_uint ORDER;
+
+static cudaStream_t NativeStream(const SparkDeviceQueue *queue)
+{
+	return(queue != 0 ? *(const cudaStream_t *)queue->backend : 0);
+}
 
 static uint32_t KindBit(cudaMemcpyKind kind)
 {
@@ -88,7 +97,7 @@ static void TestHookCopy(void *context,uint32_t asynchronous,cudaMemcpyKind kind
 	assert(pthread_mutex_lock(&hook->mutex) == 0);
 	if ( kind == cudaMemcpyDeviceToDevice )
 		hook->device_copies++;
-	if ( asynchronous != 0u && stream != (cudaStream_t)BINDING.copy_stream )
+	if ( asynchronous != 0u && stream != NativeStream(BINDING.copy_queue) )
 		hook->foreign_stream_copies++;
 	if ( hook->track_threads != 0u )
 	{
@@ -114,10 +123,25 @@ static void TestHookCopy(void *context,uint32_t asynchronous,cudaMemcpyKind kind
 	assert(pthread_mutex_unlock(&hook->mutex) == 0);
 }
 
+static void TestHookSync(void *context,cudaStream_t stream)
+{
+	TestHook *hook = context;
+	assert(pthread_mutex_lock(&hook->mutex) == 0);
+	if ( hook->block_sync != 0u && hook->active == 0u && stream == NativeStream(BINDING.copy_queue) )
+	{
+		hook->active = 1u;
+		assert(pthread_cond_broadcast(&hook->condition) == 0);
+		while ( hook->release == 0u )
+			assert(pthread_cond_wait(&hook->condition,&hook->mutex) == 0);
+	}
+	assert(pthread_mutex_unlock(&hook->mutex) == 0);
+}
+
 static void HookReset(void)
 {
 	assert(pthread_mutex_lock(&HOOK.mutex) == 0);
 	HOOK.block_kind_mask = 0u;
+	HOOK.block_sync = 0u;
 	HOOK.active = 0u;
 	HOOK.release = 0u;
 	HOOK.sleep_ns = 0u;
@@ -203,6 +227,7 @@ static SparkStatus OpenWith(const SparkStageKvConfiguration *configuration)
 	spark_stub_cuda_event_pending(0u);
 	spark_stub_cuda_event_record_failure(0u);
 	spark_stub_cuda_set_copy_hook(TestHookCopy,&HOOK);
+	spark_stub_cuda_set_sync_hook(TestHookSync,&HOOK);
 	status = SparkStageKvBindingInitialize(&BINDING,configuration);
 	if ( status == SPARK_STATUS_OK )
 		assert(BINDING.page_bytes == TEST_PAGE_BYTES && BINDING.pages_per_sequence == 2u && BINDING.copier_initialized != 0u && BINDING.page_cache.snapshot != 0);
@@ -242,6 +267,7 @@ static void Unload(void)
 {
 	SparkStageKvBindingDestroy(&BINDING);
 	spark_stub_cuda_set_copy_hook(0,0);
+	spark_stub_cuda_set_sync_hook(0,0);
 }
 
 static void Close(void)
@@ -467,6 +493,7 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 	uint8_t source_bytes[TEST_PAGE_BYTES],destination_bytes[TEST_PAGE_BYTES];
 	uint32_t source,destination;
 	cudaStream_t stream;
+	SparkDeviceQueue *queue;
 	Open();
 	source = PublishPrefix(3u,1u,2u,0x40u,0x22u);
 	StepInit(&y,2u,1u,2u,3u);
@@ -491,10 +518,10 @@ static void TestCopyOnWriteIsOneDeviceCopyPerRegionLayer(void)
 	assert(StepAdmit(&y,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT) == SPARK_STATUS_OK);
 	assert(BINDING.blocks[source].residency_reference_count == 0u);
 	assert((BINDING.blocks[destination].flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u);
-	assert(cudaStreamCreate(&stream) == cudaSuccess);
-	assert(SparkStageKvBindingFenceExecution(&BINDING,stream) == SPARK_STATUS_OK);
-	assert(spark_stub_cuda_last_wait_stream() == stream && spark_stub_cuda_last_wait_event() == (cudaEvent_t)BINDING.copier.fence_event);
-	assert(cudaStreamDestroy(stream) == cudaSuccess);
+	assert(cudaStreamCreate(&stream) == cudaSuccess && SparkDeviceQueueAdopt(&queue,stream,"kvtest execution") == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingFenceExecution(&BINDING,queue) == SPARK_STATUS_OK);
+	assert(spark_stub_cuda_last_wait_stream() == stream && spark_stub_cuda_last_wait_event() == (cudaEvent_t)BINDING.copier.fence_event->backend);
+	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && cudaStreamDestroy(stream) == cudaSuccess);
 	Close();
 	printf("T2 copy-on-write is one device copy per page-major region and per layer of a layer-major region: ok\n");
 }
@@ -516,7 +543,7 @@ static void TestCopyOnWriteDuringAPark(void)
 	resident = BINDING.arena.resident_block_count;
 	assert(resident == TEST_PHYSICAL - 1u);
 	HookReset();
-	HOOK.block_kind_mask = KindBit(cudaMemcpyDeviceToHost);
+	HOOK.block_sync = 1u;
 	StepInit(&w,4u,1u,0u,8u);
 	status = StepAdmit(&w,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE);
 	assert(status == SPARK_STATUS_BUSY);
@@ -634,7 +661,7 @@ static void TestParkCopiesAreAsync(void)
 	SparkStatus status;
 	uint8_t expected[TEST_PHYSICAL][TEST_PAGE_BYTES],restored[TEST_PAGE_BYTES];
 	Open();
-	assert(spark_stub_cuda_stream_flags((cudaStream_t)BINDING.copy_stream) == cudaStreamNonBlocking);
+	assert(spark_stub_cuda_stream_flags(NativeStream(BINDING.copy_queue)) == cudaStreamNonBlocking);
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
 	for (index=0u; index<TEST_PHYSICAL; index++)
 	{
@@ -778,10 +805,11 @@ static void TestCopierContract(void)
 	SparkModelDriverAdmissionDecision decision;
 	atomic_uint slot_states[TEST_SLOTS],lane_states[TEST_LANES];
 	uint32_t residents[4],pages[3],index,syncs;
-	uint8_t device[4u * 64u];
+	SparkDeviceBuffer device;
+	SparkDeviceQueue *queue;
 	cudaStream_t stream;
 	memset(&configuration,0,sizeof(configuration));
-	memset(device,0,sizeof(device));
+	assert(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4u * 64u,"kvtest pages") == SPARK_STATUS_OK);
 	configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	configuration.logical_block_count = 4u;
@@ -790,7 +818,7 @@ static void TestCopierContract(void)
 	configuration.layer_count = configuration.kv_head_count = configuration.bytes_per_scalar = 1u;
 	configuration.head_dim = 16u;
 	configuration.key_block_stride_bytes = 64u;
-	configuration.key_device_base = device;
+	configuration.key_device_base = (uint8_t *)(uintptr_t)device.device;
 	configuration.blocks = blocks;
 	configuration.resident_slot_logical_block_indices = residents;
 	assert(SparkKvCacheArenaInitialize(&arena,&configuration) == SPARK_STATUS_OK);
@@ -801,16 +829,16 @@ static void TestCopierContract(void)
 		assert(SparkKvCacheArenaPinResidentBlock(&arena,pages[index]) == SPARK_STATUS_OK);
 	}
 	assert(SparkKvCacheArenaPinResidentBlock(&arena,pages[0]) == SPARK_STATUS_OK);
-	assert(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess);
+	assert(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess && SparkDeviceQueueAdopt(&queue,stream,"kvtest copier") == SPARK_STATUS_OK);
 	memset(&copy,0,sizeof(copy));
 	copy.module_tag = "kvtest";
-	copy.stream = stream;
+	copy.queue = queue;
 	copy.arena = &arena;
 	copy.physical_page_count = 4u;
 	copy.region_count = 1u;
 	copy.regions[0].layout = SPARK_KV_DEVICE_COPY_PAGE_MAJOR;
 	copy.regions[0].layer_count = 1u;
-	copy.regions[0].device_base = (uintptr_t)device;
+	copy.regions[0].base.buffer = &device;
 	copy.regions[0].layer_page_bytes = 64u;
 	copy.pending_capacity = 1u;
 	assert(SparkKvDeviceCopierInitialize(&copier,&copy) == SPARK_STATUS_OK);
@@ -831,7 +859,7 @@ static void TestCopierContract(void)
 	assert(blocks[pages[0]].residency_reference_count == 1u && blocks[pages[2]].residency_reference_count == 1u);
 	assert(SparkKvDeviceCopierDrain(&copier) == SPARK_STATUS_OK);
 	SparkKvDeviceCopierDestroy(&copier);
-	assert(cudaStreamDestroy(stream) == cudaSuccess);
+	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && cudaStreamDestroy(stream) == cudaSuccess && SparkDeviceFree(&device) == SPARK_STATUS_OK);
 	Open();
 	SparkStageModuleAtomicStateArrayInitialize(slot_states,TEST_SLOTS);
 	SparkStageModuleAtomicStateArrayInitialize(lane_states,TEST_LANES);
@@ -840,11 +868,15 @@ static void TestCopierContract(void)
 	request.program_id = 7u;
 	request.control_generation = 3u;
 	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_RESET;
-	assert(cudaStreamCreate(&stream) == cudaSuccess);
+	assert(cudaStreamCreate(&stream) == cudaSuccess && SparkDeviceQueueAdopt(&queue,stream,"kvtest execution") == SPARK_STATUS_OK);
+	{
+		const SparkDeviceRange table = { &BINDING.pool, 0u };
+		assert(SparkDeviceFill(BINDING.copy_queue,table,0xffu,sizeof(uint32_t)) == SPARK_STATUS_OK);
+	}
 	syncs = cuda_stub_stream_sync_calls;
-	assert(SparkStageKvBindingAdmitReset(&BINDING,&request,&decision,slot_states,lane_states,stream) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingAdmitReset(&BINDING,&request,&decision,slot_states,lane_states,queue) == SPARK_STATUS_OK);
 	assert(decision.accepted == 1u && cuda_stub_stream_sync_calls == syncs + 2u);
-	assert(cudaStreamDestroy(stream) == cudaSuccess);
+	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && cudaStreamDestroy(stream) == cudaSuccess);
 	Close();
 	printf("T20 copier contract: ok\n");
 }
@@ -1410,19 +1442,19 @@ typedef struct TestRecurrent
 	uint8_t lanes[TEST_LANES][TEST_RECURRENT_BYTES];
 	uint32_t to_buffer;
 	uint32_t from_buffer;
-	void *last_stream;
+	SparkDeviceQueue *last_queue;
 	SparkStatus fail;
 } TestRecurrent;
 
 static TestRecurrent RECURRENT;
 
-static SparkStatus TestRecurrentCopy(void *context,uint32_t direction,uint32_t slot,void *buffer,uint64_t bytes,void *stream)
+static SparkStatus TestRecurrentCopy(void *context,uint32_t direction,uint32_t slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue)
 {
 	TestRecurrent *recurrent = context;
 	assert(recurrent == &RECURRENT && slot < TEST_LANES && bytes == TEST_RECURRENT_BYTES && buffer != 0);
 	if ( recurrent->fail != SPARK_STATUS_OK )
 		return(recurrent->fail);
-	recurrent->last_stream = stream;
+	recurrent->last_queue = queue;
 	if ( direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER )
 	{
 		recurrent->to_buffer++;
@@ -1453,7 +1485,7 @@ static void TestRecurrentRoundTrip(void)
 	TestStep step,other;
 	TestFinished finished = {0},other_finished = {0};
 	SparkStageKvRecurrentCounters counters;
-	void *stream = (void *)(uintptr_t)0x51u;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)(uintptr_t)0x51u;
 	uint64_t published;
 	uint32_t index;
 	MakeDirectories();
@@ -1466,9 +1498,9 @@ static void TestRecurrentRoundTrip(void)
 	StepStart(&other);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
 		RECURRENT.lanes[0][index] = (uint8_t)(0xc0u + index);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&other.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.to_buffer == 0u);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
-	assert(RECURRENT.to_buffer == 1u && RECURRENT.last_stream == stream && (BINDING.lane_state_flags[0] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) != 0u);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&other.slot,1u,queue) == SPARK_STATUS_OK && RECURRENT.to_buffer == 0u);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+	assert(RECURRENT.to_buffer == 1u && RECURRENT.last_queue == queue && (BINDING.lane_state_flags[0] & SPARK_STAGE_KV_LANE_STATE_CAPTURED) != 0u);
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(StepFinish(&other,SPARK_STATUS_OK,&other_finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
@@ -1484,8 +1516,8 @@ static void TestRecurrentRoundTrip(void)
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
 	assert(StepClaim(&step) == SPARK_STATUS_OK);
 	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
-	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
-	assert(RECURRENT.from_buffer == 1u && RECURRENT.last_stream == stream && memcmp(RECURRENT.lanes[1],RECURRENT.lanes[0],TEST_RECURRENT_BYTES) == 0);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+	assert(RECURRENT.from_buffer == 1u && RECURRENT.last_queue == queue && memcmp(RECURRENT.lanes[1],RECURRENT.lanes[0],TEST_RECURRENT_BYTES) == 0);
 	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
 	assert(counters.restores == 1u && counters.restore_bytes == TEST_RECURRENT_BYTES);
 	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
@@ -1510,7 +1542,7 @@ static void TestRecurrentRoundTrip(void)
 	StepPublish(&step,4u,0x91u);
 	StepStart(&step);
 	RECURRENT.fail = SPARK_STATUS_IO_ERROR;
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_IO_ERROR);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_IO_ERROR);
 	RECURRENT.fail = SPARK_STATUS_OK;
 	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_IO_ERROR);
@@ -1527,7 +1559,7 @@ static void TestRecurrentStateSurvivesRestart(void)
 	TestFinished finished = {0};
 	SparkModelDriverKvStoreCounters counters;
 	SparkKvSnapshotKey state_key;
-	void *stream = (void *)(uintptr_t)0x52u;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)(uintptr_t)0x52u;
 	SparkStatus status;
 	uint32_t index,attempt;
 	MakeDirectories();
@@ -1538,7 +1570,7 @@ static void TestRecurrentStateSurvivesRestart(void)
 	StepStart(&step);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
 		RECURRENT.lanes[0][index] = (uint8_t)(0x30u + index);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
 	ReleaseSequence(1u,0u);
@@ -1569,7 +1601,7 @@ static void TestRecurrentStateSurvivesRestart(void)
 	assert(status == SPARK_STATUS_OK && (BINDING.lane_state_flags[1] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&step) == SPARK_STATUS_OK);
 	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
-	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
 		assert(RECURRENT.lanes[1][index] == (uint8_t)(0x30u + index));
 	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
@@ -1583,7 +1615,7 @@ static void TestPromptCheckpointPersists(void)
 	TestStep step,stateless;
 	TestFinished finished = {0};
 	SparkKvSnapshotKey state_key;
-	void *stream = (void *)(uintptr_t)0x53u;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)(uintptr_t)0x53u;
 	uint32_t attempt;
 	MakeDirectories();
 	ConfigureRecurrent(&CONFIGURATION);
@@ -1591,7 +1623,7 @@ static void TestPromptCheckpointPersists(void)
 	StepInit(&step,1u,0u,0u,4u);
 	StepPublish(&step,4u,0x93u);
 	StepStart(&step);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
 	memset(&state_key,0,sizeof(state_key));
@@ -1607,7 +1639,7 @@ static void TestPromptCheckpointPersists(void)
 	StepPublish(&stateless,4u,0x94u);
 	stateless.lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS;
 	StepStart(&stateless);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&stateless.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&stateless.slot,1u,queue) == SPARK_STATUS_OK);
 	assert(StepFinish(&stateless,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
 	assert(BINDING.page_cache.checkpoint_persist_count == 1u);
@@ -1659,7 +1691,7 @@ static void PublishCheckpoint(uint64_t sequence,uint8_t seed,uint32_t stateless)
 	assert(status == SPARK_STATUS_OK);
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
 	assert(StepClaim(&step) == SPARK_STATUS_OK);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(SparkDeviceQueue *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
 	assert(RECURRENT.to_buffer == captured + (stateless != 0u ? 0u : 1u));
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
@@ -1730,7 +1762,7 @@ static void PublishRecurrentStep(uint64_t sequence,uint32_t position,uint32_t co
 	page = LanePage(0u,position / TEST_BLOCK);
 	FillPage(page,seed);
 	PageBytes(page,bytes);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(SparkDeviceQueue *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
 }
@@ -1818,7 +1850,7 @@ static void PublishStagedStep(uint64_t sequence,uint32_t position,uint32_t conte
 	StepStart(&step);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
 		RECURRENT.lanes[0][index] = (uint8_t)(fill + index);
-	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,(SparkDeviceQueue *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
 	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
 }
@@ -1842,7 +1874,7 @@ static SparkStatus ResumeAt(uint64_t sequence,uint32_t tokens,uint8_t identity,u
 	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
 	assert(StepClaim(&step) == SPARK_STATUS_OK);
 	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
-	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,(void *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,(SparkDeviceQueue *)(uintptr_t)0x51u) == SPARK_STATUS_OK);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
 		assert(RECURRENT.lanes[1][index] == (uint8_t)(fill + index));
 	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK);
@@ -1903,6 +1935,7 @@ static void TestWeightdOwnsPool(void)
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
 	(void)snprintf(LEDGER_PATH,sizeof(LEDGER_PATH),"/tmp/sparkpipe-kv-binding-ledger-%d",(int)getpid());
 	(void)unlink(LEDGER_PATH);
 	TestKvServerStart(64ull << 20);

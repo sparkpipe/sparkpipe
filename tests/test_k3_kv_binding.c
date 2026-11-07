@@ -56,7 +56,7 @@ static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uin
 static SparkStageServingState *Open(void)
 {
 	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
-	SparkMemoryBuffer *host[7], *device[8];
+	SparkDeviceBuffer *host[7], *device[8];
 	uint32_t index;
 	assert(state != 0);
 	state->model = &K3StageServing;
@@ -66,9 +66,9 @@ static SparkStageServingState *Open(void)
 	device[3] = &state->runs_device; device[4] = &state->seqslot_device; device[5] = &state->order_device;
 	device[6] = &state->output_tokens; device[7] = &state->output_scores;
 	for ( index = 0u; index < 7u; index++ )
-		assert(SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
+		assert(SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows") == SPARK_STATUS_OK);
 	for ( index = 0u; index < 8u; index++ )
-		assert(SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
+		assert(SparkDeviceAllocate(device[index], SPARK_DEVICE_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t), "k3 test rows") == SPARK_STATUS_OK);
 	state->max_rows = 8u;
 	state->max_shared_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
@@ -333,7 +333,6 @@ static void TestK3Refusals(void)
 	test_pack_status = SPARK_STATUS_OK;
 	assert(BindWith(state, 4u, 8u) != SPARK_STATUS_OK && state->kv.mutex_initialized == 0u);
 	SparkStageKvBindingDestroy(&state->kv);
-	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 	assert(rmdir(DIRECTORY) == 0);
 	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
@@ -391,7 +390,6 @@ static void TestK3ContextShard(void)
 			(uint64_t)SparkK3TpSequenceCapacity(rows, 16u) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_TP_GATE_UP_ROW_ELEMENTS &&
 			(uint64_t)SparkK3TpSequences((uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION);
 	SparkStageKvBindingDestroy(&state->kv);
-	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 	assert(rmdir(DIRECTORY) == 0);
 	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
@@ -401,6 +399,7 @@ static void TestK3ContextShard(void)
 int main(void)
 {
 	setvbuf(stdout, 0, _IONBF, 0);
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK && SparkDeviceQueueCreate(&test_runner_queue, "k3 test runner") == SPARK_STATUS_OK);
 	TestKvServerStart(UINT64_C(64) << 20);
 	TestK3PrefillDecodeRelease();
 	TestK3PrefixRestore();
@@ -408,6 +407,7 @@ int main(void)
 	TestK3Refusals();
 	TestK3ContextShard();
 	TestKvServerFinish();
+	assert(SparkDeviceQueueDestroy(test_runner_queue) == SPARK_STATUS_OK);
 	printf("PASS k3 kv binding: K3 admits, claims, restores and finishes through the common KV binding with its KDA state as the recurrent record\n");
 	return(0);
 }

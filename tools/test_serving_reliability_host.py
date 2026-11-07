@@ -12,7 +12,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = {
-    "ownership": "memory_buffer arena work_transaction runtime_completion model_runtime launch release status",
+    "ownership": "arena work_transaction runtime_completion model_runtime launch release status",
     "serving": "model_serving_adapter model_resident_deployment model_resident_ipc model_resident_deadline model_resident_session model_resident_reconnect model_pipeline_client model_pipeline_client_mock model_batch_engine_mock model_api_text pipeline_runtime serving_cache_admission steploop_admission continuous_batch model_resident_end_to_end orchestrator",
     "transport": "tp_device_collective_mock tp_collective serving_tp_config distributed_work hidden_transport hidden_transport_rdma_control fabric_topology memlink weightd_mesh_doorbell weightd_mesh_mock serial_tp_replay",
     "cache": "kv_cache kv_page_layout kv_store nvme_tier kv_model_table",
