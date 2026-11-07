@@ -10,7 +10,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 1.1. In this Agreement:
 
-- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. The **Demo Fleet** is the Fleet that the Fleet List names as such.
+- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. An **Hour Fleet** is a Fleet that the Fleet List marks as one; it is booked only by the hour.
 - **Rate** means the number that the Fleet List gives each Fleet, which we set and may change as clause 9.2 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise. A booking is priced at the Rate published when it is made.
 - **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for bookings.
 - **Booking** means the right to use one entire Fleet for an hour (an **Hour**, clause 14) or for a Week (clause 15).
@@ -52,7 +52,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.
 
-4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is the Demo Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
+4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is an Hour Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
 
 4.3. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish in each Week. We announce each maintenance period at least 7 days ahead, choose the times of least use, and rotate those times across the hours of the day. A booked hour under maintenance is credited under clause 4.4 as if the Fleet were unavailable throughout it, unless we serve Customer on another Fleet in that hour under clause 15.7.
 
@@ -118,7 +118,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 9.1. We may change this Agreement by publishing a new version and emailing Customer. A new version applies to Orders and Bookings made after Customer accepts it, and we accept no further Order or Booking from Customer until it has. HC already bought, and Bookings already made, stay under the version in force when they were made, unless Customer accepts a newer version for them.
 
-9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks booked ahead (clauses 14.2 and 15.2); the Rates on the Fleet List; how far ahead Hours may be booked and how many Hours of the Demo Fleet each account may hold in a Week (clause 14.1); and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
+9.2. **Published settings.** We publish the following on our website as **published settings**: the HC Price for each quantity bought (clause 13.1); the HC for an Hour and for a Week, and the discounts for Weeks held (clauses 14.2 and 15.2); the Rates on the Fleet List and which Fleets are Hour Fleets; how far ahead Hours on Hour Fleets may be booked and how many Hours on Hour Fleets each account may hold in a Week (clause 14.1); and the maintenance allowance. We may change any of them at any time by publishing the change, without amending this Agreement, and a change applies from when we publish it. A change never alters the price of HC already bought or of a Booking already made, nor the HC locked under clause 16.
 
 ## 10. Ending, refunds and survival
 
@@ -174,9 +174,9 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 14. Hours
 
-14.1. **Booking Hours.** Customer may book whole hours, starting on the hour: on the Demo Fleet, up to as far ahead as we publish and up to the number of Hours we publish for each account in a Week; and on any other serving Fleet that is not pinned and that nobody else holds in those hours, up to the end of the current Week.
+14.1. **Booking Hours.** Customer may book whole hours, starting on the hour: on an Hour Fleet, up to as far ahead as we publish and up to the number of Hours on Hour Fleets we publish for each account in a Week; and on any other serving Fleet that is not pinned and that nobody else holds in those hours, up to the end of the current Week.
 
-14.2. **Price.** Each Hour costs the HC we publish for an Hour, times the Fleet's Rate.
+14.2. **Price.** Each Hour costs the HC we publish for an Hour, times the Fleet's Rate, less Customer's discount when it books. Customer's discount is the larger of (a) the discount we publish for the number of Customer's booked Weeks that have not ended, counting the current Week, on the Fleet where it holds the most, and (b) while Customer is on the waitlist, the discount for the number of Weeks its lock would book under clause 16.3 on a Fleet whose Rate is 1.
 
 14.3. **Final and consumed.** A Booking exists once our system confirms it and debits its HC, and is then final: it cannot be cancelled, moved or refunded, except under clause 10.4. A booked hour is consumed when it occurs, whether or not it is used. Requests still running at the end of a Booking have 30 seconds to finish. Loading a model counts as part of the Booking.
 
@@ -184,11 +184,11 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 15. Weeks and pinned Fleets
 
-15.1. **Pinning.** A Week booked on a Fleet pins that Fleet to Customer for the Week. While a Fleet is pinned, it is Customer's alone and nobody else may book any of its hours. The Demo Fleet is never pinned.
+15.1. **Pinning.** A Week booked on a Fleet pins that Fleet to Customer for the Week. While a Fleet is pinned, it is Customer's alone and nobody else may book any of its hours. An Hour Fleet is never pinned.
 
 15.2. **Price.** Each Week costs the HC we publish for a Week, times the Fleet's Rate, less the discount we publish for the number of Customer's booked Weeks on that Fleet that have not ended, counting the Weeks being booked. The discount applies to the Weeks being booked.
 
-15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than the Demo Fleet that is available for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
+15.3. **First Week.** Customer may book a first Week, and any Weeks following it, starting on the next Monday, on a serving Fleet other than an Hour Fleet that is available for that Week, that clause 16 has not allocated, and for which no customer on the waitlist has locked enough HC to pay for a Week. The waitlist comes first: while such a customer waits, a free Fleet is allocated under clause 16.3.
 
 15.4. **Extending.** Customer may book further Weeks on a Fleet pinned to it, each following a Week already booked, and no Week more than 52 Weeks after the current Week. Nobody else may book any Week of a Fleet pinned to Customer.
 
@@ -200,11 +200,11 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 16. Waitlist
 
-16.1. **Joining.** Customer may join the waitlist by locking at least the HC we publish for a Week from its balance. Locked HC cannot be spent while it is locked. Customer may add to its lock, or leave the waitlist and unlock all of it, at any time.
+16.1. **Joining.** Customer may join the waitlist by locking at least the HC we publish for a Week from its balance. Locked HC cannot be spent while it is locked. Customer may add to its lock, or leave the waitlist and unlock all of it, at any time. If Customer leaves, the lock first repays the HC by which the discount of clause 14.2(b) lowered the price of the Hours Customer booked since it joined, beyond the discount of clause 14.2(a). Only leaving repays: a lock that books Weeks under clause 16.3, or that we unlock under clause 16.4, repays nothing.
 
 16.2. **Order.** The waitlist is ordered by the HC locked, largest first, and at equal locks by the time of joining. We show each customer only its own position.
 
-16.3. **Allocation.** At 00:00 on each Sunday, each serving Fleet other than the Demo Fleet that is free for the following Week, including a Fleet whose holder has not booked that Week under clause 15.5, is allocated to the first customer on the waitlist, then the next Fleet to the next customer, and so on. The allocated customer's whole lock books consecutive Weeks on that Fleet from the following Monday, as many as it pays for under clause 15.2, and any HC left over is unlocked. We email the allocated customer at once.
+16.3. **Allocation.** At 00:00 on each Sunday, each serving Fleet other than an Hour Fleet that is free for the following Week, including a Fleet whose holder has not booked that Week under clause 15.5, is allocated to the first customer on the waitlist, then the next Fleet to the next customer, and so on. The allocated customer's whole lock books consecutive Weeks on that Fleet from the following Monday, as many as it pays for under clause 15.2, and any HC left over is unlocked. We email the allocated customer at once.
 
 16.4. **Lapse while waiting.** Where locked HC would lapse under clause 13.3, we unlock it and refund it at the price paid under clause 3.6, instead of letting it lapse.
 

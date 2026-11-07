@@ -26,7 +26,7 @@ h1 { max-width: 14em; }
 <div class="strip">
   <div class="wrap">
     <span>플릿은 <b>한국</b>에</span>
-    <span>데모 시간 <b data-start="demo">2026년 12월 1일</b>부터</span>
+    <span>시간 예약 <b data-start="hours">2026년 12월 1일</b>부터</span>
     <span>주 예약 <b data-start="weeks">2027년 1월 4일</b>부터</span>
     <span>Kimi K3 · GLM 5.3 · 오픈 모델 19종 · <b>그리고 고객의 모델</b></span>
   </div>
@@ -206,11 +206,11 @@ h1 { max-width: 14em; }
     <h2>데모 하루, 그다음 나만의 플릿.</h2>
     <ol class="steps">
       <li><h3>계정 열기</h3><p>회사의 법인명 또는 본인 이름, 6자리 코드로 확인한 업무용 이메일, 고객 계약 동의. 비밀번호는 없습니다. 그다음 HC를 원하는 만큼 삽니다.</p></li>
-      <li><h3>데모 하루 예약</h3><p>데모 플릿 전체를 시간 단위로, 최대 <span data-demo="days">7</span>일 앞까지, 시간당 <span data-hour="hc">1</span> HC. 하루 근무 시간만큼 <span data-hour="day">8</span> HC를 예약하고 고객의 도구를 연결해, 나만의 플릿에서처럼 고객의 코드베이스로 일해 보세요.</p></li>
+      <li><h3>데모 하루 예약</h3><p>시간 플릿 전체를 시간 단위로, 최대 <span data-hourfleet="days">7</span>일 앞까지, 시간당 <span data-hour="hc">1</span> HC. 하루 근무 시간만큼 <span data-hour="day">8</span> HC를 예약하고 고객의 도구를 연결해, 나만의 플릿에서처럼 고객의 코드베이스로 일해 보세요.</p></li>
       <li><h3>플릿 고정</h3><p>이용 가능한 플릿의 첫 주를 다음 월요일부터 예약합니다. 모든 플릿이 보유되어 있으면 최소 <span data-week="hc">144</span> HC를 잠가 대기 명단에 들어갑니다.</p></li>
-      <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 예약하는 모든 주의 할인이 커지며, 최대 <span data-off="max">20%</span>입니다.</p></li>
+      <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 예약하는 모든 주와 모든 시간의 할인이 커지며, 최대 <span data-off="max">20%</span>입니다.</p></li>
     </ol>
-    <p class="prose">잠시 플릿이 더 필요한가요? 아무도 보유하지 않은 플릿은 같은 HC로 현재 주의 끝까지 시간 단위로 예약할 수 있으며, 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서입니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
+    <p class="prose">잠시 플릿이 더 필요한가요? 시간 플릿은 고정되지 않고 시간 단위 예약용으로 남아 있어, 최대 <span data-hourfleet="days">7</span>일 앞까지 고객의 할인으로 예약할 수 있습니다. 아무도 보유하지 않은 그 밖의 플릿은 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서이며, 기다리는 동안 시간 예약은 잠금으로 예약될 주 수의 할인만큼 저렴해지며, 플릿을 배정받기 전에 나오면 그 할인은 잠금에서 상환됩니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
     <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개.</p>
   </div>
 </section>
@@ -222,16 +222,17 @@ h1 { max-width: 14em; }
   </div>
   <div class="sec-body">
     <h2>6일 가격에 7일.</h2>
-    <p class="prose">모든 것은 시간 크레딧(HC)으로 지불합니다. 원하는 만큼 사서 데모 시간과 나만의 플릿의 주에 씁니다. 토큰당 요금도, 기능에 대한 추가 요금도 없습니다.</p>
+    <p class="prose">모든 것은 시간 크레딧(HC)으로 지불합니다. 원하는 만큼 사서 시간 플릿의 시간과 나만의 플릿의 주에 씁니다. 토큰당 요금도, 기능에 대한 추가 요금도 없습니다.</p>
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col">항목</th><th scope="col">가격</th></tr></thead>
       <tbody>
         <tr><th scope="row">시간 크레딧</th><td><span data-hc="bulk-from">144</span> HC 미만은 개당 <span data-hc="small-usd">$20</span>(<span data-hc="small-krw">₩27,200</span>), <span data-hc="bulk-from">144</span> HC부터는 개당 <span data-hc="bulk-usd">$15</span>(<span data-hc="bulk-krw">₩20,400</span>). 상한 없음. 각 구매분은 예약에 쓰지 않으면 <span data-hc="months">12</span>개월 후 소멸하며, 예약에 쓴 HC는 소멸하지 않습니다</td></tr>
-        <tr><th scope="row">데모 시간</th><td>데모 플릿 전체 1시간에 <span data-hour="hc">1</span> HC, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC</td></tr>
-        <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱한 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
+        <tr><th scope="row">시간</th><td>시간 플릿 전체 1시간에 <span data-hour="hc">1</span> HC에서 고객의 할인을 뺀 값, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC</td></tr>
+        <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 그 밖의 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱하고 고객의 할인을 뺀 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
         <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
         <tr><th scope="row">팀</th><td>엔지니어 3~5명이 함께 쓰는 1주: 한 명당 <span data-team="min">$432</span>~<span data-team="max">$720</span>, 구성원마다 자신의 키와 플릿의 공정한 몫</td></tr>
         <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
+        <tr><th scope="row">시간 할인</th><td>모든 시간 예약은 한 플릿에서 보유한 가장 많은 주 수의 할인, 또는 대기 명단에 있는 동안 잠금으로 예약될 주 수의 할인(플릿을 배정받기 전에 나오면 잠금에서 상환)만큼 저렴해집니다: 최대 <span data-off="max">20%</span></td></tr>
         <tr><th scope="row">예약 가능 기간</th><td>최대 <span data-ahead>52</span>주 앞까지</td></tr>
         <tr><th scope="row">장애</th><td>15분 넘게 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 HC로 돌려드립니다. 점검은 플릿당 주 최대 3시간이며 같은 방식으로 적립됩니다</td></tr>
         <tr><th scope="row">결제</th><td>토스페이먼츠를 통한 원화 결제(국내·해외 카드, 계좌이체, 가상계좌, 간편결제), CoinPayments를 통한 USDC 또는 USDT, 또는 대한민국 밖의 고객 명의 계좌에서 보내는 미국 달러 계좌이체(SWIFT). 한국 사업자는 카드 매출전표나 전자세금계산서를 받습니다</td></tr>
@@ -362,8 +363,8 @@ curl $OPENAI_BASE_URL/chat/completions \
     <nav aria-label="바닥글"><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="market.html" hreflang="en">내 계정 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="security-ko.html">보안</a><a href="privacy-ko.html">개인정보처리방침</a><a href="compare-ko.html">비용 확인</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js"></script>
-<script src="prices.js?v=2"></script>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
 <script>
 (function () {
   var reduce = false;

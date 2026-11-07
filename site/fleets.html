@@ -54,22 +54,22 @@
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
-    <p>This page is the Fleet List, with the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. The demo fleet is booked only by the hour and is never pinned. Any other fleet that nobody holds can also be booked by the hour, up to the end of the current week. Every fleet gives the customer who holds it 8 TB of cache and <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
+    <p>This page is the Fleet List, with the available models, that the <a href="agreement.html">SparkPipe Customer Agreement</a> refers to. Every fleet is made up of machines we operate ourselves in Seoul. A fleet's Rate is the number of hour-credits (HC) one hour of it costs; a week on it costs <span data-week="hc">144</span> HC times its Rate. Hour Fleets, marked below, are booked only by the hour and are never pinned. Any other fleet that nobody holds can also be booked by the hour, up to the end of the current week. Every fleet gives the customer who holds it 8 TB of cache and <span data-storage>4 TB</span> of storage. The Korean version (<a href="fleets-ko.html" hreflang="ko">fleets-ko.html</a>) has the same content and prevails if they differ.</p>
   </section>
 
-  <div class="notice"><p><b>The terms are published for review.</b> Demo hours can be booked from <span data-start="demo">1 December 2026</span>, and weeks on a pinned fleet from <span data-start="weeks">4 January 2027</span>.</p></div>
+  <div class="notice"><p><b>The terms are published for review.</b> Hours on Hour Fleets can be booked from <span data-start="hours">1 December 2026</span>, and weeks on a pinned fleet from <span data-start="weeks">4 January 2027</span>.</p></div>
 
   <section id="fleets">
     <h2>Fleets</h2>
     <div class="scroll">
     <table>
       <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Cache</th><th class="num">Customer storage</th><th>Models</th></tr>
-      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Demo fleet: by the hour</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>The models below</td></tr>
+      <tr><td><b>Fleet 1</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each, joined by a 100 Gb/s RDMA switch and direct pair links</td><td>Serving</td><td>Hour Fleet: by the hour only, never pinned</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>The models below</td></tr>
       <tr><td><b>Fleet 3</b></td><td>16 NVIDIA DGX Spark (GB10)</td><td>Under construction</td><td>By the week, pinned; by the hour while nobody holds it</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
     </table>
     </div>
     <p>Each node keeps 1 TB of cache and 500 GB of customer storage on its own NVMe drive, mirrored to its pair partner over the direct pair link, so a fleet holds 8 TB of cache and 4 TB of storage, and a failed node loses neither. If both nodes of a pair fail together, their part of the cache has to be rebuilt, and the Customer Agreement credits 24 hours of the fleet for each such event (clause 6.6). Customer storage is working space: back up daily anything you want to keep.</p>
-    <p>Our system publishes live capacity, with each fleet's state, whether it is the demo fleet, pinned or available, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
+    <p>Our system publishes live capacity, with each fleet's state, whether it is an Hour Fleet, pinned or available, and how many waitlist locks are waiting, at <span class="mono">https://sparkpipe.ai/availability.txt</span>, regenerated at least every 30 seconds.</p>
   </section>
 
 
@@ -227,7 +227,7 @@
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js"></script>
-<script src="prices.js"></script>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
 </body>
 </html>
