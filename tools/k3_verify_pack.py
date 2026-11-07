@@ -172,6 +172,9 @@ def expected_layer_names(cfg):
     mla = {"mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
            "mla_kv_a_norm_weight", "mla_q_up_weight", "mla_kv_b_value_weight",
            "mla_gate_weight", "mla_out_weight"}
+    if cfg.get("index_topk", 0) > 0:
+        mla |= {"mla_index_query_weight", "mla_index_key_weight", "mla_index_head_weight",
+                "mla_index_norm_weight", "mla_index_norm_bias"}
     return common, moe, dense, kda, mla
 
 

@@ -15,6 +15,7 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	uint32_t multiprocessors, void *stream);
 #define K3_DISPATCH_PAIR_IDENTITY 16u
 #define K3_DISPATCH_GATHER_WINDOW_GRAIN 224u
+#define K3_DISPATCH_INDEX_CHUNK_ROWS 64u
 
 static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_PREFILL_ATTN_TILE == 0u, "a gather window starts on an attention key tile");
 static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16_t)) % (K3_HIDDEN * sizeof(uint16_t)) == 0u,
@@ -231,6 +232,12 @@ int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, ui
 	memset(dims, 0, sizeof(*dims));
 	dims->tp_sharded = tp_degree > 1u ? 1u : 0u;
 	status = K3PackRankDims(pack, first_layer, layer_count, dims);
+	if ( status == SPARK_K3_DISPATCH_OK && tp_degree > 1u && dims->expert_w1_output != 0u && !K3_EXPERT_CELLS(dims) )
+	{
+		fprintf(stderr, "sparkpipe_k3: fatal: this pack splits its experts by K (w1 output %u) and a TP%u lane runs only cell-split experts; "
+			"run tools/k3_reshard_cells.py on the pack\n", dims->expert_w1_output, tp_degree);
+		status = SPARK_K3_DISPATCH_ERR_BIND;
+	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 		K3ScratchWidthsFor(dims, widths);
 	delete dims;
@@ -398,12 +405,19 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	return SPARK_K3_DISPATCH_OK;
 }
 
-int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes,
+int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes, uint8_t *index_pool, uint64_t index_layer_stride_bytes,
 	const uint32_t *page_table, uint32_t page_table_stride, uint32_t pool_page_count, uint32_t sequence_count)
 {
 	if ( d == 0 || d->mla_cache == 0 || (d->mla_count != 0u && (pool == 0 || page_table == 0 || layer_stride_bytes == 0u ||
 		page_table_stride == 0u || pool_page_count == 0u || sequence_count == 0u || sequence_count > d->sequences)) )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	if ( (d->indexed != 0u) != (index_pool != 0) || (index_pool != 0 && (d->index_cache == 0 ||
+		index_layer_stride_bytes < (uint64_t)pool_page_count * (K3IndexKv::kPageBytes / d->tp_degree))) )
+	{
+		fprintf(stderr, "sparkpipe_k3: KV attach refused: a pack %s indexer needs %s index-key region, one layer of at least %u pool pages each\n",
+			d->indexed != 0u ? "with an" : "without an", d->indexed != 0u ? "an" : "no", pool_page_count);
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	}
 	d->kv_pool = pool;
 	d->page_table = (uint32_t *)page_table;
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
@@ -413,6 +427,14 @@ int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t laye
 		d->mla_cache[i].page_table_stride = page_table_stride;
 		d->mla_cache[i].sequence_count = sequence_count;
 		d->mla_cache[i].pool_page_count = pool_page_count;
+		if ( index_pool != 0 )
+		{
+			d->index_cache[i].pool = index_pool + (size_t)i * index_layer_stride_bytes;
+			d->index_cache[i].page_table = page_table;
+			d->index_cache[i].page_table_stride = page_table_stride;
+			d->index_cache[i].sequence_count = sequence_count;
+			d->index_cache[i].pool_page_count = pool_page_count;
+		}
 	}
 	if ( d->mla_count != 0u && d->buffers_host != 0 && d->buffers_host->kv_shard.degree > 1u )
 	{
@@ -420,6 +442,56 @@ int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t laye
 		d->buffers_host->cache_shard.shard = d->buffers_host->kv_shard;
 	}
 	d->kv_attached = 1u;
+	return SPARK_K3_DISPATCH_OK;
+}
+
+int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
+{
+	K3LayerBuffers *b = d != 0 ? d->buffers_host : 0;
+	if ( b == 0 || d->indexed != 0u || d->kv_attached != 0u || d->tp_degree < 2u || d->mla_count == 0u || b->kv_shard.degree != d->tp_degree )
+		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
+	const uint64_t rows = d->attention_rows, chunk = rows < K3_DISPATCH_INDEX_CHUNK_ROWS ? rows : K3_DISPATCH_INDEX_CHUNK_ROWS;
+	const uint64_t stride = SparkKvShardGatherKeys(b->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
+	const uint64_t sizes[] = {
+		rows * K3_INDEX_QUERY * sizeof(uint16_t), rows * K3_INDEX_DIM * sizeof(uint16_t), rows * K3_INDEX_HEADS * sizeof(uint16_t),
+		chunk * stride * sizeof(float), chunk * K3_INDEX_TOPK * sizeof(uint2), (uint64_t)d->tp_degree * chunk * K3_INDEX_TOPK * sizeof(uint2),
+		chunk * 2u * words * sizeof(uint32_t), rows * K3_INDEX_TOPK * sizeof(uint32_t), sizeof(LmFrameError)};
+	uint8_t *carve[sizeof(sizes) / sizeof(sizes[0])];
+	uint64_t total = 0u;
+	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
+		total += (sizes[i] + 255u) & ~(uint64_t)255u;
+	if ( cudaMalloc(&d->index_scratch, total) != cudaSuccess ||
+		cudaMalloc(&d->index_access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
+		return SPARK_K3_DISPATCH_ERR_CUDA;
+	cudaMemset(d->index_scratch, 0, total);
+	cudaMemset(d->index_access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
+	total = 0u;
+	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
+	{
+		carve[i] = d->index_scratch + total;
+		total += (sizes[i] + 255u) & ~(uint64_t)255u;
+	}
+	d->index_scratch_bytes = total;
+	d->index_cache = new LmKvView[d->mla_count];
+	for ( uint32_t i = 0u; i < d->mla_count; ++i )
+	{
+		memset(&d->index_cache[i], 0, sizeof(d->index_cache[i]));
+		d->index_cache[i].access_error = d->index_access_error + i;
+	}
+	b->index_query_bf16 = (uint16_t *)carve[0];
+	b->index_key_bf16 = (uint16_t *)carve[1];
+	b->index_head_bf16 = (uint16_t *)carve[2];
+	b->index_scores = (float *)carve[3];
+	b->index_score_floats = chunk * stride;
+	b->index_send = (uint2 *)carve[4];
+	b->index_received = (uint2 *)carve[5];
+	b->index_bitmaps = (uint32_t *)carve[6];
+	b->index_bitmap_words = (uint32_t)words;
+	b->index_selected = (uint32_t *)carve[7];
+	b->index_error = (LmFrameError *)carve[8];
+	b->index_chunk_rows = (uint32_t)chunk;
+	d->slice_state->index_cache = d->index_cache;
+	d->indexed = 1u;
 	return SPARK_K3_DISPATCH_OK;
 }
 
@@ -461,6 +533,9 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 	cudaFree(d->mha_query);
 	delete d->pair_buffers;
 	delete[] d->mla_cache;
+	delete[] d->index_cache;
+	cudaFree(d->index_access_error);
+	cudaFree(d->index_scratch);
 	delete[] d->weights;
 	delete d->slice_state;
 	delete d->buffers;
@@ -877,7 +952,17 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 			rows, sequences, d->attention_rows);
 		return SPARK_K3_DISPATCH_ERR_CAPACITY;
 	}
-	if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE && commit != 0u )
+	if ( d->indexed != 0u )
+		K3LayerIndexPlan(b, context);
+	if ( d->indexed != 0u && rows > d->attention_rows )
+	{
+		fprintf(stderr, "sparkpipe_k3: refused a %u-row wave: an indexer pack's TP16 waves attend through the sharded scatter, so they stay within %u "
+			"attention rows; longer prompts take the streamed prefill\n", rows, d->attention_rows);
+		return SPARK_K3_DISPATCH_ERR_CAPACITY;
+	}
+	if ( d->indexed != 0u )
+		d->mla_scatter_waves++;
+	else if ( b->kv_shard.degree > 1u && rows > LM_SKINNY_ROWS_WIDE && commit != 0u )
 	{
 		const int32_t mha = K3DispatchMhaPlan(d, b, rows, sequences, in, stream);
 		const int32_t gather = mha == 0 && in->gather_context != 0u && sequences == 1u

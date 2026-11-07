@@ -35,6 +35,13 @@ The rounding points follow the CUDA stage (inference/llms/kimi_k3/layer.cuh):
              q_r . k_r) x 0.0722) in FP32 over every earlier position; the
              latent output rounded; kv_b's value rows; bf16(v sigmoid(g));
              o_proj
+  DSA        a checkpoint with dsa_config (K3.1) adds an indexer to every
+             MLA layer: q = wq_b(the normed q latent) and w =
+             weights_proj(x) rounded, k = LayerNorm(wk(x)) with weight and
+             bias in FP32 (eps rms_norm_eps) rounded; score d^-0.5 H^-0.5
+             sum_h w_h relu(q_h . k); a row with more than index_topk earlier
+             positions attends only its top index_topk, ties to the earlier
+             position (inference/kernels/topk_exact.cuh)
   MLP        SiTU: bf16(4 tanh(g/4) sigmoid(g) x 25 tanh(u/25)); layer 0
              dense; the rest the two fused shared experts plus top 16 of 896
              by sigmoid(z) + bias, weights renormalised, the experts in the
@@ -84,6 +91,14 @@ class Reference:
         self.nope, self.rope, self.value, self.latent_rank, self.q_lora = 128, 64, 128, 512, 1536
         self.experts, self.top_k, self.inter, self.latent = 896, 16, 3072, 3584
         self.block = 12
+        dsa = config.get("dsa_config") or {}
+        if dsa and dsa.get("index_topk_freq", 1) != 1:
+            raise SystemExit(f"dsa_config.index_topk_freq {dsa['index_topk_freq']} shares top-k across layers; this reference selects per layer only")
+        if dsa and (dsa.get("index_rope_dim", 0) != 0 or dsa.get("index_k_norm_type") != "layernorm"):
+            raise SystemExit(f"dsa_config {dsa} is not the NoPE layer-normed indexer this reference implements")
+        self.index_topk = dsa.get("index_topk")
+        self.index_heads, self.index_dim = dsa.get("index_num_heads"), dsa.get("index_head_dim")
+        self.index_epsilon = config.get("rms_norm_eps", 1e-5)
 
     def bf16(self, name, shape):
         return widen(np.frombuffer(self.st.bf16(name), dtype=np.uint16).reshape(shape))
@@ -162,6 +177,33 @@ class Reference:
         mixed = base.bf16(normed_out * base.sigmoid(gate))
         return self.linear(mixed.reshape(rows, width), self.bf16(a + "o_proj.weight", (self.hidden, width)))
 
+    def layer_norm(self, values, weight, bias):
+        mean = base.reduce_sum(values) / np.float32(values.shape[-1])
+        centred = values - mean
+        variance = base.reduce_sum(centred * centred) / np.float32(values.shape[-1])
+        return base.bf16(centred * np.power(variance + np.float32(self.index_epsilon), np.float32(-0.5)) * weight + bias)
+
+    def selected(self, a, normed, compressed, causal):
+        i = a + "indexer."
+        if i + "wk.weight" not in self.names:
+            return causal
+        rows, heads, dim = normed.shape[0], self.index_heads, self.index_dim
+        query = self.linear(compressed, self.bf16(i + "wq_b.weight", (heads * dim, self.q_lora))).reshape(rows, heads, dim)
+        key = self.layer_norm(self.linear(normed, self.bf16(i + "wk.weight", (dim, self.hidden))),
+                              self.gain(i + "k_norm.weight", dim), self.gain(i + "k_norm.bias", dim))
+        weight = self.linear(normed, self.bf16(i + "weights_proj.weight", (heads, self.hidden)))
+        scores = np.zeros((rows, rows), dtype=np.float32)
+        for head in (range(heads - 1, -1, -1) if base.REVERSED else range(heads)):
+            scores += weight[:, head:head + 1] * np.maximum(base.matmul(query[:, head], key.T), np.float32(0.0))
+        scores *= np.float32(dim ** -0.5) * np.float32(heads ** -0.5)
+        chosen = causal.copy()
+        for row in range(rows):
+            allowed = np.nonzero(causal[row])[0]
+            if allowed.size > self.index_topk:
+                chosen[row] = False
+                chosen[row, allowed[np.argsort(-scores[row, allowed], kind="stable")[:self.index_topk]]] = True
+        return chosen
+
     def mla(self, a, normed, positions):
         rows, heads = normed.shape[0], self.heads
         compressed = self.norm(self.linear(normed, self.bf16(a + "q_a_proj.weight", (self.q_lora, self.hidden))),
@@ -172,7 +214,7 @@ class Reference:
         tail = kv[:, self.latent_rank:]
         kv_b = self.bf16(a + "kv_b_proj.weight", (heads * (self.nope + self.value), self.latent_rank)).reshape(heads, self.nope + self.value, -1)
         gate = self.linear(normed, self.bf16(a + "g_proj.weight", (heads * self.value, self.hidden))).reshape(rows, heads, self.value)
-        causal = positions[None, :] <= positions[:, None]
+        causal = self.selected(a, normed, compressed, positions[None, :] <= positions[:, None])
         output = np.empty((rows, heads, self.value), dtype=np.float32)
         for head in range(heads):
             query = base.bf16(base.matmul(q[:, head, :self.nope], kv_b[head, :self.nope]))

@@ -321,7 +321,10 @@ class BlockDrafter:
 
 
 def open_drafter(directory, shard, names, device):
+    from k3_dspark_drafter import K3DsparkDrafter, is_k3_dspark_checkpoint
     from latent_block_drafter import LatentBlockDrafter, is_latent_checkpoint
+    if is_k3_dspark_checkpoint(directory):
+        return K3DsparkDrafter(directory, shard, names, device)
     return (LatentBlockDrafter if is_latent_checkpoint(directory) else BlockDrafter)(directory, shard, names, device)
 
 
