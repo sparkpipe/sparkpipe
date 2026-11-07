@@ -10,7 +10,6 @@ ALLOWED = (
     "tools/install_cuda13_compile_only_debian13.sh",
 )
 PENDING = (
-    "deployment/hub/model_swap.json",
     "tools/devcycle.sh",
     "tools/devcycle/bbench.sh",
     "tools/devcycle/ds4_spark_brickproof.py",
@@ -21,15 +20,12 @@ PENDING = (
     "tools/glm5_next_coldlaunch_ab.sh",
     "tools/glm5_next_pack_swap.sh",
     "tools/inference_smoke.py",
-    "tools/k3_lane.sh",
     "tools/k3_multidev_run_family.sh",
     "tools/lag_t1_launch.sh",
-    "tools/lane_run_log.sh",
     "tools/metal_gates.sh",
     "tools/mimo26_model_inputs.py",
     "tools/multi_dev_orchestrate.py",
     "tools/replay_shared_serving_release.py",
-    "tools/stage_lane.sh",
 )
 LINK_CALL = re.compile(
     r"os\.symlink\s*\("
