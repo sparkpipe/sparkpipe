@@ -1,7 +1,8 @@
 # Context memory: an optimized context rebuilt in the background
 
 Status, 2026-11-07: built for SparkPipe Chat and for API sessions, one
-exchange at a time; memory for the rounds inside an agent's turn is next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
+exchange at a time, and for the tool results of the rounds inside an
+agent's turn; a line per round is next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
 the API. The ledger, curator, expand and search tools, tool-output forms, stem,
 pre-warm and store described there stay.
 
@@ -108,12 +109,27 @@ tool loop never leaves the engine idle, so agent sessions need
 share the engine with them, which the benchmarks measure as foreground
 slowdown.
 
-## Rounds inside an agent's turn (next)
+## Rounds inside an agent's turn
 
 An agent's turn is one user message followed by tens to hundreds of rounds:
 an assistant message with tool calls, then the tool results. Exchange-level
 memory leaves the whole turn raw, so the prompt still grows with every
-round. The same two rules apply with the round as the unit:
+round.
+
+Built (`tools/serving/chat_memory.py`, `round_cut` and `rounds`): when a
+request's raw rounds hold more large tool results than the working budget,
+a round build folds the older rounds back to the budget's low mark, newest
+round always raw. The curator picks the sections of the folded results to
+keep, the build pre-warms the next request's layout, and only then
+publishes the cut (store record `round_base`). Later requests of the turn
+render the folded results as stubs plus the kept sections; the assistant
+messages and every newer round stay in full, and `expand` reads any result
+back. `tests/test_chat_memory_session.py` checks the cut, that a request
+during the pre-warm still sees every round in full, the folded rendering
+and the pre-warmed prefix.
+
+The full design, with the line per round still to build, applies the same
+two rules with the round as the unit:
 - **Lines.** A round leaving the turn's raw window gets one line ("r12: ran
   the tests; 3 failures in parse_args, KeyError 'mode'"). The curator writes
   it as a continuation of the round's own tokens, so it prefills only its
