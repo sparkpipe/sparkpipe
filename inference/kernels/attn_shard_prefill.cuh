@@ -659,6 +659,7 @@ static inline cudaError_t LmLatentShardAttendHeadsLaunch(
 				sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, selection);
 		}
 	}
+	LmSlowPath("the tensor-core shard attention refused these heads", rows, total_heads, LATENT + ROPE);
 	return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads, sequence_of_row,
 		context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, rows,
 		stream, split_positions, split_offsets, heads_per_block_limit);
