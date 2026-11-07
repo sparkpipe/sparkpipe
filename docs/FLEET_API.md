@@ -199,14 +199,14 @@ Every response carries what it cost in time:
 ```json
 "sparkpipe": {
   "request": "r_7Q2…", "fleet": "F3", "model": "kimi-k3", "pack": "core@a41f09",
-  "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580,
+  "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580, "engine_rounds": 1,
   "queue_ms": 0, "prefill_ms": 1240, "ttft_ms": 1310,
   "output_tokens": 912, "decode_tps": 15.8, "draft_accept": 0.71,
   "cold_prefill_ms_estimate": 312000
 }
 ```
 
-`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
+`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `engine_rounds` counts the model's generations behind the response. It is more than one when context memory answered the model's own `expand` or `search_history` call before the reply; then the prompt and cache counts are the last generation's, `output_tokens` counts every generation, and `prefill_ms` and `ttft_ms` run from the first. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
 
 ### 3.7 More inference features
 
@@ -218,6 +218,7 @@ Every response carries what it cost in time:
 - **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
   - **One name, two places.** A client that can set headers sends the `X-SparkPipe-Priority` header. One that can only set body fields sends the same name as a key of the request's `metadata` object, `"metadata": {"x-sparkpipe-priority": "background"}`, on any of the three shapes. The header wins when both are present. The chat layer reads the header today; reading the `metadata` key lands with the priority classes (E8, #1794).
   - **Harness hints.** Without either, the harness's own marks decide: Claude Code's `x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's `x-openai-subagent: compact`, run at background priority; everything else is interactive.
+- **Context memory.** `X-SparkPipe-Memory: on` lays a long session out the way SparkPipe Chat does: one summary line per earlier exchange, the newest exchanges in full, and the `expand` and `search_history` tools, which the chat layer answers itself, so the client never sees those calls ([CONTEXT_MEMORY.md](CONTEXT_MEMORY.md)). The session is the key's account and member plus the client's session id: `X-Claude-Code-Session-Id`, `X-Session-Id`, the Responses `prompt_cache_key` or the Messages `metadata` session; each Claude Code subagent has its own. Opting in without a session id answers 400, and the harness's own compaction requests stay raw. The client keeps sending its whole history and nothing in it is lost; usage counts the tokens the model read.
 - **Images** on models that take them, in all three API shapes.
 - **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
 

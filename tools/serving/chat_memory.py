@@ -93,6 +93,20 @@ def exchange_key(messages):
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+API_TURN = "api-"
+API_REPLY = "api-reply-"
+
+
+def turn_id(exchanges, question):
+    return exchange_key([message for exchange in exchanges for message in exchange] + [question])[:24]
+
+
+def api_turn_ids(exchanges, current):
+    turn = turn_id(exchanges, current[0])
+    parent = API_REPLY + turn_id(exchanges[:-1], exchanges[-1][0]) if exchanges else None
+    return API_TURN + turn, parent, API_REPLY + turn
+
+
 def tool_images(message):
     content = message.get("content")
     if message.get("role") != "user" or not isinstance(content, list):
@@ -101,7 +115,7 @@ def tool_images(message):
     return "image_url" in kinds and set(kinds) <= {"text", "image_url"} and len(text_of(content)) <= 200
 
 
-def split(messages):
+def exchanges_of(messages):
     head = []
     index = 0
     while index < len(messages) and messages[index].get("role") == "system":
@@ -118,10 +132,21 @@ def split(messages):
             exchanges.append([message])
         else:
             exchanges[-1].append(message)
-    if not exchanges:
+    return (head, exchanges) if exchanges else None
+
+
+def answered(exchange):
+    final = exchange[-1]
+    return len(exchange) > 1 and final.get("role") == "assistant" and not final.get("tool_calls")
+
+
+def split(messages):
+    parts = exchanges_of(messages)
+    if parts is None:
         return None
+    head, exchanges = parts
     current = exchanges.pop()
-    if current[-1].get("role") == "assistant" and not current[-1].get("tool_calls"):
+    if answered(current):
         return None
     return head, exchanges, current
 
@@ -582,11 +607,33 @@ def parse_commits(text, plan, exchanges, lines):
     return chosen
 
 
-def keep_instruction(large, small, keep_tokens):
+def round_numbers(messages):
+    rounds, number = {}, 0
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            number += 1
+        elif message.get("role") == "tool":
+            rounds[index] = number
+    return rounds
+
+
+CURATOR_REPLY = "{\"lines\": {"
+ROUND_REPLY = "{\"keep\": {"
+
+
+def replied(start, text):
+    return text if text.lstrip().startswith("{") else start + text
+
+
+ROUND_INSTRUCTION = ("This turn's earlier tool results are about to be shown only as a stub plus the sections you keep, so the context stays short; "
+                     "the full text stays readable with expand. Reply with JSON only.")
+
+
+def keep_instruction(large, small, keep_tokens, when="from the next turn on"):
     listing = "; ".join(f"{item['id']} {item['part']['name']} {item['tokens']} tokens, §1-§{item['sections']}"
                         + ("" if len(item["shown"]) == item["sections"] else " (shown: " + ", ".join(f"§{n}" for n in item["shown"]) + ")") for item in large)
     example = large[0]["id"]
-    return (f" Tool results longer than {small} tokens are shown from the next turn on only as a stub plus the sections you keep (sections are marked [§n] "
+    return (f" Tool results longer than {small} tokens are shown {when} only as a stub plus the sections you keep (sections are marked [§n] "
             f"above): {listing}. Also add \"keep\": {{\"{example}\": [<section numbers>]}} for the sections later questions are likely to need, "
             f"at most {keep_tokens} tokens in all: the sections holding facts the answer used or that later questions are likely to ask about, "
             f"none if nothing in them is likely to be needed again; only sections shown above.")
@@ -661,6 +708,18 @@ def parse_curator(text, missing, exchange_count, node_tokens, open_budget):
             opened.append(node)
             spent += size
     return lines, opened, len(lines) == len(missing)
+
+
+def warm_base(state, exchanges):
+    keys = {exchange_key(messages) for messages in exchanges}
+    for base in reversed(state["bases"]):
+        if set(base["commits"]) <= keys:
+            return base
+    return None
+
+
+def forms_used(layout, exchanges, forms):
+    return {part["key"]: forms[part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in forms}
 
 
 def fallback_line(messages):
@@ -742,7 +801,7 @@ class ChatStore:
         if key in self.memory:
             return self.memory[key]
         state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {},
-                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None}
+                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None, "bases": [], "round_bases": {}}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -788,6 +847,10 @@ class ChatStore:
             state["settings"].update({k: record[k] for k in ("memory", "target") if k in record})
         elif kind == "compaction":
             state["compaction"] = None if record.get("undo") else {k: record.get(k) for k in ("covered", "keep", "summary", "target")}
+        elif kind == "base" and isinstance(record.get("commits"), list) and isinstance(record.get("groups"), list) and isinstance(record.get("forms"), dict):
+            state["bases"].append({k: record[k] for k in ("commits", "groups", "forms")})
+        elif kind == "round_base" and record.get("message") and isinstance(record.get("cut"), int):
+            state["round_bases"].setdefault(record["message"], []).append(record["cut"])
 
     def append(self, user, chat, record):
         state = self.load(user, chat)
@@ -814,6 +877,14 @@ class ChatStore:
 
 
 HEADER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+
+class Headers(dict):
+    def __init__(self, headers, extra=()):
+        super().__init__((name.lower(), value) for name, value in list(headers.items()) + list(dict(extra).items()))
+
+    def get(self, name, default=None):
+        return dict.get(self, name.lower(), default)
 SENTINEL = "SPARKPIPE-LEDGER-END"
 
 
@@ -894,10 +965,10 @@ class Session:
     def can_continue(self):
         return self.rounds < self.memory.max_rounds
 
-    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish, prompt_ids=None, token_ids=None):
+    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish, prompt_ids=None, token_ids=None, catch_up=None):
         if visible_calls or engine_finish not in ("stop",) or not self.message:
             return
-        self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [])
+        self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [], catch_up)
 
 
 MEMORY_OFF = "\ue000SPARKPIPE-MEMORY-OFF\ue001"
@@ -985,6 +1056,10 @@ class Memory:
         self.curator_tokens = int(config.get("curator_max_tokens", 160))
         self.catch_up = int(config.get("catch_up_per_turn", 6))
         self.idle_seconds = float(config.get("idle_seconds", 1.0))
+        self.background_jobs = int(config.get("background_jobs", 1))
+        self.with_foreground = bool(config.get("background_with_foreground", False))
+        if self.background_jobs < 1:
+            raise SystemExit("chat_memory: background_jobs is at least 1")
         self.chat_list = config.get("open_webui_chat_list")
         self.prune_seconds = float(config.get("prune_seconds", 600))
         self.prune_grace_seconds = float(config.get("prune_grace_seconds", 3600))
@@ -1017,16 +1092,24 @@ class Memory:
             await self.prune_once()
             await asyncio.sleep(self.prune_seconds)
 
-    def session(self, model, headers, messages, tools, kwargs, target=None):
+    def identity(self, headers):
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
         if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
             return None
-        if (headers.get("X-OpenWebUI-Task") or "").strip():
-            return None
         chat = header(headers, "X-OpenWebUI-Chat-Id")
-        user_message = header(headers, "X-OpenWebUI-User-Message-Id")
-        if not chat or not user_message:
+        return (claims["sub"], chat) if chat else None
+
+    def bind_pending(self, user, chat, message, exchange):
+        pending = self.store.load(user, chat)["pending"].get(message)
+        if pending is not None:
+            self.store.append(user, chat, {"type": "line", "key": exchange_key(exchange), "line": pending["line"], "source": pending["source"]})
+
+    def session(self, model, headers, messages, tools, kwargs, target=None, identity=None):
+        found = self.identity(headers) if identity is None else identity
+        user_message = header(headers, "X-OpenWebUI-User-Message-Id") if identity is None else API_TURN
+        if found is None or not user_message or (headers.get("X-OpenWebUI-Task") or "").strip():
             return None
+        user, chat = found
         if any((tool.get("function") or {}).get("name") in MEMORY_TOOL_NAMES for tool in tools or []):
             print(json.dumps({"event": "chat_memory_off", "reason": "the client defines a tool with a memory tool's name"}), flush=True)
             return None
@@ -1036,14 +1119,14 @@ class Memory:
         head, exchanges, current = parts
         if any("[CONVERSATION SUMMARY]" in text_of(m.get("content")) for m in head):
             return None
-        user = claims["sub"]
-        parent = header(headers, "X-OpenWebUI-User-Message-Parent-Id")
-        message = header(headers, "X-OpenWebUI-Message-Id")
+        if identity is None:
+            parent, message = header(headers, "X-OpenWebUI-User-Message-Parent-Id"), header(headers, "X-OpenWebUI-Message-Id")
+        else:
+            user_message, parent, message = api_turn_ids(exchanges, current)
         state = self.store.load(user, chat)
         self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
-        if parent and exchanges and parent in state["pending"]:
-            pending = state["pending"][parent]
-            self.store.append(user, chat, {"type": "line", "key": exchange_key(exchanges[-1]), "line": pending["line"], "source": pending["source"]})
+        if parent and exchanges:
+            self.bind_pending(user, chat, parent, exchanges[-1])
         open_ids = list(state["open_by_message"].get(parent, [])) if parent else []
         frozen = state["layouts"].get(user_message)
         lines = self.ledger_lines(state)
@@ -1052,17 +1135,59 @@ class Memory:
             parts = self.part_renderer(model, frozen.get("forms") or {})
             layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), frozen["commits"], self.open_chars, state["groups"], frozen.get("groups", []), parts)
         else:
-            parts = self.part_renderer(model, state["forms"])
-            layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
+            base = warm_base(state, exchanges)
+            forms = base["forms"] if base is not None else state["forms"]
+            parts = self.part_renderer(model, forms)
+            if base is not None:
+                layout = build_layout(head, exchanges, current, {key: lines[key] for key in base["commits"] if key in lines}, open_ids, base["commits"],
+                                      self.open_chars, state["groups"], base["groups"], parts)
+            else:
+                layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
             layout = self.fit(model, user, chat, head, exchanges, current, layout, tools, target)
-            used = {part["key"]: state["forms"][part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in state["forms"]}
+            used = forms_used(layout, exchanges, forms)
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "commits": layout["keys"],
                                            "groups": layout["groups"], "forms": used})
+        frozen = state["layouts"].get(user_message) or {}
+
+        def lay(collapse):
+            limited = {key: lines[key] for key in frozen.get("commits") or [] if key in lines}
+            renderer = self.part_renderer(model, frozen.get("forms") or {}, collapse, state["forms"])
+            return build_layout(head, exchanges, current, limited, frozen.get("open", []), frozen.get("commits") or [], self.open_chars, state["groups"],
+                                frozen.get("groups", []), renderer)
+
+        rounds = sum(1 for m in current if m.get("role") == "assistant" and m.get("tool_calls"))
+        published = max([cut for cut in state["round_bases"].get(user_message, []) if cut <= rounds] or [0])
+        if published:
+            layout = lay(published)
         replay = state["expansions"].get((user_message, message), [])
         if replay:
             layout["messages"] = layout["messages"][:len(layout["messages"]) - len(current)] + splice_expansions(layout["messages"][len(layout["messages"]) - len(current):], replay)
-        return Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
-                       list(tools or []) + list(MEMORY_TOOLS), dict(kwargs), self.profile(model, target).target)
+        session = Session(self, model, user, chat, user_message, parent, message, head, exchanges, current, layout,
+                          list(tools or []) + list(MEMORY_TOOLS), dict(kwargs), self.profile(model, target).target)
+        session.lay, session.collapse = lay, published
+        cut = self.round_cut(model, current, published, target)
+        if cut > published:
+            self.schedule_rounds(session, cut)
+        return session
+
+    def round_cut(self, model, current, published, target=None):
+        small, cap, _ = self.part_settings(model)
+        rounds = round_numbers(current)
+        total = max(rounds.values(), default=0)
+        sizes = [0] * (total + 1)
+        for part in tool_parts(current):
+            tokens = self.count(model, part["text"]) if part["name"] not in MEMORY_TOOL_NAMES else 0
+            if tokens > small:
+                sizes[rounds.get(part["index"], 0)] += min(tokens, cap)
+        high, low = self.working_range(model, target)
+        if sum(sizes[published + 1:]) <= high:
+            return published
+        kept = 0
+        for number in range(total, published, -1):
+            if number < total and kept + sizes[number] > low:
+                return number
+            kept += sizes[number]
+        return published
 
     def ledger_lines(self, state):
         lines = dict(state["lines"])
@@ -1081,19 +1206,23 @@ class Memory:
             self.counts[key] = self.frontend.memory_count(model, text)
         return self.counts[key]
 
-    def part_renderer(self, model, forms):
+    def part_renderer(self, model, forms, collapse=0, round_forms=None):
         small, cap, _ = self.part_settings(model)
         count = lambda text: self.count(model, text)
 
         def render(number, messages, past):
             result = list(messages)
+            rounds = {} if past else round_numbers(result)
             parts = [part for part in tool_parts(result) if part["name"] not in MEMORY_TOOL_NAMES]
             for index, part in enumerate(parts, start=1):
                 node = f"e{number}.t{index}"
-                if past:
+                folded = not past and 0 < rounds.get(part["index"], 0) <= collapse and count(part["text"]) > small
+                if past or folded:
                     part = dict(part, label="")
                 if past and part["key"] in forms:
                     content = stub_form(node, part, count(part["text"]), forms[part["key"]])
+                elif folded:
+                    content = stub_form(node, part, count(part["text"]), (round_forms or {}).get(part["key"], []))
                 else:
                     content = arrival_form(node, part, small, cap, count)[0]
                 result[part["index"]] = dict(result[part["index"]], content=content)
@@ -1150,49 +1279,124 @@ class Memory:
         print(json.dumps({"event": "chat_memory_fit_short", "model": model.id, "lined": layout["lined"], "nodes": len(layout["nodes"])}), flush=True)
         return layout
 
+    def running(self, model):
+        tasks = self.tasks.setdefault(model.id, {})
+        for key in [key for key, task in tasks.items() if task.done()]:
+            del tasks[key]
+        return tasks
+
+    async def settled(self, model, user, chat, timeout_seconds):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            queued = any(job["session"].user == user and job["session"].chat == chat for job in self.jobs.get(model.id, []))
+            if not queued and (user, chat) not in self.running(model):
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    async def import_history(self, model, headers, messages, tools, kwargs, batch, timeout_seconds=3600.0):
+        found, parts = self.identity(Headers(headers)), exchanges_of(messages)
+        if found is None or parts is None or batch < 1:
+            raise ValueError("an import names a memory identity, a conversation that starts with a user message and a batch of at least one exchange")
+        user, chat = found
+        head, exchanges = parts
+        ends = sorted({min(end, len(exchanges) - 1) for end in range(batch - 1, len(exchanges) + batch - 1, batch)})
+        for end in ends:
+            exchange = exchanges[end]
+            if not answered(exchange):
+                continue
+            key = exchange_key(exchange)[:24]
+            ids = {"X-OpenWebUI-User-Message-Id": "import-" + key, "X-OpenWebUI-Message-Id": "import-reply-" + key}
+            prior = [message for earlier in exchanges[:end] for message in earlier]
+            session = self.session(model, Headers(headers, ids), head + prior + exchange[:-1], tools, kwargs)
+            if session is None:
+                raise ValueError("the conversation cannot open a memory session")
+            session.finished(session.messages, text_of(exchange[-1].get("content")), "", [], "stop", catch_up=batch)
+            if not await self.settled(model, user, chat, timeout_seconds):
+                raise TimeoutError("the memory jobs of the import did not finish")
+            self.bind_pending(user, chat, ids["X-OpenWebUI-Message-Id"], exchange)
+        state = self.store.load(user, chat)
+        return {"exchanges": len(exchanges), "lined": sum(1 for exchange in exchanges if exchange_key(exchange) in state["lines"]),
+                "committed": len(state["commits"]), "bases": len(state["bases"])}
+
+    def idle_only(self, model):
+        return self.active.get(model.id, 0) != 0 and not self.with_foreground
+
     def enter(self, model):
         self.active[model.id] = self.active.get(model.id, 0) + 1
-        task = self.tasks.pop(model.id, None)
-        if task is not None and not task.done():
-            task.cancel()
+        if not self.with_foreground:
+            for task in self.tasks.pop(model.id, {}).values():
+                if not task.done():
+                    task.cancel()
 
     def leave(self, model):
         self.active[model.id] = max(0, self.active.get(model.id, 0) - 1)
         self.kick(model)
 
     def cancel_all(self):
-        for task in list(self.tasks.values()):
-            if not task.done():
-                task.cancel()
+        for tasks in self.tasks.values():
+            for task in tasks.values():
+                if not task.done():
+                    task.cancel()
         self.tasks.clear()
 
-    def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=()):
+    def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=(), catch_up=None):
         lines = self.store.load(session.user, session.chat)["lines"]
-        missing = [i for i in session.layout["working"] if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
+        missing = [i for i in session.layout["working"] if exchange_key(session.exchanges[i]) not in lines][:catch_up or self.catch_up]
         queue = self.jobs.setdefault(session.model.id, [])
         queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
-        queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0,
+        queue.append({"kind": "exchange", "session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0,
                       "prompt_ids": list(prompt_ids), "token_ids": list(token_ids)})
         self.kick(session.model)
 
-    def kick(self, model):
-        if self.active.get(model.id, 0) or not self.jobs.get(model.id):
+    def schedule_rounds(self, session, cut):
+        queue = self.jobs.setdefault(session.model.id, [])
+        mine = [job for job in queue if job["session"].chat == session.chat and job["session"].user == session.user and job["kind"] == "rounds"]
+        if any(job["cut"] >= cut for job in mine):
             return
-        task = self.tasks.get(model.id)
-        if task is not None and not task.done():
-            return
-        self.tasks[model.id] = asyncio.ensure_future(self.run(model))
+        queue[:] = [job for job in queue if job not in mine][-7:]
+        queue.append({"kind": "rounds", "session": session, "cut": cut, "attempts": 0})
+        self.kick(session.model)
 
-    async def run(self, model):
+    def kick(self, model):
+        if self.idle_only(model):
+            return
+        running = self.running(model)
+        for job in list(self.jobs.get(model.id) or []):
+            key = (job["session"].user, job["session"].chat)
+            if len(running) >= self.background_jobs:
+                break
+            if key not in running:
+                running[key] = asyncio.ensure_future(self.run(model, job))
+
+    async def run(self, model, job):
+        key = (job["session"].user, job["session"].chat)
+        try:
+            await self.work(model, job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(json.dumps({"event": "chat_memory_background_error", "model": model.id, "error": str(error)[:300]}), flush=True)
+        if self.tasks.get(model.id, {}).get(key) is asyncio.current_task():
+            del self.tasks[model.id][key]
+        self.kick(model)
+
+    async def work(self, model, job):
         await asyncio.sleep(self.idle_seconds)
         queue = self.jobs.get(model.id) or []
-        if not queue or self.active.get(model.id, 0):
+        session = job["session"]
+        if job not in queue or self.idle_only(model):
             return
         if not await self.frontend.memory_model_ready(model):
             self.jobs.pop(model.id, None)
             return
-        job = queue[0]
-        session = job["session"]
+        if job["kind"] == "rounds":
+            try:
+                await self.rounds(model, job)
+            finally:
+                if job in queue:
+                    queue.remove(job)
+            return
         try:
             done = await self.curate(model, job)
         except asyncio.CancelledError:
@@ -1204,14 +1408,34 @@ class Memory:
         if done or job["attempts"] >= 2:
             if not done:
                 self.fallback(model, job)
-            if queue and queue[0] is job:
-                queue.pop(0)
+            if job in queue:
+                queue.remove(job)
             if job.get("ledger_changed"):
                 await self.stem(model, session)
             await self.prewarm(model, session, job["content"])
-        if self.tasks.get(model.id) is asyncio.current_task():
-            self.tasks.pop(model.id, None)
-        self.kick(model)
+
+    async def rounds(self, model, job):
+        session, cut = job["session"], job["cut"]
+        small, _, keep_tokens = self.part_settings(model)
+        rounds = round_numbers(session.current)
+        forms = self.store.load(session.user, session.chat)["forms"]
+        large = [item for item in self.large_parts(model, session)
+                 if session.collapse < rounds.get(item["part"]["index"], 0) <= cut and item["part"]["key"] not in forms]
+        if large:
+            instruction = ROUND_INSTRUCTION + keep_instruction(large, small, keep_tokens, "from the next request on")
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, session.messages + [{"role": "user", "content": instruction}], session.tools,
+                                                                   session.kwargs, self.profile(model).curator_suffix, ROUND_REPLY)
+            text = replied(ROUND_REPLY, await self.frontend.memory_complete(model, ids, self.curator_tokens + 10 * len(large), reasoning_open, "curator_render",
+                                                                             session.trace()))
+            kept = parse_keep(text, large, keep_tokens, lambda part, numbers: self.count(model, section_text(part["text"], section_spans(part["text"]), numbers)))
+            for item in large:
+                self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": kept.get(item["id"], []),
+                                                               "source": "curator" if item["id"] in kept else "fallback"})
+        layout = session.lay(cut)
+        ids = self.frontend.memory_cut_ids(model, layout["messages"] + [{"role": "user", "content": SENTINEL}], session.tools, session.kwargs, SENTINEL)
+        if ids:
+            await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())
+            self.store.append(session.user, session.chat, {"type": "round_base", "message": session.user_message, "cut": cut})
 
     def node_tokens(self, session):
         sizes = {}
@@ -1250,13 +1474,15 @@ class Memory:
             instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_range(model, session.target)[0])
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
-            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix)
+            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix,
+                                                              CURATOR_REPLY)
         if continued is not None:
             ids, reasoning_open = continued
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
-            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix)
-        text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open, "curator" if continued is not None else "curator_render", session.trace())
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix, CURATOR_REPLY)
+        text = replied(CURATOR_REPLY, await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open,
+                                                                           "curator" if continued is not None else "curator_render", session.trace()))
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, profile.open_budget)
         if lines is None:
             return False
@@ -1363,3 +1589,5 @@ class Memory:
         ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
             await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())
+            self.store.append(session.user, session.chat, {"type": "base", "message": session.message, "commits": layout["keys"], "groups": layout["groups"],
+                                                           "forms": forms_used(layout, finished, state["forms"])})

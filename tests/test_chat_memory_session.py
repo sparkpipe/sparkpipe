@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes; and a given conversation is imported in batches, one curator call per batch, with every exchange lined; and background jobs run for up to background_jobs chats at once, never two for one chat, a job replaced while its task waits runs as the newer job, and with background_with_foreground the curator runs beside foreground requests; and inside an agent's turn, once the raw rounds' tool results pass the working budget, a round build folds the older rounds back to the budget's low mark, keeps the sections the curator chose, pre-warms the next request's layout and only then publishes the cut, which later requests of the turn render while the newest rounds stay in full."""
 import asyncio
 import base64
 import hashlib
@@ -57,15 +57,17 @@ class Frontend:
         self.cuts = []
         self.continued = []
         self.block = None
+        self.block_kinds = None
+        self.fail_kinds = ()
 
     async def memory_model_ready(self, model):
         return self.ready
 
-    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix, start=""):
         self.calls.append(messages)
         return [1, 2, 3], False
 
-    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start=""):
         self.continued.append((list(prompt_ids), list(generated_ids)))
         return [1, 2, 3, 4], False
 
@@ -78,11 +80,33 @@ class Frontend:
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
-        if self.block is not None:
+        if self.block is not None and (self.block_kinds is None or kind in self.block_kinds):
             await self.block.wait()
+        if kind in self.fail_kinds:
+            raise RuntimeError(f"the engine refused a {kind} request")
         if max_tokens == 1:
             return ""
         return self.replies.pop(0) if self.replies else "not json"
+
+
+class Overlapping(Frontend):
+    def __init__(self):
+        super().__init__()
+        self.inside = {}
+        self.peak = {}
+        self.most = 0
+
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+        if not kind.startswith("curator"):
+            return await super().memory_complete(model, ids, max_tokens, reasoning_open, kind, trace)
+        chat = trace["chat"]
+        self.inside[chat] = self.inside.get(chat, 0) + 1
+        self.peak[chat] = max(self.peak.get(chat, 0), self.inside[chat])
+        self.most = max(self.most, sum(self.inside.values()))
+        try:
+            return await super().memory_complete(model, ids, max_tokens, reasoning_open, kind, trace)
+        finally:
+            self.inside[chat] -= 1
 
 
 def conversation(n):
@@ -95,8 +119,7 @@ def conversation(n):
 
 async def settle(memory, model):
     for _ in range(100):
-        task = memory.tasks.get(model.id)
-        if (task is None or task.done()) and not memory.jobs.get(model.id):
+        if not memory.running(model) and not memory.jobs.get(model.id):
             return
         await asyncio.sleep(0.02)
     raise AssertionError(f"background work did not settle: {memory.jobs.get(model.id)}")
@@ -257,7 +280,7 @@ async def run():
         session = memory.session(model, headers("u4", "a3", "a4"), conversation(4), [], {})
         session.finished(session.messages, "answer 4", "", [], "stop")
         await asyncio.sleep(0.1)
-        running = memory.tasks.get(model.id)
+        running = next(iter(memory.running(model).values()), None)
         assert running is not None and not running.done(), "the curator should be running while the engine is idle"
         memory.enter(model)
         await asyncio.sleep(0.05)
@@ -387,7 +410,162 @@ async def run():
 
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret", "budgets": BUDGETS}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
+        assert reopened["bases"] == state["bases"] and state["bases"][-1]["commits"] == state["commits"], "published bases survive a restart"
+
+        bridged = Model()
+        bridged.id = "bridged-model"
+        bridged.memory = dict(bridged.memory, working_tokens=5)
+        first = memory.session(bridged, headers("b1", None, "c1", chat="chat-bridge"), conversation(1), [], {})
+        frontend.replies[:] = ['{"lines": {"e1": "The user asked question 1."}, "open": []}']
+        first.finished(first.messages, "answer 1", "", [], "stop")
+        await settle(memory, bridged)
+        bridge_state = memory.store.load("user-1", "chat-bridge")
+        assert bridge_state["bases"] == [{"commits": [], "groups": [], "forms": {}}], "the first pre-warm publishes a base with nothing committed"
+        second = memory.session(bridged, headers("b2", "c1", "c2", chat="chat-bridge"), conversation(2), [], {})
+        frontend.replies[:] = ['{"lines": {"e2": "The user asked question 2."}, "open": [], "commit": {"e1": "="}}']
+        frontend.block, frontend.block_kinds = asyncio.Event(), ("prewarm",)
+        second.finished(second.messages, "answer 2", "", [], "stop")
+        for _ in range(100):
+            if bridge_state["commits"]:
+                break
+            await asyncio.sleep(0.02)
+        bridge_key = cm.exchange_key(conversation(2)[1:3])
+        assert bridge_state["commits"] == [bridge_key] and len(bridge_state["bases"]) == 1, "the curator committed e1 and its pre-warm is still running"
+        early = memory.session(bridged, headers("b3", "c2", "c3", chat="chat-bridge"), conversation(3), [], {})
+        assert early.layout["lined"] == 0 and early.layout["working"] == [0, 1] and early.messages[1]["content"] == "[e1] question 1", \
+            "until its pre-warm finishes, a commit stays raw in the bridge after the last warm base"
+        frontend.block.set()
+        await settle(memory, bridged)
+        frontend.block, frontend.block_kinds = None, None
+        assert bridge_state["bases"][-1]["commits"] == [bridge_key], "the finished pre-warm publishes the base with e1 committed"
+        late = memory.session(bridged, headers("b3b", "c2", "c3b", chat="chat-bridge"), conversation(3), [], {})
+        assert late.layout["lined"] == 1 and late.layout["working"] == [1] and late.messages[1]["content"].startswith(cm.LEDGER_OPEN + "[e1] "), \
+            "the next turn after the pre-warm builds on the new base"
+        assert memory.session(bridged, headers("b3", "c2", "c3", chat="chat-bridge"), conversation(3), [], {}).layout["lined"] == 0, \
+            "a turn already laid out keeps its frozen layout"
+
+        given = conversation(10)[:-1]
+        frontend.calls.clear()
+        frontend.replies[:] = ['{"lines": {"e1": "Line one.", "e2": "Line two.", "e3": "Line three.", "e4": "Line four."}, "open": []}',
+                               '{"lines": {"e5": "Line five.", "e6": "Line six.", "e7": "Line seven.", "e8": "Line eight."}, "open": []}',
+                               '{"lines": {"e9": "Line nine."}, "open": []}']
+        imported = await memory.import_history(model, headers("unused", chat="chat-import"), given, [], {}, 4, 30.0)
+        import_state = memory.store.load("user-1", "chat-import")
+        exchanges = cm.exchanges_of(given)[1]
+        assert imported == {"exchanges": 9, "lined": 9, "committed": 0, "bases": 3}, imported
+        assert [import_state["lines"][cm.exchange_key(e)] for e in exchanges] == ["Line one.", "Line two.", "Line three.", "Line four.", "Line five.", "Line six.",
+                                                                                  "Line seven.", "Line eight.", "Line nine."], "every given exchange is lined, in order"
+        assert len(frontend.calls) == 3 and "e1, e2, e3, e4" in frontend.calls[0][-1]["content"], "a batch of four exchanges takes one curator call"
+        after_import = memory.session(model, headers("i10", "import-reply-" + cm.exchange_key(exchanges[-1])[:24], "i10a", chat="chat-import"), conversation(10), [], {})
+        assert after_import is not None and after_import.layout["working"] == list(range(9)), "the next real turn builds on the imported memory"
+        try:
+            await memory.import_history(model, {"X-OpenWebUI-Chat-Id": "chat-x"}, given, [], {}, 4, 1.0)
+            raise AssertionError("an import without an identity must be refused")
+        except ValueError:
+            pass
+
+        overlap = Overlapping()
+        both = '{"lines": {"e1": "The user asked question 1.", "e2": "The user asked question 2."}, "open": []}'
+        parallel = cm.Memory({"store": tmp + "/parallel", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS, "background_jobs": 2}, overlap)
+        overlap.replies[:] = [both] * 4
+        overlap.block, overlap.block_kinds = asyncio.Event(), ("curator_render",)
+        for chat in ("p-a", "p-b", "p-c"):
+            opened = parallel.session(model, headers("q1", None, "r1", chat=chat), conversation(1), [], {})
+            opened.finished(opened.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.1)
+        assert sorted(chat for _, chat in parallel.running(model)) == ["p-a", "p-b"] and overlap.most == 2, "two chats curate at once and the third waits for a free job"
+        newer = parallel.session(model, headers("q2", "r1", "r2", chat="p-a"), conversation(2), [], {})
+        newer.finished(newer.messages, "answer 2", "", [], "stop")
+        await asyncio.sleep(0.05)
+        assert len(parallel.running(model)) == 2 and set(overlap.peak.values()) == {1}, "a chat's newer job waits while the chat's job runs"
+        overlap.block.set()
+        await settle(parallel, model)
+        assert overlap.most == 2 and set(overlap.peak.values()) == {1}, "never more jobs than background_jobs, never two for one chat"
+        assert all(parallel.store.load("user-1", chat)["pending"]["r1"]["line"] == "The user asked question 1." for chat in ("p-a", "p-b", "p-c"))
+        assert parallel.store.load("user-1", "p-a")["pending"]["r2"]["line"] == "The user asked question 2.", "the chat's newer job runs after the one it waited for"
+
+        sleepy = cm.Memory({"store": tmp + "/sleepy", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.2, "budgets": BUDGETS}, overlap)
+        overlap.calls.clear()
+        overlap.replies[:] = [both]
+        first = sleepy.session(model, headers("z1", None, "y1", chat="swap"), conversation(1), [], {})
+        first.finished(first.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.05)
+        second = sleepy.session(model, headers("z2", "y1", "y2", chat="swap"), conversation(2), [], {})
+        second.finished(second.messages, "answer 2", "", [], "stop")
+        await settle(sleepy, model)
+        swapped = sleepy.store.load("user-1", "swap")
+        assert "y1" not in swapped["pending"] and swapped["pending"]["y2"]["line"] == "The user asked question 2." and len(overlap.calls) == 1, \
+            "a job replaced while its task waits runs as the newer job"
+
+        beside = cm.Memory({"store": tmp + "/beside", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS, "background_with_foreground": True}, overlap)
+        overlap.replies[:] = [both]
+        overlap.block = asyncio.Event()
+        beside.enter(model)
+        busy = beside.session(model, headers("f1", None, "g1", chat="beside"), conversation(1), [], {})
+        busy.finished(busy.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.05)
+        curating = next(iter(beside.running(model).values()), None)
+        assert curating is not None and not curating.done(), "with background_with_foreground the curator starts while a foreground request runs"
+        beside.enter(model)
+        await asyncio.sleep(0.02)
+        assert not curating.cancelled(), "a new foreground request leaves the curator running"
+        overlap.block.set()
+        await settle(beside, model)
+        assert beside.store.load("user-1", "beside")["pending"]["g1"]["line"] == "The user asked question 1."
+        beside.leave(model)
+        beside.leave(model)
+        try:
+            cm.Memory({"store": tmp + "/none", "jwt_secret_file": tmp + "/secret", "budgets": BUDGETS, "background_jobs": 0}, overlap)
+            raise AssertionError("background_jobs below one must be refused")
+        except SystemExit:
+            pass
+
+        agent = Model()
+        agent.id = "agent-model"
+        agent.memory = dict(agent.memory, working_tokens=6000)
+        files = lambda n: "".join(f"Paragraph {i} of file {n}: the value is {i * 7 + n}.\n" for i in range(130))
+
+        def turn_with(rounds):
+            messages = conversation(2)[:-1] + [{"role": "user", "content": "Fix the failing test."}]
+            for n in range(1, rounds + 1):
+                messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"r{n}", "type": "function", "function": {"name": "read_file", "arguments": {"path": f"f{n}.py"}}}]},
+                             {"role": "tool", "tool_call_id": f"r{n}", "content": files(n)}]
+            return messages
+
+        agentic = cm.Memory({"store": tmp + "/agent", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS}, frontend)
+        frontend.block, frontend.block_kinds = None, None
+        frontend.replies[:] = ['{"keep": {"e2.t1": [2], "e2.t3": [1]}}']
+        first = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(6), [], {})
+        tool_texts = [m["content"] for m in first.messages if m["role"] == "tool"]
+        assert all("Paragraph 0 of file" in text for text in tool_texts), "until a round base is published every round's result is shown in full"
+        assert [job["cut"] for job in agentic.jobs.get(agent.id, []) if job["kind"] == "rounds"] == [4], \
+            "rounds past the working budget fold back to its low mark, and the newest rounds stay raw"
+        frontend.block, frontend.block_kinds = asyncio.Event(), ("prewarm",)
+        for _ in range(100):
+            if agentic.store.load("user-1", "chat-agent")["forms"]:
+                break
+            await asyncio.sleep(0.02)
+        waiting = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(6), [], {})
+        assert all("Paragraph 0 of file" in m["content"] for m in waiting.messages if m["role"] == "tool"), "a round base is used only once its pre-warm finished"
+        frontend.block.set()
+        await settle(agentic, agent)
+        frontend.block, frontend.block_kinds = None, None
+        agent_state = agentic.store.load("user-1", "chat-agent")
+        assert agent_state["round_bases"] == {"ag1": [4]}, agent_state["round_bases"]
+        later = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(7), [], {})
+        shown = [m["content"] for m in later.messages if m["role"] == "tool"]
+        assert "collapsed; kept §2" in shown[0] and "Paragraph 0 of file 1" not in shown[0] and "collapsed; expand" in shown[1] and "collapsed; kept §1" in shown[2], shown[:3]
+        assert all("Paragraph 0 of file" in text for text in shown[4:]), "rounds after the cut stay in full"
+        prewarmed = frontend.cuts[-1]
+        assert prewarmed[:-1] == later.messages[:len(prewarmed) - 1] and prewarmed[-1]["content"] == cm.SENTINEL, \
+            "the pre-warm renders the next request's layout up to its last tool result"
+        assert later.layout["lined"] == first.layout["lined"], "the turn's exchange layout stays frozen while its rounds fold"
+        frontend.fail_kinds = ("prewarm",)
+        failing = agentic.session(agent, headers("ag2", "a1", "ag2a", chat="chat-failing"), turn_with(6), [], {})
+        await settle(agentic, agent)
+        frontend.fail_kinds = ()
+        assert failing.collapse == 0 and not agentic.store.load("user-1", "chat-failing")["round_bases"], "a round build that fails publishes nothing and is not retried in a loop"
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge, and given conversations imported in batches of exchanges, one curator call per batch, every exchange lined, and background jobs for several chats at once, one per chat, beside foreground requests when configured, and an agent turn's older rounds folded to their kept sections once a pre-warmed round base is published")
