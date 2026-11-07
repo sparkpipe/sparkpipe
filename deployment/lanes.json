@@ -73,7 +73,8 @@
     "window": 4096,
     "context_bytes": 8589934592,
     "restart": "on-failure",
-    "log": "/srv/workspace/sparkpipe/logs/draftd.log"
+    "log": "/srv/workspace/sparkpipe/logs/draftd.log",
+    "lifecycle": "model"
    }
   },
   "qwen3.8-27b": {
@@ -127,7 +128,8 @@
     "window": 4096,
     "context_bytes": 8589934592,
     "restart": "no",
-    "log": "/srv/workspace/sparkpipe/logs/draftd-dsv41.log"
+    "log": "/srv/workspace/sparkpipe/logs/draftd-dsv41.log",
+    "lifecycle": "model"
    }
   },
   "qwen3.8-max": {

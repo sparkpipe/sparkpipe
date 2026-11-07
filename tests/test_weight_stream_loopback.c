@@ -130,7 +130,7 @@ static void *LoopRun(void *argument)
 	for (step=0u; step<LOOP_ROUNDS * LOOP_RANKS; step++)
 	{
 		SparkWeightStreamBlock block;
-		if ( SparkWeightStreamRotate(stream,step,own,partner,LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,40u + step,&block) != SPARK_STATUS_OK )
+		if ( SparkWeightStreamRotate(stream,step,own,partner,LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,40u + step,&block) != SPARK_STATUS_OK )
 		{
 			SparkWeightStreamClose(stream);
 			return 0;
@@ -161,7 +161,7 @@ static void *LoopRun(void *argument)
 	for (step=0u; step<LOOP_ROUNDS * LOOP_RANKS; step++)
 	{
 		SparkWeightStreamBlock block;
-		if ( SparkWeightStreamRotate(stream,step,own,partner,LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,70u + step,&block) != SPARK_STATUS_OK )
+		if ( SparkWeightStreamRotate(stream,step,own,partner,LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,landing + (uint64_t)(step & 1u) * LOOP_BLOCK,70u + step,&block) != SPARK_STATUS_OK )
 		{
 			SparkWeightStreamClose(stream);
 			return 0;
