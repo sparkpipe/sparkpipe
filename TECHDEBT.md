@@ -644,6 +644,18 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## KV tiers
 
+- A node's disk budget for KV is the quota in its KV ledger
+  (`~/.sparkpipe-kv-ledger`, `cache/kv_ledger.c`), which the spill store and
+  the snapshot store share; at the quota the oldest snapshot files are
+  purged. Only weightd sets it (`SPARK_KV_NODE_QUOTA_BYTES`, 500 GB), and no
+  deployment field does. A node without weightd, such as a Studio, keeps
+  whatever quota its ledger file was made with, and a fleet node's 1 TB
+  budget is not what the code applies. On 7 Nov the snapshot store of a
+  Studio benchmark filled the internal disk to 98% before its quota mattered,
+  so the quota was set by hand and the store moved to the scratch volume.
+  Carry the budget in the deployment (a node field read by residentd and
+  passed to the binding's ledger open), proven by a run that stays under it.
+
 - The 24-hour retention outside a running model (weightd's purge thread and
   its release of detached KV pools, the draft servers' context expiry, the
   batch engine's slot clearing and the prefix index's record expiry) has no
