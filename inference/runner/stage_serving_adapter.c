@@ -693,7 +693,12 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
 	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
 		configuration->runtime_limits.resident_sequence_capacity);
-	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);
+	if ( SparkJsonFindObjectMember(doc, root, "kv_pages") < 0 )
+	{
+		fprintf(stderr, "%s adapter: kv_pages is required; the context of a lane is never a default\n", state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 0u);
 	config->kv_page_bytes = 0u;
 	token = SparkJsonFindObjectMember(doc, root, "taps");
 	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )

@@ -25,6 +25,7 @@ static int32_t LmDenseRows(const void *weight, LmScaleTensor scale, const uint16
 		status = LmSkinnyLaunch<Format>(&args, stream, row_exact);
 		if ( status != LM_LAUNCH_ERR_SHAPE || row_exact != 0u )
 			return status;
+		LmSlowPath("the dense skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	}
 	return LmStreamGemmDense<Format>(weight, scale, activation, output_bf16, output_f32, rows, input_dimension, output_dimension, 0u, 0u, multiprocessors,
 		stream);
