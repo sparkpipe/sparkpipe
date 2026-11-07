@@ -3182,6 +3182,8 @@ SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t dea
 			break;
 	}
 	(void)SparkKvSnapshotFlush(&binding->snapshot_store);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotSyncDisk(&binding->snapshot_store);
 	*saved_out = unsaved_start >= unsaved ? unsaved_start - unsaved : 0u;
 	*unsaved_out = unsaved;
 	*ineligible_out = ineligible;
