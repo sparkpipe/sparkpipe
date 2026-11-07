@@ -76,6 +76,7 @@ static char DIRECTORY[64];
 static char SNAPSHOT_DIRECTORY[64];
 static char LEDGER_PATH[96];
 static SparkStageKvConfiguration CONFIGURATION;
+static uint32_t POOL_SOURCE = SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD;
 static uint64_t NEXT_ID = 1u;
 static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
 static atomic_uint ORDER;
@@ -209,6 +210,7 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->logical_page_count = TEST_LOGICAL;
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
+	configuration->pool_source = POOL_SOURCE;
 	configuration->backing_directory = DIRECTORY;
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
@@ -1932,14 +1934,34 @@ static void TestWeightdOwnsPool(void)
 	printf("weightd owns the KV pool: regions and page table carved from it, reattach keeps the generation, no weightd refuses\n");
 }
 
-int main(void)
+static void TestDevicePoolNeedsNoWeightd(void)
 {
-	setvbuf(stdout,0,_IONBF,0);
-	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
-	(void)snprintf(LEDGER_PATH,sizeof(LEDGER_PATH),"/tmp/sparkpipe-kv-binding-ledger-%d",(int)getpid());
-	(void)unlink(LEDGER_PATH);
-	TestKvServerStart(64ull << 20);
-	TestWeightdOwnsPool();
+	SparkModelDriverKvStoreCounters counters;
+	uint64_t lane_bytes;
+	assert(unsetenv("SPARK_WEIGHTD_SOCKET") == 0);
+	Open();
+	lane_bytes = (uint64_t)TEST_LANES * BINDING.pages_per_sequence * sizeof(uint32_t);
+	assert(BINDING.pool.space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE && BINDING.kv_pool.client == 0 && BINDING.kv_pool.chunk_capacity == 0u && BINDING.kv_shared.client == 0);
+	assert(BINDING.pool_started == 0u && BINDING.shared_page_count == 0u && BINDING.arena.resident_block_capacity == TEST_PHYSICAL);
+	assert((uint8_t *)BINDING.page_table == (uint8_t *)(uintptr_t)BINDING.pool.device && BINDING.region_base[0] >= (uint8_t *)BINDING.page_table + lane_bytes);
+	assert(BINDING.region_base[1] >= BINDING.region_base[0] + (uint64_t)TEST_PHYSICAL * BINDING.region_packed_page_bytes[0]);
+	assert(BINDING.region_base[1] + (uint64_t)TEST_PHYSICAL * BINDING.region_packed_page_bytes[1] <= (uint8_t *)(uintptr_t)BINDING.pool.device + BINDING.pool.bytes);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.pool_device_bytes == BINDING.pool.bytes && counters.pool_reattached == 0u && counters.pool_generation == 0u && counters.pool_adopted_pages == 0u);
+	Unload();
+	CONFIGURATION.pool_source = 0u;
+	ExpectRefused(&CONFIGURATION,SPARK_STATUS_INVALID_ARGUMENT);
+	assert(setenv("SPARK_WEIGHTD_SOCKET",TestKvServerSocket,1) == 0);
+	RemoveDirectories();
+	printf("device pool needs no weightd: one device-private buffer carries the page table and every region at full capacity, with no pool thread, no shared window and no reattach; an unnamed pool source refuses\n");
+}
+
+static void RunScenarios(void)
+{
+	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
+		TestWeightdOwnsPool();
+	else
+		TestDevicePoolNeedsNoWeightd();
 	TestCompletionEntryNeverWaits();
 	TestCopyOnWriteIsOneDeviceCopyPerRegionLayer();
 	TestCopyOnWriteDuringAPark();
@@ -1952,8 +1974,11 @@ int main(void)
 	TestSnapshotRefusals();
 	TestSnapshotRestartRestore();
 	TestRestoreGateWaitsForEveryLane();
-	TestRestartAdoptsDevicePages();
-	TestAdoptedPagesKeepTheirAge();
+	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
+	{
+		TestRestartAdoptsDevicePages();
+		TestAdoptedPagesKeepTheirAge();
+	}
 	TestRestoreHintStartsEarly();
 	TestWriteMeterCountsAndAlerts();
 	TestParkedPrefixSaves();
@@ -1968,8 +1993,21 @@ int main(void)
 	TestStatelessBoundaryProbeKeepsChain();
 	TestStagedReplyCheckpoint();
 	TestReleaseAfterFailedRun();
+}
+
+int main(void)
+{
+	setvbuf(stdout,0,_IONBF,0);
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
+	(void)snprintf(LEDGER_PATH,sizeof(LEDGER_PATH),"/tmp/sparkpipe-kv-binding-ledger-%d",(int)getpid());
+	(void)unlink(LEDGER_PATH);
+	TestKvServerStart(64ull << 20);
+	RunScenarios();
+	POOL_SOURCE = SPARK_STAGE_KV_POOL_SOURCE_DEVICE;
+	RunScenarios();
 	TestKvServerFinish();
-	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
+	assert(SparkDeviceShutdown() == SPARK_STATUS_OK);
+	printf("PASS stage kv binding: on a weightd pool and on a device pool, completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract; every device buffer and queue is released\n");
 	(void)unlink(LEDGER_PATH);
 	return(0);
 }

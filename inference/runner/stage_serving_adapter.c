@@ -43,6 +43,7 @@
 typedef struct SparkStageServingState
 {
 	const SparkStageServingModel *model;
+	uint32_t implementation_flags;
 	SparkStageRunner runner;
 	SparkStageRunnerConfiguration runner_config;
 	SparkModelServingCompletionFunction completion_function;
@@ -135,6 +136,28 @@ static uint32_t *StageServingWords(const SparkDeviceBuffer *buffer)
 static void *StageServingAddress(const SparkDeviceBuffer *buffer)
 {
 	return (void *)(uintptr_t)buffer->device;
+}
+
+static uint32_t StageServingOwnPack(uint32_t runner_flags)
+{
+	return (runner_flags & SPARK_STAGE_RUNNER_FLAG_OWN_PACK) != 0u ? 1u : 0u;
+}
+
+static uint32_t StageServingWeightdRefused(const SparkStageServingState *state, const char *section)
+{
+	if ( StageServingOwnPack(state->implementation_flags) == 0u )
+		return 0u;
+	fprintf(stderr, "%s adapter: %s needs weightd, and this runner maps its own pack\n", state->model->module_tag, section);
+	return 1u;
+}
+
+static SparkStatus StageServingCheckOwnPack(const SparkStageServingState *state)
+{
+	if ( StageServingOwnPack(state->runner.flags) == StageServingOwnPack(state->implementation_flags) )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "%s adapter: the runner's own-pack flag %u disagrees with its implementation's %u\n", state->model->module_tag,
+		StageServingOwnPack(state->runner.flags), StageServingOwnPack(state->implementation_flags));
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 static uint32_t StageServingJsonU32(SparkJsonDocument *doc, int32_t root, const char *name, uint32_t fallback)
@@ -715,9 +738,13 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	token = SparkJsonFindObjectMember(doc, root, "streamed_prefill");
+	if ( token >= 0 && StageServingWeightdRefused(state, "streamed_prefill") != 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( token >= 0 && StageServingParseStreamed(state, doc, token) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	token = SparkJsonFindObjectMember(doc, root, "device_collective");
+	if ( token >= 0 && StageServingWeightdRefused(state, "device_collective") != 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( token >= 0 )
 		return StageServingLoadDeviceCollective(state, doc, token);
 	return SPARK_STATUS_OK;
@@ -860,6 +887,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.logical_page_count = configuration->runtime_limits.kv_logical_page_capacity;
 	kv.physical_page_count = configuration->runtime_limits.kv_physical_page_capacity;
 	kv.pipeline_slot_count = 1u;
+	kv.pool_source = StageServingOwnPack(state->implementation_flags) != 0u ? SPARK_STAGE_KV_POOL_SOURCE_DEVICE : SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD;
 	kv.backing_directory = configuration->kv_backing_directory;
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 
@@ -868,7 +896,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "%s kv binding refused: the runner has no weightd pack, so the KV layout has no pack identity\n",
+		fprintf(stderr, "%s kv binding refused: the runner reports no pack identity, so the KV layout has none\n",
 			model->module_tag);
 		SPARK_RETURN(status);
 	}
@@ -1042,6 +1070,7 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->model = model;
+	state->implementation_flags = SparkStageRunnerImplementationFlags();
 	state->tap_socket = -1;
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES);
 	atomic_init(&state->reset_generation, 0u);
@@ -1074,10 +1103,12 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	status = StageServingAllocate(state);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && StageServingOwnPack(state->implementation_flags) == 0u )
 		status = StageServingRunnerWeights(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingCheckOwnPack(state);
 	if ( status == SPARK_STATUS_OK )
 		status = StageServingOpenTaps(state);
 	if ( status == SPARK_STATUS_OK )
