@@ -211,7 +211,7 @@ h1 { max-width: 14em; }
       <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것입니다. 더 많은 주를 미리 보유할수록 예약하는 모든 주와 모든 시간의 할인이 커지며, 최대 <span data-off="max">20%</span>입니다.</p></li>
     </ol>
     <p class="prose">잠시 플릿이 더 필요한가요? 시간 플릿은 고정되지 않고 시간 단위 예약용으로 남아 있어, 최대 <span data-hourfleet="days">7</span>일 앞까지 고객의 할인으로 예약할 수 있습니다. 아무도 보유하지 않은 그 밖의 플릿은 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서이며, 기다리는 동안 시간 예약은 잠금으로 예약될 주 수의 할인만큼 저렴해지며, 플릿을 배정받기 전에 나오면 그 할인은 잠금에서 상환됩니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다.</p>
-    <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개.</p>
+    <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개, 4쌍.</p>
   </div>
 </section>
 
@@ -230,6 +230,7 @@ h1 { max-width: 14em; }
         <tr><th scope="row">시간</th><td>시간 플릿 전체 1시간에 <span data-hour="hc">1</span> HC에서 고객의 할인을 뺀 값, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC</td></tr>
         <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 그 밖의 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱하고 고객의 할인을 뺀 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
         <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
+        <tr><th scope="row">쌍</th><td>플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 쌍의 A 플릿을 보유하면, A 플릿을 보유한 주 동안 B 플릿도 같은 가격과 고객 플릿의 할인으로 고정할 수 있습니다: Spark 32대, 4 TB 메모리의 한 클러스터. 서비스 중인 플릿의 최소 4분의 1, 출시 시 <span data-fleets="all">8</span>개 중 <span data-hourfleet="free">2</span>개는 항상 시간 예약용으로 남습니다</td></tr>
         <tr><th scope="row">팀</th><td>엔지니어 3~5명이 함께 쓰는 1주: 한 명당 <span data-team="min">$432</span>~<span data-team="max">$720</span>, 구성원마다 자신의 키와 플릿의 공정한 몫</td></tr>
         <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
         <tr><th scope="row">시간 할인</th><td>모든 시간 예약은 한 플릿에서 보유한 가장 많은 주 수의 할인, 또는 대기 명단에 있는 동안 잠금으로 예약될 주 수의 할인(플릿을 배정받기 전에 나오면 잠금에서 상환)만큼 저렴해집니다: 최대 <span data-off="max">20%</span></td></tr>
@@ -291,7 +292,7 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "안녕하세요"}]}'</pre>
     </div>
-    <p class="caption">플릿을 여러 개 보유하고 있다면 <span class="mono">"sparkpipe": {"fleet": "F3"}</span>로 하나를 지정하세요. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span>, <span class="mono">setup opencode</span>가 이 설정과 함께, 플릿의 코드 검색, 샌드박스 테스트 실행, 상태와 아침 보고서를 에이전트에 더하는 SparkPipe 플러그인을 설치합니다. 세 에이전트의 새 릴리스는 모두 플릿에서 시험한 뒤에 권장합니다. <span class="mono">sparkpipe</span> CLI는 터미널에서 예약, 업로드, 기능 시작과 아침 보고서 확인도 합니다.</p>
+    <p class="caption">플릿을 여러 개 보유하고 있다면 <span class="mono">"sparkpipe": {"fleet": "F1A"}</span>로 하나를 지정하세요. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span>, <span class="mono">setup opencode</span>가 이 설정과 함께, 플릿의 코드 검색, 샌드박스 테스트 실행, 상태와 아침 보고서를 에이전트에 더하는 SparkPipe 플러그인을 설치합니다. 세 에이전트의 새 릴리스는 모두 플릿에서 시험한 뒤에 권장합니다. <span class="mono">sparkpipe</span> CLI는 터미널에서 예약, 업로드, 기능 시작과 아침 보고서 확인도 합니다.</p>
   </div>
 </section>
 

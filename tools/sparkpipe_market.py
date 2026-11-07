@@ -4,6 +4,7 @@ import collections
 import hashlib
 import ipaddress
 import json
+import math
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -494,9 +495,54 @@ class Market:
         if any(self.st.locked(account) >= week for account in self.st.locks):
             raise Refusal("Customers on the waitlist come first: join the waitlist, which allocates each available Fleet every Sunday at 00:00 KST.", 409, "waitlist")
 
+    def pair_of(self, pricing, fleet):
+        return next((f for f in self.fleets(pricing) if f["id"] == fleet.get("pair")), None) if fleet.get("pair") else None
+
+    def pair_room(self, pricing, monday, fleet_id=None):
+        rules = pricing["bookings"]
+        serving = [f for f in self.fleets(pricing) if f["serving"]]
+        listed = [f for f in serving if f["hourFleet"]]
+        pinned = sum(1 for f in listed if f["id"] != fleet_id and any(b["kind"] == "week" for b in self.busy(f["id"], monday, monday + WEEK)))
+        limit = max(0, len(listed) - math.ceil(Decimal(str(rules["openHourShare"])) * len(serving)))
+        return max(0, limit - pinned), limit
+
+    def pair_plan(self, pricing, account, fleet, weeks, now):
+        rules = pricing["bookings"]
+        partner = self.pair_of(pricing, fleet)
+        if not partner or not fleet["serving"]:
+            raise Refusal(f"{fleet['name']} is booked by the hour" + (f"; only the holder of {partner['name']} may pin it, as its pair." if partner else "."), 409, "not_weekly")
+        current = week_start(now)
+        held, held_through = self.weeks_left(account, partner["id"], now)
+        count, through = self.weeks_left(account, fleet["id"], now)
+        if not held_through:
+            raise Refusal(f"Only the holder of {partner['name']} may pin {fleet['name']}, as its pair.", 409, "pair_not_held")
+        first = through or current + WEEK
+        if not through:
+            gate = self.gate(pricing, "weeksFrom")
+            if gate and first < gate:
+                raise Refusal(f"Weeks can be booked from the Week of {pricing['weeksFrom']}.", 409, "not_open")
+            while first < held_through and self.busy(fleet["id"], first, first + WEEK):
+                first += WEEK
+        end = first + WEEK * weeks
+        if end > held_through:
+            raise Refusal(f"{fleet['name']} is pinned only in Weeks you hold {partner['name']}, now through {kst_text(held_through)}.", 409, "pair_not_held")
+        taken = self.busy(fleet["id"], first, end)
+        if taken:
+            raise Refusal(f"{fleet['name']} is already booked for the Week of {kst_text(max(taken[0]['begins'], first))[:10]}.", 409, "taken")
+        week = first
+        while week < end:
+            if not self.pair_room(pricing, week, fleet["id"])[0]:
+                raise Refusal(f"At least {Decimal(str(rules['openHourShare'])) * 100:.0f}% of the serving Fleets stay open for hours in every Week, so no other pair can be pinned in the Week of {kst_text(week)[:10]}.", 409, "pair_limit")
+            week += WEEK
+        off = self.discount(rules, held)
+        return {"fleet": fleet["id"], "weeks": weeks, "first": slot_text(first), "last": slot_text(end - WEEK), "end": slot_text(end),
+                "count": held, "discount": format(off, "f"), "price": text_hc(self.week_price(rules, fleet["rate"], weeks, off)), "extends": bool(through), "pair": partner["id"]}
+
     def week_plan(self, pricing, account, fleet, weeks, now):
         rules = pricing["bookings"]
-        if fleet["hourFleet"] or not fleet["serving"]:
+        if fleet["hourFleet"]:
+            return self.pair_plan(pricing, account, fleet, weeks, now)
+        if not fleet["serving"]:
             raise Refusal(f"{fleet['name']} is not booked by the Week: choose a serving Fleet that is not an Hour Fleet.", 409, "not_weekly")
         current = week_start(now)
         count, through = self.weeks_left(account, fleet["id"], now)
@@ -927,6 +973,8 @@ class Market:
         try:
             plan = self.week_plan(pricing, account, fleet, weeks, at)
         except Refusal as error:
+            if error.reason == "pair_not_held":
+                return (through, lambda: self.stop_extend(account, fleet_id, "pair_not_held", through)) if through <= now else None
             reason = error.reason or "refused"
             return at, lambda: self.stop_extend(account, fleet_id, reason, at)
         blocked = None if self.app.terms_current(account) else "terms"
@@ -956,7 +1004,8 @@ class Market:
         through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
         self.book.append("auto_extend", {"account": account, "fleet": fleet_id, "weeks": 0, "reason": reason, "now": stamp(at)})
         why = {"not_pinned": "the Weeks it kept have ended", "taken": "someone else booked the next Week after your deadline passed", "terms": "your last booked Week ended while it waited for you to accept the current Customer Agreement",
-               "insufficient_hc": "your last booked Week ended while your unlocked HC did not cover the next one", "not_weekly": "the Fleet stopped serving by the Week", "too_far": "the next Week is more than 52 Weeks ahead"}.get(reason, reason)
+               "insufficient_hc": "your last booked Week ended while your unlocked HC did not cover the next one", "not_weekly": "the Fleet stopped serving by the Week", "too_far": "the next Week is more than 52 Weeks ahead",
+               "pair_not_held": "you no longer hold the next Week of its pair", "pair_limit": "the Hour Fleets that stay open for hours left no pair free"}.get(reason, reason)
         data = {"fleet": fleet_id, "stopped": True, "reason": reason, "through": slot_text(through) if through else None, "deadline": slot_text(through - DAY) if through else None, "auto_extend": 0}
         name, page = self.fleet_name(fleet_id), f"{self.app.cfg.public}/market.html"
         keep = f" Book the next Week by {kst_text(through - DAY)} to keep the Fleet, or turn auto-extend on again." if through and through - DAY > at else " Book Weeks yourself, or turn auto-extend on again while you hold the Fleet."
@@ -1308,9 +1357,9 @@ class Market:
         return slot_text(first)
 
     def status(self, fleet, now):
-        if fleet["hourFleet"]:
-            return "hour-fleet"
-        return "pinned" if any(b["kind"] == "week" for b in self.busy(fleet["id"], now, now + timedelta(seconds=1))) else "free"
+        if any(b["kind"] == "week" for b in self.busy(fleet["id"], now, now + timedelta(seconds=1))):
+            return "pinned"
+        return "hour-fleet" if fleet["hourFleet"] else "free"
 
     def fleet_view(self, pricing, listed, fleet, now):
         return dict(listed, serving=fleet["serving"], status=self.status(fleet, now), firstWeek=self.first_open(pricing, fleet, now),
@@ -1324,9 +1373,10 @@ class Market:
             self.advance(now)
             fleets = [self.fleet_view(pricing, listed, fleet, now) for listed, fleet in zip(pricing["fleets"], self.fleets(pricing))]
             waiting = len(self.st.locks)
+            room, limit = self.pair_room(pricing, week_start(now) + WEEK)
         return {
             "now": stamp(now), "sandbox": self.sandbox, "vatRate": pricing["vatRate"], "hoursFrom": pricing["hoursFrom"], "weeksFrom": pricing["weeksFrom"],
-            "hc": pricing["hc"], "bookings": pricing["bookings"], "fleets": fleets, "models": pricing["models"], "waitlist": {"locks": waiting},
+            "hc": pricing["hc"], "bookings": pricing["bookings"], "fleets": fleets, "models": pricing["models"], "waitlist": {"locks": waiting}, "pairs": {"open": room, "limit": limit},
         }
 
     def booking_view(self, b, now):
@@ -1340,6 +1390,9 @@ class Market:
             count, through = self.weeks_left(account, fleet["id"], now)
             if through:
                 room = through - WEEK < week_start(now) + WEEK * pricing["bookings"]["maxWeeksAhead"] and not self.busy(fleet["id"], through, through + WEEK)
+                if fleet["hourFleet"]:
+                    held = self.weeks_left(account, fleet.get("pair"), now)[1]
+                    room = room and bool(held) and held > through and bool(self.pair_room(pricing, through, fleet["id"])[0])
                 found.append({"fleet": fleet["id"], "weeks": count, "through": slot_text(through), "deadline": slot_text(through - DAY), "canExtend": room, "autoExtend": self.st.extend.get((account, fleet["id"]), {}).get("weeks", 0),
                               "autoExtendWaiting": self.extend_waiting(account, fleet["id"])})
         return found
