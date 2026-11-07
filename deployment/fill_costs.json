@@ -1,10 +1,54 @@
 {
- "required_gain": 0.10,
+ "required_gain": 0.1,
  "models": {
   "kimi-k3": {
    "reload_seconds": 70.0,
-   "wave_seconds": [[7384, 10.4], [33453, 55.0], [131072, 239.0], [258319, 494.4]],
-   "streamed_seconds": [[124000, 128.9], [258319, 166.1], [990881, 1003.3]]
+   "wave_seconds": [
+    [
+     7384,
+     10.4
+    ],
+    [
+     33453,
+     55.0
+    ],
+    [
+     131072,
+     239.0
+    ],
+    [
+     258319,
+     494.4
+    ]
+   ],
+   "streamed_seconds": [
+    [
+     124000,
+     128.9
+    ],
+    [
+     258319,
+     166.1
+    ],
+    [
+     990881,
+     1003.3
+    ]
+   ],
+   "plan": {
+    "pass_floor_seconds": 150.0,
+    "seconds_per_token": 0.000319,
+    "attention_seconds_per_token_pair": 1.44e-09,
+    "row_bytes": 834500,
+    "ring_bytes": 32400000000,
+    "dense_bytes": 7110000000,
+    "free_bytes": 9000000000,
+    "expert_bytes": 90596966400,
+    "reload_bytes_per_second": 6500000000,
+    "restart_seconds": 14.0,
+    "row_align": 256,
+    "max_passes": 8
+   }
   }
  }
 }
