@@ -226,6 +226,7 @@ struct MotifStage
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
+			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);
@@ -248,6 +249,7 @@ struct MotifStage
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
+			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);

@@ -34,6 +34,8 @@ static int32_t LmLocalExpertsUp(const LmLocalExpertRoutes &routes, const void *w
 			input_dimension, output_dimension, stream);
 	if ( launch == LM_LAUNCH_ERR_SHAPE && row_exact == 0u )
 	{
+		if ( LmCellMmaFormat<Format>::kScales != 0u )
+			LmSlowPath("the expert cell kernels refused a packed weight", routes.routes, input_dimension, output_dimension);
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();
@@ -61,6 +63,8 @@ static int32_t LmLocalExpertsDown(const LmLocalExpertRoutes &routes, const void 
 			input_dimension, output_dimension, stream);
 	if ( launch == LM_LAUNCH_ERR_SHAPE && row_exact == 0u )
 	{
+		if ( LmCellMmaFormat<Format>::kScales != 0u )
+			LmSlowPath("the expert cell kernels refused a packed weight", routes.routes, input_dimension, output_dimension);
 		LmGemmArguments gemm;
 		memset(&gemm, 0, sizeof(gemm));
 		gemm.scale_a = LmScaleTensorNone();

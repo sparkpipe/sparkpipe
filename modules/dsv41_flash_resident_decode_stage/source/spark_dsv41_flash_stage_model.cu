@@ -282,11 +282,13 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
+		LmSlowPath("dsv41 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	}
 	const int32_t status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows,
 		input_dimension, output_dimension, 0u, 0u, multiprocessors, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status;
+	LmSlowPath("dsv41 linear: the stream GEMM refused, naive linear", rows, input_dimension, output_dimension);
 	D41NaiveLinearKernel<<<dim3((output_dimension + 7u) / 8u, rows), 256u, 0, stream>>>(weight, source, destination, destination_f32,
 		input_dimension, output_dimension);
 	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
@@ -310,6 +312,7 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
+		LmSlowPath("dsv41 fp8 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	}
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 		output_dimension, 0u, 0u, multiprocessors, stream);
@@ -337,6 +340,7 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
+		LmSlowPath("dsv41 fp8 pair: the skinny kernel refused a small wave", rows, input_dimension, first_dimension);
 	}
 	const int32_t status = D41Linear(first, source, first_destination, rows, input_dimension, first_dimension, multiprocessors, 0u, stream);
 	return status != LM_LAUNCH_OK ? status :
