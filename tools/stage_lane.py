@@ -402,7 +402,7 @@ K31_PRO = {
     "kv_label": "k31_stage",
     "node_memory_bytes": 104689827840 + (512 << 20),
     "tokenizer_json": "/srv/workspace/sparkpipe/k31-tokenizer/tiktoken.model",
-    "pack": "sparkdata/k31_pro.mxfp4.tp16/k31_pro.tp16.rank{rank:02d}.pack",
+    "pack": "sparkdata/k31_pro.cells.tp16/k31_pro.tp16.rank{rank:02d}.pack",
     "adapter": "libk31_pro_tp16_serving_adapter.so",
     "firmware_adapter": "libk31_pro_tp16_serving_adapter.so",
     "program": "k3",
