@@ -1,8 +1,8 @@
 # Context memory: an optimized context rebuilt in the background
 
 Status, 2026-11-07: built for SparkPipe Chat and for API sessions, one
-exchange at a time, and for the tool results of the rounds inside an
-agent's turn; a line per round is next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
+exchange at a time, and for the rounds inside an agent's turn: folded tool
+results, then a line per round. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
 the API. The ledger, curator, expand and search tools, tool-output forms, stem,
 pre-warm and store described there stay.
 
@@ -128,8 +128,20 @@ back. `tests/test_chat_memory_session.py` checks the cut, that a request
 during the pre-warm still sees every round in full, the folded rendering
 and the pre-warmed prefix.
 
-The full design, with the line per round still to build, applies the same
-two rules with the round as the unit:
+Then lines: once the folded rounds take more than the budget's low mark,
+the same build writes one line for each of the oldest folded rounds (what
+the round did and what it found) until the folded rounds are back under
+half of it, and those rounds leave the layout. Their lines sit right after
+the user message, as the model's own earlier `expand` call for `rounds` and
+its result, under a fixed heading, so the block only grows at its end. Tool
+result ids stay those of the whole turn, `expand r<n>` reads a lined round
+back in full, a round the curator leaves out gets a line built from its
+calls, and the round base records both cuts (`cut`, `lined`).
+`tests/test_chat_memory_session.py` checks the line cut, the block, that a
+lined round leaves the layout, the stable ids, `expand r1` and the
+pre-warmed prefix.
+
+The full design applies the same two rules with the round as the unit:
 - **Lines.** A round leaving the turn's raw window gets one line ("r12: ran
   the tests; 3 failures in parse_args, KeyError 'mode'"). The curator writes
   it as a continuation of the round's own tokens, so it prefills only its
