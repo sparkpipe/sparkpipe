@@ -25,9 +25,9 @@ def main():
                 failures.append(f"{host}: {pack} lies in its lane root's packs/, so its digest is that root's packs/pack.sha256 (residentd reads exactly one), not {digest}")
         elif digest != pack + ".sha256":
             failures.append(f"{host}: {pack} is a real pack file, so its digest is the .sha256 beside it, not {digest}")
-    dense = [row for row in rows if "/stage-lanes/dsv41_flash/" in row[1]]
-    if len(dense) != 16 or not all(row[2].endswith("/root/packs/pack.sha256") for row in dense):
-        failures.append(f"DeepSeek V4.1 Flash, the dense lane, must list 16 lane-root packs with packs/pack.sha256 digests: {dense[:2]}")
+    dense = [row for row in rows if "/sparkdata/dsv41flash-1017" in row[1]]
+    if len(dense) != 16 or not all(row[2] == row[1] + ".sha256" for row in dense):
+        failures.append(f"DeepSeek V4.1 Flash, the dense lane, must list 16 real pack files with the .sha256 beside each: {dense[:2]}")
     with tempfile.TemporaryDirectory() as scratch:
         base = pathlib.Path(scratch)
         present = base / "a|b" / "rank0.spstage"
