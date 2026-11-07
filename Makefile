@@ -414,6 +414,7 @@ PYTHON_TESTS := \
 	tests/test_ab_fleet.py \
 	tests/test_ab_campaign_plans.py \
 	tests/test_spark_queue.py \
+	tests/test_sparkcp.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
 	tests/test_gemma4_smoke_manifest.py \
