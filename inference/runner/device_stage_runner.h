@@ -32,6 +32,7 @@ typedef struct SparkDeviceStageRunnerConfig
 	uint32_t tp_rank;
 	const SparkDeviceCollective *collective;
 	uint64_t weight_segment_bytes;
+	uint32_t external_kv;
 } SparkDeviceStageRunnerConfig;
 
 typedef struct SparkDeviceStageRunnerBatch
@@ -77,6 +78,11 @@ uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner,
 SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, SparkDeviceStageRunnerResult *result);
 SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, uint32_t sequence);
+SparkStatus SparkDeviceStageRunnerAttachKv(SparkDeviceStageRunner *runner, const SparkStageRunnerKv *kv);
+SparkStatus SparkDeviceStageRunnerRecurrentCopy(SparkDeviceStageRunner *runner, uint32_t to_buffer, uint32_t sequence, SparkDeviceAddress buffer,
+	uint64_t bytes);
+SparkDeviceQueue *SparkDeviceStageRunnerQueue(const SparkDeviceStageRunner *runner);
+const SparkStageRunnerModelGeometry *SparkDeviceStageRunnerGeometry(const SparkDeviceStageRunner *runner);
 SparkStatus SparkDeviceStageRunnerInfoGet(const SparkDeviceStageRunner *runner, SparkDeviceStageRunnerInfo *info);
 void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner);
 void SparkDeviceStageRunnerClose(SparkDeviceStageRunner *runner);
