@@ -911,8 +911,8 @@ The launcher picks RS/AG only if all of the following hold:
 
 - the operation is a BF16 sum;
 - the degree is at least 4;
-- the payload is at least 18432 elements at degree 16 or more (3 rows of
-  6144), or 49152 elements (12 rows of 4096) at degree 4 to 15;
+- the payload is at least 10240 elements at degree 16 or more (2 rows of
+  5120), or 49152 elements (12 rows of 4096) at degree 4 to 15;
 - the local weightd advertises `SLICE_ROUTES` in the lane's wait entries.
 
 The host phase accounting uses the same predicate.
@@ -920,11 +920,11 @@ The host phase accounting uses the same predicate.
 The threshold depends on degree because the direct path's wire cost grows
 with degree and RS/AG's does not. Direct rounds send each rank's payload to
 every peer, (degree − 1)× the payload; RS/AG sends about 2× the payload but
-pays one extra round of roughly 36 µs. At degree 16, RS/AG wins once the
-payload is past about 27 KB, so 3 GLM rows already take it. At degree 4 the
-break-even is about 95 KB, so the 12-row threshold stays. Decode steps of 3
-to 11 rows at TP16 are the ones that change. Their fleet timing (B3–B7) is
-pending a full-fleet window.
+pays one extra round. At degree 16 on dual rail (11-07 bench, 16 ranks, A B
+A B), RS/AG holds near 36 µs from 10 K to 18 K elements while direct climbs
+from 41 µs to 50 µs, so it wins from 10,240 elements and 2 GLM or K3 rows
+take it. At 8,192 elements direct is still 1 µs ahead. At degree 4 the
+break-even is about 95 KB, so the 12-row threshold stays.
 
 **Compatibility.** The mesh record magic is bumped to `MESH0005`, so a
 fleet with mixed weightd versions refuses to wire (`WD-MESH-ABI-MISMATCH`)
