@@ -47,7 +47,7 @@ def splitmix64(x):
 
 
 def keyed_gumbel(seed, position, tokens):
-    """The verifier's sampling noise (inference/kernels/head.cuh LmGumbelNoise) for int64 tensors."""
+    """The verifier's sampling noise (inference/kernels/kernel_math.cuh SparkMathGumbelNoise) for int64 tensors."""
     bits = splitmix64(seed ^ splitmix64((position << 32) | tokens))
     uniform = (shift_right(bits, 64 - GUMBEL_UNIFORM_BITS).to(torch.float32) + 0.5) / float(1 << GUMBEL_UNIFORM_BITS)
     return -torch.log(-torch.log(uniform))
