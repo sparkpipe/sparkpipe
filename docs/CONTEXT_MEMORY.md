@@ -108,6 +108,32 @@ tool loop never leaves the engine idle, so agent sessions need
 share the engine with them, which the benchmarks measure as foreground
 slowdown.
 
+## Rounds inside an agent's turn (next)
+
+An agent's turn is one user message followed by tens to hundreds of rounds:
+an assistant message with tool calls, then the tool results. Exchange-level
+memory leaves the whole turn raw, so the prompt still grows with every
+round. The same two rules apply with the round as the unit:
+- **Lines.** A round leaving the turn's raw window gets one line ("r12: ran
+  the tests; 3 failures in parse_args, KeyError 'mode'"). The curator writes
+  it as a continuation of the round's own tokens, so it prefills only its
+  instruction.
+- **Forms.** A tool result leaving the raw window becomes its stub plus the
+  sections the curator keeps, as for exchanges; `expand r12.t1` reads it
+  back in full.
+- **Layout.** The round lines sit right after the user message, as the
+  model's own earlier `expand` call and its result, so the client's messages
+  stay byte-identical and the block only grows at its end. Then come the
+  raw rounds of the base, then the bridge.
+- **Trigger.** A round is complete only when the next request brings its
+  tool results, so a build starts when a request arrives, the turn's raw
+  rounds pass the round budget and no build runs for the session. It runs
+  beside the request at background priority (`background_with_foreground`).
+- **Switch.** A request uses the newest base whose rounds its history holds.
+  Within one base every round replays its exact tokens, so the cache extends
+  by one round at a time. Moving to a newer base prefills, once, the rounds
+  of its bridge.
+
 ## Nothing is lost
 
 Every event stays in the session's store. The model reads any of it with
