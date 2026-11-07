@@ -255,9 +255,15 @@ device API:
   page table through `attach_kv`, so pages are shared between sequences with
   copy-on-write, and a resumed sequence's recurrent state is restored into
   its slot before its first row.
-- **Sampling.** Distribution rows are sampled on the device with the formulas
-  the CUDA sampler uses (`inference/kernels/kernel_math.cuh`), so a seed gives
-  the same token on both backends.
+- **Sampling.** Distribution rows are sampled on the device by
+  `spark_sample_rows`, the CUDA sampler's algorithm (`inference/kernels/sample.cuh`)
+  with its formulas from `inference/kernels/kernel_math.cuh`: the 64-bit key
+  order, top-k and top-p by radix select, the fixed-point mass and Gumbel-max
+  with the hashed noise. Metal has no 64-bit atomic add, so a mass is added
+  as two 32-bit words with an exact carry, and no double, so the top-p target
+  reproduces CUDA's double product (rounded to 53 bits, then truncated) in
+  integers. A seed and position pick the same token on both backends except
+  where the two GPUs' `exp` or `log` round a mass or the noise differently.
 
 A request therefore resumes from the longest prefix the cache holds, on a
 Studio as on the fleet, and computes only the rest.
