@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 
 #include <assert.h>
 #include <ftw.h>
@@ -364,6 +365,7 @@ static void TestVacatedPagesStillServe(void)
 
 int main(void)
 {
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
 	TestKvServerStart((uint64_t)TEST_MINIMUM_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvpoolm");
 	TestPoolAtMinimumParksEveryPage();

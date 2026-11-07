@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 
 #include <assert.h>
 #include <ftw.h>
@@ -337,6 +338,7 @@ static void TestTooSmallWindowRefusesTheBinding(void)
 
 int main(void)
 {
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
 	TestKvServerSharedWindowBytes = (uint64_t)TEST_WINDOW_PAGES * TEST_PAGE_BYTES;
 	TestKvServerStart((uint64_t)TEST_RESERVE_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvshareda");

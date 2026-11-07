@@ -31,12 +31,21 @@ typedef enum cudaStreamCaptureMode
 #define cudaSuccess 0
 #define cudaErrorInvalidValue 1
 #define cudaErrorMemoryAllocation 2
+#define cudaErrorInvalidDevicePointer 17
+#define cudaErrorNoDevice 100
+#define cudaErrorInvalidDevice 101
+#define cudaErrorNoKernelImageForDevice 209
+#define cudaErrorInvalidResourceHandle 400
 #define cudaErrorNotReady 600
 #define cudaErrorHostMemoryAlreadyRegistered 712
 #define cudaErrorHostMemoryNotRegistered 713
 #define cudaErrorLaunchFailure 719
+#define cudaErrorNotPermitted 800
+#define cudaErrorNotSupported 801
 #define cudaErrorUnknown 999
 #define cudaDevAttrMultiProcessorCount 16
+#define cudaDevAttrManagedMemory 83
+#define cudaDevAttrPageableMemoryAccess 88
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
 #define cudaEventDefault 0u
@@ -44,10 +53,29 @@ typedef enum cudaStreamCaptureMode
 #define cudaHostAllocDefault 0u
 #define cudaHostAllocPortable 1u
 #define cudaHostAllocMapped 2u
+#define cudaHostRegisterPortable 1u
+#define cudaHostRegisterMapped 2u
+#define cudaHostRegisterReadOnly 8u
+#define cudaMemAttachGlobal 1u
 #define CUDART_CB
 typedef void (*cudaHostFn_t)(void *user_data);
 
+struct cudaDeviceProp
+{
+    char name[256];
+    size_t totalGlobalMem;
+    int warpSize;
+    int multiProcessorCount;
+    int major;
+    int minor;
+    int integrated;
+};
+
 cudaError_t cudaMalloc(void **pointer, size_t bytes);
+cudaError_t cudaMallocManaged(void **pointer, size_t bytes, unsigned int flags);
+cudaError_t cudaGetDeviceCount(int *count);
+cudaError_t cudaSetDevice(int device);
+cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int device);
 cudaError_t cudaHostAlloc(void **pointer, size_t bytes, unsigned int flags);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaFree(void *pointer);
@@ -264,6 +292,8 @@ cudaError_t cudaGetLastError(void);
 void spark_stub_cuda_reset_faults(void);
 typedef void (*spark_stub_cuda_copy_hook_t)(void *context, uint32_t asynchronous, cudaMemcpyKind kind, cudaStream_t stream);
 void spark_stub_cuda_set_copy_hook(spark_stub_cuda_copy_hook_t hook, void *context);
+typedef void (*spark_stub_cuda_sync_hook_t)(void *context, cudaStream_t stream);
+void spark_stub_cuda_set_sync_hook(spark_stub_cuda_sync_hook_t hook, void *context);
 uint32_t spark_stub_cuda_sync_copy_calls(void);
 uint32_t spark_stub_cuda_async_copy_calls(void);
 void spark_stub_cuda_reset_copy_calls(void);

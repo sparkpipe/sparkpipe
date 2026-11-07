@@ -1,7 +1,6 @@
 #include "sparkpipe/spark_kv_device_copy.h"
 #include "sparkpipe/spark_error_site.h"
 
-#include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,7 +8,7 @@
 static uint32_t SparkKvDeviceCopyRegionIsValid(const SparkKvDeviceCopyRegion *region, uint32_t physical_page_count)
 {
 	if ( (region->layout != SPARK_KV_DEVICE_COPY_PAGE_MAJOR && region->layout != SPARK_KV_DEVICE_COPY_LAYER_MAJOR) ||
-		region->layer_count == 0u || region->layer_page_bytes == 0u || region->device_base == 0u )
+		region->layer_count == 0u || region->layer_page_bytes == 0u || region->base.buffer == 0 )
 		return(0u);
 	if ( region->layer_page_bytes > UINT64_MAX / region->layer_count )
 		return(0u);
@@ -26,17 +25,16 @@ static void SparkKvDeviceCopierReleaseEvents(SparkKvDeviceCopier *copier)
 	if ( copier->pending != 0 )
 		for (index=0u; index<copier->pending_capacity; index++)
 			if ( copier->pending[index].event != 0 )
-				(void)cudaEventDestroy((cudaEvent_t)copier->pending[index].event);
+				(void)SparkDeviceEventDestroy(copier->pending[index].event);
 	if ( copier->fence_event != 0 )
-		(void)cudaEventDestroy((cudaEvent_t)copier->fence_event);
+		(void)SparkDeviceEventDestroy(copier->fence_event);
 	free(copier->pending);
 }
 
 SparkStatus SparkKvDeviceCopierInitialize(SparkKvDeviceCopier *copier, const SparkKvDeviceCopyConfiguration *configuration)
 {
-	cudaEvent_t event;
 	uint32_t index;
-	if ( copier == 0 || configuration == 0 || configuration->stream == 0 || configuration->arena == 0 ||
+	if ( copier == 0 || configuration == 0 || configuration->queue == 0 || configuration->arena == 0 ||
 		configuration->region_count == 0u || configuration->region_count > SPARK_KV_DEVICE_COPY_MAX_REGIONS ||
 		configuration->pending_capacity == 0u || configuration->physical_page_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -45,7 +43,7 @@ SparkStatus SparkKvDeviceCopierInitialize(SparkKvDeviceCopier *copier, const Spa
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(copier,0,sizeof(*copier));
 	copier->module_tag = configuration->module_tag != 0 ? configuration->module_tag : "kv";
-	copier->stream = configuration->stream;
+	copier->queue = configuration->queue;
 	copier->arena = configuration->arena;
 	copier->physical_page_count = configuration->physical_page_count;
 	copier->region_count = configuration->region_count;
@@ -57,23 +55,14 @@ SparkStatus SparkKvDeviceCopierInitialize(SparkKvDeviceCopier *copier, const Spa
 		memset(copier,0,sizeof(*copier));
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	for (index=0u; index<copier->pending_capacity; index++)
-	{
-		if ( cudaEventCreateWithFlags(&event,cudaEventDisableTiming) != cudaSuccess )
+	for (index=0u; index<=copier->pending_capacity; index++)
+		if ( SparkDeviceEventCreate(index < copier->pending_capacity ? &copier->pending[index].event : &copier->fence_event) != SPARK_STATUS_OK )
 		{
+			fprintf(stderr,"%s kv copy-on-write event create failed device=%s\n",copier->module_tag,SparkDeviceLastError()->text);
 			SparkKvDeviceCopierReleaseEvents(copier);
 			memset(copier,0,sizeof(*copier));
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
-		copier->pending[index].event = (void *)event;
-	}
-	if ( cudaEventCreateWithFlags(&event,cudaEventDisableTiming) != cudaSuccess )
-	{
-		SparkKvDeviceCopierReleaseEvents(copier);
-		memset(copier,0,sizeof(*copier));
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	copier->fence_event = (void *)event;
 	return(SPARK_STATUS_OK);
 }
 
@@ -86,37 +75,37 @@ static uint32_t SparkKvDeviceCopierBlockIsPinned(const SparkKvDeviceCopier *copi
 	return((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u && block->residency_reference_count >= 1u ? 1u : 0u);
 }
 
-static cudaError_t SparkKvDeviceCopierEnqueue(SparkKvDeviceCopier *copier, uint32_t source_slot, uint32_t destination_slot, uint64_t *bytes)
+static SparkDeviceRange SparkKvDeviceCopierRange(const SparkKvDeviceCopyRegion *region, uint64_t offset)
+{
+	SparkDeviceRange range = region->base;
+	range.offset += offset;
+	return(range);
+}
+
+static SparkStatus SparkKvDeviceCopierEnqueue(SparkKvDeviceCopier *copier, uint32_t source_slot, uint32_t destination_slot, uint64_t *bytes)
 {
 	const SparkKvDeviceCopyRegion *region;
-	cudaStream_t stream;
-	cudaError_t error;
+	SparkStatus status;
 	uint64_t page_bytes;
 	uint32_t index,layer;
-	stream = (cudaStream_t)copier->stream;
 	*bytes = 0u;
-	error = cudaSuccess;
-	for (index=0u; error == cudaSuccess && index<copier->region_count; index++)
+	status = SPARK_STATUS_OK;
+	for (index=0u; status == SPARK_STATUS_OK && index<copier->region_count; index++)
 	{
 		region = &copier->regions[index];
+		page_bytes = region->layer_page_bytes * region->layer_count;
 		if ( region->layout == SPARK_KV_DEVICE_COPY_PAGE_MAJOR )
-		{
-			page_bytes = region->layer_page_bytes * region->layer_count;
-			error = cudaMemcpyAsync((void *)(region->device_base + (uintptr_t)destination_slot * page_bytes),
-				(const void *)(region->device_base + (uintptr_t)source_slot * page_bytes),
-				(size_t)page_bytes,cudaMemcpyDeviceToDevice,stream);
-		}
+			status = SparkDeviceCopy(copier->queue,SparkKvDeviceCopierRange(region,(uint64_t)destination_slot * page_bytes),
+				SparkKvDeviceCopierRange(region,(uint64_t)source_slot * page_bytes),page_bytes);
 		else
-		{
-			page_bytes = region->layer_page_bytes * region->layer_count;
-			for (layer=0u; error == cudaSuccess && layer<region->layer_count; layer++)
-				error = cudaMemcpyAsync((void *)(region->device_base + layer * region->layer_stride_bytes + (uintptr_t)destination_slot * region->layer_page_bytes),
-					(const void *)(region->device_base + layer * region->layer_stride_bytes + (uintptr_t)source_slot * region->layer_page_bytes),
-					(size_t)region->layer_page_bytes,cudaMemcpyDeviceToDevice,stream);
-		}
+			for (layer=0u; status == SPARK_STATUS_OK && layer<region->layer_count; layer++)
+				status = SparkDeviceCopy(copier->queue,
+					SparkKvDeviceCopierRange(region,layer * region->layer_stride_bytes + (uint64_t)destination_slot * region->layer_page_bytes),
+					SparkKvDeviceCopierRange(region,layer * region->layer_stride_bytes + (uint64_t)source_slot * region->layer_page_bytes),
+					region->layer_page_bytes);
 		*bytes += page_bytes;
 	}
-	return(error);
+	return(status);
 }
 
 SparkStatus SparkKvDeviceCopierCopyPage(void *context, uint32_t source_logical_page, uint32_t destination_logical_page)
@@ -124,7 +113,6 @@ SparkStatus SparkKvDeviceCopierCopyPage(void *context, uint32_t source_logical_p
 	SparkKvDeviceCopier *copier;
 	SparkKvDeviceCopyPending *entry;
 	SparkKvCacheBlockView source,destination;
-	cudaError_t error;
 	uint64_t bytes;
 	uint32_t index;
 	SparkStatus status;
@@ -157,16 +145,16 @@ SparkStatus SparkKvDeviceCopierCopyPage(void *context, uint32_t source_logical_p
 			entry = &copier->pending[index];
 	if ( entry == 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	error = SparkKvDeviceCopierEnqueue(copier,source.resident_slot_index,destination.resident_slot_index,&bytes);
-	if ( error == cudaSuccess )
-		error = cudaEventRecord((cudaEvent_t)entry->event,(cudaStream_t)copier->stream);
-	if ( error == cudaSuccess )
-		error = cudaEventRecord((cudaEvent_t)copier->fence_event,(cudaStream_t)copier->stream);
-	if ( error != cudaSuccess )
+	status = SparkKvDeviceCopierEnqueue(copier,source.resident_slot_index,destination.resident_slot_index,&bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceEventRecord(entry->event,copier->queue);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceEventRecord(copier->fence_event,copier->queue);
+	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s kv copy-on-write enqueue failed source=%u destination=%u cuda=%s\n",
-			copier->module_tag,source_logical_page,destination_logical_page,cudaGetErrorString(error));
-		(void)cudaStreamSynchronize((cudaStream_t)copier->stream);
+		fprintf(stderr,"%s kv copy-on-write enqueue failed source=%u destination=%u device=%s\n",
+			copier->module_tag,source_logical_page,destination_logical_page,SparkDeviceLastError()->text);
+		(void)SparkDeviceQueueWait(copier->queue,SPARK_DEVICE_WAIT_FOREVER);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	entry->source_logical_page = source_logical_page;
@@ -209,7 +197,6 @@ SparkStatus SparkKvDeviceCopierRetire(void *context, uint32_t require_all)
 {
 	SparkKvDeviceCopier *copier;
 	SparkKvDeviceCopyPending *entry;
-	cudaError_t error;
 	SparkStatus status,result;
 	uint32_t index;
 	copier = (SparkKvDeviceCopier *)context;
@@ -221,22 +208,22 @@ SparkStatus SparkKvDeviceCopierRetire(void *context, uint32_t require_all)
 		entry = &copier->pending[index];
 		if ( entry->active == 0u )
 			continue;
-		error = cudaEventQuery((cudaEvent_t)entry->event);
-		if ( error == cudaSuccess )
+		status = SparkDeviceEventQuery(entry->event);
+		if ( status == SPARK_STATUS_OK )
 		{
 			status = SparkKvDeviceCopierRetireEntry(copier,entry);
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
-		else if ( error == cudaErrorNotReady )
+		else if ( status == SPARK_STATUS_PENDING )
 		{
 			if ( require_all != 0u )
 				result = SPARK_STATUS_BUSY;
 		}
 		else
 		{
-			fprintf(stderr,"%s kv copy-on-write event failed page=%u cuda=%s\n",
-				copier->module_tag,entry->destination_logical_page,cudaGetErrorString(error));
+			fprintf(stderr,"%s kv copy-on-write event failed page=%u device=%s\n",
+				copier->module_tag,entry->destination_logical_page,SparkDeviceLastError()->text);
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 	}
@@ -276,15 +263,13 @@ SparkStatus SparkKvDeviceCopierDeferFree(void *context, uint32_t logical_page)
 	SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 }
 
-SparkStatus SparkKvDeviceCopierFence(SparkKvDeviceCopier *copier, void *stream)
+SparkStatus SparkKvDeviceCopierFence(SparkKvDeviceCopier *copier, SparkDeviceQueue *queue)
 {
-	cudaError_t error;
-	if ( copier == 0 || copier->fence_event == 0 || stream == 0 )
+	if ( copier == 0 || copier->fence_event == 0 || queue == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	error = cudaStreamWaitEvent((cudaStream_t)stream,(cudaEvent_t)copier->fence_event,0);
-	if ( error != cudaSuccess )
+	if ( SparkDeviceQueueWaitEvent(queue,copier->fence_event) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"%s kv copy-on-write fence failed cuda=%s\n",copier->module_tag,cudaGetErrorString(error));
+		fprintf(stderr,"%s kv copy-on-write fence failed device=%s\n",copier->module_tag,SparkDeviceLastError()->text);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -297,7 +282,7 @@ SparkStatus SparkKvDeviceCopierDrain(SparkKvDeviceCopier *copier)
 		return(SPARK_STATUS_OK);
 	for (index=0u; index<copier->pending_capacity; index++)
 		if ( copier->pending[index].active != 0u &&
-			cudaEventSynchronize((cudaEvent_t)copier->pending[index].event) != cudaSuccess )
+			SparkDeviceEventWait(copier->pending[index].event,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return(SparkKvDeviceCopierRetire(copier,1u));
 }
