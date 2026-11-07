@@ -15,9 +15,7 @@ SPEC.loader.exec_module(fixture)
 MEMORY = importlib.util.spec_from_file_location("chat_memory", ROOT / "tools" / "serving" / "chat_memory.py")
 cm = importlib.util.module_from_spec(MEMORY)
 MEMORY.loader.exec_module(cm)
-BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
-           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
-           "target_minimum_tokens": 16384}
+BUDGETS = fixture.MEMORY_BUDGETS
 NOTE = "The first user message starts with <ledger>"
 TOOLS = [{"name": "read", "description": "Read a file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}]
 LINE = "The user asked to read a.txt; it says hello world."

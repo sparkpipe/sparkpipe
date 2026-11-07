@@ -718,6 +718,7 @@ PYTHON_TESTS := \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_memory_api.py \
 	tests/test_chat_memory_import.py \
+	tests/test_chat_memory_bench.py \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
 	tests/test_chat_frontend_warm_queue.py \

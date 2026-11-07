@@ -26,6 +26,9 @@ TEMPLATE = (
     "{%- if add_generation_prompt %}<|im_start|>assistant\n<think>{% endif %}"
 )
 CODEX_INSTRUCTIONS = "You are a coding agent in the Codex CLI."
+MEMORY_BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
+                  "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
+                  "target_minimum_tokens": 16384}
 CORPUS = ["hello world, the weather in Paris is sunny today", "read the file a.txt and list the directory", "call the tool with path and pattern",
           "user assistant system tool think reply answer question", "The answer is 42. Let me check the file first."] * 20
 
@@ -86,6 +89,9 @@ class Engine:
         self.early_usage = True
         self.cache_all = False
         self.usage = []
+        self.responder = None
+        self.live = 0
+        self.arrivals = []
 
     def tokens(self, text):
         ids = []
@@ -106,11 +112,23 @@ class Engine:
     async def completions(self, request):
         body = await request.json()
         self.requests.append(body)
+        self.arrivals.append(self.live)
+        self.live += 1
+        try:
+            return await self.stream(request, body)
+        finally:
+            self.live -= 1
+
+    async def stream(self, request, body):
         prompt = body["prompt_token_ids"]
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
-        ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
+        text = self.responder(self.tokenizer.decode(prompt, skip_special_tokens=False)) if self.responder else None
+        if text is not None:
+            ids, finish = self.tokens(text) + [self.tokenizer.token_to_id("<|im_end|>")], "stop"
+        else:
+            ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
         ids = ids[:body["max_tokens"]]
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
@@ -132,7 +150,7 @@ class Engine:
         return response
 
     async def health(self, request):
-        return web.json_response({"status": "ok"})
+        return web.json_response({"status": "ok", "live_requests": self.live})
 
 
 class Controller:

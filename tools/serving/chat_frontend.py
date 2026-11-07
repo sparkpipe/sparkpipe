@@ -2198,6 +2198,8 @@ class Frontend:
             except (aiohttp.ClientError, TimeoutError) as error:
                 states[model.id] = {"status": 0, "error": str(error)}
             states[model.id]["warm_queue"] = model.gate.state()
+            if self.memory is not None:
+                states[model.id]["memory_jobs"] = self.memory.pending(model)
         healthy = all(state["status"] == 200 for state in states.values())
         return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults}, status=200 if healthy else 503)
 

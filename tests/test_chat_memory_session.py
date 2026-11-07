@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("chat_memory", ROOT / "tools" / "serving" / "chat_memory.py")
 cm = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cm)
+FIXTURE = importlib.util.spec_from_file_location("chat_harness_fixture", ROOT / "tests" / "chat_harness_fixture.py")
+fixture = importlib.util.module_from_spec(FIXTURE)
+FIXTURE.loader.exec_module(fixture)
+BUDGETS = fixture.MEMORY_BUDGETS
 SECRET = "k" * 48
 
 
@@ -37,9 +41,6 @@ def headers(user_message, parent=None, message=None, chat="chat-1", task="", jwt
     return result
 
 
-BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
-           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
-           "target_minimum_tokens": 16384}
 
 
 class Model:
