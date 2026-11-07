@@ -1089,6 +1089,14 @@ class Market:
         serving = {f["id"] for f in self.fleets(self.settings()) if f["serving"]}
         return sorted({b["fleet"] for b in self.st.bookings.values() if b["account"] == account and b["begins"] <= now < b["ends"] and b["fleet"] in serving})
 
+    def gateway_share(self, account):
+        serving = {f["id"] for f in self.fleets(self.settings()) if f["serving"]}
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            active = [b for b in self.st.bookings.values() if b["begins"] <= now < b["ends"] and b["fleet"] in serving]
+        return any(b["account"] == account for b in active), len({b["fleet"] for b in active})
+
     def holds(self, account, fleet):
         with self.book.lock:
             now = self.now()
