@@ -734,6 +734,7 @@ PYTHON_TESTS := \
 	tests/test_lane_tools.py \
 	tests/test_lane_direct_packs.py \
 	tests/test_launchers_name_real_files.py \
+	tests/test_node_pack_prune.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
 	tests/test_chat_commands.py \

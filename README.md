@@ -113,7 +113,10 @@ byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier. A pack directory holds the pack and every file the engine opens
 beside it, all real files, and a lane names the pack by that path: no lane,
 launcher or harness reaches a weight file or a configuration through a
-symlink ([`docs/LANES.md`](docs/LANES.md)).
+symlink ([`docs/LANES.md`](docs/LANES.md)). A node keeps only the files a lane
+names, their companions and a short reasoned keep list of staged packs;
+`tools/node_pack_prune.py` lists everything else and deletes it on the
+owner's order.
 
 Every model serves at its publisher's full precision by default whenever it
 fits one fleet: BF16, or the format it was trained or released in (A.X K2's
