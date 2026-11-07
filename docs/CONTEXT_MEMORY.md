@@ -16,6 +16,15 @@ What is built (`tools/serving/chat_memory.py`):
   latest commits.
 - `tests/test_chat_memory_session.py` holds a commit raw while its pre-warm
   runs and in the ledger for the first turn after it.
+- **Import.** `POST /v1/sparkpipe/memory/import` (the chat layer, with a
+  memory identity: `model`, `messages`, and `batch` exchanges per curator
+  call, default 8) brings a given conversation into memory without
+  generating any answer: for each batch it opens the turn of the batch's last
+  exchange and runs the curator, which writes the lines of the batch through
+  its catch-up, commits and regroups as in a live chat, and the batch's
+  pre-warm publishes a base. The reply counts the exchanges, the lined ones,
+  the commits and the bases. A customer moving a long conversation in uses
+  it, and so do the recall benchmarks, whose histories are given.
 
 ## Goal
 

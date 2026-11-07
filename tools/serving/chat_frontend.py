@@ -2212,6 +2212,27 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
             return web.json_response(error_body("control_unavailable", str(error) if admin else "the fleet controller is unreachable"), status=503)
 
+    async def memory_import(self, request):
+        key = request.get("public_key")
+        try:
+            if self.memory is None:
+                raise RequestError(404, "not_found", "this chat layer keeps no memory")
+            scope = self.scope_of(key, request.headers)
+            body = await self.read_body(request)
+            model, _, _ = await self.resolve_model(body.get("model"), key, scope)
+            messages, batch = body.get("messages"), body.get("batch", 8)
+            if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
+                raise RequestError(400, "invalid_request", "send the conversation to import as messages, and batch as a positive whole number of exchanges")
+            try:
+                result = await self.memory.import_history(model, request.headers, normalize_messages(messages), body.get("tools") or [], {}, batch)
+            except ValueError as error:
+                raise RequestError(400, "invalid_request", str(error))
+            except TimeoutError as error:
+                raise RequestError(504, "timeout", str(error))
+        except RequestError as error:
+            return error_response(error)
+        return web.json_response(result)
+
     async def control_switch_now(self, request):
         if self.control is None or "force_url" not in self.control:
             return web.json_response(error_body("not_found", "this front end has no Switch now"), status=404)
@@ -3725,6 +3746,7 @@ def build(frontend):
     app.router.add_get("/api/hello", frontend.hello)
     app.router.add_get("/v1/sparkpipe/status", frontend.control_status)
     app.router.add_post("/v1/sparkpipe/switch-now", frontend.control_switch_now)
+    app.router.add_post("/v1/sparkpipe/memory/import", frontend.memory_import)
     if frontend.site is not None:
         app.router.add_get("/", frontend.site_root)
         app.router.add_static("/site/", frontend.site)

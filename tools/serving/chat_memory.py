@@ -101,7 +101,7 @@ def tool_images(message):
     return "image_url" in kinds and set(kinds) <= {"text", "image_url"} and len(text_of(content)) <= 200
 
 
-def split(messages):
+def exchanges_of(messages):
     head = []
     index = 0
     while index < len(messages) and messages[index].get("role") == "system":
@@ -118,10 +118,21 @@ def split(messages):
             exchanges.append([message])
         else:
             exchanges[-1].append(message)
-    if not exchanges:
+    return (head, exchanges) if exchanges else None
+
+
+def answered(exchange):
+    final = exchange[-1]
+    return len(exchange) > 1 and final.get("role") == "assistant" and not final.get("tool_calls")
+
+
+def split(messages):
+    parts = exchanges_of(messages)
+    if parts is None:
         return None
+    head, exchanges = parts
     current = exchanges.pop()
-    if current[-1].get("role") == "assistant" and not current[-1].get("tool_calls"):
+    if answered(current):
         return None
     return head, exchanges, current
 
@@ -828,6 +839,14 @@ class ChatStore:
 
 
 HEADER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+
+
+class Headers(dict):
+    def __init__(self, headers, extra=()):
+        super().__init__((name.lower(), value) for name, value in list(headers.items()) + list(dict(extra).items()))
+
+    def get(self, name, default=None):
+        return dict.get(self, name.lower(), default)
 SENTINEL = "SPARKPIPE-LEDGER-END"
 
 
@@ -908,10 +927,10 @@ class Session:
     def can_continue(self):
         return self.rounds < self.memory.max_rounds
 
-    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish, prompt_ids=None, token_ids=None):
+    def finished(self, plan_messages, content, reasoning, visible_calls, engine_finish, prompt_ids=None, token_ids=None, catch_up=None):
         if visible_calls or engine_finish not in ("stop",) or not self.message:
             return
-        self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [])
+        self.memory.schedule(self, plan_messages, content, prompt_ids or [], token_ids or [], catch_up)
 
 
 MEMORY_OFF = "\ue000SPARKPIPE-MEMORY-OFF\ue001"
@@ -1031,16 +1050,24 @@ class Memory:
             await self.prune_once()
             await asyncio.sleep(self.prune_seconds)
 
-    def session(self, model, headers, messages, tools, kwargs, target=None):
+    def identity(self, headers):
         claims = verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.secret)
         if not claims or claims.get("iss") != self.issuer or not isinstance(claims.get("sub"), str):
             return None
-        if (headers.get("X-OpenWebUI-Task") or "").strip():
-            return None
         chat = header(headers, "X-OpenWebUI-Chat-Id")
+        return (claims["sub"], chat) if chat else None
+
+    def bind_pending(self, user, chat, message, exchange):
+        pending = self.store.load(user, chat)["pending"].get(message)
+        if pending is not None:
+            self.store.append(user, chat, {"type": "line", "key": exchange_key(exchange), "line": pending["line"], "source": pending["source"]})
+
+    def session(self, model, headers, messages, tools, kwargs, target=None):
+        found = self.identity(headers)
         user_message = header(headers, "X-OpenWebUI-User-Message-Id")
-        if not chat or not user_message:
+        if found is None or not user_message or (headers.get("X-OpenWebUI-Task") or "").strip():
             return None
+        user, chat = found
         if any((tool.get("function") or {}).get("name") in MEMORY_TOOL_NAMES for tool in tools or []):
             print(json.dumps({"event": "chat_memory_off", "reason": "the client defines a tool with a memory tool's name"}), flush=True)
             return None
@@ -1050,14 +1077,12 @@ class Memory:
         head, exchanges, current = parts
         if any("[CONVERSATION SUMMARY]" in text_of(m.get("content")) for m in head):
             return None
-        user = claims["sub"]
         parent = header(headers, "X-OpenWebUI-User-Message-Parent-Id")
         message = header(headers, "X-OpenWebUI-Message-Id")
         state = self.store.load(user, chat)
         self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
-        if parent and exchanges and parent in state["pending"]:
-            pending = state["pending"][parent]
-            self.store.append(user, chat, {"type": "line", "key": exchange_key(exchanges[-1]), "line": pending["line"], "source": pending["source"]})
+        if parent and exchanges:
+            self.bind_pending(user, chat, parent, exchanges[-1])
         open_ids = list(state["open_by_message"].get(parent, [])) if parent else []
         frozen = state["layouts"].get(user_message)
         lines = self.ledger_lines(state)
@@ -1170,6 +1195,41 @@ class Memory:
         print(json.dumps({"event": "chat_memory_fit_short", "model": model.id, "lined": layout["lined"], "nodes": len(layout["nodes"])}), flush=True)
         return layout
 
+    async def settled(self, model, user, chat, timeout_seconds):
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            task = self.tasks.get(model.id)
+            queued = any(job["session"].user == user and job["session"].chat == chat for job in self.jobs.get(model.id, []))
+            if not queued and (task is None or task.done()):
+                return True
+            await asyncio.sleep(0.05)
+        return False
+
+    async def import_history(self, model, headers, messages, tools, kwargs, batch, timeout_seconds=3600.0):
+        found, parts = self.identity(Headers(headers)), exchanges_of(messages)
+        if found is None or parts is None or batch < 1:
+            raise ValueError("an import names a memory identity, a conversation that starts with a user message and a batch of at least one exchange")
+        user, chat = found
+        head, exchanges = parts
+        ends = sorted({min(end, len(exchanges) - 1) for end in range(batch - 1, len(exchanges) + batch - 1, batch)})
+        for end in ends:
+            exchange = exchanges[end]
+            if not answered(exchange):
+                continue
+            key = exchange_key(exchange)[:24]
+            ids = {"X-OpenWebUI-User-Message-Id": "import-" + key, "X-OpenWebUI-Message-Id": "import-reply-" + key}
+            prior = [message for earlier in exchanges[:end] for message in earlier]
+            session = self.session(model, Headers(headers, ids), head + prior + exchange[:-1], tools, kwargs)
+            if session is None:
+                raise ValueError("the conversation cannot open a memory session")
+            session.finished(session.messages, text_of(exchange[-1].get("content")), "", [], "stop", catch_up=batch)
+            if not await self.settled(model, user, chat, timeout_seconds):
+                raise TimeoutError("the memory jobs of the import did not finish")
+            self.bind_pending(user, chat, ids["X-OpenWebUI-Message-Id"], exchange)
+        state = self.store.load(user, chat)
+        return {"exchanges": len(exchanges), "lined": sum(1 for exchange in exchanges if exchange_key(exchange) in state["lines"]),
+                "committed": len(state["commits"]), "bases": len(state["bases"])}
+
     def enter(self, model):
         self.active[model.id] = self.active.get(model.id, 0) + 1
         task = self.tasks.pop(model.id, None)
@@ -1186,9 +1246,9 @@ class Memory:
                 task.cancel()
         self.tasks.clear()
 
-    def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=()):
+    def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=(), catch_up=None):
         lines = self.store.load(session.user, session.chat)["lines"]
-        missing = [i for i in session.layout["working"] if exchange_key(session.exchanges[i]) not in lines][:self.catch_up]
+        missing = [i for i in session.layout["working"] if exchange_key(session.exchanges[i]) not in lines][:catch_up or self.catch_up]
         queue = self.jobs.setdefault(session.model.id, [])
         queue[:] = [job for job in queue if job["session"].chat != session.chat or job["session"].user != session.user][-7:]
         queue.append({"session": session, "messages": plan_messages, "content": content, "missing": missing, "attempts": 0,
