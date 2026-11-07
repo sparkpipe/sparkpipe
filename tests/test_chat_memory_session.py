@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes; and a given conversation is imported in batches, one curator call per batch, with every exchange lined; and background jobs run for up to background_jobs chats at once, never two for one chat, a job replaced while its task waits runs as the newer job, and with background_with_foreground the curator runs beside foreground requests."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes; and a given conversation is imported in batches, one curator call per batch, with every exchange lined; and background jobs run for up to background_jobs chats at once, never two for one chat, a job replaced while its task waits runs as the newer job, and with background_with_foreground the curator runs beside foreground requests; and inside an agent's turn, once the raw rounds' tool results pass the working budget, a round build folds the older rounds back to the budget's low mark, keeps the sections the curator chose, pre-warms the next request's layout and only then publishes the cut, which later requests of the turn render while the newest rounds stay in full."""
 import asyncio
 import base64
 import hashlib
@@ -517,6 +517,47 @@ async def run():
         except SystemExit:
             pass
 
+        agent = Model()
+        agent.id = "agent-model"
+        agent.memory = dict(agent.memory, working_tokens=6000)
+        files = lambda n: "".join(f"Paragraph {i} of file {n}: the value is {i * 7 + n}.\n" for i in range(130))
+
+        def turn_with(rounds):
+            messages = conversation(2)[:-1] + [{"role": "user", "content": "Fix the failing test."}]
+            for n in range(1, rounds + 1):
+                messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"r{n}", "type": "function", "function": {"name": "read_file", "arguments": {"path": f"f{n}.py"}}}]},
+                             {"role": "tool", "tool_call_id": f"r{n}", "content": files(n)}]
+            return messages
+
+        agentic = cm.Memory({"store": tmp + "/agent", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS}, frontend)
+        frontend.block, frontend.block_kinds = None, None
+        frontend.replies[:] = ['{"keep": {"e2.t1": [2], "e2.t3": [1]}}']
+        first = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(6), [], {})
+        tool_texts = [m["content"] for m in first.messages if m["role"] == "tool"]
+        assert all("Paragraph 0 of file" in text for text in tool_texts), "until a round base is published every round's result is shown in full"
+        assert [job["cut"] for job in agentic.jobs.get(agent.id, []) if job["kind"] == "rounds"] == [4], \
+            "rounds past the working budget fold back to its low mark, and the newest rounds stay raw"
+        frontend.block, frontend.block_kinds = asyncio.Event(), ("prewarm",)
+        for _ in range(100):
+            if agentic.store.load("user-1", "chat-agent")["forms"]:
+                break
+            await asyncio.sleep(0.02)
+        waiting = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(6), [], {})
+        assert all("Paragraph 0 of file" in m["content"] for m in waiting.messages if m["role"] == "tool"), "a round base is used only once its pre-warm finished"
+        frontend.block.set()
+        await settle(agentic, agent)
+        frontend.block, frontend.block_kinds = None, None
+        agent_state = agentic.store.load("user-1", "chat-agent")
+        assert agent_state["round_bases"] == {"ag1": [4]}, agent_state["round_bases"]
+        later = agentic.session(agent, headers("ag1", "a1", "ag1a", chat="chat-agent"), turn_with(7), [], {})
+        shown = [m["content"] for m in later.messages if m["role"] == "tool"]
+        assert "collapsed; kept §2" in shown[0] and "Paragraph 0 of file 1" not in shown[0] and "collapsed; expand" in shown[1] and "collapsed; kept §1" in shown[2], shown[:3]
+        assert all("Paragraph 0 of file" in text for text in shown[4:]), "rounds after the cut stay in full"
+        prewarmed = frontend.cuts[-1]
+        assert prewarmed[:-1] == later.messages[:len(prewarmed) - 1] and prewarmed[-1]["content"] == cm.SENTINEL, \
+            "the pre-warm renders the next request's layout up to its last tool result"
+        assert later.layout["lined"] == first.layout["lined"], "the turn's exchange layout stays frozen while its rounds fold"
+
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge, and given conversations imported in batches of exchanges, one curator call per batch, every exchange lined, and background jobs for several chats at once, one per chat, beside foreground requests when configured")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge, and given conversations imported in batches of exchanges, one curator call per batch, every exchange lined, and background jobs for several chats at once, one per chat, beside foreground requests when configured, and an agent turn's older rounds folded to their kept sections once a pre-warmed round base is published")
