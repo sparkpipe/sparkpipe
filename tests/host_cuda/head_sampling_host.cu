@@ -114,7 +114,7 @@ static uint32_t HostReference(const HostHead *head, uint32_t row)
 		total = 0.0f;
 		for (element=0u; element<HOST_HIDDEN; element++)
 			total += LmBf16ToFloat(head->normed[row * HOST_HIDDEN + element]) * LmBf16ToFloat(head->weight[token * HOST_HIDDEN + element]);
-		value = head->rules[row].inverse_temperature == 0.0f ? total : fmaf(total,head->rules[row].inverse_temperature,LmGumbelNoise(head->rules[row].seed,head->positions[row],token));
+		value = head->rules[row].inverse_temperature == 0.0f ? total : fmaf(total,head->rules[row].inverse_temperature,SparkMathGumbelNoise(head->rules[row].seed,head->positions[row],token));
 		if ( value > best )
 			best = value, best_token = token;
 	}
@@ -171,7 +171,7 @@ static void HostDistribution(float temperature, uint64_t seed)
 		best_token = 0u;
 		for (token=0u; token<HOST_DISTRIBUTION_TOKENS; token++)
 		{
-			value = fmaf(logits[token],inverse_temperature,LmGumbelNoise(seed,draw,token));
+			value = fmaf(logits[token],inverse_temperature,SparkMathGumbelNoise(seed,draw,token));
 			if ( value > best )
 				best = value, best_token = token;
 		}
