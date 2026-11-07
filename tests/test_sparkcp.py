@@ -28,7 +28,7 @@ def pattern(size):
 
 
 def entry(rel,size=0,kind="f"):
-    return({"rel":rel,"kind":kind,"size":size,"mode":0o640,"mtime_ns":MTIME_NS,"target":""})
+    return({"rel":rel,"kind":kind,"size":size,"mode":0o640,"mtime_ns":MTIME_NS})
 
 
 class Base(unittest.TestCase):
@@ -56,7 +56,6 @@ class CopyTest(Base):
         (src / "sub" / "data.bin").write_bytes(pattern(100000))
         (src / "run.sh").write_text("#!/bin/sh\n")
         (src / "zero").write_bytes(b"")
-        (src / "link").symlink_to("run.sh")
         os.chmod(src / "run.sh",0o750)
         os.chmod(src / "sub",0o700)
         os.utime(src / "run.sh",ns=(MTIME_NS,MTIME_NS))
@@ -66,12 +65,64 @@ class CopyTest(Base):
         self.assertEqual((dst / "sub" / "data.bin").read_bytes(),pattern(100000))
         self.assertEqual((dst / "zero").read_bytes(),b"")
         self.assertTrue((dst / "sub" / "empty").is_dir())
-        self.assertEqual(os.readlink(dst / "link"),"run.sh")
         self.assertEqual(stat.S_IMODE((dst / "run.sh").stat().st_mode),0o750)
         self.assertEqual(stat.S_IMODE((dst / "sub").stat().st_mode),0o700)
         self.assertEqual((dst / "run.sh").stat().st_mtime_ns,MTIME_NS)
         self.assertEqual((dst / "sub").stat().st_mtime_ns,MTIME_NS)
         self.assertEqual(self.leftovers(),[])
+
+    def test_links_arrive_as_the_real_files_they_point_to(self):
+        src = self.dir / "src"
+        (src / "real").mkdir(parents=True)
+        (src / "real" / "pack").write_bytes(pattern(5000))
+        (src / "file_link").symlink_to("real/pack")
+        (src / "dir_link").symlink_to("real")
+        outside = self.dir / "outside"
+        outside.write_text("elsewhere")
+        (src / "far_link").symlink_to(outside)
+        dst = self.dir / "dst"
+        self.copy(src,dst)
+        self.assertEqual((dst / "file_link").read_bytes(),pattern(5000))
+        self.assertEqual((dst / "dir_link" / "pack").read_bytes(),pattern(5000))
+        self.assertEqual((dst / "far_link").read_text(),"elsewhere")
+        self.assertEqual([path for path in dst.rglob("*") if path.is_symlink()],[])
+
+    def test_a_link_named_on_the_command_line_is_followed(self):
+        real = self.dir / "real"
+        real.write_text("x")
+        (self.dir / "current").symlink_to("real")
+        self.copy(self.dir / "current",self.dir / "dst")
+        self.assertEqual((self.dir / "dst").read_text(),"x")
+        self.assertFalse((self.dir / "dst").is_symlink())
+
+    def test_loops_broken_links_and_special_files_are_skipped_and_named(self):
+        src = self.dir / "src"
+        (src / "sub").mkdir(parents=True)
+        (src / "sub" / "keep").write_text("k")
+        (src / "sub" / "back").symlink_to("..")
+        (src / "broken").symlink_to("gone")
+        os.mkfifo(src / "pipe")
+        dst = self.dir / "dst"
+        output = self.copy(src,dst)
+        self.assertEqual((dst / "sub" / "keep").read_text(),"k")
+        self.assertFalse((dst / "sub" / "back").exists())
+        self.assertFalse((dst / "broken").exists())
+        self.assertFalse((dst / "pipe").exists())
+        self.assertIn("skipped 3",output)
+        for name in ("back","broken","pipe"):
+            self.assertIn(name,output)
+
+    def test_a_link_at_the_destination_is_replaced_by_the_file(self):
+        src = self.dir / "src"
+        src.write_text("new")
+        target = self.dir / "target"
+        target.write_text("old")
+        dst = self.dir / "dst"
+        dst.symlink_to("target")
+        self.copy(src,self.dir / "dst")
+        self.assertFalse(dst.is_symlink())
+        self.assertEqual(dst.read_text(),"new")
+        self.assertEqual(target.read_text(),"old")
 
     def test_sizes_around_every_boundary(self):
         sizes = [0,1,sparkcp.ALIGN_BYTES - 1,sparkcp.ALIGN_BYTES,sparkcp.ALIGN_BYTES + 1,sparkcp.CHUNK_BYTES - 1,sparkcp.CHUNK_BYTES,sparkcp.CHUNK_BYTES + 1,sparkcp.DIRECT_MIN_BYTES,sparkcp.DIRECT_MIN_BYTES + sparkcp.ALIGN_BYTES + 5]

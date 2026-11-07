@@ -37,8 +37,10 @@ the same size and mtime are skipped. A file that changed is sent whole.
 - **Priority.** Both ends run at nice 10. On cisco0 TCP sits in the default queue,
   so RoCE keeps its share of the port and the priority classes stay ahead of it.
 
-It keeps file modes, mtimes and inner symlinks. A symlink named on the command
-line is followed. Owners are not kept: files belong to the user at the destination.
+It keeps file modes and mtimes. It never creates a symlink: a link is copied as
+the file or directory it points to, so the destination holds direct files. Broken
+links, links that loop back and special files are skipped and listed in the
+summary. Owners are not kept: files belong to the user at the destination.
 
 Data travels unencrypted between the two machines, authenticated by a one-time
 token. Every path above is private to the office or the tailnet.

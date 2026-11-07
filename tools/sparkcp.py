@@ -41,6 +41,7 @@ STALL_TIMEOUT_S = 60.0
 SSH_TIMEOUT_S = 4
 PROGRESS_INTERVAL_S = 1.0
 TOKEN_BYTES = 32
+SKIPPED_SHOWN = 10
 GB = 1e9
 LOOPBACK = "127.0.0.1"
 CISCO_PREFIX = "10.10.201."
@@ -157,41 +158,45 @@ def preallocate(fd: int, size: int) -> None:
     os.ftruncate(fd,size)
 
 
-def scan_entry(rel: str, path: str, info: os.stat_result) -> Dict[str,object]:
-    entry = {"rel":rel,"mode":stat.S_IMODE(info.st_mode),"mtime_ns":info.st_mtime_ns,"size":0,"target":""}
-    if stat.S_ISDIR(info.st_mode):
-        entry["kind"] = "d"
-    elif stat.S_ISLNK(info.st_mode):
-        entry["kind"] = "l"
-        entry["target"] = os.readlink(path)
-    elif stat.S_ISREG(info.st_mode):
-        entry["kind"] = "f"
-        entry["size"] = info.st_size
-    else:
-        raise CopyError("not a file, directory or link: %s" % path)
-    return(entry)
+def scan_entry(rel: str, info: os.stat_result) -> Dict[str,object]:
+    kind = "d" if stat.S_ISDIR(info.st_mode) else "f"
+    size = info.st_size if kind == "f" else 0
+    return({"rel":rel,"kind":kind,"size":size,"mode":stat.S_IMODE(info.st_mode),"mtime_ns":info.st_mtime_ns})
 
 
-def scan(sources: List[str]) -> Tuple[List[Dict[str,object]],List[str]]:
-    entries: List[Dict[str,object]] = []
-    paths: List[str] = []
+def walk_tree(rel: str, path: str, ancestors: frozenset, found: Dict[str,list]) -> None:
+    for name in sorted(os.listdir(path)):
+        child = os.path.join(path,name)
+        try:
+            info = os.stat(child)
+        except OSError:
+            found["skipped"].append(child)
+            continue
+        key = (info.st_dev,info.st_ino)
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)) or key in ancestors:
+            found["skipped"].append(child)
+            continue
+        found["entries"].append(scan_entry(os.path.join(rel,name),info))
+        found["paths"].append(child)
+        if stat.S_ISDIR(info.st_mode):
+            walk_tree(os.path.join(rel,name),child,ancestors | {key},found)
+
+
+def scan(sources: List[str]) -> Dict[str,list]:
+    found: Dict[str,list] = {"entries":[],"paths":[],"skipped":[]}
     for source in sources:
         root = os.path.abspath(os.path.expanduser(source))
         base = os.path.basename(root)
         if base == "":
             raise CopyError("cannot copy a filesystem root")
         info = os.stat(root)
-        entries.append(scan_entry(base,root,info))
-        paths.append(root)
-        if not stat.S_ISDIR(info.st_mode):
-            continue
-        for folder,dirs,files in os.walk(root):
-            dirs.sort()
-            for name in dirs + sorted(files):
-                path = os.path.join(folder,name)
-                entries.append(scan_entry(os.path.join(base,os.path.relpath(path,root)),path,os.lstat(path)))
-                paths.append(path)
-    return(entries,paths)
+        if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise CopyError("not a file or directory: %s" % root)
+        found["entries"].append(scan_entry(base,info))
+        found["paths"].append(root)
+        if stat.S_ISDIR(info.st_mode):
+            walk_tree(base,root,frozenset({(info.st_dev,info.st_ino)}),found)
+    return(found)
 
 
 def checked_rel(rel: str) -> str:
@@ -254,11 +259,6 @@ class Receiver:
             if entry["kind"] == "d":
                 os.makedirs(path,exist_ok=True)
                 self.dirs.append((path,entry))
-            elif entry["kind"] == "l":
-                os.makedirs(os.path.dirname(path),exist_ok=True)
-                if os.path.lexists(path):
-                    os.unlink(path)
-                os.symlink(str(entry["target"]),path)
             elif not self.unchanged(path,entry):
                 os.makedirs(os.path.dirname(path),exist_ok=True)
                 temp = os.path.join(os.path.dirname(path),".sparkcp-%s-%d" % (self.suffix,index))
@@ -501,7 +501,8 @@ def report_progress(stats: Dict[str,int], total: int, done: threading.Event) -> 
 
 def run_send(job: Dict[str,object]) -> None:
     token = str(job["token"])
-    entries,paths = scan(list(job["sources"]))
+    found = scan(list(job["sources"]))
+    entries,paths = found["entries"],found["paths"]
     port = int(job["port"])
     control,label,address = connect_first(list(job["addresses"]),port,token)
     send_json(control,{"entries":entries})
@@ -529,7 +530,7 @@ def run_send(job: Dict[str,object]) -> None:
     if "error" in reply:
         raise CopyError(str(reply["error"]))
     unchanged = sum(1 for entry in entries if entry["kind"] == "f") - len(need)
-    emit({"finished":True,"path":label,"address":address,"bytes":total,"files":len(need),"unchanged":unchanged,"seconds":time.monotonic() - start})
+    emit({"finished":True,"path":label,"address":address,"bytes":total,"files":len(need),"unchanged":unchanged,"skipped":found["skipped"],"seconds":time.monotonic() - start})
 
 
 def agent_main() -> int:
@@ -646,6 +647,10 @@ def summary_text(result: Dict[str,object]) -> str:
     text = "sparkcp: %d file%s, %s in %.1f s, %.2f GB/s over %s" % (files,"" if files == 1 else "s",gb_text(size),seconds,size / seconds / GB,result["path"])
     if int(result["unchanged"]) > 0:
         text += ", %d already up to date" % int(result["unchanged"])
+    skipped = list(result["skipped"])
+    if skipped:
+        text += "\nsparkcp: skipped %d broken links, link loops or special files:" % len(skipped)
+        text += "".join("\n  %s" % path for path in skipped[:SKIPPED_SHOWN])
     return(text)
 
 
