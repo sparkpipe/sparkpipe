@@ -136,6 +136,7 @@ typedef struct SparkModelBatchRequestState
 	SparkModelBatchRequestHandle handle;
 	uint32_t defer_end;
 	uint32_t defer_decided;
+	uint32_t long_fill_check;
 } SparkModelBatchRequestState;
 
 typedef struct SparkModelBatchCacheDemand
@@ -245,6 +246,7 @@ struct SparkModelBatchEngine
 	uint32_t max_prefill_rows;
 	uint32_t max_shared_prefill_rows;
 	uint32_t streamed_min_tokens;
+	uint32_t long_fill_min_tokens;
 	uint32_t deferring_slot;
 	uint32_t deferring_generation;
 	uint32_t max_active_sequence_count;
@@ -2054,6 +2056,7 @@ static SparkStatus SparkModelBatchInitialize(
 	engine->inflight_budget_ns = configuration->inflight_budget_ns;
 	engine->max_prefill_rows = configuration->max_prefill_rows_per_submission;
 	engine->streamed_min_tokens = configuration->deployment->streamed_prefill_min_tokens;
+	engine->long_fill_min_tokens = configuration->deployment->long_fill_min_tokens;
 	engine->deferring_slot = UINT32_MAX;
 	engine->max_shared_prefill_rows = configuration->deployment->max_shared_input_row_count != 0u &&
 		configuration->deployment->max_shared_input_row_count < engine->max_prefill_rows ?
@@ -2261,6 +2264,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
+	state->long_fill_check = request->long_fill_check != 0u ? 1u : 0u;
 	state->stop_token_count = request->stop_token_count;
 	if ( request->stop_token_count != 0u )
 		memcpy(state->stop_token_ids,request->stop_token_ids,(size_t)request->stop_token_count * sizeof(uint32_t));
@@ -2671,6 +2675,15 @@ static uint32_t SparkModelBatchDeferHolds(SparkModelBatchEngine *engine,uint32_t
 static void SparkModelBatchDecideDefer(SparkModelBatchEngine *engine,SparkModelBatchRequestState *request,uint32_t slot)
 {
 	uint32_t remaining,end;
+	if ( request->long_fill_check != 0u && engine->long_fill_min_tokens != 0u )
+	{
+		request->long_fill_check = 0u;
+		if ( request->prompt_token_count - request->computed_prompt_token_count >= engine->long_fill_min_tokens )
+		{
+			SparkModelBatchFailRequest(engine,request,SPARK_STATUS_LONG_FILL);
+			return;
+		}
+	}
 	if ( request->defer_decided != 0u || engine->streamed_min_tokens == 0u || SparkModelBatchInteractive(request) == 0u )
 		return;
 	request->defer_decided = 1u;
@@ -2756,6 +2769,8 @@ static uint32_t SparkModelBatchSelectRequestPass(
 			continue;
 		if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && selected == 0u )
 			SparkModelBatchDecideDefer(engine,request,slot);
+		if ( request->state != state )
+			continue;
 		if ( selected != 0u && SparkModelBatchRequestIsIsolated(request,work_kind) != 0u )
 			continue;
 		if ( prefill_span_budget != 0 && SparkModelBatchCanonicalPrefillSpan(engine,request) > *prefill_span_budget )

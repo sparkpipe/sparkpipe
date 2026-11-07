@@ -200,7 +200,8 @@
    ],
    "end_markers": [
     "<|close|>message<|sep|>"
-   ]
+   ],
+   "long_fill": true
   },
   {
    "id": "qwen3.8-27b",
@@ -1085,7 +1086,8 @@
  "control": {
   "status_url": "http://127.0.0.1:8440/status",
   "force_url": "http://127.0.0.1:8440/force",
-  "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
+  "admin_url": "http://127.0.0.1:8090/api/v1/auths/",
+  "fill_url": "http://127.0.0.1:8440/fill"
  },
  "site_dir": "site",
  "chat_memory": {

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 15u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 16u
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
@@ -107,6 +107,7 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t logprobs;
 	uint64_t deadline_ns;
 	uint32_t drafts_disabled;
+	uint32_t long_fill_check;
 	uint32_t stop_token_count;
 	const uint32_t *stop_token_ids;
 } SparkModelBatchSubmitRequest;

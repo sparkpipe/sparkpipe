@@ -48,7 +48,7 @@ static const char *const SparkModelResidentDeploymentRuntimeMembers[] =
 	"max_inflight_submissions","max_active_sequences","max_input_rows",
 	"resident_sequence_capacity","kv_logical_page_capacity",
 	"kv_physical_page_capacity","output_vocabulary","max_sequence_positions","max_shared_input_rows",
-	"streamed_prefill_min_tokens"
+	"streamed_prefill_min_tokens","long_fill_min_tokens"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_RUNTIME_REQUIRED_MEMBER_COUNT 7u
 static const char *const SparkModelResidentDeploymentNodeMembers[] =
@@ -340,6 +340,11 @@ static SparkStatus SparkModelResidentDeploymentParseRuntime(
 	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"streamed_prefill_min_tokens") >= 0 )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"streamed_prefill_min_tokens",&deployment->streamed_prefill_min_tokens);
 	if ( status == SPARK_STATUS_OK && deployment->streamed_prefill_min_tokens == 1u )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	deployment->long_fill_min_tokens = 0u;
+	if ( status == SPARK_STATUS_OK && SparkJsonFindObjectMember(document,object,"long_fill_min_tokens") >= 0 )
+		status = SparkModelResidentDeploymentUnsigned(document,object,"long_fill_min_tokens",&deployment->long_fill_min_tokens);
+	if ( status == SPARK_STATUS_OK && deployment->long_fill_min_tokens == 1u )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentUnsigned(document,object,"max_inflight_submissions",&limits->max_inflight_submission_count);

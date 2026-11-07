@@ -940,6 +940,7 @@ class Model:
         self.context_tokens = int(spec["context_tokens"])
         self.max_output_tokens = int(spec["max_output_tokens"])
         self.sampling_defaults = dict(spec["sampling_defaults"])
+        self.long_fill = bool(spec.get("long_fill"))
         if set(self.sampling_defaults) - set(SAMPLING_DEFAULT_KEYS) or not str(spec.get("sampling_source", "")).strip():
             raise SystemExit(f"chat_frontend: {self.id} sampling_defaults takes only {', '.join(SAMPLING_DEFAULT_KEYS)} and needs a sampling_source")
         try:
@@ -1276,6 +1277,7 @@ def number(body, name, low, high, integer=False):
 
 
 SAMPLING_DEFAULT_KEYS = ("temperature", "top_p", "top_k")
+LONG_FILL_SECONDS = 3600
 
 
 def sampling_fields(body, defaults):
@@ -2520,6 +2522,8 @@ class Frontend:
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
         engine_body["priority"] = request_priority(model, body)
+        if model.long_fill:
+            engine_body["long_fill_check"] = True
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
@@ -2551,6 +2555,16 @@ class Frontend:
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
+    async def long_fill(self, model, engine_body):
+        try:
+            async with self.session.post(self.control["fill_url"], headers=self.controller_headers, json={"model": model.id, "prompt_token_ids": engine_body["prompt_token_ids"]},
+                                         timeout=aiohttp.ClientTimeout(total=LONG_FILL_SECONDS)) as response:
+                record = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill did not finish: {error}")
+        if not isinstance(record, dict) or not record.get("ok"):
+            raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill failed: {record}")
+
     async def engine_stream(self, model, engine_body, public):
         deadline = None
         while True:
@@ -2562,6 +2576,10 @@ class Frontend:
                     yield chunk
                 return
             except RequestError as error:
+                if error.code == "long_fill" and not started:
+                    await self.long_fill(model, engine_body)
+                    engine_body = {key: value for key, value in engine_body.items() if key != "long_fill_check"}
+                    continue
                 if started or error.code not in ("engine_starting", "engine_unavailable"):
                     raise
             finally:

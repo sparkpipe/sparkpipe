@@ -523,6 +523,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
             **({"streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
+            **({"long_fill_min_tokens": args.fill["streamed_prefill"]["min_tokens"]} if getattr(args, "fill", None) and not args.streamed_prefill else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,

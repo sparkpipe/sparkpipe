@@ -92,6 +92,10 @@ const char *SparkStatusToString(SparkStatus status)
         {
             return "evict_denied";
         }
+        case SPARK_STATUS_LONG_FILL:
+        {
+            return "long_fill";
+        }
         default:
         {
             return "unknown_status";

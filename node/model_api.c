@@ -62,6 +62,7 @@ typedef struct ApiOptions
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint32_t drafts_disabled;
+	uint32_t long_fill_check;
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -103,6 +104,7 @@ typedef struct ApiRequest
 	uint32_t top_k;
 	uint32_t logprob_count;
 	uint32_t drafts_disabled;
+	uint32_t long_fill_check;
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -503,6 +505,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
 	sub.drafts_disabled = r->drafts_disabled;
+	sub.long_fill_check = r->long_fill_check;
 	sub.stop_token_count = r->stop_token_count;
 	sub.stop_token_ids = r->stop_tokens;
 	sub.output_token_budget = r->max_tokens;
@@ -1101,6 +1104,7 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	int32_t member;
 	uint32_t top_alternatives = 0u;
 	bool speculation = true;
+	bool long_fill_check = false;
 	member = SparkJsonFindObjectMember(doc,root,"temperature");
 	if ( member >= 0 && (SparkJsonGetFloat(doc,member,&options->temperature) != SPARK_STATUS_OK || SparkSamplingTemperatureValid(options->temperature) == 0u) )
 		return 0;
@@ -1122,6 +1126,10 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&speculation) != SPARK_STATUS_OK )
 		return 0;
 	options->drafts_disabled = member >= 0 && speculation == false ? 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"long_fill_check");
+	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&long_fill_check) != SPARK_STATUS_OK )
+		return 0;
+	options->long_fill_check = member >= 0 && long_fill_check != false ? 1u : 0u;
 	if ( options->temperature == 0.0f )
 	{
 		options->top_p = 1.0f;
@@ -1397,6 +1405,8 @@ static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded while rank %u is disconnected\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\",\"missing_rank\":%u}}",missing,missing);
 	else if ( expired != 0u )
 		code = 504, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"deadline exceeded\",\"type\":\"timeout\",\"code\":\"deadline_exceeded\"}}");
+	else if ( req->status == (uint32_t)SPARK_STATUS_LONG_FILL )
+		code = 409, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"this prompt's uncached tokens need the streamed fill\",\"type\":\"invalid_request_error\",\"code\":\"long_fill\"}}");
 	else if ( req->engine_latched != 0u )
 		code = 503, (void)snprintf(body,capacity,"{\"error\":{\"message\":\"the engine latched %s; restart or reset the deployment's ranks\",\"type\":\"server_error\",\"code\":\"engine_failed\"}}",SparkStatusToString((SparkStatus)req->status));
 	else if ( req->submitted == 0 && req->status == (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED )
@@ -1804,6 +1814,7 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
 	req->drafts_disabled = options.drafts_disabled;
+	req->long_fill_check = options.long_fill_check;
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;

@@ -192,6 +192,8 @@ static void TestSharedInputRows(void)
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 5",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_rows\": 0",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768",SPARK_STATUS_OK,0u,0u);
+	TestRuntimeMemberShared("\"long_fill_min_tokens\": 32768",SPARK_STATUS_OK,0u,0u);
+	TestRuntimeMemberShared("\"long_fill_min_tokens\": 1",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 32768, \"streamed_prefill_quantum\": 4096",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"streamed_prefill_min_tokens\": 1",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
 	TestRuntimeMemberShared("\"max_shared_input_row\": 2",SPARK_STATUS_SCHEMA_ERROR,0u,0u);
