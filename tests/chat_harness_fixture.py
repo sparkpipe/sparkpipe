@@ -223,7 +223,7 @@ class Harness:
     def directive(self, wiped, held_until):
         path = self.tmp / "working-state" / "directive"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"sparkpipe-working-state 1\nwiped {int(wiped)}\nheld_until {int(held_until)}\n")
+        path.write_text(f"sparkpipe-working-state 2\nwiped {int(wiped)}\nheld_until {int(held_until)}\nstorage_wiped {int(wiped)}\n")
 
     async def post(self, path, body, **headers):
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:

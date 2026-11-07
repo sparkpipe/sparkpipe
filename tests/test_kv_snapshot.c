@@ -129,14 +129,14 @@ static void SnapTestStoreFormat(const char *directory)
 	uint64_t bytes,used;
 	uint32_t index;
 	int descriptor;
-	CHECK(SparkKvSnapshotStoreOpen(&store,"relative/dir",SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_INVALID_ARGUMENT);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,0,1u << 20u) == SPARK_STATUS_INVALID_ARGUMENT);
-	CHECK(SparkKvSnapshotStoreOpen(&store,"/nonexistent-sparkpipe-snapshot-dir",SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_NOT_FOUND);
+	CHECK(SparkKvSnapshotStoreOpen(&store,"relative/dir",SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,0,1u << 20u,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvSnapshotStoreOpen(&store,"/nonexistent-sparkpipe-snapshot-dir",SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_NOT_FOUND);
 	(void)snprintf(stale,sizeof(stale),"%s/%sdead-1",directory,SPARK_KV_SNAPSHOT_TEMPORARY_PREFIX);
 	descriptor = open(stale,O_WRONLY | O_CREAT | O_EXCL,0600);
 	CHECK(descriptor >= 0 && close(descriptor) == 0);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),0u) == SPARK_STATUS_INVALID_ARGUMENT);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),0u,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(store.removed_temporary_count == 1u && access(stale,F_OK) != 0 && store.used_bytes == 0u);
 	for (index=0u; index<sizeof(chain); index++)
 		chain[index] = (uint8_t)(index * 3u + 1u);
@@ -189,18 +189,18 @@ static void SnapTestStoreFormat(const char *directory)
 	CHECK(SparkKvSnapshotRead(&store,&key,readback,3u) == SPARK_STATUS_HASH_MISMATCH && store.checksum_failure_count == 4u);
 	CHECK(SparkKvSnapshotWrite(&store,&key,0,segments,3u) == SPARK_STATUS_OK && SparkKvSnapshotRead(&store,&key,readback,3u) == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_OK && store.used_bytes == used && store.file_count == 1u);
-	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_BUSY);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_OK && store.used_bytes == used && store.file_count == 1u);
+	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_BUSY);
 	CHECK(SparkKvSnapshotRemove(&store,&key) == SPARK_STATUS_OK && store.used_bytes == 0u && store.file_count == 0u);
 	CHECK(SparkKvSnapshotRemove(&store,&key) == SPARK_STATUS_NOT_FOUND && SparkKvSnapshotStat(&store,&key,&header) == SPARK_STATUS_NOT_FOUND);
 	CHECK(SparkKvSnapshotWrite(&store,&key,0,segments,3u) == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(used + SPARK_KV_SNAPSHOT_ALIGNMENT),1u << 20u) == SPARK_STATUS_OK && small.used_bytes == used && small.file_count == 1u);
+	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(used + SPARK_KV_SNAPSHOT_ALIGNMENT),1u << 20u,0) == SPARK_STATUS_OK && small.used_bytes == used && small.file_count == 1u);
 	SnapKey(&other,0x11u,0x33u,9u);
 	CHECK(SparkKvSnapshotWrite(&small,&other,0,segments,3u) == SPARK_STATUS_OK && small.eviction_count == 1u && small.evicted_bytes == used && small.used_bytes == used && small.file_count == 1u);
 	CHECK(SparkKvSnapshotStat(&small,&key,&header) == SPARK_STATUS_NOT_FOUND && access(path,F_OK) != 0 && SparkKvSnapshotStat(&small,&other,&header) == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&small);
-	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(used - 1u),1u << 20u) == SPARK_STATUS_OK && small.file_count == 0u && small.eviction_count == 1u);
+	CHECK(SparkKvSnapshotStoreOpen(&small,directory,SnapQuota(used - 1u),1u << 20u,0) == SPARK_STATUS_OK && small.file_count == 0u && small.eviction_count == 1u);
 	CHECK(SparkKvSnapshotWrite(&small,&other,0,segments,3u) == SPARK_STATUS_CAPACITY_EXCEEDED && small.write_failure_count == 0u && small.eviction_count == 1u && small.failed_status == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&small);
 }
@@ -218,7 +218,7 @@ static void SnapTestEvictionAndQueue(const char *directory)
 	for (index=0u; index<4u; index++)
 		SnapKey(&keys[index],0x21u,(uint8_t)(0x40u + index),4u * (index + 1u));
 	SnapKey(&stale,0x22u,0x40u,4u);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(3u * file_bytes),file_bytes) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(3u * file_bytes),file_bytes,0) == SPARK_STATUS_OK);
 	for (index=0u; index<3u; index++)
 	{
 		CHECK(SparkKvSnapshotWriteBegin(&store,index == 2u ? &stale : &keys[index],0,kinds,bytes,2u,0u,&ticket) == SPARK_STATUS_OK && ticket.file_bytes == file_bytes);
@@ -250,10 +250,10 @@ static void SnapTestEvictionAndQueue(const char *directory)
 	CHECK(SparkKvSnapshotWrite(&store,&stale,0,readback,2u) == SPARK_STATUS_OK && store.eviction_count == 2u && SparkKvSnapshotStat(&store,&keys[1],&header) == SPARK_STATUS_NOT_FOUND);
 	CHECK(SparkKvSnapshotPrune(&store,keys[0].layout_sha256) == SPARK_STATUS_OK && store.pruned_count == 1u && SparkKvSnapshotStat(&store,&stale,&header) == SPARK_STATUS_NOT_FOUND && store.file_count == 2u);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(3u * file_bytes),file_bytes) == SPARK_STATUS_OK && store.file_count == 2u && store.used_bytes == 2u * file_bytes);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(3u * file_bytes),file_bytes,0) == SPARK_STATUS_OK && store.file_count == 2u && store.used_bytes == 2u * file_bytes);
 	CHECK(SparkKvSnapshotStat(&store,&keys[0],&header) == SPARK_STATUS_OK && SparkKvSnapshotStat(&store,&keys[3],&header) == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(file_bytes),file_bytes) == SPARK_STATUS_OK && store.file_count == 1u && store.eviction_count == 1u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(file_bytes),file_bytes,0) == SPARK_STATUS_OK && store.file_count == 1u && store.eviction_count == 1u);
 	SparkKvSnapshotStoreClose(&store);
 }
 
@@ -298,7 +298,7 @@ static void SnapTestTreeEviction(const char *directory)
 	(void)snprintf(legacy + index,sizeof(legacy) - index,"-4%s",SPARK_KV_SNAPSHOT_SUFFIX);
 	descriptor = open(legacy,O_WRONLY | O_CREAT | O_EXCL,0600);
 	CHECK(descriptor >= 0 && close(descriptor) == 0);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(5u * file_bytes),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(5u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(store.removed_legacy_count == 1u && access(legacy,F_OK) != 0 && store.file_count == 0u);
 	CHECK(SnapTreeWrite(&store,&root,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&child,&root) == SPARK_STATUS_OK && SnapTreeWrite(&store,&grandchild,&child) == SPARK_STATUS_OK);
 	CHECK(SnapTreeWrite(&store,&other,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&state,0) == SPARK_STATUS_OK);
@@ -313,7 +313,7 @@ static void SnapTestTreeEviction(const char *directory)
 	CHECK(SnapTreeWrite(&store,&later,0) == SPARK_STATUS_OK && store.eviction_count == 2u && store.orphan_count == 0u && SparkKvSnapshotContains(&store,&orphan) == 0u);
 	CHECK(SparkKvSnapshotContains(&store,&root) == 1u && SparkKvSnapshotContains(&store,&child) == 1u && SparkKvSnapshotContains(&store,&other) == 1u);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(5u * file_bytes),1u << 20u) == SPARK_STATUS_OK && store.file_count == 5u && store.orphan_count == 0u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(5u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK && store.file_count == 5u && store.orphan_count == 0u);
 	CHECK(SparkKvSnapshotParent(&store,&child,&parent) == SPARK_STATUS_OK && memcmp(&parent,&root,sizeof(parent)) == 0);
 	CHECK(SnapTreeTouch(&store,&other) == 1u && SnapTreeTouch(&store,&state) == 1u && SnapTreeTouch(&store,&later) == 1u);
 	CHECK(SnapTreeWrite(&store,&last,0) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&child) == 0u && SparkKvSnapshotContains(&store,&root) == 1u);
@@ -368,7 +368,7 @@ static void SnapTestRetention(const char *directory)
 	SnapKey(&grandchild,0x51u,0x05u,12u);
 	state = child;
 	state.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u) == SPARK_STATUS_OK && store.expired_count == 0u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK && store.expired_count == 0u);
 	CHECK(SnapTreeWrite(&store,&root,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&child,&root) == SPARK_STATUS_OK);
 	CHECK(SnapTreeWrite(&store,&idle,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&state,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&stale,0) == SPARK_STATUS_OK);
 	CHECK(store.file_count == 5u);
@@ -380,7 +380,7 @@ static void SnapTestRetention(const char *directory)
 	SnapAge(directory,&idle,0,3600u);
 	SnapAge(directory,&state,0,3600u);
 	SnapAge(directory,&stale,0,day + 10u);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(store.expired_count == 1u && store.expired_bytes == file_bytes && store.file_count == 4u && SnapAgeOf(directory,&stale,0) == UINT64_MAX && SparkKvSnapshotContains(&store,&stale) == 0u);
 	CHECK(SnapTreeTouch(&store,&state) == 1u && SnapAgeOf(directory,&state,0) < 60u);
 	CHECK(SnapTreeWrite(&store,&grandchild,&child) == SPARK_STATUS_OK && SnapAgeOf(directory,&child,&root) < 60u && SnapAgeOf(directory,&root,0) >= 3500u);
@@ -405,7 +405,7 @@ static void SnapTestChainExpiry(const char *directory)
 	const uint64_t file_bytes = 2u * SPARK_KV_SNAPSHOT_ALIGNMENT;
 	uint32_t index;
 	uint64_t now;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota((depth + 4u) * file_bytes),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota((depth + 4u) * file_bytes),1u << 20u,0) == SPARK_STATUS_OK);
 	for (index=0u; index<depth; index++)
 	{
 		SnapKey(&keys[index & 1u],0x61u,0x07u,4u * (index + 1u));
@@ -656,7 +656,7 @@ static void SnapTestPageCacheRoundTrip(const char *directory)
 	SparkModelDriverCacheIdentity identity;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x44u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapIdentity(&identity,30u);
@@ -700,7 +700,7 @@ static void SnapTestSaveDefersWhenQueueIsFull(const char *directory)
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t kind = 1u;
 	uint64_t bytes = 40000u;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),SPARK_KV_SNAPSHOT_ALIGNMENT * 12u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),SPARK_KV_SNAPSHOT_ALIGNMENT * 12u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x77u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapIdentity(&identity,30u);
@@ -726,7 +726,7 @@ static void SnapTestReleaseSavesAndPrepareRestores(const char *directory)
 	SparkModelDriverCacheIdentity identity;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t logical[16],physical[16];
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x66u) == 0);
 	SnapPrefill(&source,pages,states);
 	memset(owners,0,sizeof(owners));
@@ -883,7 +883,7 @@ static void SnapTestEvictionDemotes(const char *directory)
 	SparkKvLaneTransactions transactions;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t logical[16],physical[16],evicted;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x68u) == 0);
 	source.snapshot.pending_capacity = 1u;
 	SnapPrefill(&source,pages,states);
@@ -911,7 +911,7 @@ static void SnapTestEvictionQueuesDemotion(const char *directory)
 	SparkKvLaneTransactions transactions;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t logical[16],physical[16];
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x69u) == 0);
 	source.snapshot.pending_capacity = 1u;
 	SnapPrefill(&source,pages,states);
@@ -932,7 +932,7 @@ static void SnapTestEvictionPrefersLowPriority(const char *directory)
 {
 	static SnapFixture source;
 	SparkKvSnapshotStore store;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x6au) == 0);
 	source.cache.admission_priority = 7u;
 	SnapPublishOne(&source,2u,1u,90u,0x3cu);
@@ -958,7 +958,7 @@ static void SnapTestQueueFullSkips(const char *directory)
 	SparkModelDriverAdmissionRequest request;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t logical[16],physical[16];
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x67u) == 0);
 	source.snapshot.pending_capacity = 1u;
 	SnapPrefill(&source,pages,states);
@@ -988,7 +988,7 @@ static void SnapTestResetKeepsPublishedSaves(const char *directory)
 	SparkKvPageCacheSaveWork work;
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t logical[16],physical[16],entries,allocated;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x68u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapPublishSecond(&source);
@@ -1052,7 +1052,7 @@ static void SnapTestReadOutcomes(const char *directory)
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint64_t writes,duplicates;
 	CHECK(geteuid() != 0);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x44u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapIdentity(&identity,30u);
@@ -1114,7 +1114,7 @@ static void SnapTestSpareRetention(const char *directory)
 	SparkKvSnapshotKey key;
 	uint32_t kinds[1] = {1u},index,serial = 0u;
 	uint64_t big[1] = {200000u},small[1] = {1000u},big_file = 0u;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(UINT64_C(1) << 26),UINT64_C(1) << 21) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(UINT64_C(1) << 26),UINT64_C(1) << 21,0) == SPARK_STATUS_OK);
 	CHECK(store.spare_maximum_bytes == store.queue_maximum_bytes / 4u && store.spare_bytes == 0u);
 	for (index=0u; index<8u; index++)
 	{
@@ -1129,7 +1129,7 @@ static void SnapTestSpareRetention(const char *directory)
 	CHECK(store.spare_bytes != 0u && store.spare_bytes <= store.spare_maximum_bytes && store.spare_maximum_bytes < 8u * big_file);
 	SparkKvSnapshotStoreClose(&store);
 
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(UINT64_C(1) << 26),UINT64_C(1) << 21) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(UINT64_C(1) << 26),UINT64_C(1) << 21,0) == SPARK_STATUS_OK);
 	SnapKey(&key,0x5bu,(uint8_t)++serial,4u);
 	CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,kinds,small,1u,0u,&tickets[0]) == SPARK_STATUS_OK && SparkKvSnapshotWriteCommit(&store,&tickets[0]) == SPARK_STATUS_OK);
 	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
@@ -1153,7 +1153,7 @@ static void SnapTestStatesSpillBeforeDemotion(const char *directory)
 	SparkKvPageCacheSaveOrder order[SNAP_PAGES];
 	uint8_t pages[4][SNAP_PAGE_BYTES],states[4][SNAP_STATE_BYTES];
 	uint32_t marked,deferred,ineligible,index,unsaved_entry;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x48u) == 0);
 	SnapPublishChain(&source,ends,4u,pages,states);
 	CHECK(SparkKvPageCacheMarkAllUnsaved(&source.cache,order,SNAP_PAGES,&marked,&deferred,&ineligible) == SPARK_STATUS_OK && marked != 0u && deferred == 0u);
@@ -1193,7 +1193,7 @@ static void SnapTestMarkAllOrder(const char *directory)
 	SparkKvPageCacheSaveOrder order[SNAP_PAGES];
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
 	uint32_t marked,deferred,ineligible,unsaved,index,last;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x46u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapPublishSecond(&source);
@@ -1229,7 +1229,7 @@ static void SnapTestFailedStoreRecovers(const char *directory)
 	SnapKey(&first,0x41u,0x51u,1u);
 	SnapKey(&second,0x42u,0x52u,2u);
 	SnapKey(&third,0x43u,0x53u,3u);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_OK);
 	store.failure_retry_ns = 100000000u;
 	(void)snprintf(shard,sizeof(shard),"%s/%02x",directory,(unsigned)first.identity_sha256[0]);
 	CHECK(chmod(shard,0500) == 0);
@@ -1253,7 +1253,7 @@ static void SnapTestFailedWriteResaves(const char *directory)
 	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES],payload[64];
 	char shard[1200];
 	uint32_t attempt;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u,0) == SPARK_STATUS_OK);
 	store.failure_retry_ns = 0u;
 	CHECK(SnapFixtureOpen(&source,&store,0x44u) == 0);
 	SnapPrefill(&source,pages,states);
@@ -1299,7 +1299,7 @@ static void SnapTestSyncWriteSeesQueuedWrite(const char *directory)
 	memset(payload,0x2d,sizeof(payload));
 	segment = (SparkKvSnapshotSegment){.kind=kind,.bytes=bytes,.data=payload};
 	SnapKey(&key,0x61u,0x71u,4u);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 20u),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SparkKvSnapshotWriteBegin(&store,&key,0,&kind,&bytes,1u,0u,&ticket) == SPARK_STATUS_OK);
 	CHECK(SparkKvSnapshotWrite(&store,&key,0,&segment,1u) == SPARK_STATUS_PENDING && store.write_count == 0u &&
 		SparkKvSnapshotStat(&store,&key,&header) == SPARK_STATUS_NOT_FOUND);
@@ -1337,7 +1337,7 @@ static void SnapTestScale(const char *directory)
 	const char *name;
 	uint8_t payload[100];
 	uint32_t chain,page;
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u,0) == SPARK_STATUS_OK);
 	SparkKvSnapshotStoreClose(&store);
 	(void)snprintf(prefix,sizeof(prefix),"%s/00",directory);
 	CHECK(stat(prefix,&info) == 0 && S_ISDIR(info.st_mode));
@@ -1366,7 +1366,7 @@ static void SnapTestScale(const char *directory)
 	SnapScaleFile(flat);
 	SnapScaleFile(misplaced);
 	SnapScaleFile(temporary);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(store.file_count == files && store.used_bytes == files * SPARK_KV_SNAPSHOT_ALIGNMENT && store.orphan_count == heads);
 	CHECK(store.removed_legacy_count == 2u && store.removed_temporary_count == 1u && access(flat,F_OK) != 0 && access(misplaced,F_OK) != 0 && access(temporary,F_OK) != 0);
 	memset(payload,7,sizeof(payload));
@@ -1385,14 +1385,14 @@ static void SnapTestScale(const char *directory)
 	SnapScaleKey(&parent,5u,49u);
 	CHECK(SparkKvSnapshotWrite(&store,&key,&parent,&segment,1u) == SPARK_STATUS_OK && store.orphan_count == 0u && store.file_count == files + heads);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u) == SPARK_STATUS_OK && store.file_count == files + heads && store.orphan_count == 0u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(unlimited),1u << 20u,0) == SPARK_STATUS_OK && store.file_count == files + heads && store.orphan_count == 0u);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(2u * SPARK_KV_SNAPSHOT_ALIGNMENT),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(2u * SPARK_KV_SNAPSHOT_ALIGNMENT),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(store.file_count != 0u && store.used_bytes <= 2u * SPARK_KV_SNAPSHOT_ALIGNMENT && store.eviction_count == files + heads - store.file_count);
 	SnapScaleKey(&key,1u,0u);
 	CHECK(SparkKvSnapshotWrite(&store,&key,0,&segment,1u) == SPARK_STATUS_OK && SparkKvSnapshotContains(&store,&key) != 0u && store.used_bytes <= 2u * SPARK_KV_SNAPSHOT_ALIGNMENT && store.quota_refusal_count == 0u);
 	SparkKvSnapshotStoreClose(&store);
-	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(SPARK_KV_SNAPSHOT_ALIGNMENT - 1u),1u << 20u) == SPARK_STATUS_OK && store.file_count == 0u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(SPARK_KV_SNAPSHOT_ALIGNMENT - 1u),1u << 20u,0) == SPARK_STATUS_OK && store.file_count == 0u);
 	SnapScaleKey(&key,2u,0u);
 	CHECK(SparkKvSnapshotWrite(&store,&key,0,&segment,1u) == SPARK_STATUS_CAPACITY_EXCEEDED && store.file_count == 0u);
 	CHECK(store.write_failure_count == 0u && store.failed_status == SPARK_STATUS_OK);
@@ -1466,7 +1466,7 @@ static void SnapTestPurge(const char *root)
 	(void)snprintf(lock_path,sizeof(lock_path),"%s/%s",busy,SPARK_KV_SNAPSHOT_LOCK_NAME);
 	lock = open(lock_path,O_RDWR | O_CREAT,0600);
 	CHECK(lock >= 0 && flock(lock,LOCK_EX | LOCK_NB) == 0);
-	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,root,(uint64_t)time(0),&result) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,root,0,(uint64_t)time(0),&result) == SPARK_STATUS_OK);
 	CHECK(result.stores == 2u && result.busy_stores == 1u && result.deleted_files == 5u && result.deleted_bytes == 30u && result.failed_unlinks == 0u);
 	CHECK(SnapPurgeExists(store_shard,"aa-cc-64.kvs") == 0u && SnapPurgeExists(store_shard,"aa-cc-128.kvs") == 1u && SnapPurgeExists(busy_shard,"cc-ee-64.kvs") == 1u);
 	CHECK(SnapPurgeExists(store,"aa-bb-64.kvs") == 0u && SnapPurgeExists(store,"aa-bb-12.kvst") == 0u && SnapPurgeExists(store,".kvs-writing-7") == 0u);
@@ -1475,9 +1475,9 @@ static void SnapTestPurge(const char *root)
 	CHECK(SnapPurgeExists(busy,"cc-dd-64.kvs") == 1u);
 	CHECK(SnapPurgeExists(outside,"ee-ff-64.kvs") == 1u);
 	(void)close(lock);
-	CHECK(SparkKvSnapshotPurgeDirectory(&snap_ledger,busy,(uint64_t)time(0),&result) == SPARK_STATUS_OK && SnapPurgeExists(busy,"cc-dd-64.kvs") == 0u && SnapPurgeExists(busy_shard,"cc-ee-64.kvs") == 0u);
-	CHECK(SparkKvSnapshotPurgeDirectory(&snap_ledger,store,(uint64_t)time(0) + 600u,&result) == SPARK_STATUS_OK && SnapPurgeExists(store,"aa-bb-128.kvs") == 0u);
-	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,"relative",(uint64_t)time(0),&result) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvSnapshotPurgeDirectory(&snap_ledger,busy,0,(uint64_t)time(0),&result) == SPARK_STATUS_OK && SnapPurgeExists(busy,"cc-dd-64.kvs") == 0u && SnapPurgeExists(busy_shard,"cc-ee-64.kvs") == 0u);
+	CHECK(SparkKvSnapshotPurgeDirectory(&snap_ledger,store,0,(uint64_t)time(0) + 600u,&result) == SPARK_STATUS_OK && SnapPurgeExists(store,"aa-bb-128.kvs") == 0u);
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,"relative",0,(uint64_t)time(0),&result) == SPARK_STATUS_INVALID_ARGUMENT);
 	CHECK(SparkKvSnapshotIsCacheFileName("x.kvs") == 1u && SparkKvSnapshotIsCacheFileName("x.kvst") == 1u && SparkKvSnapshotIsCacheFileName(".kvs-writing-1") == 1u &&
 		SparkKvSnapshotIsCacheFileName(".kvs-lock") == 0u && SparkKvSnapshotIsCacheFileName("x.kvs.txt") == 0u);
 	CHECK(SparkKvSnapshotIsShardName("00") == 1u && SparkKvSnapshotIsShardName("f9") == 1u && SparkKvSnapshotIsShardName("F9") == 0u && SparkKvSnapshotIsShardName("0") == 0u &&
@@ -1549,7 +1549,7 @@ static void SnapTestNodeQuota(const char *directory)
 	(void)snprintf(c,sizeof(c),"%s/lane-c",directory);
 	(void)snprintf(backing,sizeof(backing),"%s/lane-b-backing",directory);
 	CHECK(mkdir(a,0700) == 0 && mkdir(b,0700) == 0 && mkdir(c,0700) == 0 && mkdir(backing,0700) == 0);
-	CHECK(SparkKvSnapshotStoreOpen(&first,a,SnapQuota(UINT64_C(1) << 30),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&first,a,SnapQuota(UINT64_C(1) << 30),1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapAgedWrite(&first,1u,now - 600u,&file) == SPARK_STATUS_OK && file != 0u);
 	quota = 6u * file;
 	(void)SnapQuota(quota);
@@ -1557,15 +1557,15 @@ static void SnapTestNodeQuota(const char *directory)
 		CHECK(SnapAgedWrite(&first,(uint8_t)index,now - 601u + index,0) == SPARK_STATUS_OK);
 	CHECK(first.file_count == 6u && first.used_bytes == quota && SnapNodeUsed() == quota && first.eviction_count == 0u);
 
-	CHECK(SparkKvSnapshotStoreOpen(&closed,c,&snap_ledger,1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&closed,c,&snap_ledger,1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapAgedWrite(&closed,31u,now - 900u,0) == SPARK_STATUS_OK && closed.file_count == 1u && closed.eviction_count == 0u && closed.quota_refusal_count == 0u);
 	CHECK(first.file_count == 5u && SnapHolds(&first,1u) == 0u && SnapHolds(&first,2u) == 1u && first.quota_honored_bytes == file && SnapNodeUsed() == quota);
 	SparkKvSnapshotStoreClose(&closed);
 
-	CHECK(SparkKvSnapshotStoreOpen(&second,b,&snap_ledger,1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SparkKvSnapshotStoreOpen(&second,b,&snap_ledger,1u << 20u,0) == SPARK_STATUS_OK);
 	CHECK(SnapAgedWrite(&second,41u,now - 100u,0) == SPARK_STATUS_OK && second.file_count == 1u);
 	CHECK(first.file_count == 5u && SnapNodeUsed() == quota);
-	CHECK(SparkKvSnapshotStoreOpen(&closed,c,&snap_ledger,1u << 20u) == SPARK_STATUS_OK && closed.file_count == 0u);
+	CHECK(SparkKvSnapshotStoreOpen(&closed,c,&snap_ledger,1u << 20u,0) == SPARK_STATUS_OK && closed.file_count == 0u);
 	SparkKvSnapshotStoreClose(&closed);
 	CHECK(SnapAgedWrite(&second,42u,now - 50u,0) == SPARK_STATUS_OK && second.file_count == 2u);
 	CHECK(first.file_count == 4u && SnapHolds(&first,2u) == 0u && SnapHolds(&first,3u) == 1u && second.eviction_count == 0u && SnapNodeUsed() == quota);
@@ -1588,15 +1588,101 @@ static void SnapTestNodeQuota(const char *directory)
 	SparkKvSnapshotStoreClose(&first);
 	SparkKvSnapshotStoreClose(&second);
 	CHECK(SparkKvLedgerSample(&snap_ledger,&usage) == SPARK_STATUS_OK && usage.used_bytes == 2u * file && usage.backing_bytes == file && usage.snapshot_slots == 3u);
-	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,directory,now,&purge) == SPARK_STATUS_OK && purge.stores == 3u && purge.busy_stores == 0u && purge.deleted_files == 0u);
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,directory,0,now,&purge) == SPARK_STATUS_OK && purge.stores == 3u && purge.busy_stores == 0u && purge.deleted_files == 0u);
 	CHECK(SparkKvLedgerSample(&snap_ledger,&usage) == SPARK_STATUS_OK && usage.snapshot_bytes == file);
-	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,directory,SnapNow() + SPARK_KV_RETENTION_SECONDS + 600u,&purge) == SPARK_STATUS_OK && purge.deleted_files == 1u);
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,directory,0,SnapNow() + SPARK_KV_RETENTION_SECONDS + 600u,&purge) == SPARK_STATUS_OK && purge.deleted_files == 1u);
 	CHECK(SparkKvLedgerSample(&snap_ledger,&usage) == SPARK_STATUS_OK && usage.snapshot_bytes == 0u && usage.used_bytes == file);
 	SparkKvLedgerLeave(&snap_ledger,slot);
 	SnapRemoveAll(c);
 	SparkKvLedgerForgetMissing(&snap_ledger);
 	CHECK(SparkKvLedgerSample(&snap_ledger,&usage) == SPARK_STATUS_OK && usage.snapshot_slots == 2u && usage.backing_slots == 0u && usage.used_bytes == 0u);
 	printf("kv node quota: one lane alone fills the whole node quota, a write that finds the node full takes the oldest file of whichever lane holds it (a live lane frees it on request, a closed lane's oldest file is deleted for it), a backing reservation takes room from the oldest snapshot files, a lane is refused only when the quota holds nothing evictable, and the purge records closed stores and forgets deleted ones\n");
+}
+
+static void SnapTestWorkingState(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotKey before,after,held,reopened;
+	SparkWorkingStateDirective directive = {0u,0u,0u};
+	SparkKvSnapshotPurgeResult result;
+	const uint64_t day = SPARK_KV_RETENTION_SECONDS,file_bytes = 2u * SPARK_KV_SNAPSHOT_ALIGNMENT;
+	char home[1200],lane[1210],purge[1220],shard[1230];
+	uint64_t now;
+	SnapKey(&before,0x61u,0x01u,4u);
+	SnapKey(&after,0x61u,0x02u,4u);
+	SnapKey(&held,0x61u,0x03u,4u);
+	SnapKey(&reopened,0x61u,0x04u,4u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK);
+	CHECK(SnapTreeWrite(&store,&held,0) == SPARK_STATUS_OK && SnapTreeWrite(&store,&after,0) == SPARK_STATUS_OK);
+	SparkKvSnapshotStoreClose(&store);
+	SnapAge(directory,&held,0,day + 3600u);
+	SnapAge(directory,&after,0,600u);
+	now = SnapNow();
+	directive.wiped_seconds = 0u;
+	directive.held_until_seconds = now - 3600u;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,&directive) == SPARK_STATUS_OK && store.file_count == 2u && store.expired_count == 0u);
+	CHECK(SparkKvSnapshotExpire(&store,now + day - 3660u) == SPARK_STATUS_OK && store.file_count == 2u);
+	CHECK(SparkKvSnapshotExpire(&store,now + day - 3600u) == SPARK_STATUS_OK && store.file_count == 1u && SparkKvSnapshotContains(&store,&held) == 0u &&
+		SparkKvSnapshotContains(&store,&after) == 1u);
+	CHECK(SnapTreeWrite(&store,&before,0) == SPARK_STATUS_OK);
+	SparkKvSnapshotStoreClose(&store);
+	SnapAge(directory,&before,0,7200u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,0) == SPARK_STATUS_OK && store.file_count == 2u);
+	now = SnapNow();
+	directive.wiped_seconds = now - 3600u;
+	directive.held_until_seconds = 0u;
+	CHECK(SparkKvSnapshotSetDirective(&store,&directive) == SPARK_STATUS_OK && store.directive.wiped_seconds == now - 3600u);
+	CHECK(SparkKvSnapshotExpire(&store,now) == SPARK_STATUS_OK && store.file_count == 1u && SparkKvSnapshotContains(&store,&before) == 0u &&
+		SnapAgeOf(directory,&before,0) == UINT64_MAX && SparkKvSnapshotContains(&store,&after) == 1u);
+	CHECK(SnapTreeWrite(&store,&reopened,0) == SPARK_STATUS_OK);
+	SparkKvSnapshotStoreClose(&store);
+	SnapAge(directory,&reopened,0,7200u);
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(64u * file_bytes),1u << 20u,&directive) == SPARK_STATUS_OK && store.file_count == 1u && store.expired_count == 1u &&
+		SparkKvSnapshotContains(&store,&reopened) == 0u && SparkKvSnapshotContains(&store,&after) == 1u);
+	CHECK(SparkKvSnapshotSetDirective(0,&directive) == SPARK_STATUS_INVALID_ARGUMENT && SparkKvSnapshotSetDirective(&store,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkKvSnapshotStoreClose(&store);
+	(void)snprintf(home,sizeof(home),"%s/home",directory);
+	(void)snprintf(lane,sizeof(lane),"%s/lane",home);
+	(void)snprintf(purge,sizeof(purge),"%s/kv",lane);
+	(void)snprintf(shard,sizeof(shard),"%s/aa",purge);
+	CHECK(mkdir(home,0700) == 0 && mkdir(lane,0700) == 0 && mkdir(purge,0700) == 0 && mkdir(shard,0700) == 0);
+	SnapPurgeFile(purge,"aa-bb-4.kvs",7200u);
+	SnapPurgeFile(purge,"aa-cc-4.kvs",600u);
+	SnapPurgeFile(purge,"aa-dd-4.kvs",day + 600u);
+	SnapPurgeFile(shard,"aa-ee-4.kvs",7200u);
+	SnapPurgeFile(shard,"aa-ff-4.kvs",600u);
+	directive.wiped_seconds = (uint64_t)time(0) - 3600u;
+	directive.held_until_seconds = 0u;
+	CHECK(SparkKvSnapshotPurgeDirectory(&snap_ledger,purge,&directive,(uint64_t)time(0),&result) == SPARK_STATUS_OK && SnapPurgeExists(purge,"aa-bb-4.kvs") == 0u &&
+		SnapPurgeExists(purge,"aa-dd-4.kvs") == 0u && SnapPurgeExists(purge,"aa-cc-4.kvs") == 1u && SnapPurgeExists(shard,"aa-ee-4.kvs") == 0u && SnapPurgeExists(shard,"aa-ff-4.kvs") == 1u);
+	SnapPurgeFile(purge,"aa-dd-4.kvs",day + 600u);
+	SnapPurgeFile(shard,"aa-ee-4.kvs",day + 600u);
+	directive.wiped_seconds = 0u;
+	directive.held_until_seconds = (uint64_t)time(0) - 60u;
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,home,&directive,(uint64_t)time(0),&result) == SPARK_STATUS_OK && SnapPurgeExists(purge,"aa-dd-4.kvs") == 1u && SnapPurgeExists(shard,"aa-ee-4.kvs") == 1u);
+	CHECK(SparkKvSnapshotPurgeTree(&snap_ledger,home,&directive,(uint64_t)time(0) + day,&result) == SPARK_STATUS_OK && SnapPurgeExists(purge,"aa-dd-4.kvs") == 0u &&
+		SnapPurgeExists(purge,"aa-cc-4.kvs") == 0u && SnapPurgeExists(shard,"aa-ee-4.kvs") == 0u && SnapPurgeExists(shard,"aa-ff-4.kvs") == 0u && result.deleted_files == 4u);
+	printf("kv snapshot: the working-state directive keeps files 24 hours past the later of last use and the end of held hours, and deletes files last used before a wipe at open, in the sweep and in the purge, in every shard of a store found anywhere in the tree\n");
+}
+
+static void SnapTestHeldQuota(const char *directory)
+{
+	SparkKvSnapshotStore store;
+	SparkWorkingStateDirective directive = {0u,0u,0u};
+	const uint64_t day = SPARK_KV_RETENTION_SECONDS;
+	uint64_t one_file = 0u;
+	directive.wiped_seconds = 0u;
+	directive.held_until_seconds = (uint64_t)time(0) + 7u * day;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(UINT64_C(1) << 30),1u << 20u,&directive) == SPARK_STATUS_OK);
+	CHECK(SnapAgedWrite(&store,1u,SnapNow() - 2u * day,&one_file) == SPARK_STATUS_OK && one_file != 0u);
+	(void)SnapQuota(2u * one_file);
+	CHECK(SnapAgedWrite(&store,2u,SnapNow() - day,0) == SPARK_STATUS_OK && store.file_count == 2u && store.eviction_count == 0u);
+	CHECK(SnapAgedWrite(&store,3u,SnapNow(),0) == SPARK_STATUS_OK && store.file_count == 2u && store.eviction_count == 1u && SnapHolds(&store,1u) == 0u &&
+		SnapHolds(&store,2u) == 1u && SnapHolds(&store,3u) == 1u);
+	CHECK(SparkKvSnapshotExpire(&store,SnapNow() + 6u * day) == SPARK_STATUS_OK && store.file_count == 2u);
+	CHECK(SparkKvSnapshotExpire(&store,SnapNow() + 8u * day) == SPARK_STATUS_OK && store.file_count == 0u);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: held hours never beat the node quota: a write into a full node still evicts the oldest held file, and the held files expire 24 hours after the held hours end\n");
 }
 
 int main(void)
@@ -1633,6 +1719,14 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestRetention(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestWorkingState(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestHeldQuota(directory);
 	SnapRemoveAll(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);

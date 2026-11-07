@@ -137,12 +137,19 @@ changes to common code. Track implementation evidence in
   misses, eviction, movement, copy-on-write, slot changes and reset with real
   model state. Descriptor declarations and byte-copy tests alone are insufficient.
 - **Cached request state expires.** KV and recurrent state derived from
-  requests are deleted from every tier (device, host, weightd pool, snapshot
-  files) within 24 hours of their last use, whether or not their model is
-  running, and so are the hub draft servers' sequence contexts, the batch
-  engine's copy of a finished request's tokens and the API's prefix index
-  records. The limit is a constant; no flag, configuration or driver path
-  lengthens it, and a restart keeps each entry's age.
+  requests, the scratch area, the hub draft servers' sequence contexts, the
+  batch engine's copy of a finished request's tokens and the API's prefix
+  index records are a fleet user's working state
+  ([working state](docs/WORKING_STATE.md)). It is deleted from every tier
+  (device, host, weightd pool, snapshot files, the pair mirror), whether or
+  not its model is running, when a different account starts using the fleet,
+  and otherwise 24 hours after the later of its last use and the end of its
+  account's last held hour on the fleet. A new user's first request runs
+  only after nothing of the previous user's can match; physical deletion
+  follows within one sweep. The 24 hours are a constant; only held hours,
+  published by the fleet's working-state directive, lengthen retention, and
+  no flag, configuration or driver path does. A restart keeps each entry's
+  age.
 
 ## 6. Experts, fleet access and deployment
 

@@ -3292,6 +3292,7 @@ uint32_t SparkPrefixCacheResumeTokenCount(
 
 SparkStatus SparkPrefixCacheExpire(
     SparkPrefixCache *cache,
+    const SparkWorkingStateDirective *directive,
     uint64_t now_seconds,
     uint32_t *expired_out)
 {
@@ -3308,7 +3309,7 @@ SparkStatus SparkPrefixCacheExpire(
     {
         SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
         if (!SparkPrefixCacheEntryIsEvictable(entry) ||
-            (uint64_t)entry->used_seconds + SPARK_KV_RETENTION_SECONDS > now_seconds)
+            !SparkWorkingStateExpired(directive, (uint64_t)entry->used_seconds, now_seconds))
         {
             continue;
         }
@@ -3322,6 +3323,28 @@ SparkStatus SparkPrefixCacheExpire(
     cache->evicted_block_count += expired;
     *expired_out = expired;
     return SPARK_STATUS_OK;
+}
+
+uint32_t SparkPrefixCacheHoldsUsedBefore(
+    const SparkPrefixCache *cache,
+    uint64_t seconds)
+{
+    uint32_t entry_index;
+
+    if (cache == 0 || cache->entries == 0)
+    {
+        return 0u;
+    }
+    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    {
+        const SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+        if ((entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u &&
+            (uint64_t)entry->used_seconds < seconds)
+        {
+            return 1u;
+        }
+    }
+    return 0u;
 }
 
 SparkStatus SparkPrefixCacheExportCommitted(
@@ -3392,6 +3415,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
     SparkPrefixCache *cache,
     const SparkPrefixCacheCommittedRecord *records,
     uint32_t record_count,
+    const SparkWorkingStateDirective *directive,
     uint32_t *imported_out,
     uint32_t *skipped_out)
 {
@@ -3418,7 +3442,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
             (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->used_seconds == 0u ||
-            (uint64_t)record->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ||
+            SparkWorkingStateExpired(directive, (uint64_t)record->used_seconds, now_seconds) ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
                 record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
             cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)

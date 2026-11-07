@@ -17,6 +17,7 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_kv_snapshot.h"
+#include "sparkpipe/spark_working_state.h"
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
@@ -60,23 +61,54 @@ static void SparkWeightdSignal(int signal_number)
 
 static char weightd_kv_purge_root[SPARK_KV_SNAPSHOT_PATH_BYTES];
 static SparkKvLedger weightd_kv_ledger;
+static char weightd_working_state_path[SPARK_WORKING_STATE_PATH_BYTES];
+static SparkWorkingStateDirective weightd_working_state;
+static SparkStatus weightd_working_state_status;
+static SparkWeightdServer *weightd_kv_purge_server;
+
+static void SparkWeightdReadWorkingState(void)
+{
+    SparkWorkingStateDirective directive;
+    SparkStatus status = SparkWorkingStateDirectiveRead(weightd_working_state_path, &directive);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (status != weightd_working_state_status)
+            fprintf(stderr, "weightd working state directive %s unreadable status=%s: keeping wiped=%llu held_until=%llu\n",
+                weightd_working_state_path, SparkStatusToString(status),
+                (unsigned long long)weightd_working_state.wiped_seconds, (unsigned long long)weightd_working_state.held_until_seconds);
+        weightd_working_state_status = status;
+        return;
+    }
+    weightd_working_state_status = SPARK_STATUS_OK;
+    weightd_working_state = directive;
+}
 
 static void SparkWeightdKvPurgeOnce(void)
 {
     SparkKvSnapshotPurgeResult result;
+    SparkWorkingStatePurgeResult scratch;
     struct timespec now;
-    SparkStatus status;
+    SparkStatus status,scratch_status;
     if (clock_gettime(CLOCK_REALTIME, &now) != 0)
         return;
     SparkKvLedgerUsage usage;
-    status = SparkKvSnapshotPurgeTree(&weightd_kv_ledger, weightd_kv_purge_root, (uint64_t)now.tv_sec, &result);
+    SparkWeightdReadWorkingState();
+    SparkWeightdServerSetWorkingStateWiped(weightd_kv_purge_server, weightd_working_state.wiped_seconds);
+    status = SparkKvSnapshotPurgeTree(&weightd_kv_ledger, weightd_kv_purge_root, &weightd_working_state, (uint64_t)now.tv_sec, &result);
     memset(&usage, 0, sizeof(usage));
     (void)SparkKvLedgerSample(&weightd_kv_ledger, &usage);
     if (status != SPARK_STATUS_OK || result.deleted_files != 0u || result.failed_unlinks != 0u || result.uncounted_stores != 0u)
-        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u uncounted=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu node_used=%llu of %llu\n",
+        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u uncounted=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu wiped=%llu held_until=%llu node_used=%llu of %llu\n",
             weightd_kv_purge_root, SparkStatusToString(status), result.stores, result.busy_stores, result.uncounted_stores,
             (unsigned long long)result.deleted_files, (unsigned long long)result.deleted_bytes, result.failed_unlinks,
-            (unsigned long long)SPARK_KV_RETENTION_SECONDS, (unsigned long long)usage.used_bytes, (unsigned long long)usage.quota_bytes);
+            (unsigned long long)SPARK_KV_RETENTION_SECONDS, (unsigned long long)weightd_working_state.wiped_seconds,
+            (unsigned long long)weightd_working_state.held_until_seconds, (unsigned long long)usage.used_bytes, (unsigned long long)usage.quota_bytes);
+    scratch_status = SparkWorkingStatePurgeScratch(weightd_kv_purge_root, &weightd_working_state, (uint64_t)now.tv_sec, &scratch);
+    if (scratch_status != SPARK_STATUS_OK || scratch.emptied_areas != 0u || scratch.failed_unlinks != 0u)
+        fprintf(stderr, "weightd scratch purge root=%s status=%s areas=%u emptied=%u deleted_entries=%llu deleted_bytes=%llu failed_unlinks=%u wiped=%llu held_until=%llu\n",
+            weightd_kv_purge_root, SparkStatusToString(scratch_status), scratch.areas, scratch.emptied_areas,
+            (unsigned long long)scratch.deleted_entries, (unsigned long long)scratch.deleted_bytes, scratch.failed_unlinks,
+            (unsigned long long)weightd_working_state.wiped_seconds, (unsigned long long)weightd_working_state.held_until_seconds);
 }
 
 static void *SparkWeightdKvPurgeThread(void *argument)
@@ -96,12 +128,13 @@ static void *SparkWeightdKvPurgeThread(void *argument)
     return 0;
 }
 
-static SparkStatus SparkWeightdKvPurgeStart(void)
+static SparkStatus SparkWeightdKvPurgeStart(SparkWeightdServer *server)
 {
     static pthread_t purge_thread;
     const struct passwd *owner = getpwuid(geteuid());
     if (owner == 0 || owner->pw_dir == 0 || owner->pw_dir[0] != '/' ||
-        strlen(owner->pw_dir) >= sizeof(weightd_kv_purge_root))
+        strlen(owner->pw_dir) >= sizeof(weightd_kv_purge_root) ||
+        SparkWorkingStateDirectivePath(owner->pw_dir, weightd_working_state_path, sizeof(weightd_working_state_path)) != SPARK_STATUS_OK)
     {
         fprintf(stderr, "weightd kv purge: no home directory for uid %u; startup failed\n", (unsigned)geteuid());
         return SPARK_STATUS_NOT_FOUND;
@@ -120,17 +153,18 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
         fprintf(stderr, "weightd kv ledger %s: node quota %llu bytes for the node's own KV on disk, shared by every lane\n", ledger_path,
             (unsigned long long)SPARK_KV_NODE_QUOTA_BYTES);
     }
+    weightd_kv_purge_server = server;
     if (pthread_create(&purge_thread, 0, SparkWeightdKvPurgeThread, 0) != 0)
     {
         fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    fprintf(stderr, "weightd kv purge: every %u s under %s, cache files unused for %llu s are deleted\n",
-        SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root, (unsigned long long)SPARK_KV_RETENTION_SECONDS);
+    fprintf(stderr, "weightd kv purge: every %u s under %s, cache files and scratch expired by %s are deleted\n",
+        SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root, weightd_working_state_path);
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkWeightdStartThreads(int mesh_enabled)
+static SparkStatus SparkWeightdStartThreads(int mesh_enabled,SparkWeightdServer *server)
 {
     static pthread_t mesh_thread;
     if (mesh_enabled && pthread_create(&mesh_thread, 0, SparkWeightdMeshThread, 0) != 0)
@@ -138,7 +172,7 @@ static SparkStatus SparkWeightdStartThreads(int mesh_enabled)
         fprintf(stderr, "weightd-mesh: thread create failed; startup failed\n");
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    return SparkWeightdKvPurgeStart();
+    return SparkWeightdKvPurgeStart(server);
 }
 
 static void SparkWeightdUsage(const char *program)
@@ -590,7 +624,7 @@ int main(int argument_count, char **arguments)
         SparkWeightdServerDestroy(server);
         return 1;
     }
-    if (SparkWeightdStartThreads(mesh_fields == 15u) != SPARK_STATUS_OK)
+    if (SparkWeightdStartThreads(mesh_fields == 15u, server) != SPARK_STATUS_OK)
     {
         SparkWeightdMeshStop();
         SparkWeightdServerDestroy(server);
