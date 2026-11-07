@@ -100,13 +100,7 @@ class Commands:
         self.frontend = frontend
 
     def identity(self, headers):
-        if headers is None:
-            return None
-        claims = self.module.verify_jwt(headers.get("X-OpenWebUI-User-Jwt") or "", self.memory.secret)
-        chat = self.module.header(headers, "X-OpenWebUI-Chat-Id")
-        if not claims or claims.get("iss") != self.memory.issuer or not isinstance(claims.get("sub"), str) or not chat:
-            return None
-        return claims["sub"], chat
+        return self.memory.identity(headers) if headers is not None else None
 
     def settings(self, identity):
         return dict(self.memory.store.load(*identity)["settings"]) if identity else {}
