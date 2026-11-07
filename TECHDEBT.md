@@ -1503,20 +1503,23 @@ and the multidev docs on 2026-09-28. Line numbers are in
   and device addresses. Convert them to `SparkDeviceQueue *` and
   `SparkDeviceAddress` in one ABI change with every consumer.
 - The stage-runner API (`include/sparkpipe/spark_stage_runner.h`) still
-  carries CUDA streams type-erased: `SparkStageRunnerConfiguration.execution_stream`,
-  which the stage serving adapter forwards from residentd, and the `stream`
-  of `SparkStageRunnerRecurrentCopy`, which the adapter maps back from the
-  runner's queue (the configured stream for a queued copy, 0 for a
-  synchronous one). A device runner runs on its own queue and has no use for
-  either. Pass `SparkDeviceQueue *` there in the same ABI change.
+  carries a CUDA stream type-erased: `SparkStageRunnerConfiguration.execution_stream`,
+  which the stage serving adapter forwards from residentd. A device runner
+  runs on its own queue and has no use for it. Pass `SparkDeviceQueue *`
+  there in the same ABI change. `SparkStageRunnerRecurrentCopy` already
+  takes the runner's queue.
 - The KV binding's weightd pool path calls weightd's CUDA VMM client
-  (`runtime/spark_weightd_kv_pool.c`), which a host without CUDA links
-  through the CUDA stub (`PENDING_BUILD` in `tests/test_device_neutral.py`).
-  A runner that maps its own pack gets a fixed pool instead, one device
-  buffer: no shared prefix window between engines, no reattach across a
-  restart and no resizing against the node budget. Moving KV pool sizing
-  onto the device layer (the `make_resident`/`evict` bullet below) gives
-  both sources one sizing path.
+  (`runtime/spark_weightd_kv_pool.c`). The Metal serving adapter links
+  `runtime/spark_weightd_absent.c` instead, whose calls answer
+  `SPARK_STATUS_UNSUPPORTED`; `sparkpipe_model_residentd` and
+  `sparkpipe_model_api` on Darwin still compile weightd and the module
+  common against the CUDA stub (`PENDING_BUILD` in
+  `tests/test_device_neutral.py`). A runner that maps its own pack gets a
+  fixed pool, one device buffer: no shared prefix window between engines,
+  no reattach across a restart (the snapshot store still restores prefixes)
+  and no resizing against the node budget. Moving KV pool sizing onto the
+  device layer (the `make_resident`/`evict` bullet below) gives both sources
+  one sizing path.
 - The Metal kernels (`inference/kernels/metal/`) implement the operations of
   the CUDA kernels (`inference/kernels/`) a second time, in Metal. The
   formulas they share are moving into `inference/kernels/kernel_math.cuh`
