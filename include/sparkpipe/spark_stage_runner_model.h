@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 5u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 6u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -63,6 +63,7 @@ typedef struct SparkStageRunnerStep
 	const uint32_t *route_override;
 	uint32_t route_override_width;
 	uint32_t *route_fault;
+	uint32_t tap_row_offset;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry

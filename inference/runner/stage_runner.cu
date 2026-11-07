@@ -1929,6 +1929,7 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 	b->step.token_ids = in->token_ids != 0 ? in->token_ids + first : 0;
 	b->step.host_positions = in->host_positions + first;
 	b->step.host_sequence_of_row = in->host_sequence_of_row + first;
+	b->step.tap_row_offset = first;
 	for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES && status == SPARK_STATUS_OK; ++index )
 		status = state->model_interface->lane(state->model, index, &lanes->lane[index].step, &lanes->lane[index].services,
 			&lanes->lane[index].model);
@@ -2759,9 +2760,9 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	if ( runner == 0 || runner->private_state == 0 || entries == 0 || entry_count == 0u || entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->tap_plan.entry_count != 0u || state->model_interface->lane != 0 )
+	if ( state->tap_plan.entry_count != 0u )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s\n", state->tap_plan.entry_count != 0u ? "a tap plan is already set" : "the model runs lanes");
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: a tap plan is already set\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	for ( index = 0u; index < entry_count; ++index )
@@ -2769,16 +2770,18 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 		for ( other = 0u; other < index; ++other )
 			if ( entries[other].form == entries[index].form && entries[other].layer == entries[index].layer )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+		if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL && state->geometry.head_prenormed == 0u )
 			final_entry = index;
-		else if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT && entries[index].layer < state->geometry.total_layers )
+		else if ( entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL ||
+			(entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT && entries[index].layer < state->geometry.total_layers) )
 			model_entries++;
 		else
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( model_entries != 0u && state->model_interface->tap_plan == 0 )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s exports no layer outputs\n", state->model_interface->tag);
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s exports no layer outputs%s\n", state->model_interface->tag,
+			state->geometry.head_prenormed != 0u ? "; its stage output is already normed, so the final hidden before the norm is one of them" : "");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	stride = (uint64_t)entry_count * state->geometry.hidden;

@@ -734,6 +734,7 @@ PYTHON_TESTS := \
 	tests/test_lane_tools.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_lane_draft_hooks.py \
 	tests/test_chat_commands.py \
 	tests/test_chat_memory_qualify_checks.py \
 	tests/test_chat_api_keys.py \
@@ -750,6 +751,7 @@ PYTHON_TESTS := \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
 	tests/test_block_drafter_context.py \
+	tests/test_block_drafter_dspark.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
 	tests/test_block_draftd_retention.py \

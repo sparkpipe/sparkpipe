@@ -24,7 +24,7 @@ def log_target(command):
 
 
 for name, model in stage_lane.MODELS.items():
-    entry = stage_lane.swap_entry(name, model, 0)
+    entry = stage_lane.swap_entry(name, model, 0, {})
     target = log_target(entry["api_start"])
     if target is None or not target.startswith(WORKSPACE):
         failures.append(f"tools/stage_lane.py {name}: api_start logs to {target!r}, not a file on {WORKSPACE}")

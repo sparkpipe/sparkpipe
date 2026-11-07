@@ -25,6 +25,7 @@ whether the fleet still matches.
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
+| `draftd` | the hub draft server's unit, source directory, drafter, target tensors (`target_shard`, which may be a `model.safetensors.index.json`, with `embed`, `head` and `norm` naming the tensors), `window`, `context_bytes` and the tap layer offset `delta`. With `"lifecycle": "model"`, the swap controller starts it with the model's engines (`draft_start`, which must finish before the API starts) and stops it with the model's API (`draft_stop`). Such a server runs only while its model is active, so drafters that do not all fit the RTX 5090 at once can share it. Without a lifecycle the server is always on, and `tools/lane_config.py draftd RECORD` starts it. A draft server that fails to start leaves the model serving without model drafts, with the failure in the controller's `draft` status; the audit reports a model-scoped server that runs while another model is active |
 
 `weightd` at the top holds the device ceiling and KV reserve every node's
 weightd runs with.

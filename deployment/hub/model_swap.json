@@ -35,6 +35,8 @@
  "models": [
   {
    "id": "glm-5.3",
+   "hub_start": "env DRAFTD_UNIT=sparkpipe-draftd-glm53 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7731 DRAFTD_DRAFT_PORT=7732 DRAFTD_WINDOW=2048 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh start /srv/workspace/sparkpipe/draftd-taps",
+   "hub_stop": "env DRAFTD_UNIT=sparkpipe-draftd-glm53 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-glm53.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-dspark-redhatai DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/glm-5.3-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7731 DRAFTD_DRAFT_PORT=7732 DRAFTD_WINDOW=2048 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh stop",
    "kv_label": "glm53_full_bf16_tp16_stage",
    "node_memory_bytes": 107374182400,
    "node_reclaim": "$HOME/stage-lanes/glm53_full/lane6/root/lane.sh reclaim",
@@ -234,6 +236,8 @@
   },
   {
    "id": "k-exaone-2.0",
+   "hub_start": "env DRAFTD_UNIT=sparkpipe-draftd-kexaone DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-kexaone.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/k-exaone-2.0-dspark-official DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/k-exaone-2.0-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7751 DRAFTD_DRAFT_PORT=7752 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh start /srv/workspace/sparkpipe/draftd-taps",
+   "hub_stop": "env DRAFTD_UNIT=sparkpipe-draftd-kexaone DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-kexaone.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/k-exaone-2.0-dspark-official DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/k-exaone-2.0-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7751 DRAFTD_DRAFT_PORT=7752 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh stop",
    "kv_label": "kexaone2_stage",
    "node_memory_bytes": 107374182400,
    "node_reclaim": "$HOME/stage-lanes/kexaone2/lane11/root/lane.sh reclaim",
@@ -246,6 +250,8 @@
   },
   {
    "id": "a.x-k2",
+   "hub_start": "env DRAFTD_UNIT=sparkpipe-draftd-axk2 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-axk2.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/ax-k2-dspark-official DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/ax-k2-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7741 DRAFTD_DRAFT_PORT=7742 DRAFTD_WINDOW=128 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh start /srv/workspace/sparkpipe/draftd-taps",
+   "hub_stop": "env DRAFTD_UNIT=sparkpipe-draftd-axk2 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-axk2.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/ax-k2-dspark-official DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/ax-k2-target-io/model.safetensors.index.json DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7741 DRAFTD_DRAFT_PORT=7742 DRAFTD_WINDOW=128 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_EMBED=model.embed_tokens.weight DRAFTD_HEAD=lm_head.weight DRAFTD_NORM=model.norm.weight DRAFTD_DELTA='' bash /srv/workspace/sparkpipe/draftd-taps/hub_draftd.sh stop",
    "kv_label": "axk2_tp16_stage",
    "node_memory_bytes": 61203283968,
    "node_reclaim": "$HOME/stage-lanes/axk2/lane3/root/lane.sh reclaim",
