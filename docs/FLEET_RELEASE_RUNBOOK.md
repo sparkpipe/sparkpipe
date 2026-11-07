@@ -33,7 +33,9 @@ MANIFEST written last. Bare line references (`:NNN`) are to
 A node's rank is its position in `FLEET_HOSTS` (`:8-23`). Pack names use hex
 ranks.
 
-Network (lead-dev facts and read-only checks, 2026-09-28):
+Network: the two switched rails, their boot configuration and the rules for
+RDMA traffic are in [FLEET_FABRIC.md](FLEET_FABRIC.md). The hub's 10 GbE path
+(facts from 2026-09-28):
 
 - The hub's `eno1` (`10.10.250.2/30`) is cabled to sparkf's `enP7s7`
   (`10.10.250.1`) at 10 GbE. `enP7s7` was sparkf's management port
