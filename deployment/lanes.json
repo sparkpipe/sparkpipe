@@ -92,7 +92,6 @@
     "node_rows": 2048,
     "dense_buffers": 1,
     "expert_slots": 2,
-    "quantum": 4096,
     "min_tokens": 16384,
     "partner_pack": "sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank{partner:02d}.pack",
     "fabric_device": "rocep1s0f1",

@@ -469,7 +469,7 @@ def model_hidden(model: dict) -> int:
 
 
 def streamed_config(streamed: dict, rank: int) -> dict:
-    fields = {key: value for key, value in streamed.items() if key not in ("partner_pack", "quantum", "min_tokens")}
+    fields = {key: value for key, value in streamed.items() if key not in ("partner_pack", "min_tokens")}
     return {**fields, "partner_pack": f"/home/{HOSTS[rank]}/{streamed['partner_pack'].format(partner=rank ^ 1)}"}
 
 
@@ -536,8 +536,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
-            **({"streamed_prefill_quantum": args.streamed_prefill["quantum"],
-                "streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
+            **({"streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
