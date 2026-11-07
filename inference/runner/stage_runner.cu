@@ -2241,6 +2241,12 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 		if ( state->graph_exec[slot] != 0 )
 			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
 	}
+	if ( in->graph_key != 0u && state->resident == 0u && state->geometry.experts != 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: fatal: decode step key=%u rows=%u before every expert group is resident; it would run eager at about 6x the cost, so warm the pack before serving\n",
+			in->graph_key, rows);
+		abort();
+	}
 	if ( in->graph_key > 1u )
 	{
 		SparkStageRunnerStep eager = *in;
