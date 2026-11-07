@@ -3244,21 +3244,18 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	{
 		const uint32_t context = position + 1u > plan->context ? position + 1u : plan->context;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
-		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, calibration = 1.0f;
+		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, reach = 1.0f;
 		wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		for (index=1u; index<count && index<=depth; index++)
 		{
-			const float ratio = (engine->model_depth_observed[index - 1u] + SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR) /
-				(engine->model_depth_predicted[index - 1u] + SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR);
 			float cost,rate;
 			if ( nodes[index].parent_index != index - 1u || nodes[index].depth != index || !(nodes[index].score >= engine->draft_min_confidence) ||
 				SparkModelBatchTokenIsStop(engine,request,nodes[index].token_id) != 0u || SparkModelBatchPlanOverCap(engine,plan,index + 1u,context) != 0u )
 				break;
-			if ( ratio < calibration )
-				calibration = ratio;
 			path *= nodes[index].score < 1.0f ? nodes[index].score : 1.0f;
 			request->draft_path[index - 1u] = path;
-			drafted += calibration * path;
+			reach = SparkSpeculationFrameReach(reach,path,engine->model_depth_observed[index - 1u],engine->model_depth_predicted[index - 1u],SPARK_MODEL_BATCH_MODEL_DRAFT_PRIOR);
+			drafted += reach;
 			request->draft_tokens[index - 1u] = nodes[index].token_id;
 			cost = SparkModelBatchPlanFrameCost(engine,plan,index + 1u,context,token_ns,wait_ns);
 			rate = cost > 0.0f ? (plan->base_tokens + 1.0f + drafted) / cost : 0.0f;
@@ -3268,7 +3265,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 				best_gain = drafted;
 				drafts = index;
 				expected = 1.0f + drafted;
-				all_accepted = calibration * path;
+				all_accepted = reach;
 			}
 		}
 		if ( best_gain < SPARK_MODEL_BATCH_MODEL_DRAFT_MIN_GAIN )
