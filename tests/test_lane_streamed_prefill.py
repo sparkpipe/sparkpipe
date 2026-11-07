@@ -18,8 +18,12 @@ import stage_lane
 
 class LaneStreamedPrefill(unittest.TestCase):
     def test_a_streamed_record_renders_partner_packs_and_limits(self):
-        lane = lane_config.records()["kimi-k3.1-pro"]
-        streamed = lane["streamed_prefill"]
+        streamed = {"node_rows": 2048, "dense_buffers": 1, "expert_slots": 2, "min_tokens": 16384,
+                    "partner_pack": "sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank{partner:02d}.pack",
+                    "fabric_device": "rocep1s0f1", "pair_device": "roceP2p1s0f0"}
+        document = json.loads(json.dumps(stage_lane.lane_records()))
+        document["lanes"]["kimi-k3.1-pro"]["streamed_prefill"] = streamed
+        stage_lane.lane_records = lambda: document
         with tempfile.TemporaryDirectory() as scratch:
             directory = Path(scratch) / "lane"
             lane_config.render("kimi-k3.1-pro", directory)

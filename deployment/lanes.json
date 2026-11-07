@@ -88,18 +88,6 @@
    "context_tokens": 1048576,
    "kv_logical_pages": 131072,
    "state_budget_bytes": 5368709120,
-   "streamed_prefill": {
-    "node_rows": 2048,
-    "dense_buffers": 1,
-    "expert_slots": 2,
-    "min_tokens": 16384,
-    "partner_pack": "sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank{partner:02d}.pack",
-    "fabric_device": "rocep1s0f1",
-    "pair_device": "roceP2p1s0f0",
-    "gid_index": 3,
-    "pair_gid_index": 3,
-    "traffic_class": 106
-   },
    "draft_server": {
     "host": "127.0.0.1",
     "port": 7722,
@@ -111,7 +99,7 @@
    "draftd": {
     "unit": "sparkpipe-draftd-k31",
     "source": "/srv/workspace/sparkpipe/draftd-k31-dspark",
-    "drafter": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-5e654fbe9202",
+    "drafter": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-6a2ef20a05ef",
     "target_shard": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors",
     "window": 4096,
     "context_bytes": 17179869184,
