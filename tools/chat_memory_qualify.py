@@ -76,9 +76,9 @@ def b64(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def token(secret, user):
+def token(secret, user, seconds=3600):
     head = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    body = b64(json.dumps({"sub": user, "iss": "open-webui", "exp": time.time() + 3600}).encode())
+    body = b64(json.dumps({"sub": user, "iss": "open-webui", "exp": time.time() + seconds}).encode())
     return f"{head}.{body}.{b64(hmac.new(secret.encode(), f'{head}.{body}'.encode(), hashlib.sha256).digest())}"
 
 

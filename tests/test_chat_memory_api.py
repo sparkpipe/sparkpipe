@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""API clients get chat memory only when they ask for it. A Messages or Responses request with X-SparkPipe-Memory: on and a session id (the Claude Code session header, X-Session-Id, the Responses prompt_cache_key) is laid out by the memory layer under the key's scope and member: the system note, the expand and search_history tools and the exchange ids. The turn ids come from the conversation itself, so the next turn binds the curator's line for the last answer through its parent and the ledger then holds it. Without the header, or for the harness's own compaction requests, the request is served raw, and opting in without a session id is refused. A tool round inside a memory turn replays the model's exact tokens, so its prompt extends the previous round's prompt and reply in the engine's cache. Every foreground request, from the API or from chat, counts as foreground for the idle-only background work."""
+"""API clients get chat memory only when they ask for it. A Messages or Responses request with X-SparkPipe-Memory: on and a session id (the Claude Code session header, X-Session-Id, the Responses prompt_cache_key) is laid out by the memory layer under the key's scope and member: the system note, the expand and search_history tools and the exchange ids. The turn ids come from the conversation itself, so the next turn binds the curator's line for the last answer through its parent and the ledger then holds it, also when the request names Open WebUI message ids: a session given its identity never takes message ids from headers. Without the header, or for the harness's own compaction requests, the request is served raw, and opting in without a session id is refused. A tool round inside a memory turn replays the model's exact tokens, so its prompt extends the previous round's prompt and reply in the engine's cache. Every foreground request, from the API or from chat, counts as foreground for the idle-only background work."""
 import asyncio
 import contextlib
 import importlib.util
@@ -68,10 +68,18 @@ async def run(tmp, check):
 
         second = first + [assistant(text), {"role": "user", "content": "Read b.txt"}]
         engine.reply("Reading b.</think>Checking.<tool_call>read<arg_key>path</arg_key><arg_value>b.txt</arg_value></tool_call>")
-        status, _, text = await harness.post("/v1/messages", body(second), **opted)
+        named = {"X-OpenWebUI-User-Message-Id": "owui-user-2", "X-OpenWebUI-User-Message-Parent-Id": "owui-reply-1", "X-OpenWebUI-Message-Id": "owui-reply-2"}
+        status, _, text = await harness.post("/v1/messages", body(second), **opted, **named)
         state = frontend.memory.store.load(user, SESSION)
         key = cm.exchange_key([{"role": "user", "content": "Read a.txt"}, {"role": "assistant", "content": "It says hello world."}])
         check(status == 200 and state["lines"].get(key) == LINE, f"the next turn binds the line through the parent derived from the conversation: {state['lines']}")
+        latest, ids = max(state["turns"].items(), key=lambda item: item[1]["index"])
+        check(latest.startswith(cm.API_TURN) and (ids["parent"] or "").startswith(cm.API_REPLY) and not set(named.values()) & {latest, ids["parent"], ids["message"]},
+              f"and keeps the conversation's turn ids when the request also names Open WebUI message ids: {latest} {ids}")
+        direct = frontend.memory.session(model, named, [{"role": "user", "content": "Read c.txt"}], [], {}, identity=(user, "direct"))
+        turns = frontend.memory.store.load(user, "direct")["turns"]
+        check(direct is not None and list(turns) == [cm.API_TURN + cm.turn_id([], {"role": "user", "content": "Read c.txt"})] and not set(named.values()) & set(turns),
+              f"a session given its identity derives its turn ids from the conversation, whatever message ids the headers name: {turns}")
         call = json.loads(text)
         check(call["stop_reason"] == "tool_use", f"the model asked for a tool: {call}")
         round_prompt = list(engine.requests[-1]["prompt_token_ids"])
@@ -123,7 +131,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         asyncio.run(run(Path(tmp), checks))
     checks.finish("API requests opt in with X-SparkPipe-Memory and a session id, get the memory layout under their key's scope, bind lines through turn ids "
-                  "derived from the conversation, keep exact-token replay for tool rounds, stay raw without the header or for compaction, and count as "
+                  "derived from the conversation even beside Open WebUI message ids, keep exact-token replay for tool rounds, stay raw without the header or for compaction, and count as "
                   "foreground for background work")
 
 

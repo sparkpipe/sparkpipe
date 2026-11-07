@@ -1104,7 +1104,7 @@ class Memory:
         if pending is not None:
             self.store.append(user, chat, {"type": "line", "key": exchange_key(exchange), "line": pending["line"], "source": pending["source"]})
 
-    def session(self, model, headers, messages, tools, kwargs, target=None, identity=None):
+    def session(self, model, headers, messages, tools, kwargs, target=None, identity=None, turn=None):
         found = self.identity(headers) if identity is None else identity
         user_message = header(headers, "X-OpenWebUI-User-Message-Id") if identity is None else API_TURN
         if found is None or not user_message or (headers.get("X-OpenWebUI-Task") or "").strip():
@@ -1121,8 +1121,10 @@ class Memory:
             return None
         if identity is None:
             parent, message = header(headers, "X-OpenWebUI-User-Message-Parent-Id"), header(headers, "X-OpenWebUI-Message-Id")
-        else:
+        elif turn is None:
             user_message, parent, message = api_turn_ids(exchanges, current)
+        else:
+            user_message, parent, message = turn
         state = self.store.load(user, chat)
         self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
         if parent and exchanges:
@@ -1306,15 +1308,15 @@ class Memory:
             if not answered(exchange):
                 continue
             key = exchange_key(exchange)[:24]
-            ids = {"X-OpenWebUI-User-Message-Id": "import-" + key, "X-OpenWebUI-Message-Id": "import-reply-" + key}
+            turn = ("import-" + key, None, "import-reply-" + key)
             prior = [message for earlier in exchanges[:end] for message in earlier]
-            session = self.session(model, Headers(headers, ids), head + prior + exchange[:-1], tools, kwargs)
+            session = self.session(model, Headers(headers), head + prior + exchange[:-1], tools, kwargs, identity=found, turn=turn)
             if session is None:
                 raise ValueError("the conversation cannot open a memory session")
             session.finished(session.messages, text_of(exchange[-1].get("content")), "", [], "stop", catch_up=batch)
             if not await self.settled(model, user, chat, timeout_seconds):
                 raise TimeoutError("the memory jobs of the import did not finish")
-            self.bind_pending(user, chat, ids["X-OpenWebUI-Message-Id"], exchange)
+            self.bind_pending(user, chat, turn[2], exchange)
         state = self.store.load(user, chat)
         return {"exchanges": len(exchanges), "lined": sum(1 for exchange in exchanges if exchange_key(exchange) in state["lines"]),
                 "committed": len(state["commits"]), "bases": len(state["bases"])}
