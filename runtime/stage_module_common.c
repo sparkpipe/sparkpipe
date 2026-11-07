@@ -32,9 +32,9 @@ SparkStatus SparkStageModuleCudaWaitInitialize(SparkStageModuleCudaWait *wait,cu
     pthread_condattr_t attributes;
     int result;
     if ( wait == 0 || stream == 0 || wait->initialized != 0u )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if ( pthread_mutex_init(&wait->mutex,0) != 0 )
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     result = pthread_condattr_init(&attributes);
     if ( result == 0 )
     {
@@ -48,7 +48,7 @@ SparkStatus SparkStageModuleCudaWaitInitialize(SparkStageModuleCudaWait *wait,cu
     if ( result != 0 )
     {
         pthread_mutex_destroy(&wait->mutex);
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     wait->stream = stream;
     wait->generation = wait->completed_generation = 0u;
@@ -64,9 +64,9 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
     cudaError_t error;
     int result = 0;
     if ( wait == 0 || wait->initialized == 0u || timeout_ns == 0u || timeout_ns > UINT64_C(3600000000000) )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if ( clock_gettime(CLOCK_MONOTONIC,&deadline) != 0 )
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     deadline.tv_sec += (time_t)(timeout_ns / UINT64_C(1000000000));
     deadline.tv_nsec += (long)(timeout_ns % UINT64_C(1000000000));
     if ( deadline.tv_nsec >= 1000000000L )
@@ -78,7 +78,7 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
     if ( wait->waiting != 0u )
     {
         pthread_mutex_unlock(&wait->mutex);
-        return(SPARK_STATUS_BUSY);
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     wait->waiting = 1u;
     if ( wait->terminal_pending == 0u )
@@ -101,7 +101,7 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
             wait->terminal_pending = 0u;
             wait->waiting = 0u;
             pthread_mutex_unlock(&wait->mutex);
-            return(SPARK_STATUS_IO_ERROR);
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
     while ( wait->generation != wait->completed_generation && result == 0 )
@@ -165,12 +165,12 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
 SparkStatus SparkStageModuleCudaWaitDestroy(SparkStageModuleCudaWait *wait)
 {
     if ( wait == 0 || wait->initialized == 0u )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     pthread_mutex_lock(&wait->mutex);
     if ( wait->waiting != 0u || wait->terminal_pending != 0u || wait->generation != wait->completed_generation )
     {
         pthread_mutex_unlock(&wait->mutex);
-        return(SPARK_STATUS_BUSY);
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     pthread_mutex_unlock(&wait->mutex);
     pthread_cond_destroy(&wait->changed);
@@ -974,7 +974,7 @@ static SparkStatus SparkStageModulePackArenaPath(SparkStageModulePackArena *aren
 	}
 #endif
 	if (path_bytes <= 0 || (uint64_t)path_bytes >= sizeof(arena->pack_path))
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	arena->pack_path[path_bytes] = '\0';
 	return(SPARK_STATUS_OK);
 }
@@ -985,7 +985,7 @@ static SparkStatus SparkStageModulePackArenaSidecarDigest(SparkStageModulePackAr
 	FILE *sidecar;
 	size_t bytes = 0u,index;
 	if (snprintf(path,sizeof(path),"%s.sha256",arena->pack_path) >= (int)sizeof(path))
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	sidecar = fopen(path,"rb");
 	if (sidecar == 0)
 	{
@@ -1040,19 +1040,19 @@ static SparkStatus SparkStageModulePackArenaEnsure(SparkStageModuleLedger *ledge
 	SparkStatus status;
 	uint32_t first_pack;
 	if (ledger == 0 || file == 0 || selected == 0)
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*selected = 0;
 	status = SparkWeightdAttachRequested();
 	if (status != SPARK_STATUS_OK)
 		SPARK_RETURN(status);
 	if (fstat(fileno(file),&pack_stat) != 0 || pack_stat.st_size <= 0)
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	arena = SparkStageModulePackArenaFind(ledger,&pack_stat);
 	if (arena == 0)
 	{
 		arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
 		if (arena == 0)
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		first_pack = ledger->pack_arena == 0 ? 1u : 0u;
 		arena->next = (SparkStageModulePackArena *)ledger->pack_arena;
 		ledger->pack_arena = arena;
@@ -1077,12 +1077,12 @@ static SparkStatus SparkStageModulePackArenaSlice(
 	SparkStageModulePackArena *arena;
 	SparkStatus status;
 	if ( (offset & UINT64_C(0xff)) != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageModulePackArenaEnsure(ledger,file,&arena);
 	if (status != SPARK_STATUS_OK)
 		SPARK_RETURN(status);
 	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*pointer = (uint8_t *)arena->outcome.map_base + offset;
 	return(SPARK_STATUS_OK);
 }
@@ -1484,7 +1484,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     SparkStatus status;
 
     if (ledger == 0 || file == 0 || pointer == 0 || bytes == 0u)
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *pointer = 0;
     status = SparkWeightdAttachRequested();
     if (status == SPARK_STATUS_OK)
