@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """API clients get chat memory only when they ask for it. A Messages or Responses request with X-SparkPipe-Memory: on and a session id (the Claude Code session header, X-Session-Id, the Responses prompt_cache_key) is laid out by the memory layer under the key's scope and member: the system note, the expand and search_history tools and the exchange ids. The turn ids come from the conversation itself, so the next turn binds the curator's line for the last answer through its parent and the ledger then holds it. Without the header, or for the harness's own compaction requests, the request is served raw, and opting in without a session id is refused. A tool round inside a memory turn replays the model's exact tokens, so its prompt extends the previous round's prompt and reply in the engine's cache. Every foreground request, from the API or from chat, counts as foreground for the idle-only background work."""
 import asyncio
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
 from pathlib import Path
@@ -77,7 +79,7 @@ async def run(tmp, check):
         third = second + [{"role": "assistant", "content": call["content"]},
                           {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use["id"], "content": "bye"}]}]
         engine.reply("Done.</think>It says bye.")
-        status, _, text = await harness.post("/v1/messages", body(third), **opted)
+        status, _, said_bye = await harness.post("/v1/messages", body(third), **opted)
         cached = engine.usage[-1]["cached_tokens"]
         check(status == 200 and cached > len(round_prompt), f"the tool round's prompt extends the previous round's prompt and reply in the cache: {cached} of {len(round_prompt)}")
 
@@ -98,6 +100,22 @@ async def run(tmp, check):
         await waiting
         engine.hold = None
         check(frontend.memory.active.get("alpha") == 0, f"and stops counting when it ends: {frontend.memory.active}")
+
+        check(await frontend.memory.settled(model, user, SESSION, 10.0), "the session's background work settles before the next turn")
+        fourth = third + [assistant(said_bye), {"role": "user", "content": "What did a.txt say?"}]
+        engine.reply("Checking my notes.</think><tool_call>expand<arg_key>id</arg_key><arg_value>e1</arg_value></tool_call>")
+        engine.reply("Found it.</think>It said hello world.")
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            status, _, text = await harness.post("/v1/messages", body(fourth), **opted)
+        rounds = engine.usage[-2:]
+        logged = [json.loads(line) for line in captured.getvalue().splitlines() if line.startswith('{"event": "chat"')]
+        check(status == 200 and json.loads(text)["sparkpipe"]["engine_rounds"] == 2,
+              f"an answer after the model's own expand call reports two engine rounds: {status} {text[-300:]}")
+        check(len(logged) == 1 and logged[0]["engine_rounds"] == 2 and
+              logged[0]["engine_prefill_tokens"] == sum(entry["prompt_tokens"] - entry["cached_tokens"] for entry in rounds) and
+              logged[0]["prompt_tokens"] == rounds[-1]["prompt_tokens"] and logged[0]["cached_tokens"] <= logged[0]["prompt_tokens"],
+              f"its log line sums the new prefill of both rounds and counts the last round's prompt: {logged} {rounds}")
 
 
 def main():
