@@ -100,17 +100,13 @@ def check_runner(failures):
 def check_adapter(failures):
     adapter = ADAPTER.read_text()
     copy_inputs = body(adapter, "StageServingCopyInputs")
-    copies = re.findall(r"SparkMemoryBufferCopy\(&state->(\w+),[^;]*?,\s*([^,;]+)\)\s*!=", copy_inputs)
-    device = [(name, stream) for name, stream in copies if name.endswith("_device")]
-    if not device:
+    submit = body(adapter, "StageServingSubmit")
+    device = re.findall(r"\{ &state->(\w+_device), &state->\w+_host,", copy_inputs)
+    if not device or not re.search(r"if \( SparkDeviceCopy\(queue, [^;]*\) != SPARK_STATUS_OK \)", copy_inputs):
         failures.append("the adapter's device index copies are not checked")
-    if not re.search(r"void \*stream = state->runner_config\.execution_stream;", copy_inputs):
-        failures.append("the adapter's index copies do not take the runner's execution stream")
-    for name, stream in device:
-        if stream.strip() != "stream":
-            failures.append(f"the adapter copies {name} on {stream.strip()}, not the "
-                            f"execution stream the step kernels run on")
-    if re.search(r"\(void\)SparkMemoryBufferCopy\(", adapter):
+    if "queue = SparkStageRunnerQueue(&state->runner);" not in submit or "StageServingCopyInputs(state, queue, " not in submit:
+        failures.append("the adapter's index copies do not run on the runner's queue, the queue the step kernels run on")
+    if re.search(r"\(void\)SparkDeviceCopy\(", adapter):
         failures.append("the adapter discards a copy result")
     emits = re.findall(r"if \(([^\n]*)\)\s*\n\s*StageServingTapEmit\(", adapter)
     if not emits or any("SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u" not in guard for guard in emits):

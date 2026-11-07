@@ -53,7 +53,7 @@ class Frontend:
     def memory_count(self, model, text):
         return len(text) // 4
 
-    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix, start=""):
         self.asked.append(messages)
         return list(range(self.curator_tokens)), False
 

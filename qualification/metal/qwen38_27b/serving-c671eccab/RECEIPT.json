@@ -1,0 +1,55 @@
+{
+ "revision": "c671eccab",
+ "what": "Qwen 3.8 27B BF16 served on one Apple M5 Ultra through the common serving stack: sparkpipe_model_api, the pipeline client, sparkpipe_model_residentd and build/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib (the stage serving adapter, the device serving runner, the KV binding and copier on the device API, the Metal sampler)",
+ "host": {
+  "chip": "Apple M5 Ultra",
+  "memory_bytes": 274877906944,
+  "macos": "27.0.1 (26A434)",
+  "device": "metal.apple10"
+ },
+ "pack_sha256": "4ab7a71054721c64b4b4c28fb4cd5d08d017489d0d7901036d56110dc91ffbca",
+ "adapter_sha256": "79d2b897009bc8edd9af4b12974a8b4b390f557a7f61d255c2ac01ddda388443",
+ "build_sources": {
+  "files": 949,
+  "sha256_of_sha256s": "2c4fe2d548f28e258ab3cd9e954e8dc01aed4f91f170840a0b76e535ba002de6",
+  "equals": "git archive c671eccab"
+ },
+ "deployment": "model_resident.json",
+ "adapter_configuration": "adapter.json",
+ "prompts": "qualification/metal/qwen38_27b/gate_prompts.json",
+ "reference": {
+  "greedy.reference.json": "build/metal_stage_run --model qwen3.8-27b --mode greedy --new-tokens 24, each prompt prefilled in one step",
+  "greedy.reference_699_rows.json": "the same with --prefill-rows 699, the split the server uses for the 700-token prompt (699 rows, then the last)"
+ },
+ "tool": "tools/serving_greedy_check.py",
+ "runs": {
+  "serving_check.cold.json": "after clearing the KV backing and the snapshot store",
+  "serving_check.restart.json": "after restarting both processes with the snapshot store kept"
+ },
+ "results": {
+  "greedy": "design, code and rules equal the reference token for token, cold and after the restart. korean equals the reference run with the server's prefill split (699 rows, then the last), greedy.reference_699_rows.json. With one 700-row prefill the reference picks 220 at index 3, where the served run's logprobs are -0.8109 for 159301 and -0.8296 for 220: a tie of 0.019 nats that the split's rounding decides",
+  "prefix_resume_I27": "the prompt plus the reference's first 12 tokens, restored at the prompt's checkpoint (1099 of 1112, 1799 of 1812, 702 of 712, 2039 of 2052 tokens cached), continues with the reference's last 12 tokens for all four prompts",
+  "restart": "after both processes restart with the snapshot store kept, the four prompts resume from disk (1099, 1799, 699, 2039 tokens cached) with the same tokens as the cold run",
+  "sampling": "temperature 0.8, top_p 0.95, top_k 50: seed 7 twice gives identical tokens and seed 8 others",
+  "concurrency": "the four prompts sent at once each equal the same prompt sent alone; 2.296 s wall for 4 x 24 tokens"
+ },
+ "rates": {
+  "decode_one_sequence_tokens_per_second": 18.05,
+  "decode_ms_per_token": 55.4,
+  "prefill_1024_rows_warm_ms": 743,
+  "prefill_775_rows_at_context_1799_ms": 711,
+  "source": "batch_step lines of model_api.cold.log"
+ },
+ "not_covered": [
+  "sparkpipe_model_residentd and sparkpipe_model_api on Darwin still compile weightd and the module common against the host CUDA stub (PENDING_BUILD in tests/test_device_neutral.py); the adapter takes nothing from tests/",
+  "speculative decoding through the server, tensor parallel serving on Metal, and the chat layer in front of this API"
+ ],
+ "checks": {
+  "design_code_rules_equal_reference": true,
+  "korean_equals_split_reference": true,
+  "restart_equals_cold": true,
+  "resume_all_match": true,
+  "sampling": true,
+  "concurrent_equal_alone": true
+ }
+}

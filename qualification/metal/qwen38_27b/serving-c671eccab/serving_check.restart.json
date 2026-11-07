@@ -1,0 +1,285 @@
+{
+  "prompts": "qualification/metal/qwen38_27b/gate_prompts.json",
+  "reference": "/Users/m5u0/serve/q27/reference/greedy.metal.json",
+  "url": "http://127.0.0.1:8471",
+  "greedy": [
+    {
+      "name": "design",
+      "match": true,
+      "tokens": [
+        9,
+        256,
+        2972,
+        3026,
+        89583,
+        3554,
+        41187,
+        92217,
+        561,
+        2790,
+        311,
+        55135,
+        279,
+        11436,
+        56764,
+        6000,
+        430,
+        449,
+        10042,
+        1785,
+        11,
+        47781,
+        4687,
+        318
+      ],
+      "seconds": 2.238,
+      "usage": {
+        "prompt_tokens": 1100,
+        "completion_tokens": 24,
+        "total_tokens": 1124,
+        "prompt_tokens_details": {
+          "cached_tokens": 1099
+        }
+      }
+    },
+    {
+      "name": "code",
+      "match": true,
+      "tokens": [
+        13962,
+        68868,
+        314,
+        279,
+        52965,
+        11760,
+        271,
+        1919,
+        4108,
+        999,
+        18091,
+        264,
+        716,
+        314,
+        52965,
+        61369,
+        321,
+        12755,
+        5568,
+        5995,
+        364,
+        2972,
+        30851,
+        59930
+      ],
+      "seconds": 1.608,
+      "usage": {
+        "prompt_tokens": 1800,
+        "completion_tokens": 24,
+        "total_tokens": 1824,
+        "prompt_tokens_details": {
+          "cached_tokens": 1799
+        }
+      }
+    },
+    {
+      "name": "korean",
+      "match": false,
+      "tokens": [
+        65205,
+        32949,
+        16072,
+        159301,
+        18803,
+        182253,
+        159624,
+        186350,
+        14791,
+        150712,
+        169213,
+        17343,
+        152260,
+        149535,
+        191900,
+        210455,
+        79355,
+        220,
+        16,
+        30140,
+        180403,
+        190327,
+        37243,
+        154554
+      ],
+      "seconds": 1.572,
+      "usage": {
+        "prompt_tokens": 700,
+        "completion_tokens": 24,
+        "total_tokens": 724,
+        "prompt_tokens_details": {
+          "cached_tokens": 699
+        }
+      },
+      "first_difference": 3,
+      "served": 159301,
+      "reference": 220,
+      "served_logprob": -0.810884476,
+      "reference_logprob": -0.829641342
+    },
+    {
+      "name": "rules",
+      "match": true,
+      "tokens": [
+        27775,
+        383,
+        279,
+        3766,
+        14246,
+        5426,
+        11,
+        279,
+        1330,
+        303,
+        52778,
+        421,
+        4766,
+        1379,
+        364,
+        264,
+        2972,
+        902,
+        5404,
+        332,
+        513,
+        2972,
+        40,
+        15
+      ],
+      "seconds": 1.61,
+      "usage": {
+        "prompt_tokens": 2040,
+        "completion_tokens": 24,
+        "total_tokens": 2064,
+        "prompt_tokens_details": {
+          "cached_tokens": 2039
+        }
+      }
+    }
+  ],
+  "resume": [
+    {
+      "name": "design",
+      "match": true,
+      "prompt_tokens": 1112,
+      "cached_tokens": 1111,
+      "seconds": 0.835
+    },
+    {
+      "name": "code",
+      "match": true,
+      "prompt_tokens": 1812,
+      "cached_tokens": 1811,
+      "seconds": 0.84
+    },
+    {
+      "name": "korean",
+      "match": true,
+      "prompt_tokens": 712,
+      "cached_tokens": 711,
+      "seconds": 0.845
+    },
+    {
+      "name": "rules",
+      "match": true,
+      "prompt_tokens": 2052,
+      "cached_tokens": 2051,
+      "seconds": 0.838
+    }
+  ],
+  "sampling": {
+    "name": "design",
+    "rules": {
+      "temperature": 0.8,
+      "top_p": 0.95,
+      "top_k": 50
+    },
+    "same_seed_identical": true,
+    "other_seed_differs": true,
+    "seed_7": [
+      9,
+      256,
+      2972,
+      3026,
+      7049,
+      2319,
+      290,
+      36593,
+      92217,
+      561,
+      2790,
+      30697,
+      279,
+      42903,
+      6000,
+      430,
+      449,
+      10042,
+      1785,
+      310,
+      2534,
+      5365,
+      11436,
+      56040
+    ],
+    "seed_8": [
+      9,
+      256,
+      2972,
+      3026,
+      89583,
+      8288,
+      2319,
+      286,
+      92217,
+      561,
+      2790,
+      30697,
+      279,
+      42903,
+      5436,
+      430,
+      449,
+      10042,
+      1785,
+      440,
+      14733,
+      13732,
+      3742,
+      888
+    ]
+  },
+  "concurrent": {
+    "wall_seconds": 2.299,
+    "prompts": [
+      {
+        "name": "design",
+        "match_alone": true,
+        "seconds": 2.018
+      },
+      {
+        "name": "code",
+        "match_alone": true,
+        "seconds": 2.018
+      },
+      {
+        "name": "korean",
+        "match_alone": true,
+        "seconds": 2.076
+      },
+      {
+        "name": "rules",
+        "match_alone": true,
+        "seconds": 2.298
+      }
+    ]
+  }
+}

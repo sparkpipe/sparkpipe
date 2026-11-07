@@ -162,15 +162,21 @@ point: `C_N` is skipped and becomes a catch-up for the next curator.
   swap the fleet back). They run only while the conversation's model is
   active and ready and the controller is neither swapping nor draining; a
   swap request cancels them.
-- At most one background job per engine, admitted only when no foreground
-  request is active or queued, at a lower priority than foreground.
+- Background jobs run for up to `background_jobs` chats per engine at once
+  (default 1), never two for one chat. A chat's newer job replaces its queued
+  one and starts when the chat's running job ends. By default a job is
+  admitted only when no foreground request is active or queued; with
+  `background_with_foreground` it also runs beside foreground requests, at
+  the lower background priority, and a foreground request no longer cancels
+  it.
 - When the user's request arrives: if it extends an in-flight stem or
   pre-warm, it waits for that request's first token (the prefix is committed
   by then); otherwise the background request is cancelled by closing its
   stream. A cancelled curator becomes a catch-up.
 - Each pre-warm carries the branch's next-turn id and is dropped when stale.
-- With several users on one model, background work only fills idle time; it
-  never slows an answer.
+- With several users on one model and `background_with_foreground` off,
+  background work only fills idle time; it never slows an answer. With it
+  on, a build shares the engine with the answers it runs beside.
 
 ## Lines: pending, fallback, immutable
 

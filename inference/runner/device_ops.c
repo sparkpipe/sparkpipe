@@ -5,6 +5,10 @@
 #include <string.h>
 
 #include "inference/runner/device_ops.h"
+#include "sparkpipe/spark_sampling.h"
+
+_Static_assert(SPARK_SAMPLE_MAX_LOGPROBS == SPARK_SAMPLING_MAX_LOGPROBS && SPARK_SAMPLE_NO_TOKEN == SPARK_SAMPLING_NO_TOKEN &&
+	sizeof(SparkSampleLogprob) == sizeof(SparkSamplingLogprob),"the Metal sampler writes the sampling ABI's logprob rows");
 
 #define OPS_DECODE_PARTITION_KEYS 128u
 #define OPS_PREFILL_PARTITION_KEYS 1024u
@@ -136,7 +140,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_poly_norm_mul",
 	"spark_differential_gate",
 	"spark_hc_site_clamped",
-	"spark_route_combine_weighted_shared"
+	"spark_route_combine_weighted_shared",
+	"spark_sample_rows"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -2187,6 +2192,32 @@ SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkT
 	bindings[2] = OpsBind(result,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(argmax,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_LOGPROB,params->rows,1u,1u,1024u,params,sizeof(*params),bindings,4u));
+}
+
+SparkStatus SparkOpsSampleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor rows, SparkTensor tokens,
+	SparkTensor chosen_logits, SparkTensor logprobs, const SparkSampleParams *params)
+{
+	SparkDeviceBinding bindings[5];
+	SparkStatus status;
+	if ( params->rows == 0u || params->vocabulary == 0u || params->logit_rows == 0u || params->logit_stride < params->vocabulary )
+		return(OpsRefuse("sample","rows, logit rows and a logit stride that holds the vocabulary are required"));
+	status = OpsNeed("sample","logits",logits,OpsRowsBytes(params->logit_rows,params->logit_stride,params->vocabulary,4u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("sample","rows",rows,(uint64_t)params->rows * sizeof(SparkSampleRow));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("sample","tokens",tokens,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("sample","chosen logits",chosen_logits,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("sample","logprobs",logprobs,(uint64_t)params->rows * SPARK_SAMPLE_MAX_LOGPROBS * sizeof(SparkSampleLogprob));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(rows,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(tokens,SPARK_DEVICE_BIND_WRITE);
+	bindings[3] = OpsBind(chosen_logits,SPARK_DEVICE_BIND_WRITE);
+	bindings[4] = OpsBind(logprobs,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_SAMPLE_ROWS,params->rows,1u,1u,SPARK_SAMPLE_THREADS,params,sizeof(*params),bindings,5u));
 }
 
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups)

@@ -1,0 +1,520 @@
+model_residentd: kv_partition / free_bytes=169285464064 node_kv_ledger=/Users/m5u0/.sparkpipe-kv-ledger; the node's own KV on disk shares the ledger's quota (500000000000 bytes by default)
+qwen38_27b_stage adapter: rows=1024 shared_rows=1024 head_rows=64
+qwen38_27b_stage kv pool device bytes=4294983680 pages=1024 page_table_bytes=4096
+qwen38_27b_stage kv backing /Users/m5u0/serve/q27-root/kvcache bytes=4303355904 pages=1026 node_quota=500000000000 node_used=7260872704 snapshot_bytes=2957516800 backing_bytes=4303355904 status=ok
+qwen38_27b_stage kv capacity pages=1024/1024 tokens=65536 margin_bytes=0 event=attach resident_tokens=65536 chunks=0/0
+qwen38_27b_stage kv binding recurrent lane_bytes=154927104 state_slots=27 state_memory_bytes=4183031808 page_store_backing_bytes=4303355904 kept_states=newest 4 plus every 16384 tokens status=ok
+qwen38_27b_stage kv write meter: every spill, state and snapshot write is counted; KV-WRITE-ALERT above 21474836480 bytes in an hour
+qwen38_27b_stage kv node quota ledger=/Users/m5u0/.sparkpipe-kv-ledger quota_bytes=500000000000 used_bytes=7260872704 snapshot_bytes=2957516800 snapshot_stores=1 backing_bytes=4303355904 backing_stores=1
+qwen38_27b_stage kv snapshot store directory=/Users/m5u0/serve/q27-root/kvsnapshot node_quota_bytes=500000000000 queue_bytes=9915596800 file_bytes=154931200 used_bytes=2957516800 files=130 matching_files=130 foreign_layout_files=0 orphans=0 evicted_at_open=0 expired_at_open=0 expired_bytes_at_open=0 removed_temporaries=0 removed_legacy=0 driver=/Users/m5u0/serve/q27-root/lib/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib identity_us=2929 layout=9483dba989f00feba94a297dfe346efb0a6b71aa36966147ff0db53773f31007
+qwen38_27b_stage kv binding async completion_records=1 copy_on_write=device copy_queue=own restore=worker
+qwen38_27b_stage kv binding logical_pages=1280 physical_pages=1024 pages_per_sequence=256 page_bytes=4194304 regions=1 context_shard=0/1 layout=9483dba989f00feba94a297dfe346efb0a6b71aa36966147ff0db53773f31007
+model_residentd adapter_max_sequence_positions=16384
+model_residentd ready rank=0 stage=0 inflight=4 active=4 rows=1024 resident=4 adapter=qwen38_27b-bf16-tp1 model=Qwen/Qwen3.8-27B revision=qwen38_27b-bf16-tp1 tcp=127.0.0.1:23400
+FLUSH-TRACE fd=14 wrote=592 of 592 remaining=1
+SUBMIT-ARRIVED id=1000001 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000001 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000001 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000002 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000002 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000002 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000003 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000003 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000003 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000004 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000004 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000004 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000005 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000005 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000005 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000006 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000006 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000006 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000007 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000007 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000007 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000008 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000008 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000008 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000009 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000009 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000009 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000010 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000010 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000010 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000011 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000011 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000011 status=18 queued=2 output_count=1 fd=14
+FLUSH-TRACE fd=14 wrote=48 of 48 remaining=1
+SUBMIT-ARRIVED id=1000012 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000012 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-RESULT-TRACE id=1000012 status=18 queued=2 output_count=1 fd=14
+SUBMIT-ARRIVED id=1000013 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000013 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000014 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000014 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000015 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000015 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000016 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000016 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000017 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000017 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000018 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000018 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000019 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000019 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000020 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000020 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000021 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000021 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000022 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000022 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000023 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000023 kind=1 rows=1 lanes=1 last_id=0
+SUBMIT-ARRIVED id=1000024 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000024 kind=1 rows=1 lanes=1 last_id=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=1
+SUBMIT-ARRIVED id=1000025 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=1
+ERRSITE cache/kv_page_store.c:925 status=15 count=1
+DECISION id=1000025 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000029 bytes=400 decision=1
+DECISION id=1000029 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000030 bytes=400 decision=1
+DECISION id=1000030 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=2
+SUBMIT-ARRIVED id=1000031 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000031 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000032 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000032 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000033 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000033 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000034 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000034 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000035 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000035 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000036 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000036 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000037 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000037 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000038 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000038 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000039 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000039 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000040 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000040 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000041 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000041 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000042 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000042 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000043 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000043 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000044 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000044 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000045 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000045 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000046 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000046 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000047 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000047 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000048 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000048 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000049 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000049 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000050 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000050 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000051 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000051 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000052 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000052 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000053 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000053 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000054 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000054 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000055 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000055 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000056 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000056 kind=1 rows=1 lanes=1 last_id=1000030
+SUBMIT-ARRIVED id=1000057 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000057 kind=1 rows=1 lanes=1 last_id=1000030
+ERRSITE cache/kv_page_store.c:880 status=15 count=3
+SUBMIT-ARRIVED id=1000058 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=2
+ERRSITE cache/kv_page_store.c:925 status=15 count=2
+DECISION id=1000058 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000062 bytes=400 decision=1
+DECISION id=1000062 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000063 bytes=400 decision=1
+DECISION id=1000063 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=4
+SUBMIT-ARRIVED id=1000064 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000064 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000065 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000065 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000066 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000066 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000067 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000067 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000068 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000068 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000069 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000069 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000070 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000070 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000071 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000071 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000072 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000072 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000073 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000073 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000074 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000074 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000075 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000075 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000076 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000076 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000077 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000077 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000078 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000078 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000079 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000079 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000080 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000080 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000081 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000081 kind=1 rows=1 lanes=1 last_id=1000063
+SUBMIT-ARRIVED id=1000082 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:880 status=15 count=5
+ERRSITE cache/kv_page_store.c:911 status=15 count=3
+ERRSITE cache/kv_page_store.c:925 status=15 count=3
+DECISION id=1000082 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000084 bytes=400 decision=1
+DECISION id=1000084 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000089 bytes=400 decision=1
+DECISION id=1000089 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000090 bytes=400 decision=1
+DECISION id=1000090 decision=1 status=0 slot=0
+ERRSITE cache/kv_page_store.c:880 status=15 count=6
+SUBMIT-ARRIVED id=1000091 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000091 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000092 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000092 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000093 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000093 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000094 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000094 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000095 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000095 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000096 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000096 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000097 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000097 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000098 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000098 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000099 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000099 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000100 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000100 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000101 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000101 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000102 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000102 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000103 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000103 kind=1 rows=1 lanes=1 last_id=1000090
+SUBMIT-ARRIVED id=1000104 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000104 kind=1 rows=1 lanes=1 last_id=1000090
+ERRSITE cache/kv_page_store.c:880 status=15 count=7
+SUBMIT-ARRIVED id=1000105 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=4
+ERRSITE cache/kv_page_store.c:925 status=15 count=4
+DECISION id=1000105 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000106 bytes=400 decision=1
+DECISION id=1000106 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000107 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000107 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000108 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000108 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000109 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000109 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000110 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000110 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000111 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000111 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000112 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000112 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000113 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000113 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000114 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000114 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000115 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000115 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000116 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000116 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000117 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000117 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000118 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000118 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000119 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000119 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000120 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000120 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000121 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000121 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000122 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000122 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000123 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000123 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000124 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000124 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000125 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000125 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000126 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000126 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000127 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000127 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000128 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000128 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000129 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000129 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000130 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000130 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000131 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000131 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000132 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000132 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000133 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000133 kind=1 rows=1 lanes=1 last_id=1000106
+SUBMIT-ARRIVED id=1000134 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:880 status=15 count=8
+ERRSITE cache/kv_page_store.c:911 status=15 count=5
+ERRSITE cache/kv_page_store.c:925 status=15 count=5
+DECISION id=1000134 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000136 bytes=400 decision=1
+DECISION id=1000136 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000139 bytes=400 decision=1
+DECISION id=1000139 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000140 bytes=400 decision=1
+DECISION id=1000140 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000141 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000141 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000142 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000142 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000143 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000143 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000144 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000144 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000145 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000145 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000146 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000146 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000147 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000147 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000148 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000148 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000149 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000149 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000150 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000150 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000151 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000151 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000152 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000152 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000153 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000153 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000154 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000154 kind=1 rows=1 lanes=1 last_id=1000140
+SUBMIT-ARRIVED id=1000155 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=6
+ERRSITE cache/kv_page_store.c:925 status=15 count=6
+DECISION id=1000155 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000158 bytes=400 decision=1
+DECISION id=1000158 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000159 bytes=400 decision=1
+DECISION id=1000159 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000160 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000160 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000161 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000161 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000162 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000162 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000163 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000163 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000164 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000164 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000165 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000165 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000166 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000166 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000167 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000167 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000168 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000168 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000169 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000169 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000170 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000170 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000171 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000171 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000172 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000172 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000173 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000173 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000174 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000174 kind=1 rows=1 lanes=1 last_id=1000159
+SUBMIT-ARRIVED id=1000175 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=7
+ERRSITE cache/kv_page_store.c:925 status=15 count=7
+DECISION id=1000175 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000178 bytes=400 decision=1
+DECISION id=1000178 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000179 bytes=400 decision=1
+DECISION id=1000179 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000180 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000180 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000181 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000181 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000182 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000182 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000183 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000183 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000184 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000184 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000185 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000185 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000186 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000186 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000187 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000187 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000188 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000188 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000189 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000189 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000190 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000190 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000191 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000191 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000192 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000192 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000193 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000193 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000194 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000194 kind=1 rows=1 lanes=1 last_id=1000179
+SUBMIT-ARRIVED id=1000195 bytes=424 decision=1
+ERRSITE cache/kv_page_store.c:911 status=15 count=8
+ERRSITE cache/kv_page_store.c:925 status=15 count=8
+DECISION id=1000195 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000199 bytes=400 decision=1
+DECISION id=1000199 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000200 bytes=400 decision=1
+DECISION id=1000200 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000201 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000201 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000202 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000202 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000203 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000203 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000204 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000204 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000205 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000205 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000206 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000206 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000207 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000207 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000208 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000208 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000209 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000209 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000210 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000210 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000211 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000211 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000212 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000212 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000213 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000213 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000214 bytes=424 decision=1
+model_residentd submission_rejected status=18 id=1000214 kind=1 rows=1 lanes=1 last_id=1000200
+SUBMIT-ARRIVED id=1000215 bytes=424 decision=1
+DECISION id=1000215 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000218 bytes=400 decision=1
+DECISION id=1000218 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000219 bytes=400 decision=1
+DECISION id=1000219 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000220 bytes=424 decision=1
+DECISION id=1000220 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000224 bytes=400 decision=1
+DECISION id=1000224 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000225 bytes=400 decision=1
+DECISION id=1000225 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000226 bytes=424 decision=1
+DECISION id=1000226 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000230 bytes=400 decision=1
+DECISION id=1000230 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000231 bytes=400 decision=1
+DECISION id=1000231 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000232 bytes=424 decision=1
+DECISION id=1000232 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000236 bytes=400 decision=1
+DECISION id=1000236 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000237 bytes=400 decision=1
+DECISION id=1000237 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000238 bytes=424 decision=1
+SUBMIT-ARRIVED id=1000239 bytes=424 decision=1
+SUBMIT-ARRIVED id=1000240 bytes=424 decision=1
+SUBMIT-ARRIVED id=1000241 bytes=424 decision=1
+DECISION id=1000238 decision=1 status=0 slot=0
+DECISION id=1000239 decision=1 status=0 slot=1
+DECISION id=1000240 decision=1 status=0 slot=2
+DECISION id=1000241 decision=1 status=0 slot=3
+STAGE-WAVE-HOST tag=qwen38_27b_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=96.6 capture_ms=0.0 sync_ms=0.2 finish_ms=0.2
+SUBMIT-ARRIVED id=1000243 bytes=400 decision=1
+DECISION id=1000243 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000246 bytes=400 decision=1
+DECISION id=1000246 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000252 bytes=568 decision=1
+DECISION id=1000252 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000254 bytes=400 decision=1
+DECISION id=1000254 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000256 bytes=400 decision=1
+DECISION id=1000256 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000257 bytes=400 decision=1
+DECISION id=1000257 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000258 bytes=424 decision=1
+DECISION id=1000258 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000262 bytes=400 decision=1
+DECISION id=1000262 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000263 bytes=400 decision=1
+DECISION id=1000263 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000264 bytes=424 decision=1
+DECISION id=1000264 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000268 bytes=400 decision=1
+DECISION id=1000268 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000269 bytes=400 decision=1
+DECISION id=1000269 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000270 bytes=424 decision=1
+DECISION id=1000270 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000272 bytes=400 decision=1
+DECISION id=1000272 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000277 bytes=400 decision=1
+DECISION id=1000277 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000278 bytes=400 decision=1
+DECISION id=1000278 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000279 bytes=424 decision=1
+DECISION id=1000279 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000281 bytes=400 decision=1
+DECISION id=1000281 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000284 bytes=400 decision=1
+DECISION id=1000284 decision=1 status=0 slot=0
+SUBMIT-ARRIVED id=1000285 bytes=400 decision=1
+DECISION id=1000285 decision=1 status=0 slot=0

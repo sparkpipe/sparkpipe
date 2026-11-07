@@ -87,6 +87,7 @@ SparkStatus SparkDeviceBackendShutdown(void);
 
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation);
 SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *host);
+SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation);
 SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd, uint64_t offset);
 void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation);
 
@@ -96,6 +97,7 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 SparkStatus SparkDeviceBackendFill(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t offset, uint8_t value, uint64_t bytes);
 
 SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue);
+SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native);
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequence, uint64_t timeout_ns);
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue);

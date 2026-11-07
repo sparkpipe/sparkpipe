@@ -9,20 +9,35 @@
 #error "QWEN38_27B_CONTRACT_SHA256 must identify the model contract"
 #endif
 
-#if defined(QWEN38_27B_BF16)
-#define SPARK_QWEN38_27B_TP16_ADAPTER_ID "qwen38_27b-bf16-tp16"
-#define SPARK_QWEN38_27B_TP16_LINEAR_CODEC SPARK_WEIGHT_CODEC_BF16
+#if defined(QWEN38_27B_DEVICE_STAGE)
+#include "inference/runner/device_stage_model.h"
+#include "sparkpipe/spark_qwen38_device_stage.h"
+#define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "qwen38_27b-bf16-tp1"
+#define SPARK_QWEN38_27B_SERVING_LINEAR_CODEC SPARK_WEIGHT_CODEC_BF16
+#define SPARK_QWEN38_27B_SERVING_TP 1u
+#define SPARK_QWEN38_27B_SERVING_VERIFY_ROWS SPARK_DEVICE_STAGE_VERIFY_ROWS
+#define SPARK_QWEN38_27B_SERVING_RUNNER_MODEL SparkQwen38_27bDeviceStageModel
+#define SPARK_QWEN38_27B_SERVING_STAGE_LAYERS { SPARK_QWEN38_27B_SERVING_LAYERS }
 #else
-#define SPARK_QWEN38_27B_TP16_ADAPTER_ID "qwen38_27b-tp16"
-#define SPARK_QWEN38_27B_TP16_LINEAR_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3
+#if defined(QWEN38_27B_BF16)
+#define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "qwen38_27b-bf16-tp16"
+#define SPARK_QWEN38_27B_SERVING_LINEAR_CODEC SPARK_WEIGHT_CODEC_BF16
+#else
+#define SPARK_QWEN38_27B_SERVING_ADAPTER_ID "qwen38_27b-tp16"
+#define SPARK_QWEN38_27B_SERVING_LINEAR_CODEC SPARK_WEIGHT_CODEC_FP8_E4M3
 #endif
-#define SPARK_QWEN38_27B_TP16_MODEL_ID "Qwen/Qwen3.8-27B"
-#define SPARK_QWEN38_27B_TP16_MAX_ROWS 2048u
-#define SPARK_QWEN38_27B_TP16_LAYERS 64u
-#define SPARK_QWEN38_27B_TP16_KV_LAYERS 16u
-#define SPARK_QWEN38_27B_TP16_CHAIN_TOKENS 16u
-#define SPARK_QWEN38_27B_TP16_CHECKPOINT_TOKENS 16384u
-#define Q SPARK_QWEN38_27B_TP16_LAYERS
+#define SPARK_QWEN38_27B_SERVING_TP SPARK_QWEN38_27B_STAGE_TP_DEGREE
+#define SPARK_QWEN38_27B_SERVING_VERIFY_ROWS SPARK_QWEN38_27B_STAGE_VERIFY_ROWS
+#define SPARK_QWEN38_27B_SERVING_RUNNER_MODEL SparkQwen38_27bStageModel
+#define SPARK_QWEN38_27B_SERVING_STAGE_LAYERS { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q }
+#endif
+#define SPARK_QWEN38_27B_SERVING_MODEL_ID "Qwen/Qwen3.8-27B"
+#define SPARK_QWEN38_27B_SERVING_MAX_ROWS 2048u
+#define SPARK_QWEN38_27B_SERVING_LAYERS 64u
+#define SPARK_QWEN38_27B_SERVING_KV_LAYERS 16u
+#define SPARK_QWEN38_27B_SERVING_CHAIN_TOKENS 16u
+#define SPARK_QWEN38_27B_SERVING_CHECKPOINT_TOKENS 16384u
+#define Q SPARK_QWEN38_27B_SERVING_LAYERS
 
 static void Qwen38_27bServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -34,7 +49,7 @@ static void Qwen38_27bServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, Spar
 	kv->capacity_request.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	kv->capacity_request.descriptor_bytes = SPARK_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
 	kv->capacity_request.layout = SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
-	kv->capacity_request.layer_count = SPARK_QWEN38_27B_TP16_KV_LAYERS;
+	kv->capacity_request.layer_count = SPARK_QWEN38_27B_SERVING_KV_LAYERS;
 	kv->capacity_request.head_count = SPARK_QWEN38_27B_STAGE_KV_HEADS;
 	kv->capacity_request.query_key_head_dimension = SPARK_QWEN38_27B_STAGE_HEAD_DIM;
 	kv->capacity_request.value_head_dimension = SPARK_QWEN38_27B_STAGE_HEAD_DIM;
@@ -55,9 +70,9 @@ static uint32_t Qwen38_27bServingCollectiveSequences(uint32_t rows, uint32_t tp_
 static const SparkModelServingAdapterDescriptor Qwen38_27bServingDescriptor =
 {
 	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_QWEN38_27B_TP16_ADAPTER_ID,
-		SPARK_QWEN38_27B_TP16_MODEL_ID,
-		SPARK_QWEN38_27B_TP16_ADAPTER_ID,
+		SPARK_QWEN38_27B_SERVING_ADAPTER_ID,
+		SPARK_QWEN38_27B_SERVING_MODEL_ID,
+		SPARK_QWEN38_27B_SERVING_ADAPTER_ID,
 		"qwen38_27b",
 		QWEN38_27B_CONTRACT_SHA256),
 	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
@@ -70,26 +85,26 @@ static const SparkModelServingAdapterDescriptor Qwen38_27bServingDescriptor =
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = SPARK_QWEN38_27B_STAGE_TP_DEGREE,
-	.layer_count = SPARK_QWEN38_27B_TP16_LAYERS,
+	.stage_count = SPARK_QWEN38_27B_SERVING_TP,
+	.layer_count = SPARK_QWEN38_27B_SERVING_LAYERS,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_QWEN38_27B_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_QWEN38_27B_TP16_LINEAR_CODEC,
-	.expert_weight_codec = SPARK_QWEN38_27B_TP16_LINEAR_CODEC,
+	.linear_weight_codec = SPARK_QWEN38_27B_SERVING_LINEAR_CODEC,
+	.expert_weight_codec = SPARK_QWEN38_27B_SERVING_LINEAR_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = SPARK_QWEN38_27B_TP16_MAX_ROWS,
+	.max_input_row_count = SPARK_QWEN38_27B_SERVING_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_QWEN38_27B_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
-	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
+	.max_output_token_count = SPARK_QWEN38_27B_SERVING_CHAIN_TOKENS,
+	.max_speculative_token_count = SPARK_QWEN38_27B_SERVING_VERIFY_ROWS - 1u,
+	.stage_layer_counts = SPARK_QWEN38_27B_SERVING_STAGE_LAYERS,
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_QWEN38_27B_STAGE_PAGE_SLOTS,
 	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = SPARK_QWEN38_27B_TP16_CHECKPOINT_TOKENS,
-	.max_verify_row_count = SPARK_QWEN38_27B_STAGE_VERIFY_ROWS,
+	.cache_checkpoint_token_count = SPARK_QWEN38_27B_SERVING_CHECKPOINT_TOKENS,
+	.max_verify_row_count = SPARK_QWEN38_27B_SERVING_VERIFY_ROWS,
 };
 
 #undef Q
@@ -97,9 +112,9 @@ static const SparkModelServingAdapterDescriptor Qwen38_27bServingDescriptor =
 static const SparkStageServingModel Qwen38_27bStageServing =
 {
 	.descriptor = &Qwen38_27bServingDescriptor,
-	.runner_model = SparkQwen38_27bStageModel,
+	.runner_model = SPARK_QWEN38_27B_SERVING_RUNNER_MODEL,
 	.module_tag = "qwen38_27b_stage",
-	.tp_degree = SPARK_QWEN38_27B_STAGE_TP_DEGREE,
+	.tp_degree = SPARK_QWEN38_27B_SERVING_TP,
 	.program_id = 1u,
 	.kv_layout = Qwen38_27bServingKvLayout,
 	.collective_sequences = Qwen38_27bServingCollectiveSequences,
