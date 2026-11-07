@@ -1490,6 +1490,22 @@ and the multidev docs on 2026-09-28. Line numbers are in
   recomputed with the fixed tool (h now also carries the GPU accumulation
   error) and Metal's HY4 logits are re-judged against them. CUDA's HY4 has no
   reference-floor gate yet (its entry under Production qualification).
+- Prefill attention follows FlashAttention-2's plain forward on Metal and
+  in most references, not yet on CUDA (2026-11-07). FA2 walks a row's
+  64-key tiles from the diagonal back to the first key and never splits
+  the keys. CUDA's prefill kernels all walk forward: `LmGqaShardTiledKernel`
+  (64-key tiles to head size 192, 32 above; Solar, Gemma 4, K-EXAONE,
+  Laguna, Muse, MiMo, Qwen 3.8, K3), `LmLatentShardPrefillKernel` and
+  `LmLatentAttentionPrefillKernel` (32), `LmAttentionBlockPartialKernel`
+  (64, K3 streamed) and `LmExpandedGatherPrefillKernel` (16), and under
+  tensor parallelism each rank walks its own strided share of the keys
+  (`SparkKvShardLocalPosition`) before the merge. Closing it needs the
+  shared walk (`SparkMathFlashTiles`, `SparkMathFlashTile`) on whole rows
+  of keys, the PTX changes qualified on the fleet, and the CUDA gates
+  against references with the tiled walk. The references with attention
+  sinks or sparse selection (MiMo, HY4, DeepSeek V4.1, A.X K2) and the Qwen
+  3.8 27B C reference still take one maximum per row; each takes the walk
+  at its next gate, after checking which kernel its publisher runs.
 - GLM 5.3 Flash's Metal gate passed on a hand-written prompt format, not the
   publisher's (2026-11-07). Its gate prompts are assembled from
   `model-families/glm5_next/chat_template.json` (a newline after each role
