@@ -156,10 +156,10 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 }
 
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer,
-	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+	uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue)
 {
 	(void)runner;
-	(void)stream;
+	(void)queue;
 	if ( slot >= TEST_K3_STUB_SLOTS || bytes != test_recurrent_bytes || buffer == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( test_recurrent_status != SPARK_STATUS_OK )

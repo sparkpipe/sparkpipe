@@ -2926,15 +2926,15 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 	return state->model_interface->check != 0 ? state->model_interface->check(state->model) : SPARK_STATUS_OK;
 }
 
-SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue)
 {
 	SparkStageRunnerState *state;
 	if ( runner == 0 || runner->private_state == 0 || buffer == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->model_interface->recurrent_copy == 0 || bytes != state->geometry.recurrent_bytes )
+	if ( state->model_interface->recurrent_copy == 0 || bytes != state->geometry.recurrent_bytes || (queue != 0 && queue != state->queue) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return state->model_interface->recurrent_copy(state->model, to_buffer, slot, buffer, bytes, stream);
+	return state->model_interface->recurrent_copy(state->model, to_buffer, slot, buffer, bytes, queue != 0 ? (void *)state->stream : 0);
 }
 
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes)

@@ -205,7 +205,7 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);
 uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner);
-SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);
 void *SparkStageRunnerModel(const SparkStageRunner *runner);

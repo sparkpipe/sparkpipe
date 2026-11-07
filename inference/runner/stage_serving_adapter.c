@@ -844,7 +844,7 @@ static SparkStatus StageServingRecurrentCopy(void *context, uint32_t direction,
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return SparkStageRunnerRecurrentCopy(&state->runner,
 		direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER ? 1u : 0u,
-		slot, buffer, bytes, queue != 0 ? state->runner_config.execution_stream : 0);
+		slot, buffer, bytes, queue);
 }
 
 static SparkStatus StageServingDriverAdmit(void *driver_instance,
