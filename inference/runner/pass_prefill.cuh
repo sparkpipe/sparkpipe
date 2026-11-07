@@ -12,6 +12,7 @@
 
 #include "runtime/launch.h"
 #include "inference/kernels/dtype.cuh"
+#include "sparkpipe/spark_huge_pages.h"
 #include "sparkpipe/spark_pack_window.h"
 #include "sparkpipe/spark_pass_plan.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -541,6 +542,17 @@ static SparkStatus LmPassGather(void *context, const void *mine, void *all, uint
 	return SPARK_STATUS_OK;
 }
 
+static int LmPassOnHugePages(const LmPass *p, const void *region, uint64_t bytes, const char *name)
+{
+	const uint64_t held = SparkHugePageBytes(region, bytes);
+	fprintf(stderr, "%s: the %llu-byte streamed %s holds %llu bytes of huge pages\n", p->tag, (unsigned long long)bytes, name, (unsigned long long)held);
+	if ( held * 2u >= bytes )
+		return 1;
+	fprintf(stderr, "%s: the streamed %s got only %llu of %llu bytes on huge pages, and streaming on 4 KB pages is slower through the IOMMU; free memory on this node is too fragmented\n",
+		p->tag, name, (unsigned long long)held, (unsigned long long)bytes);
+	return 0;
+}
+
 static void LmPassDestroy(LmPass *p)
 {
 	uint32_t index;
@@ -740,6 +752,12 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 			free(p->region);
 			p->region = 0;
 		}
+		LmPassDestroy(p);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	if ( LmPassOnHugePages(p, p->region, p->region_bytes, "weight window") == 0 ||
+		(p->rows_region != 0 && LmPassOnHugePages(p, p->rows_region, p->rows_region_bytes, "row exchange region") == 0) )
+	{
 		LmPassDestroy(p);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
