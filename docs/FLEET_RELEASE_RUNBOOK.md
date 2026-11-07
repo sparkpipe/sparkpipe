@@ -524,6 +524,20 @@ To bootstrap one node:
   unlimited`, `:3`). Get a backtrace with `sudo -n gdb -p PID -batch -ex bt`.
   The engine runs with `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` (`:195`), because
   the in-process GPU dump wedged engines past TERM on 09-18.
+- **Mail `SparkPipe: <node> dead`.** The Mac telemetry collector got no fresh
+  sample from that node for 5 minutes: ssh failed, or the node's monitor
+  stopped. It mails once per death and nothing on recovery, and nodes that die
+  together share one mail. A node already failing when the collector first
+  sees it mails nothing.
+  - It covers the 19 dashboard nodes, not the hub. It runs on the Mac and sends
+    through the hub, so a dead Mac sends nothing, and a dead hub holds the mail
+    (retried each minute) only while the node stays dead.
+  - Code: `tools/telemetry/spark_telemetry_alert.py`, with the sender in
+    `spark_telemetry_mail.py`. State:
+    `~/.local/share/ds4_telemetry/alert_state.json` on the Mac. The recipient
+    (`telemetry-alert-to`) and the SMTP password are in
+    `/srv/workspace/sparkpipe/secrets/` on the hub. Deploy with
+    `tools/telemetry/install.sh hub` and `tools/telemetry/install.sh mac`.
 - **Logs.** The engine logs to `~/sparkdata/<root>/residentd.log`, rotated at
   each start with 20 kept (`:473-477`). weightd logs to `~/weightd.log`. Each
   model's API logs to `/srv/workspace/sparkpipe/logs/<model>-kv-api.log` on the
