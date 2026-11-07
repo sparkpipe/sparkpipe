@@ -280,8 +280,9 @@ def per_answer(tallies):
 
 
 def stats(rows):
+    setups = [row[SETUP[row["arm"]] + "_seconds"] for row in rows if row["arm"] in SETUP and not row.get(SETUP[row["arm"]] + "_reused", True)]
     result = dict(timing(rows), accuracy=round(sum(row["correct"] for row in rows) / len(rows), 4), missed=sorted(row["id"] for row in rows if not row["correct"]),
-                  setup_seconds=round(sum(row.get("import_seconds", 0.0) + row.get("compact_seconds", 0.0) for row in rows), 1))
+                  setup_seconds_per_history=round(statistics.mean(setups), 1) if setups else None)
     for name, field in (("setup_jobs_per_history", "setup_jobs"), ("jobs_after_each_answer", "after_jobs")):
         found = per_answer([row[field] for row in rows if row.get(field)])
         if found:

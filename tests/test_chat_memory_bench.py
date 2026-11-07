@@ -135,6 +135,10 @@ async def run(tmp, check):
         bench.main(argv + ["--summarize", "--chat-log", str(log)])
         report = json.loads((out / "summary.json").read_text())
         memory_arm, compaction_arm = report["arms"]["memory"], report["arms"]["compaction"]
+        setups = {arm: round(sum(r[bench.SETUP[arm] + "_seconds"] for r in firsts if r["arm"] == arm) / 2, 1) for arm in bench.SETUP}
+        check(all(report["arms"][arm]["all"]["setup_seconds_per_history"] == setups[arm] for arm in bench.SETUP)
+              and report["arms"]["full"]["all"]["setup_seconds_per_history"] is None,
+              f"each arm's setup time is the mean over the histories it prepared: {[report['arms'][arm]['all']['setup_seconds_per_history'] for arm in report['arms']]} {setups}")
         check("prewarm" in (memory_arm["all"].get("setup_jobs_per_history") or {}),
               f"the summary joins the import's jobs to the history's first answer: {memory_arm['all'].get('setup_jobs_per_history')}")
         check("compact" in (compaction_arm["all"].get("setup_jobs_per_history") or {}),
