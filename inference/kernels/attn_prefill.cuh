@@ -22,7 +22,7 @@ static __host__ __device__ constexpr uint32_t LmPrefillAttnSharedBytes(void)
 	return(LM_PREFILL_ATTN_QUERIES * DIM * 2u
 		+ 2u * LM_PREFILL_ATTN_TILE * DIM * 2u
 		+ 2u * LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE * 4u
-		+ 2u * LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
+		+ LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE * 2u
 		+ 3u * LM_PREFILL_ATTN_QUERIES * 4u
 		+ 2u * LM_PREFILL_ATTN_TILE * 8u);
 }
@@ -30,6 +30,11 @@ static __host__ __device__ constexpr uint32_t LmPrefillAttnSharedBytes(void)
 static __device__ __forceinline__ uint32_t LmPrefillSwizzle(uint32_t row, uint32_t chunk)
 {
 	return(chunk ^ (row & 7u));
+}
+
+static __device__ __forceinline__ uint32_t LmPrefillMin(uint32_t a, uint32_t b)
+{
+	return(a < b ? a : b);
 }
 
 static __device__ __forceinline__ void LmPrefillLoadX4(uint32_t address, uint32_t r[4])
@@ -100,7 +105,7 @@ void LmPrefillSparseUnionKernel(
 		return;
 	}
 	first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : table * ROWS_PER_BLOCK;
-	row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
+	row_end = block_table != 0 ? LmPrefillMin(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
 	rows_here = row_end > first_row ? row_end - first_row : 0u;
 	if (threadIdx.x < ROWS_PER_BLOCK)
 		length[threadIdx.x] = threadIdx.x < rows_here
@@ -196,8 +201,7 @@ void LmLatentAttentionPrefillKernel(
 	uint8_t *keys = query + LM_PREFILL_ATTN_QUERIES * ROW_BYTES;
 	float *score_parts = (float *)(keys + 2u * LM_PREFILL_ATTN_TILE * ROW_BYTES);
 	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_SCORE_STRIDE);
-	uint16_t *weight_low = weight_high + LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE;
-	float *running_max = (float *)(weight_low + LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
+	float *running_max = (float *)(weight_high + LM_PREFILL_ATTN_QUERIES * LM_PREFILL_ATTN_WEIGHT_STRIDE);
 	float *running_sum = running_max + LM_PREFILL_ATTN_QUERIES;
 	float *rescale = running_sum + LM_PREFILL_ATTN_QUERIES;
 	const uint8_t **slots = (const uint8_t **)(rescale + LM_PREFILL_ATTN_QUERIES);
@@ -207,7 +211,7 @@ void LmLatentAttentionPrefillKernel(
 	const uint32_t *tile_positions = SPARSE ? union_positions + (uint64_t)table * union_capacity : 0;
 	const uint8_t *tile_masks = SPARSE ? union_masks + (uint64_t)table * union_capacity : 0;
 	const uint32_t first_row = block_table != 0 ? (entry & LM_PREFILL_ATTN_ROW_MASK) : (gridDim.x - 1u - blockIdx.x) * ROWS_PER_BLOCK;
-	const uint32_t row_end = block_table != 0 ? min(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : min(rows, first_row + ROWS_PER_BLOCK);
+	const uint32_t row_end = block_table != 0 ? LmPrefillMin(rows, first_row + (entry >> LM_PREFILL_ATTN_COUNT_SHIFT)) : LmPrefillMin(rows, first_row + ROWS_PER_BLOCK);
 	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query);
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
 	float output[COLUMN_FRAGS][4];
@@ -329,7 +333,6 @@ void LmLatentAttentionPrefillKernel(
 				total += __shfl_xor_sync(0xffffffffu, total, index);
 			high = LmFloatToBf16(weight);
 			weight_high[q * LM_PREFILL_ATTN_WEIGHT_STRIDE + lane] = high;
-			weight_low[q * LM_PREFILL_ATTN_WEIGHT_STRIDE + lane] = LmFloatToBf16(weight - LmBf16ToFloat(high));
 			__syncwarp();
 			if (lane == 0u)
 			{
@@ -342,7 +345,7 @@ void LmLatentAttentionPrefillKernel(
 		{
 			const uint32_t matrix = lane >> 3u,within = lane & 7u;
 			const float low_scale = rescale[lane >> 2u],high_scale = rescale[(lane >> 2u) + 8u];
-			uint32_t a_high[4],a_low[4],b[4];
+			uint32_t a_high[4],b[4];
 			for (frag = 0u; frag < COLUMN_FRAGS; frag++)
 			{
 				output[frag][0] *= low_scale;
@@ -354,7 +357,6 @@ void LmLatentAttentionPrefillKernel(
 			{
 				const uint32_t a_row = (matrix & 1u) * 8u + within,a_column = step * 16u + (matrix >> 1u) * 8u;
 				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high);
-				LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_low + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_low);
 				for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
 				{
 					const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
@@ -364,9 +366,7 @@ void LmLatentAttentionPrefillKernel(
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
 					LmMmaBf16(output[frag], a_high, first);
-					LmMmaBf16(output[frag], a_low, first);
 					LmMmaBf16(output[frag + 1u], a_high, second);
-					LmMmaBf16(output[frag + 1u], a_low, second);
 				}
 			}
 		}

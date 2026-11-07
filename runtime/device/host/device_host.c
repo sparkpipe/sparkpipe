@@ -247,7 +247,7 @@ void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation)
 	allocation->backend = 0;
 }
 
-static void HostRun(HostOperation *operation)
+static void HostRun(HostQueue *queue, HostOperation *operation)
 {
 	if ( operation->kind == HOST_OPERATION_COPY )
 		memcpy(operation->destination,operation->source,(size_t)operation->bytes);
@@ -257,6 +257,10 @@ static void HostRun(HostOperation *operation)
 		operation->function(operation->context);
 	else if ( operation->kind == HOST_OPERATION_RECORD )
 	{
+		pthread_mutex_lock(&queue->mutex);
+		queue->completed = operation->sequence;
+		pthread_cond_broadcast(&queue->progress);
+		pthread_mutex_unlock(&queue->mutex);
 		pthread_mutex_lock(&operation->event->mutex);
 		if ( operation->event->completed < operation->generation )
 		{
@@ -291,7 +295,7 @@ static void *HostWorker(void *argument)
 		if ( queue->head == 0 )
 			queue->tail = 0;
 		pthread_mutex_unlock(&queue->mutex);
-		HostRun(operation);
+		HostRun(queue,operation);
 		pthread_mutex_lock(&queue->mutex);
 		queue->completed = operation->sequence;
 		pthread_cond_broadcast(&queue->progress);

@@ -58,7 +58,7 @@ template __global__ void LmCausalConvKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_C
 template __global__ void LmL2NormalisePerHeadKernel<K3_THREADS, K3_KDA_KEY_DIM>(uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmBoundedDecayKernel<K3_THREADS, K3_KDA_KEY_DIM>(const uint16_t *, const float *, const float *, float *, uint32_t, float, uint32_t);
 template __global__ void LmOutputGateKernel<K3_THREADS>(uint16_t *, const uint16_t *, uint32_t);
-template __global__ void LmSituMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, float, float);
+template __global__ void LmSituMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint64_t, float, float, uint32_t);
 template __global__ void LmKvStoreKernel<K3GlobalKv, K3_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<K3_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
@@ -68,7 +68,7 @@ template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_L
 template __global__ void LmAttentionDecodeRangeKernel<K3GlobalKv, K3_ATTN_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float, const uint32_t *, uint32_t, uint32_t, float *, float *, float *);
 template __global__ void LmAttentionRangeMergeKernel<K3_ATTN_THREADS, K3_KV_LORA_RANK>(const float *, const float *, const float *, uint32_t, uint16_t *, uint32_t);
 template __global__ void LmSpecVerifyKernel<32u, 7u>(const uint32_t *, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *);
-template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
+template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float, uint32_t *);
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 

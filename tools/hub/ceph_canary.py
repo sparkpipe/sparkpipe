@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -12,6 +13,7 @@ from pathlib import Path
 
 MARKER = "ceph_canary_probe"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+CLIENT_ADDRESS = re.compile(r"(\d+\.\d+\.\d+\.\d+:\d+/\d+)")
 PROBE = r'''
 import json, mmap, os, sys, time
 root, subdir, host, size, mounts = sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]), sys.argv[6]
@@ -72,6 +74,19 @@ except Exception as error:
 '''
 
 
+def json_values(text):
+    decoder = json.JSONDecoder()
+    values = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            return values
+        value, index = decoder.raw_decode(text, index)
+        values.append(value)
+
+
 def now_utc():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
@@ -80,7 +95,8 @@ class Canary:
     def __init__(self, config):
         for key in ("hosts", "local_host", "ssh", "root", "subdir", "mounts", "size_bytes", "interval_seconds", "probe_seconds",
                     "slow_seconds", "rounds_to_alert", "health_hosts", "health_command", "health_seconds", "ignore_checks",
-                    "entity_checks", "state_file", "event_log"):
+                    "entity_checks", "client_hosts", "sessions_command", "blocklist_command", "kernel_patterns",
+                    "state_file", "event_log"):
             if key not in config:
                 raise SystemExit(f"ceph_canary: the config needs {key}")
         self.hosts = list(config["hosts"])
@@ -103,6 +119,16 @@ class Canary:
         self.health_seconds = float(config["health_seconds"])
         self.ignore = {name: set(messages) for name, messages in config["ignore_checks"].items()}
         self.entity = set(config["entity_checks"])
+        self.client_hosts = list(config["client_hosts"])
+        if set(self.client_hosts) & set(self.hosts):
+            raise SystemExit("ceph_canary: a host is either probed with I/O (hosts) or checked passively (client_hosts), not both")
+        self.sessions_command = config["sessions_command"]
+        self.blocklist_command = config["blocklist_command"]
+        if any("\\d" in pattern or "(?" in pattern for pattern in config["kernel_patterns"]):
+            raise SystemExit("ceph_canary: kernel_patterns are POSIX extended regular expressions for grep -E: use [0-9], not \\d or (?...)")
+        self.kernel_pattern = "|".join(f"({pattern})" for pattern in config["kernel_patterns"])
+        re.compile(self.kernel_pattern)
+        self.client_addresses = {}
         self.state_file = Path(config["state_file"])
         self.event_log = Path(config["event_log"])
         self.streak = {}
@@ -196,6 +222,68 @@ class Canary:
             problems[f"host:{host}:{result['status']}"] = f"{host}: {result['status']}: {result['detail']}"
         return host, result, problems
 
+    def client_command(self):
+        lookback = int((self.rounds + 1) * self.interval)
+        return (f"printf 'mount=%s\\n' \"$(awk -v m={shlex.quote(self.root)} '$2 == m {{print $3; exit}}' /proc/mounts)\"; "
+                f"journalctl -k --since -{lookback}s -o short-iso --no-pager 2>/dev/null | grep -E {shlex.quote(self.kernel_pattern)} | tail -3 | sed 's/^/log=/'")
+
+    async def client(self, host):
+        code, lines = await self.capture(self.argv(host, self.client_command()), self.probe_seconds)
+        if code is None:
+            return host, {"status": "hang"}, {f"client:{host}:hang": f"{host}: no answer within {self.probe_seconds:g} s to a read of /proc/mounts and the kernel log"}
+        mounts = [line[len("mount="):] for line in lines if line.startswith("mount=")]
+        if not mounts:
+            detail = " | ".join(lines)[-200:] or "no output"
+            return host, {"status": "unreachable"}, {f"client:{host}:unreachable": f"{host}: unreachable: exit {code}: {detail}"}
+        kernel = [line[len("log="):] for line in lines if line.startswith("log=")]
+        problems = {}
+        if mounts[0] != "ceph":
+            problems[f"client:{host}:mount"] = f"{host}: {self.root} is {'a ' + mounts[0] + ' mount' if mounts[0] else 'not mounted'}, not ceph"
+        if kernel:
+            problems[f"client:{host}:kernel"] = f"{host}: kernel: {kernel[-1][:240]}"
+        return host, {"status": "problem" if problems else "ok", "mount": mounts[0], "kernel": kernel}, problems
+
+    def session_problems(self, sessions, blocklist):
+        by_host = {}
+        for session in sessions:
+            host = (session.get("client_metadata") or {}).get("hostname")
+            by_host.setdefault(host, []).append(session.get("state"))
+            match = CLIENT_ADDRESS.search(str(session.get("inst", "")))
+            if match and session.get("state") == "open":
+                self.client_addresses[host] = match.group(1)
+        blocked = {match.group(1) for entry in blocklist if isinstance(entry, dict) and (match := CLIENT_ADDRESS.search(str(entry.get("addr", ""))))}
+        problems = {}
+        for host in self.hosts + self.client_hosts:
+            states = by_host.get(host, [])
+            if not states:
+                problems[f"client:{host}:session"] = f"{host}: no CephFS session at the MDS; the mount is gone or the client was evicted"
+            elif "open" not in states:
+                problems[f"client:{host}:session"] = f"{host}: CephFS session is {', '.join(sorted(set(map(str, states))))}"
+            address = self.client_addresses.get(host)
+            if address in blocked:
+                problems[f"client:{host}:blocklisted"] = f"{host}: its CephFS client {address} is on the OSD blocklist (evicted)"
+        return {"sessions": len(sessions), "blocklisted": len(blocked)}, problems
+
+    async def sessions(self):
+        failures = []
+        for host in self.health_hosts:
+            code, lines = await self.capture(self.argv(host, f"{self.sessions_command} 2>/dev/null; echo; echo @@; {self.blocklist_command} 2>/dev/null"),
+                                             self.health_seconds)
+            text = "\n".join(lines)
+            if code is not None and "@@" in lines:
+                cut = lines.index("@@")
+                try:
+                    sessions = json.loads("\n".join(lines[:cut]))
+                    blocklist = [entry for value in json_values("\n".join(lines[cut + 1:])) for entry in (value if isinstance(value, list) else [value])]
+                except json.JSONDecodeError:
+                    failures.append(f"{host} printed no JSON")
+                    continue
+                if isinstance(sessions, list):
+                    summary, problems = self.session_problems(sessions, blocklist)
+                    return dict(summary, **{"from": host}), problems
+            failures.append(f"{host} {'timed out' if code is None else f'exit {code}'}: {text[-120:]}")
+        return {"sessions": None, "from": None}, {"cluster:sessions_unavailable": "MDS session list unavailable: " + "; ".join(failures)}
+
     def health_problems(self, document):
         problems = {}
         ignored = []
@@ -253,18 +341,23 @@ class Canary:
     async def tick(self):
         self.round += 1
         started = time.time()
-        outcomes = await asyncio.gather(*(self.probe(host) for host in self.hosts), self.health())
-        cluster, health_problems = outcomes[-1]
+        probes = len(self.hosts)
+        outcomes = await asyncio.gather(*(self.probe(host) for host in self.hosts), *(self.client(host) for host in self.client_hosts),
+                                        self.health(), self.sessions())
+        (cluster, health_problems), (sessions, session_problems) = outcomes[-2], outcomes[-1]
+        cluster["sessions"] = sessions
         seen = dict(health_problems)
+        seen.update(session_problems)
         hosts = {}
-        for host, result, problems in outcomes[:-1]:
-            hosts[host] = result
+        clients = {}
+        for index, (host, result, problems) in enumerate(outcomes[:-2]):
+            (hosts if index < probes else clients)[host] = result
             seen.update(problems)
         self.advance(seen)
         state = {"utc": now_utc(), "epoch": time.time(), "round": self.round, "round_seconds": round(time.time() - started, 1),
                  "interval_seconds": self.interval, "rounds_to_alert": self.rounds, "ok": not self.active,
                  "active": self.active, "pending": {key: self.streak[key] for key in seen if key not in self.active},
-                 "hosts": hosts, "cluster": cluster}
+                 "hosts": hosts, "clients": clients, "cluster": cluster}
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.state_file.with_name(self.state_file.name + ".tmp")
         temporary.write_text(json.dumps(state, indent=1) + "\n")
@@ -272,11 +365,12 @@ class Canary:
         if time.time() - self.summary_at >= 3600:
             self.summary_at = time.time()
             self.record({"event": "summary", "ok": not self.active, "active": sorted(self.active),
-                         "hosts_ok": sum(1 for result in hosts.values() if result["status"] == "ok"), "hosts": len(hosts)})
+                         "hosts_ok": sum(1 for result in hosts.values() if result["status"] == "ok"), "hosts": len(hosts),
+                         "clients_ok": sum(1 for result in clients.values() if result["status"] == "ok"), "clients": len(clients)})
         return state
 
     async def run(self, rounds=None):
-        self.record({"event": "start", "hosts": self.hosts, "interval_seconds": self.interval})
+        self.record({"event": "start", "hosts": self.hosts, "client_hosts": self.client_hosts, "interval_seconds": self.interval})
         while rounds is None or self.round < rounds:
             began = time.monotonic()
             await self.tick()

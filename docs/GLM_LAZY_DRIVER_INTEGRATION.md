@@ -38,8 +38,10 @@ The fast paths depend on it:
 Memory cost: one expert's rank-local slice is about 1.573 MB at TP16 (see
 "Batch roofline" in [GLM5_NEXT_ROOFLINE.md](GLM5_NEXT_ROOFLINE.md)). The pinned
 inventory is therefore about 19.0 GB per rank (arithmetic: 12096 × 1.573 MB).
-That fits the agent's default pool, `G5_EXPERT_POOL_BYTES` = 34359738368 bytes
-(32 GiB), which the agent passes as `SPARK_WEIGHTD_EXPERT_POOL_BYTES`.
+That fits the pool weightd sizes from the pack without a cap: the whole arena
+in one allocation (Pool sizing in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)).
+The agent passes `SPARK_WEIGHTD_EXPERT_POOL_BYTES` only when
+`G5_EXPERT_POOL_CAP_BYTES` names a cap.
 
 This is a deviation from the contract. I29 ("Expert residency is bounded")
 expects a working set loaded within a budget, with unowned data reclaimed.
@@ -87,7 +89,7 @@ The lazy settings are:
 | --- | --- |
 | `SPARK_WEIGHTD_SOCKET` | Required. Without it `SparkWeightdAttachRequested` returns `BUSY`, which the module reports as `UNSUPPORTED` (`c67be23`). |
 | `SPARK_WEIGHTD_PACK_SHA256` | Required, the pack's 64-character SHA-256 digest. |
-| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | Required, a positive byte count. |
+| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | Optional, the explicit expert pool cap: a positive whole number of 2 MiB chunks no larger than the pack's exact pool. Unset, the pool is sized from `PACK.experts`. |
 | `SPARK_WEIGHTD_SPINE_BUDGET_BYTES` | Optional. Defaults to 8 GiB. |
 | `SPARK_WEIGHTD_ATTACH` | `0` with a socket fails with `INVALID_ARGUMENT`. `1` without a socket fails the same way. |
 

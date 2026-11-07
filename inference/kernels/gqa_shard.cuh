@@ -105,7 +105,9 @@ void LmGqaShardPartialKernel(
 	for (index = 0u; index < VALUES; ++index)
 		accumulator[index] = 0.0f;
 	count = SparkKvShardLocalKeys(cache.shard,limit);
-	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u; local < count; ++local)
+	count = count < LmKvKeyWindowEnd(cache) ? count : LmKvKeyWindowEnd(cache);
+	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u, local = local > LmKvKeyWindowBegin(cache) ? local : LmKvKeyWindowBegin(cache);
+		local < count; ++local)
 	{
 		position = SparkKvShardLocalPosition(cache.shard,local);
 		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
@@ -169,7 +171,7 @@ static __host__ __device__ constexpr uint32_t LmGqaShardTiledValuePart(void)
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static __host__ __device__ constexpr bool LmGqaShardTiledFits(void)
 {
-	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 256u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
+	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 512u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -200,7 +202,9 @@ void LmGqaShardTiledKernel(
 	constexpr uint32_t KEY_BYTES = HEAD_DIM * 2u, VALUE_BYTES = PART * 2u;
 	constexpr uint32_t KEY_CHUNKS = HEAD_DIM / 8u, VALUE_CHUNKS = PART / 8u;
 	constexpr uint32_t K_STEPS = HEAD_DIM / 16u, KEY_FRAGS = TILE / 8u, P_STEPS = TILE / 16u, VALUE_FRAGS = PART / 8u;
-	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds its 16 queries, a score tile and the accumulators of one value part in registers");
+	constexpr bool QUERY_RESIDENT = K_STEPS <= 16u;
+	constexpr uint32_t QUERY_STEPS = QUERY_RESIDENT ? K_STEPS : 1u;
+	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds a score tile and the accumulators of one value part in registers, and its 16 queries when they are at most 256 wide");
 	static_assert(Geometry::kSlotBytes == KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u,
 		"a slot is [K: kv heads x head_dim][V: kv heads x value_dim] bf16 and nothing else");
 	static_assert(LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the key and value tiles exceed the shared memory an SM has");
@@ -218,8 +222,9 @@ void LmGqaShardTiledKernel(
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys), value_base = (uint32_t)__cvta_generic_to_shared(values);
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,degree), slot_count = LmGqaShardHeadSlots(heads,VALUE_DIM,degree);
 	const uint32_t record = width + 2u * slot_count;
-	uint32_t query[K_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
+	uint32_t query[QUERY_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
 	float output[VALUE_FRAGS][4], running_max[2] = { -INFINITY, -INFINITY }, running_sum[2] = { 0.0f, 0.0f };
+	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	bool valid[2], member[2];
 
 	if ( block_first >= vectors )
@@ -232,15 +237,19 @@ void LmGqaShardTiledKernel(
 		head[side] = kv_head * group + (valid[side] ? vector[side] % group : 0u);
 		limit[side] = count[side] = begin[side] = 0u;
 	}
-	#pragma unroll
-	for (step = 0u; step < K_STEPS; ++step)
+	auto query_fragment = [&](uint32_t at, uint32_t *fragment)
+	{
 		#pragma unroll
-		for (index = 0u; index < 4u; ++index)
-		{
-			side = index % 2u;
-			query[step][index] = valid[side] ? *(const uint32_t *)(query_bf16 + ((uint64_t)row[side] * heads + head[side]) * HEAD_DIM +
-				step * 16u + 2u * (lane & 3u) + 8u * (index / 2u)) : 0u;
-		}
+		for (uint32_t item = 0u; item < 4u; ++item)
+			fragment[item] = valid[item % 2u] ? *(const uint32_t *)(query_bf16 + ((uint64_t)row[item % 2u] * heads + head[item % 2u]) * HEAD_DIM +
+				at * 16u + 2u * (lane & 3u) + 8u * (item / 2u)) : 0u;
+	};
+	if constexpr ( QUERY_RESIDENT )
+	{
+		#pragma unroll
+		for (step = 0u; step < K_STEPS; ++step)
+			query_fragment(step,query[step]);
+	}
 	#pragma unroll
 	for (frag = 0u; frag < VALUE_FRAGS; ++frag)
 		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
@@ -302,7 +311,9 @@ void LmGqaShardTiledKernel(
 			if ( row_position != 0 && row_position[row[side]] != LM_KV_POSITION_UNUSED && row_position[row[side]] + 1u < limit[side] )
 				limit[side] = row_position[row[side]] + 1u;
 			count[side] = SparkKvShardLocalKeys(cache.shard,limit[side]);
+			count[side] = count[side] < LmKvKeyWindowEnd(cache) ? count[side] : LmKvKeyWindowEnd(cache);
 			begin[side] = window != 0u && limit[side] > window ? SparkKvShardLocalKeys(cache.shard,limit[side] - window) : 0u;
+			begin[side] = begin[side] > LmKvKeyWindowBegin(cache) ? begin[side] : LmKvKeyWindowBegin(cache);
 			if ( (lane & 3u) == 0u && begin[side] < count[side] )
 			{
 				atomicMin(&run[2],begin[side]);
@@ -328,8 +339,9 @@ void LmGqaShardTiledKernel(
 			const uint32_t buffer = tile & 1u;
 			const uint32_t tile_keys = key_base + buffer * TILE * KEY_BYTES, tile_values = value_base + buffer * TILE * VALUE_BYTES;
 			const uint8_t *ahead = threadIdx.x < TILE && tile + 2u < tile_end ? lookup(tile + 2u) : 0;
-			float score[KEY_FRAGS][4], peak[2], next_max[2], rescale[2];
-			uint32_t b[4], first[2], second[2], high_bits[4], low_bits[4];
+			float score[KEY_FRAGS][4], peak[2], next_max[2], rescale[2], shift[2];
+			uint32_t b[4], first[2], second[2], weights[4];
+			bool whole;
 			if ( tile + 1u < tile_end )
 			{
 				copy(tile + 1u);
@@ -350,6 +362,10 @@ void LmGqaShardTiledKernel(
 				score[frag][0] = score[frag][1] = score[frag][2] = score[frag][3] = 0.0f;
 			#pragma unroll
 			for (step = 0u; step < K_STEPS; ++step)
+			{
+				uint32_t *fragment = query[QUERY_RESIDENT ? step : 0u];
+				if constexpr ( !QUERY_RESIDENT )
+					query_fragment(step,fragment);
 				#pragma unroll
 				for (frag = 0u; frag < KEY_FRAGS; frag += 2u)
 				{
@@ -357,33 +373,48 @@ void LmGqaShardTiledKernel(
 					LmPrefillLoadX4(tile_keys + b_row * KEY_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u,b);
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(score[frag],query[step],first);
-					LmMmaBf16(score[frag + 1u],query[step],second);
+					LmMmaBf16(score[frag],fragment,first);
+					LmMmaBf16(score[frag + 1u],fragment,second);
 				}
+			}
 			peak[0] = peak[1] = -INFINITY;
-			#pragma unroll
-			for (frag = 0u; frag < KEY_FRAGS; ++frag)
+			whole = __all_sync(0xffffffffu,block_mask == 0 && member[0] && member[1] && begin[0] <= tile * TILE && begin[1] <= tile * TILE &&
+				tile * TILE + TILE <= count[0] && tile * TILE + TILE <= count[1]);
+			if ( whole )
+			{
 				#pragma unroll
-				for (entry = 0u; entry < 4u; ++entry)
-				{
-					const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry / 2u;
-					bool visible = member[which] && local >= begin[which] && local < count[which];
-					if ( visible && block_mask != 0 )
+				for (frag = 0u; frag < KEY_FRAGS; ++frag)
+					#pragma unroll
+					for (entry = 0u; entry < 4u; ++entry)
+						peak[entry / 2u] = fmaxf(peak[entry / 2u],score[frag][entry]);
+			}
+			else
+			{
+				#pragma unroll
+				for (frag = 0u; frag < KEY_FRAGS; ++frag)
+					#pragma unroll
+					for (entry = 0u; entry < 4u; ++entry)
 					{
-						const uint32_t position = SparkKvShardLocalPosition(cache.shard,local);
-						visible = position / block_tokens >= limit[which] / block_tokens ||
-							((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
+						const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry / 2u;
+						bool visible = member[which] && local >= begin[which] && local < count[which];
+						if ( visible && block_mask != 0 )
+						{
+							const uint32_t position = SparkKvShardLocalPosition(cache.shard,local);
+							visible = position / block_tokens >= limit[which] / block_tokens ||
+								((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
+						}
+						score[frag][entry] = visible ? score[frag][entry] : -INFINITY;
+						peak[which] = fmaxf(peak[which],score[frag][entry]);
 					}
-					score[frag][entry] = visible ? score[frag][entry] * qk_scale : -INFINITY;
-					peak[which] = fmaxf(peak[which],score[frag][entry]);
-				}
+			}
 			for (side = 0u; side < 2u; ++side)
 			{
 				peak[side] = fmaxf(peak[side],__shfl_xor_sync(0xffffffffu,peak[side],1u));
 				peak[side] = fmaxf(peak[side],__shfl_xor_sync(0xffffffffu,peak[side],2u));
 				next_max[side] = fmaxf(running_max[side],peak[side]);
-				rescale[side] = running_max[side] == -INFINITY ? 0.0f : __expf(running_max[side] - next_max[side]);
+				rescale[side] = running_max[side] == -INFINITY ? 0.0f : SparkMathExp2Fast((running_max[side] - next_max[side]) * scale_log2);
 				running_max[side] = next_max[side];
+				shift[side] = next_max[side] == -INFINITY ? 0.0f : next_max[side] * scale_log2;
 				running_sum[side] *= rescale[side];
 			}
 			#pragma unroll
@@ -399,7 +430,7 @@ void LmGqaShardTiledKernel(
 				#pragma unroll
 				for (entry = 0u; entry < 4u; ++entry)
 				{
-					const float weight = score[frag][entry] == -INFINITY ? 0.0f : __expf(score[frag][entry] - running_max[entry / 2u]);
+					const float weight = SparkMathExp2Fast(fmaf(score[frag][entry],scale_log2,-shift[entry / 2u]));
 					running_sum[entry / 2u] += weight;
 					score[frag][entry] = weight;
 				}
@@ -410,9 +441,7 @@ void LmGqaShardTiledKernel(
 				for (index = 0u; index < 4u; ++index)
 				{
 					const float *pair = &score[2u * step + index / 2u][2u * (index % 2u)];
-					const uint16_t high_first = LmFloatToBf16(pair[0]), high_second = LmFloatToBf16(pair[1]);
-					high_bits[index] = (uint32_t)high_first | ((uint32_t)high_second << 16u);
-					low_bits[index] = LmPackBf16Pair(pair[0] - __uint_as_float((uint32_t)high_first << 16u),pair[1] - __uint_as_float((uint32_t)high_second << 16u));
+					weights[index] = LmPackBf16Pair(pair[0],pair[1]);
 				}
 				#pragma unroll
 				for (frag = 0u; frag < VALUE_FRAGS; frag += 2u)
@@ -421,10 +450,8 @@ void LmGqaShardTiledKernel(
 					LmPrefillLoadX4Trans(tile_values + b_row * VALUE_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u,b);
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(output[frag],high_bits,first);
-					LmMmaBf16(output[frag],low_bits,first);
-					LmMmaBf16(output[frag + 1u],high_bits,second);
-					LmMmaBf16(output[frag + 1u],low_bits,second);
+					LmMmaBf16(output[frag],weights,first);
+					LmMmaBf16(output[frag + 1u],weights,second);
 				}
 			}
 			if ( threadIdx.x < TILE && tile + 2u < tile_end )
@@ -449,7 +476,7 @@ void LmGqaShardTiledKernel(
 			float *base = send + (uint64_t)destination * destination_stride + (uint64_t)row[side] * record;
 			if ( part == 0u && (lane & 3u) == 0u )
 			{
-				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM)] = running_max[side];
+				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM)] = running_max[side] == -INFINITY ? -INFINITY : running_max[side] * qk_scale;
 				base[width + 2u * (head[side] - (destination * width) / VALUE_DIM) + 1u] = running_sum[side];
 			}
 			#pragma unroll

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Cost Check</title>
+<meta name="description" content="Drop your Claude Code or Codex session logs and see what your tokens cost at the provider's published prices, and how often the cache expired under you. Nothing leaves your browser.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/compare.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/compare-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/compare.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 76ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul { display: grid; gap: 8px; padding-left: 20px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy code { font: 500 14px/1.5 var(--mono); color: var(--ink); }
+.zone { display: grid; gap: 14px; justify-items: start; border: 1px dashed var(--rule-strong); border-radius: 6px; padding: 24px; background: var(--sheet); max-width: 76ch; }
+.zone.over { border-style: solid; border-color: var(--ink); }
+.zone p { margin: 0; }
+.picks { display: flex; flex-wrap: wrap; gap: 10px; }
+.picks input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.status { font: 500 13px/1.6 var(--mono); color: var(--faint); min-height: 1.6em; }
+.facts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); max-width: 76ch; }
+.facts-grid div { padding: 16px 18px; display: grid; gap: 6px; border-top: 1px solid var(--rule); }
+.facts-grid small { font: 500 12px/1.4 var(--mono); color: var(--faint); }
+.facts-grid strong { font: 700 18px/1.25 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; }
+.policy .scroll { overflow-x: auto; max-width: 76ch; }
+.policy table { border-collapse: collapse; width: 100%; min-width: 640px; font: 400 14px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 9px 10px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">cost check</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="index.html#why">Why a fleet</a>
+      <a href="index.html#prices">Prices</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="compare.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="compare-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Cost check</h1>
+    <p>What did your coding agent's tokens cost, and how often did the cache expire under you? Drop your Claude Code or Codex session logs below. This page reads them in your browser only: nothing is uploaded, and the page is not allowed to connect anywhere.</p>
+  </section>
+
+  <section>
+    <h2>Your logs</h2>
+    <ul>
+      <li><b>Claude Code</b> keeps one <code>.jsonl</code> file per session in <code>~/.claude/projects/</code>, in a folder per project.</li>
+      <li><b>Codex</b> keeps its sessions in <code>~/.codex/sessions/</code>, by date.</li>
+      <li>Choose the whole folder, or drag it here. On a Mac, press Cmd+Shift+. in the file window to show hidden folders.</li>
+    </ul>
+    <div class="zone" id="zone">
+      <p>Drop files or folders here, or choose them.</p>
+      <div class="picks">
+        <label class="btn solid" for="folder">Choose a folder</label><input id="folder" type="file" webkitdirectory multiple>
+        <label class="btn" for="files">Choose files</label><input id="files" type="file" accept=".jsonl,.json" multiple>
+        <button class="btn" id="clear" type="button">Clear</button>
+      </div>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <section id="results" hidden>
+    <h2>What your tokens cost</h2>
+    <div class="facts-grid" id="facts"></div>
+    <div class="scroll">
+    <table>
+      <thead><tr><th scope="col">Model</th><th scope="col" class="num">Requests</th><th scope="col" class="num">Uncached input</th><th scope="col" class="num">Cache writes</th><th scope="col" class="num">Cache reads</th><th scope="col" class="num">Output</th><th scope="col" class="num">Cost</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    </div>
+    <p id="skipped"></p>
+  </section>
+
+  <section>
+    <h2>How it counts</h2>
+    <ul>
+      <li>Costs use each provider's published prices for its own API, checked on <span id="checked">2026-11-05</span>: <a href="https://platform.claude.com/docs/en/about-claude/pricing">Anthropic</a> (base input, 5-minute and 1-hour cache writes, cache reads, output, and Haiku 5.5's price above 100,000 tokens) and <a href="https://developers.openai.com/api/docs/pricing">OpenAI</a> (input, cached input, output, and the price above 272,000 tokens). Global endpoints, standard speed, no batch discount.</li>
+      <li>A request <b>wrote its context again after a pause</b> when it came more than the cache's lifetime after the previous request of the same session (5 minutes, or 1 hour for a 1-hour cache write; 5 minutes for OpenAI), its prompt had at least 10,000 tokens, and at least half of it was written or read uncached. "Saved had they been cache reads" is what those tokens cost beyond the cache-read price.</li>
+      <li>On a subscription you do not pay these prices, but the same tokens count against your plan's limits.</li>
+      <li>A SparkPipe fleet has no per-token price: a week is one flat price, and its cache stays while you hold the fleet. To compare a team, add every member's logs.</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="compare-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="pricing.js"></script>
+<script src="compare-prices.js?v=1"></script>
+<script src="compare.js?v=1"></script>
+</body>
+</html>

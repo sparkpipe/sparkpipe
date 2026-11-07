@@ -417,6 +417,11 @@ SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t 
 
 SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, const char *owner)
 {
+	return(SparkDeviceMapFileSegments(buffer,fd,offset,bytes,0u,owner));
+}
+
+SparkStatus SparkDeviceMapFileSegments(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, uint64_t segment_stride, const char *owner)
+{
 	SparkDeviceAllocation *allocation = 0;
 	SparkStatus status;
 	if ( buffer == 0 || fd < 0 || bytes == 0u )
@@ -435,6 +440,7 @@ SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offse
 		pthread_mutex_unlock(&device_mutex);
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"map_file",owner,0,"out of host memory for the allocation record"));
 	}
+	allocation->segment_stride = segment_stride;
 	status = SparkDeviceBackendMapFile(allocation,fd,offset);
 	if ( status != SPARK_STATUS_OK )
 		free(allocation);
@@ -547,6 +553,17 @@ SparkStatus SparkDeviceHostOf(SparkDeviceRange range, uint64_t bytes, void **hos
 		*host = (uint8_t *)allocation->host + range.offset;
 	pthread_mutex_unlock(&device_mutex);
 	return(status);
+}
+
+uint32_t SparkDeviceSegmented(SparkDeviceRange range)
+{
+	SparkDeviceAllocation *allocation;
+	uint32_t segmented;
+	pthread_mutex_lock(&device_mutex);
+	allocation = DeviceAllocationOf(range.buffer);
+	segmented = allocation != 0 && allocation->segment_stride != 0u ? 1u : 0u;
+	pthread_mutex_unlock(&device_mutex);
+	return(segmented);
 }
 
 static uint32_t DeviceDeviceSide(const SparkDeviceAllocation *allocation)
@@ -828,9 +845,12 @@ SparkStatus SparkDeviceEventDestroy(SparkDeviceEvent *event)
 	SparkStatus status;
 	if ( event == 0 || event->id == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"event_destroy",0,0,"needs a live event"));
-	if ( event->recorded != 0u && SparkDeviceBackendEventWait(event,0u) == SPARK_STATUS_PENDING )
-		return(SparkDeviceRecordError(SPARK_STATUS_BUSY,"event_destroy",0,0,"the event's queue has not reached it"));
 	pthread_mutex_lock(&device_mutex);
+	if ( DeviceStampsBusy(event->stamps) != 0u )
+	{
+		pthread_mutex_unlock(&device_mutex);
+		return(SparkDeviceRecordError(SPARK_STATUS_BUSY,"event_destroy",0,0,"a queue that records or waits on the event has not passed it"));
+	}
 	SparkDeviceBackendEventDestroy(event);
 	event->id = 0u;
 	device_live_events--;
@@ -843,12 +863,15 @@ SparkStatus SparkDeviceEventDestroy(SparkDeviceEvent *event)
 SparkStatus SparkDeviceEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *queue)
 {
 	SparkStatus status;
+	int32_t slot = -1;
 	if ( event == 0 || event->id == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"event_record",0,0,"needs a live event"));
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("event_record",0);
 	if ( status == SPARK_STATUS_OK )
 		status = DeviceQueueValid(queue,"event_record");
+	if ( status == SPARK_STATUS_OK && (slot = DeviceStampsSlot(event->stamps,queue->id)) < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"event_record",queue->owner,0,"the event is in flight on too many queues");
 	if ( status == SPARK_STATUS_OK )
 	{
 		queue->submitted++;
@@ -860,6 +883,7 @@ SparkStatus SparkDeviceEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *qu
 			event->queue_id = queue->id;
 			event->sequence = queue->submitted;
 			event->recorded = 1u;
+			DeviceStampAt(event->stamps,slot,queue->id,queue->submitted);
 		}
 	}
 	pthread_mutex_unlock(&device_mutex);
@@ -869,18 +893,23 @@ SparkStatus SparkDeviceEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *qu
 SparkStatus SparkDeviceQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent *event)
 {
 	SparkStatus status;
+	int32_t slot = -1;
 	if ( event == 0 || event->id == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_wait_event",0,0,"needs a live event"));
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("queue_wait_event",0);
 	if ( status == SPARK_STATUS_OK )
 		status = DeviceQueueValid(queue,"queue_wait_event");
+	if ( status == SPARK_STATUS_OK && event->recorded != 0u && (slot = DeviceStampsSlot(event->stamps,queue->id)) < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_wait_event",queue->owner,0,"the event is in flight on too many queues");
 	if ( status == SPARK_STATUS_OK && event->recorded != 0u )
 	{
 		queue->submitted++;
 		status = SparkDeviceBackendQueueWaitEvent(queue,event);
 		if ( status != SPARK_STATUS_OK )
 			queue->submitted--;
+		else
+			DeviceStampAt(event->stamps,slot,queue->id,queue->submitted);
 	}
 	pthread_mutex_unlock(&device_mutex);
 	return(status);

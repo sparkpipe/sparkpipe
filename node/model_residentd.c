@@ -22,6 +22,7 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/un.h>
 #if defined(__linux__)
 #include <sys/vfs.h>
@@ -37,6 +38,7 @@
 #include "runtime/model_resident_socket.h"
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_kv_ledger.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
@@ -79,7 +81,7 @@ typedef struct SparkModelResidentdConfiguration
 	const char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	const char *kv_snapshot_directory;
-	uint64_t kv_snapshot_maximum_bytes;
+	char kv_ledger_path[SPARK_KV_LEDGER_DIRECTORY_BYTES];
 	uint32_t rank_index;
 	uint32_t stage_index;
 	uint32_t previous_rank_index;
@@ -90,6 +92,7 @@ typedef struct SparkModelResidentdConfiguration
 	uint32_t resident_sequence_capacity;
 	uint32_t kv_logical_page_capacity;
 	uint32_t kv_physical_page_capacity;
+	uint32_t output_vocabulary;
 	uint32_t port_base;
 	uint32_t listen_port;
 } SparkModelResidentdConfiguration;
@@ -379,7 +382,8 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 	configuration->kv_partition = node->kv_partition;
 	configuration->kv_backing_maximum_bytes = node->kv_backing_maximum_bytes;
 	configuration->kv_snapshot_directory = node->kv_snapshot_directory;
-	configuration->kv_snapshot_maximum_bytes = node->kv_snapshot_maximum_bytes;
+	if ( SparkKvLedgerDefaultPath(configuration->kv_ledger_path,sizeof(configuration->kv_ledger_path)) != SPARK_STATUS_OK )
+		configuration->kv_ledger_path[0] = '\0';
 	configuration->rank_index = node->rank_index;
 	configuration->stage_index = node->stage_index;
 	configuration->previous_rank_index = previous != 0 ? previous->rank_index : SPARK_PIPELINE_RUNTIME_NO_RANK;
@@ -392,6 +396,7 @@ static SparkStatus SparkModelResidentdBuildConfiguration(
 		deployment->runtime_limits.kv_logical_page_capacity;
 	configuration->kv_physical_page_capacity =
 		deployment->runtime_limits.kv_physical_page_capacity;
+	configuration->output_vocabulary = deployment->runtime_limits.output_vocabulary;
 	configuration->port_base = deployment->transport_control_port_base;
 	return(SPARK_STATUS_OK);
 }
@@ -427,6 +432,7 @@ static SparkStatus SparkModelResidentdValidateKvPartition(
 	const SparkModelResidentdConfiguration *configuration)
 {
 	struct stat partition,directory;
+	struct statvfs space;
 	const char *refusal;
 	if ( configuration->kv_partition == 0 || stat(configuration->kv_partition,&partition) != 0 || !S_ISDIR(partition.st_mode) )
 	{
@@ -449,6 +455,17 @@ static SparkStatus SparkModelResidentdValidateKvPartition(
 		fprintf(stderr,"model_residentd: kv_snapshot_directory %s is not on kv_partition %s\n",configuration->kv_snapshot_directory,configuration->kv_partition);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	if ( configuration->kv_snapshot_directory != 0 && configuration->kv_ledger_path[0] == '\0' )
+	{
+		fprintf(stderr,"model_residentd: no home directory for uid %u holds the node KV ledger %s\n",(unsigned)geteuid(),SPARK_KV_LEDGER_NAME);
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	if ( configuration->kv_snapshot_directory != 0 && statvfs(configuration->kv_partition,&space) != 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( configuration->kv_snapshot_directory != 0 )
+		fprintf(stderr,"model_residentd: kv_partition %s free_bytes=%llu node_kv_ledger=%s; the node's own KV on disk shares the ledger's quota (%llu bytes by default)\n",
+			configuration->kv_partition,(unsigned long long)((uint64_t)space.f_bavail * (uint64_t)space.f_frsize),configuration->kv_ledger_path,
+			(unsigned long long)SPARK_KV_NODE_QUOTA_BYTES);
 	return(SPARK_STATUS_OK);
 }
 
@@ -1328,8 +1345,8 @@ static SparkStatus SparkModelResidentdInitializeAdapter(
 		configuration->kv_backing_maximum_bytes;
 	adapter_configuration.kv_snapshot_directory =
 		configuration->kv_snapshot_directory;
-	adapter_configuration.kv_snapshot_maximum_bytes =
-		configuration->kv_snapshot_maximum_bytes;
+	adapter_configuration.kv_ledger_path =
+		configuration->kv_ledger_path[0] != '\0' ? configuration->kv_ledger_path : 0;
 	adapter_configuration.execution_stream = runtime->execution_stream;
 	adapter_configuration.completion_function = SparkModelResidentdCompletion;
 	adapter_configuration.completion_context = runtime;
@@ -1385,6 +1402,7 @@ static SparkStatus SparkModelResidentdInitializeLimits(
 		configuration->kv_logical_page_capacity;
 	runtime->runtime_limits.kv_physical_page_capacity =
 		configuration->kv_physical_page_capacity;
+	runtime->runtime_limits.output_vocabulary = configuration->output_vocabulary;
 	return(SparkModelServingAdapterValidateRuntimeLimits(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits));
 }
 

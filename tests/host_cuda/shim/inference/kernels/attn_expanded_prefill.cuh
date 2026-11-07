@@ -14,11 +14,13 @@ __global__ void LmLatentValueExpandKernel(
 	const uint16_t *__restrict__ weight_bf16,
 	uint32_t heads,
 	uint8_t *__restrict__ values,
-	uint64_t value_source_stride)
+	uint64_t value_source_stride,
+	uint64_t key_pitch,
+	uint64_t head_pitch)
 {
 	const uint32_t key = blockIdx.x, head = blockIdx.y, source = blockIdx.z;
 	const uint16_t *row = (const uint16_t *)(keys + (uint64_t)source * key_source_stride + (uint64_t)key * ROW_DIM * 2u);
-	uint16_t *target = (uint16_t *)(values + (uint64_t)source * value_source_stride) + ((uint64_t)key * heads + head) * VALUE;
+	uint16_t *target = (uint16_t *)(values + (uint64_t)source * value_source_stride) + (uint64_t)key * key_pitch + (uint64_t)head * head_pitch;
 	uint32_t output, element;
 	if (key >= keys_per_source || head >= heads)
 		return;
@@ -52,7 +54,53 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 	if (keys_per_source == 0u)
 		return cudaSuccess;
 	LM_HOST_LAUNCH(dim3(keys_per_source, heads, sources), (LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>(keys, key_source_stride, keys_per_source,
-		weight_bf16, heads, values, value_source_stride)));
+		weight_bf16, heads, values, value_source_stride, (uint64_t)heads * VALUE, VALUE)));
+	return cudaSuccess;
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM>
+static inline cudaError_t LmLatentRopeBroadcastLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	uint64_t rope_offset,
+	cudaStream_t stream)
+{
+	uint32_t key,head,element;
+	(void)stream;
+	if (keys == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || rope_offset % 2u != 0u || head_pitch % 2u != 0u || key_pitch % 2u != 0u ||
+		head_pitch < rope_offset + (ROW_DIM - LATENT) || key_pitch < (uint64_t)(heads - 1u) * head_pitch + rope_offset + (ROW_DIM - LATENT))
+		return cudaErrorInvalidValue;
+	for (key = 0u; key < key_count; key++)
+		for (head = 0u; head < heads; head++)
+			for (element = 0u; element < ROW_DIM - LATENT; element++)
+				((uint16_t *)output)[(uint64_t)key * key_pitch + (uint64_t)head * head_pitch + rope_offset + element] =
+					((const uint16_t *)keys)[(uint64_t)key * ROW_DIM + LATENT + element];
+	return cudaSuccess;
+}
+
+template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
+static inline cudaError_t LmLatentExpandPitchedLaunch(
+	const uint8_t *keys,
+	uint32_t key_count,
+	const uint16_t *weight_bf16,
+	uint32_t heads,
+	uint8_t *output,
+	uint64_t key_pitch,
+	uint64_t head_pitch,
+	cudaStream_t stream)
+{
+	(void)stream;
+	if (keys == 0 || weight_bf16 == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || head_pitch < VALUE ||
+		key_pitch < (uint64_t)(heads - 1u) * head_pitch + VALUE || key_pitch % 2u != 0u || head_pitch % 2u != 0u)
+		return cudaErrorInvalidValue;
+	if (key_count == 0u)
+		return cudaSuccess;
+	LM_HOST_LAUNCH(dim3(key_count, heads, 1u), (LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>(keys, 0u, key_count,
+		weight_bf16, heads, output, 0u, key_pitch, head_pitch)));
 	return cudaSuccess;
 }
 

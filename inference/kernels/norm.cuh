@@ -73,7 +73,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
@@ -113,7 +113,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 				total += value * value;
 		}
 		total = LmBlockSum<THREADS>(total,reduction);
-		scale = rsqrtf((total / (float)dimension) + epsilon);
+		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 		#pragma unroll
 		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
 		{
@@ -132,7 +132,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(LmFloatToBf16(row[index] * scale));
@@ -194,9 +194,7 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
-		float activated = fminf(SparkMathSiluFast(gate), limit);
-		output_bf16[out_base + index] =
-			LmFloatToBf16(activated * fminf(fmaxf(up, -limit), limit));
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathClampedGlu(SparkMathSiluFast(gate), up, limit));
 	}
 }
 
@@ -236,7 +234,7 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
@@ -263,7 +261,7 @@ static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__r
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale));
@@ -320,7 +318,7 @@ void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const ui
 		value = LmBf16ToFloat(input_bf16[base + index]);
 		total += value * value;
 	}
-	inverse = rsqrtf(LmBlockSum<THREADS>(total,reduction) / (float)dimension + epsilon);
+	inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total,reduction), (float)dimension, epsilon);
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * inverse * weight[index];
@@ -348,20 +346,16 @@ void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *_
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
+void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint64_t output_pitch, float beta, float linear_beta, uint32_t row_groups)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
-	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint64_t out_base = (uint64_t)(blockIdx.x / row_groups) * output_pitch + (uint64_t)(blockIdx.x % row_groups) * dimension;
 	uint32_t index;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
-		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
-		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
-		float activated = beta * tanhf(gate / beta) *
-			SparkMathSigmoidFast(gate);
-		if (linear_beta > 0.0f)
-			up = linear_beta * tanhf(up / linear_beta);
-		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
+		const float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
+		const float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathSitu(gate, up, beta, linear_beta));
 	}
 }
 
@@ -541,54 +535,63 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight, uint16_t *__restrict__ output_bf16, uint32_t tokens, uint32_t top_k, uint32_t dimension)
 {
-	uint32_t token = blockIdx.y;
+	uint32_t token;
 	uint32_t element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint32_t route;
-	float total = 0.0f;
 	LmDependentRelease();
-	if ( token >= tokens || element >= dimension )
+	if ( element >= dimension )
 		return;
-	for (route = 0u; route < top_k; ++route)
+	for (token = blockIdx.y; token < tokens; token += gridDim.y)
 	{
-		uint32_t packed_row = packed_row_of_token_route[(token * top_k) + route];
-		total += LmBf16ToFloat(packed_bf16[((uint64_t)packed_row * dimension) + element])
-			* route_weight[(token * top_k) + route];
+		float total = 0.0f;
+		for (route = 0u; route < top_k; ++route)
+		{
+			uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+			total += LmBf16ToFloat(packed_bf16[((uint64_t)packed_row * dimension) + element])
+				* route_weight[((uint64_t)token * top_k) + route];
+		}
+		output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
 	}
-	output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__restrict__ b_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t dimension)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
-	if ( row >= rows || element >= dimension )
+	if ( element >= dimension )
 		return;
-	index = ((uint64_t)row * dimension) + element;
-	out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		index = ((uint64_t)row * dimension) + element;
+		out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
+	}
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
-	if ( row >= rows || element >= dimension )
+	if ( element >= dimension )
 		return;
-	index = ((uint64_t)row * dimension) + element;
-	destination_bf16[index] = source_bf16[index];
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		index = ((uint64_t)row * dimension) + element;
+		destination_bf16[index] = source_bf16[index];
+	}
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRankMajorRowsKernel(const uint16_t *__restrict__ gathered_bf16, uint16_t *__restrict__ rows_bf16, uint32_t rows, uint32_t width, uint32_t ranks)
 {
-	const uint32_t row = blockIdx.y;
-	uint32_t index;
-	for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width * ranks; index += gridDim.x * THREADS)
-		rows_bf16[((uint64_t)row * width * ranks) + index] = gathered_bf16[((((uint64_t)(index / width) * rows) + row) * width) + (index % width)];
+	uint32_t row,index;
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+		for (index = (blockIdx.x * THREADS) + threadIdx.x; index < width * ranks; index += gridDim.x * THREADS)
+			rows_bf16[((uint64_t)row * width * ranks) + index] = gathered_bf16[((((uint64_t)(index / width) * rows) + row) * width) + (index % width)];
 }
 
 template<uint32_t THREADS>
@@ -606,10 +609,11 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmCopyRowsStridedKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension,
 	uint64_t destination_stride)
 {
-	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
-	if ( row >= rows || element >= dimension )
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
+	if ( element >= dimension )
 		return;
-	destination_bf16[((uint64_t)row * destination_stride) + element] = source_bf16[((uint64_t)row * dimension) + element];
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+		destination_bf16[((uint64_t)row * destination_stride) + element] = source_bf16[((uint64_t)row * dimension) + element];
 }
 
 template<uint32_t THREADS>
@@ -666,7 +670,7 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 			square += value * value;
 		}
 		square = LmBlockSum<THREADS>(square,reduction);
-		inverse = rsqrtf((square / (float)dimension) + epsilon);
+		inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
 		for (index = threadIdx.x; index < dimension; index += THREADS)
 			dot += LmBf16ToFloat(values[index]) * inverse
 				* LmBf16ToFloat(score_weight_bf16[index]);
@@ -718,7 +722,7 @@ __global__ __launch_bounds__(THREADS) void LmAttnResScoreKernel(const uint16_t *
 		square += value * value;
 	}
 	square = LmBlockSum<THREADS>(square,reduction);
-	inverse = rsqrtf((square / (float)dimension) + epsilon);
+	inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 		dot += LmBf16ToFloat(values[index]) * inverse
 			* LmBf16ToFloat(score_weight_bf16[index]);
@@ -791,7 +795,7 @@ void LmCenteredRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 		output_bf16[base + index] =
 			LmFloatToBf16(row[index] * scale * (1.0f + LmBf16ToFloat(weight_bf16[index])));

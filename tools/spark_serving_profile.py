@@ -19,6 +19,7 @@ MESH_MAX_BATCH_ROWS = 4096
 PROFILE_ROW_CAPACITY = 128
 FIRMWARE_MAX_INPUT_ROWS = 65536
 KV_PAGE_TOKENS = 64
+OUTPUT_VOCABULARY = 154856
 KV_POOL_PAGES_PER_RESIDENT_PAGE = 16
 # Bytes per KV page (payload + recurrent state; module formula — the
 # module recomputes this and rejects a smaller backing budget).
@@ -39,6 +40,7 @@ DEPLOYMENT_RUNTIME_MEMBERS = (
     "max_input_rows",
     "kv_logical_page_capacity",
     "kv_physical_page_capacity",
+    "output_vocabulary",
     "max_sequence_positions",
 )
 
@@ -94,6 +96,7 @@ def derive(sequences: int, positions: int = 512, recurrent_page_bytes: int = 0, 
         "max_input_rows": rows,
         "kv_logical_page_capacity": kv_pages,
         "kv_physical_page_capacity": physical_pages,
+        "output_vocabulary": OUTPUT_VOCABULARY,
         "kv_partition": "/",
         "kv_backing_maximum_bytes": backing,
         "execution_row_capacity": rows,

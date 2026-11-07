@@ -9,18 +9,20 @@ themselves belong in [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
 Work goes one iteration at a time. An iteration changes one thing, says which
 exit criterion it moves, and names the measurement that picks the next step.
 
-The operator's current emphasis (2026-09-28), with the operator directives in
-[`GOALS.md`](GOALS.md):
+The product is a fleet that serves one customer and keeps its working state.
+Its build list, with a test for each item and 4 January 2027 as the date, is
+[`FLEET_API_ISSUES.md`](FLEET_API_ISSUES.md). The engine work that list leans
+on most, as of 6 November 2026:
 
-- drivers developed in parallel while common code improves (M11);
-- GLM 5.3 Flash B1 without speculation at TP16, measured against public
-  4-Spark results (M1);
-- speculation that pays at B8 and B64 as well as B1 (M10);
-- no fixed topology: TP16, PP16 and TP4 x PP4 compared on measured tok/s and
-  latency (M5).
+- working state kept for the holder, mirrored, and deleted at a change of
+  user (E1-E3, M6);
+- decode toward the memory roofline at B1 and B8 (M1, M2);
+- speculation that pays on agent turns and at batch 2 and above (M10, E13);
+- several models resident at once when they fit (M6, E18).
 
 The state of each milestone and driver on 2026-09-28 is in
-[`HANDOFF_DRIVERS_2026-09-28.md`](HANDOFF_DRIVERS_2026-09-28.md).
+[`HANDOFF_DRIVERS_2026-09-28.md`](HANDOFF_DRIVERS_2026-09-28.md); measured
+numbers since then are in [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
 
 ## M1. GLM 5.3 Flash at 80% of the memory roofline
 
@@ -172,32 +174,25 @@ stages across the two classes also need M5's pipeline execution.
 TECHDEBT: hardware independence, Mac Studio deployment, incremental
 expansion.
 
-## M9. Fleet-hours
+## M9. A fleet of your own
 
-Exit: a business rents a whole fleet without our help.
+Exit: a customer pins a whole fleet and keeps it without our help.
 
-- It opens an account with its Ethereum wallet and accepts the Hourly Terms by signing their text.
-- It pays a USDC invoice through the payment processor, and its hours appear once the payment clears.
-- It reserves hours on a fleet's calendar with a signed message. A two-year customer can take an hourly reservation more than 6 hours ahead, and the hourly customer is told and gets the hour back.
-- During its hours its access tokens reach the fleet, and nobody else's do.
-- `sparkpipe.ai/availability.txt` shows live capacity, regenerated every 30 seconds.
-- Every payment, issue of hours, reservation, displacement, credit and consumption is a line in the hash-chained ledger, whose daily root is published.
-- Downtime credits are issued from the fleet's own records, without a claim.
+- It opens an account with its legal name and a work email confirmed by a 6-digit code, and accepts the Customer Agreement with a box recorded against the text's hash.
+- It buys HC in won, in USDC or USDT, or in US dollars by bank transfer, and the HC appears once the payment clears.
+- It books a demo hour, pins a free fleet by booking a first week, or joins the waitlist when every fleet is held. Auto-extend keeps its next weeks booked.
+- During its weeks only its keys reach the fleet, and its working state is kept until another customer's first hour.
+- Every payment, issue of HC, booking, credit and use is a line in the hash-chained ledger.
+- Downtime credits are issued from the fleet's own records, without a claim, and a held fleet that is down fails over to a free one.
 
-Work:
-
-- the account service: signed acceptance, business details, sanctions screening, the business check and the 720-hour limit;
-- invoices, the processor integration and VAT invoices;
-- the ledger and its daily root;
-- the reservation writer, the calendar, displacement and expiry;
-- access tokens scoped to reserved hours, and the gate in front of the fleet;
-- `availability.txt`;
-- automatic credits.
+The build list for this milestone, with each item's test, is in
+[`FLEET_API_ISSUES.md`](FLEET_API_ISSUES.md): the gateway and account items
+(G), working state (E1, E19) and the CLI (L).
 
 It depends on:
 
-- the legal review of the terms, which settles the business flow;
-- the 24-hour retention of cached request state in production.
+- the legal review of the Customer Agreement;
+- working state kept for the holder and deleted at a change of user (E1).
 
 TECHDEBT: fleet-hours.
 

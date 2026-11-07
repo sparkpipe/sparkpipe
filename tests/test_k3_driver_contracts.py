@@ -187,7 +187,7 @@ def main():
                   f"interleaved pack would launch the wrong GEMM layout")
             failures += 1
 
-    kda = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerKda")
+    kda = function_body(re.sub(r"//[^\n]*", "", layer), "K3LayerKdaProject")
     wide = len(re.findall(r"K3Project<\w+>\(b,b->normed_bf16", kda))
     if wide != 3:
         print(f"  FAIL {wide} projection GEMMs read normed_bf16 in K3LayerKda; "

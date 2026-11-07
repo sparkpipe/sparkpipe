@@ -18,6 +18,11 @@
   handles, and production build rules take nothing from `tests/`.
   `tests/test_device_neutral.py` enforces this; its `PENDING` and
   `PENDING_BUILD` debt may only shrink.
+- A failure returns through `SPARK_FAIL` (`include/sparkpipe/spark_error_site.h`),
+  so every error names its site. A bare error return is converted when its
+  file is next changed. A cancelled collective round is terminal and returns
+  `SPARK_STATUS_IO_ERROR`, never `BUSY`: the caller aborts the wave rather
+  than retrying the round.
 
 ## Workflow
 
@@ -29,6 +34,10 @@
   Read it before touching a fleet host. Deploy only by publishing a release
   root; never kill and reload daemons by hand, and never kill anything on
   the hub.
+- Never write the shared Git configuration (`git config user.name` and the
+  like): every worktree shares `.git/config`, so one session's change stamps
+  every other session's commits. Set an identity for one command with
+  `GIT_AUTHOR_*` and `GIT_COMMITTER_*` when one is needed.
 
 ## Source package manifests
 
@@ -47,7 +56,7 @@
   `tools/sparkpipe_github_pat.sh`. The wrapper reads `GITHUB_PAT` from
   `$SPARKPIPE_PAT_FILE` or, when that is unset, from the first readable
   `sparkpipe/.env` in its candidate list; on this workstation that is
-  `/Users/mac/sparkpipe/.env`.
+  `/Users/cem/sparkpipe/.env`.
 - The wrapper deliberately clears Git credential helpers. This is mandatory:
   the workstation credential helper may otherwise replace the SparkPipe PAT
   with the cached `experiencenow-ai` credential before askpass runs.

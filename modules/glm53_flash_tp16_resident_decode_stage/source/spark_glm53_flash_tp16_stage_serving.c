@@ -8,11 +8,20 @@
 #ifndef GLM53_FLASH_TP16_CONTRACT_SHA256
 #error "GLM53_FLASH_TP16_CONTRACT_SHA256 must identify the model contract"
 #endif
+#ifndef GLM53_FLASH_EXPERT_CODEC
+#error "GLM53_FLASH_EXPERT_CODEC must name the routed-expert weight codec of the packs this build serves"
+#endif
+#if !defined(GLM53_FLASH_ADAPTER_ID) || !defined(GLM53_FLASH_MODULE_TAG)
+#error "GLM53_FLASH_ADAPTER_ID and GLM53_FLASH_MODULE_TAG must name this build's adapter and KV label"
+#endif
+#if !defined(GLM53_FLASH_MODEL_ID) || !defined(GLM53_FLASH_MODEL_REVISION)
+#error "GLM53_FLASH_MODEL_ID and GLM53_FLASH_MODEL_REVISION must name the checkpoint this build's packs come from"
+#endif
 
-#define SPARK_GLM53_FLASH_TP16_ADAPTER_ID "glm53_flash-tp16"
-#define SPARK_GLM53_FLASH_TP16_MODEL_ID "zai-org/GLM-5.3-Flash"
-#define SPARK_GLM53_FLASH_TP16_MODEL_REVISION "84c6a6aa9497188e15a635ba793b0f95a79b1033"
-#define SPARK_GLM53_FLASH_TP16_MAX_ROWS 2048u
+#define SPARK_GLM53_FLASH_TP16_ADAPTER_ID GLM53_FLASH_ADAPTER_ID
+#define SPARK_GLM53_FLASH_TP16_MODEL_ID GLM53_FLASH_MODEL_ID
+#define SPARK_GLM53_FLASH_TP16_MODEL_REVISION GLM53_FLASH_MODEL_REVISION
+#define SPARK_GLM53_FLASH_TP16_MAX_ROWS 4096u
 #define SPARK_GLM53_FLASH_TP16_CHAIN_TOKENS 16u
 #define SPARK_GLM53_FLASH_TP16_CHECKPOINT_TOKENS 4096u
 #define Q SPARK_GLM53_FLASH_TP16_STAGE_LAYERS
@@ -66,26 +75,28 @@ static const SparkModelServingAdapterDescriptor Glm53FlashTp16ServingDescriptor 
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS,
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
 	.stage_count = SPARK_GLM53_FLASH_TP16_STAGE_TP_DEGREE,
 	.layer_count = SPARK_GLM53_FLASH_TP16_STAGE_LAYERS,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_GLM53_FLASH_TP16_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = GLM53_FLASH_EXPERT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_input_row_count = SPARK_GLM53_FLASH_TP16_MAX_ROWS,
 	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
 	.max_output_token_count = SPARK_GLM53_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_GLM53_FLASH_TP16_CHAIN_TOKENS - 1u,
+	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
 	.minimum_efficient_submission_row_count = 1u,
 	.cache_block_token_count = SPARK_GLM53_FLASH_TP16_STAGE_PAGE_SLOTS,
 	.parallel_group_size = 0u,
 	.cache_checkpoint_token_count = SPARK_GLM53_FLASH_TP16_CHECKPOINT_TOKENS,
+	.max_verify_row_count = SPARK_GLM53_FLASH_TP16_VERIFY_ROWS,
 };
 
 #undef Q
@@ -94,7 +105,7 @@ static const SparkStageServingModel Glm53FlashTp16StageServing =
 {
 	.descriptor = &Glm53FlashTp16ServingDescriptor,
 	.runner_model = SparkGlm53FlashTp16StageModel,
-	.module_tag = "glm53_flash_stage",
+	.module_tag = GLM53_FLASH_MODULE_TAG,
 	.tp_degree = SPARK_GLM53_FLASH_TP16_STAGE_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = Glm53FlashTp16ServingKvLayout,

@@ -15,7 +15,8 @@ references them from its page tables like any other page.
   prefix private.
 - **Opting in.** The node operator gives weightd
   `--kv-shared-window-bytes N` (or `SPARK_WEIGHTD_KV_SHARED_WINDOW_BYTES`).
-  The bytes are carved from the KV reserve, and each layout key gets a
+  The bytes come out of the node's KV limit (the reserve plus what the
+  attached weights leave of the ceiling), and each layout key gets a
   window of that size.
   - Without the flag, every binding logs
     `kv shared prefix off: weightd has no shared window` and keeps its
@@ -23,6 +24,12 @@ references them from its page tables like any other page.
   - With the flag, every binding of the layout maps the window. A failure
     to map it fails the binding loudly; nothing falls back to private
     pages quietly.
+  - The window must hold at least one aligned group (`A` pages, see
+    *Alignment*) of every layout that runs on the node. A smaller window
+    refuses the attach with `CAPACITY_EXCEEDED`, and the binding fails with
+    `kv binding refused: weightd shared prefix attach status=...`.
+  - Running without the window is a configuration, not a fault: neither
+    weightd nor the engine reports an error site for it.
 
 ## Layout
 

@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 23u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 24u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -82,6 +82,7 @@ typedef struct SparkModelResidentIpcHelloAck
 	uint32_t output_sideband_kind;
 	uint32_t output_sideband_bytes_per_sequence;
 	uint32_t max_sequence_positions;
+	uint32_t output_vocabulary;
 	char adapter_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_id[SPARK_MODEL_RESIDENT_IPC_ID_BYTES];
 	char model_revision[SPARK_MODEL_RESIDENT_IPC_REVISION_BYTES];

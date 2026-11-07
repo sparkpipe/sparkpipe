@@ -59,6 +59,13 @@ static cudaError_t LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 gri
 #define LM_LAUNCH_ERR_LAUNCH (-46)
 #define LM_LAUNCH_ERR_OUTPUT (-47)
 
+#define LM_LAUNCH_GRID_Y_MAX 65535u
+
+static inline uint32_t LmLaunchGridRows(uint32_t rows)
+{
+	return(rows < LM_LAUNCH_GRID_Y_MAX ? rows : LM_LAUNCH_GRID_Y_MAX);
+}
+
 #define LM_LAUNCH_TILE_MIN 16u
 #define LM_LAUNCH_TILE_MAX 64u
 

@@ -834,6 +834,7 @@ static void TestModelPipelineWriteDeployment(
 	fixture.runtime_limits.resident_sequence_capacity = 32u;
 	fixture.runtime_limits.kv_logical_page_capacity = 128u;
 	fixture.runtime_limits.kv_physical_page_capacity = 64u;
+	fixture.runtime_limits.output_vocabulary = TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY;
 	fixture.control_port_base = TestTcpPortRange(TEST_MODEL_PIPELINE_RANK_COUNT);
 	assert(fixture.control_port_base != 0u && "no free loopback port range below the ephemeral range");
 	fixture.node_count = TEST_MODEL_PIPELINE_RANK_COUNT;
@@ -1178,11 +1179,12 @@ static void TestModelBatchEnginePriority(
 	TestModelBatchWaitIdle(engine,16u);
 	assert(state.accepted_count == 17u);
 	assert(state.token_count == 17u);
-	assert(state.first_prefill_lane_count == 16u);
-	assert(state.first_prefill_row_count == 16u);
+	assert(state.first_prefill_lane_count == 1u);
+	assert(state.first_prefill_row_count == 1u);
 	assert(state.completed_count == 16u);
 	assert(state.cancelled_count == 1u);
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
+	printf("test_model_pipeline_client: an interactive request takes the first prefill wave alone; sixteen background requests wait for it instead of riding in its wave\n");
 }
 
 static void TestModelBatchEngineDeadlineOrder(

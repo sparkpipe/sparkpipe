@@ -87,6 +87,7 @@ static void TestInitialize(TestSession *test)
 	runtime->runtime_limits.resident_sequence_capacity = 1u;
 	runtime->runtime_limits.kv_logical_page_capacity = 1u;
 	runtime->runtime_limits.kv_physical_page_capacity = 1u;
+	runtime->runtime_limits.output_vocabulary = 32000u;
 	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
 	descriptor->cache_block_token_count = 4u;

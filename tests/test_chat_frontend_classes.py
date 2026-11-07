@@ -17,6 +17,7 @@ def main():
     failures = []
     frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)
     frontend.memory = None
+    frontend.workspace = None
     model = request_fields.FakeModel()
     frontend.models = {model.id: model}
     if frontend.model_for({"model": "fake"}) is not model or frontend.model_for({"model": "fake-bulk"}) is not model:

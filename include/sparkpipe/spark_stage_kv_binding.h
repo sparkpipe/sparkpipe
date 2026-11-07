@@ -200,7 +200,7 @@ typedef struct SparkStageKvConfiguration
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
-	uint64_t snapshot_maximum_bytes;
+	const char *ledger_path;
 	uint8_t pack_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint8_t contract_sha256[SPARK_SHA256_DIGEST_BYTES];
 	uint32_t expert_codec;
@@ -281,6 +281,7 @@ struct SparkStageKvBinding
 	uint64_t restore_hinted_jobs;
 	uint64_t restore_imported_pages;
 	uint32_t save_stop;
+	uint32_t save_held;
 	uint64_t expiry_sweep_seconds;
 	uint32_t save_running;
 	uint32_t sync_initialized;
@@ -290,6 +291,8 @@ struct SparkStageKvBinding
 	char driver_path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	uint64_t snapshot_page_file_bytes;
 	SparkKvSnapshotStore snapshot_store;
+	SparkKvLedger ledger;
+	uint32_t backing_slot;
 	SparkWeightdKvPoolMapping kv_pool;
 	SparkWeightdKvSharedMapping kv_shared;
 	SparkKvSharedIndex shared_index;
@@ -310,6 +313,8 @@ struct SparkStageKvBinding
 	uint32_t pool_wake_initialized;
 	uint32_t pool_idle_ticks;
 	uint32_t pool_last_status;
+	uint32_t pool_grow_refused;
+	uint64_t kv_margin_bytes;
 	pthread_cond_t pool_wake;
 	pthread_t pool_thread;
 	uint64_t pool_mapped_bytes;
@@ -377,6 +382,7 @@ SparkStatus SparkStageKvBindingSampleCounters(SparkStageKvBinding *binding,Spark
 SparkStatus SparkStageKvBindingPublishFrame(SparkStageKvBinding *binding,SparkModelDriverFrame *frame,atomic_uint *lane_states);
 uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding);
 SparkStatus SparkStageKvLayoutDigest(const SparkStageKvLayoutIdentity *identity,uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],const char **invalid_input);
+SparkStatus SparkStageKvBindingHoldSaves(SparkStageKvBinding *binding,uint32_t hold);
 SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t deadline_ns,uint32_t *saved_out,uint32_t *unsaved_out,uint32_t *ineligible_out);
 void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelDriverKvStoreCounters *counters);
 

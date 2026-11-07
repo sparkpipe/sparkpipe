@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 4u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 5u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -32,6 +32,7 @@ typedef struct SparkStageRunnerServices
 	void (*fail)(void *context, SparkStatus status);
 	SparkStatus (*expert_weights)(void *context, uint32_t layer, const uint32_t *group_row_offset_device,
 		uint32_t routed_rows, const void **w1, const void **w2);
+	SparkStatus (*expert_weights_ahead)(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2);
 	void (*layer_done)(void *context, uint32_t layer);
 	void (*row_state)(void *context, uint32_t layer, uint32_t phase);
 } SparkStageRunnerServices;
@@ -61,6 +62,7 @@ typedef struct SparkStageRunnerStep
 	uint32_t graph_key;
 	const uint32_t *route_override;
 	uint32_t route_override_width;
+	uint32_t *route_fault;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -115,6 +117,19 @@ typedef struct SparkStageRunnerModelOpen
 	void *stream;
 } SparkStageRunnerModelOpen;
 
+typedef struct SparkStageRunnerStreamedPrefill
+{
+	uint64_t sequence_id;
+	uint32_t first_position;
+	uint32_t token_count;
+	const uint32_t *token_ids;
+	uint32_t sequence_slot;
+	uint32_t state_target;
+	uint32_t multiprocessors;
+	uint32_t reserved0;
+	uint32_t *route_fault;
+} SparkStageRunnerStreamedPrefill;
+
 struct SparkStageRunnerModelInterface
 {
 	uint32_t abi_version;
@@ -138,6 +153,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*tap_plan)(void *model, const SparkStageRunnerTapPlan *plan);
 	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
 	SparkStatus (*check)(void *model);
+	SparkStatus (*streamed_prefill)(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services);
 };
 
 #ifdef __cplusplus

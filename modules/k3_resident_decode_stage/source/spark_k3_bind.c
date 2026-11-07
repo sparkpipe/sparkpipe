@@ -55,8 +55,24 @@ static SparkStatus SparkK3BindMla(SparkK3Pack *pack, SparkK3BoundLayer *bound)
 		"mla_kv_a_weight", "mla_kv_a_norm_weight", "mla_kv_b_value_weight",
 		"mla_gate_weight", "mla_out_weight"
 	};
+	static const char *const expanded[] =
+	{
+		"mla_q_b_weight", "mla_kv_b_key_full_weight", "mla_kv_b_value_full_weight"
+	};
+	char full_name[SPARK_K3_PACK_MAX_NAME_BYTES];
+	SparkK3PackEntry probe;
+	uint32_t present = 0u;
 	for ( uint32_t i = 0u; i < sizeof(names) / sizeof(names[0]); i++ )
 		BIND_ONE(bound, pack, names[i]);
+	for ( uint32_t i = 0u; i < sizeof(expanded) / sizeof(expanded[0]); i++ )
+	{
+		snprintf(full_name, sizeof(full_name), "%s%u.%s", K3_LAYER_PREFIX, bound->layer_index, expanded[i]);
+		present += SparkK3PackLoadEntry(pack, full_name, &probe) == SPARK_STATUS_OK ? 1u : 0u;
+	}
+	if ( present != 0u && present != sizeof(expanded) / sizeof(expanded[0]) )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	for ( uint32_t i = 0u; present != 0u && i < sizeof(expanded) / sizeof(expanded[0]); i++ )
+		BIND_ONE(bound, pack, expanded[i]);
 	return(SPARK_STATUS_OK);
 }
 

@@ -68,7 +68,7 @@ static double Quantile(double *values, uint32_t count, double q)
 static int ComparePosition(const float *reference, const float *test, uint32_t vocab, uint32_t target, double *ref_log, double *test_log,
 	CompareTotals *totals, uint32_t position, uint32_t split, const float *second)
 {
-	uint32_t ref_top, test_top, second_top, index;
+	uint32_t ref_top, test_top, second_top, index, stable = 0u;
 	double kl, delta;
 	for ( index = 0u; index < vocab; index++ )
 		if ( !isfinite(reference[index]) || !isfinite(test[index]) )
@@ -90,6 +90,7 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 			if ( !isfinite(second[index]) )
 				return(-1);
 		LogSoftmax(second,vocab,test_log,&second_top);
+		stable = second_top == ref_top ? 1u : 0u;
 		totals->floor_kl[position] = Kl(ref_log,test_log,vocab);
 		totals->above_floor += kl > totals->floor_kl[position] ? 1u : 0u;
 	}
@@ -101,7 +102,7 @@ static int ComparePosition(const float *reference, const float *test, uint32_t v
 	}
 	else
 		totals->kl_decode += kl;
-	if ( second != 0 && second_top == ref_top )
+	if ( stable != 0u )
 	{
 		totals->stable_positions++;
 		totals->stable_agree += ref_top == test_top ? 1u : 0u;
@@ -121,14 +122,14 @@ int main(int argc, char **argv)
 	SparkTokenPrompts prompts;
 	const SparkTokenPrompt *prompt = 0;
 	CompareTotals totals;
-	FILE *reference, *test, *second = 0;
+	FILE *reference, *test, *second = 0, *kl_out = 0;
 	float *ref_row, *test_row, *second_row = 0;
 	uint32_t split;
 	double *ref_log, *test_log;
 	uint32_t vocab, index, positions;
-	if ( argc < 7 || argc > 9 )
+	if ( argc < 7 || argc > 10 )
 	{
-		fprintf(stderr,"usage: %s PROMPTS.json PROMPT_NAME VOCAB REFERENCE.logits TEST.logits LABEL [PREFILL_POSITIONS [SECOND_REFERENCE.logits]]\n",argv[0]);
+		fprintf(stderr,"usage: %s PROMPTS.json PROMPT_NAME VOCAB REFERENCE.logits TEST.logits LABEL [PREFILL_POSITIONS [SECOND_REFERENCE.logits|- [KL.f64]]]\n",argv[0]);
 		return(2);
 	}
 	if ( SparkTokenPromptsLoad(argv[1],&prompts) != SPARK_STATUS_OK )
@@ -144,7 +145,12 @@ int main(int argc, char **argv)
 	ref_log = (double *)malloc((size_t)vocab * sizeof(double));
 	test_log = (double *)malloc((size_t)vocab * sizeof(double));
 	split = argc >= 8 ? (uint32_t)strtoul(argv[7],0,10) : 0u;
-	if ( argc == 9 )
+	if ( argc == 10 && (kl_out = fopen(argv[9],"wb")) == 0 )
+	{
+		fprintf(stderr,"logit_compare: cannot write the per-position KL file\n");
+		return(1);
+	}
+	if ( argc >= 9 && strcmp(argv[8],"-") != 0 )
 	{
 		second = fopen(argv[8],"rb");
 		second_row = (float *)malloc((size_t)vocab * sizeof(float));
@@ -208,6 +214,11 @@ int main(int argc, char **argv)
 			printf("%s[%u,%u]",index != 0u ? "," : "",above,at - index);
 		}
 		printf("],\"floor_kl_median\":%.6e,",Quantile(totals.floor_kl,positions,0.5));
+	}
+	if ( kl_out != 0 && (fwrite(totals.kl,sizeof(double),positions,kl_out) != positions || fclose(kl_out) != 0) )
+	{
+		fprintf(stderr,"logit_compare: cannot write the per-position KL file\n");
+		return(1);
 	}
 	printf("\"kl_median\":%.6e,\"kl_p90\":%.6e}\n",Quantile(totals.kl,positions,0.5),Quantile(totals.kl,positions,0.9));
 	free(totals.kl);

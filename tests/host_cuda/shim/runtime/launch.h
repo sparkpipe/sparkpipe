@@ -2,6 +2,12 @@
 #include <stdint.h>
 
 #define LM_LAUNCH_OK 0
+#define LM_LAUNCH_GRID_Y_MAX 65535u
+
+static inline uint32_t LmLaunchGridRows(uint32_t rows)
+{
+	return(rows < LM_LAUNCH_GRID_Y_MAX ? rows : LM_LAUNCH_GRID_Y_MAX);
+}
 #define LM_LAUNCH_ERR_SHAPE (-41)
 #define LM_LAUNCH_ERR_TILE (-42)
 #define LM_LAUNCH_ERR_SHARED (-43)

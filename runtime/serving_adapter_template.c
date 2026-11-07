@@ -6,6 +6,7 @@
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_kv_ledger.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_serving_adapter_template.h"
 
@@ -570,7 +571,7 @@ SparkStatus SparkServingAdapterTemplateLoadDriver(
 	create_request.kv_snapshot_directory =
 		configuration->kv_snapshot_directory;
 	create_request.kv_snapshot_maximum_bytes =
-		configuration->kv_snapshot_maximum_bytes;
+		configuration->kv_snapshot_directory != 0 ? SPARK_KV_NODE_QUOTA_BYTES : 0u;
 	create_request.execution_stream = configuration->execution_stream;
 	create_request.completion_function = request->completion_function;
 	create_request.completion_context = request->completion_context;

@@ -41,6 +41,7 @@ HUB_FILES = (
 )
 SSH = ("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
 CONTROLLER = {"token": "/srv/workspace/sparkpipe/swap-controller/token", "url": "http://127.0.0.1:8440/status"}
+INFERENCE_ROOTS = stage_lane.INFERENCE_ROOTS
 READ = r'''
 import glob, json, os, re, subprocess, sys, urllib.request
 request = json.load(sys.stdin)
@@ -119,6 +120,9 @@ for path in request["paths"]:
     restored.append(path)
 print(json.dumps(restored))
 '''
+
+
+OPTIONAL_FIELDS = ("expert_pool_cap_bytes",)
 
 
 def records() -> dict:
@@ -428,7 +432,8 @@ def main() -> int:
     if args.command == "draftd":
         return draftd_start(args.record)
     if args.command == "field":
-        print(record(args.record)[args.field])
+        lane = record(args.record)
+        print(lane.get(args.field, "") if args.field in OPTIONAL_FIELDS else lane[args.field])
         return 0
     lane = record(args.record)
     if args.command == "release-row":
@@ -442,7 +447,9 @@ def main() -> int:
     if lane["launcher"] != "stage_lane":
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
     values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],
-              "STAGE_EXPERT_POOL_BYTES": lane["expert_pool_bytes"], "STAGE_MEMORY_MAX": lane["memory_max"]}
+              "STAGE_MEMORY_MAX": lane["memory_max"]}
+    if "expert_pool_cap_bytes" in lane:
+        values["STAGE_EXPERT_POOL_CAP_BYTES"] = lane["expert_pool_cap_bytes"]
     print("\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items()))
     return 0
 

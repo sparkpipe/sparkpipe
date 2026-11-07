@@ -24,20 +24,20 @@ if stage_lane.draft_hooks(record_id, lane) != {}:
 
 lane["draftd"]["lifecycle"] = "model"
 hooks = stage_lane.draft_hooks(record_id, lane)
-start, stop = hooks.get("draft_start", ""), hooks.get("draft_stop", "")
+start, stop = hooks.get("hub_start", ""), hooks.get("hub_stop", "")
 words = shlex.split(start)
 settings = dict(word.split("=", 1) for word in words[1:] if "=" in word and not word.startswith("-"))
 if words[:1] != ["env"] or words[-3:] != ["/srv/workspace/sparkpipe/draftd-test/hub_draftd.sh", "start", "/srv/workspace/sparkpipe/draftd-test"]:
-    failures.append(f"draft_start runs the source's hub_draftd.sh start with the record's environment: {start}")
+    failures.append(f"hub_start runs the source's hub_draftd.sh start with the record's environment: {start}")
 expected = {"DRAFTD_UNIT": "sparkpipe-draftd-axk2", "DRAFTD_TAP_PORT": "7721", "DRAFTD_DRAFT_PORT": "7722", "DRAFTD_WINDOW": "128", "DRAFTD_DELTA": "-1",
             "DRAFTD_EMBED": "model.embed_tokens.weight", "DRAFTD_HEAD": "lm_head.weight", "DRAFTD_NORM": "model.norm.weight"}
 for key, value in expected.items():
     if settings.get(key) != value:
-        failures.append(f"draft_start sets {key}={value}, not {settings.get(key)!r}")
+        failures.append(f"hub_start sets {key}={value}, not {settings.get(key)!r}")
 if not stop.endswith("/srv/workspace/sparkpipe/draftd-test/hub_draftd.sh stop") or "DRAFTD_UNIT=sparkpipe-draftd-axk2" not in stop:
-    failures.append(f"draft_stop stops the record's unit: {stop}")
+    failures.append(f"hub_stop stops the record's unit: {stop}")
 entry = stage_lane.swap_entry(lane["model"], stage_lane.MODELS[lane["model"]], lane["lane"], hooks)
-if entry.get("draft_start") != start or entry.get("draft_stop") != stop:
+if entry.get("hub_start") != start or entry.get("hub_stop") != stop:
     failures.append("the swap entry carries the record's draft hooks")
 
 lane["draftd"]["lifecycle"] = "always"
@@ -59,4 +59,4 @@ for failure in failures:
     print("FAIL", failure)
 if failures:
     raise SystemExit(1)
-print("PASS lane draft hooks: a draftd record with lifecycle model gives the swap entry draft_start and draft_stop with the record's environment; no lifecycle keeps it always on; an unknown lifecycle or a path off local NVMe is refused")
+print("PASS lane draft hooks: a draftd record with lifecycle model gives the swap entry hub_start and hub_stop with the record's environment; no lifecycle keeps it always on; an unknown lifecycle or a path off local NVMe is refused")
