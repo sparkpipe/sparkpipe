@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 try:
@@ -587,17 +587,6 @@ def slot(text):
     return f"{found.group(1)}T{found.group(2)}:00Z"
 
 
-def hour_price(state, fleet, hours):
-    found = next((f for f in state.get("fleets") or [] if isinstance(f, dict) and f.get("id") == fleet), None)
-    if not found:
-        raise Failure(f"{fleet} is not on the Fleet List.")
-    try:
-        price = Decimal(hours) * Decimal(str((state.get("bookings") or {})["hourHC"])) * Decimal(str(found["rate"]))
-    except (KeyError, TypeError, InvalidOperation):
-        raise Failure("The market did not give the price of an hour and the fleet's Rate.")
-    return price.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-
-
 def book_week(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "weeks": ctx.args.weeks}
@@ -613,8 +602,10 @@ def book_week(ctx):
 def book_hours(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "start": slot(ctx.args.start), "hours": ctx.args.hours}
-    price = hour_price(client.call("GET", "/market/state", auth="session"), request["fleet"], request["hours"])
-    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {price} HC?")
+    plan = client.call("POST", "/market/quote-hours", request, auth="session")
+    off = percent(plan.get("discount"))
+    discount = f" ({off} off)" if off else ""
+    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {plan.get('price')} HC{discount}?")
     booked = spend(ctx, client, "/market/book-hours", request)
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('start')} to {booked.get('end')} for {booked.get('hc')} HC."])
     return 0

@@ -564,7 +564,7 @@ A Function is software we build and run for the account on a fleet it holds. It 
 | Ask the whole codebase | Run one question or instruction over every file or module, and collect the answers | Packs |
 | Keep docs current | Draft updates to architecture notes, API docs and a map of the code after each push, as a branch | Packs, repo push token |
 | Morning report | Everything the night produced, with the week's prefill avoided (§3.6) | Runner |
-| Benchmark your repository | For a demo hour or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, warm |
+| Benchmark your repository | For a demo day or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, warm |
 | Scheduled model | Change the fleet's resident models on a schedule, for example a second model for the night, with the cache of each saved and restored (§4.5) | Model switch |
 | Tests and fuzzing | Write and run tests and fuzzers for changed code, and report crashes with reproductions | Sandbox |
 | Confirmed findings | Re-run review findings as tests in the sandbox, and keep only those that reproduce | Sandbox |

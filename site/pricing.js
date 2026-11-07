@@ -1,7 +1,7 @@
 window.SP_PRICING = {
   "vatRate": 0.1,
   "swiftVatRate": 0,
-  "demoFrom": "2026-12-01",
+  "hoursFrom": "2026-12-01",
   "weeksFrom": "2027-01-04",
   "fleets": [
     {
@@ -10,7 +10,7 @@ window.SP_PRICING = {
       "kind": "16 Sparks",
       "state": "serving",
       "rate": 1,
-      "demo": true,
+      "hourFleet": true,
       "storageTB": 4
     },
     {
@@ -19,7 +19,7 @@ window.SP_PRICING = {
       "kind": "16 Sparks",
       "state": "building",
       "rate": 1,
-      "demo": false,
+      "hourFleet": false,
       "storageTB": 4
     }
   ],
@@ -82,8 +82,8 @@ window.SP_PRICING = {
       }
     ],
     "maxWeeksAhead": 52,
-    "demoDaysAhead": 7,
-    "demoHoursPerWeek": 24,
+    "hourFleetDaysAhead": 7,
+    "hourFleetHoursPerWeek": 24,
     "maintenanceHoursPerWeek": 3
   }
 };

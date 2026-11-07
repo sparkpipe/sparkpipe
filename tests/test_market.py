@@ -304,7 +304,7 @@ def opening(failures, app, m):
     NOW[0] = kst(2026, 11, 28, 12)
     early = person(app, "early", 50)
     if refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 11, 30, 23)), "hours": 1})) != (409, "not_open") or refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 12, 1)), "hours": 1})):
-        failures.append("Demo Fleet hours open on demoFrom and not before")
+        failures.append("Hour Fleet hours open on hoursFrom and not before")
     NOW[0] = kst(2026, 12, 25, 12)
     if refused(lambda: m.quote_weeks(early, {"fleet": "F3", "weeks": 1})) != (409, "not_open"):
         failures.append("a Week before weeksFrom is booked")
@@ -331,7 +331,7 @@ def weeks_and_hours(failures, app, m, port):
     NOW[0] = kst(2027, 1, 6, 12)
     public = m.public()
     fleets = {f["id"]: f for f in public["fleets"]}
-    if [fleets[f]["status"] for f in ("F1", "F3", "F4", "F5")] != ["demo", "pinned", "free", "free"] or fleets["F4"]["firstWeek"] != slot(kst(2027, 1, 11)) or fleets["F3"]["firstWeek"] is not None or fleets["F3"]["booked"] != [[slot(kst(2027, 1, 4)), slot(kst(2027, 1, 11))]]:
+    if [fleets[f]["status"] for f in ("F1", "F3", "F4", "F5")] != ["hour-fleet", "pinned", "free", "free"] or fleets["F4"]["firstWeek"] != slot(kst(2027, 1, 11)) or fleets["F3"]["firstWeek"] is not None or fleets["F3"]["booked"] != [[slot(kst(2027, 1, 4)), slot(kst(2027, 1, 11))]]:
         failures.append(f"the public Fleet states: {fleets}")
     if public["waitlist"] != {"locks": 0} or fleets["F3"]["storageTB"] != 4 or public["hc"]["prices"][1] != {"from": 144, "usd": 15, "krw": 19500} or public["bookings"]["weekHC"] != 144:
         failures.append("the public state shows more of an empty waitlist than its count of locks, or lacks the published settings")
@@ -363,7 +363,7 @@ def weeks_and_hours(failures, app, m, port):
         failures.append("a free-Fleet Hour reaches past the current Week, or takes a booked hour")
     if refused(lambda: m.book_hours(C, {"fleet": "F5", "start": slot(kst(2027, 1, 6, 12)), "hours": 1})) != (409, "started"):
         failures.append("an hour that has started is booked")
-    demo(failures, m, C, D)
+    hour_fleet(failures, m, C, D)
     m.book_weeks(G, {"fleet": "F4", "weeks": 1})
     m.book_weeks(K, {"fleet": "F5", "weeks": 1})
     for who, fleet in ((G, "F4"), (K, "F5")):
@@ -371,14 +371,14 @@ def weeks_and_hours(failures, app, m, port):
     return state
 
 
-def demo(failures, m, C, D):
+def hour_fleet(failures, m, C, D):
     book = lambda who, start, hours: refused(lambda: m.book_hours(who, {"fleet": "F1", "start": slot(start), "hours": hours}))
-    if book(C, kst(2027, 1, 6, 13), 24) or book(C, kst(2027, 1, 7, 13), 1) != (409, "demo_cap") or book(D, kst(2027, 1, 7, 13), 1):
-        failures.append("the Demo Fleet's weekly cap is not per account")
-    if book(C, kst(2027, 1, 10, 23), 2) != (409, "demo_cap") or book(C, kst(2027, 1, 11), 3):
-        failures.append("Demo Fleet hours are not capped by the Week they fall in")
+    if book(C, kst(2027, 1, 6, 13), 24) or book(C, kst(2027, 1, 7, 13), 1) != (409, "hour_cap") or book(D, kst(2027, 1, 7, 13), 1):
+        failures.append("the Hour Fleets' weekly cap is not per account")
+    if book(C, kst(2027, 1, 10, 23), 2) != (409, "hour_cap") or book(C, kst(2027, 1, 11), 3):
+        failures.append("Hour Fleet hours are not capped by the Week they fall in")
     if book(C, kst(2027, 1, 13, 12), 1) != (409, "too_far") or book(C, kst(2027, 1, 13, 11), 1):
-        failures.append("Demo Fleet hours are not bookable exactly up to 7 days ahead")
+        failures.append("Hour Fleet hours are not bookable exactly up to 7 days ahead")
 
 
 def waitlist(failures, app, m, port, mailbox, state):
@@ -736,7 +736,7 @@ def holders_and_maintenance(failures, app, m, port, state):
     if [h["start"] for h in found["hours"]] != [slot(kst(2027, 1, 17, h)) for h in (21, 22, 23)] + [slot(kst(2027, 1, 18, h)) for h in (3, 4)]:
         failures.append(f"the holder feed lists maintenance hours as held: {found}")
     status, kind, raw = call(port, "GET", "/availability.txt")
-    if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving demo\nF3 serving pinned\nF4 serving available\nF5 serving available\nwaitlist locks 3\n"):
+    if status != 200 or not kind.startswith("text/plain") or not raw.decode().endswith("F1 serving hour-fleet\nF3 serving pinned\nF4 serving available\nF5 serving available\nwaitlist locks 3\n"):
         failures.append(f"availability.txt: {status} {kind} {raw[-120:]!r}")
     if client(app, port, C)("POST", "/market/sandbox/clock", {"hours": 1})[0] != 404 or client(app, port, C)("POST", "/market/sandbox/fleet", {"fleet": "F3", "up": False})[0] != 404:
         failures.append("the live service moves its clock or takes a Fleet down on request")
@@ -786,6 +786,48 @@ def order_lot(app, account, count, price, total):
     app.book.append("order", {"order": ident, "account": account, "email": "x@example.com", "company": "X", "product": "credits", "processor": "toss", "currency": "KRW", "hc": str(count), "price": price, "net": "0", "vat": "0", "total": total})
     app.market.issue(account, Decimal(count), ident)
     return ident
+
+
+def discount_flows(failures, work):
+    root = work / "discounts"
+    site(root)
+    path = root / "site" / "pricing.js"
+    pricing = tp.read_pricing(path)
+    pricing["fleets"] += [dict(pricing["fleets"][0], id="F6", name="Fleet 6"), dict(pricing["fleets"][1], id="F7", name="Fleet 7")]
+    tp.write_pricing(path, pricing)
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    server, app, port = live(root, "data", mailbox)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 6, 12)
+        H, S, P, W, N = (person(app, name, credits) for name, credits in (("h", 6100), ("s", 1000), ("p", 7000), ("w", 3300), ("n", 100)))
+        for who, fleet, weeks in ((H, "F3", 52), (S, "F4", 3), (S, "F7", 2), (P, "F5", 4)):
+            m.book_weeks(who, {"fleet": fleet, "weeks": weeks})
+        m.join(P, {"lock": 6000})
+        m.join(W, {"lock": 3200})
+        start = slot(kst(2027, 1, 7, 10))
+        quotes = {who: m.quote_hours(who, {"fleet": "F1", "start": start, "hours": 2}) for who in (H, S, P, W, N)}
+        got = {who: (q["price"], q["discount"], q["weeks"], q["basis"]) for who, q in quotes.items()}
+        expect = {H: ("1.600000", "0.2", 52, "held"), S: ("2.000000", "0", 3, "held"), P: ("1.600000", "0.2", 52, "waitlist"), W: ("1.700000", "0.15", 26, "waitlist"), N: ("2.000000", "0", 0, None)}
+        if got != expect:
+            failures.append(f"an Hour is not priced at the most Weeks held on one Fleet, or the Weeks a waitlist lock books, whichever discount is larger: {got}")
+        booked = m.book_hours(H, {"fleet": "F1", "start": start, "hours": 2})
+        if (booked["hc"], booked["discount"]) != ("1.600000", "0.2") or m.view(H)["discount"] != {"discount": "0.2", "weeks": 52, "basis": "held", "fleet": "F3"} or balance(app, H) != Decimal("108.0"):
+            failures.append(f"a holder's Hours are not charged and shown at its discount: {booked} {m.view(H)['discount']}")
+        if m.view(N)["discount"] != {"discount": "0", "weeks": 0, "basis": None, "fleet": None}:
+            failures.append(f"an account with no Weeks and no lock shows a discount: {m.view(N)['discount']}")
+        if refused(lambda: m.book_hours(H, {"fleet": "F6", "start": slot(kst(2027, 1, 8)), "hours": 22})) or refused(lambda: m.book_hours(H, {"fleet": "F1", "start": slot(kst(2027, 1, 9)), "hours": 1})) != (409, "hour_cap") \
+                or refused(lambda: m.book_hours(N, {"fleet": "F6", "start": slot(kst(2027, 1, 9)), "hours": 1})):
+            failures.append("the weekly hour cap does not count an account's hours on every Hour Fleet together, or binds another account")
+        if refused(lambda: m.quote_weeks(N, {"fleet": "F6", "weeks": 1})) != (409, "not_weekly") or [f["status"] for f in m.public()["fleets"] if f["hourFleet"]] != ["hour-fleet", "hour-fleet"]:
+            failures.append("a second Hour Fleet can be pinned or is not shown as an Hour Fleet")
+        NOW[0] = kst(2027, 1, 10, 0, 1)
+        m.tick()
+        if any(b["source"] == "waitlist" for b in app.book.market.bookings.values()) or [m.position(who) for who in (P, W)] != [1, 2]:
+            failures.append("the Sunday round allocates an Hour Fleet to the waitlist")
+    finally:
+        server.shutdown()
+        mailbox.shutdown()
 
 
 def allocation_flows(failures, work):
@@ -1569,6 +1611,7 @@ def main():
         check_units(failures)
         site(work)
         live_flows(failures, work)
+        discount_flows(failures, work)
         allocation_flows(failures, work)
         extension_flows(failures, work)
         notice_flows(failures, work)
@@ -1582,7 +1625,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Demo Fleet hours open on demoFrom, up to 7 days ahead and 24 a Week per account; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, up when every resident model answers or a swap is under way, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, and reset; and the ledger replays")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Hour Fleet hours open on hoursFrom, up to 7 days ahead and 24 a Week per account across every Hour Fleet, never pinned or allocated; an Hour costs less by the discount for the most Weeks held on one Fleet or the Weeks a waitlist lock books; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, up when every resident model answers or a swap is under way, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, and reset; and the ledger replays")
     return 0
 
 

@@ -336,10 +336,6 @@ def check_units(failures):
         refused(failures, lambda: cli.token_name(name), f"the token name {name!r} is accepted")
     expect(failures, (cli.percent("0.1"), cli.percent(0.05), cli.percent("0.125"), cli.percent("0"), cli.percent(None)) == ("10%", "5%", "12.5%", None, None),
            "a discount is not shown as a percentage")
-    state = {"bookings": {"hourHC": 1, "weekHC": 144}, "fleets": [{"id": "F1", "rate": 1.5}, {"id": "F3", "rate": 2}, {"id": "F5", "rate": "0.3333337"}]}
-    expect(failures, str(cli.hour_price(state, "F1", 2)) == "3.000000" and str(cli.hour_price(state, "F3", 5)) == "10.000000", "the price of hours is not hours x hourHC x Rate")
-    expect(failures, str(cli.hour_price(state, "F5", 1)) == "0.333333", "the price of hours is not rounded down to a millionth of an HC as the market charges it")
-    refused(failures, lambda: cli.hour_price(state, "F9", 1), "hours of a fleet that is not on the Fleet List are priced")
     env = cli.claude_env(cli.API, KEY, "kimi-k3+core", "kimi-k3+core", 1000000)
     spec = {"ANTHROPIC_BASE_URL": "https://sparkpipe.ai/pay/api", "ANTHROPIC_AUTH_TOKEN": KEY, "ANTHROPIC_MODEL": "kimi-k3+core", "ANTHROPIC_DEFAULT_HAIKU_MODEL": "kimi-k3+core",
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
@@ -507,6 +503,8 @@ def check_book(failures, home, fake):
     fake.terms = False
     fake.route("GET", "/market/state", (200, {}, {"account": {"email": "dev@acme.example"}, "bookings": {"hourHC": 1, "weekHC": 144}, "fleets": [{"id": "F1", "rate": 1.5}, {"id": "F3", "rate": 1}]}))
     fake.route("POST", "/market/quote-weeks", (200, {}, plan))
+    hour_plan = {"fleet": "F1", "start": "2027-01-05T10:00Z", "end": "2027-01-05T12:00Z", "hours": 2, "price": "2.400000", "discount": "0.2", "weeks": 52, "basis": "held"}
+    fake.route("POST", "/market/quote-hours", lambda r: (200, {}, hour_plan) if r["body"]["fleet"] in ("F1", "F3") else (400, {}, {"error": "Choose a Fleet on the Fleet List: F1, F3."}))
     fake.route("POST", "/market/book-weeks", booked)
     fake.route("POST", "/market/book-hours", lambda r: (200, {}, dict(r["body"], booking="BK8", end="2027-01-05T12:00Z", hc="3.000000")))
     fake.route("POST", "/market/waitlist", (200, {}, {"locked": "144.000000", "position": 3}))
@@ -530,7 +528,8 @@ def check_book(failures, home, fake):
     code, out, _ = home.run("book", "week", "F3", "4", "--yes", "--accept")
     expect(failures, code == 0 and fake.find("POST", "/market/book-weeks")[-1]["body"] == {"fleet": "F3", "weeks": 4, "accept": True}, "--accept is not sent with the booking")
     code, out, _ = home.run("book", "hours", "F1", "2027-01-05T10", "2", answers=["y"])
-    expect(failures, code == 0 and "F1 for 2 hour(s) from 2027-01-05T10:00Z, for 3.000000 HC?" in home.prompts[-1] and "BK8" in out, f"book hours does not show the price: {home.prompts[-1]}")
+    expect(failures, code == 0 and "F1 for 2 hour(s) from 2027-01-05T10:00Z, for 2.400000 HC (20% off)?" in home.prompts[-1] and "BK8" in out
+           and fake.find("POST", "/market/quote-hours")[0]["body"] == {"fleet": "F1", "start": "2027-01-05T10:00Z", "hours": 2}, f"book hours does not show the market's price and discount: {home.prompts[-1]}")
     for start in ("2027-01-05T10", "2027-01-05T10:00Z"):
         code, out, _ = home.run("book", "hours", "F1", start, "2", "--yes")
         expect(failures, code == 0 and fake.find("POST", "/market/book-hours")[-1]["body"] == {"fleet": "F1", "start": "2027-01-05T10:00Z", "hours": 2} and "BK8" in out, f"book hours {start}: {out}")
