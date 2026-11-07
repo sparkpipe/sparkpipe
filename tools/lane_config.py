@@ -40,7 +40,7 @@ HUB_FILES = (
     ("config/litellm-config.yaml", "sparkpipe-chat/litellm.yaml"),
 )
 SSH = ("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
+INFERENCE_ROOTS = stage_lane.INFERENCE_ROOTS
 READ = r'''
 import glob, json, os, re, subprocess, sys
 request = json.load(sys.stdin)
