@@ -934,6 +934,8 @@ class WarmGate:
 
 
 class Model:
+    long_fill = False
+
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
