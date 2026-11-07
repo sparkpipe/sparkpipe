@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
+CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 SESSION_BLOCK_BASE = 18432
@@ -502,7 +503,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
+            "control_endpoint": {"kind": "tcp", "host": CONTROL_HOST.format(rank=rank), "port": 23000 + 16 * lane + rank},
         })
     result = {
         "schema_version": 2,
