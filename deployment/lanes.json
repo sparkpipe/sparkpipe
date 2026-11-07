@@ -101,6 +101,29 @@
     "pair_gid_index": 3,
     "traffic_class": 106
    },
+   "draft_server": {
+    "host": "127.0.0.1",
+    "port": 7722,
+    "target_model": "kimi-k3.1-pro",
+    "depth": 7,
+    "wait_ms": 30,
+    "min_confidence": 0.05
+   },
+   "draftd": {
+    "unit": "sparkpipe-draftd-k31",
+    "source": "/srv/workspace/sparkpipe/draftd-k31-dspark",
+    "drafter": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-5e654fbe9202",
+    "target_shard": "/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors",
+    "window": 4096,
+    "context_bytes": 17179869184,
+    "restart": "on-failure",
+    "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log"
+   },
+   "taps": {
+    "entries": "o75,o79,o83,o87,o91",
+    "rank": 15,
+    "stream": "10.10.250.2:7721"
+   },
    "tokenizer_sha256": "58578ae8cb9f99f2b928afd7af00c6ac87d8262a01484fb7a51b7dc608742ad9",
    "text_prompt_prefix_token_ids": []
   },

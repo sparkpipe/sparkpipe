@@ -25,7 +25,7 @@ start)
 	if [ "$(listening)" != 0 ]; then echo "hub_draftd: port $TAP_PORT or $DRAFT_PORT is already in use" >&2; exit 1; fi
 	RECORD=""
 	if [ -n "$RECORD_DIR" ]; then
-		case "$RECORD_DIR" in /mnt/cold-raid6/*) ;; *) echo "hub_draftd: DRAFTD_RECORD_DIR must be on /mnt/cold-raid6 (a recording holds about 172 KB per tap row)" >&2; exit 1;; esac
+		case "$RECORD_DIR" in /srv/workspace/*) ;; *) echo "hub_draftd: DRAFTD_RECORD_DIR must be on the hub's local NVMe (a recording holds about 172 KB per tap row)" >&2; exit 1;; esac
 		mkdir -p "$RECORD_DIR" || exit 1
 		RECORD="--record-dir '$RECORD_DIR'"
 	fi

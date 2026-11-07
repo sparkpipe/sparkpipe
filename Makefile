@@ -802,6 +802,7 @@ PYTHON_TESTS := \
 	tests/test_motif3_pack.py \
 	tests/test_lane_run_log.py \
 	tests/test_lane_streamed_prefill.py \
+	tests/test_k3_dspark_drafter.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_weightd_map_fd_ownership.py \
