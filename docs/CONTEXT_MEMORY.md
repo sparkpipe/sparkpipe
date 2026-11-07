@@ -37,9 +37,9 @@ What is built (`tools/serving/chat_memory.py`):
   system block with the reasoning effort, so a base warmed at another effort
   shares nothing past the first few tokens with the next request, which then
   prefills the whole layout cold. The import checks its memory identity once,
-  when it arrives, and opens every batch as that identity: a long history
-  takes as long as its batches do, past the life of the token it was sent
-  with.
+  when it arrives, and opens every batch as that identity under the batch's
+  own turn ids: a long history takes as long as its batches do, past the life
+  of the token it was sent with.
 
 ## Goal
 
@@ -180,7 +180,7 @@ output that can be fetched again leaves the raw window first.
     the conversation up to its user message, its reply by the same digest,
     and its parent by the previous turn's. A client that resends its history
     therefore binds the curator's lines exactly as Open WebUI's message ids
-    do.
+    do. Open WebUI message-id headers on an API request are ignored.
   - Opting in without a session id answers 400. The harness's own
     compaction and auxiliary requests stay raw.
   - Replay keeps working inside a memory session. A frozen layout renders
