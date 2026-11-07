@@ -94,12 +94,12 @@ def matmul(left, right):
     if not FP32:
         return matmul_f64(left, right)
     if not REVERSED or left.shape[-1] <= CHUNK:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + CHUNK] @ right[first:first + CHUNK] for first in range(0, left.shape[-1], CHUNK)]
     total = None
-    for first in reversed(range(0, left.shape[-1], CHUNK)):
-        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, CHUNK)
 
 
 def reduce_sum(values, axis=-1, keepdims=True):

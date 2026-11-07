@@ -639,10 +639,35 @@ the error a GPU's has (`tools/reference_device_error.py`: on the M5 Ultra
 under `-fno-fast-math`, exp is off by a relative 1.64e-7 mean and 4.35e-7
 standard deviation, about 18 times FP32 rounding, and tanh by an absolute
 3.7e-8; the error is a fixed function of the input, drawn from a hash of its
-bits). The KL divergences among A, B and H are the floors: FP32
-reduction-order noise plus the transcendental noise any GPU adds, under BF16
-rounding. Every reference (the Python ones too) computes A, B and H by
-default.
+bits), and every matrix product carrying a GPU matrix unit's accumulation
+error. The KL divergences among A, B and H are the floors: FP32
+reduction-order noise plus the transcendental and accumulation noise any GPU
+adds, under BF16 rounding. Every reference (the Python ones too) computes A,
+B and H by default.
+
+The accumulation error is the M5 Ultra's. Its MPP matmul, which `spark_gemm`
+runs for every prefill projection of more than 64 rows, keeps one FP32
+accumulator for the whole inner dimension and adds four products to it at a
+time. Against exact sums, on random bf16 operands with K = 4,096, its error
+is 1.21e-8 of the summed absolute products (rms), unbiased, and it flips 0.031%
+of the bf16-rounded outputs; the hub's BLAS is at 3.28e-9 and 0.015%, so the
+references alone sit closer to each other than any GPU sits to them. An
+emulated FP32 chain of four-product tree sums reproduces the MPP numbers.
+Accumulating 512-wide blocks into a fresh partial sum (the form
+`spark_gemm_fp8_blocks` already uses) brings the GEMM to BLAS's error, but at
+66 TFLOPS against 94 on the M5 Ultra, and Solar's gate excess only fell from
+0.026 to 0.016. H therefore models the chain instead
+(`reference_device_error.accumulated`): each product gains a normal draw whose
+variance is 0.11 u^2 (u = 2^-24) times the chain's expected sum of squared
+running sums, computed per 1,024-wide chunk from the chunk's partial sum and
+its sum of squared products. 0.11 matches the M5 Ultra's bf16 flip rate and
+mean error, in bf16 steps, on the random operands and on four of Solar Open 2's
+projections (layers 1, 4 and 24, flips within 15% and mean error within 10%).
+A chain over the whole inner dimension is the longest a GPU needs; CUDA's
+k16 MMA steps, split-K and tensor-parallel shards all accumulate less, so the
+allowance covers them. A and B multiply exactly as before; references
+computed before the model carry only the transcendental error, a tighter
+floor, so a gate passed against them stands.
 
 The floor used to be A against B, reduction order alone. It failed the
 reference itself: the same numpy reference of Gemma 4 31B run on a second CPU

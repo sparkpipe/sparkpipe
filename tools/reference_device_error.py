@@ -14,12 +14,36 @@ uses) gives a uniform draw with that mean and standard deviation, so a
 against h measures FP32 reduction-order noise plus the transcendental noise
 any GPU adds, which is the floor the Metal gate compares against. Variants
 a and b leave both functions exact.
+
+h also carries a GPU matrix unit's accumulation error. The references
+multiply in FP32 through BLAS, whose blocked sums are about as accurate as
+FP32 allows; the M5 Ultra's MPP matmul keeps one FP32 accumulator for a
+whole inner dimension and adds four products to it at a time, and its error
+is 3.7 times BLAS's, unbiased, with twice the bf16 rounding flips. A matrix
+product a reference takes through accumulated() gains, in h, a normal draw
+whose variance is 0.11 u^2 (u = 2^-24) times the expected sum, over the
+accumulator's additions, of the running sum's square plus the four-product
+tree's own squares: with the inner dimension cut into 1,024-wide chunks of
+partial sum Y and squared-product sum V, and S the sum of the chunks before,
+each chunk of n additions contributes n (S^2 + S Y + Y^2 / 3 + V / 6) + 2 V.
+0.11 matches the M5 Ultra's bf16 rounding flips and its mean error in bf16
+steps on random K = 4,096 products and on four of Solar Open 2's projections
+(flips within 15%, mean error within 10%). The draw is a Box-Muller normal
+from two hashes of the product's FP32 bits, so h stays deterministic. A
+product chained over its whole inner dimension is the longest chain a GPU
+needs; split-K and tensor-parallel shards add less, so h's allowance holds
+for any of them. References computed before this model carry only the
+transcendental error: their floors are tighter, and a gate passed against
+them stands.
 """
 
 import numpy as np
 
 EXP_ERROR = (1.637e-7, 4.354e-7)
 TANH_ERROR = (6.1e-9, 3.67e-8)
+SUM_ERROR = 0.11
+SUM_STEP = 4
+SUM_WIDTH = 1024
 ACTIVE = False
 
 
@@ -55,3 +79,33 @@ def tanh(values):
     if not ACTIVE:
         return exact
     return exact + draw(values, 2, TANH_ERROR)
+
+
+def normal(values, salt):
+    first = (centered(values, salt).astype(np.float64) + 1.0) / 2.0
+    second = centered(values, salt + 1).astype(np.float64)
+    return np.sqrt(-2.0 * np.log(first)) * np.cos(np.pi * second)
+
+
+def accumulated(left, right, total, parts=None, width=SUM_WIDTH):
+    if not ACTIVE:
+        return total
+    depth = left.shape[-1]
+    if parts is None:
+        parts = [total] if depth <= width else [left[..., first:first + width] @ right[first:first + width] for first in range(0, depth, width)]
+    elif len(parts) != -(-depth // width):
+        raise ValueError(f"{len(parts)} partial products for an inner dimension of {depth} in chunks of {width}")
+    running = np.zeros(np.shape(total), dtype=np.float64)
+    expected = np.zeros(np.shape(total), dtype=np.float64)
+    for index, part in enumerate(parts):
+        first = index * width
+        chunk_left = np.asarray(left[..., first:first + width], dtype=np.float32)
+        chunk_right = np.asarray(right[first:first + width], dtype=np.float32)
+        squares = ((chunk_left * chunk_left) @ (chunk_right * chunk_right)).astype(np.float64)
+        part = np.asarray(part, dtype=np.float64)
+        expected += chunk_left.shape[-1] / SUM_STEP * (running * running + running * part + part * part / 3.0 + squares / 6.0) + 2.0 * squares
+        running += part
+    total = np.asarray(total, dtype=np.float32)
+    with np.errstate(invalid="ignore", over="ignore"):
+        noise = (np.sqrt(SUM_ERROR * expected) * 2.0 ** -24 * normal(total, 3)).astype(np.float32)
+        return np.where(np.isfinite(total), total + noise, total)

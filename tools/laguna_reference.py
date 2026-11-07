@@ -69,6 +69,10 @@ def bf16(values):
     return rounded.astype(np.uint32).view(np.float32)
 
 
+def product(left, right):
+    return device.accumulated(left, right, left @ right)
+
+
 def rms(values, epsilon):
     return values * np.power((values * values).mean(axis=-1, keepdims=True) + np.float32(epsilon), np.float32(-0.5))
 
@@ -172,7 +176,7 @@ class Reference:
         return bf16(self.weight(name) * bf16(rms(values, self.epsilon)))
 
     def linear(self, values, name):
-        return bf16(values @ self.weight(name).T)
+        return bf16(product(values, self.weight(name).T))
 
     def rope(self, values, kind, positions):
         inv_freq = self.inv_freq[kind]
@@ -202,11 +206,11 @@ class Reference:
             visible &= positions[None, :] > positions[:, None] - self.window
         output = np.empty((rows, heads, dim), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head // group, :].T) * self.scale
+            scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
             total = weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16((bf16(weights) @ value[:, head // group, :]) / total)
+            output[:, head, :] = bf16(product(bf16(weights), value[:, head // group, :]) / total)
         gate = bf16(softplus(self.linear(normed, p + "g_proj.weight")))
         output = bf16(output * gate[:, :, None])
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
@@ -219,7 +223,7 @@ class Reference:
     def moe(self, layer, normed):
         p = f"{PREFIX}layers.{layer}.mlp."
         shared = self.mlp(normed, p + "shared_expert.")
-        logits = bf16(normed @ self.weight(p + "gate.weight").T)
+        logits = bf16(product(normed, self.weight(p + "gate.weight").T))
         scores = (np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))).astype(np.float32)
         selection = scores + self.weight(p + "experts.e_score_correction_bias")[None, :]
         chosen = PINNED[layer] if PINNED is not None else np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
@@ -230,10 +234,10 @@ class Reference:
             rows, slots = np.nonzero(chosen == expert)
             e = f"{p}experts.{int(expert)}."
             x = normed[rows]
-            gate = bf16(x @ self.checkpoint.f32(e + "gate_proj.weight").T)
-            up = bf16(x @ self.checkpoint.f32(e + "up_proj.weight").T)
+            gate = bf16(product(x, self.checkpoint.f32(e + "gate_proj.weight").T))
+            up = bf16(product(x, self.checkpoint.f32(e + "up_proj.weight").T))
             hidden = bf16(bf16(silu(gate)) * up)
-            out = bf16(hidden @ self.checkpoint.f32(e + "down_proj.weight").T)
+            out = bf16(product(hidden, self.checkpoint.f32(e + "down_proj.weight").T))
             routed[rows] = bf16(routed[rows] + bf16(out * weights[rows, slots][:, None]))
         return bf16(bf16(routed * self.routed_scale) + shared), chosen
 
@@ -272,7 +276,7 @@ class Reference:
         parts = []
         for first in range(0, head.shape[0], chunk):
             rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
-            parts.append(normed @ rows.T)
+            parts.append(product(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 

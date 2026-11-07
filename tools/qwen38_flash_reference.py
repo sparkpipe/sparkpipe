@@ -96,12 +96,12 @@ def ordered(count):
 
 def matmul(left, right, chunk=CHUNK):
     if not REVERSED or left.shape[-1] <= chunk:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + chunk] @ right[first:first + chunk] for first in range(0, left.shape[-1], chunk)]
     total = None
-    for first in reversed(range(0, left.shape[-1], chunk)):
-        part = left[..., first:first + chunk] @ right[first:first + chunk]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, chunk)
 
 
 def e4m3_table():
@@ -379,7 +379,7 @@ class Reference:
             key = self.head_norm_rope(k[first:first + count], k_norm, positions)
             visible = positions[None, :] <= positions[:, None]
             for head in range(self.heads):
-                scores = (query[:, head] @ key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
+                scores = matmul(query[:, head], key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
                 scores = np.where(visible, scores, -np.inf)
                 weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
                 total = reduce_sum(weights, keepdims=True)

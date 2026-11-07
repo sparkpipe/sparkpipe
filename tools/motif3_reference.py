@@ -80,7 +80,7 @@ def bf16(values):
 
 def product(left, right):
     if FP32:
-        return np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32)
+        return device.accumulated(left, right, np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32))
     return matmul(left, right)
 
 

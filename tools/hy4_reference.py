@@ -76,7 +76,7 @@ GROUP = 32
 LOOKAHEAD = 8
 REVERSED = False
 CHUNK = 1024
-CHUNK = 32 << 20
+READ_BYTES = 32 << 20
 KINDS = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}
 
 
@@ -96,12 +96,12 @@ def silu(values):
 
 def product(left, right):
     if not REVERSED or left.shape[-1] <= CHUNK:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + CHUNK] @ right[first:first + CHUNK] for first in range(0, left.shape[-1], CHUNK)]
     total = None
-    for first in reversed(range(0, left.shape[-1], CHUNK)):
-        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, CHUNK)
 
 
 def reduce_sum(values, axis=-1, keepdims=True):
@@ -151,7 +151,7 @@ class Checkpoint:
         buffer = np.empty(end - begin, dtype=np.uint8)
         view, done = memoryview(buffer), 0
         while done < buffer.size:
-            got = os.preadv(descriptor, [view[done:done + CHUNK]], base + begin + done)
+            got = os.preadv(descriptor, [view[done:done + READ_BYTES]], base + begin + done)
             if got <= 0:
                 raise OSError(f"short read of {name} at {done}")
             done += got
