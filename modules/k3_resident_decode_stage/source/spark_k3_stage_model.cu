@@ -153,6 +153,7 @@ struct SparkK3ModelState
 	uint32_t tp_rank;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
+	uint32_t position_capacity;
 	uint64_t kv_page_bytes;
 	uint64_t layer_w1_offset[K3_LAYERS];
 	uint64_t layer_w2_offset[K3_LAYERS];
@@ -737,6 +738,7 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 		fprintf(stderr, "sparkpipe_k3: the pack does not give the per-rank scratch widths\n");
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
+	state->position_capacity = configuration->kv_pages_per_sequence * K3_KV_PAGE_SLOTS;
 	if ( SparkK3DispatchCreate(&state->dispatch, &state->module.sizing,
 		configuration->max_active_sequence_count,
 		configuration->max_input_row_count, attention_rows,
@@ -1128,6 +1130,17 @@ static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStr
 	return K3StreamedRun(state->streamed, request, services, state->execution_stream);
 }
 
+static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step)
+{
+	uint32_t row, context = 0u;
+	if ( step->graph_key != 0u || step->host_positions == 0 )
+		return state->position_capacity;
+	for ( row = 0u; row < step->rows; row++ )
+		if ( step->host_positions[row] + 1u > context )
+			context = step->host_positions[row] + 1u;
+	return context;
+}
+
 static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, void *stream_void)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
@@ -1169,7 +1182,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
-		step->rows * K3_TOP_K, step->context, step->multiprocessors, stream);
+		step->rows * K3_TOP_K, K3StepContext(state, step), step->multiprocessors, stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_K3_DISPATCH_OK )
