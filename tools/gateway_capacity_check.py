@@ -74,9 +74,9 @@ def measure(url, method, body, headers, concurrency, seconds, timeout):
     statuses = {}
     for status, _ in results:
         statuses[str(status)] = statuses.get(str(status), 0) + 1
-    rate = len(ok) / elapsed if elapsed > 0 else 0.0
+    rate = round(len(ok) / elapsed, 3) if elapsed > 0 else 0.0
     return {"url": url, "method": method, "concurrency": concurrency, "seconds": round(elapsed, 3), "requests": len(results), "ok": len(ok),
-            "statuses": statuses, "throttled": statuses.get("429", 0), "requests_per_second": round(rate, 3),
+            "statuses": statuses, "throttled": statuses.get("429", 0), "requests_per_second": rate,
             "p50_ms": round(percentile(ok, 0.50) * 1000, 3) if ok else None, "p99_ms": round(percentile(ok, 0.99) * 1000, 3) if ok else None,
             "window_seconds": WINDOW_SECONDS, "capacity_per_window": math.floor(rate * WINDOW_SECONDS)}
 
