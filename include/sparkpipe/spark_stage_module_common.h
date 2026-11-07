@@ -9,13 +9,12 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_stage_module_claims.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
 #define SPARK_STAGE_MODULE_MAX_DEVICE_ALLOCATIONS 4096u
 #define SPARK_STAGE_MODULE_STAGING_CHUNK_BYTES (64ull * 1024ull * 1024ull)
-#define SPARK_STAGE_MODULE_SLOT_FREE 0u
-#define SPARK_STAGE_MODULE_SLOT_CLAIMED 1u
 #define SPARK_STAGE_MODULE_DESTROY_QUIESCE_TIMEOUT_NS 30000000000ull
 #define SPARK_STAGE_MODULE_CUDA_FORK_MAX_BRANCHES 2u
 #define SPARK_STAGE_MODULE_CUDA_READ_AHEAD_IDLE 0u
@@ -73,9 +72,6 @@ typedef cudaError_t (*SparkStageModuleCudaReadAheadLaunchFunction)(
     uint32_t *sink_u32,
     uint32_t sink_word_capacity,
     void *launch_context);
-
-typedef SparkStatus (*SparkStageModuleClaimedIndexPrepareFunction)(
-    void *prepare_context);
 
 #define SPARK_STAGE_MODULE_STAGE_TIMING_SAMPLE_CAPACITY 96u
 #define SPARK_STAGE_MODULE_STAGE_TIMING_STAGE_CAPACITY 32u
@@ -238,60 +234,6 @@ void SparkStageModuleRuntimeSnapshotInitialize(
     uint32_t program_id,
     const atomic_uint *slot_states,
     uint32_t slot_count);
-SparkStatus SparkStageModuleSlotClaim(
-    atomic_uint *slot_states,
-    uint32_t slot_count,
-    uint32_t *slot_index);
-SparkStatus SparkStageModuleIndexSetClaim(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count);
-SparkStatus SparkStageModuleIndexClaimOrdinal(
-    const atomic_uint *index_states,
-    uint32_t index_capacity,
-    uint32_t index,
-    uint32_t *ordinal_out);
-
-typedef struct SparkStageModuleClaimedLaneContext
-{
-	const atomic_uint *index_states;
-	uint32_t index_capacity;
-} SparkStageModuleClaimedLaneContext;
-
-static inline SparkStatus SparkStageModuleClaimedLaneOrdinal(
-	void *context,
-	uint32_t lane_id,
-	uint32_t *ordinal_out)
-{
-	const SparkStageModuleClaimedLaneContext *lanes;
-	lanes = (const SparkStageModuleClaimedLaneContext *)context;
-	if ( lanes == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	return(SparkStageModuleIndexClaimOrdinal(lanes->index_states,lanes->index_capacity,lane_id,ordinal_out));
-}
-
-SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count,
-    SparkStageModuleClaimedIndexPrepareFunction prepare_function,
-    void *prepare_context);
-void SparkStageModuleIndexSetRelease(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count);
-void SparkStageModuleAtomicStateArrayInitialize(
-    atomic_uint *states,
-    uint32_t state_count);
-uint32_t SparkStageModuleSlotAvailableCount(
-    const atomic_uint *slot_states,
-    uint32_t slot_count);
-uint32_t SparkStageModuleSlotCountFree(
-    const atomic_uint *slot_states,
-    uint32_t slot_count);
 SparkStatus SparkStageModuleWaitForSlots(
     const char *module_tag,
     const atomic_uint *slot_states,
@@ -301,9 +243,6 @@ SparkStatus SparkStageModulePauseTimespec(
     uint64_t nanoseconds,
     struct timespec *pause);
 SparkStatus SparkStageModulePauseNanoseconds(uint64_t nanoseconds);
-void SparkStageModuleSlotRelease(
-    atomic_uint *slot_states,
-    uint32_t slot_index);
 void SparkStageModuleCompleteAndReleaseClaims(
     SparkModelDriverCompletionFunction completion_function,
     void *completion_context,

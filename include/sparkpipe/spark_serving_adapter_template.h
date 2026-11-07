@@ -4,7 +4,6 @@
 
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_status.h"
