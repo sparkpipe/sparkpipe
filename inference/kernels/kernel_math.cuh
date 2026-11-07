@@ -95,6 +95,18 @@ SPARK_MATH_FN float SparkMathAttentionValueWeight(float weight)
 	return(SparkMathRoundBf16(weight));
 }
 
+#define SPARK_MATH_FLASH_KEY_TILE 64u
+
+SPARK_MATH_FN SparkMathU32 SparkMathFlashTiles(SparkMathU32 begin, SparkMathU32 end)
+{
+	return(end > begin ? (end - 1u) / SPARK_MATH_FLASH_KEY_TILE - begin / SPARK_MATH_FLASH_KEY_TILE + 1u : 0u);
+}
+
+SPARK_MATH_FN SparkMathU32 SparkMathFlashTile(SparkMathU32 end, SparkMathU32 step)
+{
+	return(((end - 1u) / SPARK_MATH_FLASH_KEY_TILE - step) * SPARK_MATH_FLASH_KEY_TILE);
+}
+
 SPARK_MATH_FN float SparkMathExp2Fast(float value)
 {
 #if defined(__CUDA_ARCH__)

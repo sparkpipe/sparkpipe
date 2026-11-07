@@ -174,6 +174,7 @@ typedef struct SparkDeviceOps
 	SparkDeviceBuffer partial;
 	SparkDeviceQueue *partial_queue;
 	uint32_t lane;
+	uint32_t compute_units;
 } SparkDeviceOps;
 
 typedef struct SparkOpsSequences

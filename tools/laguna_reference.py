@@ -40,9 +40,8 @@ bf16 multiplies each head before o_proj; layer 0 is a dense SwiGLU, layers
 weights the unbiased scores normalized and cast to bf16), routed experts
 summed in bf16 in ascending expert order, times 2.5, plus the shared expert.
 Projections round to bf16; the attention takes the publishers' flash form:
-weights w = exp(s - m) in f32 with m the row's maximum over its visible keys
-(one max per row, the reference's single-tile model of the kernels' per-tile
-running maxima), the values multiplied by bf16(w) in f32, that product
+weights w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+diagonal (tools/reference_flash.py), the values multiplied by bf16(w) in f32, that product
 divided by the sum of the f32 weights and rounded to bf16; the final logits
 are f32. Every prompt goes through one layer at a time, so each layer's
 weights are read once per run.
@@ -57,6 +56,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 
 PREFIX = "model."
 REVERSED = False
@@ -208,9 +208,8 @@ class Reference:
         for head in range(heads):
             scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(product(bf16(weights), value[:, head // group, :]) / total)
+            attended, total, _ = flash.attend(scores, value[:, head // group, :], product, lambda weights: weights.sum(axis=-1, keepdims=True), device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         gate = bf16(softplus(self.linear(normed, p + "g_proj.weight")))
         output = bf16(output * gate[:, :, None])
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")

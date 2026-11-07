@@ -35,9 +35,8 @@ f32, each routed expert's bf16 output times its f32 weight cast to bf16 and
 added in ascending expert order, plus the shared expert. Layers 62..77 clamp
 the gate above at 7 before SiLU and the up projection to +-7 on every MLP.
 Projections round to bf16; the attention takes the publishers' flash form:
-weights w = exp(s - m) in f32 with m the row's maximum over its visible keys
-(one max per row, the reference's single-tile model of the kernels' per-tile
-running maxima), the values multiplied by bf16(w), that product divided in
+weights w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+diagonal (tools/reference_flash.py), the values multiplied by bf16(w), that product divided in
 f32 by the sum of the f32 weights and rounded to bf16; the final logits are
 f32. Every matrix product accumulates in
 f64 before it is rounded, so a prompt's numbers do not depend on the other
@@ -56,6 +55,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 from t1_reference_common import matmul
 
 PREFIX = "model."
@@ -167,9 +167,8 @@ class Reference:
         for head in range(heads):
             scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(product(bf16(weights), value[:, head // group, :]) / total)
+            attended, total, _ = flash.attend(scores, value[:, head // group, :], product, lambda weights: weights.sum(axis=-1, keepdims=True), device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
 
     def swiglu(self, gate, up, limit):

@@ -6,6 +6,8 @@ using namespace mpp::tensor_ops;
 
 #define SPARK_ATTENTION_BLOCK_SIMDS 4u
 
+static_assert(SPARK_ATTENTION_BLOCK_KEYS == SPARK_MATH_FLASH_KEY_TILE, "prefill attention tiles keys as the shared flash walk does");
+
 static inline bool SparkKvPage(device const uint *page_table, uint pages_per_sequence, uint page_slots, uint pool_pages, uint sequence,
 	uint position, device atomic_uint *error, uint row, thread uint &page)
 {
@@ -257,8 +259,10 @@ kernel void spark_attention_prefill_blocks(constant SparkAttentionParams &p [[bu
 		row_max[lane] = -INFINITY;
 		row_sum[lane] = 0.0f;
 	}
-	for ( uint tile = begin; tile < end; tile += SPARK_ATTENTION_BLOCK_KEYS )
+	const uint tiles = SparkMathFlashTiles(begin, end);
+	for ( uint step = 0u; step < tiles; step++ )
 	{
+		const uint tile = SparkMathFlashTile(end, step);
 		const uint keys = min(SPARK_ATTENTION_BLOCK_KEYS, end - tile);
 		uint page;
 		if ( !SparkKvPage(page_table, p.pages_per_sequence, p.page_slots, p.pool_pages, sequence, tile, error, first_row, page) )
