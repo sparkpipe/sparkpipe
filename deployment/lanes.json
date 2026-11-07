@@ -62,7 +62,7 @@
     "node_rows": 32768,
     "dense_buffers": 3,
     "expert_slots": 32,
-    "min_tokens": 16384,
+    "min_tokens": 124928,
     "partner_pack": "sparkdata/k3.mxfp4.tp16/partner/k3.stage0.rank{partner:02d}.pack",
     "fabric_device": "rocep1s0f1",
     "pair_device": "roceP2p1s0f0",

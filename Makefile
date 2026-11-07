@@ -736,6 +736,7 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
 	tests/test_lane_streamed_prefill.py \
+	tests/test_fill_cutoff.py \
 	tests/test_chat_commands.py \
 	tests/test_chat_memory_qualify_checks.py \
 	tests/test_chat_api_keys.py \
