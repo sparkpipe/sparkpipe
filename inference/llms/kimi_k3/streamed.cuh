@@ -609,6 +609,7 @@ struct K3StreamedMlaExchange
 	const uint32_t *index_context;
 	uint16_t *index_local;
 	uint16_t *index_keys;
+	uint8_t *index_packed;
 	uint16_t *index_heads_local;
 	uint16_t *index_heads;
 	uint16_t *index_query;
@@ -685,7 +686,7 @@ static uint32_t K3StreamedMlaHelp(const K3StreamedMlaExchange *x, uint32_t giver
 
 static uint32_t K3StreamedMlaIndexReady(const K3StreamedMlaExchange *x, uint32_t rows)
 {
-	return(x->index_local != 0 && x->index_keys != 0 && x->index_heads_local != 0 && x->index_heads != 0 && x->index_query != 0 && x->index_scores != 0 &&
+	return(x->index_local != 0 && x->index_keys != 0 && x->index_packed != 0 && x->index_heads_local != 0 && x->index_heads != 0 && x->index_query != 0 && x->index_scores != 0 &&
 		x->index_send != 0 && x->index_received != 0 && x->index_bitmaps != 0 && x->index_selected_local != 0 && x->index_selected != 0 &&
 		x->index_error != 0 && x->index_context != 0 && x->index_chunk != 0u && x->key_pages != 0 && x->zero_rows != 0 && x->sparse_query != 0 &&
 		x->sparse_partials != 0 && x->sparse_latent != 0 && x->sparse_rows != 0u && x->index_store.shard.degree == x->nodes &&
@@ -717,9 +718,13 @@ static int32_t K3StreamedMlaIndexSelect(K3LayerBuffers *b, const K3StreamedMlaEx
 {
 	const uint32_t stride = SparkKvShardGatherKeys(x->index_store.shard, key_count), keep = stride < K3_INDEX_TOPK ? stride : K3_INDEX_TOPK;
 	const uint32_t chunk = x->index_chunk < rows ? x->index_chunk : rows;
+	const LmIndexScorePackedView packed = {x->index_store.pages, x->index_store.shard, x->index_packed};
 	int32_t status = K3StreamedMlaIndexReady(x, rows) != 0u ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE;
 	if ( status == LM_LAUNCH_OK && ((uint64_t)chunk * stride > x->index_score_floats || keep == 0u) )
 		status = LM_LAUNCH_ERR_SHAPE;
+	if ( status == LM_LAUNCH_OK && LmKvShardGatherPackLaunch<K3IndexKv,K3_LAYER_THREADS>(x->index_store,x->older_sequence,x->older_offset,x->index_context,1u,stride,x->index_packed,
+			stream) != cudaSuccess )
+		status = LM_LAUNCH_ERR_LAUNCH;
 	for (uint32_t first = 0u; first < rows && status == LM_LAUNCH_OK; first += chunk)
 	{
 		const uint32_t count = rows - first < chunk ? rows - first : chunk;
@@ -728,8 +733,8 @@ static int32_t K3StreamedMlaIndexSelect(K3LayerBuffers *b, const K3StreamedMlaEx
 			const uint64_t row = (uint64_t)node * rows + first;
 			status = K3Project<LmBf16Format>(b,x->q_latents + row * K3_Q_LORA_RANK,b->mla_index_query_weight,0,x->index_query,count,K3_Q_LORA_RANK,K3_INDEX_QUERY,
 				multiprocessors,stream);
-			if ( status == LM_LAUNCH_OK && (LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmKvShardView>(x->index_query,
-					x->index_heads + row * K3_INDEX_HEADS,x->index_store,x->store_sequence_of_row + row,x->index_context,x->pass_positions + row,count,stride,
+			if ( status == LM_LAUNCH_OK && (LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmIndexScorePackedView>(x->index_query,
+					x->index_heads + row * K3_INDEX_HEADS,packed,x->store_sequence_of_row + row,x->index_context,x->pass_positions + row,count,stride,
 					K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),x->index_scores,stream) != cudaSuccess ||
 				LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(x->index_store.shard,x->index_scores,stride,x->store_sequence_of_row + row,x->index_context,
 					x->pass_positions + row,keep,K3_INDEX_TOPK,count,x->index_send + (uint64_t)node * chunk * keep,x->index_error,stream) != cudaSuccess) )

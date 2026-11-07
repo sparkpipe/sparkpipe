@@ -15,6 +15,13 @@
 #define LM_INDEX_SCORE_SHARED_ROWS 8u
 #define LM_INDEX_SCORE_SHARED_MIN_ROWS 64u
 
+struct LmIndexScorePackedView
+{
+	LmKvView pages;
+	SparkKvShard shard;
+	const uint8_t *keys;
+};
+
 static __host__ __device__ __forceinline__ uint32_t LmIndexScoreBlocks(uint32_t positions)
 {
 	return((positions + LM_INDEX_SCORE_BLOCK_POSITIONS - 1u) / LM_INDEX_SCORE_BLOCK_POSITIONS);
@@ -35,6 +42,11 @@ static __host__ __device__ __forceinline__ const LmKvView &LmIndexScorePages(con
 	return(view.pages);
 }
 
+static __host__ __device__ __forceinline__ const LmKvView &LmIndexScorePages(const LmIndexScorePackedView &view)
+{
+	return(view.pages);
+}
+
 static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvView &view, uint32_t bound)
 {
 	(void)view;
@@ -44,6 +56,19 @@ static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvView &view
 static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvShardView &view, uint32_t bound)
 {
 	return(SparkKvShardLocalKeys(view.shard, bound));
+}
+
+static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmIndexScorePackedView &view, uint32_t bound)
+{
+	return(SparkKvShardLocalKeys(view.shard, bound));
+}
+
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmIndexScorePackedView &view, uint32_t sequence, uint32_t key, uint32_t row)
+{
+	(void)sequence;
+	(void)row;
+	return(view.keys + (uint64_t)key * Geometry::kSlotBytes);
 }
 
 template<class Geometry>

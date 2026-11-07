@@ -211,6 +211,7 @@ static void MiSetup(MiNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 	x->index_context = x->key_context;
 	x->index_local = MiAlloc<uint16_t>((uint64_t)rows * K3_INDEX_DIM);
 	x->index_keys = MiAlloc<uint16_t>((uint64_t)MI_ROWS * K3_INDEX_DIM);
+	x->index_packed = MiAlloc<uint8_t>((uint64_t)SparkKvShardGatherKeys(owned,MI_ROWS) * K3IndexKv::kSlotBytes);
 	x->index_heads_local = MiAlloc<uint16_t>((uint64_t)rows * K3_INDEX_HEADS);
 	x->index_heads = MiAlloc<uint16_t>((uint64_t)MI_ROWS * K3_INDEX_HEADS);
 	x->index_query = MiAlloc<uint16_t>((uint64_t)MI_CHUNK * K3_INDEX_QUERY);

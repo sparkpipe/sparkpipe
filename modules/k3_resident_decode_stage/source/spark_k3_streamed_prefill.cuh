@@ -199,6 +199,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 		const uint64_t stride = SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
 		s->mla.index_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_DIM);
 		s->mla.index_keys = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_DIM);
+		s->mla.index_packed = LmPassAlloc<uint8_t>(p, stride * K3IndexKv::kSlotBytes);
 		s->mla.index_heads_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_HEADS);
 		s->mla.index_heads = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_HEADS);
 		s->mla.index_query = LmPassAlloc<uint16_t>(p, chunk * K3_INDEX_QUERY);
