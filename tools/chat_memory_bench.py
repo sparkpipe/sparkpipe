@@ -4,10 +4,12 @@ import collections
 import json
 import random
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -95,9 +97,25 @@ def post(url, body, headers):
         raise SystemExit(f"HTTP {error.code} from {url}: {error.read().decode(errors='replace')[:2000]}")
 
 
-def identity(secret, user):
-    chat = str(uuid.uuid4())
+def identity(secret, user, chat=None):
+    chat = chat or str(uuid.uuid4())
     return chat, {"X-OpenWebUI-User-Jwt": qualify.token(secret, user), "X-OpenWebUI-Chat-Id": chat, "X-OpenWebUI-Task": ""}
+
+
+class Prepared:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.locks = {}
+        self.entries = {}
+
+    def get(self, key, build):
+        with self.lock:
+            lock = self.locks.setdefault(key, threading.Lock())
+        with lock:
+            built = key not in self.entries
+            if built:
+                self.entries[key] = build()
+            return self.entries[key], built
 
 
 def turn_headers(headers, parent):
@@ -107,28 +125,40 @@ def turn_headers(headers, parent):
     return turn
 
 
-def answer(args, item, arm, secret, memory):
+def answer(args, item, arm, secret, memory, prepared):
     question = {"role": "user", "content": ASK.format(item["date"], item["question"])}
     record = {"id": item["id"], "kind": item["kind"], "arm": arm}
+    user = f"bench-{args.model}"
+    history = memory.exchange_key(item["history"])
     if arm == "full":
         messages = [{"role": "system", "content": SYSTEM + memory.MEMORY_OFF}] + item["history"] + [question]
         record["reply"], record["prompt_tokens"], record["cached_tokens"], record["seconds"] = qualify.ask(args.url + "/v1/chat/completions", args.model,
                                                                                                           messages, {}, args.effort)
         return record
-    chat, headers = identity(secret, f"bench-{args.model}")
     if arm == "memory":
-        result, record["import_seconds"] = post(args.url + "/v1/sparkpipe/memory/import",
-                                                {"model": args.model, "messages": [{"role": "system", "content": SYSTEM}] + item["history"], "batch": args.batch},
-                                                headers)
-        record["import"] = result
+        def imported():
+            chat, headers = identity(secret, user)
+            result, seconds = post(args.url + "/v1/sparkpipe/memory/import",
+                                   {"model": args.model, "messages": [{"role": "system", "content": SYSTEM}] + item["history"], "batch": args.batch}, headers)
+            return {"chat": chat, "import": result, "seconds": seconds}
+        entry, built = prepared.get(("memory", history), imported)
+        record.update(import_seconds=entry["seconds"] if built else 0.0, import_reused=not built, **({"import": entry["import"]} if built else {}))
+        _, headers = identity(secret, user, entry["chat"])
         last = memory.exchanges_of(item["history"])[1][-1]
         messages = [{"role": "system", "content": SYSTEM}] + item["history"] + [question]
         reply = qualify.ask(args.url + "/v1/chat/completions", args.model, messages, turn_headers(headers, "import-reply-" + memory.exchange_key(last)[:24]),
                             args.effort)
     else:
         base = [{"role": "system", "content": SYSTEM + memory.MEMORY_OFF}] + item["history"]
-        _, _, _, record["compact_seconds"] = qualify.ask(args.url + "/v1/chat/completions", args.model, base + [{"role": "user", "content": "/compact full"}],
-                                                       turn_headers(headers, None), args.effort)
+
+        def compacted():
+            chat, headers = identity(secret, user)
+            _, _, _, seconds = qualify.ask(args.url + "/v1/chat/completions", args.model, base + [{"role": "user", "content": "/compact full"}],
+                                           turn_headers(headers, None), args.effort)
+            return {"chat": chat, "seconds": seconds}
+        entry, built = prepared.get(("compaction", history), compacted)
+        record.update(compact_seconds=entry["seconds"] if built else 0.0, compact_reused=not built)
+        _, headers = identity(secret, user, entry["chat"])
         reply = qualify.ask(args.url + "/v1/chat/completions", args.model, base + [question], turn_headers(headers, None), args.effort)
     record["reply"], record["prompt_tokens"], record["cached_tokens"], record["seconds"] = reply
     return record
@@ -151,7 +181,10 @@ def summary(records):
     for arm, kinds in table.items():
         report[arm] = {kind: {"questions": len(rows), "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 4),
                               "mean_prompt_tokens": round(sum(r["prompt_tokens"] for r in rows) / len(rows)),
-                              "mean_seconds": round(sum(r["seconds"] for r in rows) / len(rows), 2)} for kind, rows in kinds.items()}
+                              "mean_new_prefill_tokens": round(sum(r["prompt_tokens"] - r["cached_tokens"] for r in rows) / len(rows)),
+                              "mean_seconds": round(sum(r["seconds"] for r in rows) / len(rows), 2),
+                              "setup_seconds": round(sum(r.get("import_seconds", 0.0) + r.get("compact_seconds", 0.0) for r in rows), 1)}
+                       for kind, rows in kinds.items()}
     return report
 
 
@@ -167,6 +200,7 @@ def main():
     parser.add_argument("--per-conversation", type=int, default=20, help="LoCoMo questions per conversation")
     parser.add_argument("--seed", type=int, default=1107)
     parser.add_argument("--batch", type=int, default=8, help="exchanges per curator call when the memory arm imports a history")
+    parser.add_argument("--parallel", type=int, default=1, help="questions in flight at once; a history is imported or compacted once and shared")
     parser.add_argument("--effort", default="low")
     parser.add_argument("--url", default="http://127.0.0.1:8433")
     parser.add_argument("--layer", type=Path, default=Path.home() / "sparkpipe-chat")
@@ -179,15 +213,19 @@ def main():
     items = longmemeval(args.data, args.per_type, args.seed) if args.dataset == "longmemeval" else \
         locomo(args.data, args.conversations, args.per_conversation, args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
-    records = []
+    records, written, prepared = [], threading.Lock(), Prepared()
     with (args.out / "records.jsonl").open("a") as handle:
-        for item in items:
+        def run(item):
             for arm in args.arms.split(","):
-                record = judge(args, item, answer(args, item, arm, secret, memory))
-                handle.write(json.dumps(record) + "\n")
-                handle.flush()
-                records.append(record)
+                record = judge(args, item, answer(args, item, arm, secret, memory, prepared))
+                with written:
+                    handle.write(json.dumps(record) + "\n")
+                    handle.flush()
+                    records.append(record)
                 print(json.dumps({k: record.get(k) for k in ("id", "kind", "arm", "correct", "prompt_tokens", "cached_tokens", "seconds")}), flush=True)
+        with ThreadPoolExecutor(args.parallel) as pool:
+            for future in [pool.submit(run, item) for item in items]:
+                future.result()
     report = {"dataset": args.dataset, "model": args.model, "judge": args.judge_model, "judge_prompts": LONGMEMEVAL_SOURCE, "seed": args.seed,
               "arms": summary(records)}
     (args.out / "summary.json").write_text(json.dumps(report, indent=2))
