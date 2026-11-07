@@ -53,10 +53,10 @@ nodes:
 ~/sparkdata/qab-f2/
   agent.env                 rendered by tools/ab_fleet.py env
   model_resident.json       runtime_root, control ports, kv_backing_directory = <root>/run/kv_backing
-  config/stage_NN.json      one per rank; stage.json -> stage_<rank>.json
+  config/stage_NN.json      one per rank, named by that rank's node in model_resident.json
   arm.json                  sparkpipe-quant-arm-v1 descriptor; the client passes it as --quant-arm
+  packs/<pack>.sha256       a copy of the rank pack's digest, the one *.sha256 residentd reads for the weightd attach
   bin/ lib/ stages/         the arm firmware, a SCORE_DUMP=1 build (identical SHA256SUMS on every node)
-  packs/                    symlinks to the arm's pack directory (read-only)
   inputs/                   targets.bin, probe.bin, tier2_rows.bin (same SHA on every node)
   run/                      the current run's private directories; created empty per run
   runs/<run_id>/            finished runs (dumps, logs), moved out of run/
@@ -91,19 +91,29 @@ would delete production's snapshots at startup. Score dumps contain prompt
 logits and must never land in a production root. So:
 
 - `kv_snapshot_directory`, `score_dump_directory` and `kv_backing_directory`
-  resolve under the arm root, after symlinks. Stage members are relative paths
+  resolve under the arm root. Stage members are relative paths
   (the runtime joins them to the runtime root).
 - No private directory may lie inside a protected path (production's root, its
   KV backing directory, `~/release`, `~/sparkdata/core`, `~/sparkdata/weightd`)
   or overlap another arm's.
 - Every run starts with them empty.
 
+Nothing under an arm root is a symlink. Each stage config names its rank pack
+by the absolute path of the real file in the arm's pack directory,
+`/home/<host>/sparkdata/<pack_root>/...`, and on the node that runs the rank
+the pack, its `.experts` manifest and its `.sha256` digest are regular files,
+and `packs/` holds exactly one `*.sha256`, a copy of that digest.
+The deployment's node for this host names its own `config/stage_<RR>.json`.
+
 `python3 tools/ab_fleet.py root-check <spec> ARM=ROOT ... [--fresh]` enforces
-all three. The window scripts run it on every node before every start, and
+all of these. The window scripts run it on every node before every start, and
 refuse the run if it fails. `tests/test_ab_fleet.py` covers the refusals:
 a snapshot directory symlinked into production, a `..` path, an absolute path,
 production's KV backing directory, a root that aliases production, two arms
-sharing a directory, and a non-empty directory under `--fresh`.
+sharing a directory, a non-empty directory under `--fresh`, a relative,
+linked or incomplete pack, a link under the root (a `packs/` link,
+`config/stage.json`, a linked stage config) and a deployment that names its
+configuration through a link.
 
 ### 2.3 Lanes and ports
 

@@ -74,7 +74,7 @@ def resident_deployment() -> dict:
             "runtime_root": RUNTIME_ROOT.format(host=host),
             "node_target": NODE_TARGET,
             "transport_host": host,
-            "adapter_configuration_path": "config/stage.json",
+            "adapter_configuration_path": "config/stage_%02d.json" % rank,
             "kv_backing_directory": "/home/%s/kvcache/gemma4_26b.tp4pp4.t1" % host,
             "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,

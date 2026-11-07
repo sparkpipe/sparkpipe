@@ -146,7 +146,7 @@ def resident_deployment() -> dict:
             "runtime_root": RUNTIME_ROOT.format(host=host),
             "node_target": NODE_TARGET,
             "transport_host": host,
-            "adapter_configuration_path": "config/stage.json",
+            "adapter_configuration_path": "config/stage_%02d.json" % rank,
             "kv_backing_directory": "/home/%s/kvcache/laguna-s-2.1.bf16.tp8pp2" % host,
             "kv_partition": "/",
             "kv_backing_maximum_bytes": 0,  # Derive KV + recurrent backing from configured cache geometry.

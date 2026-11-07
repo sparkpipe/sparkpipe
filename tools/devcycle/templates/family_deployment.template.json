@@ -1,6 +1,6 @@
 {
  "schema_version": 2,
- "@comment": "Shared-socket family deployment template, extracted from the validated GLM5.3-flash TP16 deployment (deployment/glm5_next_tp16/model_resident.json, PR #1082 receipts). One nodes[] entry per rank, rank_index strictly ordered from 0; the wrapper rewrites runtime_root, kv_backing_directory, control/transport ports into the lane's reserved ranges before launch. Replace every @PLACEHOLDER@; never commit a privatized copy.",
+ "@comment": "Shared-socket family deployment template, extracted from the validated GLM5.3-flash TP16 deployment (deployment/glm5_next_tp16/model_resident.json, PR #1082 receipts). One nodes[] entry per rank, rank_index strictly ordered from 0, each naming its own config/stage_<rank_index as %02d>.json; the wrapper rewrites runtime_root, kv_backing_directory, control/transport ports into the lane's reserved ranges before launch. Replace every @PLACEHOLDER@; never commit a privatized copy.",
  "eos_token_ids": [@EOS_TOKEN_IDS@],
  "coordinator_rank_index": 0,
  "adapter": {
@@ -34,7 +34,7 @@
    "runtime_root": "@HOME@/sparkdata/@FAMILY@.@QUANT@.@TOPOLOGY@",
    "node_target": "@NODE_TARGET@",
    "transport_host": "@HOST0@",
-   "adapter_configuration_path": "config/stage.json",
+   "adapter_configuration_path": "config/stage_00.json",
    "kv_backing_directory": "@HOME@/kvcache/@FAMILY@.@QUANT@.@TOPOLOGY@",
    "kv_partition": "/",
    "kv_backing_maximum_bytes": @KV_BACKING_MAXIMUM_BYTES@,

@@ -10,21 +10,7 @@ ALLOWED = (
     "tools/install_cuda13_compile_only_debian13.sh",
 )
 PENDING = (
-    "tools/devcycle.sh",
-    "tools/devcycle/bbench.sh",
     "tools/devcycle/ds4_spark_brickproof.py",
-    "tools/devcycle/r3flash_exact_cell.sh",
-    "tools/devcycle/templates/run-family-job.sh.template",
-    "tools/fleet_node_agent.sh",
-    "tools/fleet_serve.sh",
-    "tools/glm5_next_coldlaunch_ab.sh",
-    "tools/glm5_next_pack_swap.sh",
-    "tools/inference_smoke.py",
-    "tools/k3_multidev_run_family.sh",
-    "tools/lag_t1_launch.sh",
-    "tools/metal_gates.sh",
-    "tools/mimo26_model_inputs.py",
-    "tools/multi_dev_orchestrate.py",
     "tools/replay_shared_serving_release.py",
 )
 LINK_CALL = re.compile(
