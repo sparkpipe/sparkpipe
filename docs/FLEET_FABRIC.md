@@ -40,6 +40,7 @@ writing collectives or other RDMA traffic against it.
 | Rail 1 QoS | `sparkpipe-roce-qos.service` (`tools/fabric/sparkpipe_roce_qos.sh`): trust DSCP, PFC 3, `prio2buffer 0,0,0,1` |
 | Rail 2 everything | `ds4-rail2-fabric.timer`, 30 s after boot (`tools/devcycle/fleet/ds4_rail2_fabric_apply.sh`): idle function down, address, MTU 9000, rings 1024, trust DSCP, PFC 3 and 6, one shared receive buffer, 802.3x pause off, spark2's forced link |
 | weightd rail 2 device | fleet-agent drop-in `~/.config/systemd/user/fleet-agent.service.d/40-rail2.conf`: `SPARK_MESH_PAIR_INTERFACE=roceP2p1s0f0` |
+| weightd rail mode | Dual rail, the default in `tools/fleet_node_agent.sh` |
 | Hub | `/etc/netplan/61-hub-100g.yaml` (address) and `sparkpipe-hub-rail2.service` (`tools/hub/system/`) |
 | `cisco0` | startup config, policies `ROCE_CLASSIFY2`, `ROCE_NQ2`, `ROCE_OUT2` |
 
