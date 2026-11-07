@@ -696,6 +696,23 @@ def context_target(body):
     return value
 
 
+def template_settings(model, body):
+    kwargs = {}
+    effort = body.get("reasoning_effort")
+    if effort is not None:
+        if not isinstance(effort, str) or effort not in model.reasoning_effort:
+            raise RequestError(400, "unsupported_parameter", f"reasoning_effort must be one of {sorted(model.reasoning_effort)}")
+        kwargs.update(model.reasoning_effort[effort])
+    template_kwargs = body.get("chat_template_kwargs")
+    if template_kwargs is not None and not isinstance(template_kwargs, dict):
+        raise RequestError(400, "invalid_request", "chat_template_kwargs must be an object")
+    for key, value in (template_kwargs or {}).items():
+        if key not in model.template_kwargs:
+            raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
+        kwargs[key] = value
+    return kwargs
+
+
 def request_priority(model, body):
     return BULK_PRIORITY if body.get("model") == model.id + BULK_SUFFIX else INTERACTIVE_PRIORITY
 
@@ -2236,7 +2253,8 @@ class Frontend:
             if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
                 raise RequestError(400, "invalid_request", "send the conversation to import as messages, and batch as a positive whole number of exchanges")
             try:
-                result = await self.memory.import_history(model, request.headers, normalize_messages(messages), body.get("tools") or [], {}, batch)
+                result = await self.memory.import_history(model, request.headers, normalize_messages(messages), body.get("tools") or [],
+                                                          template_settings(model, body), batch)
             except ValueError as error:
                 raise RequestError(400, "invalid_request", str(error))
             except TimeoutError as error:
@@ -2470,19 +2488,7 @@ class Frontend:
             tools = None
         if body.get("stream") not in (None, True, False):
             raise RequestError(400, "invalid_request", "stream must be a boolean")
-        kwargs = {}
-        effort = body.get("reasoning_effort")
-        if effort is not None:
-            if not isinstance(effort, str) or effort not in model.reasoning_effort:
-                raise RequestError(400, "unsupported_parameter", f"reasoning_effort must be one of {sorted(model.reasoning_effort)}")
-            kwargs.update(model.reasoning_effort[effort])
-        template_kwargs = body.get("chat_template_kwargs")
-        if template_kwargs is not None and not isinstance(template_kwargs, dict):
-            raise RequestError(400, "invalid_request", "chat_template_kwargs must be an object")
-        for key, value in (template_kwargs or {}).items():
-            if key not in model.template_kwargs:
-                raise RequestError(400, "unsupported_parameter", f"chat_template_kwargs.{key} is not accepted; accepted: {sorted(model.template_kwargs)}")
-            kwargs[key] = value
+        kwargs = template_settings(model, body)
         session = None
         trace = request_trace(headers, messages)
         if self.citation_wrapper is not None and headers is not None and headers.get("X-OpenWebUI-Chat-Id"):

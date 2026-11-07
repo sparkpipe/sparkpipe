@@ -140,7 +140,8 @@ def answer(args, item, arm, secret, memory, prepared):
         def imported():
             chat, headers = identity(secret, user)
             result, seconds = post(args.url + "/v1/sparkpipe/memory/import",
-                                   {"model": args.model, "messages": [{"role": "system", "content": SYSTEM}] + item["history"], "batch": args.batch}, headers)
+                                   {"model": args.model, "messages": [{"role": "system", "content": SYSTEM}] + item["history"], "batch": args.batch,
+                                    "reasoning_effort": args.effort}, headers)
             return {"chat": chat, "import": result, "seconds": seconds}
         entry, built = prepared.get(("memory", history), imported)
         record.update(import_seconds=entry["seconds"] if built else 0.0, import_reused=not built, **({"import": entry["import"]} if built else {}))
