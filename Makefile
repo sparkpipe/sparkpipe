@@ -1531,6 +1531,9 @@ build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEV
 DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner/device_stage_model.c inference/runner/device_layers.c inference/runner/device_collective.c inference/runner/device_collective_tcp.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
 DEVICE_RUNNER_INCLUDE_FLAGS := -Imodel-families/common/include
 DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
+DEVICE_SERVING_SOURCES := inference/runner/stage_serving_adapter.c inference/runner/device_serving_runner.c runtime/stage_kv_binding.c runtime/kv_device_copy.c \
+	runtime/stage_module_claims.c runtime/model_serving_adapter.c runtime/spark_weightd_memory.c runtime/spark_weightd_absent.c \
+	ring/transport/tp_device_collective_absent.c cache/kv_ledger.c cache/kv_snapshot_purge.c $(SPARKPIPE_CACHE_SOURCES)
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
 	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
@@ -1542,6 +1545,10 @@ QWEN38_DEVICE_OBJECT := build/metal/qwen38_device_stage.o
 $(QWEN38_DEVICE_OBJECT): $(QWEN38_DEVICE_SOURCES) $(QWEN38_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(QWEN38_DEVICE_SOURCES) -o $@
+QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen38_27b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN38_27B_TP16_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN38_27B_BF16=1 -DQWEN38_27B_DEVICE_STAGE=1 -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
 GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.cpp
 GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_device_stage.h \
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
