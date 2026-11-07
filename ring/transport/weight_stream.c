@@ -503,7 +503,7 @@ static uint32_t WeightStreamRotatePair(uint32_t rank, uint32_t ranks, uint32_t k
 }
 
 SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, uint64_t own_offset, uint64_t partner_offset, uint64_t bytes,
-	uint64_t landing_offset, uint32_t tag, SparkWeightStreamBlock *block)
+	uint64_t landing_offset, uint64_t pair_landing_offset, uint32_t tag, SparkWeightStreamBlock *block)
 {
 	const SparkWeightStreamConfig *config = stream != 0 ? &stream->config : 0;
 	uint32_t ranks,rank,partner,k,source,per_half,holds_own,target_pair,send_half,targets[2],target_count = 0u,sent[2] = {0u,0u},writers[2],writer_count = 0u;
@@ -512,7 +512,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	WeightStreamCall call;
 	SparkStatus status;
 	if ( config == 0 || block == 0 || stream->paired == 0u || bytes == 0u || (bytes % 2u) != 0u || own_offset + bytes > config->region_bytes ||
-		partner_offset + bytes > config->region_bytes || landing_offset + bytes > config->region_bytes )
+		partner_offset + bytes > config->region_bytes || landing_offset + bytes > config->region_bytes || pair_landing_offset + bytes > config->region_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	ranks = config->ranks;
 	rank = config->rank;
@@ -562,7 +562,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 				if ( sent[index] >= per_half || (call.ready[link] & (1u << target)) == 0u || stream->links[link].outstanding[target] >= config->depth )
 					continue;
 				status = WeightStreamWrite(stream,target,send_base + (uint64_t)sent[index] * config->chunk_bytes,
-					landing_offset + (uint64_t)send_half * half + (uint64_t)sent[index] * config->chunk_bytes,WeightStreamChunkLength(half,config->chunk_bytes,sent[index]),
+					(target == partner ? pair_landing_offset : landing_offset) + (uint64_t)send_half * half + (uint64_t)sent[index] * config->chunk_bytes,WeightStreamChunkLength(half,config->chunk_bytes,sent[index]),
 					WeightStreamImmediate(tag,rank,send_half,sent[index]));
 				if ( status != SPARK_STATUS_OK )
 					return WeightStreamFail(stream,status);
@@ -592,7 +592,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	}
 	else if ( source == partner )
 	{
-		block->half_offset[0] = landing_offset;
+		block->half_offset[0] = pair_landing_offset;
 		block->half_offset[1] = partner_offset + half;
 	}
 	else

@@ -12,6 +12,7 @@ extern "C" {
 #define SPARK_PACK_WINDOW_MAX_DENSE_RANGES 4u
 #define SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS 4u
 #define SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS 64u
+#define SPARK_PACK_WINDOW_STAGES 3u
 
 typedef SparkStatus (*SparkPackWindowRead)(void *context, uint64_t pack_offset, uint64_t bytes, uint8_t *destination);
 
@@ -51,6 +52,8 @@ typedef struct SparkPackWindow
 	SparkPackWindowConfig config;
 	uint64_t dense_base[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
 	uint64_t expert_slot[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
+	uint64_t stage_own[SPARK_PACK_WINDOW_STAGES];
+	uint64_t stage_partner[SPARK_PACK_WINDOW_STAGES];
 	uint64_t own_staging;
 	uint64_t partner_staging;
 	uint64_t staged_layer_offset;
@@ -62,6 +65,7 @@ uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint
 SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWindowConfig *config);
 uint64_t SparkPackWindowDenseBytes(const SparkPackWindowLayer *layer);
 SparkStatus SparkPackWindowDense(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t buffer, uint32_t tag, uint8_t **rank_base);
+void SparkPackWindowUseStage(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t stage);
 SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t step, uint32_t slot, uint32_t tag, uint32_t *source,
 	const uint8_t **block);
 

@@ -54,7 +54,7 @@ uint32_t SparkWeightStreamRotationSource(uint32_t rank, uint32_t ranks, uint32_t
 SparkStatus SparkWeightStreamBroadcast(SparkWeightStream *stream, uint64_t source_offset, uint64_t bytes, uint64_t landing_offset, uint32_t tag);
 SparkStatus SparkWeightStreamExchange(SparkWeightStream *stream, uint64_t send_offset, uint64_t send_pitch, uint64_t bytes, uint64_t landing_offset, uint32_t tag);
 SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, uint64_t own_offset, uint64_t partner_offset, uint64_t bytes,
-	uint64_t landing_offset, uint32_t tag, SparkWeightStreamBlock *block);
+	uint64_t landing_offset, uint64_t pair_landing_offset, uint32_t tag, SparkWeightStreamBlock *block);
 
 #ifdef __cplusplus
 }
