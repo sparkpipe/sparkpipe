@@ -180,6 +180,8 @@ class Swapper:
                 if status == 0:
                     return
                 live = payload.get("live_requests") or 0
+                if not live and (payload.get("idle_ms") or 0) >= self.drain_quiet_seconds * 1000:
+                    return
                 if live:
                     quiet_since = None
                 else:
