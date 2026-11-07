@@ -1001,6 +1001,10 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	geometry->pack_bytes = state->module.pack.file_bytes;
 	geometry->kv_layer_count = state->dispatch.mla_count;
 	geometry->kv_layer_page_bytes = K3GlobalKv::kPageBytes;
+#if SPARK_K3_SERVING_INDEXER != 0
+	geometry->kv_second_layer_count = state->dispatch.mla_count;
+	geometry->kv_second_layer_page_bytes = K3IndexKv::kPageBytes;
+#endif
 	geometry->kv_shard = state->dispatch.buffers->kv_shard;
 	geometry->recurrent_bytes = K3ModelRecurrentBytes(state);
 	geometry->experts = K3_EXPERTS;
