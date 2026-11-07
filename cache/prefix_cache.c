@@ -3368,22 +3368,94 @@ SparkStatus SparkPrefixCacheExportCommitted(
     return SPARK_STATUS_OK;
 }
 
+typedef struct SparkPrefixCacheParentIndex
+{
+    uint32_t *slots;
+    uint32_t mask;
+} SparkPrefixCacheParentIndex;
+
+static uint32_t SparkPrefixCacheParentSlot(
+    const SparkPrefixCacheParentIndex *index,
+    uint64_t block_hash,
+    uint32_t first_token_index)
+{
+    return (uint32_t)((block_hash ^ ((uint64_t)first_token_index * UINT64_C(0x9E3779B97F4A7C15))) & index->mask);
+}
+
+static void SparkPrefixCacheParentIndexAdd(
+    SparkPrefixCacheParentIndex *index,
+    const SparkPrefixCache *cache,
+    uint32_t entry_index)
+{
+    const SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
+    uint32_t slot;
+
+    if (entry->token_count != cache->block_token_count)
+    {
+        return;
+    }
+    slot = SparkPrefixCacheParentSlot(index, entry->block_hash, entry->first_token_index);
+    while (index->slots[slot] != 0u)
+    {
+        const SparkPrefixCacheEntry *held = &cache->entries[index->slots[slot] - 1u];
+        if (held->block_hash == entry->block_hash && held->first_token_index == entry->first_token_index)
+        {
+            return;
+        }
+        slot = (slot + 1u) & index->mask;
+    }
+    index->slots[slot] = entry_index + 1u;
+}
+
+static SparkStatus SparkPrefixCacheParentIndexOpen(
+    SparkPrefixCacheParentIndex *index,
+    const SparkPrefixCache *cache)
+{
+    uint64_t slot_count = 4u;
+    uint32_t entry_index;
+
+    while (slot_count < 2ull * cache->entry_count)
+    {
+        slot_count <<= 1u;
+    }
+    index->mask = (uint32_t)(slot_count - 1u);
+    index->slots = (uint32_t *)calloc((size_t)slot_count, sizeof(index->slots[0]));
+    if (index->slots == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+    }
+    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    {
+        if (SparkPrefixCacheEntryIsReusable(cache, &cache->entries[entry_index]) != 0u)
+        {
+            SparkPrefixCacheParentIndexAdd(index, cache, entry_index);
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkPrefixCacheEntry *SparkPrefixCacheFindParent(
+    const SparkPrefixCacheParentIndex *index,
     SparkPrefixCache *cache,
     const SparkPrefixCacheCommittedRecord *record)
 {
-    uint32_t entry_index;
+    uint32_t first_token_index;
+    uint32_t slot;
 
-    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
+    if (record->first_token_index < cache->block_token_count)
     {
-        SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
-        if (SparkPrefixCacheEntryIsReusable(cache, entry) != 0u &&
-            entry->token_count == cache->block_token_count &&
-            entry->block_hash == record->parent_hash &&
-            entry->first_token_index + cache->block_token_count == record->first_token_index)
+        return 0;
+    }
+    first_token_index = record->first_token_index - cache->block_token_count;
+    slot = SparkPrefixCacheParentSlot(index, record->parent_hash, first_token_index);
+    while (index->slots[slot] != 0u)
+    {
+        SparkPrefixCacheEntry *entry = &cache->entries[index->slots[slot] - 1u];
+        if (entry->block_hash == record->parent_hash && entry->first_token_index == first_token_index)
         {
             return entry;
         }
+        slot = (slot + 1u) & index->mask;
     }
     return 0;
 }
@@ -3400,6 +3472,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
     uint32_t skipped = 0u;
     uint64_t epoch;
     uint64_t now_seconds = SparkPrefixCacheNowSeconds();
+    SparkPrefixCacheParentIndex parents;
     SparkStatus status;
 
     status = SparkPrefixCacheValidate(cache);
@@ -3410,6 +3483,11 @@ SparkStatus SparkPrefixCacheImportCommitted(
     if ((record_count != 0u && records == 0) || imported_out == 0 || skipped_out == 0)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    status = SparkPrefixCacheParentIndexOpen(&parents, cache);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
     for (index = 0u; index < record_count; ++index)
     {
@@ -3428,7 +3506,7 @@ SparkStatus SparkPrefixCacheImportCommitted(
         }
         if (record->first_token_index != 0u)
         {
-            parent = SparkPrefixCacheFindParent(cache, record);
+            parent = SparkPrefixCacheFindParent(&parents, cache, record);
             if (parent == 0)
             {
                 skipped++;
@@ -3452,8 +3530,10 @@ SparkStatus SparkPrefixCacheImportCommitted(
         {
             parent->flags |= SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME_CHILD;
         }
+        SparkPrefixCacheParentIndexAdd(&parents, cache, (uint32_t)(entry - cache->entries));
         imported++;
     }
+    free(parents.slots);
     *imported_out = imported;
     *skipped_out = skipped;
     return SPARK_STATUS_OK;
