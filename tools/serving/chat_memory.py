@@ -663,6 +663,18 @@ def parse_curator(text, missing, exchange_count, node_tokens, open_budget):
     return lines, opened, len(lines) == len(missing)
 
 
+def warm_base(state, exchanges):
+    keys = {exchange_key(messages) for messages in exchanges}
+    for base in reversed(state["bases"]):
+        if set(base["commits"]) <= keys:
+            return base
+    return None
+
+
+def forms_used(layout, exchanges, forms):
+    return {part["key"]: forms[part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in forms}
+
+
 def fallback_line(messages):
     user = " ".join(text_of(messages[0].get("content")).split())[:80]
     answer = ""
@@ -742,7 +754,7 @@ class ChatStore:
         if key in self.memory:
             return self.memory[key]
         state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {},
-                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None}
+                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None, "bases": []}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -788,6 +800,8 @@ class ChatStore:
             state["settings"].update({k: record[k] for k in ("memory", "target") if k in record})
         elif kind == "compaction":
             state["compaction"] = None if record.get("undo") else {k: record.get(k) for k in ("covered", "keep", "summary", "target")}
+        elif kind == "base" and isinstance(record.get("commits"), list) and isinstance(record.get("groups"), list) and isinstance(record.get("forms"), dict):
+            state["bases"].append({k: record[k] for k in ("commits", "groups", "forms")})
 
     def append(self, user, chat, record):
         state = self.load(user, chat)
@@ -1052,10 +1066,16 @@ class Memory:
             parts = self.part_renderer(model, frozen.get("forms") or {})
             layout = build_layout(head, exchanges, current, limited, frozen.get("open", []), frozen["commits"], self.open_chars, state["groups"], frozen.get("groups", []), parts)
         else:
-            parts = self.part_renderer(model, state["forms"])
-            layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
+            base = warm_base(state, exchanges)
+            forms = base["forms"] if base is not None else state["forms"]
+            parts = self.part_renderer(model, forms)
+            if base is not None:
+                layout = build_layout(head, exchanges, current, {key: lines[key] for key in base["commits"] if key in lines}, open_ids, base["commits"],
+                                      self.open_chars, state["groups"], base["groups"], parts)
+            else:
+                layout = build_layout(head, exchanges, current, lines, open_ids, state["commits"], self.open_chars, state["groups"], None, parts)
             layout = self.fit(model, user, chat, head, exchanges, current, layout, tools, target)
-            used = {part["key"]: state["forms"][part["key"]] for index in layout["working"] for part in tool_parts(exchanges[index]) if part["key"] in state["forms"]}
+            used = forms_used(layout, exchanges, forms)
             self.store.append(user, chat, {"type": "layout", "message": user_message, "lined": layout["lined"], "open": layout["open"], "commits": layout["keys"],
                                            "groups": layout["groups"], "forms": used})
         replay = state["expansions"].get((user_message, message), [])
@@ -1363,3 +1383,5 @@ class Memory:
         ids = self.frontend.memory_cut_ids(model, layout["messages"], session.tools, session.kwargs, SENTINEL)
         if ids:
             await self.frontend.memory_complete(model, ids, 1, False, "prewarm", session.trace())
+            self.store.append(session.user, session.chat, {"type": "base", "message": session.message, "commits": layout["keys"], "groups": layout["groups"],
+                                                           "forms": forms_used(layout, finished, state["forms"])})

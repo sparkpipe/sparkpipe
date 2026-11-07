@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes."""
 import asyncio
 import base64
 import hashlib
@@ -57,6 +57,7 @@ class Frontend:
         self.cuts = []
         self.continued = []
         self.block = None
+        self.block_kinds = None
 
     async def memory_model_ready(self, model):
         return self.ready
@@ -78,7 +79,7 @@ class Frontend:
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
-        if self.block is not None:
+        if self.block is not None and (self.block_kinds is None or kind in self.block_kinds):
             await self.block.wait()
         if max_tokens == 1:
             return ""
@@ -387,7 +388,40 @@ async def run():
 
         reopened = cm.Memory({"store": tmp + "/store", "jwt_secret_file": tmp + "/secret", "budgets": BUDGETS}, frontend).store.load("user-1", "chat-1")
         assert reopened["lines"] == state["lines"] and reopened["pending"].keys() == state["pending"].keys()
+        assert reopened["bases"] == state["bases"] and state["bases"][-1]["commits"] == state["commits"], "published bases survive a restart"
+
+        bridged = Model()
+        bridged.id = "bridged-model"
+        bridged.memory = dict(bridged.memory, working_tokens=5)
+        first = memory.session(bridged, headers("b1", None, "c1", chat="chat-bridge"), conversation(1), [], {})
+        frontend.replies[:] = ['{"lines": {"e1": "The user asked question 1."}, "open": []}']
+        first.finished(first.messages, "answer 1", "", [], "stop")
+        await settle(memory, bridged)
+        bridge_state = memory.store.load("user-1", "chat-bridge")
+        assert bridge_state["bases"] == [{"commits": [], "groups": [], "forms": {}}], "the first pre-warm publishes a base with nothing committed"
+        second = memory.session(bridged, headers("b2", "c1", "c2", chat="chat-bridge"), conversation(2), [], {})
+        frontend.replies[:] = ['{"lines": {"e2": "The user asked question 2."}, "open": [], "commit": {"e1": "="}}']
+        frontend.block, frontend.block_kinds = asyncio.Event(), ("prewarm",)
+        second.finished(second.messages, "answer 2", "", [], "stop")
+        for _ in range(100):
+            if bridge_state["commits"]:
+                break
+            await asyncio.sleep(0.02)
+        bridge_key = cm.exchange_key(conversation(2)[1:3])
+        assert bridge_state["commits"] == [bridge_key] and len(bridge_state["bases"]) == 1, "the curator committed e1 and its pre-warm is still running"
+        early = memory.session(bridged, headers("b3", "c2", "c3", chat="chat-bridge"), conversation(3), [], {})
+        assert early.layout["lined"] == 0 and early.layout["working"] == [0, 1] and early.messages[1]["content"] == "[e1] question 1", \
+            "until its pre-warm finishes, a commit stays raw in the bridge after the last warm base"
+        frontend.block.set()
+        await settle(memory, bridged)
+        frontend.block, frontend.block_kinds = None, None
+        assert bridge_state["bases"][-1]["commits"] == [bridge_key], "the finished pre-warm publishes the base with e1 committed"
+        late = memory.session(bridged, headers("b3b", "c2", "c3b", chat="chat-bridge"), conversation(3), [], {})
+        assert late.layout["lined"] == 1 and late.layout["working"] == [1] and late.messages[1]["content"].startswith(cm.LEDGER_OPEN + "[e1] "), \
+            "the next turn after the pre-warm builds on the new base"
+        assert memory.session(bridged, headers("b3", "c2", "c3", chat="chat-bridge"), conversation(3), [], {}).layout["lined"] == 0, \
+            "a turn already laid out keeps its frozen layout"
 
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge")
