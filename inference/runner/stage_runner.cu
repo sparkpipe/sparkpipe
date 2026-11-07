@@ -306,6 +306,7 @@ typedef struct SparkStageRunnerState
 	uint32_t deferred_slot;
 	uint32_t deferred_active;
 	uint32_t deferred_flags;
+	SparkStatus streamed_failure;
 	uint32_t *context_length;
 	uint32_t *sequence_of_row;
 	uint32_t *recurrent_index;
@@ -2414,8 +2415,11 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	state->deferred_active = 0u;
 	state->deferred_count = 0u;
 	if ( status != SPARK_STATUS_OK )
+	{
 		fprintf(stderr, "sparkpipe_stage_runner: streamed prefill of %u tokens for sequence %llu failed status=%d; the request fails, no wave fallback\n",
 			request.token_count, (unsigned long long)request.sequence_id, (int)status);
+		state->streamed_failure = status;
+	}
 	return status;
 }
 
@@ -2462,6 +2466,12 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->streamed_failure != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: a streamed prefill failed status=%d and its collective rounds may still be queued on this lane's stream; the lane must restart\n",
+			(int)state->streamed_failure);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	state->capture_ns = 0u;
 	rows = dispatch->row_count;
 	steps = dispatch->chain_steps > 1u ? dispatch->chain_steps : 1u;
@@ -2900,6 +2910,8 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->streamed_failure != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->route_fault_host != 0 && *(volatile uint32_t *)state->route_fault_host != 0u )
 	{
 		*(volatile uint32_t *)state->route_fault_host = 0u;
