@@ -43,9 +43,8 @@ kernels it calls (fla 0.5.2):
   MLA: q_proj (no q LoRA), kv_a_proj -> RMSNorm(latent) -> kv_b_proj
   (k_nope | v), interleaved rope on the 64 rope dims with bf16 cos/sin,
   causal softmax(QK^T / sqrt(192)) in the publishers' flash form: weights
-  w = exp(s - m) in f32 with m the row's maximum over its visible keys (one
-  max per row, the reference's single-tile model of the kernels' per-tile
-  running maxima), the values multiplied by bf16(w) in f32, that product
+  w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+  diagonal (tools/reference_flash.py), the values multiplied by bf16(w) in f32, that product
   divided by the sum of the f32 weights and rounded to bf16; head-wise
   sigmoid gate, dense.
   MoE: f32 router logits, sigmoid scores, expert_bias for selection only,
@@ -82,6 +81,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 from t1_reference_common import matmul as matmul_f64
 
 FP32 = False
@@ -301,9 +301,8 @@ class Reference:
         for head in range(heads):
             scores = matmul(query[:, head, :], key[:, head, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = reduce_sum(weights)
-            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head, :]) / total)
+            attended, total, _ = flash.attend(scores, value[:, head, :], matmul, reduce_sum, device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads, self.hidden)))
         output = bf16(output * gate[:, :, None])
         return self.output(output.reshape(rows, heads * self.value_dim), a + "dense.weight", self.hidden, heads * self.value_dim)

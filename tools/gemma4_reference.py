@@ -50,9 +50,8 @@ checkpoint one layer (one expert) at a time and all prompts go through each
 layer together. Values are rounded to bf16 where the publisher's eager
 PyTorch code rounds: norms in f32 then cast, projections in bf16, elementwise
 bf16 products, rotary cos/sin in bf16. The attention takes the publishers'
-flash form: weights w = exp(s - m) in f32 with m the row's maximum over its
-visible keys (one max per row, the reference's single-tile model of the
-kernels' per-tile running maxima), the values multiplied by bf16(w) in f32,
+flash form: weights w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+diagonal (tools/reference_flash.py), the values multiplied by bf16(w) in f32,
 that product divided by the sum of the f32 weights and rounded to bf16;
 logits are computed in f32.
 
@@ -86,6 +85,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 
 PREFIX = "model.language_model."
 
@@ -230,9 +230,8 @@ class Reference:
         for head in range(heads):
             scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = reduce_sum(weights, keepdims=True)
-            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head // group, :]) / total)
+            attended, total, _ = flash.attend(scores, value[:, head // group, :], matmul, reduce_sum, device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         return output.reshape(rows, -1)
 
     def attention(self, layer, normed, positions):

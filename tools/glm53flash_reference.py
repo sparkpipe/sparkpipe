@@ -41,8 +41,8 @@ are), and
              head through kv_b's key rows (rounded), softmax(q.k / 16) over
              every earlier position (the indexer keeps them all below 2,048
              keys) in the publishers' flash form: weights w = exp(s - m) in
-             FP32 with m the row's maximum (one max per row, the reference's
-             single-tile model of the kernels' per-tile running maxima), the
+             FP32 with m the running maximum over FA2's 64-key tiles walked back from the
+             diagonal (tools/reference_flash.py), the
              latent multiplied by bf16(w) in FP32, that product divided by
              the sum of the FP32 weights and rounded, kv_b's value
              rows per head, o_proj
@@ -62,6 +62,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
@@ -217,9 +218,8 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :], key_up))
             scores = base.matmul(query, latent.T) * np.float32(1.0 / 16.0)
             scores = np.where(causal, scores, -np.inf)
-            exponentials = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = base.reduce_sum(exponentials)
-            attended = base.bf16(base.matmul(base.bf16(exponentials), latent) / total)
+            attended, total, _ = flash.attend(scores, latent, base.matmul, base.reduce_sum, device.exp, base.bf16)
+            attended = base.bf16(flash.normalize(attended, total))
             output[:, head, :] = base.bf16(base.matmul(attended, value_up.T))
         return self.linear(output.reshape(rows, heads * self.value_dim), weights["o"])
 

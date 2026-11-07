@@ -26,9 +26,8 @@ fast path calls (model_contracts/references/fla_kda_gate.py):
   sigmoid(g_b(g_a(x))) in f32 and o_proj.
   GQA: 64 query heads over 8 KV heads, no rope, no qk norm, causal
   softmax(QK^T / sqrt(128)) in the publishers' flash form: weights w =
-  exp(s - m) in f32 with m the row's maximum over its visible keys (one max
-  per row, the reference's single-tile model of the kernels' per-tile
-  running maxima), the values multiplied by bf16(w) in f32, that product
+  exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+  diagonal (tools/reference_flash.py), the values multiplied by bf16(w) in f32, that product
   divided by the sum of the f32 weights and rounded to bf16; output times
   bf16 sigmoid(g_proj(x)), o_proj.
   MoE: f32 router logits, sigmoid scores, e_score_correction_bias for
@@ -50,6 +49,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference  # noqa: E402
@@ -154,9 +154,8 @@ class Reference(ling3_reference.Reference):
         for head in range(heads):
             scores = matmul(q[:, head, :], k[:, head // group, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = reduce_sum(weights)
-            output[:, head, :] = bf16(matmul(bf16(weights), v[:, head // group, :]) / total)
+            attended, total, _ = flash.attend(scores, v[:, head // group, :], matmul, reduce_sum, device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads * dim, self.hidden)))
         output = bf16(output.reshape(rows, heads * dim) * gate)
         return self.output(output, a + "o_proj.weight", self.hidden, heads * dim)

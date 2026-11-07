@@ -36,9 +36,8 @@ read from the checkpoint directly. R() is a round to bf16.
   swished; residual = R(residual + R(gated + conv))
 - GDN as tools/qwen38_27b_reference.c, with the sigmoid output gate
 - attention as tools/qwen38_27b_reference.c (2 KV heads), in the publishers'
-  flash form: weights w = exp(s - m) in FP32 with m the row's maximum over
-  its visible keys (one max per row, the reference's single-tile model of
-  the kernels' per-tile running maxima), the values multiplied by R(w) in
+  flash form: weights w = exp(s - m) in FP32 with m the running maximum over FA2's 64-key tiles walked back from the
+  diagonal (tools/reference_flash.py), the values multiplied by R(w) in
   FP32, that product divided by the sum of the FP32 weights and R'd; the
   indexer keeps every block below 2,052 positions, so it is not modelled and
   longer prompts are refused
@@ -60,6 +59,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 
 PREFIX = "model.language_model."
 EPSILON = np.float32(1e-6)
@@ -381,9 +381,9 @@ class Reference:
             for head in range(self.heads):
                 scores = matmul(query[:, head], key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
                 scores = np.where(visible, scores, -np.inf)
-                weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
-                total = reduce_sum(weights, keepdims=True)
-                out = bf16(matmul(bf16(weights), v[first:first + count, head // group]) / total)
+                attended, total, _ = flash.attend(scores, v[first:first + count, head // group], matmul, reduce_sum,
+                                                  lambda shifted: device.exp(shifted.astype(np.float64)).astype(np.float32), bf16)
+                out = bf16(flash.normalize(attended, total))
                 gated[first:first + count, head] = bf16(out * bf16(sigmoid(gq[first:first + count, head, self.head_dim:])))
         return self.linear(gated.reshape(rows, -1), c.bf16(p + "o_proj.weight"))
 

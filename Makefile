@@ -393,6 +393,7 @@ PYTHON_TESTS := \
 	tests/test_metal_stage_run_inputs.py \
 	tests/test_metal_gate_summary.py \
 	tests/test_reference_device_error.py \
+	tests/test_reference_flash.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \

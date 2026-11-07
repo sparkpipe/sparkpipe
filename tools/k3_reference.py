@@ -33,9 +33,8 @@ The rounding points follow the CUDA stage (inference/llms/kimi_k3/layer.cuh):
              the 512 latent norm and the 64 raw values; the query absorbed
              per head through kv_b's key rows (rounded); softmax((q_l . k_l +
              q_r . k_r) x 0.0722) over every earlier position in the
-             publishers' flash form: weights w = exp(s - m) in FP32 with m
-             the row's maximum (one max per row, the reference's single-tile
-             model of the kernels' per-tile running maxima), the latent
+             publishers' flash form: weights w = exp(s - m) in FP32 with m the running maximum over FA2's 64-key tiles walked back from the
+             diagonal (tools/reference_flash.py), the latent
              multiplied by bf16(w) in FP32, that product divided by the sum
              of the FP32 weights and rounded; kv_b's value rows;
              bf16(v sigmoid(g)); o_proj
@@ -57,6 +56,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
@@ -182,9 +182,8 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :self.nope], kv_b[head, :self.nope]))
             scores = (base.matmul(query, latent.T) + base.matmul(q[:, head, self.nope:], tail.T)) * np.float32(0.07216878365)
             scores = np.where(causal, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            total = base.reduce_sum(weights)
-            attended = base.bf16(base.matmul(base.bf16(weights), latent) / total)
+            attended, total, _ = flash.attend(scores, latent, base.matmul, base.reduce_sum, device.exp, base.bf16)
+            attended = base.bf16(flash.normalize(attended, total))
             value = base.bf16(base.matmul(attended, kv_b[head, self.nope:].T))
             output[:, head, :] = base.bf16(value * base.sigmoid(gate[:, head, :]))
         return self.linear(output.reshape(rows, heads * self.value), self.bf16(a + "o_proj.weight", (self.hidden, heads * self.value)))
