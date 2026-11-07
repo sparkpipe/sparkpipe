@@ -96,6 +96,7 @@ FAST_TESTS = (
     "tests/test_no_build_defaults.py",
     "tests/test_no_python_in_production.py",
     "tests/test_no_source_comments.py",
+    "tests/test_no_weight_links.py",
     "tests/test_python_syntax.py",
     "tests/test_third_party_notices.py",
     "tests/test_hardware_probe_coverage.py",

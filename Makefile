@@ -446,6 +446,7 @@ PYTHON_TESTS := \
 	tests/test_ab_fleet.py \
 	tests/test_ab_campaign_plans.py \
 	tests/test_spark_queue.py \
+	tests/test_sparkcp.py \
 	tests/test_multi_dev_orchestrate.py \
 	tests/test_inference_smoke.py \
 	tests/test_gemma4_smoke_manifest.py \
@@ -465,6 +466,7 @@ PYTHON_TESTS := \
 	tests/test_dry_law.py \
 	tests/test_no_symlinks.py \
 	tests/test_ci_lanes.py \
+	tests/test_no_weight_links.py \
 	tests/test_device_stage_tables.py \
 	tests/test_geometry_required_switches.py \
 	tests/test_family_defines_single_source.py \
@@ -761,10 +763,13 @@ PYTHON_TESTS := \
 	tests/test_stage_lane_setup.py \
 	tests/test_stage_lane_dense_setup.py \
 	tests/test_release_packs.py \
+	tests/test_release_long_fill.py \
 	tests/test_reasoning_effort_choice.py \
 	tests/test_stage_lane_pack_identity.py \
 	tests/test_glm53_flash_warm_identity.py \
 	tests/test_lane_tools.py \
+	tests/test_lane_direct_packs.py \
+	tests/test_launchers_name_real_files.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
 	tests/test_chat_commands.py \
