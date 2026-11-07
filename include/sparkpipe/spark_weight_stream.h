@@ -44,6 +44,9 @@ typedef struct SparkWeightStreamBlock
 	uint32_t source;
 	uint32_t reserved0;
 	uint64_t half_offset[2];
+	uint64_t ready_ns;
+	uint64_t posted_ns;
+	uint64_t total_ns;
 } SparkWeightStreamBlock;
 
 typedef struct SparkWeightStream SparkWeightStream;

@@ -114,6 +114,7 @@ SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWi
 	status = SparkWeightStreamRotate(window->config.stream,step,window->own_staging,window->partner_staging,layer->experts.bytes,slot,window->partner_staging,tag,&arrived);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	window->last_rotation = arrived;
 	*source = arrived.source;
 	if ( arrived.source == window->config.rank )
 	{

@@ -372,6 +372,9 @@ struct LmPass
 	uint64_t stage_ready;
 	uint64_t stage_consumed;
 	uint64_t stage_held[SPARK_PACK_WINDOW_STAGES][2];
+	uint64_t step_ns[LM_PASS_RANKS][4];
+	uint64_t step_count[LM_PASS_RANKS];
+	uint64_t step_end_ns;
 	void *allocations[LM_PASS_MAX_ALLOCATIONS];
 	uint32_t allocation_count;
 };
@@ -1037,6 +1040,15 @@ static SparkStatus LmPassStreamStep(LmPass *p, uint32_t layer, uint32_t step, ui
 	if ( status == SPARK_STATUS_OK )
 		status = SparkPackWindowExpertStep(&p->window, &p->ranges[layer], step, slot, p->tag_counter++, &source, &block);
 	p->spent[5] += LmPassNowNs() - mark;
+	if ( status == SPARK_STATUS_OK && step < LM_PASS_RANKS )
+	{
+		p->step_ns[step][0] += p->window.last_rotation.ready_ns;
+		p->step_ns[step][1] += p->window.last_rotation.posted_ns;
+		p->step_ns[step][2] += p->window.last_rotation.total_ns;
+		p->step_ns[step][3] += p->step_end_ns != 0u ? mark - p->step_end_ns : 0u;
+		p->step_count[step]++;
+		p->step_end_ns = LmPassNowNs();
+	}
 	if ( status == SPARK_STATUS_OK && (source >= LM_PASS_RANKS || (source != p->rank && block == 0)) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK && source == p->rank && p->pool == 0 )
@@ -1401,6 +1413,19 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 			"%.1f s of them reading the packs\n", p->tag, pass + 1u, plan.passes, rows, LM_PASS_RANKS,
 			(unsigned long long)(step.base + step.pass_tokens), (int)status, (double)(LmPassNowNs() - started) / 1e9, (double)p->spent[0] / 1e9, (double)p->spent[1] / 1e9,
 			(double)p->spent[2] / 1e9, (double)p->spent[3] / 1e9, (double)p->spent[4] / 1e9, (double)p->spent[5] / 1e9, (double)p->spent[6] / 1e9);
+		{
+			char steps[1024];
+			uint32_t length = 0u, index;
+			for (index = 0u; index < LM_PASS_RANKS && length + 48u < sizeof(steps); index++)
+			{
+				const double count = p->step_count[index] != 0u ? (double)p->step_count[index] * 1e6 : 1e6;
+				length += (uint32_t)snprintf(steps + length, sizeof(steps) - length, " %u:%.1f/%.1f/%.1f/%.1f", index, (double)p->step_ns[index][0] / count, (double)p->step_ns[index][1] / count,
+					(double)p->step_ns[index][2] / count, (double)p->step_ns[index][3] / count);
+			}
+			fprintf(stderr, "%s: streamed prefill pass %u step ms ready/posted/done/gap:%s\n", p->tag, pass + 1u, steps);
+			memset(p->step_ns, 0, sizeof(p->step_ns));
+			memset(p->step_count, 0, sizeof(p->step_count));
+		}
 		memset(p->spent, 0, sizeof(p->spent));
 	}
 	if ( status != SPARK_STATUS_OK )

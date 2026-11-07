@@ -59,6 +59,7 @@ typedef struct SparkPackWindow
 	uint64_t staged_layer_offset;
 	uint32_t staged;
 	uint32_t reserved0;
+	SparkWeightStreamBlock last_rotation;
 } SparkPackWindow;
 
 uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint64_t dense_capacity, uint32_t expert_slots, uint64_t expert_capacity);
