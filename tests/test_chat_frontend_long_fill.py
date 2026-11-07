@@ -42,20 +42,21 @@ class Reply:
 
 
 class Session:
-    def __init__(self, fill_status, record):
-        self.fill_status, self.record, self.fills, self.engine = fill_status, record, [], []
+    def __init__(self, fill_status, record, refusals):
+        self.fill_status, self.record, self.refusals, self.fills, self.engine = fill_status, record, refusals, [], []
 
     def post(self, url, headers=None, json=None, timeout=None):
         if url.endswith("/fill"):
             self.fills.append((url, json))
             return Reply(self.fill_status, self.record)
         self.engine.append(dict(json))
-        return Reply(200, lines=[REFUSED, DONE] if json.get("long_fill_check") else [TOKENS, DONE])
+        self.refusals -= 1
+        return Reply(200, lines=[REFUSED, DONE] if self.refusals >= 0 and json.get("long_fill_check") else [TOKENS, DONE])
 
 
-def harness(record):
+def harness(record, refusals=1):
     server = Frontend.__new__(Frontend)
-    server.session = Session(200 if record.get("ok") else 502, record)
+    server.session = Session(200 if record.get("ok") else 502, record, refusals)
     server.control = {"fill_url": "http://controller/fill"}
     server.controller_headers = {}
     server.memory = None
@@ -72,7 +73,15 @@ def main():
     chunks = asyncio.run(run(server))
     assert chunks == [{"tokens": [1]}], chunks
     assert server.session.fills == [("http://controller/fill", {"model": "kimi-k3", "prompt_token_ids": [1, 2, 3]})], server.session.fills
-    assert [body.get("long_fill_check") for body in server.session.engine] == [True, None], server.session.engine
+    assert [body.get("long_fill_check") for body in server.session.engine] == [True, True], server.session.engine
+    server = harness({"ok": True}, refusals=2)
+    try:
+        asyncio.run(run(server))
+    except RequestError as error:
+        assert error.code == "long_fill_failed" and "cannot resume" in str(error.message), error.message
+    else:
+        raise AssertionError("a fill the engine cannot resume from must fail the request, not run the prompt as waves")
+    assert len(server.session.fills) == 1 and len(server.session.engine) == 2, (server.session.fills, server.session.engine)
     server = harness({"ok": False, "error": "streamed fill answered 500"})
     try:
         asyncio.run(run(server))
@@ -83,7 +92,7 @@ def main():
     assert len(server.session.engine) == 1, server.session.engine
     config = json.loads((ROOT / "deployment" / "hub" / "chat_frontend.json").read_text())
     assert [model["id"] for model in config["models"] if model.get("long_fill")] == ["kimi-k3"] and config["control"]["fill_url"].endswith("/fill"), config["control"]
-    print("PASS test_chat_frontend_long_fill: a prompt the engine refuses inside its 200 stream runs the fill and retries once; a failed fill fails the request")
+    print("PASS test_chat_frontend_long_fill: a prompt the engine refuses inside its 200 stream runs the fill and retries once; a failed fill or a fill the engine cannot resume from fails the request")
     return 0
 
 

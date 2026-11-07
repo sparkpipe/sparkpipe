@@ -2571,6 +2571,7 @@ class Frontend:
 
     async def engine_stream(self, model, engine_body, public):
         deadline = None
+        filled = False
         while True:
             started = False
             events = self.engine_events(model, engine_body)
@@ -2581,8 +2582,10 @@ class Frontend:
                 return
             except RequestError as error:
                 if error.code == "long_fill" and not started:
+                    if filled:
+                        raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill finished, but the engine cannot resume from it and would compute the prompt again")
                     await self.long_fill(model, engine_body)
-                    engine_body = {key: value for key, value in engine_body.items() if key != "long_fill_check"}
+                    filled = True
                     continue
                 if started or error.code not in ("engine_starting", "engine_unavailable"):
                     raise
