@@ -468,6 +468,11 @@ def model_hidden(model: dict) -> int:
     return json.loads((ROOT / model["contract"]).read_text())["source"]["config_json"]["hidden_size"]
 
 
+def streamed_config(streamed: dict, rank: int) -> dict:
+    fields = {key: value for key, value in streamed.items() if key not in ("partner_pack", "quantum", "min_tokens")}
+    return {**fields, "partner_pack": f"/home/{HOSTS[rank]}/{streamed['partner_pack'].format(partner=rank ^ 1)}"}
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
@@ -484,6 +489,7 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
         "hidden": model_hidden(model),
         **({"taps": args.taps} if args.taps else {}),
+        **({"streamed_prefill": streamed_config(args.streamed_prefill, rank)} if args.streamed_prefill else {}),
         "device_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
@@ -530,6 +536,8 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
+            **({"streamed_prefill_quantum": args.streamed_prefill["quantum"],
+                "streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
@@ -632,7 +640,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
-        taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
@@ -722,6 +730,7 @@ def main() -> int:
             parser.error("--model, --lane, --runtime-root and --weightd-socket are required without --record")
         output_dir = args.output_dir
         args.taps = None
+        args.streamed_prefill = None
         args.draft_server = None
     write_lane(args, output_dir)
     print(f"{args.model} lane {args.lane} rendered under {output_dir}")
