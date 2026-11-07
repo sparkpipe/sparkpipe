@@ -180,6 +180,8 @@ class Reference:
         self.checkpoint = Checkpoint(directory)
         text = json.loads((Path(directory) / "config.json").read_text())["text_config"]
         self.threads = threads
+        self.prefix = PREFIX
+        self.output_gate = sigmoid
         self.hidden = text["hidden_size"]
         self.layers = text["num_hidden_layers"]
         self.streams = text["hc_count"]
@@ -304,7 +306,7 @@ class Reference:
 
     def gdn(self, layer, x, spans):
         c = self.checkpoint
-        p = f"{PREFIX}layers.{layer}.linear_attn."
+        p = f"{self.prefix}layers.{layer}.linear_attn."
         qk, v_width = self.key_heads * self.key_dim, self.value_heads * self.value_dim
         mix = self.linear(x, c.bf16(p + "in_proj_qkv.weight"))
         z = self.linear(x, c.bf16(p + "in_proj_z.weight"))
@@ -343,7 +345,7 @@ class Reference:
         mean = reduce_sum(core * core, keepdims=True) / np.float32(self.value_dim)
         scale = (1.0 / np.sqrt((mean + EPSILON).astype(np.float64))).astype(np.float32)
         normed = bf16(bf16(core * scale) * norm)
-        gated = bf16(normed * sigmoid(z.reshape(core.shape)))
+        gated = bf16(normed * self.output_gate(z.reshape(core.shape)))
         return self.linear(gated.reshape(x.shape[0], -1), c.bf16(p + "out_proj.weight"))
 
     def head_norm_rope(self, values, weight, positions):
@@ -361,7 +363,7 @@ class Reference:
 
     def attention(self, layer, x, spans):
         c = self.checkpoint
-        p = f"{PREFIX}layers.{layer}.self_attn."
+        p = f"{self.prefix}layers.{layer}.self_attn."
         rows = x.shape[0]
         gq = self.linear(x, c.bf16(p + "q_proj.weight")).reshape(rows, self.heads, 2 * self.head_dim)
         k = self.linear(x, c.bf16(p + "k_proj.weight")).reshape(rows, self.kv_heads, self.head_dim)
@@ -385,7 +387,7 @@ class Reference:
 
     def moe(self, layer, x):
         c = self.checkpoint
-        m = f"{PREFIX}layers.{layer}.mlp."
+        m = f"{self.prefix}layers.{layer}.mlp."
         logits = self.linear(x, c.bf16(m + "gate.weight")).astype(np.float64)
         probs = device.exp(logits - logits.max(axis=-1, keepdims=True)).astype(np.float32)
         probs = probs / reduce_sum(probs, keepdims=True)
@@ -447,12 +449,12 @@ class Reference:
         return np.concatenate(parts, axis=-1)
 
 
-def teacher(args):
+def teacher(args, reference=None):
     global REVERSED
     variants = args.variants.split(",")
     if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
         raise SystemExit("--variants takes distinct a, b and h")
-    reference = Reference(args.checkpoint, args.threads)
+    reference = reference if reference is not None else Reference(args.checkpoint, args.threads)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     if args.only:
         prompts = [prompt for prompt in prompts if prompt["name"] in args.only.split(",")]

@@ -9,6 +9,7 @@ extern "C" {
 
 const SparkStageRunnerModelInterface *SparkQwen38_27bDeviceStageModel(void);
 const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void);
+const SparkStageRunnerModelInterface *SparkQwen38MaxDeviceStageModelAt(uint32_t tp_degree);
 
 #ifdef __cplusplus
 }
