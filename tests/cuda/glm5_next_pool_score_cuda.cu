@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,6 +140,69 @@ static void Case(uint32_t context, uint32_t rows, uint32_t degree, uint32_t rank
 	cudaFree(d_packed); cudaFree(d_query); cudaFree(d_weight); cudaFree(d_ape);
 }
 
+static void CandidatesMatchFullGather(uint32_t rows, uint32_t pools, uint32_t degree, uint32_t hidden_rows)
+{
+	const uint32_t keep = Glm5NextIndexKeep(), local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
+	const uint64_t sequences = SparkGlm5NextIndexCpGatherSequences(rows, 2u * keep), peer_floats = sequences * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS;
+	std::vector<float> full((uint64_t)rows * pools), local((uint64_t)rows * local_stride);
+	for ( uint32_t row = 0u; row < rows; row++ )
+		for ( uint32_t pool = 0u; pool < pools; pool++ )
+			full[(uint64_t)row * pools + pool] = pool + hidden_rows * (rows - row) >= pools ? -INFINITY : Uniform(11u, (uint64_t)row * pools + pool);
+	float *d_local, *d_selection, *d_gathered, *d_full;
+	uint32_t *d_selected;
+	CUDA(cudaMalloc(&d_local, local.size() * 4u));
+	CUDA(cudaMalloc(&d_selection, full.size() * 4u));
+	CUDA(cudaMalloc(&d_full, full.size() * 4u));
+	CUDA(cudaMalloc(&d_gathered, degree * peer_floats * 4u));
+	CUDA(cudaMalloc(&d_selected, (uint64_t)rows * keep * 4u));
+	Glm5NextLayerBuffers b;
+	memset(&b, 0, sizeof(b));
+	b.index_owner_degree = degree;
+	b.index_local_scores = d_local;
+	b.selection_scores = d_selection;
+	b.index_gathered_scores = d_gathered;
+	b.selected_pools = d_selected;
+	for ( uint32_t rank = 0u; rank < degree; rank++ )
+	{
+		for ( uint32_t row = 0u; row < rows; row++ )
+			for ( uint32_t slot = 0u; slot < local_stride; slot++ )
+			{
+				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(slot, rank, degree);
+				local[(uint64_t)row * local_stride + slot] = pool < pools ? full[(uint64_t)row * pools + pool] : -INFINITY;
+			}
+		CUDA(cudaMemcpy(d_local, local.data(), local.size() * 4u, cudaMemcpyHostToDevice));
+		b.index_owner_rank = rank;
+		REQUIRE(Glm5NextIndexCandidatePack(&b, rows, pools * G5N_KPOOL, 0) == LM_LAUNCH_OK);
+		CUDA(cudaDeviceSynchronize());
+		CUDA(cudaMemcpy(d_gathered + rank * peer_floats, d_selection, (uint64_t)rows * keep * 8u, cudaMemcpyDeviceToDevice));
+	}
+	CUDA(cudaDeviceSynchronize());
+	REQUIRE((LmIndexShardCandidateScatterLaunch<G5N_THREADS>((const uint2 *)d_gathered, peer_floats / 2u, degree, keep, rows, pools, d_selection, 0)) == cudaSuccess);
+	LmTopkExactRowsLaunch<G5N_THREADS>(d_selection, rows, pools, keep, d_selected, 0);
+	CUDA(cudaDeviceSynchronize());
+	std::vector<uint32_t> candidate((uint64_t)rows * keep), direct((uint64_t)rows * keep);
+	CUDA(cudaMemcpy(candidate.data(), d_selected, candidate.size() * 4u, cudaMemcpyDeviceToHost));
+	CUDA(cudaMemcpy(d_full, full.data(), full.size() * 4u, cudaMemcpyHostToDevice));
+	LmTopkExactRowsLaunch<G5N_THREADS>(d_full, rows, pools, keep, d_selected, 0);
+	CUDA(cudaDeviceSynchronize());
+	CUDA(cudaMemcpy(direct.data(), d_selected, direct.size() * 4u, cudaMemcpyDeviceToHost));
+	uint64_t differs = 0u;
+	for ( uint32_t row = 0u; row < rows; row++ )
+	{
+		std::vector<uint32_t> x(candidate.begin() + (uint64_t)row * keep, candidate.begin() + (uint64_t)(row + 1u) * keep);
+		std::vector<uint32_t> y(direct.begin() + (uint64_t)row * keep, direct.begin() + (uint64_t)(row + 1u) * keep);
+		std::sort(x.begin(), x.end());
+		std::sort(y.begin(), y.end());
+		for ( uint32_t k = 0u; k < keep; k++ )
+			differs += x[k] != y[k] && full[(uint64_t)row * pools + y[k]] != -INFINITY;
+	}
+	const uint64_t bytes_full = (uint64_t)local_stride * 4u, bytes_candidates = (uint64_t)keep * 8u;
+	printf("%s candidates rows=%u pools=%u degree=%u: %llu of %llu selected pools differ from the full gather, %llu -> %llu bytes per rank row\n", differs == 0u ? "PASS" : "FAIL", rows, pools, degree,
+		(unsigned long long)differs, (unsigned long long)candidate.size(), (unsigned long long)bytes_full, (unsigned long long)bytes_candidates);
+	REQUIRE(differs == 0u);
+	cudaFree(d_local); cudaFree(d_selection); cudaFree(d_full); cudaFree(d_gathered); cudaFree(d_selected);
+}
+
 int main(void)
 {
 	Case(1024u, 64u, 1u, 0u, 0u, false);
@@ -146,6 +211,9 @@ int main(void)
 	Case(9000u, 130u, 16u, 15u, 3u, false);
 	Case(16384u, 2048u, 16u, 3u, 0u, true);
 	Case(65536u, 2048u, 16u, 9u, 0u, true);
+	CandidatesMatchFullGather(64u, 40000u, 16u, 0u);
+	CandidatesMatchFullGather(1024u, 40000u, 16u, 7u);
+	CandidatesMatchFullGather(256u, 262144u, 16u, 40u);
 	if ( failures != 0u )
 	{
 		printf("FAIL glm5_next pool score: %u cases differ or score nothing\n", failures);
