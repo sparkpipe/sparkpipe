@@ -1,0 +1,18 @@
+{
+    "task": {
+        "name": "terminal-bench/fix-git",
+        "ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "fix-git__6sYvKjz",
+    "trials_dir": "/Users/cem/sparkpipe-agent-e2e/tb21/jobs/stub-cc-tb21",
+    "agent": {
+        "name": "claude-code",
+        "model_name": "stub-model",
+        "kwargs": {
+            "version": "2.1.311",
+            "config": "/Users/cem/sparkpipe-agent-e2e/tb21/cc-stub.json"
+        }
+    },
+    "job_id": "bf39421e-8da4-40e3-8588-df2100d5df8c"
+}

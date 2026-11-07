@@ -733,6 +733,8 @@ PYTHON_TESTS := \
 	tests/test_lane_tools.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_agent_task_eval.py \
+	tests/test_agent_endpoint_stub.py \
 	tests/test_chat_commands.py \
 	tests/test_chat_memory_qualify_checks.py \
 	tests/test_chat_api_keys.py \
