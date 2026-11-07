@@ -1759,8 +1759,10 @@ class Frontend:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
-            raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
+        if self.control is not None and set(self.control) - {"fill_url"} not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url, optionally both force_url and admin_url, and optionally fill_url")
+        if any(model.long_fill for model in self.models.values()) and "fill_url" not in (self.control or {}):
+            raise SystemExit("chat_frontend: a model with long_fill needs control fill_url")
         controlled = self.control is not None or any(model.gate.activation_url is not None for model in self.models.values())
         if controlled != ("controller_token_file" in config):
             raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
