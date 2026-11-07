@@ -1125,7 +1125,10 @@ FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
 (`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
 `gate-prompts` and `teacher` modes (variant b sums every product in
 1,024-wide chunks last first, reverses the norms' and softmax sums and adds
-the experts in descending order):
+the experts in descending order). Until 6e9f4b535 the tool's 32 MiB read size
+overwrote that chunk, so every b computed before it took its products whole,
+as a does; HY4 is not proven on Metal until its b and h are recomputed and
+its logits re-judged against them:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
