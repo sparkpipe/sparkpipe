@@ -57,8 +57,8 @@ State on 6 November 2026:
 | G2 | Key options | Scopes, `fleet`, `allow_swap`, expiry, IP allowlist and rotation (the old key valid for an hour) are enforced and tested | M | |
 | G3 | Usage records and `GET /v1/requests` | Records arrive from the hub per request, are kept a year, and sum into `stats` | M | C4 |
 | G4 | Bearer sessions for the CLI on `/market/...` | The CLI books a week and joins the waitlist with a bearer session | S | |
-| G5 | Teams | Invites, roles (owner, admin, member), per-member keys and usage; a member cannot book or pay | L | G2 |
-| G6 | Audit log | Every event in §12 is logged and listed by `GET /v1/audit`, without prompts or replies | M | G5 |
+| G5 | Teams | Invites, roles (owner, admin, member), per-member keys and usage; a member cannot book or pay; the gateway sends `X-SparkPipe-Member` for fair share per member (C8) | L | G2 |
+| G6 | Audit log | Every event in §12 is logged and listed by `GET /v1/audit`, without prompts or replies; the hub reports its own events (model switches, wipes, storage access, fetches, runs) to `POST /hub/audit` | M | G5 |
 | G7 | Webhooks and email notifications | Every event in §13 is delivered signed, with retries. `booking.deadline` fires 72 h, 48 h, 6 h and 2 h before the Sunday deadline, and when auto-extend waits or stops | M | |
 | G8 | Auto-extend | On by default from the first booked or granted week, one week ahead, with a one-click off switch and the weeks-ahead setting on the account page. A fleet with auto-extend keeps its weeks booked ahead across a simulated year, a holder who does nothing keeps the fleet, and a short balance triggers an early warning | M | G7 |
 | G9 | Several fleets: prefix-affinity routing | With two held fleets and `fleet: "any"`, a session's turns all land on the fleet where its prefix is warm | M | C4 |

@@ -83,6 +83,14 @@ PENDING_SECONDS = 86400
 RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
 SPENDING = ("/market/book-hours", "/market/book-weeks", "/market/waitlist", "/market/auto-extend")
+OWNER_ACTIONS = SPENDING + ("/market/buy", "/market/waitlist/leave")
+ACCOUNT_ROLES = {"webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
+                 "member_delete": (("owner",), "Removing members"), "audit": (("owner", "admin"), "The audit log")}
+AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start", "hours", "hc")), "/market/book-weeks": ("booking.weeks", ("booking", "fleet", "first", "weeks", "price")),
+           "/market/waitlist": ("waitlist.lock", ("locked",)), "/market/waitlist/leave": ("waitlist.leave", ()), "/market/auto-extend": ("auto_extend.set", ("fleet", "weeks_ahead")),
+           "/market/buy": ("hc.bought", ("lot", "hc", "order")), "/market/keys": ("key.created", ("id", "member", "scopes", "fleet")), "/market/keys/revoke": ("key.revoked", ("id",)),
+           "/market/keys/rotate": ("key.rotated", ("id", "replaces")), "/market/sessions/revoke": ("session.revoked", ("id",)), "key_create": ("key.created", ("id", "member", "scopes", "fleet")),
+           "key_revoke": ("key.revoked", ("id",)), "key_rotate": ("key.rotated", ("id", "replaces")), "webhook_put": ("webhook.set", ("id", "events")), "webhook_delete": ("webhook.deleted", ("id",))}
 LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "read": (240, 600), "market": (240, 600), "gateway": (6000, 600)}
 BODY_LIMIT = 32 * 1024 * 1024
 REPORT_LIMIT = 4 * 1024 * 1024
@@ -106,6 +114,10 @@ UPTIME_GAP_SECONDS = 90
 UPTIME_MONTHS_SHOWN = 4
 UPTIME_DAYS_SHOWN = 90
 UPTIME_YEARS = 5
+INVITE_DAYS = 7
+MEMBERS_PER_ACCOUNT = 50
+HUB_AUDIT = re.compile(r"(model|models|cache|storage|fetch|run|export|restore|pack|repo)\.[a-z_]{1,40}")
+AUDIT_LIMIT = 4096
 OWN = {}
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length", "expect"}
 DROPPED = HOP | {"authorization", "x-api-key", "cookie", "forwarded", "x-real-ip"}
@@ -144,8 +156,12 @@ ACCOUNT_ROUTES = (
     ("GET", r"/v1/webhooks", "read", "webhooks"),
     ("PUT", r"/v1/webhooks", "write", "webhook_put"),
     ("DELETE", r"/v1/webhooks/(WH[A-Z2-7]{16})", "write", "webhook_delete"),
+    ("GET", r"/v1/members", "read", "members"),
+    ("POST", r"/v1/members", "write", "member_put"),
+    ("DELETE", r"/v1/members/((?:MB|IV)[A-Z2-7]{16})", "write", "member_delete"),
+    ("GET", r"/v1/audit", "read", "audit"),
 )
-RECORD_TEXT = {"request": 64, "account": 32, "key": 32, "fleet": 32, "model": 128, "pack": 128, "api": 32, "priority": 16, "session": 128, "at": 20}
+RECORD_TEXT = {"request": 64, "account": 32, "member": 32, "key": 32, "fleet": 32, "model": 128, "pack": 128, "api": 32, "priority": 16, "session": 128, "at": 20}
 RECORD_NUMBERS = ("status", "prompt_tokens", "cached_tokens", "prefill_tokens", "queue_ms", "prefill_ms", "ttft_ms", "output_tokens", "duration_ms", "decode_tps", "draft_accept", "cold_prefill_ms_estimate")
 TOTALS = ("prompt_tokens", "cached_tokens", "prefill_tokens", "output_tokens", "prefill_ms", "cold_prefill_ms_estimate")
 FOOTER = "\n\nChoose which notices you get by email or webhook on your account page or with PUT /v1/webhooks.\n\nHYOR AI Tech Ltd. (SparkPipe), Seoul. Reply to this email with any question."
@@ -498,6 +514,9 @@ class Book:
         self.invoices = {}
         self.accounts = {}
         self.emails = {}
+        self.members = {}
+        self.member_emails = {}
+        self.invites = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -547,6 +566,24 @@ class Book:
             self.emails[data["email"]] = data["account"]
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
+        elif kind == "member_invite":
+            self.invites[data["invite"]] = dict(data, created=line["at"], state="invited")
+            for other in self.invites.values():
+                if other["email"] == data["email"] and other["account"] == data["account"] and other["invite"] != data["invite"] and other["state"] == "invited":
+                    other["state"] = "replaced"
+        elif kind == "member":
+            self.members[data["member"]] = dict(data, created=line["at"], removed=False)
+            self.member_emails[data["email"]] = data["member"]
+            if data.get("invite") in self.invites:
+                self.invites[data["invite"]]["state"] = "accepted"
+        elif kind == "member_role":
+            self.members[data["member"]]["role"] = data["role"]
+        elif kind == "member_remove":
+            if data.get("member") in self.members:
+                self.members[data["member"]]["removed"] = True
+                self.member_emails.pop(self.members[data["member"]]["email"], None)
+            if data.get("invite") in self.invites:
+                self.invites[data["invite"]]["state"] = "cancelled"
         elif kind == "order":
             self.orders[data["order"]] = dict(data, created=line["at"], state="unpaid" if data.get("processor") == "swift" else "created", invoice=None, link=None, issued=False, paid=None, refunds=[])
         elif kind == "invoice":
@@ -746,8 +783,8 @@ class Journal:
 
 
 class Usage:
-    def __init__(self, folder):
-        self.folder = folder
+    def __init__(self, folder, ident="request"):
+        self.folder, self.ident = folder, ident
         self.lock = threading.Lock()
         self.ids = collections.OrderedDict()
         private_folder(folder)
@@ -761,7 +798,7 @@ class Usage:
     def known(self, account, day):
         key = (account, day)
         if key not in self.ids:
-            self.ids[key] = {record["request"] for record in self.lines(account, day)}
+            self.ids[key] = {record[self.ident] for record in self.lines(account, day)}
             while len(self.ids) > 256:
                 self.ids.popitem(last=False)
         self.ids.move_to_end(key)
@@ -772,8 +809,8 @@ class Usage:
         with self.lock:
             for account, day in sorted({(record["account"], record["at"][:10]) for record in records}):
                 seen = self.known(account, day)
-                fresh = [record for record in records if record["account"] == account and record["at"][:10] == day and record["request"] not in seen]
-                unique = list({record["request"]: record for record in fresh}.values())
+                fresh = [record for record in records if record["account"] == account and record["at"][:10] == day and record[self.ident] not in seen]
+                unique = list({record[self.ident]: record for record in fresh}.values())
                 if not unique:
                     continue
                 private_folder(os.path.join(self.folder, account))
@@ -782,7 +819,7 @@ class Usage:
                     handle.write("".join(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n" for record in unique).encode())
                     handle.flush()
                     os.fsync(handle.fileno())
-                seen.update(record["request"] for record in unique)
+                seen.update(record[self.ident] for record in unique)
                 added += len(unique)
         return added
 
@@ -807,7 +844,7 @@ class Usage:
         for name in names:
             if name.endswith(".jsonl") and first <= name[:-6] <= last:
                 found = [record for record in self.lines(account, name[:-6]) if since <= stamp_time(record["at"]) < until and all(record.get(key) == value for key, value in match.items())]
-                yield from sorted(found, key=lambda record: (record["at"], record["request"]))
+                yield from sorted(found, key=lambda record: (record["at"], record[self.ident]))
 
 
 def usage_totals(records):
@@ -1210,6 +1247,7 @@ class App:
         self.mails = queue.Queue()
         self.market = market.Market(self, cfg.sandbox, lambda: clock())
         self.usage = Usage(cfg.path("requests"))
+        self.audits = Usage(cfg.path("audit"), "id")
         self.notices = Journal(cfg.path("notices"), NOTICE_DAYS)
         self.hooks = Records(cfg.path("webhooks.json"))
         self.sessions = Records(cfg.path("sessions.json"))
@@ -1282,62 +1320,85 @@ class App:
                 raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
             self.accept(account, ip, agent)
 
-    def signed_in(self, headers):
+    def resolve(self, subject):
+        if subject in self.book.accounts:
+            return subject, subject, "owner"
+        found = self.book.members.get(subject)
+        if found and not found["removed"] and found["account"] in self.book.accounts:
+            return found["account"], subject, found["role"]
+        return None
+
+    def actor(self, headers):
         token = credential(headers)
         if token.startswith(BEARER):
-            return self.bearer_account(token)
+            return self.bearer_actor(token)
         jar = {}
         for part in (headers.get("Cookie") or "").split(";"):
             name, _, value = part.strip().partition("=")
             jar[name] = value
-        account = session_account(self.key, jar.get(COOKIE), int(clock().timestamp()))
-        return account if account in self.book.accounts else None
+        return self.resolve(session_account(self.key, jar.get(COOKIE), int(clock().timestamp())))
 
-    def bearer_account(self, token):
+    def bearer_actor(self, token):
         record = self.sessions.get(market.key_digest(token))
         if not record or stamp_time(record["expires"]) <= clock():
             return None
-        return record["account"] if record["account"] in self.book.accounts else None
+        found = self.resolve(record.get("member") or record["account"])
+        return found if found and found[0] == record["account"] else None
 
-    def open_bearer(self, account, device):
+    def open_bearer(self, account, member, device):
         token = BEARER + secrets.token_urlsafe(32)
         now = clock()
         expires = market.stamp(now + timedelta(seconds=BEARER_SECONDS))
-        self.sessions.put(market.key_digest(token), {"session": new_id("SE"), "account": account, "device": device, "created": market.stamp(now), "expires": expires})
+        self.sessions.put(market.key_digest(token), {"session": new_id("SE"), "account": account, "member": member, "device": device, "created": market.stamp(now), "expires": expires})
         return token, expires
 
     def sign_out(self, headers):
-        token = credential(headers)
+        token, found = credential(headers), self.actor(headers)
         if token.startswith(BEARER):
             self.sessions.drop(market.key_digest(token))
+        if found:
+            self.audit(found[0], found[1], "session.sign_out", {"via": "bearer" if token.startswith(BEARER) else "cookie"})
         return {"ok": True}
 
-    def revoke_session(self, account, found):
-        ident, _ = self.sessions.find(lambda record: record["session"] == found and record["account"] == account)
+    def revoke_session(self, actor, found):
+        account, member, role = actor
+        ident, _ = self.sessions.find(lambda record: record["session"] == found and record["account"] == account and (role == "owner" or record.get("member", account) == member))
         if not ident:
             raise Refusal("No active session with that id on this account.", 404)
         self.sessions.drop(ident)
         return {"id": found, "revoked": True}
 
-    def sessions_of(self, account):
-        now = clock()
-        return sorted(({"id": r["session"], "device": r["device"], "created": r["created"], "expires": r["expires"]} for r in self.sessions.values() if r["account"] == account and stamp_time(r["expires"]) > now),
-                      key=lambda r: (r["created"], r["id"]))
+    def require_role(self, actor, roles, what):
+        if actor[2] not in roles:
+            raise Refusal(f"{what} is for the account's {' or '.join(roles)}; your role is {actor[2]}.", 403, "role")
+
+    def audit(self, account, member, kind, data, at=None):
+        now = at or self.market.now()
+        self.audits.add([{"id": new_id("AU"), "account": account, "at": market.stamp(now), "member": member, "type": kind, "data": data}])
+
+    def sessions_of(self, actor):
+        now, (account, member, role) = clock(), actor
+        return sorted(({"id": r["session"], "member": r.get("member", account), "device": r["device"], "created": r["created"], "expires": r["expires"]} for r in self.sessions.values()
+                       if r["account"] == account and (role == "owner" or r.get("member", account) == member) and stamp_time(r["expires"]) > now), key=lambda r: (r["created"], r["id"]))
 
     def principal(self, headers, ip, scope):
         token = credential(headers)
         if token.startswith(BEARER):
-            account = self.bearer_account(token)
-            if not account:
+            found, record, via = self.bearer_actor(token), None, "bearer"
+            if not found:
                 raise Refusal("This session has ended: sign in again.", 401, "invalid_key")
-            return account, None, "bearer"
-        if token:
-            record = self.market.authorize(token, scope, ip)
-            return record["account"], record, "key"
-        account = self.signed_in(headers)
-        if not account:
-            raise Refusal("Send a SparkPipe API key as Authorization: Bearer sk-hc-... or X-Api-Key.", 401, "invalid_key")
-        return account, None, "cookie"
+        elif token:
+            record, via = self.market.authorize(token, scope, ip), "key"
+            found = self.resolve(record["member"])
+            if not found or found[0] != record["account"]:
+                raise Refusal("This key's member has left the account.", 401, "invalid_key")
+        else:
+            found, record, via = self.actor(headers), None, "cookie"
+            if not found:
+                raise Refusal("Send a SparkPipe API key as Authorization: Bearer sk-hc-... or X-Api-Key.", 401, "invalid_key")
+        if scope not in market.ROLE_SCOPES[found[2]]:
+            raise Refusal(f"A {found[2]} of the account does not have the {scope} scope.", 403, "invalid_key")
+        return found[0], record, via, found[1], found[2]
 
     def notified(self, notice):
         account = self.book.accounts.get(notice["account"])
@@ -1422,6 +1483,9 @@ class App:
         moment = market.stamp_field(found["at"], "time the request ran")
         if not now - timedelta(days=RECORD_DAYS) <= moment <= now + timedelta(minutes=5):
             raise Refusal("A record is kept for a year: it must be from the last year, and not from the future.", 400, "invalid_request")
+        owner = self.book.market.keys.get(found.get("key"))
+        if "member" not in found and owner and owner["account"] == found["account"]:
+            found["member"] = owner["member"]
         return found
 
     def record_usage(self, body):
@@ -1437,7 +1501,16 @@ class App:
         added = self.usage.add(found)
         return {"accepted": added, "duplicates": len(found) - added, "refused": refused}
 
-    def requests(self, account, query):
+    def requests(self, actor, query):
+        account, member, role = actor
+        if role == "member":
+            query = dict(query, member=[member])
+        return self.page(self.usage, account, query, ("key", "fleet", "model", "session", "member"), usage_totals)
+
+    def audit_list(self, account, query):
+        return self.page(self.audits, account, query, ("member", "type"), None)
+
+    def page(self, store, account, query, names, summed):
         pick = lambda name: query.get(name, [None])[0]
         until = time_field(pick("until"), "until") or clock() + timedelta(minutes=5)
         since = time_field(pick("since"), "since") or until - timedelta(days=7)
@@ -1447,10 +1520,10 @@ class App:
         if not limit.isdigit() or not 1 <= int(limit) <= 10000:
             raise Refusal("Give limit from 1 to 10000.", 400, "invalid_request")
         after, page, more = pick("after"), [], [False]
-        cursor = lambda record: f"{record['at']}|{record['request']}"
+        cursor = lambda record: f"{record['at']}|{record[store.ident]}"
 
         def walk():
-            for record in self.usage.query(account, since, until, {name: pick(name) for name in ("key", "fleet", "model", "session") if pick(name)}):
+            for record in store.query(account, since, until, {name: pick(name) for name in names if pick(name)}):
                 if not after or cursor(record) > after:
                     if len(page) < int(limit):
                         page.append(record)
@@ -1458,8 +1531,34 @@ class App:
                         more[0] = True
                 yield record
 
-        totals = usage_totals(walk())
-        return {"object": "list", "since": market.stamp(since), "until": market.stamp(until), "data": page, "totals": totals, "has_more": more[0], "next": cursor(page[-1]) if more[0] else None}
+        found = {"object": "list", "since": market.stamp(since), "until": market.stamp(until)}
+        if summed:
+            found["totals"] = summed(walk())
+        else:
+            collections.deque(walk(), maxlen=0)
+        return dict(found, data=page, has_more=more[0], next=cursor(page[-1]) if more[0] else None)
+
+    def hub_audit(self, body):
+        items = body.get("events") if isinstance(body.get("events"), list) else None
+        if not items or len(items) > RECORDS_PER_REPORT:
+            raise Refusal(f"Send events as a list of 1 to {RECORDS_PER_REPORT}.", 400, "invalid_request")
+        now, found, refused = clock(), [], []
+        for index, item in enumerate(items):
+            try:
+                if not isinstance(item, dict) or not isinstance(item.get("type"), str) or not HUB_AUDIT.fullmatch(item["type"]):
+                    raise Refusal("Give each event a type such as models.switched, cache.wiped, storage.read, fetch.started or run.started.", 400, "invalid_request")
+                entry = {name: market.short_text(item[name], name, 128) for name in ("id", "account", "member", "fleet", "at") if item.get(name) is not None}
+                data = item.get("data", {})
+                if any(name not in entry for name in ("id", "account", "at")) or entry["account"] not in self.book.accounts or not isinstance(data, dict) or len(json.dumps(data)) > AUDIT_LIMIT:
+                    raise Refusal(f"Every event names its id, a known account and when it happened (at), with data as an object of at most {AUDIT_LIMIT} bytes.", 400, "invalid_request")
+                moment = market.stamp_field(entry["at"], "time of the event")
+                if not now - timedelta(days=RECORD_DAYS) <= moment <= now + timedelta(minutes=5):
+                    raise Refusal("An audit event is kept for a year: it must be from the last year, and not from the future.", 400, "invalid_request")
+                found.append(dict(entry, id="HB" + entry["id"], type=item["type"], data=data))
+            except Refusal as error:
+                refused.append({"index": index, "error": str(error)})
+        added = self.audits.add(found)
+        return {"accepted": added, "duplicates": len(found) - added, "refused": refused}
 
     def hub_events(self, body):
         items = body.get("events") if isinstance(body.get("events"), list) else [body]
@@ -1473,24 +1572,101 @@ class App:
                 results.append({"id": item.get("id") if isinstance(item, dict) else None, "error": str(error), "reason": error.reason})
         return {"events": results}
 
-    def account_call(self, action, account, match, query, body):
+    def account_call(self, action, actor, match, query, body):
+        account, member, role = actor
         calls = {
-            "requests": lambda: self.requests(account, query),
-            "keys": lambda: {"object": "list", "data": [self.market.key_view(r) for r in self.book.market.keys.values() if r["account"] == account]},
-            "key_create": lambda: self.market.create_key(account, body),
-            "key_revoke": lambda: self.market.revoke_key(account, match.group(1)),
-            "key_rotate": lambda: self.market.rotate_key(account, match.group(1)),
+            "requests": lambda: self.requests(actor, query),
+            "keys": lambda: {"object": "list", "data": [self.market.key_view(r) for r in self.book.market.keys.values() if r["account"] == account and (role != "member" or r["member"] == member)]},
+            "key_create": lambda: self.market.create_key(account, body, member, role),
+            "key_revoke": lambda: self.market.revoke_key(account, match.group(1), member, role),
+            "key_rotate": lambda: self.market.rotate_key(account, match.group(1), member, role),
             "webhooks": lambda: self.webhooks(account),
             "webhook_put": lambda: self.webhook_put(account, body),
             "webhook_delete": lambda: self.webhook_delete(account, match.group(1)),
+            "members": lambda: self.members(account),
+            "member_put": lambda: self.member_put(actor, body),
+            "member_delete": lambda: self.member_delete(actor, match.group(1)),
+            "audit": lambda: self.audit_list(account, query),
         }
-        return calls[action]()
+        if action in ACCOUNT_ROLES:
+            self.require_role(actor, *ACCOUNT_ROLES[action])
+        found = calls[action]()
+        if action in AUDITED:
+            self.audit(account, member, AUDITED[action][0], {name: found.get(name) for name in AUDITED[action][1] if name in found})
+        return found
 
-    def need(self, headers):
-        account = self.signed_in(headers)
-        if not account:
+    def need_actor(self, headers):
+        found = self.actor(headers)
+        if not found:
             raise Refusal("Sign in to continue.", 401)
-        return account
+        return found
+
+    def need_owner(self, headers, roles, what):
+        found = self.need_actor(headers)
+        self.require_role(found, roles, what)
+        return found[0]
+
+    def members(self, account):
+        record, now = self.book.accounts[account], market.stamp(self.market.now())
+        owner = {"id": account, "email": record["email"], "role": "owner", "state": "member", "since": record["created"]}
+        joined = [{"id": m["member"], "email": m["email"], "role": m["role"], "state": "member", "since": m["created"]} for m in self.book.members.values() if m["account"] == account and not m["removed"]]
+        invited = [{"id": i["invite"], "email": i["email"], "role": i["role"], "state": "invited", "invited": i["created"], "expires": i["expires"]} for i in self.book.invites.values() if i["account"] == account and i["state"] == "invited" and i["expires"] > now]
+        return {"object": "list", "data": [owner] + joined + invited, "roles": {role: list(market.ROLE_SCOPES[role]) for role in market.ROLES}}
+
+    def pending_invite(self, email, account=None):
+        now = market.stamp(self.market.now())
+        return next((i for i in self.book.invites.values() if i["email"] == email and i["state"] == "invited" and i["expires"] > now and (account is None or i["account"] == account)), None)
+
+    def member_put(self, actor, body):
+        account, member, _ = actor
+        email, role = email_field(body.get("email")), body.get("role")
+        if role not in ("admin", "member"):
+            raise Refusal("Give role as admin or member.", 400, "invalid_request")
+        with self.book.lock:
+            company = self.book.accounts[account]["company"]
+            if email == self.book.accounts[account]["email"]:
+                raise Refusal("That is the owner's email; the owner's role does not change.", 400, "invalid_request")
+            current = self.book.member_emails.get(email)
+            if current and self.book.members[current]["account"] == account:
+                if self.book.members[current]["role"] != role:
+                    self.book.append("member_role", {"account": account, "member": current, "role": role, "by": member})
+                    self.audit(account, member, "member.role", {"member": current, "email": email, "role": role})
+                return next(m for m in self.members(account)["data"] if m["id"] == current)
+            other = self.pending_invite(email)
+            if current or email in self.book.emails or (other and other["account"] != account):
+                raise Refusal("That email already belongs to a SparkPipe account or has a pending invitation from one.", 409, "email_taken")
+            if not other and len(self.members(account)["data"]) > MEMBERS_PER_ACCOUNT:
+                raise Refusal(f"An account has at most {MEMBERS_PER_ACCOUNT} members and invitations.", 409, "too_many")
+            now = self.market.now()
+            invite = {"invite": new_id("IV"), "account": account, "email": email, "role": role, "by": member, "expires": market.stamp(now + timedelta(days=INVITE_DAYS)), "now": market.stamp(now)}
+            self.book.append("member_invite", invite)
+            self.audit(account, member, "member.invited", {"invite": invite["invite"], "email": email, "role": role})
+        self.mail(email, f"{company} invited you to SparkPipe", "\n".join([
+            f"{self.who(account)} invited you to its SparkPipe account as {'an admin' if role == 'admin' else 'a member'}.",
+            "",
+            f"To join, sign in with this email address at {self.cfg.public}/market.html. The invitation expires at {market.kst_text(market.stamp_time(invite['expires']))}.",
+            "An admin manages keys, Functions, models and storage; a member makes its own keys, sends requests and runs its own Functions. Bookings, payments and members stay with the account's owner.",
+            "If you did not expect this, ignore it: nothing happens until you sign in.",
+        ]))
+        return next(m for m in self.members(account)["data"] if m["id"] == invite["invite"])
+
+    def member_delete(self, actor, ident):
+        account, member, _ = actor
+        with self.book.lock:
+            found = self.book.members.get(ident)
+            invite = self.book.invites.get(ident)
+            if found and found["account"] == account and not found["removed"]:
+                self.book.append("member_remove", {"account": account, "member": ident, "by": member})
+                for record in [r for r in self.book.market.keys.values() if r["member"] == ident and not r["revoked"]]:
+                    self.book.append("api_key_revoke", {"key": record["key"]})
+                self.sessions.keep(lambda record: record.get("member") != ident)
+                self.audit(account, member, "member.removed", {"member": ident, "email": found["email"]})
+            elif invite and invite["account"] == account and invite["state"] == "invited":
+                self.book.append("member_remove", {"account": account, "invite": ident, "by": member})
+                self.audit(account, member, "member.invite_cancelled", {"invite": ident, "email": invite["email"]})
+            else:
+                raise Refusal("No member or invitation with that id on this account.", 404)
+        return {"id": ident, "removed": True}
 
     def send_code(self, body, ip):
         self.throttle("code", ip)
@@ -1517,11 +1693,15 @@ class App:
         return {"sent": True}
 
     def verify(self, body, ip, agent):
-        summary, token = self.check_code(body, ip, agent)
+        summary, subject = self.check_code(body, ip, agent)
+        account, member, _ = self.resolve(subject)
         if body.get("bearer") is True:
-            session, expires = self.open_bearer(self.book.emails[summary["email"]], optional_text(body.get("device"), 100))
+            device = optional_text(body.get("device"), 100)
+            session, expires = self.open_bearer(account, member, device)
+            self.audit(account, member, "session.sign_in", {"via": "bearer", "device": device})
             return dict(summary, session=session, sessionExpires=expires), None
-        return summary, token
+        self.audit(account, member, "session.sign_in", {"via": "cookie"})
+        return summary, session_token(self.key, subject, int(clock().timestamp()) + SESSION_SECONDS)
 
     def check_code(self, body, ip, agent):
         self.throttle("verify", ip)
@@ -1538,7 +1718,16 @@ class App:
         if not good:
             raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
         with self.book.lock:
-            account = self.book.emails.get(email)
+            account, member = self.book.emails.get(email), self.book.member_emails.get(email)
+            invite = None if account or member else self.pending_invite(email)
+            if member:
+                return self.summary(self.resolve(member)), member
+            if invite:
+                member = new_id("MB")
+                self.book.append("member", {"member": member, "account": invite["account"], "email": email, "role": invite["role"], "invite": invite["invite"]})
+                self.audit(invite["account"], member, "member.joined", {"member": member, "email": email, "role": invite["role"]})
+                self.mail(self.book.accounts[invite["account"]]["email"], f"{email} joined your SparkPipe account", f"{email} accepted your invitation and joined {self.book.accounts[invite['account']]['company']} as {invite['role']}. Members and their roles: {self.cfg.public}/market.html")
+                return self.summary(self.resolve(member)), member
             if not account:
                 if not body.get("company"):
                     raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
@@ -1552,16 +1741,21 @@ class App:
                 log(f"account {account} opened")
             elif body.get("accept") is True and not self.accepted(account, self.current_terms()):
                 self.accept(account, ip, agent)
-        expires = int(clock().timestamp()) + SESSION_SECONDS
-        return self.summary(account), session_token(self.key, account, expires)
+        return self.summary((account, account, "owner")), account
 
-    def summary(self, account):
+    def own_email(self, account, member):
+        return self.book.accounts[account]["email"] if member == account else self.book.members[member]["email"]
+
+    def summary(self, actor):
+        account, member, role = actor
         with self.book.lock:
             record = self.book.accounts[account]
-            mine = [o for o in reversed(list(self.book.orders.values())) if o["account"] == account]
+            mine = [o for o in reversed(list(self.book.orders.values())) if o["account"] == account] if role == "owner" else []
             return {
-                "email": record["email"],
+                "email": self.own_email(account, member),
                 "company": record["company"],
+                "member": member,
+                "role": role,
                 "since": record["created"][:10],
                 "termsCurrent": self.accepted(account, self.current_terms()),
                 "hc": market.text_hc(self.book.market.balance(account, market.stamp(self.market.now()))),
@@ -1635,19 +1829,32 @@ class App:
                 raise Refusal("No such order.", 404)
             return self.shown(order)
 
-    def market_state(self, account):
+    def market_state(self, actor):
         state = self.market.public()
         state["account"] = None
-        if account:
-            record = self.book.accounts[account]
-            state["account"] = dict(self.market.view(account), email=record["email"], company=record["company"], termsCurrent=self.accepted(account, self.current_terms()), sessions=self.sessions_of(account))
+        if actor:
+            account, member, role = actor
+            record, view = self.book.accounts[account], self.market.view(account)
+            if role == "member":
+                view["keys"] = [k for k in view["keys"] if k["member"] == member]
+            state["account"] = dict(view, email=self.own_email(account, member), company=record["company"], member=member, role=role, termsCurrent=self.accepted(account, self.current_terms()), sessions=self.sessions_of(actor))
         return state
 
-    def market_action(self, path, body, account, ip, agent):
+    def market_action(self, path, body, actor, ip, agent):
         self.throttle("market", ip)
+        account, member, role = actor
+        if path in OWNER_ACTIONS:
+            self.require_role(actor, ("owner",), "Booking, the waitlist, auto-extend and buying HC")
         if path in SPENDING:
             with self.book.lock:
                 self.require_terms(account, body, ip, agent)
+        found = self.market_call(path, body, actor, ip, agent)
+        if path in AUDITED:
+            self.audit(account, member, AUDITED[path][0], {name: found.get(name) for name in AUDITED[path][1] if name in found})
+        return found
+
+    def market_call(self, path, body, actor, ip, agent):
+        account, member, role = actor
         actions = {
             "/market/buy": lambda: self.buy(body, account, ip, agent),
             "/market/quote-weeks": lambda: self.market.quote_weeks(account, body),
@@ -1656,10 +1863,10 @@ class App:
             "/market/waitlist": lambda: self.market.join(account, body),
             "/market/waitlist/leave": lambda: self.market.leave(account),
             "/market/auto-extend": lambda: self.market.auto_extend(account, body),
-            "/market/keys": lambda: self.market.create_key(account, body),
-            "/market/keys/revoke": lambda: self.market.revoke_key(account, body.get("id")),
-            "/market/keys/rotate": lambda: self.market.rotate_key(account, body.get("id")),
-            "/market/sessions/revoke": lambda: self.revoke_session(account, body.get("id")),
+            "/market/keys": lambda: self.market.create_key(account, body, member, role),
+            "/market/keys/revoke": lambda: self.market.revoke_key(account, body.get("id"), member, role),
+            "/market/keys/rotate": lambda: self.market.rotate_key(account, body.get("id"), member, role),
+            "/market/sessions/revoke": lambda: self.revoke_session(actor, body.get("id")),
         }
         sandbox = {
             "/market/sandbox/clock": lambda: self.market.move_clock(market.count_field(body.get("hours"), "number of hours", 9600)),
@@ -2080,6 +2287,7 @@ class App:
     def housekeeping(self):
         self.book.refresh()
         self.usage.prune(clock())
+        self.audits.prune(clock())
         self.notices.prune(self.market.now())
         self.notifier.deliveries.prune(clock())
         self.uptime.prune(self.market.now())
@@ -2202,9 +2410,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if match:
             return self.holders(match.group(1), query)
         routes = {
-            "/account": lambda: app.summary(app.need(self.headers)),
-            "/market/state": lambda: app.market_state(app.signed_in(self.headers)),
-            "/market/ledger": lambda: app.ledger(app.need(self.headers)),
+            "/account": lambda: app.summary(app.need_actor(self.headers)),
+            "/market/state": lambda: app.market_state(app.actor(self.headers)),
+            "/market/ledger": lambda: app.ledger(app.need_owner(self.headers, ("owner", "admin"), "The ledger export")),
             "/status": app.market.status_page,
             "/toss/config": app.toss_config,
             "/swift/config": app.swift_config,
@@ -2272,9 +2480,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path == "/signout":
                 return self.reply(200, app.sign_out(self.headers), cookie=None if credential(self.headers).startswith(BEARER) else "")
             if path == "/order":
-                return self.reply(200, app.order(body, app.need(self.headers), self.client_ip(), self.agent()))
+                account = app.need_owner(self.headers, ("owner",), "Buying HC")
+                found = app.order(body, account, self.client_ip(), self.agent())
+                app.audit(account, account, "order.created", {"order": found.get("order"), "processor": body.get("processor", "coinpayments")})
+                return self.reply(200, found)
             if path.startswith("/market/"):
-                return self.reply(200, app.market_action(path, body, app.need(self.headers), self.client_ip(), self.agent()))
+                return self.reply(200, app.market_action(path, body, app.need_actor(self.headers), self.client_ip(), self.agent()))
             return self.reply(404, {"error": "Not found."})
         except Refusal as error:
             self.refuse(error)
@@ -2295,7 +2506,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def hub_report(self, path):
         app = self.server.app
-        actions = {"/hub/requests": app.record_usage, "/hub/events": app.hub_events, "/hub/pair-loss": app.market.pair_loss}
+        actions = {"/hub/requests": app.record_usage, "/hub/events": app.hub_events, "/hub/pair-loss": app.market.pair_loss, "/hub/audit": app.hub_audit}
         if path not in actions:
             return self.reply(404, {"error": "Not found."})
         if not self.hub_key():
@@ -2312,14 +2523,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not route:
                 raise Refusal("Not found.", 404, "not_found")
             need, action, match = route
-            account, record, via = app.principal(self.headers, self.client_ip(), "account:read")
+            account, record, via, member, role = app.principal(self.headers, self.client_ip(), "account:read")
             if need == "write" and record:
-                raise Refusal("Managing keys and webhooks needs the account session: sign in on the account page or with sparkpipe login.", 403, "invalid_key")
+                raise Refusal("Managing keys, webhooks and members needs a session: sign in on the account page or with sparkpipe login.", 403, "invalid_key")
             if need == "write" and via == "cookie" and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("market", account)
             body = self.json_body(ACCOUNT_LIMIT) if method in ("POST", "PUT") and self.headers.get("Content-Length") not in (None, "0") else {}
-            self.reply(200, app.account_call(action, account, match, urllib.parse.parse_qs(parts.query), body))
+            self.reply(200, app.account_call(action, (account, member, role), match, urllib.parse.parse_qs(parts.query), body))
         except Refusal as error:
             self.api_error(error)
 
@@ -2406,7 +2617,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             if any(part in (".", "..") for part in urllib.parse.unquote(path).split("/")):
                 raise Refusal("Not found.", 404, "not_found")
-            account, record, via = app.principal(self.headers, self.client_ip(), scope)
+            account, record, via, member, role = app.principal(self.headers, self.client_ip(), scope)
             if via == "cookie" and method not in ("GET", "HEAD") and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("gateway", account)
@@ -2421,7 +2632,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not hub:
                 return self.api_error(Refusal("The API opens once it is connected to the Fleets.", 503, "closed"), shape, path)
             target = hub[2] + path + ("?" + parts.query if parts.query else "")
-            headers = self.upstream_headers(account, record, served, origin)
+            headers = self.upstream_headers(account, record, served, origin, member, role)
             ip, upstream = self.client_ip(), []
             self.cutoff = False
             watch = app.guard.watch(lambda: self.still(account, fleet, scope, ip, served), lambda: self.cut(upstream))
@@ -2459,14 +2670,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def upstream_headers(self, account, record, fleet, origin=None):
+    def upstream_headers(self, account, record, fleet, origin=None, member=None, role="owner"):
         app = self.server.app
         found = [(name, value) for name, value in self.headers.items()
                  if TOKEN.fullmatch(name) and "\r" not in value and "\n" not in value and name.lower() not in DROPPED and not name.lower().startswith("x-forwarded-")
                  and (not name.lower().startswith("x-sparkpipe-") or name.lower() in CUSTOMER_HEADERS)]
+        scopes = [scope for scope in (record["scopes"] if record else market.SCOPES) if scope in market.ROLE_SCOPES[role]]
         found += [("Authorization", f"Bearer {app.cfg.pool_key}"), ("X-SparkPipe-Public", "1"), ("X-SparkPipe-Account", account), ("X-SparkPipe-Fleet", fleet),
-                  ("X-SparkPipe-Key", record["key"] if record else "session"), ("X-SparkPipe-Scopes", ",".join(record["scopes"] if record else market.SCOPES)),
-                  ("X-SparkPipe-Allow-Swap", "1" if not record or record["allow_swap"] else "0")]
+                  ("X-SparkPipe-Key", record["key"] if record else "session"), ("X-SparkPipe-Member", member or account), ("X-SparkPipe-Role", role), ("X-SparkPipe-Scopes", ",".join(scopes)),
+                  ("X-SparkPipe-Allow-Swap", "1" if (not record or record["allow_swap"]) and role != "member" else "0")]
         if record and record["priority"] and not self.headers.get("X-SparkPipe-Priority"):
             found.append(("X-SparkPipe-Priority", record["priority"]))
         if origin:
@@ -2628,6 +2840,7 @@ def start(cfg, port=None):
     if cfg.hub and cfg.health_seconds > 0 and not cfg.sandbox:
         threading.Thread(target=app.uptime.run, daemon=True).start()
     app.usage.prune(clock())
+    app.audits.prune(clock())
     app.notices.prune(app.market.now())
     app.notifier.deliveries.prune(clock())
     app.notifier.sweep(app.market.now())
