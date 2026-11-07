@@ -110,7 +110,10 @@ derives TP and PP placements from the model's authoritative contract in
 **Stage packs.** Weights are repackaged once, offline, into immutable stage
 packs. A pack is already sharded for one topology and already in the exact
 byte layout the kernels read, and it is identified by SHA-256 at every
-storage tier.
+storage tier. A pack directory holds the pack and every file the engine opens
+beside it, all real files, and a lane names the pack by that path: no lane,
+launcher or harness reaches a weight file or a configuration through a
+symlink ([`docs/LANES.md`](docs/LANES.md)).
 
 Every model serves at its publisher's full precision by default whenever it
 fits one fleet: BF16, or the format it was trained or released in (A.X K2's

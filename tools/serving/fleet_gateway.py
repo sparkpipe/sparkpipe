@@ -94,7 +94,7 @@ class Gateway:
         for model in json.loads(Path(config["swap_config"]).read_text())["models"]:
             match = ROOT.search(model["node_start"])
             if match:
-                self.engine_logs[model["id"]] = match.group(1) + "/residentd.log"
+                self.engine_logs[model["id"]] = match.group(1) + "/logs"
         self.session = None
 
     async def start(self, app):
@@ -199,7 +199,7 @@ class Gateway:
             path = self.engine_logs.get(active)
             if path is None:
                 return web.json_response({"error": f"no engine log known for the loaded model {active!r}"}, status=404)
-            code, text, _ = await self.execute(self.plain_argv(node, f"tail -n {lines} {path}", 20), 25)
+            code, text, _ = await self.execute(self.plain_argv(node, f'tail -n {lines} "$(ls -t {path}/residentd-*.log 2>/dev/null | head -1)"', 20), 25)
             return web.json_response({"name": f"engine log of {active} on {node}", "exit": code, "text": text})
         if name in self.logs:
             path = Path(self.logs[name])

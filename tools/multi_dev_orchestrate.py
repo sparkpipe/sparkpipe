@@ -57,7 +57,7 @@ def probe_nodes():
     healthy = []
     for node in sorted({dev["node"] for dev in DEVS} | {"spark9"}):
         result = ssh(node, "test -x $HOME/smokemd-mds/bin/multi_dev_smoke || "
-                           "{ mkdir -p $HOME/smokemd-mds/bin; ln -sfn "
+                           "{ mkdir -p $HOME/smokemd-mds/bin; cp -p "
                            "/home/spark9/smokemd/bin/* $HOME/smokemd-mds/bin/ 2>/dev/null; }; "
                            "timeout 30 $HOME/smokemd-mds/bin/multi_dev_smoke bandwidth 8 1 "
                            "2>&1 | tail -1")

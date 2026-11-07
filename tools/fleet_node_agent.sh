@@ -11,7 +11,7 @@ MESH_SGID_INDEX="${SPARK_MESH_SGID_INDEX:-3}"
 MESH_PAIR_INTERFACE="${SPARK_MESH_PAIR_INTERFACE:-roceP2p1s0f0}"
 MESH_PAIR_SGID_INDEX="${SPARK_MESH_PAIR_SGID_INDEX:-3}"
 MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"
-MESH_SECOND_RAIL="${SPARK_MESH_SECOND_RAIL:-}"
+MESH_SECOND_RAIL="${SPARK_MESH_SECOND_RAIL-1}"
 MESH_TRAFFIC_CLASS=106
 MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
@@ -63,7 +63,7 @@ esac
 case "$MESH_SECOND_RAIL" in
     "") ;;
     1) MESH_PAIRED=1 ;;
-    *) echo "fleet agent: SPARK_MESH_SECOND_RAIL must be 1 or unset, not '$MESH_SECOND_RAIL'" >&2; exit 2 ;;
+    *) echo "fleet agent: SPARK_MESH_SECOND_RAIL must be 1, unset or empty, not '$MESH_SECOND_RAIL'" >&2; exit 2 ;;
 esac
 PID_FILE="$HOME/.fleet_agent.pid"
 VIEW="$HOME/current"
@@ -234,11 +234,18 @@ root_config() {
         done < "$f"
     done
     [ -f "$rr/config/$RC_STAGE" ] || rc_fail "config/$RC_STAGE missing for rank index $RC_INDEX" || return 1
+    [ ! -L "$rr/config/$RC_STAGE" ] || rc_fail "config/$RC_STAGE is a symlink; a root holds its real stage configuration" || return 1
     if [ "$RC_ROLE" = dev ]; then
         [ -n "$RC_MEMORY_MAX" ] || rc_fail "a dev root needs AGENT_MEMORY_MAX" || return 1
         [ -n "$RC_NEED_GIB" ] || rc_fail "a dev root needs AGENT_MEMORY_NEED_GIB" || return 1
     fi
     return 0
+}
+
+root_stage_named() {
+    local named
+    named=$(python3 -c 'import json, sys; print(next((n["adapter_configuration_path"] for n in json.load(open(sys.argv[1]))["nodes"] if n["rank_index"] == int(sys.argv[2])), ""))' "$(root_dir "$1")/model_resident.json" "$RC_INDEX" 2>/dev/null)
+    [ "$named" = "config/$RC_STAGE" ] || rc_fail "model_resident.json names '${named}' for rank index $RC_INDEX, not config/$RC_STAGE; each rank names its own stage configuration directly" || return 1
 }
 
 root_role() {
@@ -300,7 +307,7 @@ check_root_gate() {
         note_root "$name" held "agent.hold present"
         return 1
     fi
-    if ! root_config "$name"; then
+    if ! root_config "$name" || ! root_stage_named "$name"; then
         note_root "$name" blocked-config "$RC_ERROR"
         return 1
     fi
@@ -524,7 +531,7 @@ start_root() {
         return 0
     fi
     cd "$rr" || return 1
-    ln -sf "$RC_STAGE" config/stage.json
+    if [ -L config/stage.json ]; then rm -f config/stage.json; fi
     sha16 "$rr/stages/stage_000/model_driver.so" > "$rr/.driver_sha_at_boot" 2>/dev/null
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     note_root "$name" "" ""
@@ -736,9 +743,6 @@ sync_root() {
             unload_root "$name" || return 0
             start_root "$name" ;;
         api) drain_api "$name" ;;
-        stage)
-            root_config "$name" >/dev/null 2>&1
-            ln -sf "$RC_STAGE" "$root/config/stage.json" ;;
     esac
 }
 

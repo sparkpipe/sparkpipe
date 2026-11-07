@@ -145,7 +145,7 @@ Boot0002* ubuntu HD(1,GPT,def)
             self.assertEqual(path.stat().st_mode & 0o777,0o600)
 
     def test_fabric_services_are_bounded_and_not_boot_critical(self) -> None:
-        for name in ("ds4-switched-fabric","ds4-direct-pair-fabric"):
+        for name in ("ds4-switched-fabric","ds4-rail2-fabric"):
             service = (ROOT / "tools" / "devcycle" / "fleet" / f"{name}.service").read_text()
             timer = (ROOT / "tools" / "devcycle" / "fleet" / f"{name}.timer").read_text()
             self.assertIn("TimeoutStartSec=60",service)
@@ -157,7 +157,7 @@ Boot0002* ubuntu HD(1,GPT,def)
         for name in ("ds4-optional-storage.service","ds4-optional-storage.timer"):
             self.assertFalse((ROOT / "tools" / "devcycle" / "fleet" / name).exists())
             self.assertNotIn(f"/etc/systemd/system/{name}",MODULE.ASSET_SOURCES)
-        for name in ("ds4-switched-fabric.service.conf","ds4-direct-pair-fabric.service.conf"):
+        for name in ("ds4-switched-fabric.service.conf","ds4-rail2-fabric.service.conf"):
             self.assertFalse((ROOT / "tools" / "devcycle" / "boot-unblock" / name).exists())
         self.assertNotIn("ceph.target",MODULE.CEPH_MASK_UNITS)
         self.assertIn("ceph-crash.service",MODULE.CEPH_MASK_UNITS)
@@ -390,66 +390,132 @@ Boot0002* ubuntu HD(1,GPT,def)
         self.assertIn('["systemctl","--failed","--no-legend","--plain"]',source)
         self.assertIn('["logrotate","--debug","/etc/logrotate.conf"]',source)
 
-    def test_direct_pair_links_follow_the_cabled_rank_partners(self) -> None:
-        self.assertEqual([MODULE.direct_pair_linked(rank) for rank in range(16)],[True] * 16)
-        with mock.patch.object(MODULE,"MESH_LINK_MAP","0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"):
-            self.assertEqual([MODULE.direct_pair_linked(rank) for rank in range(16)],[True] * 14 + [False] * 2)
-        for link_map in ("0-2:200","1-0:200","0-1","0-1:200,14-15"):
-            with self.subTest(link_map=link_map),mock.patch.object(MODULE,"MESH_LINK_MAP",link_map):
-                with self.assertRaises(MODULE.BrickproofError):
-                    MODULE.direct_pair_linked(0)
-
     def test_fabric_netdev_rings_are_sized_for_roce(self) -> None:
         fleet = ROOT / "tools" / "devcycle" / "fleet"
-        for name in ("ds4_direct_pair_fabric_apply.sh","ds4_switched_fabric_apply.sh"):
+        for name in ("ds4_rail2_fabric_apply.sh","ds4_switched_fabric_apply.sh"):
             with self.subTest(script=name):
                 rings = re.findall(r'ethtool -G "\$\{[A-Z_]+\}" rx (\d+) tx (\d+)',(fleet / name).read_text())
                 self.assertEqual(rings,[("1024","1024")])
         door = (ROOT / "tools" / "devcycle" / "spark_fabric_door.sh").read_text()
         self.assertIn('rings="${1:-1024}"',door)
 
-    def test_every_mesh_link_map_copy_agrees(self) -> None:
-        agent = (ROOT / "tools" / "fleet_node_agent.sh").read_text()
-        apply = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
-        expected = f'MESH_LINK_MAP="{MODULE.MESH_LINK_MAP}"'
-        self.assertEqual([line for line in agent.splitlines() if line.startswith("MESH_LINK_MAP=")],[expected])
-        self.assertEqual([line for line in apply.splitlines() if line.startswith("MESH_LINK_MAP=")],[expected])
+    def test_policy_services_enable_rail2_on_every_rank_and_retire_the_pair_units(self) -> None:
+        for rank in (0,2,14,15):
+            with self.subTest(rank=rank),mock.patch.object(MODULE,"run") as run,mock.patch.object(MODULE,"disable_persistent_unit") as disable:
+                MODULE.enable_policy_services(rank)
+                calls = [call.args[0] for call in run.call_args_list if call.args]
+                self.assertIn(["systemctl","enable","--now","ds4-rail2-fabric.timer"],calls)
+                for unit in ("ds4-direct-pair-fabric.timer","ds4-direct-pair-fabric.service"):
+                    self.assertIn(["systemctl","disable","--now",unit],calls)
+                    self.assertIn(mock.call(unit),disable.call_args_list)
+                self.assertFalse([call for call in calls if "enable" in call and any("direct-pair" in part for part in call)])
 
-    def test_policy_services_enable_the_pair_timer_only_on_linked_ranks(self) -> None:
-        for link_map,cases in ((MODULE.MESH_LINK_MAP,((0,"enable"),(13,"enable"),(14,"enable"),(15,"enable"))),
-                               ("0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200",((0,"enable"),(13,"enable"),(14,"disable"),(15,"disable")))):
-            for rank,verb in cases:
-                with self.subTest(link_map=link_map,rank=rank),mock.patch.object(MODULE,"MESH_LINK_MAP",link_map),mock.patch.object(MODULE,"run") as run,\
-                     mock.patch.object(MODULE,"disable_persistent_unit"):
-                    MODULE.enable_policy_services(rank)
-                    pair = [call.args[0] for call in run.call_args_list if call.args and "ds4-direct-pair-fabric.timer" in call.args[0]]
-                    self.assertEqual(pair,[["systemctl",verb,"--now","ds4-direct-pair-fabric.timer"]])
+    def test_retired_paths_cover_every_pair_fabric_file(self) -> None:
+        root = Path("/etc/systemd/system")
+        retired = set(MODULE.retired_paths(root))
+        for path in (root / "ds4-direct-pair-fabric.service",root / "ds4-direct-pair-fabric.timer",
+                     root / "ds4-direct-pair-fabric.service.d",root / "ds4-direct-pair-fabric-p2.service",
+                     Path("/usr/local/sbin/ds4-direct-pair-fabric-apply")):
+            self.assertIn(path,retired)
+        self.assertFalse([path for path in MODULE.ASSET_SOURCES if "direct-pair" in path])
 
-    def test_pair_fabric_apply_leaves_an_unlinked_rank_untouched(self) -> None:
-        script = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_direct_pair_fabric_apply.sh").read_text()
-        cabled = script.split("\nif [ \"$(id -u)\" -ne 0 ]; then",1)[0]
-        self.assertIn(f'MESH_LINK_MAP="{MODULE.MESH_LINK_MAP}"',cabled)
-        seven = cabled.replace(f'MESH_LINK_MAP="{MODULE.MESH_LINK_MAP}"','MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"')
+    def rail2_harness(self,directory: str,rank: object,addresses: str,queue_pairs: str = "",autoneg: str = "on") -> subprocess.CompletedProcess:
+        script = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_rail2_fabric_apply.sh").read_text()
+        functions = script.split('\nif [ "$(id -u)" -ne 0 ]; then',1)[0]
+        sysfs = Path(directory) / "net"
+        for device,rdma in (("rail0","roceRail"),("idle0","roceIdle")):
+            (sysfs / device / "device" / "infiniband" / rdma).mkdir(parents=True,exist_ok=True)
+        (Path(directory) / "rank").write_text(f"{rank}\n")
+        stubs = f"""
+ip() {{ echo "IP $*"; if [ "$1 $2" = "-4 -o" ]; then printf '%s' {shlex.quote(addresses)}; fi; }}
+ethtool() {{ echo "ETHTOOL $*"; case "$*" in rail0) printf '\\tAuto-negotiation: {autoneg}\\n';; "--show-fec rail0") echo "Supported/Configured FEC encodings: Auto";; esac; }}
+sysctl() {{ echo "SYSCTL $*"; }}
+rdma() {{ echo "link $4 lqpn 1 type GSI state RTS comm [ib_core]"; printf '%s' {shlex.quote(queue_pairs)}; }}
+mlnx_qos() {{ echo "MLNX_QOS $*" >&2; echo "Priority trust state: dscp"; }}
+dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:on 7:off"; echo "prio-buffer 0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1"; }}
+"""
+        harness = (f"export DS4_NODE_RANK_PATH={directory}/rank DS4_SYSFS_NET={sysfs} DS4_RAIL2_DEVICE=rail0 DS4_RAIL2_IDLE_DEVICE=idle0\n"
+                   + functions + stubs + "apply_rail2\n")
+        return(subprocess.run(["bash","-c",harness],capture_output=True,text=True))
+
+    def test_rail2_apply_sets_the_rank_address_and_one_shared_lossless_buffer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            for functions,rank,linked in ((cabled,0,True),(cabled,"07",True),(cabled,13,True),(cabled,14,True),(cabled,15,True),
-                                          (seven,13,True),(seven,14,False),(seven,15,False)):
-                with self.subTest(rank=rank,map="cabled" if functions is cabled else "seven pairs"):
-                    harness = (functions.replace("/etc/ds4-node-rank",f"{directory}/rank").replace('"/sys/class/net/${DIRECT_DEVICE}"',f'"{directory}"')
-                               + '\nip() { echo "IP $*"; }\nethtool() { echo "ETHTOOL $*"; }\nsysctl() { echo "SYSCTL $*"; }\n'
-                               + f'printf "{rank}\\n" > "{directory}/rank"\nDIRECT_DEVICE=lo\nconfigure_direct_pair\n')
-                    result = MODULE.subprocess.run(["bash","-c",harness],capture_output=True,text=True)
+            result = self.rail2_harness(directory,"05","x x x 10.10.201.5/31\nx x x 10.10.201.5/24\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            out = result.stdout
+            self.assertIn("IP -4 addr flush dev idle0 scope global",out)
+            self.assertIn("IP link set dev idle0 down",out)
+            self.assertIn("IP address replace 10.10.201.5/24 dev rail0",out)
+            self.assertIn("IP address del 10.10.201.5/31 dev rail0",out)
+            self.assertNotIn("IP address del 10.10.201.5/24",out)
+            self.assertIn("ETHTOOL -A rail0 rx off tx off",out)
+            self.assertNotIn("autoneg off",out)
+            qos = [line for line in result.stderr.splitlines() if line.startswith("MLNX_QOS -i rail0 --")]
+            self.assertEqual(qos,["MLNX_QOS -i rail0 --trust dscp","MLNX_QOS -i rail0 --pfc 0,0,0,1,0,0,1,0",
+                                  "MLNX_QOS -i rail0 --prio2buffer 1,1,1,1,1,1,1,1","MLNX_QOS -i rail0 --buffer_size 0,459360,0,0,0,0,0,0"])
+            self.assertTrue(out.endswith("rail2_fabric rank=5 device=rail0 address=10.10.201.5/24 mtu=9000 idle=idle0 forced_link=no\n"),out)
+
+    def test_rail2_apply_keeps_addresses_that_live_queue_pairs_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result = self.rail2_harness(directory,4,"x x x 10.10.201.4/31\nx x x 10.10.201.4/24\n",
+                                        queue_pairs="link roceRail/1 lqpn 534 rqpn 535 type RC state RTS comm sparkpipe_weigh\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertNotIn("IP address del",result.stdout)
+            self.assertIn("kept 10.10.201.4/31 on rail0; 1 live queue pairs hold its RoCE GID",result.stderr)
+
+    def test_rail2_apply_forces_the_link_only_on_listed_ranks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            for rank,autoneg,forced in ((2,"on",True),(2,"off",False),(3,"on",False)):
+                with self.subTest(rank=rank,autoneg=autoneg):
+                    result = self.rail2_harness(directory,rank,f"x x x 10.10.201.{rank}/24\n",autoneg=autoneg)
                     self.assertEqual(result.returncode,0,result.stderr)
-                    self.assertEqual("IP -4 addr flush dev lo scope global" in result.stdout,linked,result.stdout)
-                    if not linked:
-                        self.assertEqual(result.stdout,f"direct_pair_fabric rank={rank} has no direct pair link; lo left untouched\n")
-                    else:
-                        self.assertIn(f"IP address replace 10.10.200.{int(rank)}/31 dev lo",result.stdout)
+                    self.assertEqual("ETHTOOL -s rail0 autoneg off speed 100000 duplex full" in result.stdout,forced,result.stdout)
+                    self.assertEqual("ETHTOOL --set-fec rail0 encoding rs" in result.stdout,rank == 2,result.stdout)
+                    self.assertIn(f"forced_link={'yes' if rank == 2 else 'no'}",result.stdout)
+
+    def test_rail2_apply_fails_when_the_lossless_state_does_not_take(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            patched = (ROOT / "tools" / "devcycle" / "fleet" / "ds4_rail2_fabric_apply.sh").read_text().split('\nif [ "$(id -u)" -ne 0 ]; then',1)[0]
+            sysfs = Path(directory) / "net"
+            (sysfs / "rail0").mkdir(parents=True)
+            (Path(directory) / "rank").write_text("6\n")
+            harness = (f"set -euo pipefail\nexport DS4_NODE_RANK_PATH={directory}/rank DS4_SYSFS_NET={sysfs} DS4_RAIL2_DEVICE=rail0 DS4_RAIL2_IDLE_DEVICE=idle0\n"
+                       + patched + '\nip() { :; }\nethtool() { :; }\nsysctl() { :; }\nmlnx_qos() { echo "Priority trust state: dscp"; }\n'
+                       + 'dcb() { echo "prio-pfc 3:on 6:on"; echo "prio-buffer 0:0 1:0 2:0 3:1 4:0 5:0 6:0 7:0"; }\napply_rail2\n')
+            result = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
+            self.assertEqual(result.returncode,4,result.stdout + result.stderr)
+            self.assertIn("lossless state did not take on rail0",result.stderr)
+
+    def test_rail2_audit_reports_each_drift(self) -> None:
+        healthy = {
+            "ip -4 -o addr show dev enP2p1s0f0np0 scope global":"7: enP2p1s0f0np0    inet 10.10.201.6/24 brd 10.10.201.255 scope global enP2p1s0f0np0",
+            "mlnx_qos -i enP2p1s0f0np0":"Priority trust state: dscp",
+            "dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:on 7:off",
+            "dcb buffer show dev enP2p1s0f0np0 prio-buffer":"prio-buffer 0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1",
+        }
+        cases = (
+            ({},"down",[]),
+            ({"ip -4 -o addr show dev enP2p1s0f0np0 scope global":"7: enP2p1s0f0np0    inet 10.10.201.6/31 scope global enP2p1s0f0np0"},"down",["rail2-address:10.10.201.6/31"]),
+            ({},"up",["rail2-idle-function:up"]),
+            ({"mlnx_qos -i enP2p1s0f0np0":"Priority trust state: pcp"},"down",["rail2-trust"]),
+            ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:off 6:on"},"down",["rail2-pfc"]),
+            ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:on 6:off"},"down",["rail2-pfc"]),
+            ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:on 4:on 6:on"},"down",["rail2-pfc"]),
+            ({"dcb buffer show dev enP2p1s0f0np0 prio-buffer":"prio-buffer 0:0 1:0 2:0 3:1 4:0 5:0 6:0 7:0"},"down",["rail2-prio-buffer"]),
+        )
+        for overrides,idle,expected in cases:
+            commands = {**healthy,**overrides}
+            with self.subTest(expected=expected),\
+                    mock.patch.object(MODULE,"command",side_effect=lambda argv,**_: commands.get(" ".join(argv),"")),\
+                    mock.patch.object(MODULE,"read_optional",return_value=f"{idle}\n"):
+                self.assertEqual(MODULE.audit_rail2(6)[0],expected)
 
     def test_fleet_audit_pins_physical_interfaces(self) -> None:
         self.assertEqual(MODULE.SWITCHED_INTERFACE,"enp1s0f1np1")
         self.assertEqual(MODULE.SWITCHED_SPEED_MBIT,"100000")
-        self.assertEqual(MODULE.DIRECT_INTERFACE,"enp1s0f0np0")
-        self.assertEqual(MODULE.DIRECT_SPEED_MBIT,"200000")
+        self.assertEqual(MODULE.RAIL2_INTERFACE,"enP2p1s0f0np0")
+        self.assertEqual(MODULE.RAIL2_IDLE_INTERFACE,"enp1s0f0np0")
+        self.assertEqual(MODULE.RAIL2_SPEED_MBIT,"100000")
         source = SCRIPT.read_text()
         self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
         self.assertIn('["tailscale","status","--json"]',source)

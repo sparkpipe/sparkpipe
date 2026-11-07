@@ -54,7 +54,6 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--fixture", required=True)
     parser.add_argument("--out", required=True)
-    parser.add_argument("--weights-from", default=None)
     args = parser.parse_args()
     config = json.load(open(os.path.join(args.checkpoint, "config.json")))
     layers = int(config["num_hidden_layers"])
@@ -70,28 +69,15 @@ def main():
 
     put("prompt.i32", np.asarray(arrays["prompt_token_ids"], dtype=np.int32))
     put("generated.i32", np.asarray(arrays["generated_token_ids"], dtype=np.int32))
-    if args.weights_from is None:
-        put("embed.bf16", st.pread("model.embed_tokens.weight"))
-        put("final_norm.bf16", st.pread("model.norm.weight"))
-        put("lm_head.bf16", st.pread("lm_head.weight"))
+    put("embed.bf16", st.pread("model.embed_tokens.weight"))
+    put("final_norm.bf16", st.pread("model.norm.weight"))
+    put("lm_head.bf16", st.pread("lm_head.weight"))
     for key in sorted(arrays):
         if key.endswith("_streams"):
             put(key + ".bf16", arrays[key])
         if key.endswith("_route_ids"):
             put(key + ".i32", np.asarray(arrays[key], dtype=np.int32))
     summary = {"layers": layers, "experts": [len(u) for u in used], "route_sets": route_sets}
-    if args.weights_from is not None:
-        source = os.path.abspath(args.weights_from)
-        for name in sorted(os.listdir(source)):
-            if name.startswith(("l", "embed", "final_norm", "lm_head")) and not name.endswith("expert_used.i32") \
-                    and not os.path.exists(os.path.join(args.out, name)):
-                os.symlink(os.path.join(source, name), os.path.join(args.out, name))
-        for layer in range(layers):
-            if config["moe_layer_freq"][layer]:
-                put(f"l{layer:02d}_expert_used.i32", np.asarray(used[layer], dtype=np.int32))
-        json.dump(summary, open(os.path.join(args.out, "manifest.json"), "w"))
-        print(json.dumps({"out": args.out, "resident_experts": sum(summary["experts"]), "weights_from": source}))
-        return 0
     for layer in range(layers):
         prefix = f"model.layers.{layer}."
         tag = f"l{layer:02d}_"

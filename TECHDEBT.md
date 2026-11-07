@@ -10,16 +10,35 @@ purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
 accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
-## Dual-fabric topology contract
+## Dual-rail topology contract
 
-- Replace the legacy ring/single-switch/dual-switch topology modes with one
-  schema that represents the CRS804 rail plus eight pairwise direct links.
-- Generate supported four-, eight-, and sixteen-Spark profiles from the same
-  schema, requiring complete direct pairs at every size.
-- Generate pinned interface, address, direct-partner, and communicator tables
-  for all sixteen ranks from that schema.
-- Remove obsolete topology examples and release switches after all consumers
-  use the combined-fabric contract.
+- The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
+  `cisco0` on port 0, [FLEET_FABRIC.md](docs/FLEET_FABRIC.md)); there are no
+  direct pair links. Replace the legacy ring/single-switch/dual-switch topology
+  modes with one schema for two all-to-all rails, and generate the four-,
+  eight-, and sixteen-Spark profiles and the pinned interface, address and
+  communicator tables from it.
+- weightd uses rail 2 only for the `rank ^ 1` partner (`--mesh-pair-interface`,
+  `MESH_LINK_MAP` in the agent, still labelled 200 Gb/s). Every other peer goes
+  over rail 1, so rail 2 sits idle for 14 of 15 peers. Spread every peer's
+  traffic over both rails.
+- Mesh collectives write to all fifteen peers at once. That fifteen-to-one
+  incast holds rail 2 all-to-all at 88 of 98 Gb/s a node and gives small
+  messages a 0.65-1.3 ms p99 behind PFC pauses. Permutation-scheduled steps
+  (rotation or pairwise halving and doubling) measured 98 Gb/s a node and a
+  30 us p99. Schedule bulk collectives as permutations, and send
+  latency-critical small messages in the rail 2 fast class (traffic class 202).
+  The CRS804 has no second lossless class.
+- The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
+  which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
+  node; release main's agent, which has that default, and drop the override.
+- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
+  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
+  run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
+  another switch port to find out which end is at fault.
+- `tools/dsv41_flash_gen_deployment.py` still names `10.10.200.4-7` as its
+  rail 0, which no longer exists.
 
 ## Mesh collectives
 
@@ -210,7 +229,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
   through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
   id>.log` and refuses to overwrite it; the helper moves an older launcher's
-  `residentd.log` aside, and `archive` collects and removes the logs.
+  `residentd.log` aside (or removes the link an older version made), `status`
+  reads the newest run log, and `archive` collects and removes the logs.
   `fleet_node_agent.sh` moves a non-empty `residentd.log` aside with a
   timestamp before each start. Proof: a fleet run whose rank logs name the
   path of every chain and survive a second run on the same lane.
@@ -1379,6 +1399,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
 
+- **Measure gateway_capacity on the VPS and set it.** The gateway now refuses to start without `SPARKPIPE_GATEWAY_CAPACITY`, and neither `/etc/sparkpipe-pay/env` nor the sandbox's env has it yet. Measure it with `tools/gateway_capacity_check.py` against the sandbox on the VPS (`docs/PAYMENTS.md`, before the systemctl commands) and set both files before this release is deployed, or the live gateway stops at its next restart. Until it is measured, holders' share of the gateway (`docs/FLEET_API.md` §17) is only as good as the number written there.
+
 - **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
 - **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
 - **Ledger.** The payment service's `ledger.jsonl` chains every order, invoice, payment and issue of hours. Still missing: reservations, displacement, credits and consumption in it, a published daily root and per-customer proofs. Until consumption is recorded, the 168- and 720-hour holding limits count every unexpired hour issued. Balances must come only from replaying it.
@@ -1457,6 +1479,46 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- Awaiting fleet proof (lane `lanes/direct-pack-paths`): lanes name their
+  weight files directly (docs/LANES.md, Weight files). `stage_lane.sh` and
+  `k3_lane.sh` setup no longer link packs, refuse a missing or linked weight
+  file and delete every link under the lane root; `lane_run_log.sh` no longer
+  links `residentd.log`; the swap entries' warm commands read the pack from
+  `config/adapter.json`; `tools/lane_pack_files.py` lists every lane's files;
+  `lane_config.py audit` reports each link. Fleet step before the gate:
+  DeepSeek V4.1 Flash's pack directory
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs` does not yet hold what
+  the engine opens beside the pack. The hub's source copy of
+  `rank<r>.spstage.experts` is a 61,440-group slice manifest (2,949,136
+  bytes; the node copies were placed from it), while the engine attaches the
+  pack whole and refuses anything but a zero-range manifest; the engram shard
+  (`engram/engram.rank<r>.spengram`), its digest and `engram_tables.bin` sit in
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16`. Until the directory is
+  completed, setup refuses that lane and names the first missing file. Proof:
+  setup of every lane, `release_compare` EXACT on every model against the
+  linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
+  and an audit with no `LINK` line.
+- Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
+  weight file or a configuration (`tests/test_no_weight_links.py` holds the
+  tree to it; the only link sites left are the CUDA toolkit alias in
+  `tools/install_cuda13_compile_only_debian13.sh`, the systemd mask in
+  `tools/devcycle/ds4_spark_brickproof.py` and the source checkout of the
+  archived release replay `tools/replay_shared_serving_release.py`, whose
+  archived `stage-assets.sh` reads it). Deployments name each rank's own
+  `config/stage_<RR>.json`; `fleet_node_agent.sh`, `fleet_serve.sh` and
+  `lag_t1_launch.sh` refuse a rank whose node names anything else or a
+  linked file, and delete an older `config/stage.json` link before a
+  start; `fleet_serve.sh` now sees a refused start (the check and the run
+  log guard ran in the background before). The family job template, the
+  GLM cold-launch A/B, `inference_smoke.py` and the K3 run family name the
+  real pack and copy one digest; the A/B `root-check` refuses any link
+  under an arm root and a pack named any other way. The dead DSV4 dev cycle
+  (`tools/devcycle.sh`, `bbench.sh`), the GLM 5.2 `r3flash_exact_cell.sh`
+  and the one-off `glm5_next_pack_swap.sh` are gone. Fleet step before the
+  new agent ships: every agent-managed or `fleet_serve` root's
+  `model_resident.json` must name `config/stage_<RR>.json` per rank (the
+  agent holds the root in `blocked-config` otherwise); the A/B window
+  scripts must render absolute pack paths and copy `packs/<pack>.sha256`.
 - The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
   hub. They reach a person only while a session runs its `watch` command
   from the workstation. Nothing sends mail or a push on its own, and the

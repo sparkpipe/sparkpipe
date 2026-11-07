@@ -208,11 +208,33 @@ class SmokePreparation(unittest.TestCase):
              patch.object(smoke.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
             return smoke.prepare(self.spec, self.environment)
 
+    def test_a_linked_or_missing_pack_file_is_refused(self):
+        for name in ("packs/model.pack", "packs/model.pack.sha256", "packs/model.pack.experts"):
+            for kind in ("symlink", "missing"):
+                with self.subTest(name=name, kind=kind):
+                    path = self.source / name
+                    real = path.with_name(path.name + ".real")
+                    path.rename(real)
+                    if kind == "symlink":
+                        path.symlink_to(real)
+                    try:
+                        with self.assertRaises(ValueError) as refused:
+                            self.prepare()
+                        self.assertIn(f"{path} is missing, not a regular file or a symlink", str(refused.exception))
+                        self.assertFalse(self.root.exists())
+                    finally:
+                        if kind == "symlink":
+                            path.unlink()
+                        real.rename(path)
+
     def test_private_runtime_preserves_pack_and_changes_all_owned_paths(self):
         root, rank, hosts, batch, reference, deployment = self.prepare()
         self.assertEqual(rank, 0)
-        self.assertTrue((root / "runtime/packs/model.pack").is_symlink())
-        self.assertFalse((root / "runtime/config/model.json").is_symlink())
+        self.assertEqual([path for path in root.rglob("*") if path.is_symlink()], [])
+        self.assertEqual(sorted(path.name for path in (root / "runtime/packs").iterdir()), ["model.pack.sha256"])
+        self.assertEqual((root / "runtime/packs/model.pack.sha256").read_bytes(), (self.source / "packs/model.pack.sha256").read_bytes())
+        self.assertEqual((root / "runtime/lib/driver.so").read_text(), "driver")
+        self.assertEqual(json.loads((root / "runtime/config/model.json").read_text())["stage_pack_path"], str(self.source / "packs/model.pack"))
         self.assertEqual(deployment["weightd"]["socket_path"], str(root / "weightd.sock"))
         self.assertEqual(deployment["nodes"][0]["kv_backing_directory"], str(root / "kv"))
         private = json.loads((root / "runtime/config/model.json").read_text())
