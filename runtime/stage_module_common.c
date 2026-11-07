@@ -1118,14 +1118,6 @@ struct SparkStageModuleLoadPipeline
     SparkStatus failure;
 };
 
-SparkStatus SparkStageModuleLoadPipelineRequested(void)
-{
-    const char *text = getenv("SPARK_STAGE_MODULE_LOAD_PIPELINE");
-    return (text != 0 && text[0] == '0' && text[1] == '\0')
-        ? SPARK_STATUS_BUSY
-        : SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkStageModuleLoadPipelineWaitForSlotCopyIssued(
     SparkStageModuleLoadPipeline *pipeline,
     uint64_t chunk_index)

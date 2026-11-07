@@ -210,7 +210,6 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     uint64_t offset,
     uint64_t bytes,
     void **pointer);
-SparkStatus SparkStageModuleLoadPipelineRequested(void);
 SparkStatus SparkStageModuleLoadPipelineCreate(
     const char *module_tag,
     FILE *file,
