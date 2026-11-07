@@ -74,7 +74,7 @@ window.SP_PRICING = {
     "maxWeeksAhead": 52,
     "hourFleetDaysAhead": 7,
     "hourFleetHoursPerWeek": 24,
-    "freeHourFleets": 2,
+    "openHourShare": 0.25,
     "maintenanceHoursPerWeek": 3
   }
 };

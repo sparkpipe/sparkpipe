@@ -4,6 +4,7 @@ import collections
 import hashlib
 import ipaddress
 import json
+import math
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -499,9 +500,10 @@ class Market:
 
     def pair_room(self, pricing, monday, fleet_id=None):
         rules = pricing["bookings"]
-        listed = [f for f in self.fleets(pricing) if f["hourFleet"] and f["serving"]]
+        serving = [f for f in self.fleets(pricing) if f["serving"]]
+        listed = [f for f in serving if f["hourFleet"]]
         pinned = sum(1 for f in listed if f["id"] != fleet_id and any(b["kind"] == "week" for b in self.busy(f["id"], monday, monday + WEEK)))
-        limit = max(0, len(listed) - rules["freeHourFleets"])
+        limit = max(0, len(listed) - math.ceil(Decimal(str(rules["openHourShare"])) * len(serving)))
         return max(0, limit - pinned), limit
 
     def pair_plan(self, pricing, account, fleet, weeks, now):
@@ -530,7 +532,7 @@ class Market:
         week = first
         while week < end:
             if not self.pair_room(pricing, week, fleet["id"])[0]:
-                raise Refusal(f"At least {rules['freeHourFleets']} Hour Fleets stay open for hours in every Week, so no other pair can be pinned in the Week of {kst_text(week)[:10]}.", 409, "pair_limit")
+                raise Refusal(f"At least {Decimal(str(rules['openHourShare'])) * 100:.0f}% of the serving Fleets stay open for hours in every Week, so no other pair can be pinned in the Week of {kst_text(week)[:10]}.", 409, "pair_limit")
             week += WEEK
         off = self.discount(rules, held)
         return {"fleet": fleet["id"], "weeks": weeks, "first": slot_text(first), "last": slot_text(end - WEEK), "end": slot_text(end),

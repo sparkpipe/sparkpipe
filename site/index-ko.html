@@ -230,7 +230,7 @@ h1 { max-width: 14em; }
         <tr><th scope="row">시간</th><td>시간 플릿 전체 1시간에 <span data-hour="hc">1</span> HC에서 고객의 할인을 뺀 값, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC</td></tr>
         <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 그 밖의 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱하고 고객의 할인을 뺀 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
         <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
-        <tr><th scope="row">쌍</th><td>플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 쌍의 A 플릿을 보유하면, A 플릿을 보유한 주 동안 B 플릿도 같은 가격과 고객 플릿의 할인으로 고정할 수 있습니다: Spark 32대, 4 TB 메모리의 한 클러스터. B 플릿은 항상 최소 <span data-hourfleet="free">2</span>개가 시간 예약용으로 남습니다</td></tr>
+        <tr><th scope="row">쌍</th><td>플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 쌍의 A 플릿을 보유하면, A 플릿을 보유한 주 동안 B 플릿도 같은 가격과 고객 플릿의 할인으로 고정할 수 있습니다: Spark 32대, 4 TB 메모리의 한 클러스터. 서비스 중인 플릿의 최소 4분의 1, 출시 시 <span data-fleets="all">8</span>개 중 <span data-hourfleet="free">2</span>개는 항상 시간 예약용으로 남습니다</td></tr>
         <tr><th scope="row">팀</th><td>엔지니어 3~5명이 함께 쓰는 1주: 한 명당 <span data-team="min">$432</span>~<span data-team="max">$720</span>, 구성원마다 자신의 키와 플릿의 공정한 몫</td></tr>
         <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
         <tr><th scope="row">시간 할인</th><td>모든 시간 예약은 한 플릿에서 보유한 가장 많은 주 수의 할인, 또는 대기 명단에 있는 동안 잠금으로 예약될 주 수의 할인(플릿을 배정받기 전에 나오면 잠금에서 상환)만큼 저렴해집니다: 최대 <span data-off="max">20%</span></td></tr>
