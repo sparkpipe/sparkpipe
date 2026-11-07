@@ -317,6 +317,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	layout.row_align = K3_STREAMED_ROW_ALIGN;
 	layout.hidden = K3_HIDDEN;
 	layout.row_elements = K3_HIDDEN;
+	layout.round_rows = SparkK3TpSequenceCapacity(dispatch->max_rows, dispatch->tp_degree);
 	layout.tensors = tensors;
 	layout.tensor_first = tensor_first;
 	layout.experts_per_layer = experts_per_layer;
