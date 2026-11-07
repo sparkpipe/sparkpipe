@@ -85,7 +85,8 @@ CANCEL_WAIT_SECONDS = 5.0
 REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
-MEMBER_HEADER = "X-SparkPipe-Key"
+MEMBER_HEADER = "X-SparkPipe-Member"
+KEY_HEADER = "X-SparkPipe-Key"
 ALLOW_SWAP_HEADER = "X-SparkPipe-Allow-Swap"
 ALLOW_SWAP_VALUES = frozenset({"1", "true"})
 HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
@@ -1900,7 +1901,7 @@ class Frontend:
         if key is None:
             return None
         if key.get("gateway") is True:
-            return clean_header(headers.get(MEMBER_HEADER))
+            return clean_header(headers.get(MEMBER_HEADER)) or clean_header(headers.get(KEY_HEADER))
         return key.get("id")
 
     @staticmethod

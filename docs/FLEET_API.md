@@ -73,7 +73,7 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - Chat completions streams send an SSE comment line.
   - Non-streamed Messages and Responses requests get their 200 headers at the first keep-alive, then a newline every 10 s before the JSON body; JSON parsers skip leading whitespace. An error after the first newline arrives as the shape's error body under that 200.
 - **Path.** gateway (VPS) → SSH tunnel → the hub's chat layer (`tools/serving/chat_frontend.py`) → the model's `sparkpipe_model_api` → the 16 ranks. All three new API shapes are translated in the chat layer, because the tokenizer, chat templates and tool-call parsers live there (`chat_frontend.py:525`). The gateway passes the new paths through unchanged, with `X-SparkPipe-Account` and `X-SparkPipe-Fleet`.
-- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load.
+- **No per-key limit.** No key has a request or concurrency limit of its own. A holder's 64 concurrent requests all wait for sequences; the busy 429 after 60 s is the only refusal for load on the Fleet. The gateway's own limit (§17) is a share of what it can process, so a holder meets it only when the gateway itself is the bottleneck.
 - **Class.** A request is `interactive` (the default) or `background`. It names its class with the header `x-sparkpipe-priority: interactive|background`, or with the same key in its body's `metadata` (`"metadata": {"x-sparkpipe-priority": "background"}`, on all three shapes). The header wins when both are sent, and any other value is a 400 `invalid_request`. Claude Code's compaction and auxiliary calls (§3.8), a key made with `--priority background`, `<model>-bulk`, chat-memory jobs and Functions (§7.1) are background.
   - While background work runs, two sequences stay free for interactive requests. A freed sequence goes to a waiting interactive request first.
   - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
@@ -392,11 +392,11 @@ Every night, the anticipator chooses which leaves to build and keep warm for the
 4. **Hints.** What the customer says tomorrow is about: `sparkpipe anticipate focus src/consensus/** "allocator migration"`, a task list file, or pinned leaves.
 
 **Planning.**
-- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf.
+- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf: directories, pairs of directories, and each recent session's working set.
 - **Score.** Each candidate is scored as:
   - the expected uses tomorrow (recent sessions on those files, decayed by age, raised by hints)
   - × the prefill time a use would save (its tokens at the model's measured cold prefill rate)
-  - − the night's prefill time to build it
+  - − the night's prefill time to build it, counted at a tenth of a daytime wait, since night prefill runs on an idle fleet
   - − the cache it takes.
 - **Selection.** The plan is chosen greedily by score per gigabyte of new cache, counting shared roots and trunks once, until the night's compute budget or the cache budget runs out.
 - **Output.** Every planned leaf lists its files, the signals behind it, its expected uses and its build time.
@@ -605,15 +605,20 @@ The product promise is that a team can serve its own model on its own fleet, lis
 
 ## 10. Codebase tools over MCP
 
-The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, OpenCode and any MCP client can call tools that run next to the ingested repository and the sandbox host. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
+The fleet serves an MCP server (Streamable HTTP) at `/mcp`, authenticated with the account's key. Claude Code, Codex, OpenCode and any MCP client can call tools that run next to the ingested repository, its indexes and the sandbox host. A search, a type check or a test run is answered on the fleet in milliseconds or seconds, where it would otherwise cost the agent several turns and the laptop several minutes. The tools' indexes, build caches and dependency mirror are working state (§4): kept while the account holds the fleet and deleted with it. `sparkpipe mcp` is a stdio bridge for clients that only start local servers.
 
 | Tool | Does | Why it saves time |
 | --- | --- | --- |
 | `search_code` | ripgrep, plus a semantic index built at ingest, over a repository at any commit | Answers in milliseconds from the fleet's copy, with no files shipped back and forth |
+| `search_history` | The commits, messages and diffs that touched a path or match a question ("when and why did this change?"), from the same semantic index | The agent finds why code is the way it is without walking `git log` by hand |
 | `find_symbol`, `references` | Definitions and uses from a tree-sitter index built at ingest | Replaces several grep-and-read turns |
+| `definition`, `hover`, `diagnostics`, `rename_preview` | Answers from language servers kept running for the repository at the account's working commit, with the project's own build settings: clangd, pyright, rust-analyzer, gopls and the TypeScript server, among others | Exact, type-aware answers and compile errors without a build, where grep can only guess |
+| `deps` | The source and docs of the repository's dependencies at the versions its lockfiles pin (pip, npm, cargo, Go modules, Maven), fetched when the account turns the mirror on and searched like the repository | The agent reads the real API of the exact version instead of guessing from memory |
 | `read_file` | A file or line range at a commit | |
 | `pack_info` | Which files and commit a pack holds | The agent knows what is already in its context and does not read it again |
-| `run` | A command in a fresh sandbox microVM on the repository at a commit, with an optional patch (the local `git diff`) applied; no network unless allowed | Builds and test suites run on the fleet's sandbox host while the laptop stays free |
+| `run` | A command in a fresh sandbox microVM on the repository at a commit, with an optional patch (the local `git diff`) applied; no network unless allowed. Build caches (ccache, sccache, pip, npm, cargo, Gradle) persist between runs for the account. With `tests: "affected"`, only the tests the change touches run, from a coverage map a nightly Function refreshes, split across the sandbox host's cores; flaky tests are reported apart | A test loop that takes minutes on a laptop comes back in seconds, while the laptop stays free |
+| `browse` | A headless browser in the sandbox opens a page served by a `run`, or a URL the account allows, follows a short script and returns screenshots and the console and network errors | Checks a web app without the engineer's machine; the model reads the screenshots |
+| `map` | Runs one instruction over many files or chunks at once (summarize, extract, classify, check) with a small model beside the fleet's main model, and returns the collected answers | Fan-out reading spends no turns and no decode time of the main model, which stays on the reasoning |
 | `start_function`, `run_status`, `morning_report` | §7 | |
 | `warm` | §4.2 | |
 
@@ -732,6 +737,14 @@ A held fleet is then never lost to a forgotten Sunday.
 | Pins | Half the fleet's cache | §4.3 |
 | Context | The model's served window (Fleet List) | |
 | Storage | 4 TB per fleet | §6 |
+| Gateway requests, account holding an active rental | `SPARKPIPE_GATEWAY_CAPACITY` / N per 10 minutes, N = Fleets with an active rental now (at least 1) | `throttle_gateway` in `tools/sparkpipe_pay.py`; capacity measured with `tools/gateway_capacity_check.py` |
+| Gateway requests, any other account | 6,000 per 10 minutes | `LIMITS["gateway"]` in `tools/sparkpipe_pay.py` |
+
+The gateway's limits:
+- An account holds an active rental when one of its bookings' hours includes now. Such an account is not subject to the 6,000 limit. Instead, the holders of the N Fleets rented at that moment share the gateway's measured capacity equally, so each gets `SPARKPIPE_GATEWAY_CAPACITY / N` requests in any 10 minutes.
+- `SPARKPIPE_GATEWAY_CAPACITY` is the number of requests the gateway sustains in 10 minutes. It is required: the gateway refuses to start without a whole number of at least 1, and there is no default.
+- It is measured with `tools/gateway_capacity_check.py` against the sandbox or a staging gateway, never production. Set it to the result's `capacity_per_window`, which is the sustained 2xx requests per second over a 60-second run times 600 (docs/PAYMENTS.md).
+- Both limits answer 429 `busy` with `Retry-After: 60` in each shape's error body.
 
 Errors use each API shape's own error body, with these `type` or `code` values:
 - `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;

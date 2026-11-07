@@ -1,0 +1,2523 @@
+{
+ "budgets": {
+  "cache_bytes_node": 250000000000,
+  "compute_seconds": 50400.0
+ },
+ "commit": "13bb07a47f70b9275bf43a5a4ab85c8cc1cbc6ec",
+ "date": "2026-11-05",
+ "evidence": {
+  "candidates": 292,
+  "commits": 6957,
+  "excluded_files": {
+   "binary": 262,
+   "generated": 10,
+   "pattern": 735,
+   "too_large": 5
+  },
+  "hinted_files": 0,
+  "plannable_files": 4565,
+  "recent_refs": 40,
+  "sessions": 14
+ },
+ "format": "sparkpipe-anticipator-plan-1",
+ "generated": "2026-11-05T10:00:00Z",
+ "hints": {
+  "date": null,
+  "paths": [],
+  "phrases": [],
+  "pins": [],
+  "tasks": []
+ },
+ "leaves": [
+  {
+   "build_seconds": 854.8,
+   "cache_bytes_node": 747110400,
+   "digest": "38bfa91ded99ed2b",
+   "expected_uses": 1.454,
+   "files": [
+    {
+     "blob": "6a6bc06c26ad378b09294537db5a8648d4b961ed",
+     "path": "tests/test_python_syntax.py",
+     "tokens": 211
+    },
+    {
+     "blob": "9645751995fbccc8d4e25b70a36a3c025a62d848",
+     "path": "tests/code_size_budget/README.md",
+     "tokens": 192
+    },
+    {
+     "blob": "0c85582e545b0542a6c401bc8c92fdacb0580f04",
+     "path": "tests/test_device_neutral.py",
+     "tokens": 4772
+    },
+    {
+     "blob": "22b2727c2044accab8b1ae2cf8969943eff1b070",
+     "path": "tests/test_python_tests_registered.py",
+     "tokens": 421
+    },
+    {
+     "blob": "b4ef9c4642e4eaad7b010337f2e6fbd2d6aca87e",
+     "path": "tests/test_no_source_comments.py",
+     "tokens": 4518
+    },
+    {
+     "blob": "7b3e35b416073f91e2fa46fc7ba5f8fb6bb0adae",
+     "path": "site/market-test.html",
+     "tokens": 140
+    },
+    {
+     "blob": "69a39904086f46f00025e4e9a3ff00e5c1d5e0dd",
+     "path": "tests/test_package_manifest.py",
+     "tokens": 1906
+    },
+    {
+     "blob": "bda1526afa821ffc31dbc5f811b895e08e9ad49b",
+     "path": "deployment/vps/sparkpipe-lang.conf",
+     "tokens": 353
+    },
+    {
+     "blob": "8c9c745aa44857a329657d58b10ec67759fc25fb",
+     "path": "deployment/vps/sparkpipe-pay-sandbox.service",
+     "tokens": 199
+    },
+    {
+     "blob": "8d52d192d65e01a29689aea2a614b55aca24ecb3",
+     "path": "deployment/vps/sparkpipe-pay-sandbox.env.example",
+     "tokens": 127
+    },
+    {
+     "blob": "e3d3e2e6b85509da08396044e41a028bcf5eb136",
+     "path": "deployment/vps/sparkpipe-pay.service",
+     "tokens": 204
+    },
+    {
+     "blob": "007b61eb7d564c7be1d16636e1ceaa3152770cdf",
+     "path": "tests/test_ci_lanes.py",
+     "tokens": 1965
+    },
+    {
+     "blob": "10c38df4d6cc9897beacf090eb504033825ef3b3",
+     "path": "tests/test_no_python_in_production.py",
+     "tokens": 653
+    },
+    {
+     "blob": "755c8684f62f183a5bb8cfee45c42e8d6c5664c8",
+     "path": "docs/FLEET_BOOKINGS.md",
+     "tokens": 8335
+    },
+    {
+     "blob": "c19d64425444fa56c68df909f7459bbbad1135c8",
+     "path": "tests/test_dry_law.py",
+     "tokens": 1464
+    },
+    {
+     "blob": "66f94ba5ae899fd449b7cd813cf89d010907cd5c",
+     "path": ".github/workflows/cuda13-sm121a-compile.yml",
+     "tokens": 1241
+    },
+    {
+     "blob": "cc3f4df7bd6c587e2f1773bf76504a4a5af28eb1",
+     "path": "deployment/vps/sparkpipe-pay.env.example",
+     "tokens": 272
+    },
+    {
+     "blob": "a3beb72db748f92d2f32d3e918b62462feabb4ef",
+     "path": "docs/FLEET_API_ISSUES.md",
+     "tokens": 4452
+    },
+    {
+     "blob": "451ed398c82ace148857402eeb8a736bf8f7cdbc",
+     "path": "tools/sparkpipe_github_pat.sh",
+     "tokens": 585
+    },
+    {
+     "blob": "a3d62bce1edfc10737386623946673bce29ff629",
+     "path": "tests/test_complexity_ceiling.py",
+     "tokens": 2590
+    },
+    {
+     "blob": "771e3f3357e808a5be4538bbba0eacced5938b9d",
+     "path": "tests/test_site.py",
+     "tokens": 2927
+    },
+    {
+     "blob": "e109e9fc5b5267c0604bcf26492e24d7cf13722b",
+     "path": "sparkpipe_invariants.md",
+     "tokens": 3923
+    },
+    {
+     "blob": "3f9f5151fd7e74a844756e71a0f653c45e84590b",
+     "path": "docs/FLEET_API.md",
+     "tokens": 16357
+    },
+    {
+     "blob": "8127f66f3c5088af8bb2e8051d3e474cb2704f3a",
+     "path": "site/pricing.js",
+     "tokens": 1227
+    },
+    {
+     "blob": "075cd7c3d6649e6ebf5b6023373ae72bb2e78f68",
+     "path": "tools/sparkpipe_market.py",
+     "tokens": 15616
+    },
+    {
+     "blob": "998a1a95e8c651e3712e98004d8d568bb58578d7",
+     "path": "site/account.html",
+     "tokens": 5200
+    },
+    {
+     "blob": "296e4f3833c8423a07ef918682936e2a12683be3",
+     "path": "tests/test_market.py",
+     "tokens": 28998
+    },
+    {
+     "blob": "26b27264fcf85c367b97f1e3dcc72ead6180df14",
+     "path": "tests/test_pay.py",
+     "tokens": 21272
+    },
+    {
+     "blob": "cd578b7867d5ca3fc0e143b53a16ac5a8af7d33b",
+     "path": "docs/PAYMENTS.md",
+     "tokens": 7266
+    },
+    {
+     "blob": "060f7daaf3cf37a731d015bd7e5781d26591c4f5",
+     "path": "site/privacy-ko.html",
+     "tokens": 9246
+    },
+    {
+     "blob": "a5a8a934cbd25f8a72402a8c305daac467dbf7b6",
+     "path": "site/terms/agreement-ko.md",
+     "tokens": 12272
+    },
+    {
+     "blob": "5b1fe61f7d6e04e7d4cc880a621f71076ba39fc6",
+     "path": "tools/sparkpipe_pay.py",
+     "tokens": 32991
+    },
+    {
+     "blob": "d7e8746134a857a81050120c25650ac0c7070cb5",
+     "path": "site/agreement-ko.html",
+     "tokens": 15032
+    },
+    {
+     "blob": "4e93da963a1f8eb26781aa7a8bab3184462c3216",
+     "path": "site/terms/agreement-en.md",
+     "tokens": 6757
+    },
+    {
+     "blob": "d536195e4bf6cda742bcfe81b0efef0ff010bed4",
+     "path": "site/fleets-ko.html",
+     "tokens": 12250
+    },
+    {
+     "blob": "deb4a35e67ab11d7ea413826fb2f58621b2ad469",
+     "path": "site/privacy.html",
+     "tokens": 6441
+    },
+    {
+     "blob": "9a780b43ed6de03bd26c38cfc69b40a4afa0499b",
+     "path": "site/fleets.html",
+     "tokens": 10006
+    },
+    {
+     "blob": "8eafb635f66a4a56dcdaeeea9a601470dcfbcd77",
+     "path": "docs/FLEET_RELEASE_RUNBOOK.md",
+     "tokens": 10046
+    },
+    {
+     "blob": "3288561199bc863b8648d6bd4bffe0f1b895dd5f",
+     "path": "site/index-ko.html",
+     "tokens": 13740
+    },
+    {
+     "blob": "cf7065fa7689a3b3fdbd8841de0f2b1c53ade5d8",
+     "path": "tools/serving/chat_frontend.py",
+     "tokens": 34537
+    },
+    {
+     "blob": "3a8194ccd90ff1c4f094466eaf4a9f4f93d78731",
+     "path": "site/index.html",
+     "tokens": 10516
+    },
+    {
+     "blob": "5b717201d8fe3e2f43a722f39e99f39e7cb28284",
+     "path": "docs/LITELLM_FRONTEND.md",
+     "tokens": 20854
+    },
+    {
+     "blob": "386bacb61315b3f9d76de892af15297dd86ec0f0",
+     "path": "tests/test_code_size.py",
+     "tokens": 27819
+    }
+   ],
+   "header": 0,
+   "kind": "workset",
+   "manifest": true,
+   "modules": [
+    "tools",
+    "site"
+   ],
+   "name": "core/work-tools+site",
+   "new_tokens": 393216,
+   "pack_tokens": 393216,
+   "padded_tokens": 360448,
+   "reasons": "8 recent sessions worked mostly in its files (43 of them); 614 commits in 90 days touched it, 3 files changed today; 14 files changed on recently pushed branches; 7 include or import links inside it",
+   "saved_seconds_per_use": 849.8,
+   "score": 1143.071,
+   "signals": [
+    {
+     "files": 43,
+     "sessions": 8,
+     "signal": "sessions"
+    },
+    {
+     "commits": 614,
+     "files_changed_today": 3,
+     "signal": "history"
+    },
+    {
+     "files": 14,
+     "signal": "branches"
+    },
+    {
+     "links": 7,
+     "signal": "structure"
+    }
+   ],
+   "tokens": 360409,
+   "trunk": null
+  },
+  {
+   "build_seconds": 712.3,
+   "cache_bytes_node": 622592000,
+   "digest": "f5e2c8a5a0cfce4f",
+   "expected_uses": 0.263,
+   "files": [
+    {
+     "blob": "03efd434d505bdf19281f82d157c83dc9da6813b",
+     "path": "scripts/ling_build.sh",
+     "tokens": 539
+    },
+    {
+     "blob": "02bbd8b4bae44114fee14ea29e74c5465b054b64",
+     "path": "scripts/numerics_build.sh",
+     "tokens": 578
+    },
+    {
+     "blob": "fcda41429c4a62f994d6b8f8f70c348d33ac1ea3",
+     "path": "scripts/release_test.sh",
+     "tokens": 270
+    },
+    {
+     "blob": "0c85582e545b0542a6c401bc8c92fdacb0580f04",
+     "path": "tests/test_device_neutral.py",
+     "tokens": 4772
+    },
+    {
+     "blob": "22b2727c2044accab8b1ae2cf8969943eff1b070",
+     "path": "tests/test_python_tests_registered.py",
+     "tokens": 421
+    },
+    {
+     "blob": "60b15c1f3ec76c27a911fd3cbb055e45902b4a75",
+     "path": "tools/spec_bakeoff.py",
+     "tokens": 5494
+    },
+    {
+     "blob": "b4ef9c4642e4eaad7b010337f2e6fbd2d6aca87e",
+     "path": "tests/test_no_source_comments.py",
+     "tokens": 4518
+    },
+    {
+     "blob": "df1fa62a124c0f4507d33db4c3311ac101f12cb3",
+     "path": "tools/batch_speculation_gate.py",
+     "tokens": 1982
+    },
+    {
+     "blob": "3099b50163aaed1ceff309cb6e64db4599a9dd94",
+     "path": "tests/test_latent_block_drafter.py",
+     "tokens": 5673
+    },
+    {
+     "blob": "6588257bb01df1f201964235ac2a9d41f3579d84",
+     "path": "tools/batch_invariance_bench.cu",
+     "tokens": 6737
+    },
+    {
+     "blob": "de5ef6a53c679e7a7efb85c49f50391a68a64c99",
+     "path": "scripts/release_build.sh",
+     "tokens": 1075
+    },
+    {
+     "blob": "ea92302ed4fc06502c4950087b5a0788efdf7106",
+     "path": "scripts/rollover_lib.sh",
+     "tokens": 716
+    },
+    {
+     "blob": "30be5fa7d9ddeae9b74178bd12b42aa056012f7a",
+     "path": "tools/spec_offline/latent_block_drafter.py",
+     "tokens": 6863
+    },
+    {
+     "blob": "c19d64425444fa56c68df909f7459bbbad1135c8",
+     "path": "tests/test_dry_law.py",
+     "tokens": 1464
+    },
+    {
+     "blob": "ba28b8b0322c133cb94b51730eb4db56fd80fda8",
+     "path": "tests/test_release_rollout.py",
+     "tokens": 4654
+    },
+    {
+     "blob": "299885b519632833054cbae148a30dc35ada3c77",
+     "path": "tools/hub_draftd.sh",
+     "tokens": 1062
+    },
+    {
+     "blob": "451ed398c82ace148857402eeb8a736bf8f7cdbc",
+     "path": "tools/sparkpipe_github_pat.sh",
+     "tokens": 585
+    },
+    {
+     "blob": "a3d62bce1edfc10737386623946673bce29ff629",
+     "path": "tests/test_complexity_ceiling.py",
+     "tokens": 2590
+    },
+    {
+     "blob": "e109e9fc5b5267c0604bcf26492e24d7cf13722b",
+     "path": "sparkpipe_invariants.md",
+     "tokens": 3923
+    },
+    {
+     "blob": "34a11f23331daf9ec5bc5bf70c43b74c1ad873bf",
+     "path": "tools/serving/model_swap.py",
+     "tokens": 4695
+    },
+    {
+     "blob": "0f36fe8c4a25cb1abeff4fd62b872f1eea3dee75",
+     "path": "docs/README.md",
+     "tokens": 2202
+    },
+    {
+     "blob": "3c69630b662f87d5ea844e64ca497a13f3a317d5",
+     "path": "tools/spec_offline/block_drafter.py",
+     "tokens": 8517
+    },
+    {
+     "blob": "cbd9edc08c5866866e6296cf0f794fe23d953671",
+     "path": "docs/SPECULATION_PLAN.md",
+     "tokens": 16794
+    },
+    {
+     "blob": "e51fc532172827064420cb42b23155f45c258016",
+     "path": "tools/block_draftd.py",
+     "tokens": 6278
+    },
+    {
+     "blob": "b1c4f49e055466c09fd515c6194af221cdb594db",
+     "path": "deployment/lanes.json",
+     "tokens": 4584
+    },
+    {
+     "blob": "0129f18ebad8711bd1e5b1802610c5ce1883561e",
+     "path": "scripts/release_rollout.sh",
+     "tokens": 6391
+    },
+    {
+     "blob": "8eafb635f66a4a56dcdaeeea9a601470dcfbcd77",
+     "path": "docs/FLEET_RELEASE_RUNBOOK.md",
+     "tokens": 10046
+    },
+    {
+     "blob": "d970f33334915e70d058873d6f927693610f85e9",
+     "path": "inference/runner/stage_serving_adapter.c",
+     "tokens": 22791
+    },
+    {
+     "blob": "cf7065fa7689a3b3fdbd8841de0f2b1c53ade5d8",
+     "path": "tools/serving/chat_frontend.py",
+     "tokens": 34537
+    },
+    {
+     "blob": "5b717201d8fe3e2f43a722f39e99f39e7cb28284",
+     "path": "docs/LITELLM_FRONTEND.md",
+     "tokens": 20854
+    },
+    {
+     "blob": "c391352445a3c948ba689db00ba1132b190bddb1",
+     "path": "PERFORMANCE_STATUS.md",
+     "tokens": 11177
+    },
+    {
+     "blob": "97619d0eb4a4bd2193e20dd890c5951af20a21d0",
+     "path": "TECHDEBT.md",
+     "tokens": 36990
+    },
+    {
+     "blob": "386bacb61315b3f9d76de892af15297dd86ec0f0",
+     "path": "tests/test_code_size.py",
+     "tokens": 27819
+    },
+    {
+     "blob": "320f0c73696e066c62e8ae2a6b2aef0a93277d03",
+     "path": "Makefile",
+     "tokens": 51161
+    }
+   ],
+   "header": 0,
+   "kind": "module",
+   "manifest": true,
+   "modules": [
+    "scripts"
+   ],
+   "name": "core/scripts",
+   "new_tokens": 327680,
+   "pack_tokens": 360448,
+   "padded_tokens": 327680,
+   "reasons": "2 recent sessions worked mostly in its files (27 of them); 1412 commits in 90 days touched it, 4 files changed today; 13 files changed on recently pushed branches; 2 include or import links inside it",
+   "saved_seconds_per_use": 778.6,
+   "score": 127.639,
+   "signals": [
+    {
+     "files": 27,
+     "sessions": 2,
+     "signal": "sessions"
+    },
+    {
+     "commits": 1412,
+     "files_changed_today": 4,
+     "signal": "history"
+    },
+    {
+     "files": 13,
+     "signal": "branches"
+    },
+    {
+     "links": 2,
+     "signal": "structure"
+    }
+   ],
+   "tokens": 319160,
+   "trunk": null
+  },
+  {
+   "build_seconds": 783.6,
+   "cache_bytes_node": 684851200,
+   "digest": "31571545ae05fe21",
+   "expected_uses": 0.236,
+   "files": [
+    {
+     "blob": "d4afaad79f9a7d134914346ef15106e314a7e162",
+     "path": "model-families/glm5_next/include/sparkpipe/spark_glm5_next_device_stage.h",
+     "tokens": 125
+    },
+    {
+     "blob": "a442b9c35622a60e9f734c7d21a23bc29827335e",
+     "path": "model-families/hy4/device/hy4_device_stage.cpp",
+     "tokens": 5475
+    },
+    {
+     "blob": "a4895e2685dd0d8a5af58072e6b9a695834984ab",
+     "path": "model-families/hy4/include/sparkpipe/spark_hy4_device_stage.h",
+     "tokens": 119
+    },
+    {
+     "blob": "93cc1a1e3b592c2361aefce3dbec59fd2ebbce86",
+     "path": "inference/kernels/metal/common.metal",
+     "tokens": 405
+    },
+    {
+     "blob": "50de515ef2ad103c05827ac28bf4a85273676603",
+     "path": "inference/kernels/metal/ngram.metal",
+     "tokens": 1795
+    },
+    {
+     "blob": "0562a537d083c00d767b65fea4eec96c2923cde8",
+     "path": "include/sparkpipe/spark_device.h",
+     "tokens": 1380
+    },
+    {
+     "blob": "57b40aed12ed20bf66c3af5db8ff36ab90da488f",
+     "path": "tools/glm53flash_reference.py",
+     "tokens": 5054
+    },
+    {
+     "blob": "3090c2e4c0c1154df54e72508bc4311158a18934",
+     "path": "inference/kernels/metal/hyper.metal",
+     "tokens": 7250
+    },
+    {
+     "blob": "e3f59a9a5d25dcf59c372b3e653c778cae50a0a0",
+     "path": "docs/FAMILY_SCHEDULES.md",
+     "tokens": 1815
+    },
+    {
+     "blob": "23b0c096cdefa2ddbfa75e2aac99b0b1c4eb3f27",
+     "path": "model-families/mimo26/device/mimo26_device_stage.cpp",
+     "tokens": 4532
+    },
+    {
+     "blob": "5c380807d055589429a0612f170e538351283512",
+     "path": "inference/kernels/topk.cuh",
+     "tokens": 1836
+    },
+    {
+     "blob": "1986e36a93fe29d83228cde5346f823458d816e8",
+     "path": "inference/kernels/metal/attention.metal",
+     "tokens": 5758
+    },
+    {
+     "blob": "8fd25e704b89de368359a4f08dc520f10a76c241",
+     "path": "inference/kernels/metal/norm.metal",
+     "tokens": 3836
+    },
+    {
+     "blob": "19a375e207fda550d108d8242a480593fc230a78",
+     "path": "inference/runner/device_stage_model.c",
+     "tokens": 9249
+    },
+    {
+     "blob": "f969d357962275e8e81690f2299e5417070eb746",
+     "path": "inference/runner/device_stage_runner.c",
+     "tokens": 11637
+    },
+    {
+     "blob": "e0d228a5e4f4697dd7cf7525782d76e3f4c8c24f",
+     "path": "inference/runner/device_stage_model.h",
+     "tokens": 1847
+    },
+    {
+     "blob": "8237ebaa79173e4efdf9d5efde05e139328a9659",
+     "path": "inference/kernels/kernel_math.cuh",
+     "tokens": 4117
+    },
+    {
+     "blob": "0d5194f16a2ee65379251498067b688116370b70",
+     "path": "inference/kernels/metal/elementwise.metal",
+     "tokens": 9404
+    },
+    {
+     "blob": "41ebd3401ba204c526050565c5a19edc2f425a3d",
+     "path": "inference/runner/device_layers.h",
+     "tokens": 3659
+    },
+    {
+     "blob": "6679229eab39421a3060e0480725856a883fa12c",
+     "path": "tools/metal_gates.sh",
+     "tokens": 2748
+    },
+    {
+     "blob": "c1698a7f530618e4013a3af8776d1ec09fa504a7",
+     "path": "include/sparkpipe/spark_stage_runner_model.h",
+     "tokens": 1469
+    },
+    {
+     "blob": "f8f06947e20209d752570485d2584f9e0b912235",
+     "path": "inference/kernels/metal/kernel_params.h",
+     "tokens": 2530
+    },
+    {
+     "blob": "3464232de72de6b7f23e0865d4b8fa8bdd417bda",
+     "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh",
+     "tokens": 10099
+    },
+    {
+     "blob": "bb3414ddc33c27107e00ca76a9d4de76cf8caab2",
+     "path": "inference/runner/device_layers.c",
+     "tokens": 22078
+    },
+    {
+     "blob": "33b817ff65c8b083f7ff551863403ccd428880f4",
+     "path": "inference/runner/device_ops.h",
+     "tokens": 5260
+    },
+    {
+     "blob": "6cb748b4411a5bebe38c40da4123b895aa683d47",
+     "path": "inference/runner/device_ops.c",
+     "tokens": 37094
+    },
+    {
+     "blob": "8eafb635f66a4a56dcdaeeea9a601470dcfbcd77",
+     "path": "docs/FLEET_RELEASE_RUNBOOK.md",
+     "tokens": 10046
+    },
+    {
+     "blob": "2419c7f5a8fcdd25a35cc866d2af3452e48dd375",
+     "path": "tests/test_metal_kernels.c",
+     "tokens": 88566
+    },
+    {
+     "blob": "2ce3e73f30f6324f116202fcd22e97af9df5ea27",
+     "path": "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_model.cu",
+     "tokens": 36913
+    },
+    {
+     "blob": "9e3260cac7bc4b2cedaab9d66d98980e6e707514",
+     "path": "docs/METAL_BACKEND.md",
+     "tokens": 26648
+    },
+    {
+     "blob": "97619d0eb4a4bd2193e20dd890c5951af20a21d0",
+     "path": "TECHDEBT.md",
+     "tokens": 36990
+    }
+   ],
+   "header": 0,
+   "kind": "module",
+   "manifest": true,
+   "modules": [
+    "model-families/hy4/device"
+   ],
+   "name": "core/model-families-hy4-device",
+   "new_tokens": 360448,
+   "pack_tokens": 393216,
+   "padded_tokens": 360448,
+   "reasons": "3 recent sessions worked mostly in its files (31 of them); 449 commits in 90 days touched it, 2 files changed today; 25 files changed on recently pushed branches; 27 include or import links inside it",
+   "saved_seconds_per_use": 849.8,
+   "score": 115.05,
+   "signals": [
+    {
+     "files": 31,
+     "sessions": 3,
+     "signal": "sessions"
+    },
+    {
+     "commits": 449,
+     "files_changed_today": 2,
+     "signal": "history"
+    },
+    {
+     "files": 25,
+     "signal": "branches"
+    },
+    {
+     "links": 27,
+     "signal": "structure"
+    }
+   ],
+   "tokens": 360106,
+   "trunk": null
+  }
+ ],
+ "mode": "auto",
+ "model": "kimi-k3",
+ "plan": "1bdf292ea6b8cc8b",
+ "profile": {
+  "cache_bytes_node": 500000000000,
+  "cache_bytes_per_token_node": 1900,
+  "prefill_tokens_per_s": 460,
+  "resume_tokens": 16384,
+  "window_tokens": 1048576
+ },
+ "root": {
+  "digest": "0b4c94352e4e8533",
+  "files": [
+   {
+    "blob": "7f28889213445452dfefc2f4571160984b1f6136",
+    "path": "CLA.md",
+    "tokens": 921
+   },
+   {
+    "blob": "8c6895857e3841a63c040a7b59f8843ad0ad59f4",
+    "path": "CONTRIBUTING.md",
+    "tokens": 295
+   },
+   {
+    "blob": "3db466c69f28d90a607965a48abe977459ca2b59",
+    "path": "LICENSE-PERMISSION.md",
+    "tokens": 399
+   },
+   {
+    "blob": "1bc56af3ffed5f6bf2d141651938eabead467ab5",
+    "path": "docs/EXPERT_GROUPED_SCHEDULING.md",
+    "tokens": 2294
+   },
+   {
+    "blob": "c34d0bf8dfcf62f82d2bb1a0a45e8ebabde93957",
+    "path": "SPEC.md",
+    "tokens": 2327
+   },
+   {
+    "blob": "cba8f3f09c58c0de2cf6e1feea264c888e75fdef",
+    "path": "docs/ARCHIVE_INDEX.md",
+    "tokens": 3552
+   },
+   {
+    "blob": "7e73c943c774bc999b13d27354a48932b795dda7",
+    "path": "docs/INFERENCE_OS_DESIGN.md",
+    "tokens": 3092
+   },
+   {
+    "blob": "f2d391ecdf216adc54b12a65f397d5f6e7a140b0",
+    "path": "docs/SPECULATION_UNIFIED_DESIGN.md",
+    "tokens": 5245
+   },
+   {
+    "blob": "592651b7723d31637d21106f61e00bbcdf48ab70",
+    "path": "AGENTS.md",
+    "tokens": 828
+   },
+   {
+    "blob": "2071aa3985567d45fbd5b67e75e14e1d6d0cf597",
+    "path": "README.md",
+    "tokens": 10905
+   }
+  ],
+  "header": 64,
+  "manifest": false,
+  "padded_tokens": 32768,
+  "tokens": 29922
+ },
+ "seconds": 3.9,
+ "settings": {
+  "cache_share": 0.5,
+  "exclude": [],
+  "max_hours": null,
+  "max_leaf_tokens": 400000,
+  "mode": "auto",
+  "model": "kimi-k3",
+  "signals": {
+   "hints": true,
+   "history": true,
+   "sessions": true,
+   "structure": true
+  },
+  "window": {
+   "end": "09:00",
+   "start": "19:00",
+   "zone": "Asia/Seoul"
+  }
+ },
+ "signals": {
+  "hints": true,
+  "history": true,
+  "sessions": true,
+  "structure": true
+ },
+ "skipped": [
+  {
+   "name": "core/cache",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/config",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -30.984
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-glm5-next-tp16",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-glm5-next-tp16-config",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-hub",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-hub-open-webui-branding",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-laguna-s-2-1-bf16-tp8pp2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-minimax-text-tp4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-telemetry",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-vps",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-vps-chat-local",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/deployment-vps-hyor-io",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -38.73
+  },
+  {
+   "expected_uses": 0.029,
+   "name": "core/docs",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -60.7
+  },
+  {
+   "expected_uses": 0.032,
+   "name": "core/docs+include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -57.786
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs+site",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.031,
+   "name": "core/docs+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.581
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs-archive",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs-brand-hyor-ai",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs-brand-hyor-ai-favicon",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs-brand-hyor-ai-logo",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/docs-brand-hyor-ai-seal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/github-workflows",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.032,
+   "name": "core/include-sparkpipe+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -57.786
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/include-sparkpipe-family-stagepack",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/inference-kernels",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/inference-kernels-formats",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/inference-kernels-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/inference-llms-kimi-k3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/inference-runner",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "name": "core/model-contracts",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-contracts-references",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-axk2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-common-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-dsv41-flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "name": "core/model-families-dsv41-flash-device",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-dsv41-flash-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-gemma4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-gemma4-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -73.588
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-gemma4-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-gemma4-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm5-next",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm5-next-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm5-next-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm5-next-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -81.334
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm52",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm52-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm52-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm52-serving",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-glm52-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-hy4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-hy4-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-hy4-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -54.222
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-k3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -34.857
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-k3-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-k3-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-kexaone2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-laguna",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -30.984
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-ling",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -34.857
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-ling-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.096
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-ling-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-ling-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-mimo26",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "name": "core/model-families-mimo26-device",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-mimo26-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-mimo26-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -30.984
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-motif",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-motif-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-motif-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-motif-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -34.857
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-qwen38-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.096
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-qwen38-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.096
+  },
+  {
+   "name": "core/model-families-qwen38-source",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/model-families-solar-open2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-axk2-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-axk2-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-dsv41-flash-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "name": "core/modules-dsv41-flash-resident-decode-stage-source",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-gemma4-26b-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-gemma4-26b-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-gemma4-31b-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-gemma4-31b-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-glm53-flash-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-glm53-flash-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -27.111
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-glm53-full-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-hy4-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-hy4-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-k3-resident-decode-stage",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-k3-resident-decode-stage-configs",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-k3-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -38.73
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-k3-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-kexaone2-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-kexaone2-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-laguna-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-laguna-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-ling3-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-ling3-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-mimo26-flash-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-mimo26-flash-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-mimo26-pro-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-mimo26-pro-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-motif3-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-motif3-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-muse-glimmer-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-muse-glimmer-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-27b-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-27b-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-flash-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-flash-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-max-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-qwen38-max-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-solar-open2-tp16-resident-decode-stage-include-sparkpipe",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/modules-solar-open2-tp16-resident-decode-stage-source",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "name": "core/node",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ab-fleet",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-batch-sweep-20261018",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-batch-sweep-20261024",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-chat-memory-stageb-k3-20261015",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-dsv41-flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-dsv41-flash-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-dsv41-flash-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-dsv41-flash-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-26b",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-26b-compsec17-ui-2aa246576-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-26b-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-31b",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-31b-compsec17-ui-2aa246576-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-gemma4-31b-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-flash-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -46.476
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-flash-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-flash-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-golden",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-prefill-rf-20261015",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold6",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold7",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-spec-long-frames-20261015-hold8",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -42.603
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-glm53-full-speed",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -27.111
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-hy4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -27.111
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-hy4-compsec17-ui-2aa246576-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-hy4-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-k3-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-k3-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-k3-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-k3-spec-long-frames-20261015",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-k3-spec-long-frames-20261015-hold5",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-laguna",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-laguna-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-fin",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -34.857
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-fin-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-fin-ui-readd-20261012-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -69.715
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-flash-compsec17-ui-2aa246576-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ling3-flash-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-axk2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-dsv41-flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-3b09cd778-unchanged",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-control",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-control-experts",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-control-layers",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-control-rotate",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-pinned",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-gemma4-26b-662c49da2-pinned64",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-glm53flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-glm53full",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-hy4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-k3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-kexaone2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-laguna",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-ling",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-mimo26-flash",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-motif3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-muse-glimmer",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00-control",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00-control-layers",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00-control-rotate",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-07e0c1e00-speculation-2670f0d58",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-compare",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-control",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-control-layers",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-control-rotate",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-3b09cd778-ref",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-662c49da2-unchanged",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-76576307c",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-76576307c-control",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-76576307c-control-layers",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-76576307c-control-rotate",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-76576307c-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-a2bd02d0a",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-qwen38-27b-a2bd02d0a-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-metal-solar-open2",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-flash-mimo-flash-20261013t003830z",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -34.857
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-flash-ui-91c0e6be3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-flash-ui-91c0e6be3-compsec17-ui-91c0e6be3-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-pro-mimo-pro-20261013t050947z",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -27.111
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-pro-ui-91c0e6be3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-mimo26-pro-ui-91c0e6be3-compsec17-ui-91c0e6be3-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-muse-glimmer",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-muse-glimmer-compsec17-ui-2aa246576-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-muse-glimmer-compsec17-ui-2c5d5b843-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-numerics",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -81.334
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-pack-sweep-2026-09-19",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -30.984
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-27b-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-27b-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-27b-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-flash-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-flash-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-flash-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-max-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -11.619
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-max-rollover-2c5d5b843-compsec17-new-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-qwen38-max-rollover-2c5d5b843-compsec17-old-responses",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-releases-1d89e0377",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-releases-91c0e6be3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-releases-9b253f5b4",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-releases-9b253f5b4-kvgate",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-rollover-2c5d5b843",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-spark",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-spark-topologies",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-spec-offline-k3-edits-20261015",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-spec-offline-k3-edits-20261015-streams",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-t1-reference-dsv41",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-t1-reference-glm53full",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-t1-reference-k3",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ui-fix-smoke-after",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/qualification-ui-fix-smoke-before",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "name": "core/ring-transport",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/runtime",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.036,
+   "name": "core/runtime+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -54.739
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/runtime-device",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/runtime-device-cuda",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/runtime-device-host",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -7.746
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/runtime-device-metal",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/site",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/site+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/site-terms",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "name": "core/src",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.031,
+   "name": "core/tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.448
+  },
+  {
+   "expected_uses": 0.031,
+   "name": "core/tests+tools",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -58.448
+  },
+  {
+   "expected_uses": 0.032,
+   "name": "core/tests+tools-serving",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -57.742
+  },
+  {
+   "name": "core/tests-code-size-budget",
+   "reason": "its files do not fit within max_leaf_tokens after the root"
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-cuda",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-cuda-stub",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-fixtures",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-fixtures-deployment-generator",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-host-cuda",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-host-cuda-shim-inference-kernels",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -30.984
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tests-host-cuda-shim-runtime",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/text",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -77.461
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-ci",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-devcycle",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -54.222
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-devcycle-batches",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -19.365
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-devcycle-fleet",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-devcycle-templates",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-hardware",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -46.476
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-hub",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-hub-systemd",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-hy4-dequant",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -23.238
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-hy4-gpu",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -27.111
+  },
+  {
+   "expected_uses": 0.032,
+   "name": "core/tools-serving",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -57.918
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-serving-open-webui",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-serving-open-webui-functions",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-serving-open-webui-tools",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -3.873
+  },
+  {
+   "expected_uses": 0.034,
+   "name": "core/tools-spec-offline",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -55.976
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/tools-telemetry",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -15.492
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/validation-gemma4-anchors",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/work-docs+tools-spec-offline",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/work-tests+tools",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.037,
+   "name": "core/work-tests+tools-serving",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -53.459
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/work-tools+inference-runner",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.0,
+   "name": "core/work-tools+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -85.207
+  },
+  {
+   "expected_uses": 0.031,
+   "name": "core/work-tools-serving+tests",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -59.243
+  },
+  {
+   "expected_uses": 0.03,
+   "name": "core/work-tools-serving+tools",
+   "reason": "the expected uses do not pay for its build time and cache",
+   "score": -59.508
+  }
+ ],
+ "token_counts": "tokenizer:b6c497a7469b33ce",
+ "totals": {
+  "build_seconds": 2350.7,
+  "cache_bytes_node": 2054553600,
+  "expected_uses": 1.953,
+  "leaves": 3
+ },
+ "tree": "core",
+ "trunks": {}
+}
