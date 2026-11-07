@@ -49,12 +49,12 @@ window.SP_PRICING = {
       {
         "from": 1,
         "usd": 20,
-        "krw": 26000
+        "krw": 27200
       },
       {
         "from": 144,
         "usd": 15,
-        "krw": 19500
+        "krw": 20400
       }
     ],
     "min": 1,
