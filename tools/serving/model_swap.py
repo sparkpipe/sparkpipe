@@ -226,13 +226,41 @@ class Swapper:
 
     async def start(self, model):
         run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-        if model.get("hub_start"):
-            self.enter("starting hub services")
-            code, text = await self.local(model["hub_start"], self.hub_seconds)
-            if code != 0:
-                raise SwapError(f"{model['id']} hub service start exit {code}: {text[-300:]}")
-        self.enter("starting engines")
-        self.check(await self.fan(model["node_start"], 120, {"run_id": run_id}), f"{model['id']} engine start")
+        hub = asyncio.create_task(self.local(model["hub_start"], self.hub_seconds)) if model.get("hub_start") else None
+        warm = None
+        try:
+            self.enter("starting engines")
+            self.check(await self.fan(model["node_start"], 120, {"run_id": run_id}), f"{model['id']} engine start")
+            if model.get("warm_with_engines"):
+                warm = asyncio.create_task(self.fan(model["node_warm"], self.node_seconds, {"run_id": run_id}))
+            await self.wait_for_ranks(model, run_id)
+            if warm:
+                self.enter("warming weights")
+                self.check(await warm, f"{model['id']} weight warm")
+            elif model.get("node_warm"):
+                self.enter("warming weights")
+                self.check(await self.fan(model["node_warm"], self.node_seconds, {"run_id": run_id}), f"{model['id']} weight warm")
+            if hub:
+                self.enter("starting hub services")
+                code, text = await hub
+                if code != 0:
+                    raise SwapError(f"{model['id']} hub service start exit {code}: {text[-300:]}")
+        except BaseException:
+            for task in (hub, warm):
+                if task:
+                    task.cancel()
+            raise
+        self.enter("connecting api")
+        code, text = await self.local(model["api_start"], 60)
+        if code != 0:
+            raise SwapError(f"{model['id']} api start exit {code}: {text[-300:]}")
+        deadline = time.time() + self.api_seconds
+        while not await self.ready(model):
+            if time.time() > deadline:
+                raise SwapError(f"{model['id']} api did not connect all {len(self.nodes)} ranks within {self.api_seconds:g} s")
+            await asyncio.sleep(1)
+
+    async def wait_for_ranks(self, model, run_id):
         self.enter("waiting for ranks")
         deadline = time.time() + self.ready_seconds
         while True:
@@ -246,18 +274,6 @@ class Swapper:
             if time.time() > deadline:
                 waiting = [self.nodes[rank] for rank, state in enumerate(states) if state != "READY"]
                 raise SwapError(f"{model['id']} ranks not ready after {self.ready_seconds:g} s: {', '.join(waiting)}")
-            await asyncio.sleep(2)
-        if model.get("node_warm"):
-            self.enter("warming weights")
-            self.check(await self.fan(model["node_warm"], self.node_seconds, {"run_id": run_id}), f"{model['id']} weight warm")
-        self.enter("connecting api")
-        code, text = await self.local(model["api_start"], 60)
-        if code != 0:
-            raise SwapError(f"{model['id']} api start exit {code}: {text[-300:]}")
-        deadline = time.time() + self.api_seconds
-        while not await self.ready(model):
-            if time.time() > deadline:
-                raise SwapError(f"{model['id']} api did not connect all {len(self.nodes)} ranks within {self.api_seconds:g} s")
             await asyncio.sleep(1)
 
     async def swap(self, target):

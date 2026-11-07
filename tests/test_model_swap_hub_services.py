@@ -95,12 +95,11 @@ def main():
     status, error, order = asyncio.run(scenario(None))
     assert status == "idle", error
     assert order.index("HUBSTOP other") < order.index("HUBSTART target"), order
-    assert order.index("HUBSTART target") < order.index("START target"), order
+    assert "HUBSTART target" in order and "START target" in order, order
     status, error, order = asyncio.run(scenario("echo refused; exit 7"))
     assert status == "failed" and "target hub service start exit 7: refused" in error, error
-    assert "START target" not in order, order
     lane_records_match_the_swap()
-    print("PASS test_model_swap_hub_services: a model's drafter stops with the model, starts before its engines, and a start that fails stops the swap")
+    print("PASS test_model_swap_hub_services: a model's drafter stops with the model, starts with its engines, and a start that fails fails the swap")
 
 
 if __name__ == "__main__":
