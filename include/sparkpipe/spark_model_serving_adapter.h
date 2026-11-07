@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 37u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 38u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -263,6 +263,18 @@ typedef struct SparkModelServingSubmission
 	SparkModelDriverResidencyToken residency;
 } SparkModelServingSubmission;
 
+static inline uint32_t SparkModelServingVerifyPublishLane(const SparkModelServingSubmission *submission)
+{
+	uint32_t lane;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u || submission->lanes == 0 )
+		return(UINT32_MAX);
+	for (lane=0u; lane<submission->lane_count; lane++)
+		if ( (submission->lanes[lane].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS |
+			SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED)) != 0u )
+			return(lane);
+	return(UINT32_MAX);
+}
+
 static inline uint32_t SparkModelServingSubmissionFrameFlags(const SparkModelServingSubmission *submission)
 {
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
@@ -361,8 +373,7 @@ typedef struct SparkModelServingAdapterConfiguration
 	const char *kv_backing_directory;
 	uint64_t kv_backing_maximum_bytes;
 	const char *kv_snapshot_directory;
-	uint64_t kv_snapshot_maximum_bytes;
-	uint64_t kv_partition_reserve_bytes;
+	const char *kv_ledger_path;
 	void *execution_stream;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;

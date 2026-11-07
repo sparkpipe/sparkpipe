@@ -1204,13 +1204,14 @@ static void TestApiDegradedPath(TestApiStack *stack)
 	const char *flag = getenv("SPARK_TEST_ADAPTER_DEGRADED_FILE");
 	FILE *file;
 	assert(flag != 0 && TestApiWaitHealthBody(stack,200,"\"degraded_rank\":-1",20u) != 0u);
+	assert(TestApiWaitHealthBody(stack,200,"\"kv_capacity_tokens\":20,\"kv_capacity_max_tokens\":",20u) != 0u);
 	file = fopen(flag,"w");
 	assert(file != 0 && fclose(file) == 0);
 	assert(TestApiWaitHealthBody(stack,503,"\"degraded_path\":\"eager\"",20u) != 0u);
 	assert(TestApiWaitHealthBody(stack,503,"\"degraded_rank\":0",5u) != 0u);
 	assert(unlink(flag) == 0);
 	assert(TestApiWaitHealthBody(stack,200,"\"degraded_path\":\"none\"",20u) != 0u);
-	printf("test_model_api_text: degraded path OK (/health answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
+	printf("test_model_api_text: degraded path OK (/health reports kv_capacity_tokens as the smallest rank's grown pool, answers 503 naming the rank whose driver fell back to the eager path, and 200 once it reports none)\n");
 }
 
 static void TestApiRankLoss(TestApiStack *stack)
@@ -1289,6 +1290,22 @@ static void TestApiSamplingOptions(TestApiStack *stack)
 	TestApiChatOptionRejected(stack,"/v1/completions","{\"prompt_token_ids\":[11,12],\"speculation\":0}");
 	printf("test_model_api_text: sampling options OK (logprobs return the emitted token and its top alternatives "
 		"in order, streamed or not; top-p and top-k reach a truncating adapter; speculation false is accepted; out-of-range options are 400)\n");
+}
+
+static void TestApiStreamFirstUsage(TestApiStack *stack)
+{
+	char response[65536];
+	const char *first,*end,*usage,*last;
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12,13],\"max_tokens\":3,\"stream\":true}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	first = strstr(response,"data: {");
+	assert(first != 0);
+	end = strstr(first,"\n\n");
+	usage = strstr(first,"\"usage\":{\"prompt_tokens\":3,");
+	assert(end != 0 && usage != 0 && usage < end && strstr(first,"\"finish_reason\":null") < end && strstr(first,"\"cached_tokens\":") < end);
+	last = strstr(response,"data: [DONE]");
+	assert(last != 0 && strstr(end,"\"usage\":{\"prompt_tokens\":3,") != 0);
+	printf("test_model_api_text: stream usage OK (the first streamed event carries the prompt and cached counts, the last the whole usage)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
@@ -1397,6 +1414,7 @@ int main(void)
 	}
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
+	TestApiStreamFirstUsage(&stack);
 	TestApiClientDisconnectDrains(&stack);
 	TestApiHttpBounds(&stack);
 	TestApiStopTokenIds(&stack);

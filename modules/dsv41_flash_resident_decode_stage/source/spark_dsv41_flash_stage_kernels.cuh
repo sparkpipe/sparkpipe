@@ -289,9 +289,7 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 		const float kv0 = ordinal > 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
 		const float score0 = ordinal > 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
 		const float kv1 = kv[(uint64_t)row * width + c], score1 = score[(uint64_t)row * width + c];
-		const float top = fmaxf(score0, score1);
-		const float e0 = expf(score0 - top), e1 = expf(score1 - top);
-		pooled[(uint64_t)row * width + c] = LmFloatToBf16((kv0 * e0 + kv1 * e1) / (e0 + e1));
+		pooled[(uint64_t)row * width + c] = LmFloatToBf16(SparkMathSoftmaxPool2(kv0, score0, kv1, score1));
 	}
 	if ( threadIdx.x == 0u )
 		emit_row[row] = position / ratio;

@@ -15,6 +15,7 @@ extern "C" {
 #define SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS 9u
 #define SPARK_SPECULATION_FRAME_MAX_DRAFTS 255u
 #define SPARK_SPECULATION_FRAME_PROBE_DRAFTS 16u
+#define SPARK_SPECULATION_FRAME_GROWTH 4u
 #define SPARK_SPECULATION_FRAME_HAZARD_PRIOR 0.2f
 #define SPARK_SPECULATION_FRAME_REQUEST_WEIGHT 8.0f
 #define SPARK_SPECULATION_FRAME_ENGINE_DECAY 0.995f
@@ -22,6 +23,7 @@ extern "C" {
 #define SPARK_SPECULATION_FRAME_COST_WEIGHT 0.125f
 #define SPARK_SPECULATION_FRAME_MARGIN 1.05f
 #define SPARK_SPECULATION_FRAME_BATCH_LANES 16u
+#define SPARK_SPECULATION_FRAME_STALE_FRAMES 64u
 
 typedef struct SparkSpeculationHazard
 {
@@ -35,6 +37,7 @@ typedef struct SparkSpeculationCost
 	float ns;
 	float rows;
 	float samples;
+	uint64_t seen;
 } SparkSpeculationCost;
 
 typedef struct SparkSpeculationFrameModel
@@ -44,6 +47,7 @@ typedef struct SparkSpeculationFrameModel
 	SparkSpeculationCost token[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 	SparkSpeculationCost single[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 	SparkSpeculationCost batch_step[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS][SPARK_SPECULATION_FRAME_BATCH_LANES];
+	uint64_t observed[SPARK_SPECULATION_FRAME_CONTEXT_BUCKETS];
 } SparkSpeculationFrameModel;
 
 typedef struct SparkSpeculationFrameRequest
@@ -55,6 +59,7 @@ typedef struct SparkSpeculationFrameRequest
 	uint32_t sampled;
 	uint32_t lanes;
 	uint32_t base_rows;
+	uint32_t proven_drafts;
 	float base_tokens;
 	float cost_cap_ns;
 } SparkSpeculationFrameRequest;

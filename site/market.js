@@ -26,13 +26,13 @@
     return data;
   };
 
-  const spend = async (path, body) => {
+  const spend = async (path, body, method = 'POST') => {
     try {
-      return await call('POST', path, body);
+      return await call(method, path, body);
     } catch (error) {
       if (error.reason !== 'terms') throw error;
       if (!confirm('The SparkPipe Customer Agreement has changed since you accepted it. Accept the current text (the Korean text prevails) and continue?')) throw error;
-      return call('POST', path, Object.assign({}, body, { accept: true }));
+      return call(method, path, Object.assign({}, body, { accept: true }));
     }
   };
 
@@ -102,6 +102,33 @@
   };
 
   const statusText = { demo: 'Demo fleet', pinned: 'Pinned', free: 'Available' };
+  const waitingText = { terms: 'waiting for you to accept the current Customer Agreement', insufficient_hc: 'waiting for enough unlocked HC to book the next week' };
+
+  const setAutoExtend = (fleet, weeks) => act('m-weeks', () => spend('/market/auto-extend', { fleet, weeks_ahead: weeks }, 'PUT'),
+    (r) => (r.weeks_ahead ? `Auto-extend on ${fleet}: ${r.weeks_ahead} week${r.weeks_ahead === 1 ? '' : 's'} kept booked ahead${r.through ? `, booked through ${lastDay(r.through)}` : ''}.` : `Auto-extend on ${fleet} is off. Book the next week yourself to keep the fleet.`));
+
+  function autoExtendControl(own) {
+    const box = document.createElement('div');
+    box.className = 'auto-extend';
+    const label = cell('span', '');
+    if (own.autoExtend) {
+      label.textContent = `Auto-extend on: ${own.autoExtend} week${own.autoExtend === 1 ? '' : 's'} kept booked ahead` + (own.autoExtendWaiting ? `, ${waitingText[own.autoExtendWaiting] || own.autoExtendWaiting}. ` : '. ');
+      const ahead = document.createElement('select');
+      ahead.setAttribute('aria-label', 'Weeks kept booked ahead on ' + own.fleet);
+      for (let n = 1; n <= P.bookings.maxWeeksAhead; n += 1) {
+        const o = cell('option', `${n} week${n === 1 ? '' : 's'} ahead`);
+        o.value = String(n);
+        ahead.append(o);
+      }
+      ahead.value = String(own.autoExtend);
+      ahead.addEventListener('change', () => setAutoExtend(own.fleet, Number(ahead.value)));
+      box.append(label, ahead, ' ', button('Turn auto-extend off', () => setAutoExtend(own.fleet, 0)));
+    } else {
+      label.textContent = 'Auto-extend off: book the next week yourself by the deadline. ';
+      box.append(label, button('Turn auto-extend on', () => setAutoExtend(own.fleet, 1), 'btn small solid'));
+    }
+    return box;
+  }
 
   function renderTop() {
     const st = S.state;
@@ -114,7 +141,8 @@
       const yours = own ? `Booked through ${lastDay(own.through)} (${own.weeks} week${own.weeks === 1 ? '' : 's'}); book the next week by ${kst(own.deadline)} KST` : '';
       const open = !own && f.firstWeek ? `available from ${kstDay(f.firstWeek)}` : '';
       const status = own ? 'Pinned to you' : [statusText[f.status] || f.status, open].filter(Boolean).join(', ');
-      return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : status, yours]);
+      const detail = own ? (() => { const box = document.createElement('div'); box.append(cell('p', yours), autoExtendControl(own)); return box; })() : yours;
+      return row([f.name, f.kind || '-', String(f.rate), f.serving === false ? 'Not serving yet' : status, detail]);
     }), 'No fleet is listed yet.');
     fillSelect('weeks-fleet', st.fleets.filter((f) => (mine(f.id) && mine(f.id).canExtend) || (!mine(f.id) && f.firstWeek)).map((f) => [f.id, f.name + (mine(f.id) ? ' (extend)' : ' (pin from ' + kstDay(f.firstWeek) + ')')]));
     fillSelect('hours-fleet', st.fleets.filter((f) => f.serving !== false && (f.demo || f.status === 'free')).map((f) => [f.id, f.name + (f.demo ? ' (demo)' : ' (available this week)')]));

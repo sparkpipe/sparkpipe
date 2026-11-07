@@ -95,6 +95,18 @@ static __global__ void LmNgramGatherE8m0Kernel(const int64_t *__restrict__ ids, 
 			LmE8m0ToFloat(scale[local * (head_dim / 32u) + c / 32u])) : (uint16_t)0u;
 }
 
+static __global__ void LmNgramGatherBf16Kernel(const int64_t *__restrict__ ids, const uint16_t *__restrict__ payload,
+	uint16_t *__restrict__ embed, uint64_t first_row, uint64_t local_rows, uint32_t columns, uint32_t head_dim)
+{
+	const uint32_t row = blockIdx.x, column = blockIdx.y;
+	const int64_t id = ids[(uint64_t)row * columns + column];
+	uint16_t *target = embed + ((uint64_t)row * columns + column) * head_dim;
+	const uint32_t owned = id >= (int64_t)first_row && id < (int64_t)(first_row + local_rows);
+	const uint64_t local = owned != 0u ? (uint64_t)(id - (int64_t)first_row) : 0u;
+	for ( uint32_t c = threadIdx.x; c < head_dim; c += blockDim.x )
+		target[c] = owned != 0u ? payload[local * head_dim + c] : (uint16_t)0u;
+}
+
 static __global__ void LmNgramGatherScaledKernel(const int64_t *__restrict__ ids, const uint8_t *__restrict__ payload, const float *__restrict__ scale,
 	uint16_t *__restrict__ embed, uint64_t first_row, uint64_t local_rows, uint32_t columns, uint32_t head_dim)
 {

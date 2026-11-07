@@ -11,11 +11,11 @@ static __device__ __forceinline__ uint64_t LmTopkWarpCandidate(const float *scor
 	if ( index >= n )
 		return(0ull);
 	value = LmTopkScore<SCORE_TRANSFORM>(scores,logits_bf16,base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f);
-	return(((uint64_t)LmTopkKey(value) << 32u) | (uint64_t)(0xffffffffu - index));
+	return(((uint64_t)LmTopkRouteKey(value) << 32u) | (uint64_t)(0xffffffffu - index));
 }
 
 template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-__global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale)
+__global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
 {
 	constexpr uint32_t width = K <= 1u ? 1u : K <= 2u ? 2u : K <= 4u ? 4u : K <= 8u ? 8u : K <= 16u ? 16u : 32u;
 	static_assert(K <= LM_WARP_LANES, "one lane holds each chosen expert");
@@ -41,6 +41,8 @@ __global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *_
 		for ( slot = 0u; slot < LM_TOPK_WARP_PER_LANE; slot++ )
 			candidate[slot] = candidate[slot] == winner ? 0ull : candidate[slot];
 	}
+	if ( lane == 0u )
+		LmTopkRouteFault(fault,high);
 	if ( lane < K )
 	{
 		out_indices[(uint64_t)blockIdx.x * K + lane] = chosen;
@@ -64,7 +66,7 @@ __global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *_
 #define LM_TOPK_WARPS_PER_LANE 4u
 
 template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-__global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale)
+__global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
 {
 	constexpr uint32_t width = K <= 1u ? 1u : K <= 2u ? 2u : K <= 4u ? 4u : K <= 8u ? 8u : K <= 16u ? 16u : 32u;
 	constexpr uint32_t merged = (LM_TOPK_WARPS * K + LM_WARP_LANES - 1u) / LM_WARP_LANES;
@@ -114,6 +116,8 @@ __global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKern
 		for ( slot = 0u; slot < merged; slot++ )
 			pool[slot] = pool[slot] == winner ? 0ull : pool[slot];
 	}
+	if ( lane == 0u )
+		LmTopkRouteFault(fault,high);
 	if ( lane < K )
 	{
 		out_indices[(uint64_t)blockIdx.x * K + lane] = chosen;
@@ -134,13 +138,15 @@ __global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKern
 }
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-static cudaError_t LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, cudaStream_t stream)
+static cudaError_t LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, uint32_t *fault, cudaStream_t stream)
 {
-	if ( n <= LM_TOPK_WARP_PER_LANE * LM_WARP_LANES && n >= K )
-		LM_LAUNCH((LmTopkWarpKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale);
-	else if ( n <= LM_TOPK_WARPS * LM_TOPK_WARPS_PER_LANE * LM_WARP_LANES && n >= K )
-		LM_LAUNCH((LmTopkWarpsKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_TOPK_WARPS * LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale);
+	if ( fault == 0 || n < K )
+		return(cudaErrorInvalidValue);
+	if ( n <= LM_TOPK_WARP_PER_LANE * LM_WARP_LANES )
+		LM_LAUNCH((LmTopkWarpKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
+	else if ( n <= LM_TOPK_WARPS * LM_TOPK_WARPS_PER_LANE * LM_WARP_LANES )
+		LM_LAUNCH((LmTopkWarpsKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_TOPK_WARPS * LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	else
-		LM_LAUNCH((LmTopkSmallKernel<THREADS,K,RENORMALISE,1u,1u,SCORE_TRANSFORM>),rows,THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale);
+		LM_LAUNCH((LmTopkSmallKernel<THREADS,K,RENORMALISE,1u,1u,SCORE_TRANSFORM>),rows,THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	return(cudaPeekAtLastError());
 }

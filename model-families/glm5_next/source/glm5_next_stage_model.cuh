@@ -28,6 +28,10 @@ typedef struct Glm5NextModelState
 	uint64_t kda_window_slot_bytes;
 	uint8_t *kda_state;
 	uint8_t *kda_windows;
+	uint32_t verify_rows;
+	uint16_t *replay_inputs;
+	float *replay_retention;
+	float *replay_write_gate;
 	LmKvAccessError *kv_error;
 	LmKvShardView latent_views[G5N_DSA_LAYERS];
 	LmKvShardView index_views[G5N_DSA_LAYERS];
@@ -298,6 +302,7 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 	const uint64_t query_latent = R * mla_heads * G5N_LATENT > query_stride ? R * mla_heads * G5N_LATENT : query_stride;
 	const uint64_t gate_up = P * (2u * G5N_EXPERT_INTER / D) > R * (2u * G5N_DENSE_INTER / D) ? P * (2u * G5N_EXPERT_INTER / D) : R * (2u * G5N_DENSE_INTER / D);
 	const uint64_t inter = P * (G5N_EXPERT_INTER / D) > R * (G5N_DENSE_INTER / D) ? P * (G5N_EXPERT_INTER / D) : R * (G5N_DENSE_INTER / D);
+	const uint64_t replay = lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->verify_rows : 0u;
 	const Glm5NextBuffer plan[] =
 	{
 		{ (void **)&state->dense_row_offset, 8u }, { (void **)&state->dense_tile_prefix, 8u },
@@ -334,6 +339,8 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 		{ (void **)&state->shard_partials, D * partial_stride * 4u }, { (void **)&state->shard_partials_received, D * partial_stride * 4u },
 		{ (void **)&state->kda_state, lane == 0u ? (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_state_slot_bytes : 0u },
 		{ (void **)&state->kda_windows, lane == 0u ? 3u * (uint64_t)G5N_KDA_LAYERS * state->slots * state->kda_window_slot_bytes : 0u },
+		{ (void **)&state->replay_inputs, replay * 3u * rank_qk * 2u }, { (void **)&state->replay_retention, replay * rank_qk * 4u },
+		{ (void **)&state->replay_write_gate, replay * kda_heads * 4u },
 	};
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
 		if ( plan[index].bytes == 0u )
@@ -422,11 +429,62 @@ static void Glm5NextFree(Glm5NextModelState *state)
 		state->gate_up, state->intermediate, state->expert_out, state->shared_out, state->router_logits, state->route_expert, state->route_weight,
 		state->route_source_token, state->route_packed_row, state->group_row_offset, state->group_tile_prefix_w1, state->group_tile_prefix_w2,
 		state->shard_query_gathered, state->shard_partials, state->shard_partials_received, state->kda_state, state->kda_windows,
+		state->replay_inputs, state->replay_retention, state->replay_write_gate,
 	};
 	for ( uint32_t index = 0u; index < sizeof(pointers) / sizeof(pointers[0]); ++index )
 		if ( pointers[index] != 0 )
 			(void)cudaFree(pointers[index]);
 	free(state->entries);
+}
+
+static SparkStatus Glm5NextPlaceTensor(Glm5NextLayerWeights *w, uint32_t kind, const void *p)
+{
+	switch ( kind )
+	{
+	case GLM5_NEXT_T_ATTN_NORM: w->attn_norm = p; break;
+	case GLM5_NEXT_T_Q_A: w->q_a = p; break;
+	case GLM5_NEXT_T_Q_A_NORM: w->q_a_norm = p; break;
+	case GLM5_NEXT_T_Q_B: w->q_b = p; break;
+	case GLM5_NEXT_T_KV_A: w->kv_a = p; break;
+	case GLM5_NEXT_T_KV_A_NORM: w->kv_a_norm = p; break;
+	case GLM5_NEXT_T_KV_B_KEY_T: w->kv_b_key = p; break;
+	case GLM5_NEXT_T_KV_B_VALUE: w->kv_b_value = p; break;
+	case GLM5_NEXT_T_ATTN_OUTPUT: w->attn_output = p; break;
+	case GLM5_NEXT_T_POST_ATTN_NORM: w->post_attn_norm = p; break;
+	case GLM5_NEXT_T_INDEX_Q: w->index_q = p; break;
+	case GLM5_NEXT_T_INDEX_K: w->index_k = p; break;
+	case GLM5_NEXT_T_INDEX_HEAD: w->index_head = p; break;
+	case GLM5_NEXT_T_INDEX_NORM_WEIGHT: w->index_norm_weight = p; break;
+	case GLM5_NEXT_T_INDEX_NORM_BIAS: w->index_norm_bias = p; break;
+	case GLM5_NEXT_T_INDEX_COMPRESS_APE: w->index_compress_ape = p; break;
+	case GLM5_NEXT_T_INDEX_COMPRESS_GATE: w->index_compress_gate = p; break;
+	case GLM5_NEXT_T_DENSE_GATE_UP: w->dense_gate_up = p; break;
+	case GLM5_NEXT_T_DENSE_DOWN: w->dense_down = p; break;
+	case GLM5_NEXT_T_ROUTER: w->router = p; break;
+	case GLM5_NEXT_T_ROUTER_CORRECTION: w->router_correction = (const float *)p; break;
+	case GLM5_NEXT_T_SHARED_GATE_UP: w->shared_gate_up = p; break;
+	case GLM5_NEXT_T_SHARED_DOWN: w->shared_down = p; break;
+	case GLM5_NEXT_T_KDA_QKV_BETA: w->kda_qkv_beta = p; break;
+	case GLM5_NEXT_T_KDA_DECAY_GATE_DOWN: w->kda_decay_gate_down = p; break;
+	case GLM5_NEXT_T_KDA_DECAY_UP: w->kda_decay_up = p; break;
+	case GLM5_NEXT_T_KDA_GATE_UP: w->kda_gate_up = p; break;
+	case GLM5_NEXT_T_KDA_Q_CONV: w->kda_q_conv = p; break;
+	case GLM5_NEXT_T_KDA_K_CONV: w->kda_k_conv = p; break;
+	case GLM5_NEXT_T_KDA_V_CONV: w->kda_v_conv = p; break;
+	case GLM5_NEXT_T_KDA_DECAY_BIAS: w->kda_decay_bias = (const float *)p; break;
+	case GLM5_NEXT_T_KDA_HEAD_LOG_SCALE: w->kda_head_log_scale = (const float *)p; break;
+	case GLM5_NEXT_T_KDA_OUT_NORM: w->kda_out_norm = p; break;
+	case GLM5_NEXT_T_KDA_OUT: w->kda_out = p; break;
+	case GLM5_NEXT_T_HC_ATTN_FN: w->hc_attn_fn = p; break;
+	case GLM5_NEXT_T_HC_ATTN_BASE: w->hc_attn_base = p; break;
+	case GLM5_NEXT_T_HC_ATTN_SCALE: w->hc_attn_scale = p; break;
+	case GLM5_NEXT_T_HC_FFN_FN: w->hc_ffn_fn = p; break;
+	case GLM5_NEXT_T_HC_FFN_BASE: w->hc_ffn_base = p; break;
+	case GLM5_NEXT_T_HC_FFN_SCALE: w->hc_ffn_scale = p; break;
+	default:
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	return SPARK_STATUS_OK;
 }
 
 static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageRunnerStep *step, uint32_t layer, Glm5NextLayerBuffers *b)
@@ -447,6 +505,7 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 	b->shared_gate_up_rows = 2u * G5N_EXPERT_INTER / D;
 	b->shared_intermediate = G5N_EXPERT_INTER / D;
 	b->kda_heads = Glm5NextRankHeads(G5N_KDA_HEADS, D);
+	b->row_invariant = step->commit == 0u ? 1u : 0u;
 	if ( w->kv_b_key != 0 )
 		b->kv_b_key = (const uint16_t *)w->kv_b_key + (uint64_t)state->tp_rank * heads * G5N_LATENT * G5N_NOPE;
 	if ( w->kv_b_value != 0 )
@@ -479,6 +538,7 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 	b->route_weight = state->route_weight;
 	b->route_source_token = state->route_source_token;
 	b->route_packed_row = state->route_packed_row;
+	b->route_fault = step->route_fault;
 	b->group_row_offset = state->group_row_offset;
 	b->group_tile_prefix_w1 = state->group_tile_prefix_w1;
 	b->group_tile_prefix_w2 = state->group_tile_prefix_w2;
@@ -521,6 +581,18 @@ static void Glm5NextBindLayer(const Glm5NextModelState *state, const SparkStageR
 		b->kda_q_window = (uint16_t *)(state->kda_windows + window);
 		b->kda_k_window = (uint16_t *)(state->kda_windows + windows + window);
 		b->kda_v_window = (uint16_t *)(state->kda_windows + 2u * windows + window);
+		b->kda_q_input = b->q_bf16;
+		b->kda_k_input = b->kv_slot_bf16;
+		b->kda_v_input = b->gate_up_bf16;
+		if ( step->commit == 0u )
+		{
+			const uint64_t replay = (uint64_t)w->kda_ordinal * state->verify_rows, rank_qk = (uint64_t)b->kda_heads * G5N_KDA_KEY;
+			b->kda_q_input = state->replay_inputs + replay * 3u * rank_qk;
+			b->kda_k_input = b->kda_q_input + state->verify_rows * rank_qk;
+			b->kda_v_input = b->kda_k_input + state->verify_rows * rank_qk;
+			b->kda_retention = state->replay_retention + replay * rank_qk;
+			b->kda_write_gate = state->replay_write_gate + replay * b->kda_heads;
+		}
 	}
 	if ( w->dsa_ordinal != G5N_NO_ORDINAL )
 	{
@@ -561,7 +633,7 @@ struct Glm5NextStage
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 
-	static SparkStatus Attention(Glm5NextModelState *state, const Glm5NextLayerBuffers *b, const SparkStageRunnerStep *step, uint32_t context,
+	static SparkStatus LatentAttention(Glm5NextModelState *state, const Glm5NextLayerBuffers *b, const SparkStageRunnerStep *step, uint32_t context,
 		cudaStream_t stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors, layer = b->layer_index, D = state->tp_degree;
@@ -587,18 +659,100 @@ struct Glm5NextStage
 		return status;
 	}
 
-	static SparkStatus Mlp(Glm5NextModelState *state, Glm5NextLayerBuffers *b, const SparkStageRunnerStep *step, cudaStream_t stream)
+	using State = Glm5NextModelState;
+
+	struct Frame
 	{
-		const uint32_t rows = step->rows, sms = step->multiprocessors, layer = b->layer_index;
-		const void *w1 = 0, *w2 = 0;
-		SparkStatus status;
-		if ( layer < G5N_FIRST_ROUTED )
+		const SparkStageRunnerStep *step;
+		cudaStream_t stream;
+		uint32_t context;
+		Glm5NextLayerBuffers b;
+	};
+
+	static SparkStatus Begin(Glm5NextModelState *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
+	{
+		const uint32_t rows = step->rows;
+		frame->step = step;
+		frame->stream = (cudaStream_t)stream_void;
+		frame->context = step->commit != 0u && step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context :
+			state->context_capacity;
+		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
+			step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 ||
+			(step->commit == 0u && rows > state->verify_rows) )
 		{
-			status = Launch(Glm5NextDenseMlp(b, rows, sms, stream), "dense mlp", layer);
-			state->services->layer_done(state->services->context, layer);
-			return status;
+			fprintf(stderr, "%s: step refused rows=%u sequences=%u commit=%u kv_attached=%u\n", G::Tag(), rows, step->sequences, step->commit,
+				state->kv_attached);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		status = Launch(Glm5NextMoeRoute(b, rows, sms, stream), "moe route", layer);
+		Glm5NextDenseOffsetsKernel<<<1u, 1u, 0, frame->stream>>>(state->dense_row_offset, rows);
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus HyperBegin(Glm5NextModelState *state, Frame &frame)
+	{
+		LmHcExpandStreamsKernel<G5N_HIDDEN><<<dim3((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, frame.step->rows), G5N_THREADS, 0, frame.stream>>>(
+			frame.step->hidden_bf16, state->streams, frame.step->rows);
+		if ( cudaPeekAtLastError() != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		return SPARK_STATUS_OK;
+	}
+
+	static void BindLayer(Glm5NextModelState *state, Frame &frame, uint32_t layer)
+	{
+		Glm5NextBindLayer(state, frame.step, layer, &frame.b);
+	}
+
+	static SparkStatus HyperNorm(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
+	{
+		const Glm5NextLayerWeights *w = &state->layers[layer];
+		if ( part == GLM5_NEXT_FFN_PART )
+			return Launch(Glm5NextHcSite(&frame.b, w->hc_ffn_fn, w->hc_ffn_base, w->hc_ffn_scale, frame.step->rows, frame.stream), "ffn hc site", layer);
+		return Launch(Glm5NextHcSite(&frame.b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, frame.step->rows, frame.stream), "attention hc site",
+			layer);
+	}
+
+	static SparkStatus Kda(Glm5NextModelState *state, Frame &frame, uint32_t layer)
+	{
+		const SparkStageRunnerStep *step = frame.step;
+		SparkStatus status;
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		status = Launch(Glm5NextKda(&frame.b, step->rows, step->sequences, step->commit, step->multiprocessors, frame.stream), "kda", layer);
+		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		return status;
+	}
+
+	static SparkStatus Attention(Glm5NextModelState *state, Frame &frame, uint32_t layer)
+	{
+		(void)layer;
+		return LatentAttention(state, &frame.b, frame.step, frame.context, frame.stream);
+	}
+
+	static SparkStatus AllReduce(Glm5NextModelState *state, Frame &frame)
+	{
+		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, frame.b.attention_out_bf16,
+			frame.b.attention_out_bf16);
+	}
+
+	static SparkStatus HyperPost(Glm5NextModelState *state, Frame &frame, uint32_t layer, Glm5NextPart part)
+	{
+		(void)state;
+		return Launch(Glm5NextHcPost(&frame.b, frame.step->rows, frame.stream), part == GLM5_NEXT_FFN_PART ? "ffn hc post" : "attention hc post", layer);
+	}
+
+	static SparkStatus DenseMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)
+	{
+		const SparkStatus status = Launch(Glm5NextDenseMlp(&frame.b, frame.step->rows, frame.step->multiprocessors, frame.stream), "dense mlp", layer);
+		state->services->layer_done(state->services->context, layer);
+		return status;
+	}
+
+	static SparkStatus RoutedMlp(Glm5NextModelState *state, Frame &frame, uint32_t layer)
+	{
+		Glm5NextLayerBuffers *b = &frame.b;
+		const uint32_t rows = frame.step->rows, sms = frame.step->multiprocessors;
+		cudaStream_t stream = frame.stream;
+		const void *w1 = 0, *w2 = 0;
+		SparkStatus status = Launch(Glm5NextMoeRoute(b, rows, sms, stream), "moe route", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = state->services->expert_weights(state->services->context, layer, b->group_row_offset, rows * G5N_TOP_K, &w1, &w2);
 		if ( status != SPARK_STATUS_OK )
@@ -615,58 +769,12 @@ struct Glm5NextStage
 		return status;
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream_void)
+	static SparkStatus HyperEnd(Glm5NextModelState *state, Frame &frame)
 	{
-		Glm5NextModelState *state = (Glm5NextModelState *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
+		const SparkStageRunnerStep *step = frame.step;
 		const uint32_t rows = step->rows;
-		const uint32_t context = step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context : state->context_capacity;
-		Glm5NextLayerBuffers b;
-		SparkStatus status = SPARK_STATUS_OK;
-		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
-			step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 )
-		{
-			fprintf(stderr, "%s: step refused rows=%u sequences=%u kv_attached=%u\n", G::Tag(), rows, step->sequences, state->kv_attached);
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		}
-		Glm5NextDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, rows);
-		Glm5NextExpandStreamsKernel<<<dim3((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, rows), G5N_THREADS, 0, stream>>>(step->hidden_bf16,
-			state->streams, rows);
-		if ( cudaPeekAtLastError() != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		for ( uint32_t layer = 0u; layer < G5N_LAYERS && status == SPARK_STATUS_OK; ++layer )
-		{
-			const Glm5NextLayerWeights *w = &state->layers[layer];
-			Glm5NextBindLayer(state, step, layer, &b);
-			status = Launch(Glm5NextHcSite(&b, w->hc_attn_fn, w->hc_attn_base, w->hc_attn_scale, rows, stream), "attention hc site", layer);
-			if ( status == SPARK_STATUS_OK )
-			{
-				if ( w->kda_ordinal != G5N_NO_ORDINAL )
-				{
-					RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-					status = Launch(Glm5NextKda(&b, rows, step->sequences, step->commit, step->multiprocessors, stream), "kda", layer);
-					RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-				}
-				else
-					status = Attention(state, &b, step, context, stream);
-			}
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, b.attention_out_bf16, b.attention_out_bf16);
-			if ( status == SPARK_STATUS_OK )
-				status = Launch(Glm5NextHcPost(&b, rows, stream), "attention hc post", layer);
-			if ( status == SPARK_STATUS_OK )
-				status = Launch(Glm5NextHcSite(&b, w->hc_ffn_fn, w->hc_ffn_base, w->hc_ffn_scale, rows, stream), "ffn hc site", layer);
-			if ( status == SPARK_STATUS_OK )
-				status = Mlp(state, &b, step, stream);
-			if ( status == SPARK_STATUS_OK )
-				status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, b.attention_out_bf16, b.attention_out_bf16);
-			if ( status == SPARK_STATUS_OK )
-				status = Launch(Glm5NextHcPost(&b, rows, stream), "ffn hc post", layer);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		Glm5NextStreamsMeanKernel<<<rows, G5N_THREADS, 0, stream>>>(state->streams, state->streams_mean, rows);
-		LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, state->streams_mean,
+		LmHcStreamsMeanKernel<G5N_HIDDEN><<<rows, G5N_THREADS, 0, frame.stream>>>(state->streams, state->streams_mean, rows);
+		LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), frame.stream, state->streams_mean,
 			(const uint16_t *)state->final_norm, step->hidden_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -674,6 +782,11 @@ struct Glm5NextStage
 		if ( rows > step->sequences )
 			state->prefill_rows += rows;
 		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
+	{
+		return Glm5NextSchedule<G, Glm5NextStage>::Step((Glm5NextModelState *)model, step, stream);
 	}
 
 	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **model, SparkStageRunnerModelGeometry *geometry)
@@ -703,6 +816,7 @@ struct Glm5NextStage
 		state->collective_capacity = configuration->device_collective->max_active_sequence_count;
 		state->kda_state_slot_bytes = (uint64_t)Glm5NextRankHeads(G5N_KDA_HEADS, state->tp_degree) * G5N_KDA_KEY * G5N_KDA_VALUE * sizeof(float);
 		state->kda_window_slot_bytes = (uint64_t)Glm5NextRankHeads(G5N_KDA_HEADS, state->tp_degree) * G5N_KDA_KEY * G5N_KDA_CONV * sizeof(uint16_t);
+		state->verify_rows = G::kVerifyRows;
 		for ( uint32_t layer = 0u; layer < G5N_LAYERS; ++layer )
 		{
 			state->layers[layer].kda_ordinal = Glm5NextKdaOrdinal(layer);
@@ -796,7 +910,6 @@ struct Glm5NextStage
 		{
 			const Glm5NextPackEntry *entry = &state->entries[index];
 			const void *p = 0;
-			Glm5NextLayerWeights *w;
 			if ( entry->tensor_kind == GLM5_NEXT_T_EXPERT_UP_GATE || entry->tensor_kind == GLM5_NEXT_T_EXPERT_DOWN ||
 				entry->tensor_kind == GLM5_NEXT_T_EMBEDDING || entry->tensor_kind == GLM5_NEXT_T_LM_HEAD ||
 				(entry->layer_index >= G5N_LAYERS && entry->layer_index != GLM5_NEXT_PACK_GLOBAL_LAYER) )
@@ -808,50 +921,8 @@ struct Glm5NextStage
 				state->final_norm = p;
 				continue;
 			}
-			w = &state->layers[entry->layer_index];
-			switch ( entry->tensor_kind )
+			if ( Glm5NextPlaceTensor(&state->layers[entry->layer_index], entry->tensor_kind, p) != SPARK_STATUS_OK )
 			{
-			case GLM5_NEXT_T_ATTN_NORM: w->attn_norm = p; break;
-			case GLM5_NEXT_T_Q_A: w->q_a = p; break;
-			case GLM5_NEXT_T_Q_A_NORM: w->q_a_norm = p; break;
-			case GLM5_NEXT_T_Q_B: w->q_b = p; break;
-			case GLM5_NEXT_T_KV_A: w->kv_a = p; break;
-			case GLM5_NEXT_T_KV_A_NORM: w->kv_a_norm = p; break;
-			case GLM5_NEXT_T_KV_B_KEY_T: w->kv_b_key = p; break;
-			case GLM5_NEXT_T_KV_B_VALUE: w->kv_b_value = p; break;
-			case GLM5_NEXT_T_ATTN_OUTPUT: w->attn_output = p; break;
-			case GLM5_NEXT_T_POST_ATTN_NORM: w->post_attn_norm = p; break;
-			case GLM5_NEXT_T_INDEX_Q: w->index_q = p; break;
-			case GLM5_NEXT_T_INDEX_K: w->index_k = p; break;
-			case GLM5_NEXT_T_INDEX_HEAD: w->index_head = p; break;
-			case GLM5_NEXT_T_INDEX_NORM_WEIGHT: w->index_norm_weight = p; break;
-			case GLM5_NEXT_T_INDEX_NORM_BIAS: w->index_norm_bias = p; break;
-			case GLM5_NEXT_T_INDEX_COMPRESS_APE: w->index_compress_ape = p; break;
-			case GLM5_NEXT_T_INDEX_COMPRESS_GATE: w->index_compress_gate = p; break;
-			case GLM5_NEXT_T_DENSE_GATE_UP: w->dense_gate_up = p; break;
-			case GLM5_NEXT_T_DENSE_DOWN: w->dense_down = p; break;
-			case GLM5_NEXT_T_ROUTER: w->router = p; break;
-			case GLM5_NEXT_T_ROUTER_CORRECTION: w->router_correction = (const float *)p; break;
-			case GLM5_NEXT_T_SHARED_GATE_UP: w->shared_gate_up = p; break;
-			case GLM5_NEXT_T_SHARED_DOWN: w->shared_down = p; break;
-			case GLM5_NEXT_T_KDA_QKV_BETA: w->kda_qkv_beta = p; break;
-			case GLM5_NEXT_T_KDA_DECAY_GATE_DOWN: w->kda_decay_gate_down = p; break;
-			case GLM5_NEXT_T_KDA_DECAY_UP: w->kda_decay_up = p; break;
-			case GLM5_NEXT_T_KDA_GATE_UP: w->kda_gate_up = p; break;
-			case GLM5_NEXT_T_KDA_Q_CONV: w->kda_q_conv = p; break;
-			case GLM5_NEXT_T_KDA_K_CONV: w->kda_k_conv = p; break;
-			case GLM5_NEXT_T_KDA_V_CONV: w->kda_v_conv = p; break;
-			case GLM5_NEXT_T_KDA_DECAY_BIAS: w->kda_decay_bias = (const float *)p; break;
-			case GLM5_NEXT_T_KDA_HEAD_LOG_SCALE: w->kda_head_log_scale = (const float *)p; break;
-			case GLM5_NEXT_T_KDA_OUT_NORM: w->kda_out_norm = p; break;
-			case GLM5_NEXT_T_KDA_OUT: w->kda_out = p; break;
-			case GLM5_NEXT_T_HC_ATTN_FN: w->hc_attn_fn = p; break;
-			case GLM5_NEXT_T_HC_ATTN_BASE: w->hc_attn_base = p; break;
-			case GLM5_NEXT_T_HC_ATTN_SCALE: w->hc_attn_scale = p; break;
-			case GLM5_NEXT_T_HC_FFN_FN: w->hc_ffn_fn = p; break;
-			case GLM5_NEXT_T_HC_FFN_BASE: w->hc_ffn_base = p; break;
-			case GLM5_NEXT_T_HC_FFN_SCALE: w->hc_ffn_scale = p; break;
-			default:
 				fprintf(stderr, "%s: tensor kind %u at layer %u has no place in the stage\n", G::Tag(), entry->tensor_kind, entry->layer_index);
 				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 			}
@@ -1001,6 +1072,23 @@ struct Glm5NextStage
 			(unsigned long long)state->prefill_rows, state->context_capacity);
 	}
 
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
+	{
+		Glm5NextModelState *state = (Glm5NextModelState *)model;
+		Glm5NextLayerBuffers b;
+		SparkStatus status = SPARK_STATUS_OK;
+		if ( kept == 0 || step->commit != 0u || step->rows == 0u || step->rows > state->verify_rows || step->sequences == 0u ||
+			step->sequences > state->slots || step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < G5N_LAYERS && status == SPARK_STATUS_OK; ++layer )
+			if ( state->layers[layer].kda_ordinal != G5N_NO_ORDINAL )
+			{
+				Glm5NextBindLayer(state, step, layer, &b);
+				status = Launch(Glm5NextKdaRecur(&b, step->rows, step->sequences, kept, 1u, (cudaStream_t)stream_void), "kda keep rows", layer);
+			}
+		return status;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface table =
@@ -1021,7 +1109,8 @@ struct Glm5NextStage
 			ProbeBuffers,
 			Report,
 			0,
-			Lane
+			Lane,
+			KeepRows
 		};
 		return &table;
 	}

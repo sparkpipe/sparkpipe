@@ -146,18 +146,25 @@ static SparkStatus StageServingRunnerWeights(SparkStageServingState *state)
 {
 	SparkStageRunnerConfiguration *config = &state->runner_config;
 	const char *digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	SparkStatus pool, spine;
+	SparkStatus cap = SPARK_STATUS_OK, spine;
 	config->weights.socket_path = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-	pool = StageServingEnvU64("SPARK_WEIGHTD_EXPERT_POOL_BYTES", &config->weights.expert_pool_bytes);
+	config->weights.expert_pool_cap_bytes = 0u;
+	if ( getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 )
+		cap = StageServingEnvU64("SPARK_WEIGHTD_EXPERT_POOL_BYTES", &config->weights.expert_pool_cap_bytes);
 	spine = StageServingEnvU64("SPARK_WEIGHTD_SPINE_BUDGET_BYTES", &config->weights.spine_budget_bytes);
-	if ( digest == 0 || strlen(digest) != SPARK_STAGE_RUNNER_DIGEST_HEX ||
-		pool == SPARK_STATUS_INVALID_ARGUMENT || spine == SPARK_STATUS_INVALID_ARGUMENT )
+	if ( digest == 0 || strlen(digest) != SPARK_STAGE_RUNNER_DIGEST_HEX || spine == SPARK_STATUS_INVALID_ARGUMENT )
 	{
-		fprintf(stderr, "%s: the runner needs %s, SPARK_WEIGHTD_EXPERT_POOL_BYTES and SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n",
+		fprintf(stderr, "%s: the runner needs %s and SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n",
 			state->model->module_tag, SPARK_WEIGHTD_ATTACH_ENV_SHA256);
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
-	if ( pool != SPARK_STATUS_OK || spine != SPARK_STATUS_OK )
+	if ( cap != SPARK_STATUS_OK || (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 && config->weights.expert_pool_cap_bytes == 0u) )
+	{
+		fprintf(stderr, "%s: SPARK_WEIGHTD_EXPERT_POOL_BYTES is the lane's explicit expert pool cap, a positive byte count; unset it to size the pool from the pack\n",
+			state->model->module_tag);
+		return SPARK_STATUS_PARSE_ERROR;
+	}
+	if ( spine != SPARK_STATUS_OK )
 		return SPARK_STATUS_PARSE_ERROR;
 	memcpy(config->weights.pack_sha256, digest, SPARK_STAGE_RUNNER_DIGEST_HEX + 1u);
 	return SPARK_STATUS_OK;
@@ -840,9 +847,9 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.pipeline_slot_count = 1u;
 	kv.backing_directory = configuration->kv_backing_directory;
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
+
 	kv.snapshot_directory = configuration->kv_snapshot_directory;
-	kv.snapshot_maximum_bytes = configuration->kv_snapshot_maximum_bytes;
-	kv.partition_reserve_bytes = configuration->kv_partition_reserve_bytes;
+	kv.ledger_path = configuration->kv_ledger_path;
 	status = SparkStageRunnerPackIdentity(&state->runner, kv.pack_sha256, sizeof(kv.pack_sha256));
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1523,6 +1530,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	status = StageServingValidateSubmission(state, submission);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( SparkModelServingVerifyPublishLane(submission) != UINT32_MAX )
+	{
+		fprintf(stderr, "%s adapter: submit refused: lane %u of a verify frame publishes cache blocks, and its recurrent state would be captured before keep_rows\n",
+			state->model->module_tag, SparkModelServingVerifyPublishLane(submission));
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 		return StageServingSubmitNonRow(state, submission);
 	stream = state->runner_config.execution_stream;

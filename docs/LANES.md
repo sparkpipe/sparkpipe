@@ -16,12 +16,12 @@ whether the fleet still matches.
 | `sequences`, `rows`, `shared_rows` | resident sequences, rows per wave, rows of the shared prefill half |
 | `context_tokens` | positions one sequence may hold; `kv_pages` is this over the model's KV block (64 tokens, DSV4.1 256) |
 | `context_reason` | required while `context_tokens` is below the contract maximum: what holds it there |
-| `kv_physical_pages` | pages the scheduler may reserve; weightd must be able to back them |
+| `kv_physical_pages_cap` | optional: keeps the device KV pool below this many pages, for a lane that must leave room on purpose (co-resident sets). Without it the device pool may grow to what the node budget leaves the model: `(weightd device_bytes_max - node_memory_bytes) / kv_page_bytes`, at most 4,194,302 pages (the pool metadata bound). The rendered `kv_physical_page_capacity` is that number and the rendered logical capacity is the larger of it and `kv_logical_pages` |
 | `kv_logical_pages` | pages including those parked on the node's NVMe; at least `sequences` full-length sequences |
-| `kv_backing_bytes`, `kv_snapshot_bytes` | per-node NVMe caps for parked pages and prefix snapshots |
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
-| `expert_pool_bytes`, `memory_max` | the residentd unit's expert pool and MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes them (and the socket and state budget) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry them |
+| `memory_max` | the residentd unit's MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes it (and the socket, state budget and expert pool cap) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry the record's values |
+| `expert_pool_cap_bytes` | optional, and set by no production record: an explicit cap for a lane that streams experts on purpose, a positive whole number of 2 MiB chunks no larger than the pack's exact expert pool (larger is refused at startup). It renders as `SPARK_WEIGHTD_EXPERT_POOL_BYTES` into `lane.sh` (stage lanes, whose warm command reads it from there) or through `K3_EXPERT_POOL_CAP_BYTES` (`tools/k3_lane.sh`). Without it the variable is not set and every engine and warm sizes the pool from the pack's `PACK.experts` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)). `tests/test_lane_records.py` refuses the old hand-set `expert_pool_bytes` |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
@@ -36,12 +36,23 @@ weightd runs with.
 - every swap-controller model has exactly one record;
 - `context_tokens` is the contract maximum, or lower with a
   `context_reason`, never higher;
-- one full-length sequence fits the weightd KV reserve, and so do the
-  physical pages: the scheduler is never promised pages weightd cannot back.
-  A model whose native maximum does not fit stays lower with its reason;
+- one full-length sequence fits the weightd KV reserve. A model whose
+  native maximum does not fit stays lower with its reason;
+- no record carries `kv_physical_pages`; a `kv_physical_pages_cap` holds
+  at least one full-length sequence, and the rendered physical capacity is
+  the node budget's (or the cap). The pool attaches with one sequence and
+  grows on demand, so the scheduler's physical capacity is the most the
+  model can hold alone on the node, not a reservation;
 - the record renders: physical pages hold one sequence, logical pages hold
-  every resident sequence at full length, the backing holds the parked
-  pages, recurrent checkpoint memory holds two per sequence plus two;
+  every resident sequence at full length, the backing holds every logical page
+  beyond the one sequence the pool's minimum keeps resident, plus two in flight
+  (`kv_backing_maximum_bytes`, derived, never a record field): the pool grows
+  only after the arena has parked, and a pool other lanes hold at its minimum
+  parks everything past one sequence; recurrent checkpoint memory holds two per
+  sequence plus two;
+- no record names `kv_backing_bytes` or `kv_snapshot_bytes`, and the document
+  names no `kv_partition_reserve_bytes`: every lane's KV on disk shares the
+  node's 500 GB quota ([`docs/INTERFACE_CONTRACTS.md`](INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh));
 - the stage lanes' swap entries in `deployment/hub/model_swap.json` are the
   ones the record renders, and the chat layer's `context_tokens` in
   `deployment/hub/chat_frontend.json` is the record's;
@@ -131,7 +142,20 @@ LiteLLM serve the same contexts.
 
 `push` writes one record's rendered files to the nodes and the hub, keeps
 every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
-not touch binaries, packs or KV, so a lane restart picks the change up.
+not touch binaries, packs or KV, so a lane restart picks the change up. That
+includes a pack switch, such as a precision change: `lane.sh start` takes the
+expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
+from the `.sha256` beside the pack `config/adapter.json` names, and the spine
+budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
+describe the pack the lane was first staged with. A configured pack without
+its sidecar refuses to start. A dense lane (DeepSeek V4.1 Flash) names a pack
+link inside its own `packs/`; residentd reads exactly one `packs/*.sha256`,
+so that lane keeps the `packs/pack.sha256` setup writes from the pack, and
+`lane.sh start` refuses when it is missing. The release precheck applies the
+same rule through `tools/release_packs.py`, which prints every rank's pack
+and digest file. `lane.sh pack` prints the configured pack, and
+the swap controller's weight-warm commands warm `$(./lane.sh pack)` rather
+than the link the lane was staged with.
 
 `SPARK_LANES=<file>` renders, audits or pushes from another copy of the
 records, which is how a gate tries a raised record before it is committed.
