@@ -55,6 +55,7 @@ struct LagunaGeometry : GemmaDefaults
 	static constexpr float kLogitSoftcap = 0.0f;
 	static constexpr uint32_t kPageSlots = SPARK_LAGUNA_TP16_STAGE_PAGE_SLOTS;
 	static constexpr float kNormEpsilon = 1e-6f;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr bool kValueNorm = false;
 	static constexpr float kAttentionScale = 0.08838834764831845f;
 	static constexpr bool kGeluMlp = false;

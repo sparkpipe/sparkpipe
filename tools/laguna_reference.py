@@ -24,6 +24,10 @@
              --variants a,b,h. Variant b sums each row's routed experts in
              descending instead of ascending expert order, and h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
              and the three variants' distances from one another are the gate's floors.
+             Each of a, b and h also writes DIR/<name>.ref_<v>.routes, its chosen
+             experts as uint16 [layers][positions][top_k] (dense layers 0..k-1);
+             hp is h with a's experts, weighted by its own unbiased scores, for
+             the gate's pinned legs (list a first).
 
 Semantics follow modeling_laguna.py (checkpoint revision 0f573140, sha256
 765fd328...): pre-norm blocks; LagunaRMSNorm is w * bf16(x * rsqrt(mean
@@ -35,9 +39,13 @@ bf16 multiplies each head before o_proj; layer 0 is a dense SwiGLU, layers
 1..47 a sigmoid router (bf16 logits widened to f32, top-10 on score + bias,
 weights the unbiased scores normalized and cast to bf16), routed experts
 summed in bf16 in ascending expert order, times 2.5, plus the shared expert.
-Projections round to bf16; the attention softmax and the final logits are
-f32. Every prompt goes through one layer at a time, so each layer's weights
-are read once per run.
+Projections round to bf16; the attention takes the publishers' flash form:
+weights w = exp(s - m) in f32 with m the row's maximum over its visible keys
+(one max per row, the reference's single-tile model of the kernels' per-tile
+running maxima), the values multiplied by bf16(w) in f32, that product
+divided by the sum of the f32 weights and rounded to bf16; the final logits
+are f32. Every prompt goes through one layer at a time, so each layer's
+weights are read once per run.
 """
 
 import argparse
@@ -52,12 +60,17 @@ import reference_device_error as device
 
 PREFIX = "model."
 REVERSED = False
+PINNED = None
 
 
 def bf16(values):
     bits = np.ascontiguousarray(values, dtype=np.float32).view(np.uint32)
     rounded = (bits + 0x7FFF + ((bits >> 16) & 1)) & 0xFFFF0000
     return rounded.astype(np.uint32).view(np.float32)
+
+
+def product(left, right):
+    return device.accumulated(left, right, left @ right)
 
 
 def rms(values, epsilon):
@@ -163,7 +176,7 @@ class Reference:
         return bf16(self.weight(name) * bf16(rms(values, self.epsilon)))
 
     def linear(self, values, name):
-        return bf16(values @ self.weight(name).T)
+        return bf16(product(values, self.weight(name).T))
 
     def rope(self, values, kind, positions):
         inv_freq = self.inv_freq[kind]
@@ -193,11 +206,11 @@ class Reference:
             visible &= positions[None, :] > positions[:, None] - self.window
         output = np.empty((rows, heads, dim), dtype=np.float32)
         for head in range(heads):
-            scores = (query[:, head, :] @ key[:, head // group, :].T) * self.scale
+            scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(weights @ value[:, head // group, :])
+            total = weights.sum(axis=-1, keepdims=True)
+            output[:, head, :] = bf16(product(bf16(weights), value[:, head // group, :]) / total)
         gate = bf16(softplus(self.linear(normed, p + "g_proj.weight")))
         output = bf16(output * gate[:, :, None])
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
@@ -210,10 +223,10 @@ class Reference:
     def moe(self, layer, normed):
         p = f"{PREFIX}layers.{layer}.mlp."
         shared = self.mlp(normed, p + "shared_expert.")
-        logits = bf16(normed @ self.weight(p + "gate.weight").T)
+        logits = bf16(product(normed, self.weight(p + "gate.weight").T))
         scores = (np.float32(1.0) / (np.float32(1.0) + device.exp(-logits))).astype(np.float32)
         selection = scores + self.weight(p + "experts.e_score_correction_bias")[None, :]
-        chosen = np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
+        chosen = PINNED[layer] if PINNED is not None else np.argsort(-selection, axis=-1, kind="stable")[:, :self.top_k]
         weights = np.take_along_axis(scores, chosen, axis=-1)
         weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
         routed = np.zeros_like(normed)
@@ -221,33 +234,39 @@ class Reference:
             rows, slots = np.nonzero(chosen == expert)
             e = f"{p}experts.{int(expert)}."
             x = normed[rows]
-            gate = bf16(x @ self.checkpoint.f32(e + "gate_proj.weight").T)
-            up = bf16(x @ self.checkpoint.f32(e + "up_proj.weight").T)
+            gate = bf16(product(x, self.checkpoint.f32(e + "gate_proj.weight").T))
+            up = bf16(product(x, self.checkpoint.f32(e + "up_proj.weight").T))
             hidden = bf16(bf16(silu(gate)) * up)
-            out = bf16(hidden @ self.checkpoint.f32(e + "down_proj.weight").T)
+            out = bf16(product(hidden, self.checkpoint.f32(e + "down_proj.weight").T))
             routed[rows] = bf16(routed[rows] + bf16(out * weights[rows, slots][:, None]))
         return bf16(bf16(routed * self.routed_scale) + shared), chosen
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         embed = self.checkpoint.raw(PREFIX + "embed_tokens.weight")
         residual = [(np.asarray(embed[np.asarray(tokens)]).astype(np.uint32) << 16).view(np.float32) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
         bounds = np.cumsum([0] + [len(tokens) for tokens in sequences])
         routes = []
+        self.chosen = {}
         for layer in range(self.config["num_hidden_layers"]):
             p = f"{PREFIX}layers.{layer}."
             self.cache = {}
             for index in range(len(sequences)):
                 attended = self.attention(layer, self.norm(residual[index], p + "input_layernorm.weight"), positions[index])
                 residual[index] = bf16(residual[index] + attended)
+            if dump is not None:
+                dump[f"attn{layer:02d}"] = np.concatenate(residual)
             normed = np.concatenate([self.norm(values, p + "post_attention_layernorm.weight") for values in residual])
             if layer in self.config["mlp_only_layers"]:
                 out = self.mlp(normed, p + "mlp.")
             else:
                 out, chosen = self.moe(layer, normed)
                 routes.append(chosen)
+                self.chosen[layer] = chosen
             for index in range(len(sequences)):
                 residual[index] = bf16(residual[index] + out[bounds[index]:bounds[index + 1]])
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = np.concatenate(residual)
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.cache = {}
         return [self.norm(values, PREFIX + "norm.weight") for values in residual]
@@ -257,7 +276,7 @@ class Reference:
         parts = []
         for first in range(0, head.shape[0], chunk):
             rows = (np.asarray(head[first:first + chunk]).astype(np.uint32) << 16).view(np.float32)
-            parts.append(normed @ rows.T)
+            parts.append(product(normed, rows.T))
         return np.concatenate(parts, axis=-1)
 
 
@@ -351,19 +370,41 @@ def score(args):
     Path(args.out).write_text(json.dumps(report))
 
 
+def write_routes(path, routes, layers, top_k, first, count):
+    filler = np.broadcast_to(np.arange(top_k, dtype=np.int64), (count, top_k))
+    stacked = np.stack([routes[layer][first:first + count] if layer in routes else filler for layer in range(layers)])
+    np.ascontiguousarray(stacked, dtype="<u2").tofile(path)
+
+
 def teacher(args):
-    global REVERSED
+    global REVERSED, PINNED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a, b and h")
+    if not variants or any(label not in ("a", "b", "h", "hp") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b, h and hp")
+    if "hp" in variants and ("a" not in variants or variants.index("a") > variants.index("hp")):
+        raise SystemExit("hp is h with a's experts: list a before it")
     reference = Reference(args.checkpoint)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    chosen_a = None
+    bounds = np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts])
     for label in variants:
         REVERSED = label != "a"
+        PINNED = chosen_a if label == "hp" else None
         device.select(label)
-        finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        finals = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        PINNED = None
+        if label == "a":
+            chosen_a = dict(reference.chosen)
+        if label != "hp":
+            for index, prompt in enumerate(prompts):
+                write_routes(out / f"{prompt['name']}.ref_{label}.routes", reference.chosen, reference.config["num_hidden_layers"],
+                             reference.top_k, bounds[index], len(prompt["prompt_token_ids"]))
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts]), **dump)
         for prompt, final in zip(prompts, finals):
             count = len(prompt["prompt_token_ids"])
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
@@ -395,6 +436,7 @@ def main():
     parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--capture")
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/laguna/chat_template.json"))
+    parser.add_argument("--dump", help="teacher: write every layer's post-attention and post-MLP residual for all rows to DUMP.<variant>.npz")
     parser.add_argument("--out")
     args = parser.parse_args()
     if args.mode == "yarn":

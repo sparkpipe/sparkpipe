@@ -44,6 +44,8 @@ struct Axk2Dimensions
 	static constexpr uint32_t kExpertInter = 2048u;
 	static constexpr uint32_t kDenseInter = 18432u;
 	static constexpr float kRmsEpsilon = 1e-06f;
+	static constexpr bool kNormRoundFirst = true;
+	static constexpr bool kRopeRoundedTerms = true;
 	static constexpr float kRopeTheta = 1000000.0f;
 	static constexpr float kQkScale = 0.0825202391f;
 	static constexpr float kRoutedScale = 2.5f;

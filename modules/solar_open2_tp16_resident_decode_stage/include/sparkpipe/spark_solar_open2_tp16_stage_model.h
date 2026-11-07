@@ -40,10 +40,16 @@ struct SolarOpen2Geometry : LingDefaults
 	static constexpr uint32_t kPhase = 0u;
 	static constexpr uint32_t kDenseLayers = 0u;
 	static constexpr float kNormEpsilon = 1e-5f;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr uint32_t kKdaHeads = 64u;
 	static constexpr uint32_t kKdaDim = 128u;
 	static constexpr uint32_t kKdaRank = 128u;
 	static constexpr bool kKdaDoubledBeta = true;
+	static constexpr bool kKdaConvRoundedSum = true;
+	static constexpr bool kKdaNormRoundOnce = true;
+	static constexpr bool kFfnSiluRounded = true;
+	static constexpr bool kExpertWeightAfterDown = true;
+	static constexpr bool kTpPartialsF32 = true;
 	static constexpr uint32_t kConv = 4u;
 	static constexpr float kKdaLowerBound = -5.0f;
 	static constexpr uint32_t kAttention = LING_ATTENTION_GQA;

@@ -52,7 +52,7 @@ static __device__ float LmBlockMax(float value, float *shared)
 	return(value);
 }
 
-template<uint32_t THREADS, class Weight>
+template<uint32_t THREADS, class Weight, bool ROUND_FIRST = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
@@ -68,7 +68,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	{
 		float value = LmBf16ToFloat(input_bf16[base + index]);
 		if ( residual_bf16 != 0 )
-			value += LmBf16ToFloat(residual_bf16[base + index]);
+			value = SparkMathResidualSum(value, LmBf16ToFloat(residual_bf16[base + index]));
 		row[index] = value;
 		total += value * value;
 	}
@@ -79,8 +79,8 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	{
 		if ( residual_out_bf16 != 0 )
 			residual_out_bf16[base + index] = LmFloatToBf16(row[index]);
-		output_bf16[base + index] =
-			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
+		output_bf16[base + index] = LmFloatToBf16(ROUND_FIRST ? SparkMathNormGainRounded(row[index] * scale, LmScalarToFloat(weight[index])) :
+			row[index] * scale * LmScalarToFloat(weight[index]));
 	}
 }
 
@@ -200,6 +200,21 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmSiluRoundedMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, bool gate_first, float limit)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
+		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathClampedGlu(SparkMathRoundBf16(SparkMathSilu(gate)), up, limit));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float limit)
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
@@ -217,7 +232,7 @@ void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_
 #define LM_GATE_SOFTPLUS 1u
 #define LM_GATE_SILU 2u
 
-template<uint32_t THREADS, class Weight = uint16_t>
+template<uint32_t THREADS, class Weight = uint16_t, bool ROUND_FIRST = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon, float head_multiply)
 {
@@ -239,7 +254,7 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
 		if ( weight_bf16 != 0 )
-			value *= LmScalarToFloat(weight_bf16[index]);
+			value = ROUND_FIRST ? SparkMathNormGainRounded(value, LmScalarToFloat(weight_bf16[index])) : value * LmScalarToFloat(weight_bf16[index]);
 		rounded = LmBf16ToFloat(LmFloatToBf16(value));
 		output_bf16[base + index] = LmFloatToBf16(rounded * head_multiply);
 	}
@@ -269,6 +284,29 @@ static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__r
 		gate = LmBf16ToFloat(gate_bf16[base + index]);
 		output_bf16[base + index] = LmFloatToBf16(value * (GATE == LM_GATE_SIGMOID ? SparkMathSigmoidFast(gate) : SparkMathSiluFast(gate)));
 	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmHeadRmsNormSigmoidGateOnceKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t rows, uint32_t heads, uint32_t head_dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.y,head = blockIdx.x,index;
+	uint64_t base;
+	float total = 0.0f,scale,value;
+	if ( row >= rows || head >= heads )
+		return;
+	base = ((uint64_t)row * heads + head) * head_dimension;
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+	{
+		value = LmBf16ToFloat(input_bf16[base + index]);
+		total += value * value;
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
+	for (index = threadIdx.x; index < head_dimension; index += THREADS)
+		output_bf16[base + index] = LmFloatToBf16(SparkMathRmsNormGateOnce(LmBf16ToFloat(input_bf16[base + index]), scale,
+			LmBf16ToFloat(weight_bf16[index]), SparkMathSigmoidFast(LmBf16ToFloat(gate_bf16[base + index]))));
 }
 
 template<uint32_t THREADS>
@@ -443,7 +481,7 @@ void LmLowRankGateApplyKernel(uint16_t *__restrict__ rows_bf16, const float *__r
 	rows_bf16[(uint64_t)row * dimension + index] = LmFloatToBf16(LmBf16ToFloat(rows_bf16[(uint64_t)row * dimension + index]) * SparkMathSigmoidFast(gate));
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, bool ROUND_GATE = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t dimension)
 {
@@ -454,7 +492,7 @@ void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__re
 		float gate = LmBf16ToFloat(gate_bf16[base + index]);
 		float value = LmBf16ToFloat(output_bf16[base + index]);
 		output_bf16[base + index] =
-			LmFloatToBf16(value * SparkMathSigmoidFast(gate));
+			LmFloatToBf16(value * (ROUND_GATE ? SparkMathRoundBf16(SparkMathSigmoid(gate)) : SparkMathSigmoidFast(gate)));
 	}
 }
 

@@ -55,6 +55,7 @@ struct Kexaone2Geometry : GemmaDefaults
 	static constexpr float kLogitSoftcap = 0.0f;
 	static constexpr uint32_t kPageSlots = SPARK_KEXAONE2_TP16_STAGE_PAGE_SLOTS;
 	static constexpr float kNormEpsilon = 1e-5f;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr bool kValueNorm = false;
 	static constexpr float kAttentionScale = 0.08838834764831845f;
 	static constexpr bool kGeluMlp = false;

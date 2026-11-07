@@ -58,7 +58,7 @@ static __device__ __forceinline__ void LmLatentShardStep(const float (*query)[PE
         scaled_current = __expf(score - running_max[head]);
         running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
         for (element = 0u; element < PER_LANE; ++element)
-            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (scaled_current * value[element]);
+            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (SparkMathAttentionValueWeight(scaled_current) * value[element]);
     }
 }
 

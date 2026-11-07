@@ -86,6 +86,7 @@ struct GemmaDevice
 		shape->pack_alignment = GEMMA_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
 		shape->post_epsilon = G::kPostEpsilon;
+		shape->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		shape->tied_head = G::kUntiedHead ? 0u : 1u;
 		shape->logit_softcap = G::kLogitSoftcap;
 		shape->logit_scale = G::kLogitScale;
@@ -107,7 +108,7 @@ struct GemmaDevice
 		sliding->qk_weightless = G::kQkNormWeighted ? 0u : 1u;
 		sliding->query_multiply = G::kQueryMultiply == 1.0f ? 0.0f : G::kQueryMultiply;
 		sliding->window = G::kWindow;
-		sliding->rope_rounded_terms = 1u;
+		sliding->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		memset(full, 0, sizeof(*full));
 		full->heads = G::kFullHeads;
 		full->kv_heads = G::kFullKvHeads;
@@ -123,13 +124,14 @@ struct GemmaDevice
 		full->qk_weightless = sliding->qk_weightless;
 		full->query_multiply = sliding->query_multiply;
 		full->rope_pairs = G::kFullRopePairs;
-		full->rope_rounded_terms = 1u;
+		full->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		full->rope_scale = G::kFullRopeScale;
 		full->yarn_factor = G::kYarnFactor;
 		full->yarn_original = G::kYarnOriginal;
 		full->yarn_beta_fast = G::kYarnBetaFast;
 		full->yarn_beta_slow = G::kYarnBetaSlow;
 		sliding->head_gate = full->head_gate = G::kHeadGate ? 1u : 0u;
+		sliding->norm_round_first = full->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		memset(experts, 0, sizeof(*experts));
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;
@@ -367,7 +369,7 @@ struct GemmaDevice
 	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const Layer &layer)
 	{
 		const SparkDeviceExpertsShape experts = ExpertsOf(state, layer);
-		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &experts, &frame.t, &layer.experts, &state->experts, state->normed, state->partial,
+		return SparkDeviceSigmoidExperts(&state->stage, frame.queue, &experts, &frame.t, layer.index, &layer.experts, &state->experts, state->normed, state->partial,
 			state->expert_out);
 	}
 
@@ -394,9 +396,8 @@ struct GemmaDevice
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
 	{
-		(void)frame;
 		SparkDeviceStageLayerDone(&state->stage, index);
-		return SPARK_STATUS_OK;
+		return SparkDeviceStageDumpRows(&state->stage, frame.queue, &frame.t, frame.t.hidden, G::kHidden, index);
 	}
 
 	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *queue)

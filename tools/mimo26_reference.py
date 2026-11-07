@@ -39,10 +39,15 @@ modeling_mimo_v2.py in the checkpoint directory), never from SparkPipe code:
   scale, the rope products and the SwiGLU products round to bf16 as the
   modeling code does; rope on the first int(192 * 0.334) = 64 dims of each
   head (rotate_half on those 64), cos/sin in bf16, theta 1e7 full / 1e4 SWA
-- attention scores, the softmax and the probabilities stay f32 (the eager
-  path would round scores and probabilities to bf16; flash kernels do not);
-  SWA keys j with i - 128 < j <= i; SWA layers append the per-head sink
-  logit to the softmax and drop it from the output
+- attention scores stay f32 (the eager path would round them to bf16; flash
+  kernels do not) and the softmax takes the publishers' flash form: weights
+  w = exp(s - m) in f32 with m the row's maximum over its visible keys, the
+  sink excluded (one max per row, the reference's single-tile model of the
+  kernels' per-tile running maxima), the values multiplied by bf16(w) in
+  f32, that product divided by the sum of the f32 weights and rounded to
+  bf16; SWA keys j with i - 128 < j <= i; SWA layers append the per-head
+  sink logit to the denominator as exp(sink - m) and drop it from the
+  output
 - router: f32 logits, sigmoid, top-8 by sigmoid + e_score_correction_bias,
   weights = chosen sigmoid / (sum + 1e-20); expert outputs (bf16) combine
   in f32; logits f32 from the bf16 final norm and the untied bf16 lm_head
@@ -81,12 +86,12 @@ def reduce_sum(values, axis=-1, keepdims=False):
 
 def matmul(left, right, chunk=CHUNK):
     if not REVERSED or left.shape[-1] <= chunk:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + chunk] @ right[first:first + chunk] for first in range(0, left.shape[-1], chunk)]
     total = None
-    for first in reversed(range(0, left.shape[-1], chunk)):
-        part = left[..., first:first + chunk] @ right[first:first + chunk]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, chunk)
 
 
 def e4m3_table():
@@ -242,13 +247,11 @@ class Reference:
                 scores = matmul(q[:, head, :], k[:, head // group, :].T) * self.scaling
                 scores = np.where(visible, scores, -np.inf)
                 top = scores.max(axis=-1, keepdims=True)
-                if sinks is not None:
-                    top = np.maximum(top, sinks[head])
                 weights = device.exp(scores - top)
                 total = reduce_sum(weights, keepdims=True)
                 if sinks is not None:
                     total = total + device.exp(sinks[head] - top)
-                output[first:first + count, head, :] = bf16(matmul(weights / total, v[:, head // group, :]))
+                output[first:first + count, head, :] = bf16(matmul(bf16(weights), v[:, head // group, :]) / total)
         return bf16(matmul(output.reshape(normed.shape[0], -1), self.checkpoint.bf16(a + "o_proj.weight").T))
 
     @staticmethod
@@ -286,7 +289,7 @@ class Reference:
                 np.add.at(output, tokens, contribution)
         return bf16(output)
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         spans, first = [], 0
         for tokens in sequences:
             spans.append((first, len(tokens)))
@@ -298,12 +301,16 @@ class Reference:
             started = time.time()
             p = f"model.layers.{layer}."
             residual = bf16(residual + self.attention(layer, rms(residual, self.checkpoint.bf16(p + "input_layernorm.weight"), self.epsilon), spans))
+            if dump is not None:
+                dump[f"attn{layer:02d}"] = residual.copy()
             normed = rms(residual, self.checkpoint.bf16(p + "post_attention_layernorm.weight"), self.epsilon)
             if self.config["moe_layer_freq"][layer]:
                 mlp = self.moe(layer, normed)
             else:
                 mlp = self.dense(layer, normed)
             residual = bf16(residual + mlp)
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = residual.copy()
             print(f"layer {layer} {'swa' if self.swa(layer) else 'full'} done in {time.time() - started:.1f}s", file=sys.stderr, flush=True)
         return rms(residual, self.checkpoint.bf16("model.norm.weight"), self.epsilon), spans
 
@@ -405,7 +412,11 @@ def teacher(args):
     for label in variants:
         REVERSED = label != "a"
         device.select(label)
-        normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        normed, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [count for _, count in spans]), **dump)
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
                 for row in range(0, count - 1, 128):
@@ -430,6 +441,7 @@ def main():
     parser.add_argument("--template", default=str(Path(__file__).resolve().parents[1] / "model-families/mimo26/chat_template.json"))
     parser.add_argument("--answers-out")
     parser.add_argument("--threads", type=int, default=6)
+    parser.add_argument("--dump", help="teacher: write every layer's post-attention and post-MLP residual for all rows to DUMP.<variant>.npz")
     parser.add_argument("--tie-margin", type=float, default=0.1)
     parser.add_argument("--out", required=True)
     args = parser.parse_args()

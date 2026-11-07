@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Write a control copy of a named stage pack with tensors deliberately corrupted.
 
-The copy is an APFS clone (cp -c), so only the corrupted tensors' blocks take
-new space. --tensor is a glob over the pack's tensor names, so
+The copy is an APFS clone (cp -c), so only the blocks written take new space:
+a swap writes the tensor's first two rows, a rotation the whole tensor. --tensor is a glob over the pack's tensor names, so
 layers.31.ffn_down corrupts one tensor and layers.*.ffn_down the same tensor in
 every layer, the reach of a kernel bug that every layer runs.
 --corruption swap-rows swaps each tensor's first two rows, the size of a bug
@@ -50,11 +50,12 @@ def corrupt(handle, name, offset, entry, corruption):
     if original[:row_bytes] == original[row_bytes:2 * row_bytes]:
         raise SystemExit(f"rows 0 and 1 of {name} are identical; moving them changes nothing")
     if corruption == "swap-rows":
-        corrupted = original[row_bytes:2 * row_bytes] + original[:row_bytes] + original[2 * row_bytes:]
+        changed = original[row_bytes:2 * row_bytes] + original[:row_bytes]
+        corrupted = changed + original[2 * row_bytes:]
     else:
-        corrupted = original[-row_bytes:] + original[:-row_bytes]
+        changed = corrupted = original[-row_bytes:] + original[:-row_bytes]
     handle.seek(offset)
-    handle.write(corrupted)
+    handle.write(changed)
     return {"tensor": name, "rows": rows, "row_bytes": row_bytes, "sha256_before": hashlib.sha256(original).hexdigest(),
             "sha256_after": hashlib.sha256(corrupted).hexdigest()}
 

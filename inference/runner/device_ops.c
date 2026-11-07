@@ -6,8 +6,6 @@
 
 #include "inference/runner/device_ops.h"
 
-#define OPS_DECODE_PARTITION_KEYS 128u
-#define OPS_PREFILL_PARTITION_KEYS 1024u
 #define OPS_DECODE_ROWS_PER_SEQUENCE 8u
 #define OPS_GEMM_ROWS 128u
 #define OPS_GEMM_OUTPUTS 64u
@@ -136,7 +134,13 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_poly_norm_mul",
 	"spark_differential_gate",
 	"spark_hc_site_clamped",
-	"spark_route_combine_weighted_shared"
+	"spark_route_combine_weighted_shared",
+	"spark_route_sigmoid_pinned",
+	"spark_route_sqrt_softplus_pinned",
+	"spark_silu_rounded_clamp_mul",
+	"spark_rank_sum_f32",
+	"spark_gemv_routed_f32",
+	"spark_route_combine_weighted_shared_f32"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -433,6 +437,26 @@ static SparkStatus OpsRankCombine(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
 {
 	return(OpsRankCombine(ops,queue,SPARK_OPS_RANK_SUM_BF16,"rank_sum_bf16",lanes,full,ranks,elements,2u));
+}
+
+SparkStatus SparkOpsRankSumF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
+{
+	SparkRankParams params;
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( ranks == 0u || elements == 0u || elements > UINT32_MAX )
+		return(OpsRefuse("rank_sum_f32","ranks and at most 2^32 elements are required"));
+	status = OpsNeed("rank_sum_f32","lanes",lanes,(uint64_t)ranks * elements * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("rank_sum_f32","full",full,elements * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&params,0,sizeof(params));
+	params.elements = elements;
+	params.ranks = ranks;
+	bindings[0] = OpsBind(lanes,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(full,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_RANK_SUM_F32,(uint32_t)((elements + 255u) / 256u),1u,1u,256u,&params,sizeof(params),bindings,2u));
 }
 
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements)
@@ -934,8 +958,8 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions)
 {
-	const uint64_t decode = (uint64_t)rows * ((positions + OPS_DECODE_PARTITION_KEYS - 1u) / OPS_DECODE_PARTITION_KEYS);
-	const uint64_t prefill = (uint64_t)rows * ((positions + OPS_PREFILL_PARTITION_KEYS - 1u) / OPS_PREFILL_PARTITION_KEYS);
+	const uint64_t decode = (uint64_t)rows * ((positions + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS);
+	const uint64_t prefill = (uint64_t)rows * ((positions + SPARK_ATTENTION_PREFILL_PARTITION_KEYS - 1u) / SPARK_ATTENTION_PREFILL_PARTITION_KEYS);
 	return((decode > prefill ? decode : prefill) * heads * (head_dimension + 2u) * sizeof(float));
 }
 
@@ -967,7 +991,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots )
 		return(OpsRefuse("attention","every row's position must lie inside its sequence's pages"));
 	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE || params->row_exact != 0u ? 1u : 0u;
-	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
+	launch.partition_keys = decode != 0u ? SPARK_ATTENTION_DECODE_PARTITION_KEYS : SPARK_ATTENTION_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
 	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * (OpsAttentionValueDimension(params) + 2u) * sizeof(float));
@@ -1033,7 +1057,7 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots ||
 		(uint64_t)extra_longest > (uint64_t)params->pages_per_sequence * params->page_slots )
 		return(OpsRefuse("attention_extra","every row's keys must lie inside its sequence's pages"));
-	launch.partition_keys = OPS_DECODE_PARTITION_KEYS;
+	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
 	primary = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.extra_partitions = (extra_longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.partitions = primary + launch.extra_partitions;
@@ -1106,8 +1130,9 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	SparkStatus status;
 	if ( params->rows == 0u || params->dimension == 0u || params->input_stride < 2u * params->dimension ||
 		(activation != SPARK_GATED_SILU && activation != SPARK_GATED_GELU_TANH && activation != SPARK_GATED_SILU_ROUNDED && activation != SPARK_GATED_SILU_CLAMP &&
-		activation != SPARK_GATED_SILU_GATE_LIMIT && activation != SPARK_GATED_SITU) ||
-		((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT || activation == SPARK_GATED_SITU) && !(params->limit > 0.0f)) )
+		activation != SPARK_GATED_SILU_GATE_LIMIT && activation != SPARK_GATED_SITU && activation != SPARK_GATED_SILU_ROUNDED_CLAMP) ||
+		((activation == SPARK_GATED_SILU_CLAMP || activation == SPARK_GATED_SILU_GATE_LIMIT || activation == SPARK_GATED_SITU ||
+		activation == SPARK_GATED_SILU_ROUNDED_CLAMP) && !(params->limit > 0.0f)) )
 		return(OpsRefuse("gated_mul","rows, an input stride that holds the gate and up halves, a known activation and its positive limit are required"));
 	status = OpsNeed("gated_mul","input",input,OpsRowsBytes(params->rows,params->input_stride,2u * params->dimension,2u));
 	if ( status == SPARK_STATUS_OK )
@@ -1118,7 +1143,8 @@ SparkStatus SparkOpsGatedMul(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spark
 	bindings[1] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,activation == SPARK_GATED_GELU_TANH ? SPARK_OPS_GELU_TANH_MUL : activation == SPARK_GATED_SILU_ROUNDED ? SPARK_OPS_SILU_ROUNDED_MUL :
 		activation == SPARK_GATED_SILU_CLAMP ? SPARK_OPS_SILU_CLAMP_MUL : activation == SPARK_GATED_SILU_GATE_LIMIT ? SPARK_OPS_SILU_GATE_LIMIT_MUL :
-		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : SPARK_OPS_SILU_MUL,(params->dimension + 255u) / 256u,
+		activation == SPARK_GATED_SITU ? SPARK_OPS_SITU_MUL : activation == SPARK_GATED_SILU_ROUNDED_CLAMP ? SPARK_OPS_SILU_ROUNDED_CLAMP_MUL : SPARK_OPS_SILU_MUL,
+		(params->dimension + 255u) / 256u,
 		params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
@@ -1300,6 +1326,29 @@ SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQ
 	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
 }
 
+SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params)
+{
+	SparkDeviceBinding bindings[4];
+	SparkStatus status;
+	if ( params->rows == 0u || params->top_k == 0u || params->top_k > SPARK_ROUTE_MAX_TOP_K || params->width == 0u )
+		return(OpsRefuse("route_combine_weighted_shared_f32","rows, a top-k of at most 16 and a width are required"));
+	status = OpsNeed("route_combine_weighted_shared_f32","expert outputs",expert_out,(uint64_t)params->rows * params->top_k * params->width * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","shared",shared,(uint64_t)params->rows * params->width * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("route_combine_weighted_shared_f32","output",output,(uint64_t)params->rows * params->width * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(expert_out,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(weights,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(shared,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,4u));
+}
+
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params)
 {
@@ -1336,11 +1385,12 @@ SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	return(OpsLaunch(ops,queue,SPARK_OPS_SIGMOID_GATE_ROWS,(params->width + 255u) / 256u,params->rows,1u,256u,params,sizeof(*params),bindings,2u));
 }
 
-SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
-	const SparkRouteParams *params)
+static SparkStatus OpsRouteScored(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, const SparkTensor *pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
 {
 	SparkRouteParams launch = *params;
-	SparkDeviceBinding bindings[4];
+	SparkDeviceBinding bindings[5];
+	SparkOpsKernel kernel;
 	SparkStatus status;
 	if ( params->rows == 0u || params->experts == 0u || params->experts > SPARK_ROUTE_MAX_EXPERTS || params->top_k == 0u ||
 		params->top_k > SPARK_ROUTE_MAX_TOP_K || params->top_k > params->experts || params->logit_stride < params->experts ||
@@ -1357,16 +1407,35 @@ SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 		status = OpsNeed("route_sigmoid","experts",experts,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("route_sigmoid","weights",weights,(uint64_t)params->rows * params->top_k * sizeof(float));
+	if ( status == SPARK_STATUS_OK && pinned != 0 )
+		status = OpsNeed("route_sigmoid","pinned experts",*pinned,(uint64_t)params->rows * params->top_k * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	bindings[0] = OpsBind(logits,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(bias,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(experts,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(weights,SPARK_DEVICE_BIND_WRITE);
+	if ( pinned != 0 )
+		bindings[4] = OpsBind(*pinned,SPARK_DEVICE_BIND_READ);
 	if ( params->score != SPARK_ROUTE_SCORE_SIGMOID && params->score != SPARK_ROUTE_SCORE_SQRT_SOFTPLUS )
 		return(OpsRefuse("route_sigmoid","the expert score is a sigmoid or the square root of a softplus"));
-	return(OpsLaunch(ops,queue,params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS : SPARK_OPS_ROUTE_SIGMOID,params->rows,1u,1u,256u,
-		&launch,sizeof(launch),bindings,4u));
+	if ( pinned != 0 )
+		kernel = params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS_PINNED : SPARK_OPS_ROUTE_SIGMOID_PINNED;
+	else
+		kernel = params->score == SPARK_ROUTE_SCORE_SQRT_SOFTPLUS ? SPARK_OPS_ROUTE_SQRT_SOFTPLUS : SPARK_OPS_ROUTE_SIGMOID;
+	return(OpsLaunch(ops,queue,kernel,params->rows,1u,1u,256u,&launch,sizeof(launch),bindings,pinned != 0 ? 5u : 4u));
+}
+
+SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
+	const SparkRouteParams *params)
+{
+	return(OpsRouteScored(ops,queue,logits,bias,0,experts,weights,params));
+}
+
+SparkStatus SparkOpsRouteSigmoidPinned(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor pinned,
+	SparkTensor experts, SparkTensor weights, const SparkRouteParams *params)
+{
+	return(OpsRouteScored(ops,queue,logits,bias,&pinned,experts,weights,params));
 }
 
 SparkStatus SparkOpsRmsNormBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor weight, SparkTensor output,
@@ -1905,13 +1974,13 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkDeviceBinding bindings[4];
 	SparkStatus status;
 	if ( params->rows == 0u || K == 0u || N == 0u || K % 8u != 0u || params->input_stride % 8u != 0u || params->input_stride < K ||
-		params->route_divisor == 0u || params->output_f32 != 0u || expert_count == 0u )
-		return(OpsRefuse("linear_routed","routes, an input width that is a multiple of 8, a source row per route divisor and BF16 output are required"));
+		params->route_divisor == 0u || expert_count == 0u )
+		return(OpsRefuse("linear_routed","routes, an input width that is a multiple of 8 and a source row per route divisor are required"));
 	status = OpsNeed("linear_routed","input",x,OpsRowsBytes(sources,params->input_stride,K,2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear_routed","weight",w,(uint64_t)expert_count * N * K * sizeof(uint16_t));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("linear_routed","output",y,OpsRowsBytes(params->rows,params->output_stride,N,2u));
+		status = OpsNeed("linear_routed","output",y,OpsRowsBytes(params->rows,params->output_stride,N,params->output_f32 != 0u ? 4u : 2u));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("linear_routed","experts",experts,(uint64_t)params->rows * sizeof(uint32_t));
 	if ( status != SPARK_STATUS_OK )
@@ -1920,8 +1989,8 @@ SparkStatus SparkOpsLinearRouted(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	bindings[1] = OpsBind(w,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(y,SPARK_DEVICE_BIND_WRITE);
 	bindings[3] = OpsBind(experts,SPARK_DEVICE_BIND_READ);
-	return(OpsLaunch(ops,queue,SPARK_OPS_GEMV_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,params->rows,1u,128u,params,sizeof(*params),
-		bindings,4u));
+	return(OpsLaunch(ops,queue,params->output_f32 != 0u ? SPARK_OPS_GEMV_ROUTED_F32 : SPARK_OPS_GEMV_ROUTED,(N + SPARK_GEMV_OUTPUTS - 1u) / SPARK_GEMV_OUTPUTS,
+		params->rows,1u,128u,params,sizeof(*params),bindings,4u));
 }
 
 SparkStatus SparkOpsLinearRoutedFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor x, SparkTensor w, SparkTensor scale, SparkTensor y,

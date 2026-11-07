@@ -25,7 +25,11 @@
              the routed experts in descending order, so a against b is the
              noise of FP32 reduction order; h is b with a GPU's exp and tanh error (tools/reference_device_error.py),
              and the three variants' distances from one another are the
-             gate's floors
+             gate's floors. Each of a, b and h also writes
+             DIR/<name>.ref_<v>.routes, its chosen experts as uint16
+             [layers][positions][top_k] (dense layers 0..k-1); hp is h
+             with a's experts, weighted by its own unbiased scores, for the
+             gate's pinned legs (list a first)
 
 Semantics follow the publisher modeling_bailing_moe_v3.py and the fla
 kernels it calls (fla 0.5.2):
@@ -38,7 +42,11 @@ kernels it calls (fla 0.5.2):
   RMSNorm(o) * w * sigmoid(g_proj) in f32 and o_proj.
   MLA: q_proj (no q LoRA), kv_a_proj -> RMSNorm(latent) -> kv_b_proj
   (k_nope | v), interleaved rope on the 64 rope dims with bf16 cos/sin,
-  causal softmax(QK^T / sqrt(192)) in f32 with bf16 probabilities, head-wise
+  causal softmax(QK^T / sqrt(192)) in the publishers' flash form: weights
+  w = exp(s - m) in f32 with m the row's maximum over its visible keys (one
+  max per row, the reference's single-tile model of the kernels' per-tile
+  running maxima), the values multiplied by bf16(w) in f32, that product
+  divided by the sum of the f32 weights and rounded to bf16; head-wise
   sigmoid gate, dense.
   MoE: f32 router logits, sigmoid scores, expert_bias for selection only,
   top-2 group sums, 4 of 8 groups, top-8, weights renormalized and scaled
@@ -78,6 +86,7 @@ from t1_reference_common import matmul as matmul_f64
 
 FP32 = False
 REVERSED = False
+PINNED = None
 CHUNK = 1024
 
 
@@ -85,12 +94,12 @@ def matmul(left, right):
     if not FP32:
         return matmul_f64(left, right)
     if not REVERSED or left.shape[-1] <= CHUNK:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + CHUNK] @ right[first:first + CHUNK] for first in range(0, left.shape[-1], CHUNK)]
     total = None
-    for first in reversed(range(0, left.shape[-1], CHUNK)):
-        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, CHUNK)
 
 
 def reduce_sum(values, axis=-1, keepdims=True):
@@ -293,8 +302,8 @@ class Reference:
             scores = matmul(query[:, head, :], key[:, head, :].T) * scale
             scores = np.where(causal, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / reduce_sum(weights))
-            output[:, head, :] = bf16(matmul(weights, value[:, head, :]))
+            total = reduce_sum(weights)
+            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head, :]) / total)
         gate = bf16(sigmoid(self.linear(normed, a + "g_proj.weight", heads, self.hidden)))
         output = bf16(output * gate[:, :, None])
         return self.output(output.reshape(rows, heads * self.value_dim), a + "dense.weight", self.hidden, heads * self.value_dim)
@@ -321,15 +330,18 @@ class Reference:
         m = f"model.layers.{layer}.mlp."
         logits = matmul(normed, self.checkpoint.bf16(m + "gate.weight", self.experts, self.hidden).T)
         scores = sigmoid(logits)
-        selection = scores + self.checkpoint.f32(m + self.expert_bias_name, self.experts)[None, :]
-        rows = normed.shape[0]
-        grouped = selection.reshape(rows, self.groups, -1)
-        group_score = np.sort(grouped, axis=-1)[..., -2:].sum(axis=-1)
-        group_order = np.argsort(-group_score, axis=-1, kind="stable")[:, :self.topk_groups]
-        mask = np.zeros((rows, self.groups), dtype=bool)
-        np.put_along_axis(mask, group_order, True, axis=-1)
-        masked = np.where(np.repeat(mask, self.experts // self.groups, axis=-1), selection, -np.inf)
-        chosen = np.argsort(-masked, axis=-1, kind="stable")[:, :self.top_k]
+        if PINNED is not None:
+            chosen = PINNED[layer]
+        else:
+            selection = scores + self.checkpoint.f32(m + self.expert_bias_name, self.experts)[None, :]
+            rows = normed.shape[0]
+            grouped = selection.reshape(rows, self.groups, -1)
+            group_score = np.sort(grouped, axis=-1)[..., -2:].sum(axis=-1)
+            group_order = np.argsort(-group_score, axis=-1, kind="stable")[:, :self.topk_groups]
+            mask = np.zeros((rows, self.groups), dtype=bool)
+            np.put_along_axis(mask, group_order, True, axis=-1)
+            masked = np.where(np.repeat(mask, self.experts // self.groups, axis=-1), selection, -np.inf)
+            chosen = np.argsort(-masked, axis=-1, kind="stable")[:, :self.top_k]
         picked = np.take_along_axis(scores, chosen, axis=-1)
         weights = picked / (picked.sum(axis=-1, keepdims=True) + np.float32(1e-20)) * self.route_scale
         return chosen, weights.astype(np.float32)
@@ -452,26 +464,41 @@ def score(args, reference):
     Path(args.out).write_text(json.dumps(report))
 
 
+def write_routes(path, routes, layers, top_k, first, count):
+    filler = np.broadcast_to(np.arange(top_k, dtype=np.int64), (count, top_k))
+    stacked = np.stack([routes[layer][first:first + count] if layer in routes else filler for layer in range(layers)])
+    np.ascontiguousarray(stacked, dtype="<u2").tofile(path)
+
+
 def teacher(args, reference=None):
-    global FP32, REVERSED
+    global FP32, REVERSED, PINNED
     variants = args.variants.split(",")
-    if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
-        raise SystemExit("--variants takes distinct a, b and h")
+    if not variants or any(label not in ("a", "b", "h", "hp") for label in variants) or len(set(variants)) != len(variants):
+        raise SystemExit("--variants takes distinct a, b, h and hp")
+    if "hp" in variants and ("a" not in variants or variants.index("a") > variants.index("hp")):
+        raise SystemExit("hp is h with a's experts: list a before it")
     reference = reference if reference is not None else Reference(args.checkpoint, args.swiglu_limits)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     bounds = np.cumsum([0] + [len(prompt["prompt_token_ids"]) for prompt in prompts])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     FP32 = True
+    chosen_a = None
     for label in variants:
         REVERSED = label != "a"
+        PINNED = chosen_a if label == "hp" else None
         device.select(label)
         dump = {} if getattr(args, "dump", None) else None
-        normed, _ = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        normed, routes = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        PINNED = None
+        if label == "a":
+            chosen_a = routes
         if dump is not None:
             np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]), bounds=bounds, **dump)
         for index, prompt in enumerate(prompts):
             first, count = bounds[index], len(prompt["prompt_token_ids"])
+            if label != "hp":
+                write_routes(out / f"{prompt['name']}.ref_{label}.routes", routes, reference.layers, reference.top_k, first, count)
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
                 for row in range(0, count - 1, 128):
                     handle.write(np.ascontiguousarray(reference.logits(normed[first + row:first + min(row + 128, count - 1)]), dtype=np.float32).tobytes())

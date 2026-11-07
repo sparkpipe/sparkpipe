@@ -133,7 +133,7 @@ void LmGqaShardPartialKernel(
 		running_sum = fmaf(running_sum,rescale,weight);
 		#pragma unroll
 		for (index = 0u; index < VALUES; ++index)
-			accumulator[index] = fmaf(accumulator[index],rescale,weight * value[index]);
+			accumulator[index] = fmaf(accumulator[index],rescale,SparkMathAttentionValueWeight(weight) * value[index]);
 	}
 	first = head * VALUE_DIM;
 	last = first + VALUE_DIM;

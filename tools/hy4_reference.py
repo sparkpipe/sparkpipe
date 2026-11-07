@@ -33,9 +33,17 @@ deployment; accumulations are f32.
              branch input is sum pre_s * stream_s
   hc post    stream_s += post_s * branch output (f32, then bf16)
   attention  MLA (q lora 2048, kv lora 512, nope 192, rope 64, value 256),
-             interleaved rope pairs (2i, 2i+1), theta 1e7, scale 1/sqrt(256),
-             learned per-head sink logit in the softmax denominator,
-             elementwise sigmoid gate (linear_gate of the normed input) on the
+             interleaved rope pairs (2i, 2i+1), theta 1e7, each product and
+             the sum rounded to bf16 with bf16 cos and sin (BF16 rotary in
+             transformers and vLLM), scale 1/sqrt(256),
+             learned per-head sink logit in the softmax denominator, in the
+             publishers' flash form: weights w = exp(s - m) in f32 with m
+             the row's maximum over its attended keys, the sink excluded
+             (one max per row, the reference's single-tile model of the
+             kernels' per-tile running maxima), the values multiplied by
+             bf16(w) in f32, that product divided by the sum of the f32
+             weights plus exp(sink - m) and rounded to bf16; elementwise
+             sigmoid gate (linear_gate of the normed input) on the
              64 x 256 head outputs before o_proj
   indexer    layers with indexer_types "full": q = wq_b(normed q lora), k =
              LayerNorm(wk(x)) (eps 1e-6, as vLLM hy_v4), rope on the last 64 of 128;
@@ -68,7 +76,7 @@ GROUP = 32
 LOOKAHEAD = 8
 REVERSED = False
 CHUNK = 1024
-CHUNK = 32 << 20
+READ_BYTES = 32 << 20
 KINDS = {"BF16": np.uint16, "F32": np.float32, "F8_E4M3": np.uint8, "U8": np.uint8}
 
 
@@ -88,12 +96,12 @@ def silu(values):
 
 def product(left, right):
     if not REVERSED or left.shape[-1] <= CHUNK:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + CHUNK] @ right[first:first + CHUNK] for first in range(0, left.shape[-1], CHUNK)]
     total = None
-    for first in reversed(range(0, left.shape[-1], CHUNK)):
-        part = left[..., first:first + CHUNK] @ right[first:first + CHUNK]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, CHUNK)
 
 
 def reduce_sum(values, axis=-1, keepdims=True):
@@ -143,7 +151,7 @@ class Checkpoint:
         buffer = np.empty(end - begin, dtype=np.uint8)
         view, done = memoryview(buffer), 0
         while done < buffer.size:
-            got = os.preadv(descriptor, [view[done:done + CHUNK]], base + begin + done)
+            got = os.preadv(descriptor, [view[done:done + READ_BYTES]], base + begin + done)
             if got <= 0:
                 raise OSError(f"short read of {name} at {done}")
             done += got
@@ -239,13 +247,13 @@ class Reference:
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float64) * self.inv_freq[None, :]
         shape = [values.shape[0]] + [1] * (values.ndim - 2) + [self.rope_dim // 2]
-        cos = np.cos(angles).astype(np.float32).reshape(shape)
-        sin = np.sin(angles).astype(np.float32).reshape(shape)
+        cos = bf16(np.cos(angles).astype(np.float32)).reshape(shape)
+        sin = bf16(np.sin(angles).astype(np.float32)).reshape(shape)
         even, odd = values[..., 0::2], values[..., 1::2]
         out = np.empty_like(values)
-        out[..., 0::2] = even * cos - odd * sin
-        out[..., 1::2] = even * sin + odd * cos
-        return bf16(out)
+        out[..., 0::2] = bf16(bf16(even * cos) - bf16(odd * sin))
+        out[..., 1::2] = bf16(bf16(odd * cos) + bf16(even * sin))
+        return out
 
     def hc_weights(self, streams, fn, base, scale, post):
         rows = streams.shape[0]
@@ -325,10 +333,10 @@ class Reference:
             for head in range(self.heads):
                 scores = (product(query[window, head, :self.nope], key_nope[window, head].T) + rope_scores[head]) * self.scale
                 scores = np.where(allowed, scores, -np.inf)
-                peak = np.maximum(scores.max(axis=-1, keepdims=True), sinks[head])
+                peak = scores.max(axis=-1, keepdims=True)
                 weights = device.exp(scores - peak)
                 denominator = reduce_sum(weights) + device.exp(sinks[head] - peak)
-                output[window, head] = bf16(product(weights, value[window, head]) / denominator)
+                output[window, head] = bf16(product(bf16(weights), value[window, head]) / denominator)
         gate = bf16(sigmoid(bf16(product(normed, c.bf16(p + "linear_gate.weight", (self.heads * self.value, self.hidden)).T))))
         gated = bf16(output.reshape(rows, -1) * gate)
         return bf16(product(gated, c.mxfp8(p + "o_proj", (self.hidden, self.heads * self.value)).T))

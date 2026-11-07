@@ -42,6 +42,9 @@
 #define REF_PREFIX "model.language_model."
 #define REF_EXP_ERROR_MEAN 1.637e-7
 #define REF_EXP_ERROR_SPREAD 4.354e-7
+#define REF_SUM_ERROR 0.11
+#define REF_SUM_STEP 4.0
+#define REF_SUM_OUTPUTS 8192u
 
 typedef struct RefShard
 {
@@ -127,6 +130,78 @@ static double RefExp(double x)
 {
 	const double exact = exp(x);
 	return(ref_device_error != 0u ? exact + exact * (REF_EXP_ERROR_MEAN + REF_EXP_ERROR_SPREAD * sqrt(3.0) * RefDeviceCentered((float)x,1u)) : exact);
+}
+
+static double RefDeviceNormal(float value)
+{
+	const double first = (RefDeviceCentered(value,3u) + 1.0) / 2.0, second = RefDeviceCentered(value,4u);
+	return(sqrt(-2.0 * log(first)) * cos(3.141592653589793 * second));
+}
+
+static void RefAccumulated(uint32_t rows, uint32_t outputs, uint32_t depth, float alpha, const float *left, uint32_t left_stride, const float *right,
+	uint32_t right_stride, uint32_t transposed, float *y, uint32_t y_stride)
+{
+	uint32_t n0;
+	if ( ref_device_error == 0u )
+		return;
+	for ( n0 = 0u; n0 < outputs; n0 += REF_SUM_OUTPUTS )
+	{
+		const uint32_t count = outputs - n0 < REF_SUM_OUTPUTS ? outputs - n0 : REF_SUM_OUTPUTS;
+		const uint64_t cells = (uint64_t)rows * count;
+		float *part = (float *)malloc((size_t)cells * sizeof(float)), *squares = (float *)malloc((size_t)cells * sizeof(float));
+		float *left_squares = (float *)malloc((size_t)rows * REF_SPLIT * sizeof(float)), *right_squares = (float *)malloc((size_t)count * REF_SPLIT * sizeof(float));
+		double *running = (double *)calloc((size_t)cells,sizeof(double)), *expected = (double *)calloc((size_t)cells,sizeof(double));
+		uint32_t k0, r, n, k;
+		uint64_t i;
+		if ( part == 0 || squares == 0 || left_squares == 0 || right_squares == 0 || running == 0 || expected == 0 )
+		{
+			fprintf(stderr,"qwen38_27b_reference: out of memory for the accumulation model\n");
+			exit(1);
+		}
+		for ( k0 = 0u; k0 < depth; k0 += REF_SPLIT )
+		{
+			const uint32_t width = depth - k0 < REF_SPLIT ? depth - k0 : REF_SPLIT;
+			for ( r = 0u; r < rows; r++ )
+				for ( k = 0u; k < width; k++ )
+				{
+					const float value = left[(uint64_t)r * left_stride + k0 + k];
+					left_squares[(uint64_t)r * width + k] = value * value;
+				}
+			for ( n = 0u; n < count; n++ )
+				for ( k = 0u; k < width; k++ )
+				{
+					const float value = transposed != 0u ? right[(uint64_t)(n0 + n) * right_stride + k0 + k] : right[(uint64_t)(k0 + k) * right_stride + n0 + n];
+					right_squares[(uint64_t)n * width + k] = value * value;
+				}
+			if ( transposed != 0u )
+				cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)count,(int)width,alpha,left + k0,(int)left_stride,
+					right + (uint64_t)n0 * right_stride + k0,(int)right_stride,0.0f,part,(int)count);
+			else
+				cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,(int)rows,(int)count,(int)width,alpha,left + k0,(int)left_stride,
+					right + (uint64_t)k0 * right_stride + n0,(int)right_stride,0.0f,part,(int)count);
+			cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)count,(int)width,alpha * alpha,left_squares,(int)width,right_squares,(int)width,
+				0.0f,squares,(int)count);
+			for ( i = 0u; i < cells; i++ )
+			{
+				const double p = part[i], s = running[i], q = squares[i];
+				expected[i] += (double)width / REF_SUM_STEP * (s * s + s * p + p * p / 3.0 + q / 6.0) + 2.0 * q;
+				running[i] = s + p;
+			}
+		}
+		for ( r = 0u; r < rows; r++ )
+			for ( n = 0u; n < count; n++ )
+			{
+				float *cell = y + (uint64_t)r * y_stride + n0 + n;
+				if ( isfinite(*cell) )
+					*cell += (float)(sqrt(REF_SUM_ERROR * expected[(uint64_t)r * count + n]) * (1.0 / 16777216.0) * RefDeviceNormal(*cell));
+			}
+		free(part);
+		free(squares);
+		free(left_squares);
+		free(right_squares);
+		free(running);
+		free(expected);
+	}
 }
 
 static float Silu(float x)
@@ -349,6 +424,7 @@ static void RefGemm(uint32_t variant, const float *x, uint32_t rows, uint32_t in
 		if ( first == 0u )
 			break;
 	}
+	RefAccumulated(rows,output,input,1.0f,x,input,w,input,1u,y,y_stride);
 }
 
 static float RefSum(uint32_t variant, const float *values, uint32_t count, uint32_t stride)
@@ -511,7 +587,8 @@ static void RefHeadNormRope(uint32_t variant, const float *in, uint32_t in_strid
 				const float frequency = (float)(1.0 / pow(REF_THETA,(double)(2u * pair) / (double)REF_ROPE));
 				const float angle = (float)(first_position + row) * frequency;
 				const float partner = i < REF_ROPE / 2u ? -normed[i + REF_ROPE / 2u] : normed[i - REF_ROPE / 2u];
-				value = (float)((double)normed[i] * cos((double)angle) + (double)partner * sin((double)angle));
+				const float c = RoundBf16((float)cos((double)angle)), s = RoundBf16((float)sin((double)angle));
+				value = RoundBf16(RoundBf16(normed[i] * c) + RoundBf16(partner * s));
 			}
 			out[((uint64_t)row * heads + head) * REF_HEAD_DIM + i] = RoundBf16(value);
 		}
@@ -538,8 +615,10 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 		const uint32_t kv = (uint32_t)head / (REF_HEADS / REF_KV_HEADS);
 		float *scores = (float *)malloc((size_t)rows * length * sizeof(float));
 		float *out = (float *)malloc((size_t)rows * REF_HEAD_DIM * sizeof(float));
+		float *totals = (float *)malloc((size_t)rows * sizeof(float));
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasTrans,(int)rows,(int)length,(int)REF_HEAD_DIM,1.0f / 16.0f,query + head * REF_HEAD_DIM,(int)REF_Q,
 			keys + kv * REF_HEAD_DIM,(int)REF_KV,0.0f,scores,(int)length);
+		RefAccumulated(rows,length,REF_HEAD_DIM,1.0f / 16.0f,query + head * REF_HEAD_DIM,REF_Q,keys + kv * REF_HEAD_DIM,REF_KV,1u,scores,length);
 		for ( uint32_t row = 0u; row < rows; row++ )
 		{
 			float *line = scores + (uint64_t)row * length, best = -INFINITY;
@@ -548,20 +627,22 @@ static void RefAttention(uint32_t variant, const RefLayer *layer, uint32_t index
 				best = line[j] > best ? line[j] : best;
 			for ( uint32_t j = 0u; j < length; j++ )
 				line[j] = j < visible ? (float)RefExp((double)(line[j] - best)) : 0.0f;
-			const float total = RefSum(variant,line,visible,1u);
+			totals[row] = RefSum(variant,line,visible,1u);
 			for ( uint32_t j = 0u; j < visible; j++ )
-				line[j] /= total;
+				line[j] = RoundBf16(line[j]);
 		}
 		cblas_sgemm(CblasRowMajor,CblasNoTrans,CblasNoTrans,(int)rows,(int)REF_HEAD_DIM,(int)length,1.0f,scores,(int)length,
 			values + kv * REF_HEAD_DIM,(int)REF_KV,0.0f,out,(int)REF_HEAD_DIM);
+		RefAccumulated(rows,REF_HEAD_DIM,length,1.0f,scores,length,values + kv * REF_HEAD_DIM,REF_KV,0u,out,REF_HEAD_DIM);
 		for ( uint32_t row = 0u; row < rows; row++ )
 			for ( uint32_t d = 0u; d < REF_HEAD_DIM; d++ )
 			{
 				const float g = gq[(uint64_t)row * 2u * REF_Q + head * 2u * REF_HEAD_DIM + REF_HEAD_DIM + d];
-				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d]) * Sigmoid(g));
+				gated[(uint64_t)row * REF_Q + head * REF_HEAD_DIM + d] = RoundBf16(RoundBf16(out[(uint64_t)row * REF_HEAD_DIM + d] / totals[row]) * RoundBf16(Sigmoid(g)));
 			}
 		free(scores);
 		free(out);
+		free(totals);
 	});
 	RefLinearRows(variant,gated,rows,REF_Q,layer->o,REF_HIDDEN,partial);
 	free(gq);

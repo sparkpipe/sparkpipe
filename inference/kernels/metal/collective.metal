@@ -11,6 +11,17 @@ kernel void spark_rank_sum_bf16(constant SparkRankParams &p [[buffer(0)]], devic
 	full[index] = SparkMathFloatToBf16(total);
 }
 
+kernel void spark_rank_sum_f32(constant SparkRankParams &p [[buffer(0)]], device const float *lanes [[buffer(1)]], device ushort *full [[buffer(2)]],
+	uint index [[thread_position_in_grid]])
+{
+	if ( index >= p.elements )
+		return;
+	float total = 0.0f;
+	for ( uint rank = 0u; rank < p.ranks; rank++ )
+		total += lanes[(ulong)rank * p.elements + index];
+	full[index] = SparkMathFloatToBf16(total);
+}
+
 kernel void spark_rank_max_u64(constant SparkRankParams &p [[buffer(0)]], device const ulong *lanes [[buffer(1)]], device ulong *full [[buffer(2)]],
 	uint index [[thread_position_in_grid]])
 {

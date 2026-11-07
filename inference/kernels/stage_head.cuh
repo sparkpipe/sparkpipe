@@ -60,6 +60,7 @@ typedef struct LmStageHeadRows
 	uint32_t hidden;
 	float epsilon;
 	uint32_t norm_f32;
+	uint32_t norm_round_first;
 	uint32_t prenormed;
 	uint32_t vocab_slice_rows;
 	uint32_t rank_offset;
@@ -80,9 +81,15 @@ static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, cudaS
 {
 	if ( head.prenormed != 0u )
 		return(head.normed_bf16 == head.hidden_bf16 ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE);
-	if ( head.norm_f32 != 0u )
+	if ( head.norm_f32 != 0u && head.norm_round_first != 0u )
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float,true>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
+			head.hidden_bf16,0,(const float *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
+	else if ( head.norm_f32 != 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const float *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
+	else if ( head.norm_round_first != 0u )
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t,true>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
+			head.hidden_bf16,0,(const uint16_t *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
 	else
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const uint16_t *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);

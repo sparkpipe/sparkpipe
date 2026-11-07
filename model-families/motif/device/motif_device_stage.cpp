@@ -112,8 +112,10 @@ struct MotifDevice
 		attention->value_dimension = kValueDim;
 		attention->epsilon = kEpsilon;
 		attention->query_lora = kQueryLora;
+		attention->query_norm_once = 1u;
 		attention->tensor_prefix = "attn_";
 		attention->rope_half = 1u;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_BF16_TRIG;
 		attention->differential = kGroup;
 		attention->window = window;
 		if ( window != 0u )
@@ -145,6 +147,7 @@ struct MotifDevice
 		shape->epsilon = kEpsilon;
 		shape->projection = SPARK_PROJECTION_GEMV;
 		shape->prenormed_head = 1u;
+		shape->norm_round_first = 1u;
 		AttentionShape(&state->window_shape, SPARK_MOTIF_MODEL_WINDOW_TOKENS);
 		AttentionShape(&state->full_shape, 0u);
 	}
@@ -325,6 +328,7 @@ struct MotifDevice
 		norm.rows = frame.t.rows;
 		norm.dimension = norm.input_stride = norm.output_stride = kHidden;
 		norm.epsilon = kEpsilon;
+		norm.round_first = 1u;
 		return norm;
 	}
 

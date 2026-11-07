@@ -61,6 +61,9 @@ typedef struct SparkDeviceChannelDeltaShape
 	uint32_t conv_f32;
 	uint32_t gate_full_rank;
 	float prenorm_epsilon;
+	uint32_t conv_swish_once;
+	uint32_t norm_round_once;
+	uint32_t output_f32;
 } SparkDeviceChannelDeltaShape;
 
 typedef struct SparkDeviceChannelDeltaWeights
@@ -106,6 +109,7 @@ typedef struct SparkDeviceLatentAttentionShape
 	uint32_t head_gate;
 	uint32_t query_lora;
 	uint32_t norm_bf16;
+	uint32_t query_norm_once;
 	uint32_t sinks;
 	const char *tensor_prefix;
 	uint32_t query_concat;
@@ -117,6 +121,7 @@ typedef struct SparkDeviceLatentAttentionShape
 	uint32_t rope_unrotated;
 	uint32_t gate_unrounded;
 	uint32_t rope_half;
+	uint32_t rope_rounding;
 	uint32_t window;
 	uint32_t differential;
 } SparkDeviceLatentAttentionShape;
@@ -177,14 +182,16 @@ typedef struct SparkDeviceAttentionShape
 	uint32_t sinks;
 	uint32_t window;
 	uint32_t rope_pairs;
-	uint32_t rope_rounded_terms;
+	uint32_t rope_rounding;
 	float rope_scale;
 	float yarn_factor;
 	float yarn_original;
 	float yarn_beta_fast;
 	float yarn_beta_slow;
 	uint32_t head_gate;
+	uint32_t norm_round_first;
 	const char *tensor_prefix;
+	uint32_t output_f32;
 } SparkDeviceAttentionShape;
 
 typedef struct SparkDeviceAttentionRope
@@ -237,6 +244,8 @@ typedef struct SparkDeviceExpertsShape
 	float limit;
 	const char *router;
 	uint32_t tensor_parallel;
+	uint32_t weight_after_down;
+	uint32_t output_f32;
 } SparkDeviceExpertsShape;
 
 typedef struct SparkDeviceExpertsWeights
@@ -366,6 +375,8 @@ SparkStatus SparkDeviceGatedFfn(SparkDeviceStage *stage, SparkDeviceQueue *queue
 	const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
 SparkStatus SparkDeviceGatedFfnLimits(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit, float up_limit,
 	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
+SparkStatus SparkDeviceGatedFfnF32(SparkDeviceStage *stage, SparkDeviceQueue *queue, uint32_t ffn, uint32_t activation, float limit,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceFfnWeights *weights, const SparkDeviceFfnScratch *scratch, SparkTensor normed, SparkTensor output);
 
 uint64_t SparkDeviceExpertsScratchBytes(const SparkDeviceStage *stage, const SparkDeviceExpertsShape *shape, uint32_t part);
 SparkStatus SparkDeviceExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
@@ -384,7 +395,7 @@ SparkStatus SparkDeviceRoutedFfnQdq(SparkDeviceStage *stage, SparkDeviceQueue *q
 SparkStatus SparkDeviceSigmoidExpertsBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceExpertsShape *shape, SparkDeviceExpertsWeights *bound);
 SparkStatus SparkDeviceSigmoidExperts(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceExpertsShape *shape,
-	const SparkDeviceStepTensors *tensors, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
+	const SparkDeviceStepTensors *tensors, uint32_t layer, const SparkDeviceExpertsWeights *weights, const SparkDeviceExpertsScratch *scratch, SparkTensor normed,
 	SparkTensor shared, SparkTensor output);
 SparkStatus SparkDeviceBranchNorm(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor first,
 	const SparkTensor *second, const SparkTensor *first_weight, const SparkTensor *second_weight, SparkTensor output_weight, const SparkTensor *scalar);

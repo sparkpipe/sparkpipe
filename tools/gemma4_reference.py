@@ -49,8 +49,12 @@ block, otherwise the Gemma 4 dense text model. Weights are read from the BF16
 checkpoint one layer (one expert) at a time and all prompts go through each
 layer together. Values are rounded to bf16 where the publisher's eager
 PyTorch code rounds: norms in f32 then cast, projections in bf16, elementwise
-bf16 products, rotary cos/sin in bf16. The attention softmax and P.V run in
-f32 (SDPA/flash), logits are computed in f32.
+bf16 products, rotary cos/sin in bf16. The attention takes the publishers'
+flash form: weights w = exp(s - m) in f32 with m the row's maximum over its
+visible keys (one max per row, the reference's single-tile model of the
+kernels' per-tile running maxima), the values multiplied by bf16(w) in f32,
+that product divided by the sum of the f32 weights and rounded to bf16;
+logits are computed in f32.
 
 Gemma 4 (transformers modeling_gemma4.py): embeddings scaled by
 bf16(sqrt(hidden)); RMSNorm multiplies by w; q/k norms weighted, v norm
@@ -102,12 +106,12 @@ def reduce_sum(values, axis=-1, keepdims=False):
 
 def matmul(left, right, chunk=CHUNK):
     if not REVERSED or left.shape[-1] <= chunk:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + chunk] @ right[first:first + chunk] for first in range(0, left.shape[-1], chunk)]
     total = None
-    for first in reversed(range(0, left.shape[-1], chunk)):
-        part = left[..., first:first + chunk] @ right[first:first + chunk]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, chunk)
 
 
 def rms(values, weight=None, epsilon=1e-6):
@@ -227,8 +231,8 @@ class Reference:
             scores = matmul(query[:, head, :], key[:, head // group, :].T, query.shape[-1] // 2) * np.float32(scale)
             scores = np.where(causal, scores, -np.inf)
             weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= reduce_sum(weights, keepdims=True)
-            output[:, head, :] = bf16(matmul(weights, value[:, head // group, :]))
+            total = reduce_sum(weights, keepdims=True)
+            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head // group, :]) / total)
         return output.reshape(rows, -1)
 
     def attention(self, layer, normed, positions):
@@ -311,7 +315,7 @@ class Reference:
             residual = bf16(residual * self.checkpoint.f32(p + "layer_scalar")[0])
         return residual
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         global REVERSED
         residuals = [self.embed(tokens) for tokens in sequences]
         positions = [np.arange(len(tokens), dtype=np.int64) for tokens in sequences]
@@ -323,6 +327,8 @@ class Reference:
                     REVERSED = self.reversed_of[index]
                     device.select(self.variant_of[index])
                 residuals[index] = self.layer(layer, residuals[index], position)
+                if dump is not None:
+                    dump.setdefault(index, {})[f"mlp{layer:02d}"] = residuals[index].copy()
             print(f"layer {layer} done", file=sys.stderr, flush=True)
         self.checkpoint.cache.clear()
         final = widen(self.checkpoint.raw(PREFIX + "norm.weight"))
@@ -468,7 +474,14 @@ def teacher(args):
     reference.pin_source = [first_a + index % len(prompts) if label in ("bp", "hp") else None for index, (_, label) in enumerate(runs)]
     if any(variants.index(label) < variants.index("a") for label in pinned):
         raise ValueError("list a before bp and hp so a's experts are chosen first in every layer")
-    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs])
+    dump = {} if args.dump else None
+    normed = reference.forward([prompt["prompt_token_ids"] for prompt, _ in runs], dump)
+    if dump is not None:
+        for label in variants:
+            indices = [index for index, (_, run_label) in enumerate(runs) if run_label == label]
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([runs[index][0]["name"] for index in indices]),
+                     bounds=np.cumsum([0] + [len(runs[index][0]["prompt_token_ids"]) for index in indices]),
+                     **{key: np.concatenate([dump[index][key] for index in indices]) for key in dump[indices[0]]})
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     for index, ((prompt, label), hidden) in enumerate(zip(runs, normed)):
@@ -530,6 +543,7 @@ def main():
     r.add_argument("--prompts", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--variants", default="a,b,h")
+    r.add_argument("--dump", help="write every layer's post-layer residual for all rows to DUMP.<variant>.npz")
     m = sub.add_parser("summary")
     m.add_argument("--report", required=True)
     m.add_argument("--tie", type=float, default=0.1)

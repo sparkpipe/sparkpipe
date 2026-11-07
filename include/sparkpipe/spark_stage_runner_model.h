@@ -84,6 +84,7 @@ typedef struct SparkStageRunnerModelGeometry
 	uint64_t head_bytes;
 	uint32_t head_rows;
 	uint32_t head_norm_f32;
+	uint32_t head_norm_round_first;
 	uint32_t head_prenormed;
 	float logit_softcap;
 	float logit_scale;

@@ -7,6 +7,13 @@
 #define SPARK_PROJECTION_ROW_TILES 1u
 #define SPARK_GEMV_ROW_OUTPUTS(rows) ((rows) >= 8u ? 1u : (rows) >= 4u ? 2u : SPARK_GEMV_OUTPUTS)
 #define SPARK_ATTENTION_BLOCK_ROWS(dim) ((dim) > 256u ? 16u : 32u)
+#define SPARK_ATTENTION_SIMDS 8u
+#define SPARK_ROPE_ROUNDING_FP32 0u
+#define SPARK_ROPE_ROUNDING_TERMS 1u
+#define SPARK_ROPE_ROUNDING_BF16_TRIG 2u
+#define SPARK_ATTENTION_BLOCK_KEYS 64u
+#define SPARK_ATTENTION_DECODE_PARTITION_KEYS 128u
+#define SPARK_ATTENTION_PREFILL_PARTITION_KEYS 1024u
 #define SPARK_GEMM_ROWS_OUTPUTS 128u
 #define SPARK_GEMM_ROWS_DEPTH 64u
 #define SPARK_GEMM_ROWS_THREADS 128u
@@ -22,6 +29,7 @@
 #define SPARK_GATED_SILU_CLAMP 3u
 #define SPARK_GATED_SILU_GATE_LIMIT 4u
 #define SPARK_GATED_SITU 5u
+#define SPARK_GATED_SILU_ROUNDED_CLAMP 6u
 #define SPARK_HEAD_GATE_SOFTPLUS 0u
 #define SPARK_HEAD_GATE_SIGMOID_BF16 1u
 #define SPARK_HEAD_GATE_SIGMOID 2u
@@ -68,6 +76,7 @@ typedef struct SparkNormParams
 	uint32_t write_sum;
 	float epsilon;
 	uint32_t weightless;
+	uint32_t round_first;
 } SparkNormParams;
 
 #define SPARK_ATTNRES_MAX_SOURCES 16u
@@ -95,7 +104,7 @@ typedef struct SparkGatedNormParams
 	uint32_t sigmoid_gate;
 	uint32_t weight_f32;
 	uint32_t round_norm;
-	uint32_t pad;
+	uint32_t round_once;
 } SparkGatedNormParams;
 
 typedef struct SparkBranchNormParams
@@ -147,12 +156,13 @@ typedef struct SparkHeadRopeParams
 	uint32_t rope_dimension;
 	float epsilon;
 	uint32_t has_weight;
-	uint32_t rope_rounded_terms;
+	uint32_t rope_rounding;
 	float multiply;
 	uint32_t plain;
 	float scale;
 	uint32_t interleaved;
 	uint32_t output_head_stride;
+	uint32_t round_first;
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkHeadRopeParams;
 
@@ -194,7 +204,7 @@ typedef struct SparkConvParams
 	uint32_t commit;
 	uint32_t dilation;
 	uint32_t weight_f32;
-	uint32_t pad;
+	uint32_t swish_once;
 } SparkConvParams;
 
 typedef struct SparkDeltaParams
