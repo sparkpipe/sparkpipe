@@ -85,7 +85,7 @@ PENDING = {
     "include/sparkpipe/spark_model_serving_adapter.h": {"handle": 1},
     "include/sparkpipe/spark_module_abi.h": {"handle": 1},
     "include/sparkpipe/spark_stage_module_common.h": {"header": 1, "token": 22},
-    "include/sparkpipe/spark_stage_runner.h": {"handle": 3},
+    "include/sparkpipe/spark_stage_runner.h": {"handle": 2},
     "include/sparkpipe/spark_stage_runner_model.h": {"handle": 7},
     "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 3, "header": 1, "token": 23},
     "include/sparkpipe/spark_tp_device_collective.h": {"handle": 22},
