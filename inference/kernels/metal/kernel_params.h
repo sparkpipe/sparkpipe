@@ -415,4 +415,33 @@ typedef struct SparkGateParams
 	uint32_t pad[3];
 } SparkGateParams;
 
+#define SPARK_SAMPLE_THREADS 1024u
+#define SPARK_SAMPLE_MAX_LOGPROBS 21u
+#define SPARK_SAMPLE_NO_TOKEN 0xffffffffu
+
+typedef struct SparkSampleParams
+{
+	uint32_t rows;
+	uint32_t vocabulary;
+	uint32_t logit_stride;
+	uint32_t logit_rows;
+} SparkSampleParams;
+
+typedef struct SparkSampleRow
+{
+	uint64_t seed;
+	float inverse_temperature;
+	float nucleus;
+	uint32_t top_k;
+	uint32_t logprobs;
+	uint32_t position;
+	uint32_t head_row;
+} SparkSampleRow;
+
+typedef struct SparkSampleLogprob
+{
+	uint32_t token;
+	float logprob;
+} SparkSampleLogprob;
+
 #endif
