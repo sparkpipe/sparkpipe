@@ -502,11 +502,11 @@ static uint32_t WeightStreamRotatePair(uint32_t rank, uint32_t ranks, uint32_t k
 	return (((*holds_own != 0u ? rank : rank ^ 1u) + ranks - k) % ranks) / 2u;
 }
 
-static uint32_t WeightStreamEveryPeerReady(const WeightStreamCall *call, const SparkWeightStream *stream)
+static uint32_t WeightStreamAllReady(const WeightStreamCall *call, const SparkWeightStream *stream, const uint32_t *targets, uint32_t count)
 {
-	uint32_t peer;
-	for (peer=0u; peer<stream->config.ranks; peer++)
-		if ( peer != stream->config.rank && (call->ready[WeightStreamLinkOf(stream,peer)] & (1u << peer)) == 0u )
+	uint32_t index;
+	for (index=0u; index<count; index++)
+		if ( (call->ready[WeightStreamLinkOf(stream,targets[index])] & (1u << targets[index])) == 0u )
 			return 0u;
 	return 1u;
 }
@@ -563,25 +563,22 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	for (index=0u; index<writer_count; index++)
 		expect_got[WeightStreamLinkOf(stream,writers[index])] += per_half;
 	status = WeightStreamCallBegin(stream,&call,tag);
-	for (index=0u; index<ranks && status == SPARK_STATUS_OK; index++)
-		if ( index != rank )
-			status = WeightStreamReady(stream,index,tag);
+	for (index=0u; index<writer_count && status == SPARK_STATUS_OK; index++)
+		status = WeightStreamReady(stream,writers[index],tag);
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
 	start = WeightStreamNowNs();
 	block->ready_ns = block->posted_ns = 0u;
-	while ( block->ready_ns == 0u || call.done[WEIGHT_STREAM_FABRIC] < expect_done[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < expect_done[WEIGHT_STREAM_PAIR] ||
+	while ( call.done[WEIGHT_STREAM_FABRIC] < expect_done[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < expect_done[WEIGHT_STREAM_PAIR] ||
 		call.got[WEIGHT_STREAM_FABRIC] < expect_got[WEIGHT_STREAM_FABRIC] || call.got[WEIGHT_STREAM_PAIR] < expect_got[WEIGHT_STREAM_PAIR] )
 	{
-		if ( block->ready_ns == 0u && WeightStreamEveryPeerReady(&call,stream) != 0u )
-			block->ready_ns = WeightStreamNowNs() - start + 1u;
 		do
 		{
 			moved = 0u;
-			for (index=0u; index<target_count && block->ready_ns != 0u; index++)
+			for (index=0u; index<target_count; index++)
 			{
 				const uint32_t target = targets[index],link = WeightStreamLinkOf(stream,target);
-				if ( sent[index] >= per_half || stream->links[link].outstanding[target] >= config->depth )
+				if ( sent[index] >= per_half || (call.ready[link] & (1u << target)) == 0u || stream->links[link].outstanding[target] >= config->depth )
 					continue;
 				status = WeightStreamWrite(stream,target,send_base + (uint64_t)sent[index] * config->chunk_bytes,
 					(target == partner ? pair_landing_offset : landing_offset) + (uint64_t)send_half * half + (uint64_t)sent[index] * config->chunk_bytes,WeightStreamChunkLength(half,config->chunk_bytes,sent[index]),
@@ -593,7 +590,9 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 			}
 		}
 		while ( moved != 0u );
-		if ( block->posted_ns == 0u && block->ready_ns != 0u && WeightStreamAllSent(sent,target_count,per_half) != 0u )
+		if ( block->ready_ns == 0u && WeightStreamAllReady(&call,stream,targets,target_count) != 0u )
+			block->ready_ns = WeightStreamNowNs() - start;
+		if ( block->posted_ns == 0u && WeightStreamAllSent(sent,target_count,per_half) != 0u )
 			block->posted_ns = WeightStreamNowNs() - start;
 		status = WeightStreamPollAll(stream,&call);
 		if ( status != SPARK_STATUS_OK )

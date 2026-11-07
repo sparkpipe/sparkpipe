@@ -464,6 +464,17 @@ static SparkStatus LmPassPread(int fd, int direct_fd, uint8_t *bounce, uint64_t 
 		(void)posix_fadvise(fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
 		return status;
 	}
+	if ( ((pack_offset | bytes | (uint64_t)(uintptr_t)destination) % LM_PASS_DIRECT_ALIGN) == 0u )
+	{
+		while ( done < bytes )
+		{
+			const ssize_t part = pread(direct_fd, destination + done, (size_t)(bytes - done < LM_PASS_DIRECT_CHUNK ? bytes - done : LM_PASS_DIRECT_CHUNK), (off_t)(pack_offset + done));
+			if ( part <= 0 )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			done += (uint64_t)part;
+		}
+		return SPARK_STATUS_OK;
+	}
 	while ( done < bytes )
 	{
 		const uint64_t start = (pack_offset + done) / LM_PASS_DIRECT_ALIGN * LM_PASS_DIRECT_ALIGN, skip = pack_offset + done - start;
