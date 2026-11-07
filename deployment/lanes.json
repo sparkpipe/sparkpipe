@@ -120,7 +120,7 @@
     "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log"
    },
    "taps": {
-    "entries": "o75,o79,o83,o87,o91",
+    "entries": "o75,o79,o83,o87,o91,final",
     "rank": 15,
     "stream": "10.10.250.2:7721"
    },

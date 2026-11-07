@@ -76,6 +76,8 @@ def context_partials(absorbed, query_rope, rows, kv_rank, scale, chunk=LATENT_AT
 
 
 class K3DsparkDrafter(LatentBlockDrafter):
+    convention = "shift"
+
     def __init__(self, directory, shard, names, device, rope_attn_factor=True):
         self.device = device
         with open(Path(directory) / "config.json") as handle:

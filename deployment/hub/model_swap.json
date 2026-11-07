@@ -76,7 +76,7 @@
   },
   {
    "id": "kimi-k3.1-pro",
-   "hub_start": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-k31.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-5e654fbe9202 DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7721 DRAFTD_DRAFT_PORT=7722 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=17179869184 DRAFTD_RESTART=on-failure bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-k31-dspark",
+   "hub_start": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-k31.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-5e654fbe9202 DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7721 DRAFTD_DRAFT_PORT=7722 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=17179869184 DRAFTD_RESTART=on-failure DRAFTD_RECORD_DIR=/srv/workspace/sparkpipe/k31-taps bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-k31-dspark",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 bash hub_draftd.sh stop",
    "kv_label": "k31_stage",
    "node_memory_bytes": 105226698752,
