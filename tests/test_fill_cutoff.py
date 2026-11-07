@@ -26,9 +26,9 @@ class FillCutoff(unittest.TestCase):
         costs = json.loads(fill_cutoff.COSTS.read_text())
         lanes = json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"]
         for name, lane in lanes.items():
-            if "streamed_prefill" in lane:
+            if "fill" in lane:
                 self.assertIn(name, costs["models"], f"{name} streams without measured costs")
-                self.assertEqual(lane["streamed_prefill"]["min_tokens"], fill_cutoff.cutoff(costs["models"][name], costs["required_gain"]), name)
+                self.assertEqual(lane["fill"]["streamed_prefill"]["min_tokens"], fill_cutoff.cutoff(costs["models"][name], costs["required_gain"]), name)
 
 
 if __name__ == "__main__":

@@ -192,6 +192,9 @@ def node_files(record_id: str, directory: Path) -> dict[str, dict[str, Path]]:
         root = lane["runtime_root"].format(host=host)
         files = {f"{root}/deployment.json": directory / "deployment.json",
                  f"{root}/config/adapter.json": directory / f"adapter.{host}.json"}
+        if (directory / "deployment.fill.json").exists():
+            files[f"{root}/deployment.fill.json"] = directory / "deployment.fill.json"
+            files[f"{root}/config/adapter.fill.json"] = directory / f"adapter.fill.{host}.json"
         if lane["launcher"] == "stage_lane":
             files[f"{root}/lane.sh"] = directory / f"lane.{host}.sh"
         result[host] = files
@@ -199,7 +202,11 @@ def node_files(record_id: str, directory: Path) -> dict[str, dict[str, Path]]:
 
 
 def hub_files(record_id: str, directory: Path) -> dict[str, Path]:
-    return {f"{HUB_HOME}/{record(record_id)['model']}-kv-api/model_resident.json": directory / "model_resident.json"}
+    api = f"{HUB_HOME}/{record(record_id)['model']}-kv-api"
+    files = {f"{api}/model_resident.json": directory / "model_resident.json"}
+    if (directory / "model_resident.fill.json").exists():
+        files[f"{api}/model_resident.fill.json"] = directory / "model_resident.fill.json"
+    return files
 
 
 def remote(host: str, script: str, request: dict) -> dict | list:

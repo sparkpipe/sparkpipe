@@ -626,7 +626,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
-        taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), fill=record.get("fill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
@@ -679,6 +679,12 @@ def write_lane(args, output_dir: Path) -> None:
         (output_dir / f"adapter.{host}.json").write_text(render(adapter_config(model, args.lane, rank, args)))
     if args.record:
         (output_dir / "model_resident.json").write_text(render(hub_deployment(model, args.lane, args)))
+    if getattr(args, "fill", None):
+        filled = argparse.Namespace(**{**vars(args), "streamed_prefill": args.fill["streamed_prefill"]})
+        (output_dir / "deployment.fill.json").write_text(render(deployment(model, args.lane, filled)).replace("config/adapter.json", "config/adapter.fill.json"))
+        (output_dir / "model_resident.fill.json").write_text(render(hub_deployment(model, args.lane, filled)))
+        for rank, host in enumerate(HOSTS):
+            (output_dir / f"adapter.fill.{host}.json").write_text(render(adapter_config(model, args.lane, rank, filled)))
     if args.swap_entry:
         (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
 

@@ -17,20 +17,18 @@ import stage_lane
 
 
 class LaneStreamedPrefill(unittest.TestCase):
-    def test_a_streamed_record_renders_partner_packs_and_limits(self):
-        streamed = {"node_rows": 2048, "dense_buffers": 1, "expert_slots": 2, "min_tokens": 16384,
-                    "partner_pack": "sparkdata/k3.mxfp4.tp16/partner/k3.stage0.rank{partner:02d}.pack",
-                    "fabric_device": "rocep1s0f1", "pair_device": "roceP2p1s0f0"}
-        document = json.loads(json.dumps(stage_lane.lane_records()))
-        document["lanes"]["kimi-k3"]["streamed_prefill"] = streamed
-        stage_lane.lane_records = lambda: document
+    def test_the_fill_lane_renders_beside_the_decode_lane(self):
         with tempfile.TemporaryDirectory() as scratch:
             directory = Path(scratch) / "lane"
             lane_config.render("kimi-k3", directory)
-            limits = json.loads((directory / "model_resident.json").read_text())["runtime_limits"]
-            self.assertEqual(limits["streamed_prefill_min_tokens"], streamed["min_tokens"])
+            streamed = stage_lane.lane_records()["lanes"]["kimi-k3"]["fill"]["streamed_prefill"]
+            self.assertNotIn("streamed_prefill_min_tokens", json.loads((directory / "model_resident.json").read_text())["runtime_limits"])
+            self.assertEqual(json.loads((directory / "model_resident.fill.json").read_text())["runtime_limits"]["streamed_prefill_min_tokens"], streamed["min_tokens"])
+            self.assertIn("config/adapter.fill.json", (directory / "deployment.fill.json").read_text())
+            self.assertNotIn("config/adapter.fill.json", (directory / "deployment.json").read_text())
             for rank, host in enumerate(stage_lane.HOSTS):
-                config = json.loads((directory / f"adapter.{host}.json").read_text())["streamed_prefill"]
+                self.assertNotIn("streamed_prefill", json.loads((directory / f"adapter.{host}.json").read_text()))
+                config = json.loads((directory / f"adapter.fill.{host}.json").read_text())["streamed_prefill"]
                 self.assertEqual(config["partner_pack"], f"/home/{host}/{streamed['partner_pack'].format(partner=rank ^ 1)}")
                 self.assertEqual(config["node_rows"], streamed["node_rows"])
                 self.assertNotIn("min_tokens", config)

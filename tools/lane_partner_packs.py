@@ -19,7 +19,8 @@ def pairs(record):
     with tempfile.TemporaryDirectory() as scratch:
         directory = pathlib.Path(scratch) / "lane"
         lane_config.render(record, directory)
-        adapters = {host: json.loads((directory / f"adapter.{host}.json").read_text()) for host in stage_lane.HOSTS}
+        name = "adapter.fill" if (directory / "deployment.fill.json").exists() else "adapter"
+        adapters = {host: json.loads((directory / f"{name}.{host}.json").read_text()) for host in stage_lane.HOSTS}
     if "streamed_prefill" not in adapters[stage_lane.HOSTS[0]]:
         raise SystemExit(f"{record}: this lane record has no streamed_prefill")
     for rank, host in enumerate(stage_lane.HOSTS):

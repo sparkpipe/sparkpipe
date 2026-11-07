@@ -73,7 +73,12 @@
    "api_stop": "systemctl --user stop kv-k3-api 2>/dev/null; systemctl --user reset-failed kv-k3-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8459/health",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/kimi-k3-dflash2-lightseek-e77935fb DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/kimi-k3/model-00094-of-000096.safetensors DRAFTD_TAP_HOST=10.10.250.2 DRAFTD_TAP_PORT=7701 DRAFTD_DRAFT_PORT=7702 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-760a73b19",
-   "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd bash hub_draftd.sh stop"
+   "hub_stop": "cd /srv/workspace/sparkpipe/draftd-760a73b19 && env DRAFTD_UNIT=sparkpipe-draftd bash hub_draftd.sh stop",
+   "fill": {
+    "checkpoint_tokens": 16384,
+    "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs && if [ -L residentd.log ]; then rm -f residentd.log; elif [ -f residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && systemctl --user reset-failed sp-k3-rd8 2>/dev/null; systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=96G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lanes/lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lanes/lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_EXPERT_POOL_BYTES=8589934592 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.fill.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
+    "api_start": "systemctl --user reset-failed kv-k3-api 2>/dev/null; systemctl --user is-active -q kv-k3-api || systemd-run --user --unit=kv-k3-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k3-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.fill.json --runtime-root $HOME/k3-kv-api/runtime --port 8459 >> /srv/workspace/sparkpipe/logs/k3-kv-api.log 2>&1' >/dev/null"
+   }
   },
   {
    "id": "qwen3.8-27b",

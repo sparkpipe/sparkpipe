@@ -697,6 +697,7 @@ PYTHON_TESTS := \
 	tests/test_open_webui_github_tool.py \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
+	tests/test_model_swap_fill.py \
 	tests/test_model_swap_deactivate.py \
 	tests/test_model_swap_token.py \
 	tests/test_swap_token_shell.py \

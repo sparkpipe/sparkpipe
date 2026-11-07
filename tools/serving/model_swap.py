@@ -48,6 +48,7 @@ class Swapper:
         self.memory_margin = int(config["memory_margin_bytes"])
         self.ready_seconds = float(config.get("ready_seconds", 300))
         self.api_seconds = float(config.get("api_seconds", 120))
+        self.fill_seconds = config.get("fill_seconds", 3600)
         self.drain_seconds = float(config.get("drain_seconds", 30))
         self.drain_quiet_seconds = float(config.get("drain_quiet_seconds", 0))
         self.node_seconds = float(config.get("node_seconds", 240))
@@ -198,8 +199,9 @@ class Swapper:
         finally:
             self.draining = None
 
-    async def stop(self, model):
-        await self.drain(model)
+    async def stop(self, model, drain=True):
+        if drain:
+            await self.drain(model)
         code, text = await self.local(model["api_stop"], 60)
         if code != 0:
             raise SwapError(f"{model['id']} api stop exit {code}: {text[-300:]}")
@@ -277,6 +279,71 @@ class Swapper:
                 waiting = [self.nodes[rank] for rank, state in enumerate(states) if state != "READY"]
                 raise SwapError(f"{model['id']} ranks not ready after {self.ready_seconds:g} s: {', '.join(waiting)}")
             await asyncio.sleep(1)
+
+    async def stream_fill(self, model, tokens):
+        engine = model["health"].rsplit("/", 1)[0] + "/v1/completions"
+        body = {"prompt_token_ids": tokens, "max_tokens": 1, "temperature": 0}
+        async with self.session.post(engine, json=body, timeout=aiohttp.ClientTimeout(total=self.fill_seconds)) as response:
+            text = await response.text()
+            if response.status != 200:
+                raise SwapError(f"{model['id']} streamed fill answered {response.status}: {text[-300:]}")
+
+    async def run_fill(self, model, tokens):
+        fill_lane = {key: value for key, value in dict(model, **model["fill"]).items() if key not in ("hub_start", "hub_stop", "node_warm", "warm_with_engines")}
+        began = time.time()
+        marks = {}
+        try:
+            self.active = None
+            self.enter("stopping engines")
+            await self.stop(model)
+            self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
+            await self.start(fill_lane)
+            self.enter("streaming the prompt")
+            marks["start_s"] = round(time.time() - began, 1)
+            await self.stream_fill(fill_lane, tokens)
+            marks["fill_s"] = round(time.time() - began - marks["start_s"], 1)
+            mark = time.time()
+            self.enter("stopping the fill lane")
+            await self.stop(fill_lane, drain=False)
+            self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
+            await self.start(model)
+            marks["reload_s"] = round(time.time() - mark, 1)
+            self.active = model["id"]
+            self.state = "idle"
+        except SwapError as error:
+            self.state = "failed"
+            self.error = str(error)
+        except Exception as error:
+            self.state = "failed"
+            self.error = f"unexpected {type(error).__name__} during {self.phase}: {error}"
+        record = dict(marks, model=model["id"], tokens=len(tokens), ok=self.state == "idle", error=self.error, seconds=round(time.time() - began, 1))
+        print(json.dumps(dict(record, event="fill_done")), file=sys.stderr, flush=True)
+        self.phase = None
+        self.target = None
+        return record
+
+    async def fill(self, request):
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        model = self.models.get(body.get("model")) if isinstance(body, dict) else None
+        tokens = body.get("prompt_token_ids") if isinstance(body, dict) else None
+        if model is None or "fill" not in model or not isinstance(tokens, list) or not tokens:
+            return web.json_response({"error": "fill takes a model with a fill lane and prompt_token_ids"}, status=400)
+        if self.state == "swapping" or self.active != model["id"]:
+            return web.json_response(dict(self.status(), error=f"{model['id']} must be the idle active model"), status=409)
+        stride = model["fill"]["checkpoint_tokens"]
+        keep = (len(tokens) - 2) // stride * stride
+        if keep <= 0:
+            return web.json_response({"error": f"a prompt under {stride + 2} tokens has no checkpoint to fill to"}, status=400)
+        self.state = "swapping"
+        self.target = model["id"]
+        self.error = None
+        self.swap_started = time.time()
+        self.task = asyncio.ensure_future(self.run_fill(model, tokens[:keep]))
+        record = await self.task
+        return web.json_response(record, status=200 if record["ok"] else 502)
 
     async def swap(self, target):
         model = self.models[target]
@@ -437,13 +504,14 @@ def build(swapper, token):
             return web.json_response({"error": "unauthorized"}, status=401)
         return await handler(request)
 
-    app = web.Application(middlewares=[authorize])
+    app = web.Application(middlewares=[authorize], client_max_size=64 * 1024 * 1024)
     app.on_startup.append(swapper.startup)
     app.on_cleanup.append(swapper.cleanup)
     app.router.add_get("/status", swapper.get_status)
     app.router.add_post("/activate", swapper.activate)
     app.router.add_post("/force", swapper.force)
     app.router.add_post("/deactivate", swapper.deactivate)
+    app.router.add_post("/fill", swapper.fill)
     return app
 
 
