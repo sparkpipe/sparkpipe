@@ -232,6 +232,12 @@ int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, ui
 	memset(dims, 0, sizeof(*dims));
 	dims->tp_sharded = tp_degree > 1u ? 1u : 0u;
 	status = K3PackRankDims(pack, first_layer, layer_count, dims);
+	if ( status == SPARK_K3_DISPATCH_OK && tp_degree > 1u && dims->expert_w1_output != 0u && !K3_EXPERT_CELLS(dims) )
+	{
+		fprintf(stderr, "sparkpipe_k3: fatal: this pack splits its experts by K (w1 output %u) and a TP%u lane runs only cell-split experts; "
+			"run tools/k3_reshard_cells.py on the pack\n", dims->expert_w1_output, tp_degree);
+		status = SPARK_K3_DISPATCH_ERR_BIND;
+	}
 	if ( status == SPARK_K3_DISPATCH_OK )
 		K3ScratchWidthsFor(dims, widths);
 	delete dims;
