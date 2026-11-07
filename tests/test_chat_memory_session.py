@@ -62,11 +62,11 @@ class Frontend:
     async def memory_model_ready(self, model):
         return self.ready
 
-    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix, start=""):
         self.calls.append(messages)
         return [1, 2, 3], False
 
-    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start=""):
         self.continued.append((list(prompt_ids), list(generated_ids)))
         return [1, 2, 3, 4], False
 

@@ -2807,12 +2807,14 @@ class Frontend:
         return (isinstance(status, dict) and status.get("active") == model.id and status.get("state") == "idle"
                 and not status.get("draining") and status.get("wanted") in (None, model.id))
 
-    def memory_curator_ids(self, model, messages, tools, kwargs, suffix):
+    def memory_curator_ids(self, model, messages, tools, kwargs, suffix, start=""):
         prompt, ids = model.render(normalize_messages(messages), tools, kwargs)
         reasoning_open = model.reasoning is not None and prompt.rstrip().endswith(model.reasoning["start"].rstrip())
         if suffix and reasoning_open:
             ids = ids + model.vocabulary.encode(suffix, True)
             reasoning_open = False
+        if start and not reasoning_open:
+            ids = ids + model.vocabulary.encode(start, False)
         return ids, reasoning_open
 
     def memory_template_parts(self, model, messages, tools, kwargs, markers):
@@ -2834,7 +2836,7 @@ class Frontend:
         parts.append((ids, "".join(texts)))
         return parts if found == len(markers) else None
 
-    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix):
+    def memory_continuation_ids(self, model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start=""):
         reply, ask = "\ue000SPARKPIPE-REPLY\ue001", "\ue000SPARKPIPE-ASK\ue001"
         parts = self.memory_template_parts(model, list(messages) + [{"role": "assistant", "content": reply}, {"role": "user", "content": ask}], tools, kwargs, [reply, ask])
         if parts is None:
@@ -2849,6 +2851,8 @@ class Frontend:
         if suffix and reasoning_open:
             ids += model.vocabulary.encode(suffix, True)
             reasoning_open = False
+        if start and not reasoning_open:
+            ids += model.vocabulary.encode(start, False)
         return ids, reasoning_open
 
     def memory_count(self, model, text):
