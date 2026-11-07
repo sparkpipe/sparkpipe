@@ -10,9 +10,12 @@ against the maximum so far, are rounded to bf16 for the value product, the
 row sum adds the FP32 weights, and when a tile raises the maximum the
 accumulated values and sum are first scaled by exp(m_old - m_new). The
 output is the accumulated values times the reciprocal of the sum (a row
-whose sum is 0 keeps 0). Prefill never splits the keys. A tile that a row
-cannot see at all leaves it unchanged, so walking every tile from the last
-one back gives each row FA2's order.
+whose sum is 0 keeps 0). FA2 runs this one kernel whenever the launch fills
+the GPU (flash_api.cpp's num_splits_heuristic: batch x heads x ceil(rows /
+64) at least 0.8 x 2 x the SM count), as every gate prefill chunk does;
+smaller launches split the keys by the GPU's SM count, which has no single
+form. A tile that a row cannot see at all leaves it unchanged, so walking
+every tile from the last one back gives each row FA2's order.
 
 attend() takes masked scores (-inf where a key is not visible), the values
 and the reference's own product, sum, exp and bf16, so variants a, b and h

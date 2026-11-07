@@ -579,16 +579,21 @@ Prefill attention follows FlashAttention-2's plain forward, the form the
 user chose for the publishers' attention (2026-11-07). FA2 tiles a row's
 keys at 64 for causal head size 128 on every GPU class (kBlockN in
 `run_mha_fwd_hdim128`: sm80 and sm90 launch 128 x 64, sm86 and sm89 64 x
-64) and walks the tiles from the diagonal back to the first key, without
-splitting the keys; the BF16 rounding of each tile's weights depends on the
-running maximum at that tile, so the walk is part of the form. Metal walked
+64) and walks the tiles from the diagonal back to the first key; the BF16
+rounding of each tile's weights depends on the running maximum at that
+tile, so the walk is part of the form. FA2 runs that one unsplit kernel
+whenever the launch fills the GPU (`flash_api.cpp`'s
+`num_splits_heuristic`: batch x heads x ceil(rows / 64) at least 0.8 x 2 x
+the SM count), which every gate prefill chunk does; smaller launches split
+the keys into 128-key blocks by the GPU's SM count. Metal walked
 its 64-key tiles forward and split rows longer than 1,024 keys into
 partitions; it now walks back and runs prefill as one partition, and
 `test_metal_kernels` models the backward walk (the forward-walking kernel
 fails three of its prefill cases). The references' flash form
 (`tools/reference_flash.py`) walks the same way. Decode keeps its 128-key
-partitions: FA2's KV-cache path uses 128-key blocks and splits keys by the
-GPU's SM count, so it has no single form to follow.
+partitions: FA2's KV-cache path, like its small prefill launches, uses
+128-key blocks split by the GPU's SM count, so it has no single form to
+follow.
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
