@@ -34,6 +34,8 @@
 #define SPARK_STAGE_KV_LOCK_SITE_RESTORE 7u
 #define SPARK_STAGE_KV_LOCK_SITE_COUNT 8u
 
+#define SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD 1u
+#define SPARK_STAGE_KV_POOL_SOURCE_DEVICE 2u
 #define SPARK_STAGE_KV_POOL_TARGET_CHUNKS 1024u
 #define SPARK_STAGE_KV_POOL_TICK_NS 50000000ull
 #define SPARK_STAGE_KV_POOL_IDLE_TICKS 4u
@@ -197,6 +199,7 @@ typedef struct SparkStageKvConfiguration
 	uint32_t physical_page_count;
 	uint32_t pipeline_slot_count;
 	SparkKvShard context_shard;
+	uint32_t pool_source;
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
@@ -220,6 +223,7 @@ struct SparkStageKvBinding
 	uint32_t resident_sequence_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pipeline_slot_count;
+	uint32_t pool_source;
 	SparkKvShard context_shard;
 	SparkStageKvRegion regions[SPARK_STAGE_KV_MAX_REGIONS];
 	uint8_t *region_base[SPARK_STAGE_KV_MAX_REGIONS];

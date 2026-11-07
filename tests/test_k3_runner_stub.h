@@ -24,6 +24,8 @@ static SparkStatus test_check_status = SPARK_STATUS_OK;
 static uint32_t test_check_calls;
 static SparkDeviceQueue *test_runner_queue;
 static uint32_t test_implementation_flags;
+static SparkStatus test_runner_status = SPARK_STATUS_UNSUPPORTED;
+static uint32_t test_runner_flags;
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 {
@@ -33,10 +35,10 @@ const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner,
 	const SparkStageRunnerConfiguration *configuration, const SparkStageRunnerModelInterface *model)
 {
-	(void)runner;
 	(void)configuration;
 	(void)model;
-	return(SPARK_STATUS_UNSUPPORTED);
+	runner->flags = test_runner_flags;
+	return(test_runner_status);
 }
 
 SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner,
