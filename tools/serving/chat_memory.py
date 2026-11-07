@@ -93,6 +93,20 @@ def exchange_key(messages):
     return hashlib.sha256(blob.encode()).hexdigest()[:32]
 
 
+API_TURN = "api-"
+API_REPLY = "api-reply-"
+
+
+def turn_id(exchanges, question):
+    return exchange_key([message for exchange in exchanges for message in exchange] + [question])[:24]
+
+
+def api_turn_ids(exchanges, current):
+    turn = turn_id(exchanges, current[0])
+    parent = API_REPLY + turn_id(exchanges[:-1], exchanges[-1][0]) if exchanges else None
+    return API_TURN + turn, parent, API_REPLY + turn
+
+
 def tool_images(message):
     content = message.get("content")
     if message.get("role") != "user" or not isinstance(content, list):
@@ -1066,9 +1080,9 @@ class Memory:
         if pending is not None:
             self.store.append(user, chat, {"type": "line", "key": exchange_key(exchange), "line": pending["line"], "source": pending["source"]})
 
-    def session(self, model, headers, messages, tools, kwargs, target=None):
-        found = self.identity(headers)
-        user_message = header(headers, "X-OpenWebUI-User-Message-Id")
+    def session(self, model, headers, messages, tools, kwargs, target=None, identity=None):
+        found = self.identity(headers) if identity is None else identity
+        user_message = header(headers, "X-OpenWebUI-User-Message-Id") if identity is None else API_TURN
         if found is None or not user_message or (headers.get("X-OpenWebUI-Task") or "").strip():
             return None
         user, chat = found
@@ -1081,8 +1095,10 @@ class Memory:
         head, exchanges, current = parts
         if any("[CONVERSATION SUMMARY]" in text_of(m.get("content")) for m in head):
             return None
-        parent = header(headers, "X-OpenWebUI-User-Message-Parent-Id")
-        message = header(headers, "X-OpenWebUI-Message-Id")
+        if identity is None:
+            parent, message = header(headers, "X-OpenWebUI-User-Message-Parent-Id"), header(headers, "X-OpenWebUI-Message-Id")
+        else:
+            user_message, parent, message = api_turn_ids(exchanges, current)
         state = self.store.load(user, chat)
         self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
         if parent and exchanges:

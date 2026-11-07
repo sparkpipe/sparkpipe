@@ -1,7 +1,7 @@
 # Context memory: an optimized context rebuilt in the background
 
-Status, 2026-11-07: built for SparkPipe Chat; agent rounds and the API are
-next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
+Status, 2026-11-07: built for SparkPipe Chat and for API sessions, one
+exchange at a time; memory for the rounds inside an agent's turn is next. It extends [CHAT_MEMORY.md](CHAT_MEMORY.md) for both SparkPipe Chat and
 the API. The ledger, curator, expand and search tools, tool-output forms, stem,
 pre-warm and store described there stay.
 
@@ -118,11 +118,28 @@ output that can be fetched again leaves the raw window first.
 ## Identity
 
 - SparkPipe Chat: the signed Open WebUI user and chat id, as now.
-- The API: the account and a session id, from the `x-sparkpipe-session`
-  header, or the harness's own session id (Claude Code's session in
-  `metadata`, Codex's `prompt_cache_key`). Memory is opt-in per request with
-  `x-sparkpipe-memory: on`, and through the providers' own compaction
-  requests (Anthropic `context_management`, OpenAI `context_management` and
+- The API (built): memory is opt-in per request with
+  `X-SparkPipe-Memory: on`, on chat completions, Messages and Responses.
+  - The user is the key's scope and member. The session is the client's
+    session id: `X-Claude-Code-Session-Id`, `X-Session-Id`, the Responses
+    `prompt_cache_key` or the Messages `metadata` session. A Claude Code
+    subagent's id follows the session id, so each subagent has its own
+    memory.
+  - Turn ids come from the conversation. A turn is named by the digest of
+    the conversation up to its user message, its reply by the same digest,
+    and its parent by the previous turn's. A client that resends its history
+    therefore binds the curator's lines exactly as Open WebUI's message ids
+    do.
+  - Opting in without a session id answers 400. The harness's own
+    compaction and auxiliary requests stay raw.
+  - Replay keeps working inside a memory session. A frozen layout renders
+    the same messages on every round, so each reply's exact tokens are found
+    again and a tool round extends the previous round's prompt and reply in
+    the engine's cache. A reply that used `expand` or `search_history` is
+    not recorded for replay.
+  - `tests/test_chat_memory_api.py` checks each of these.
+- Later: the providers' own compaction requests (Anthropic
+  `context_management`, OpenAI `context_management` and
   `/v1/responses/compact`).
 
 ## Engine contract

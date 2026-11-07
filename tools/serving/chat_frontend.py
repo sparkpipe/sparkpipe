@@ -95,6 +95,7 @@ BACKGROUND_CLASSES = frozenset({"compaction", "auxiliary"})
 SUBAGENT_HEADER = "x-openai-subagent"
 BACKGROUND_SUBAGENTS = frozenset({"compact"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
+MEMORY_HEADER = "X-SparkPipe-Memory"
 AGENT_HEADERS = ("x-claude-code-agent-id", "x-parent-session-id")
 DEFAULT_ALIASES = {"claude-*": None, "gpt-*": None}
 ALIAS_TABLE_SIZE = 64
@@ -2036,6 +2037,15 @@ class Frontend:
         agent = next((clean_header(headers.get(name)) for name in AGENT_HEADERS if clean_header(headers.get(name))), None)
         return session, agent
 
+    def api_memory(self, headers, scope, member, fallback):
+        if self.memory is None or (headers.get(MEMORY_HEADER) or "").strip().lower() != "on" or harness_background(headers):
+            return None
+        session, agent = self.affinity(headers, fallback)
+        if session is None:
+            raise RequestError(400, "memory_session_required", f"{MEMORY_HEADER}: on needs a session id: an X-Claude-Code-Session-Id or X-Session-Id header, "
+                                                               "the Responses prompt_cache_key or the Messages metadata session")
+        return (scope if member is None else f"{scope}/{member}"), (session if agent is None else f"{session}/{agent}")
+
     def replay_render(self, model, messages, tools, kwargs, scope, member, contexts, pack_ids=None):
         found = []
         try:
@@ -2096,6 +2106,8 @@ class Frontend:
 
     def replay_record(self, model, plan, assistant, result, handles, turn=None):
         if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
+            return None
+        if plan.get("session") is not None and plan["session"].rounds:
             return None
         try:
             return self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
@@ -2434,7 +2446,7 @@ class Frontend:
         plan = self.plan(model, body, None)
         return plan["engine_body"], plan["parser"], plan["prompt_tokens"]
 
-    def plan(self, model, body, headers, scope=None, member=None, pack_request=None):
+    def plan(self, model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
         for field in UNSUPPORTED_FIELDS:
             if field in body and body[field] not in (None, False, 1):
                 raise RequestError(400, "unsupported_parameter", f"{field} is not supported by this server")
@@ -2492,8 +2504,8 @@ class Frontend:
                 trace.update(memory_off=True)
                 messages = self.commands.compacted(identity, messages)
         target = context_target(body) or settings.get("target")
-        if self.memory is not None and headers is not None and not memory_off:
-            session = self.memory.session(model, headers, messages, tools, kwargs, target)
+        if self.memory is not None and (headers is not None or memory_identity is not None) and not memory_off:
+            session = self.memory.session(model, headers or {}, messages, tools, kwargs, target, memory_identity)
             if session is not None:
                 messages, tools = normalize_messages(session.messages), session.tools
                 trace.update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]), memory_target=session.target)
@@ -2501,7 +2513,7 @@ class Frontend:
         if pack_request is not None and session is None:
             pack = self.choose_pack(pack_request, messages, tools, kwargs)
             messages = [context_packs.pack_message(pack[0])] + messages
-        contexts = chat_replay.context_digests(model.id, tools, kwargs, messages) if scope is not None and session is None else None
+        contexts = chat_replay.context_digests(model.id, tools, kwargs, messages) if scope is not None and (session is None or memory_identity is not None) else None
         replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts, pack and pack[1]) if contexts is not None else None
         rendered = (replay["text"], replay["ids"]) if replay is not None else (model.render(messages, tools, kwargs, pack[1]) if pack else None)
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, rendered)
@@ -2919,8 +2931,10 @@ class Frontend:
             scope = self.scope_of(public, request.headers) if public is not None else None
             model, bulk, pack = await self.resolve_model(body.get("model"), public, scope or OWN_SCOPE)
             await self.admit_model(model, public, request.headers)
-            plan = self.plan(model, body, None if public is not None else request.headers, scope, self.member_of(public, request.headers),
-                             self.pack_request(scope, pack, request.headers, public))
+            member = self.member_of(public, request.headers)
+            identity = self.api_memory(request.headers, scope, member, clean_header(body.get("prompt_cache_key"))) if public is not None else None
+            plan = self.plan(model, body, None if public is not None else request.headers, scope, member, self.pack_request(scope, pack, request.headers, public),
+                             identity)
             if "engine_body" in plan:
                 plan["engine_body"]["priority"] = self.hinted_priority(bulk, request.headers, public, body.get("metadata"))
         except RequestError as error:
@@ -2940,13 +2954,7 @@ class Frontend:
                 return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
-        if self.memory is not None:
-            self.memory.enter(model)
-        try:
-            return await self.admitted(request, model, body, plan, started, self.answer, error_response)
-        finally:
-            if self.memory is not None:
-                self.memory.leave(model)
+        return await self.admitted(request, model, body, plan, started, self.answer, error_response)
 
     def stamp(self, plan, started, headers, affinity=None):
         plan["request_id"] = "r_" + uuid.uuid4().hex[:24]
@@ -2956,6 +2964,8 @@ class Frontend:
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
         live = self.track(plan, scope)
+        if self.memory is not None:
+            self.memory.enter(model)
         try:
             try:
                 await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
@@ -2970,6 +2980,8 @@ class Frontend:
                 await model.sequences.release(scope, member)
         finally:
             self.untrack(plan)
+            if self.memory is not None:
+                self.memory.leave(model)
 
     def track(self, plan, scope):
         live = LiveRequest(scope)
@@ -3077,7 +3089,11 @@ class Frontend:
         if effort is not None:
             kwargs.update(model.reasoning_effort[effort])
         member = self.member_of(key, headers)
-        if translated.get("pack_request") is not None:
+        identity = self.api_memory(headers, scope, member, translated.get("affinity")) if not forced else None
+        session = self.memory.session(model, {}, messages, tools, kwargs, None, identity) if identity is not None else None
+        if session is not None:
+            messages, tools = normalize_messages(session.messages), session.tools
+        elif translated.get("pack_request") is not None:
             pack = self.choose_pack(translated["pack_request"], messages, tools, kwargs)
             messages = [context_packs.pack_message(pack[0])] + messages
         contexts = chat_replay.context_digests(model.id, tools, kwargs, messages)
@@ -3095,12 +3111,14 @@ class Frontend:
             text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
         body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
-        plan = self.finish_plan(model, body, messages, tools, kwargs, None, (text, ids))
+        plan = self.finish_plan(model, body, messages, tools, kwargs, session, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
+        if session is not None:
+            plan["trace"].update(memory_lined=session.layout["lined"], memory_open=len(session.layout["open"]))
         if key is not None:
             plan["public_key"] = key
             plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replayed_tokens(plan))
