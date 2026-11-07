@@ -617,6 +617,14 @@ def round_numbers(messages):
     return rounds
 
 
+CURATOR_REPLY = "{\"lines\": {"
+ROUND_REPLY = "{\"keep\": {"
+
+
+def replied(start, text):
+    return text if text.lstrip().startswith("{") else start + text
+
+
 ROUND_INSTRUCTION = ("This turn's earlier tool results are about to be shown only as a stub plus the sections you keep, so the context stays short; "
                      "the full text stays readable with expand. Reply with JSON only.")
 
@@ -1414,8 +1422,9 @@ class Memory:
         if large:
             instruction = ROUND_INSTRUCTION + keep_instruction(large, small, keep_tokens, "from the next request on")
             ids, reasoning_open = self.frontend.memory_curator_ids(model, session.messages + [{"role": "user", "content": instruction}], session.tools,
-                                                                   session.kwargs, self.profile(model).curator_suffix)
-            text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 10 * len(large), reasoning_open, "curator_render", session.trace())
+                                                                   session.kwargs, self.profile(model).curator_suffix, ROUND_REPLY)
+            text = replied(ROUND_REPLY, await self.frontend.memory_complete(model, ids, self.curator_tokens + 10 * len(large), reasoning_open, "curator_render",
+                                                                             session.trace()))
             kept = parse_keep(text, large, keep_tokens, lambda part, numbers: self.count(model, section_text(part["text"], section_spans(part["text"]), numbers)))
             for item in large:
                 self.store.append(session.user, session.chat, {"type": "form", "part": item["part"]["key"], "keep": kept.get(item["id"], []),
@@ -1463,13 +1472,15 @@ class Memory:
             instruction += commit_instruction(commit_plan, session.exchanges, state["lines"], self.working_range(model, session.target)[0])
         continued = None
         if job["prompt_ids"] and job["token_ids"] and job["attempts"] == 0:
-            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix)
+            continued = self.frontend.memory_continuation_ids(model, job["messages"], session.tools, session.kwargs, job["prompt_ids"], job["token_ids"], instruction, profile.curator_suffix,
+                                                              CURATOR_REPLY)
         if continued is not None:
             ids, reasoning_open = continued
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
-            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix)
-        text = await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open, "curator" if continued is not None else "curator_render", session.trace())
+            ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix, CURATOR_REPLY)
+        text = replied(CURATOR_REPLY, await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open,
+                                                                           "curator" if continued is not None else "curator_render", session.trace()))
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, profile.open_budget)
         if lines is None:
             return False
