@@ -42,7 +42,9 @@ nothing more:
   `wait_seconds`, and `activation_url`, which is POSTed once per cold period
   or null when an operator starts the engine) until `/health` turns ready.
   A full queue or an expired wait answers 503 with Retry-After; `/health`
-  shows the queue.
+  shows the queue. With memory on, it also counts each model's background
+  memory jobs (`memory_jobs`: `queued` and `running`), so a client can tell
+  when memory work has drained.
 
 The layer is model-neutral. A model family supplies its configuration
 (`model-families/glm52/serving/chat_frontend.json`): the model directory

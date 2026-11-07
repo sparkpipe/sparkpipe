@@ -86,17 +86,19 @@ def short(value):
     return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
-def memory_jobs(chat_log, offset, chat):
-    rows = []
+def events(chat_log, offset=0, *needles):
     with chat_log.open("rb") as handle:
         handle.seek(offset)
         for line in handle.read().decode("utf-8", "replace").splitlines():
-            if '"memory_job"' in line and short(chat) in line:
+            if "{" in line and all(needle in line for needle in needles):
                 try:
-                    rows.append(json.loads(line[line.index("{"):]))
+                    yield json.loads(line[line.index("{"):])
                 except ValueError:
                     pass
-    return rows
+
+
+def memory_jobs(chat_log, offset, chat):
+    return list(events(chat_log, offset, '"memory_job"', short(chat)))
 
 
 def stale_recomputes(api_log, start, end):

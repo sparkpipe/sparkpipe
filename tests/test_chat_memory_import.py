@@ -20,9 +20,7 @@ fixture = load("chat_harness_fixture", ROOT / "tests" / "chat_harness_fixture.py
 cm = load("chat_memory", ROOT / "tools" / "serving" / "chat_memory.py")
 qualify = load("chat_memory_qualify", ROOT / "tools" / "chat_memory_qualify.py")
 SECRET = "s" * 48
-BUDGETS = {"open_budget": 1500, "line_tokens": 48, "group_size": 16, "working_tokens": 24576, "working_context_share": 0.1875, "ledger_tokens": 12288,
-           "ledger_context_share": 0.1, "part_small_tokens": 1024, "part_cap_tokens": 12288, "keep_tokens": 4096, "target_tolerance": 0.25,
-           "target_minimum_tokens": 16384}
+BUDGETS = fixture.MEMORY_BUDGETS
 HISTORY = [{"role": "system", "content": "You are a helpful assistant."},
            {"role": "user", "content": "Read a.txt"}, {"role": "assistant", "content": "It says hello world."},
            {"role": "user", "content": "Read b.txt"}, {"role": "assistant", "content": "It says bye."},

@@ -269,7 +269,7 @@ class Commands:
         if not await self.frontend.memory_model_ready(model):
             return (f"{model.id}가 아직 로드 중이거나 다른 모델로 바뀌는 중이라 압축하지 않았습니다. 모델이 답하면 다시 시도하세요." if ko else
                     f"{model.id} is loading or the fleet is switching models, so nothing was compacted; try again once it answers.")
-        text = await self.frontend.memory_complete(model, prompt_ids, answer_tokens, reasoning_open, "compact", {"chat": identity[1][:12], "user_message": "compact"})
+        text = await self.frontend.memory_complete(model, prompt_ids, answer_tokens, reasoning_open, "compact", {"chat": self.module.short(identity[1]), "user_message": "compact"})
         choice = parse_choice(text, ids)
         if choice is None:
             return ("모델의 압축 응답이 요청한 JSON이 아니어서 아무것도 바뀌지 않았습니다. 다시 시도하세요." if ko else

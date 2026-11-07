@@ -556,6 +556,10 @@ def curator_instruction(exchanges, lines, missing, open_ids, node_tokens, open_b
     return text
 
 
+def short(value):
+    return hashlib.sha256(value.encode()).hexdigest()[:12]
+
+
 def messages_text(messages):
     parts = []
     for message in messages:
@@ -918,7 +922,7 @@ class Session:
         self.rounds = 0
 
     def trace(self):
-        return {"chat": hashlib.sha256(self.chat.encode()).hexdigest()[:12], "user_message": hashlib.sha256(self.user_message.encode()).hexdigest()[:12]}
+        return {"chat": short(self.chat), "user_message": short(self.user_message)}
 
     def claims(self, call):
         return (call.get("function") or {}).get("name") in MEMORY_TOOL_NAMES
@@ -1284,6 +1288,9 @@ class Memory:
         for key in [key for key, task in tasks.items() if task.done()]:
             del tasks[key]
         return tasks
+
+    def pending(self, model):
+        return {"queued": len(self.jobs.get(model.id) or []), "running": len(self.running(model))}
 
     async def settled(self, model, user, chat, timeout_seconds):
         deadline = time.monotonic() + timeout_seconds

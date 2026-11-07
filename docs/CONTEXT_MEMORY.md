@@ -214,3 +214,27 @@ compaction (one summary at a threshold), and this design.
 Called state of the art only with receipts: recall within 2 points of the full
 history, task success equal to the full history and above compaction, and at
 least 5 times less new prefill per agent step on long sessions.
+
+`tools/chat_memory_bench.py` runs the recall arms through the chat layer, with
+LongMemEval's own judge prompts:
+- The full arm sends the whole history with memory off. The compaction arm
+  compacts it with `/compact full` and asks on the summary. The memory arm
+  imports it and asks on its base. Each history is imported or compacted once,
+  and `setup.jsonl` in the output keeps the chats, so a later run, or one after
+  a restart, answers on the same setups.
+- Two regimes, both reported. Cold: nothing is cached, so the new prefill is
+  the whole prompt, the arm's prompt size. Warm: the arm's prefix is cached.
+  In a plain run every question brings a new history, so full and compaction
+  are cold, and only memory, whose import pre-warms its base, is warm.
+- `--isolated` prepares every history first, then takes each answer alone,
+  once the engine has no request in flight and the chat layer no memory job
+  queued or running (both from the chat layer's `/health`), and follows it with
+  a turn in the same chat, which measures every arm warm. Restarting the engine
+  with an empty snapshot store between `--setup-only` and `--isolated` makes
+  every first answer cold.
+- With the chat layer's log (`--chat-log`), the summary joins each answer's
+  time to its first visible token, its engine rounds, its new prefill over all
+  of them, the memory jobs that prepared its history (renders, pre-warms, stems
+  or the compaction) and the jobs after it. Per arm and question type it lists
+  the questions missed, and across arms which of those the full history
+  answered.
