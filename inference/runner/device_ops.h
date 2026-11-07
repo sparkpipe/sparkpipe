@@ -151,6 +151,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_DIFFERENTIAL_GATE,
 	SPARK_OPS_HC_SITE_CLAMPED,
 	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,
+	SPARK_OPS_SAMPLE_ROWS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -300,6 +301,8 @@ SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *que
 	SparkTensor y, SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,
 	SparkTensor argmax, const SparkLogprobParams *params);
+SparkStatus SparkOpsSampleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor rows, SparkTensor tokens,
+	SparkTensor chosen_logits, SparkTensor logprobs, const SparkSampleParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
 SparkStatus SparkOpsBlockQdq(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkQdqParams *params);
 SparkStatus SparkOpsHcSiteLagged(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,

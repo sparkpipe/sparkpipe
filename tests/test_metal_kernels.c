@@ -951,6 +951,242 @@ static void TestScaleAndSoftcap(void)
 	SparkDeviceFree(&logits);
 }
 
+static uint64_t SampleSplitMix(uint64_t value)
+{
+	value += 0x9e3779b97f4a7c15ull;
+	value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+	value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+	return(value ^ (value >> 31u));
+}
+
+static double SampleScore(float logit, float inverse_temperature, uint64_t seed, uint32_t position, uint32_t token)
+{
+	const uint64_t bits = SampleSplitMix(seed ^ SampleSplitMix(((uint64_t)position << 32u) | token));
+	const double uniform = ((double)(uint32_t)(bits >> 40u) + 0.5) / 16777216.0;
+	return((double)logit * inverse_temperature - log(-log(uniform)));
+}
+
+static uint32_t SampleBefore(const float *logits, uint32_t a, uint32_t b)
+{
+	return(logits[a] > logits[b] || (logits[a] == logits[b] && a < b) ? 1u : 0u);
+}
+
+static void SampleOrder(const float *logits, uint32_t vocabulary, uint32_t *order)
+{
+	uint32_t i, j;
+	for ( i = 0u; i < vocabulary; i++ )
+		order[i] = i;
+	for ( i = 1u; i < vocabulary; i++ )
+		for ( j = i; j > 0u && SampleBefore(logits,order[j],order[j - 1u]) != 0u; j-- )
+		{
+			const uint32_t swap = order[j];
+			order[j] = order[j - 1u];
+			order[j - 1u] = swap;
+		}
+}
+
+static uint32_t SampleBestIn(const float *logits, const uint8_t *allowed, uint32_t vocabulary, const SparkSampleRow *rule, double *best_score)
+{
+	uint32_t token, best = 0xffffffffu;
+	*best_score = -INFINITY;
+	for ( token = 0u; token < vocabulary; token++ )
+	{
+		const double score = SampleScore(logits[token],rule->inverse_temperature,rule->seed,rule->position,token);
+		if ( allowed[token] == 2u && score > *best_score )
+		{
+			*best_score = score;
+			best = token;
+		}
+	}
+	return(best);
+}
+
+static void TestSampleRows(void)
+{
+	enum { VOCAB = 3000u, ROWS = 12u, STRIDE = 3072u, DRAWS = 6000u, SMALL = 6u };
+	static const float small_logits[SMALL] = { 2.0f, 1.3f, 0.6f, 0.1f, -0.7f, -1.5f };
+	SparkDeviceBuffer logits_buffer, rows_buffer, tokens_buffer, chosen_buffer, logprobs_buffer;
+	float *logits = (float *)Shared(&logits_buffer,(uint64_t)DRAWS * STRIDE * sizeof(float),"sample logits");
+	SparkSampleRow *rows = (SparkSampleRow *)Shared(&rows_buffer,(uint64_t)DRAWS * sizeof(SparkSampleRow),"sample rows");
+	uint32_t *tokens = (uint32_t *)Shared(&tokens_buffer,(uint64_t)DRAWS * sizeof(uint32_t),"sample tokens");
+	float *chosen = (float *)Shared(&chosen_buffer,(uint64_t)DRAWS * sizeof(float),"sample chosen logits");
+	SparkSampleLogprob *logprobs = (SparkSampleLogprob *)Shared(&logprobs_buffer,(uint64_t)DRAWS * SPARK_SAMPLE_MAX_LOGPROBS * sizeof(SparkSampleLogprob),
+		"sample logprobs");
+	uint32_t *order = (uint32_t *)malloc(VOCAB * sizeof(uint32_t)), *first = (uint32_t *)malloc(ROWS * sizeof(uint32_t));
+	uint8_t *allowed = (uint8_t *)malloc(VOCAB);
+	uint32_t counts[SMALL];
+	SparkSampleParams params;
+	const uint64_t rng_saved = rng_state;
+	uint32_t row, token, index, bad = 0u;
+	double lse, total, chi = 0.0, best;
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		for ( token = 0u; token < VOCAB; token++ )
+			logits[(uint64_t)row * STRIDE + token] = (float)(3.0 * Normal());
+		memset(&rows[row],0,sizeof(rows[row]));
+		rows[row].head_row = row;
+		rows[row].position = 1000u + row;
+		rows[row].seed = 0x5eed0000ull + row;
+	}
+	logits[(uint64_t)STRIDE + 7u] = logits[(uint64_t)STRIDE + 3u] = 40.0f;
+	rows[1].logprobs = 6u;
+	rows[2].inverse_temperature = 1.0f;
+	rows[2].top_k = 1u;
+	for ( row = 3u; row < 6u; row++ )
+		rows[row].inverse_temperature = 1.0f;
+	rows[6].inverse_temperature = 1.0f / 0.7f;
+	rows[6].top_k = 50u;
+	rows[7].inverse_temperature = 1.0f;
+	rows[7].nucleus = 0.9f;
+	rows[8].inverse_temperature = 1.0f / 0.6f;
+	rows[8].nucleus = 0.5f;
+	rows[8].top_k = 40u;
+	rows[9].inverse_temperature = 1.0f;
+	rows[9].nucleus = 0.95f;
+	rows[9].logprobs = 21u;
+	rows[10].inverse_temperature = 2.0f;
+	rows[11].inverse_temperature = 1.0f;
+	rows[11].top_k = VOCAB;
+	memset(&params,0,sizeof(params));
+	params.rows = ROWS;
+	params.vocabulary = VOCAB;
+	params.logit_stride = STRIDE;
+	params.logit_rows = ROWS;
+	if ( !Run(SparkOpsSampleRows(&ops,queue,Whole(&logits_buffer),Whole(&rows_buffer),Whole(&tokens_buffer),Whole(&chosen_buffer),
+		Whole(&logprobs_buffer),&params),"sample rows") )
+		return;
+	memcpy(first,tokens,ROWS * sizeof(uint32_t));
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		const float *v = logits + (uint64_t)row * STRIDE;
+		const SparkSampleRow *rule = &rows[row];
+		uint32_t kept = VOCAB;
+		SampleOrder(v,VOCAB,order);
+		memset(allowed,2,VOCAB);
+		if ( rule->top_k != 0u && rule->top_k < VOCAB )
+		{
+			for ( index = rule->top_k; index < VOCAB; index++ )
+				allowed[order[index]] = 0u;
+			kept = rule->top_k;
+		}
+		if ( rule->nucleus != 0.0f )
+		{
+			double mass = 0.0, running = 0.0;
+			for ( index = 0u; index < kept; index++ )
+				mass += exp((double)(v[order[index]] - v[order[0]]) * rule->inverse_temperature);
+			for ( index = 0u; index < kept; index++ )
+			{
+				const double before = running;
+				running += exp((double)(v[order[index]] - v[order[0]]) * rule->inverse_temperature);
+				if ( before >= rule->nucleus * mass * (1.0 + 1e-6) )
+					allowed[order[index]] = 0u;
+				else if ( before >= rule->nucleus * mass * (1.0 - 1e-6) )
+					allowed[order[index]] = 1u;
+			}
+		}
+		if ( tokens[row] >= VOCAB || chosen[row] != v[tokens[row]] )
+		{
+			printf("FAIL sample row %u: token %u, chosen logit %g\n",row,tokens[row],tokens[row] < VOCAB ? chosen[row] : 0.0f);
+			bad++;
+			continue;
+		}
+		if ( rule->inverse_temperature == 0.0f || rule->top_k == 1u )
+		{
+			if ( tokens[row] != order[0] )
+			{
+				printf("FAIL sample row %u: greedy picked %u, the argmax is %u (ties to the lowest token)\n",row,tokens[row],order[0]);
+				bad++;
+			}
+		}
+		else if ( allowed[tokens[row]] == 0u )
+		{
+			printf("FAIL sample row %u: token %u lies outside top-k %u / top-p %g\n",row,tokens[row],rule->top_k,rule->nucleus);
+			bad++;
+		}
+		else
+		{
+			const uint32_t host = SampleBestIn(v,allowed,VOCAB,rule,&best);
+			const double score = SampleScore(v[tokens[row]],rule->inverse_temperature,rule->seed,rule->position,tokens[row]);
+			if ( score < best - 1e-4 * (fabs(best) + 1.0) )
+			{
+				printf("FAIL sample row %u: Gumbel-max picked %u (score %.7f), the host's best is %u (score %.7f)\n",row,tokens[row],score,host,best);
+				bad++;
+			}
+		}
+		if ( rule->logprobs != 0u )
+		{
+			total = 0.0;
+			for ( token = 0u; token < VOCAB; token++ )
+				total += exp((double)v[token] - (double)v[order[0]]);
+			lse = (double)v[order[0]] + log(total);
+			for ( index = 0u; index < rule->logprobs; index++ )
+			{
+				const SparkSampleLogprob *entry = &logprobs[(uint64_t)row * SPARK_SAMPLE_MAX_LOGPROBS + index];
+				const uint32_t expected = index == 0u ? tokens[row] : order[index - 1u];
+				if ( entry->token != expected || fabs((double)entry->logprob - ((double)v[expected] - lse)) > 1e-4 )
+				{
+					printf("FAIL sample row %u logprob %u: token %u logprob %g, expected %u and %g\n",row,index,entry->token,entry->logprob,expected,
+						(double)v[expected] - lse);
+					bad++;
+				}
+			}
+		}
+	}
+	if ( Run(SparkOpsSampleRows(&ops,queue,Whole(&logits_buffer),Whole(&rows_buffer),Whole(&tokens_buffer),Whole(&chosen_buffer),
+		Whole(&logprobs_buffer),&params),"sample rows again") && memcmp(first,tokens,ROWS * sizeof(uint32_t)) != 0 )
+	{
+		printf("FAIL sample rows: a second run with the same seeds and positions picked different tokens\n");
+		bad++;
+	}
+	for ( row = 0u; row < DRAWS; row++ )
+	{
+		memcpy(logits + (uint64_t)row * STRIDE,small_logits,sizeof(small_logits));
+		memset(&rows[row],0,sizeof(rows[row]));
+		rows[row].head_row = row;
+		rows[row].position = row;
+		rows[row].seed = 0x7u;
+		rows[row].inverse_temperature = 1.0f;
+	}
+	params.rows = params.logit_rows = DRAWS;
+	params.vocabulary = SMALL;
+	memset(counts,0,sizeof(counts));
+	if ( Run(SparkOpsSampleRows(&ops,queue,Whole(&logits_buffer),Whole(&rows_buffer),Whole(&tokens_buffer),Whole(&chosen_buffer),
+		Whole(&logprobs_buffer),&params),"sample distribution") )
+	{
+		total = 0.0;
+		for ( token = 0u; token < SMALL; token++ )
+			total += exp((double)small_logits[token]);
+		for ( row = 0u; row < DRAWS; row++ )
+			if ( tokens[row] < SMALL )
+				counts[tokens[row]]++;
+		for ( token = 0u; token < SMALL; token++ )
+		{
+			const double expected = DRAWS * exp((double)small_logits[token]) / total;
+			chi += ((double)counts[token] - expected) * ((double)counts[token] - expected) / expected;
+		}
+		if ( chi > 20.5 )
+		{
+			printf("FAIL sample distribution: chi-square %.2f over %u draws (5 degrees of freedom, p < 0.001)\n",chi,DRAWS);
+			bad++;
+		}
+	}
+	failures += (int)bad;
+	if ( receipt != 0 )
+		fprintf(receipt,"%s{\"op\":\"sample_rows\",\"shape\":\"%u rows x %u tokens; %u draws x %u tokens\",\"outside\":%u,\"chi_square\":%.4g,"
+			"\"tolerance\":\"greedy exact; Gumbel-max within 1e-4 of the host's best score in top-k and top-p; logprobs within 1e-4; chi-square < 20.5\","
+			"\"pass\":%s}",ftell(receipt) > 2 ? ",\n" : "",(uint32_t)ROWS,(uint32_t)VOCAB,(uint32_t)DRAWS,(uint32_t)SMALL,bad,chi,bad == 0u ? "true" : "false");
+	printf("%s sample_rows: greedy ties, Gumbel-max within top-k and top-p, logprobs, determinism, chi-square %.2f\n",bad == 0u ? "PASS" : "FAIL",chi);
+	rng_state = rng_saved;
+	free(order);
+	free(first);
+	free(allowed);
+	SparkDeviceFree(&logits_buffer);
+	SparkDeviceFree(&rows_buffer);
+	SparkDeviceFree(&tokens_buffer);
+	SparkDeviceFree(&chosen_buffer);
+	SparkDeviceFree(&logprobs_buffer);
+}
+
 static void TestRoutesNonFinite(void)
 {
 	enum { EXPERTS = 128u, TOP = 8u, ROWS = 3u };
@@ -5724,6 +5960,7 @@ int main(int argc, char **argv)
 	TestGatedMulRouted(24u,SPARK_GATED_SILU_CLAMP);
 	TestGatedMulRouted(24u,SPARK_GATED_SILU_GATE_LIMIT);
 	TestScaleAndSoftcap();
+	TestSampleRows();
 	TestRoutes(3u);
 	TestRoutesPinned(3u);
 	TestRoutesNonFinite();
