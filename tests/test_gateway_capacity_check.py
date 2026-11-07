@@ -2,6 +2,7 @@
 import http.server
 import importlib.util
 import json
+import math
 import tempfile
 import threading
 import time
@@ -65,7 +66,9 @@ def main():
             failures.append(f"a gateway that answers every request yields a clean measurement: exit {code}, {result}")
         if abs(result["requests_per_second"] - result["ok"] / result["seconds"]) > 0.01 * result["requests_per_second"] + 0.01:
             failures.append(f"the rate is the 2xx answers over the elapsed time: {result}")
-        if result["capacity_per_window"] != int(result["requests_per_second"] * 600) or result["window_seconds"] != 600:
+        rounding = 0.0005 * 600
+        window = result["requests_per_second"] * 600
+        if not math.floor(window - rounding) <= result["capacity_per_window"] <= math.floor(window + rounding) or result["window_seconds"] != 600:
             failures.append(f"capacity_per_window is the sustained rate over the gateway's 600 s window: {result}")
         if not (result["p99_ms"] >= result["p50_ms"] >= 5.0):
             failures.append(f"p50 and p99 latency are measured per request and ordered: {result}")
