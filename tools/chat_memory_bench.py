@@ -68,7 +68,8 @@ def longmemeval(path, per_type, seed):
         by_type[kind].append({"id": row["question_id"], "kind": kind, "judge": kind, "question": row["question"], "answer": str(row["answer"]),
                               "date": row["question_date"], "history": session_messages(sessions)})
     rng = random.Random(seed)
-    return [item for kind in sorted(by_type) for item in rng.sample(by_type[kind], min(per_type, len(by_type[kind])))]
+    chosen = [rng.sample(by_type[kind], min(per_type, len(by_type[kind]))) for kind in sorted(by_type)]
+    return [group[index] for index in range(max(map(len, chosen))) for group in chosen if index < len(group)]
 
 
 def locomo(path, conversations, per_conversation, seed):
@@ -172,6 +173,20 @@ def judge(args, item, record):
     return record
 
 
+def first_tokens(chat_log, records):
+    seen = collections.defaultdict(list)
+    for line in chat_log.read_text(errors="replace").splitlines():
+        if '"event": "chat"' in line:
+            event = json.loads(line[line.index("{"):])
+            seen[(event.get("prompt_tokens"), event.get("cached_tokens"))].append(event)
+    for record in records:
+        found = seen.get((record["prompt_tokens"], record["cached_tokens"]))
+        if found:
+            event = found.pop(0)
+            record.update(ttft_seconds=event.get("ttft_s"), decode_tokens_per_second=event.get("decode_tok_s"))
+    return records
+
+
 def summary(records):
     table = collections.defaultdict(lambda: collections.defaultdict(list))
     for record in records:
@@ -183,6 +198,9 @@ def summary(records):
                               "mean_prompt_tokens": round(sum(r["prompt_tokens"] for r in rows) / len(rows)),
                               "mean_new_prefill_tokens": round(sum(r["prompt_tokens"] - r["cached_tokens"] for r in rows) / len(rows)),
                               "mean_seconds": round(sum(r["seconds"] for r in rows) / len(rows), 2),
+                              "mean_ttft_seconds": (round(sum(r["ttft_seconds"] for r in rows if r.get("ttft_seconds") is not None)
+                                                          / max(1, sum(1 for r in rows if r.get("ttft_seconds") is not None)), 2)
+                                                    if any(r.get("ttft_seconds") is not None for r in rows) else None),
                               "setup_seconds": round(sum(r.get("import_seconds", 0.0) + r.get("compact_seconds", 0.0) for r in rows), 1)}
                        for kind, rows in kinds.items()}
     return report
@@ -195,7 +213,7 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--judge-model", help="the judge; defaults to the model under test")
     parser.add_argument("--arms", default="full,compaction,memory")
-    parser.add_argument("--per-type", type=int, default=10, help="LongMemEval questions per question type")
+    parser.add_argument("--per-type", type=int, default=10, help="LongMemEval questions per question type, taken one type at a time so a partial run stays balanced")
     parser.add_argument("--conversations", type=int, default=10, help="LoCoMo conversations")
     parser.add_argument("--per-conversation", type=int, default=20, help="LoCoMo questions per conversation")
     parser.add_argument("--seed", type=int, default=1107)
@@ -205,18 +223,29 @@ def main():
     parser.add_argument("--url", default="http://127.0.0.1:8433")
     parser.add_argument("--layer", type=Path, default=Path.home() / "sparkpipe-chat")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--chat-log", type=Path, help="the chat layer's log, to join each answer's time to first token into the summary")
+    parser.add_argument("--summarize", action="store_true", help="only summarize the records already saved in --out")
     args = parser.parse_args()
     args.judge_model = args.judge_model or args.model
+    if args.summarize:
+        records = [json.loads(line) for line in (args.out / "records.jsonl").read_text().splitlines() if line.strip()]
+        write_summary(args, first_tokens(args.chat_log, records) if args.chat_log else records)
+        return
     memory = qualify.load("chat_memory", Path(__file__).resolve().parent / "serving" / "chat_memory.py")
     config = json.loads((args.layer / "config.json").read_text())
     secret = Path(config["chat_memory"]["jwt_secret_file"]).read_text().strip()
     items = longmemeval(args.data, args.per_type, args.seed) if args.dataset == "longmemeval" else \
         locomo(args.data, args.conversations, args.per_conversation, args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
-    records, written, prepared = [], threading.Lock(), Prepared()
-    with (args.out / "records.jsonl").open("a") as handle:
+    saved = args.out / "records.jsonl"
+    records = [json.loads(line) for line in saved.read_text().splitlines() if line.strip()] if saved.exists() else []
+    done = {(record["id"], record["arm"]) for record in records}
+    written, prepared = threading.Lock(), Prepared()
+    with saved.open("a") as handle:
         def run(item):
             for arm in args.arms.split(","):
+                if (item["id"], arm) in done:
+                    continue
                 record = judge(args, item, answer(args, item, arm, secret, memory, prepared))
                 with written:
                     handle.write(json.dumps(record) + "\n")
@@ -226,6 +255,10 @@ def main():
         with ThreadPoolExecutor(args.parallel) as pool:
             for future in [pool.submit(run, item) for item in items]:
                 future.result()
+    write_summary(args, first_tokens(args.chat_log, records) if args.chat_log else records)
+
+
+def write_summary(args, records):
     report = {"dataset": args.dataset, "model": args.model, "judge": args.judge_model, "judge_prompts": LONGMEMEVAL_SOURCE, "seed": args.seed,
               "arms": summary(records)}
     (args.out / "summary.json").write_text(json.dumps(report, indent=2))
