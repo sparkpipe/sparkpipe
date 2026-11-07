@@ -26,7 +26,7 @@
    "id": "glm-5.3",
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
-   "context_tokens": 1048576,
+   "context_tokens": 786432,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -38,6 +38,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 8,
    "stop_tokens": [
     "<|endoftext|>",
     "<|user|>",
@@ -88,6 +89,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|endoftext|>",
     "<|user|>",
@@ -138,6 +140,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 8,
    "tokenizer": {
     "kind": "tiktoken",
     "file": "tiktoken.model",
@@ -216,6 +219,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 8,
    "stop_tokens": [
     "<|im_end|>",
     "<|endoftext|>"
@@ -272,6 +276,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 8,
    "renderer": {
     "kind": "segments",
     "module": "encoding_dsv41.py",
@@ -339,6 +344,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|im_end|>",
     "<|endoftext|>"
@@ -383,6 +389,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|im_end|>",
     "<|endoftext|>"
@@ -440,6 +447,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<turn|>",
     "<eos>",
@@ -492,6 +500,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<turn|>",
     "<eos>",
@@ -543,6 +552,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<｜hy_end:opensource｜>"
    ],
@@ -599,6 +609,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|role_end|>",
     "<|endoftext|>"
@@ -652,6 +663,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|eot|>",
     "<|end_of_text|>"
@@ -711,6 +723,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|role_end|>",
     "<|endoftext|>"
@@ -764,6 +777,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "〈|EOS|〉",
     "</assistant>"
@@ -816,6 +830,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|im_end|>",
     "<|endoftext|>",
@@ -872,6 +887,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|im_end|>",
     "<|endoftext|>",
@@ -928,6 +944,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 4,
    "stop_tokens": [
     "<|endofturn|>"
    ],
@@ -980,6 +997,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 8,
    "stop_tokens": [
     "<|im_end|>"
    ],
@@ -1027,6 +1045,7 @@
     "wait_seconds": 3900,
     "activation_url": "http://127.0.0.1:8440/activate"
    },
+   "sequences": 16,
    "stop_tokens": [
     "<|im:end|>"
    ],
@@ -1087,6 +1106,14 @@
    "target_tolerance": 0.25,
    "target_minimum_tokens": 16384
   }
+ },
+ "replay": {
+  "directory": "/srv/workspace/sparkpipe/replay",
+  "budget_bytes": 8589934592,
+  "directive": "/home/spec/sparkdata/working-state/directive"
+ },
+ "codex": {
+  "instructions_file": "codex_instructions.md"
  },
  "client": {
   "citation_wrapper": {

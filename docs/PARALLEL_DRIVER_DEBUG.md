@@ -262,7 +262,9 @@ common decode window; these are stdout-observed timings, not GPU kernel time.
 A job specification supplies `hosts`, `deployment`, `batch`, `reference`,
 `port_base`, `port_map`, `environment`, `timeout_seconds` (at most 840), and
 `budgets` containing `weightd_device_bytes`, `model_device_bytes`,
-`expert_pool_bytes`, `spine_bytes`. Multi-rank jobs also supply `mesh.interface`
+`spine_bytes`, `kv_reserve_bytes` and, for a partial working set only,
+`expert_pool_cap_bytes` (a full working set takes the whole pack, so a cap is
+refused there, and the retired `expert_pool_bytes` is refused everywhere). Multi-rank jobs also supply `mesh.interface`
 and `mesh.sgid_index`. All values describe the actual model and workload.
 The same specification is present in every synced participant checkout.
 

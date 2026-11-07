@@ -15,6 +15,9 @@ extern "C" {
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
+#define SPARK_MODEL_BATCH_PRIORITY_BACKGROUND 0u
+#define SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE 2u
+#define SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES 2u
 
 #define SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED 1u
 #define SPARK_MODEL_BATCH_EVENT_TOKEN 2u
@@ -124,6 +127,7 @@ typedef struct SparkModelBatchEngineView
 	uint32_t kv_logical_page_capacity;
 	uint32_t failed_status;
 	uint32_t context_limit;
+	uint32_t cache_block_token_count;
 	uint64_t submitted_request_count;
 	uint64_t completed_request_count;
 	uint64_t cancelled_request_count;

@@ -70,6 +70,7 @@ typedef struct TestHook
 static SparkStageKvBinding BINDING;
 static char DIRECTORY[64];
 static char SNAPSHOT_DIRECTORY[64];
+static char LEDGER_PATH[96];
 static SparkStageKvConfiguration CONFIGURATION;
 static uint64_t NEXT_ID = 1u;
 static TestHook HOOK = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
@@ -185,10 +186,9 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->backing_directory = DIRECTORY;
-	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 2u) * TEST_PAGE_BYTES;
+	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
-	configuration->snapshot_maximum_bytes = 1ull << 26;
-	configuration->partition_reserve_bytes = 1ull << 20;
+	configuration->ledger_path = LEDGER_PATH;
 	memset(configuration->pack_sha256,0x11,sizeof(configuration->pack_sha256));
 	memset(configuration->contract_sha256,0x22,sizeof(configuration->contract_sha256));
 	configuration->expert_codec = SPARK_WEIGHT_CODEC_FP8_E4M3;
@@ -880,14 +880,33 @@ static void TestSnapshotRefusals(void)
 	configuration.snapshot_directory = 0;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	Configure(&configuration);
-	configuration.snapshot_maximum_bytes = 0u;
+	configuration.ledger_path = 0;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
 	Configure(&configuration);
-	configuration.partition_reserve_bytes = 0u;
+	configuration.ledger_path = "relative-ledger";
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
-	Configure(&configuration);
-	configuration.snapshot_maximum_bytes = 4096u;
-	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+	{
+		char small[128],other[160];
+		SparkKvLedger ledger;
+		uint32_t slot = SPARK_KV_LEDGER_NO_SLOT;
+		const uint64_t quota = UINT64_C(1) << 30,backing = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
+		(void)snprintf(small,sizeof(small),"%s-small",LEDGER_PATH);
+		(void)snprintf(other,sizeof(other),"%s-other-lane",LEDGER_PATH);
+		(void)unlink(small);
+		assert(SparkKvLedgerOpen(&ledger,small,4096u) == SPARK_STATUS_OK);
+		Configure(&configuration);
+		configuration.ledger_path = small;
+		ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+		ledger.file->quota_bytes = quota;
+		assert(SparkKvLedgerJoin(&ledger,SPARK_KV_LEDGER_KIND_BACKING,other,&slot) == SPARK_STATUS_OK);
+		assert(SparkKvLedgerReserve(&ledger,slot,0u,quota - backing + 1u,SPARK_KV_LEDGER_NO_OLDEST,&(SparkKvLedgerVictim){0}) == SPARK_STATUS_OK);
+		ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
+		SparkKvLedgerLeave(&ledger,slot);
+		assert(OpenWith(&configuration) == SPARK_STATUS_OK);
+		Unload();
+		SparkKvLedgerClose(&ledger);
+		(void)unlink(small);
+	}
 	Configure(&configuration);
 	configuration.expert_codec = 999u;
 	ExpectRefused(&configuration,SPARK_STATUS_INVALID_ARGUMENT);
@@ -896,12 +915,24 @@ static void TestSnapshotRefusals(void)
 	ExpectRefused(&configuration,SPARK_STATUS_NOT_FOUND);
 	Configure(&CONFIGURATION);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	{
+		SparkKvLedgerUsage usage;
+		assert(SparkKvLedgerSample(&BINDING.ledger,&usage) == SPARK_STATUS_OK && usage.quota_bytes == SPARK_KV_NODE_QUOTA_BYTES);
+		assert(usage.backing_slots == 1u && usage.backing_bytes == CONFIGURATION.backing_maximum_bytes && usage.snapshot_slots >= 1u);
+	}
 	configuration = CONFIGURATION;
 	memset(&other,0,sizeof(other));
 	assert(SparkStageKvBindingInitialize(&other,&configuration) == SPARK_STATUS_BUSY);
 	SparkStageKvBindingDestroy(&other);
 	Close();
-	printf("A10 snapshot refusals: ok\n");
+	{
+		SparkKvLedgerUsage usage;
+		SparkKvLedger ledger;
+		assert(SparkKvLedgerOpen(&ledger,LEDGER_PATH,0u) == SPARK_STATUS_OK && SparkKvLedgerSample(&ledger,&usage) == SPARK_STATUS_OK);
+		assert(usage.backing_slots == 0u && usage.backing_bytes == 0u);
+		SparkKvLedgerClose(&ledger);
+	}
+	printf("A10 snapshot refusals: no ledger path, a relative one, a node quota short of one page file and a node quota another lane's backing holds refuse, and the same quota admits the lane once that backing leaves; an open binding charges its backing to the node ledger and gives it back at destroy: ok\n");
 }
 
 static void PublishStep(uint64_t sequence,uint32_t slot,uint32_t position,uint32_t context,uint8_t identity,uint8_t seed,uint8_t *bytes)
@@ -1248,15 +1279,15 @@ static void TestParkedPrefixSaves(void)
 	uint32_t chain,flags,attempt;
 	Open();
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	maximum = BINDING.snapshot_store.maximum_bytes;
-	BINDING.snapshot_store.maximum_bytes = 1u;
+	maximum = BINDING.ledger.file->quota_bytes;
+	BINDING.ledger.file->quota_bytes = 1u;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	PublishStepRetry(60u,0xa0u,0x31u,first[0]);
 	WaitSavesIdle();
 	flags = EntryFlags(0xa0u);
 	assert((flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u && (flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u && (flags & 0x80000000u) != 0u);
 	assert(pthread_mutex_lock(&BINDING.mutex) == 0);
-	BINDING.snapshot_store.maximum_bytes = maximum;
+	BINDING.ledger.file->quota_bytes = maximum;
 	assert(pthread_mutex_unlock(&BINDING.mutex) == 0);
 	for (chain=0u; chain<TEST_PHYSICAL + 1u && (EntryFlags(0xa0u) & 0x80000000u) != 0u; chain++)
 	{
@@ -1603,7 +1634,7 @@ static void TestRecurrentRefusals(void)
 	configuration.recurrent.memory_bytes = (2u * TEST_LANES + 1u) * TEST_RECURRENT_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	ConfigureRecurrent(&configuration);
-	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_PHYSICAL + 1u) * TEST_PAGE_BYTES;
+	configuration.backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 1u) * TEST_PAGE_BYTES;
 	ExpectRefused(&configuration,SPARK_STATUS_CAPACITY_EXCEEDED);
 	RemoveDirectories();
 	printf("A11 recurrent refusals: a lane size without a copy hook, a hook without a lane size, no state memory, state memory short of two checkpoints per resident lane plus two, and backing short of the page spill refuse: ok\n");
@@ -1872,6 +1903,8 @@ static void TestWeightdOwnsPool(void)
 int main(void)
 {
 	setvbuf(stdout,0,_IONBF,0);
+	(void)snprintf(LEDGER_PATH,sizeof(LEDGER_PATH),"/tmp/sparkpipe-kv-binding-ledger-%d",(int)getpid());
+	(void)unlink(LEDGER_PATH);
 	TestKvServerStart(64ull << 20);
 	TestWeightdOwnsPool();
 	TestCompletionEntryNeverWaits();
@@ -1904,5 +1937,6 @@ int main(void)
 	TestReleaseAfterFailedRun();
 	TestKvServerFinish();
 	printf("PASS stage kv binding: completion entry never waits, device copy-on-write on the copy stream with pins held until the event, copy-on-write during a park, finish and release only mark saves, async park copies, measured lock sites, FIFO quiesce and stop, copier contract\n");
+	(void)unlink(LEDGER_PATH);
 	return(0);
 }

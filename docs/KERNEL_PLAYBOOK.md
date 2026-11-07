@@ -89,8 +89,6 @@ Rules for whoever implements the contract:
   - `SparkLmValidateLinearContract` again, for NVFP4 when `input_dimension`
     is not a multiple of 16.
   - The native FP8 linear, when `input_dimension` is not a multiple of 128.
-  - `SparkLmHostLaunchBatchedLinearMloop`, when `input_dimension` is not a
-    multiple of `SPARK_LM_TILE_K`.
 
   State the alignment in the contract.
 - **Row stride has no default.** `LmFusedResidualRmsNormKernel` takes an
@@ -324,6 +322,75 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   scores once) against 105 ms, and one decode row 0.32 ms against 2.2 ms.
   Splitting P into bf16 high and low parts (the previous version) cost 19% at
   the 128-wide shape; the whole-tile path is the other 1.28x.
+**Latent shard attention (`attn_shard.cuh`, `attn_shard_prefill.cuh`)**
+
+- A rank holds a share of every sequence's latent keys and computes, for
+  every head, a partial record (max, sum, unnormalized latent output) over
+  its own keys. `LmLatentShardMergeKernel` merges the ranks' records.
+- `LmLatentShardPartialKernel` is the scalar kernel: one block per row and
+  up to four heads, with every key re-read by each block.
+- `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
+  row and 32 heads per block, 32-key tiles through a cp.async double buffer,
+  QK and PV on `mma.sync`, one BF16 copy of each tile's weights against
+  the running maximum (the publishers' flash form, Latent prefill below).
+  - Rows past the dense limit read their selected positions, either from
+    a list compacted in shared memory or from the caller's split lists
+    (`LmLatentShardSplitLaunch`). The two orders are the same, so both
+    give the same records.
+  - Each block holds one row, so a row's record does not depend on the other
+    rows: decode, verify frames and prefill waves agree bit for bit.
+  - Pair-grouped records (`record_heads`, `record_copies`) are written as
+    the scalar kernel writes them, and a row at position `0xffffffff` has no
+    keys.
+- `LmLatentShardAttendLaunch` and `LmLatentShardAttendHeadsLaunch` take the
+  scalar launchers' arguments and use the tensor-core kernel when the width,
+  the head count and the shared memory for the list fit; otherwise they run
+  the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter waves, A.X K2,
+  Ling 3's MLA layers, Hy4 and both DSV4.1 attention paths call them.
+- A head count that is a multiple of 32 fills each block. A head count below
+  32 that divides 32 (`padded_heads`) runs one row per block with its heads
+  repeated across the 32 query slots, and only the first copy writes records.
+  MMA rows are independent, so each head computes exactly what it would in a
+  full block. DSV4.1's landing path (4 heads per rank) therefore still equals
+  its records path (64 heads) bit for bit (`tests/test_dsv41_flash_landing.cu`).
+- lenovo7 (GB10), 64 heads over 16 ranks, one rank:
+
+  | Shape | Scalar | Tensor cores |
+  |---|---|---|
+  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.7 ms | 5.19 ms |
+  | Same, width 576 | 40.2 ms | 5.00 ms |
+  | 4,096 rows, 16K dense keys, width 576 | 99.0 ms | 8.73 ms |
+  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.038 / 0.056 / 0.173 ms | 0.028 / 0.027 / 0.027 ms |
+  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.2 ms | 11.8 ms |
+
+  The records are the flash form. On one rank every record lies closer to an
+  f64 model of it (each 32-key tile's weights against the running maximum
+  rounded to BF16 once, the sum unrounded) than to exact attention: 5e-5 to
+  1.8e-4 of each head's peak from the model, 1.6e-3 to 1.7e-3 from exact.
+  Against the FP32 scalar kernel the normalized outputs differ by up to 0.3%
+  of each head's peak, which is that rounding
+  (`tests/cuda/latent_shard_sparse_cuda.cu`). A low BF16 half (540dfd170)
+  once matched the scalar kernel and the fleet's earlier greedy tokens; the
+  publishers' kernels multiply one BF16 copy, the gates judge against their
+  references, and without the half the kernel is 5 to 15% faster on the
+  shapes above (the width-512 case is within run-to-run noise).
+
+**Latent prefill (`attn_prefill.cuh`, `attn_shard_prefill.cuh`)**
+
+- `LmLatentAttentionPrefillKernel` (GLM 5.3 Full and A.X K2, dense and
+  DSA-sparse) and `LmLatentShardPrefillKernel` (GLM 5.3 Flash, GLM 5.3
+  Full's scatter waves, A.X K2, Ling 3, Hy4, DSV4.1) take the
+  same form as the GQA tiled kernel and the publishers' own kernels
+  (FlashAttention-2, DeepSeek's `sparse_attn`): each 32-key tile's weights
+  `exp(s - m)` against the running maximum are rounded to BF16 once for the
+  P·V MMA, and the running sum adds the FP32 weights.
+- The latent prefill used to split each weight into BF16 high and low parts
+  and run two P·V MMAs per fragment. One part is 8 to 12% faster on GB10
+  (4 heads, 512 + 64 wide): 2,048 rows after 30,720 cached positions take
+  21.5 ms against 23.9 ms, 4,096 rows after 61,440 take 84 to 87 ms
+  against 91 to 97 ms (three runs each, `tests/cuda/attn_prefill_cuda.cu
+  --time` with longer cases). The kernel is not bound by its MMAs alone, so
+  the gain is less than the third of its MMAs that the low part was.
 
 **Projections (`project.cuh`)**
 
@@ -418,10 +485,10 @@ that disagrees on it fails to build. The consumers are:
 
   Otherwise they choose `FLAT_8`.
 - **Mloop.**
-  - `SparkLmExpertTileMloopKernel` (dense BF16) gives one CTA
-    `SPARK_LM_MLOOP_GROUP` (8) m-tiles of one n-tile. Each k-stage weight
-    strip is staged once for all of them.
-  - `SparkLmExpertTileAllMloopKernel` is the grouped-expert version.
+  - `SparkLmExpertTileAllMloopKernel` (grouped experts) gives one CTA
+    eight m-tiles (`M_GROUP`) of one n-tile. Each k-stage weight strip is
+    staged once for all of them. Its dense BF16 sibling had no callers left
+    and was removed with #927.
   - **Why (4187f90^).** At B=256 the plain grid launched about 122K mostly
     empty CTAs, at about 1.25 µs each. That was the measured collapse to
     233 GB/s.

@@ -111,7 +111,7 @@ class DirectPacks(unittest.TestCase):
 
     def link_uses(self, text: str) -> list[str]:
         uses = re.findall(r"ln -s\S*|readlink -f \S*", text)
-        return uses + [token for token in re.findall(r"[^\s\"'()=]*packs/[^\s\"'()]*", text) if "sparkdata/" not in token and not token.endswith("packs/pack.sha256")]
+        return uses + [token for token in re.findall(r"[^\s\"'()=]*packs/[^\s\"'()]*", text) if "sparkdata/" not in token and not token.endswith(("packs/pack.sha256", "packs/pack.sha256.tmp"))]
 
     def fleet(self, scratch: str):
         fake = Path(scratch) / "fleet"

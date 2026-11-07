@@ -2,10 +2,11 @@
 """Summarize a Metal stage gate run into one receipt with verdicts.
 
 Reads the outputs a model's gate script (tools/qwen38_27b_metal_gates.sh,
-tools/gemma4_26b_metal_gates.sh) writes and applies the
-gate rule against both reference variants (A and B, the same reference with
-different reduction orders), each leg measured against the other variant as
-its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
+tools/metal_gates.sh) writes and applies the
+gate rule against both reference variants (A, which sums in numpy's order,
+and H, which sums in the reversed and chunked order and carries a GPU's
+measured exp and tanh error, tools/reference_device_error.py), each leg
+measured against the other variant as its floor: the position-weighted mean KL at most KL_FACTOR times the floor's,
 the top-1 disagreement rate at most TOP1_FACTOR times the floor's, and the
 paired test (the share of positions where the candidate is further from the
 reference than the other variant is, which is one half for a candidate whose
@@ -19,8 +20,8 @@ is reported against the measured streaming-read bandwidth.
 
 A mixture-of-experts gate adds a pinned-route set (labels prefixed pinned_):
 the Metal run and the controls with every layer's experts taken from
-reference A's choice, against A and against B pinned the same way (bp), with
-A against bp as the floor. The same rule applies to it; the Metal runs
+reference A's choice, against A and against H pinned the same way (hp), with
+A against hp as the floor. The same rule applies to it; the Metal runs
 (metal, and metal_rows64 when present: the same pass prefilled in 64-row
 chunks) must pass every set present, and a required control must fail in
 every set it appears in. A batch ladder run with --exact-rows (exact/) must
@@ -31,6 +32,8 @@ or exact rows) may give one batch different tokens across its repeats.
 """
 
 import argparse
+import array
+import itertools
 import json
 import re
 import sys
@@ -45,6 +48,8 @@ REQUIRED_CONTROLS = ("control_layers", "control_rotate")
 REQUIRED_WHERE_RUN = ("control_experts",)
 PROBE_CONTROLS = ("control",)
 CANDIDATES = ("metal", "metal_rows64")
+MULTI_FLOOR_VARIANTS = ("a", "b", "h")
+BLOCK_POSITIONS = 128
 
 
 def aggregate(rows, label):
@@ -105,9 +110,76 @@ def leg(candidate, floor_top1):
             "pass": all(checks.values())}
 
 
-def verdict(against_a, against_b, floor):
-    legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_b": leg(against_b, floor["top1_agreement"])}
+def verdict(against_a, against_h, floor):
+    legs = {"reference_a": leg(against_a, floor["top1_agreement"]), "reference_h": leg(against_h, floor["top1_agreement"])}
     return {**legs, "pass": all(item["pass"] for item in legs.values())}
+
+
+def read_kl(path):
+    values = array.array("d")
+    with open(path, "rb") as handle:
+        values.frombytes(handle.read())
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+def multi_floor_variants(rows):
+    present = {row["label"] for row in rows}
+    return [variant for variant in MULTI_FLOOR_VARIANTS
+            if all(f"mf:{variant}:{other}" in present for other in MULTI_FLOOR_VARIANTS if other != variant)]
+
+
+def multi_floor_candidate(rows, out, prompts, variants, candidate):
+    legs = {}
+    for reference in variants:
+        floors = [aggregate(rows, f"mf:{reference}:{other}") for other in variants if other != reference]
+        floor_kl = sum(item["kl_mean"] for item in floors) / len(floors)
+        floor_disagreement = sum(1.0 - item["top1_agreement"] for item in floors) / len(floors)
+        measured = aggregate(rows, f"mf:{reference}:{candidate}")
+        kl_ratio = ratio(measured["kl_mean"], floor_kl)
+        top1_ratio = ratio(1.0 - measured["top1_agreement"], floor_disagreement)
+        legs[f"reference_{reference}"] = {"kl_mean": measured["kl_mean"], "floor_kl_mean": floor_kl, "kl_ratio_to_floor": kl_ratio,
+                                          "top1_agreement": measured["top1_agreement"], "top1_disagreement_ratio_to_floor": top1_ratio,
+                                          "kl_within_factor": kl_ratio <= KL_FACTOR, "top1_within_factor": top1_ratio <= TOP1_FACTOR}
+    pairs = [(reference, floor, third) for reference, floor, third in itertools.permutations(variants, 3)]
+    blocks, total, positions = [], 0.0, 0
+    for name in prompts:
+        kl = {(reference, other): read_kl(out / "compare" / "kl" / f"{name}.{reference}.{other}.f64")
+              for reference in variants for other in [*variants, candidate] if other != reference}
+        count = len(kl[(variants[0], candidate)])
+        if any(len(series) != count for series in kl.values()):
+            raise SystemExit(f"multi-floor test: the per-position KL files of prompt {name} differ in length")
+        excess = [sum((kl[(r, candidate)][i] > kl[(r, f)][i]) - (kl[(r, t)][i] > kl[(r, f)][i]) for r, f, t in pairs) / len(pairs)
+                  for i in range(count)]
+        for first in range(0, count, BLOCK_POSITIONS):
+            chunk = excess[first:first + BLOCK_POSITIONS]
+            blocks.append((sum(chunk), len(chunk)))
+        total += sum(excess)
+        positions += count
+    if len(blocks) < 2:
+        raise SystemExit(f"multi-floor test: {len(blocks)} block(s) of positions; the block standard error needs at least two")
+    mean = total / positions
+    spread = sum((value - mean * count) ** 2 for value, count in blocks)
+    error = math.sqrt(len(blocks) / (len(blocks) - 1) * spread) / positions
+    sigma = mean / error if error > 0.0 else (math.inf if mean > 0.0 else -math.inf if mean < 0.0 else 0.0)
+    paired = {"excess_share_over_variants": mean, "standard_error": error, "sigma": sigma, "blocks": len(blocks),
+              "within_sigma": sigma <= PAIRED_SIGMA, "comparisons": [f"{r} vs floor {f}, against {t}" for r, f, t in pairs]}
+    passed = all(leg["kl_within_factor"] and leg["top1_within_factor"] for leg in legs.values()) and paired["within_sigma"]
+    return {**legs, "paired": paired, "pass": passed}
+
+
+def multi_floor(rows, out, prompts):
+    variants = multi_floor_variants(rows)
+    if len(variants) < 3:
+        return None
+    present = {row["label"] for row in rows}
+    candidates = [name for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
+                  if all(f"mf:{variant}:{name}" in present for variant in variants)]
+    floors = {f"{reference}_vs_{other}": {key: aggregate(rows, f"mf:{reference}:{other}")[key] for key in ("kl_mean", "top1_agreement")}
+              for reference in variants for other in variants if other != reference}
+    return {"variants": variants, "floors": floors,
+            **{name: multi_floor_candidate(rows, out, prompts, variants, name) for name in candidates}}
 
 
 def common_prefix(first, second):
@@ -128,8 +200,8 @@ def greedy_table(out, reference_dir):
         entry[f"reference_{item['variant']}"] = item["generated"]
     for entry in table.values():
         entry["metal_matches_reference_a_tokens"] = common_prefix(entry["metal"], entry["reference_a"])
-        entry["metal_matches_reference_b_tokens"] = common_prefix(entry["metal"], entry["reference_b"])
-        entry["reference_a_matches_b_tokens"] = common_prefix(entry["reference_a"], entry["reference_b"])
+        entry["metal_matches_reference_h_tokens"] = common_prefix(entry["metal"], entry["reference_h"])
+        entry["reference_a_matches_h_tokens"] = common_prefix(entry["reference_a"], entry["reference_h"])
     return table
 
 
@@ -161,7 +233,7 @@ def speed(out):
                          "roofline": f"{streamed / 1e9:.2f} GB read per token ({weights / 1e9:.2f} GB of weights, the rest KV and recurrent state) / "
                                      f"{peak / 1e9:.1f} GB/s measured = "
                                      f"{decode_ceiling:.2f} tok/s; measured {decode:.2f} tok/s = {100.0 * decode / decode_ceiling:.1f}%"}}
-    for key in ("prefill_1024", "prefill_8192"):
+    for key in sorted((key for key in bench if key.startswith("prefill_")), key=lambda key: int(key.split("_")[1])):
         item = bench[key]
         rows = min(item["chunk_rows"], int(key.split("_")[1]))
         chunk = bench.get("streamed_bytes_per_chunk", weights)
@@ -181,10 +253,10 @@ def speed(out):
 def numerics_set(rows, prefix, out):
     labels = {row["label"] for row in rows}
     floor = aggregate(rows, prefix + "floor")
-    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_b")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
-                  if prefix + name in labels and f"{prefix}{name}_vs_b" in labels}
+    candidates = {name: (aggregate(rows, prefix + name), aggregate(rows, f"{prefix}{name}_vs_h")) for name in CANDIDATES + REQUIRED_CONTROLS + REQUIRED_WHERE_RUN + PROBE_CONTROLS
+                  if prefix + name in labels and f"{prefix}{name}_vs_h" in labels}
     result = {"floor": floor,
-              **{name: {"against_reference_a": pair[0], "against_reference_b": pair[1], "verdict": verdict(pair[0], pair[1], floor),
+              **{name: {"against_reference_a": pair[0], "against_reference_h": pair[1], "verdict": verdict(pair[0], pair[1], floor),
                         "corruption": json.loads((out / name / "control.json").read_text()) if name not in CANDIDATES else None}
                  for name, pair in candidates.items()}}
     return candidates, result
@@ -196,6 +268,7 @@ def main():
     parser.add_argument("--revision", required=True)
     parser.add_argument("--prompts", type=Path, required=True)
     parser.add_argument("--reference", type=Path, default=None, help="reference logits directory; OUT/ref by default")
+    parser.add_argument("--tp-degree", type=int, default=1)
     arguments = parser.parse_args()
     out = arguments.out
     reference_dir = arguments.reference or out / "ref"
@@ -211,6 +284,7 @@ def main():
     prompts = json.loads(arguments.prompts.read_text())
     receipt = {
         "revision": arguments.revision,
+        "tp_degree": arguments.tp_degree,
         "pack_sha256": sha.group(1) if sha else None,
         "prompts": {item["name"]: {"tokens": item["tokens"], "source": item["source"], "source_sha256": item["source_sha256"]}
                     for item in prompts["prompts"]},
@@ -225,13 +299,15 @@ def main():
                               f"{' and '.join(REQUIRED_CONTROLS)} fail"),
                      "diagnostics": diagnostics, **free},
         "greedy": greedy_table(out, reference_dir) if (reference_dir / "greedy.ref.json").exists() else None,
-        "speed": speed(out),
+        "speed": speed(out) if (out / "metal" / "bench.metal.json").exists() else None,
     }
-    receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
-    ladder_deterministic = all(row["nondeterministic"] == 0 for row in receipt["batch_ladder"]["rows"])
-    receipt["batch_ladder"]["deterministic"] = ladder_deterministic
+    ladder_deterministic = None
+    if (out / "metal" / "ladder.metal.json").exists() and receipt["speed"] is not None:
+        receipt["batch_ladder"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9)
+        ladder_deterministic = all(row["nondeterministic"] == 0 for row in receipt["batch_ladder"]["rows"])
+        receipt["batch_ladder"]["deterministic"] = ladder_deterministic
     exact_identical = None
-    if (out / "exact" / "ladder.metal.json").exists():
+    if (out / "exact" / "ladder.metal.json").exists() and receipt["speed"] is not None:
         receipt["batch_ladder_exact_rows"] = ladder_table(out, receipt["speed"]["bandwidth"]["device_private"]["median_gb_per_s"] * 1e9, "exact")
         exact_identical = all(row["sequences_identical_to_solo"] == row["batch"] and row["nondeterministic"] == 0
                               for row in receipt["batch_ladder_exact_rows"]["rows"])
@@ -244,6 +320,7 @@ def main():
                                              for item in speculation["prompts"]]
         receipt["speculation"]["exact"] = speculation["prompts_identical"] == speculation["prompt_count"]
     numerics = receipt["numerics"]
+    floors = multi_floor(rows, out, [item["name"] for item in prompts["prompts"]])
     sets = [numerics] + ([pinned] if pinned is not None else [])
     if pinned is not None:
         numerics["pinned_routes"] = pinned
@@ -252,6 +329,19 @@ def main():
         all(not item[name]["verdict"]["pass"] for name in REQUIRED_WHERE_RUN for item in sets if name in item)
     numerics["pass"] = all("metal" in item and all(item[name]["verdict"]["pass"] for name in CANDIDATES if name in item) for item in sets) and \
         numerics["controls_fail_as_required"]
+    if floors is not None:
+        floors["controls_fail_as_required"] = all(name in floors and not floors[name]["pass"] for name in REQUIRED_CONTROLS) and \
+            all(not floors[name]["pass"] for name in REQUIRED_WHERE_RUN if name in floors)
+        floors["pass"] = "metal" in floors and all(floors[name]["pass"] for name in CANDIDATES if name in floors) and \
+            floors["controls_fail_as_required"] and all(item[name]["verdict"]["pass"] for item in sets[1:] for name in CANDIDATES if name in item)
+        floors["rule"] = (f"three reference variants ({', '.join(floors['variants'])}): against each, mean KL <= {KL_FACTOR:g} x and top-1 "
+                          f"disagreement <= {TOP1_FACTOR:g} x the mean over the other variants as floors; and, for every reference, floor and "
+                          f"third variant, the share of positions where the candidate is further from the reference than the floor, less the "
+                          f"same share for the third variant, averaged over all of them, at most {PAIRED_SIGMA:g} block standard errors above "
+                          f"zero; the required controls fail")
+        numerics["multi_floor"] = floors
+        numerics["single_floor_pass"] = numerics["pass"]
+        numerics["pass"] = floors["pass"]
     (out / "RECEIPT.json").write_text(json.dumps(receipt, indent=1) + "\n")
     speculation_exact = receipt["speculation"]["exact"] if "speculation" in receipt else None
     print(json.dumps({"numerics_pass": numerics["pass"], "speculation_exact": speculation_exact, "ladder_deterministic": ladder_deterministic,
@@ -263,8 +353,14 @@ def main():
                                                                                      "pass")}
                                             for leg_name, item in pinned[name]["verdict"].items() if leg_name != "pass"}
                          for name in pinned_candidates},
-                      "decode": receipt["speed"]["decode"]["roofline"]}, indent=1))
-    return 0 if numerics["pass"] and speculation_exact is not False and ladder_deterministic and exact_identical is not False else 1
+                      "multi_floor": ({name: {"pass": floors[name]["pass"], "paired_sigma": floors[name]["paired"]["sigma"],
+                                              **{leg: [round(floors[name][leg]["kl_ratio_to_floor"], 3),
+                                                       round(floors[name][leg]["top1_disagreement_ratio_to_floor"], 3)]
+                                                 for leg in floors[name] if leg.startswith("reference_")}}
+                                       for name in floors if isinstance(floors[name], dict) and "paired" in floors[name]}
+                                      if floors is not None else None),
+                      "decode": receipt["speed"]["decode"]["roofline"] if receipt["speed"] is not None else None}, indent=1))
+    return 0 if numerics["pass"] and speculation_exact is not False and ladder_deterministic is not False and exact_identical is not False else 1
 
 if __name__ == "__main__":
     sys.exit(main())

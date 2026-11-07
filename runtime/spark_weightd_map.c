@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include <pthread.h>
 #include <cuda.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -14,7 +15,8 @@ enum
 	MAP_INFLIGHT,
 	MAP_RECORDED,
 	MAP_RETIRING,
-	MAP_LEASE_COUNT = 64
+	MAP_LEASE_COUNT = 64,
+	MAP_COMPLETION_POLL_NS = 20000
 };
 
 typedef struct SparkWeightdMapSlot
@@ -439,6 +441,37 @@ SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint
 	status = map_release_locked(map,identifier,timeout);
 	(void)pthread_mutex_unlock(&map->client_lock);
 	return(status);
+}
+
+SparkStatus SparkWeightdMapReleaseCompleted(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout)
+{
+	const struct timespec pause = {0,MAP_COMPLETION_POLL_NS};
+	SparkWeightdMapSlot *slot;
+	uint64_t started = map_now(),deadline,remaining;
+	SparkStatus status = map_context(map);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( started == 0u || timeout == 0u || timeout > (UINT64_MAX - started) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	deadline = (started + timeout);
+	slot = map_slot(map,identifier);
+	if ( slot == 0 )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	if ( slot->state != MAP_RECORDED )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (;;)
+	{
+		if ( map_remaining(deadline,&remaining) != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"MAP-RELEASE-WAIT-EXPIRED id=%llu waited_ns=%llu: the GPU work recorded for this lease did not complete; the lease stays held\n",
+			    (unsigned long long)identifier,(unsigned long long)(map_now() - started));
+			SPARK_FAIL(SPARK_STATUS_BUSY);
+		}
+		status = SparkWeightdMapRelease(map,identifier,remaining);
+		if ( status != SPARK_STATUS_BUSY || slot->state != MAP_RECORDED )
+			SPARK_RETURN(status);
+		(void)nanosleep(&pause,0);
+	}
 }
 
 static SparkStatus map_bind_chunk(SparkWeightdMap *map,uint32_t slot,uint32_t chunk,uint32_t pool_slot)

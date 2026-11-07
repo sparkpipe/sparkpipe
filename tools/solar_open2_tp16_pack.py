@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Solar Open 2 (SolarOpen2ForCausalLM) BF16 checkpoint -> sixteen TP16 named stage packs.
+"""Solar Open 2 (SolarOpen2ForCausalLM) BF16 checkpoint -> TP16 (or --tp-degree N) named stage packs.
 
-Output per rank: <out>/solar_open2.tp16.rank<NN>.pack (tools/spark_named_pack.py
+Output per rank: <out>/solar_open2.tp<N>.rank<NN>.pack (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts (experts are
 plain tensors). Pass --ranks to pack only some ranks, for example one rank per
 node.
@@ -37,12 +37,16 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ling3_tp16_pack  # noqa: E402
 from ling3_tp16_pack import EXPERTS_MAGIC, EXPERTS_VERSION, Checkpoint, PackFailure, RankPacks, pad_rows  # noqa: E402
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, assemble, source_identity  # noqa: E402
 
 TP = 16
-SHARED_ROWS = 128
 PREFIX = "solar_open2"
+
+
+def shared_rows(config):
+    return (config["moe_intermediate_size"] * config["n_shared_experts"] // TP + 63) // 64 * 64
 
 
 def gqa_layers(config):
@@ -100,7 +104,7 @@ def pack_layer(checkpoint, packs, config, layer):
     m = p + "mlp."
     experts, inter = config["n_routed_experts"], config["moe_intermediate_size"]
     shared = inter * config["n_shared_experts"]
-    expert_rows, shared_rows = inter // TP, shared // TP
+    expert_rows, rank_shared, padded = inter // TP, shared // TP, shared_rows(config)
     packs.replicated(name + "router", checkpoint.bf16(m + "gate.weight", (experts, hidden)), "bf16")
     packs.replicated(name + "expert_bias", checkpoint.f32(m + "gate.e_score_correction_bias", (experts,)), "f32")
     shared_gate = checkpoint.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
@@ -116,9 +120,9 @@ def pack_layer(checkpoint, packs, config, layer):
                 stacked = np.stack([matrix[window] for matrix in matrices])
             packs.add(rank, name + target, stacked, "bf16")
     for rank in packs.ranks:
-        window = slice(rank * shared_rows, (rank + 1) * shared_rows)
-        packs.add(rank, name + "shared_gate_up", np.concatenate((pad_rows(shared_gate[window], SHARED_ROWS), pad_rows(shared_up[window], SHARED_ROWS))), "bf16")
-        packs.add(rank, name + "shared_down", pad_rows(np.ascontiguousarray(shared_down[:, window].T), SHARED_ROWS).T, "bf16")
+        window = slice(rank * rank_shared, (rank + 1) * rank_shared)
+        packs.add(rank, name + "shared_gate_up", np.concatenate((pad_rows(shared_gate[window], padded), pad_rows(shared_up[window], padded))), "bf16")
+        packs.add(rank, name + "shared_down", pad_rows(np.ascontiguousarray(shared_down[:, window].T), padded).T, "bf16")
 
 
 def finish(packs, config, revision, contract_sha256):
@@ -129,7 +133,7 @@ def finish(packs, config, revision, contract_sha256):
         layout = {"model": PREFIX, "tp_degree": TP, "tp_rank": rank, "hidden": config["hidden_size"], "layers": config["num_hidden_layers"],
                   "vocab": config["vocab_size"], "vocab_first": rank * vocab_rows, "vocab_rows": vocab_rows,
                   "ffn_rows": 0, "experts": config["n_routed_experts"], "local_experts": local,
-                  "expert_first": 0, "expert_rows": config["moe_intermediate_size"] // TP, "top_k": config["num_experts_per_tok"], "shared_rows": SHARED_ROWS}
+                  "expert_first": 0, "expert_rows": config["moe_intermediate_size"] // TP, "top_k": config["num_experts_per_tok"], "shared_rows": shared_rows(config)}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "expert_codec": "bf16", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
@@ -155,10 +159,10 @@ def check_layout(config):
         raise PackFailure(f"this packer handles the Solar Open 2 layout (NoPE gated GQA, low-rank KDA gates with a -5 bound, one routing group, scale 1, normalized top-k); "
                           f"config differs in {wrong or 'the KDA heads, gate bound, attention bias, qk norm, routing or tied embeddings'}")
     if config["num_attention_heads"] % TP or linear["num_heads"] % TP or config["n_routed_experts"] % TP or config["vocab_size"] % TP or \
-            (config["moe_intermediate_size"] * config["n_shared_experts"]) // TP > SHARED_ROWS or \
+            (config["moe_intermediate_size"] * config["n_shared_experts"]) % TP or \
             config["moe_intermediate_size"] % TP or (config["moe_intermediate_size"] // TP) % 8 or \
             ((config["num_attention_heads"] + 2 * config["num_key_value_heads"]) * config["head_dim"]) % TP:
-        raise PackFailure("heads, experts, vocab or the shared expert do not fit the TP16 layout")
+        raise PackFailure(f"heads, experts, vocab or the shared expert do not fit the TP{TP} layout")
     period = sorted(gqa_layers(config))
     if period != list(range(0, config["num_hidden_layers"], 4)):
         raise PackFailure(f"the stage runs GQA on every fourth layer from 0; config has {period}")
@@ -170,8 +174,13 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--ranks", default=",".join(str(rank) for rank in range(TP)))
+    parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
+    parser.add_argument("--ranks")
     args = parser.parse_args()
+    global TP
+    TP = ling3_tp16_pack.TP = args.tp_degree
+    if args.ranks is None:
+        args.ranks = ",".join(str(rank) for rank in range(TP))
     ranks = sorted({int(rank) for rank in args.ranks.split(",")})
     if not ranks or ranks[0] < 0 or ranks[-1] >= TP:
         raise PackFailure(f"--ranks must name ranks in 0..{TP - 1}")

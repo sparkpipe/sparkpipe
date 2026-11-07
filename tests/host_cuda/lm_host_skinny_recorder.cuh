@@ -4,7 +4,7 @@
 #include "runtime/gemm.cuh"
 
 template<>
-int32_t LmSkinnyDense<LmBf16Format>(const void *weight, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, cudaStream_t stream)
+int32_t LmSkinnyDense<LmBf16Format>(const void *weight, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, cudaStream_t stream, uint32_t any_rows)
 {
 	LmSkinnyArguments args;
 	LmRecordedGemm record;
@@ -22,7 +22,7 @@ int32_t LmSkinnyDense<LmBf16Format>(const void *weight, const uint16_t *activati
 	args.output_dimension = output_dimension;
 	args.output_row_stride = output_row_stride != 0u ? output_row_stride : output_dimension;
 	args.output_column_offset = output_column_offset;
-	status = LmSkinnyValidate<LmBf16Format>(&args);
+	status = LmSkinnyValidate<LmBf16Format>(&args,any_rows);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	memset(&record,0,sizeof(record));

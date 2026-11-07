@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe 데이터 처리 계약</title>
+<meta name="description" content="고객의 플릿에서 처리하는 개인정보에 관한 SparkPipe 데이터 처리 계약 검토용 공개 문안. GDPR 제28조, 영국 GDPR, 개인정보 보호법.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/dpa.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/dpa-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/dpa.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(32px, 5vw, 56px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy .part h2 { font-size: clamp(28px, 3.6vw, 42px); margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--rule); }
+.policy h3 { font-size: clamp(20px, 2.2vw, 26px); margin-top: 8px; }
+.policy section { display: grid; gap: 12px; max-width: 76ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy th.num, .policy td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.policy .scroll { overflow-x: auto; max-width: 76ch; }
+.policy .scroll table { min-width: 520px; }
+.policy .notice { max-width: 76ch; border: 1px solid var(--rule); border-left: 3px solid var(--ink); padding: 14px 16px; }
+.policy .notice p { color: var(--ink); }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">약관</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="terms-ko.html">약관 목록</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index-ko.html">홈</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="언어 / Language"><a href="dpa.html?lang=en" hreflang="en" lang="en">EN</a><a href="dpa-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+<section>
+<h1>SparkPipe 데이터 처리 계약</h1>
+<p class="effective">2026년 11월 5일 판</p>
+<p>본 계약은 고객 계약의 일부이며, 공급자가 고객의 플릿에서 고객을 위하여 개인정보를 처리하는 모든 경우에 적용된다. 국문본이 우선한다(제11.4조).</p>
+</section>
+<div class="notice"><p><b>검토용으로 공개한 문안입니다.</b> 문안은 바뀔 수 있습니다. 서명본이 필요하거나 의견이 있으면 <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>로 보내 주십시오.</p></div>
+<section id="parties-and-scope">
+<h2>당사자 및 범위</h2>
+<p>본 데이터 처리 계약(이하 "<b>본 계약</b>")은 <b>효르에이아이테크 유한회사</b>(HYOR AI Tech Ltd., 사업자등록번호 641-87-03809, 이하 "<b>공급자</b>")와 SparkPipe 고객 계약(이하 "<b>고객 계약</b>")의 고객(이하 "<b>고객</b>") 사이에 체결된다. 본 계약은 고객 계약의 일부를 이루며, 공급자가 플릿, 기능 및 API를 제공하면서 고객을 위하여 개인정보를 처리하는 모든 경우(그 개인정보를 이하 "<b>고객 개인정보</b>"라 한다)에 적용된다. 고객 계약에서 정의한 용어는 본 계약에서도 같은 뜻을 가진다.</p>
+</section>
+<section id="s1">
+<h2>제1조 (역할)</h2>
+<p id="c1-1">1.1. 고객 개인정보에 관하여 고객은 개인정보처리자(컨트롤러) 또는 그 개인정보처리자를 위하여 처리하는 수탁자이고, 공급자는 고객의 수탁자(프로세서)이다. 「개인정보 보호법」(이하 "<b>개인정보 보호법</b>")상 고객은 처리를 위탁하는 자이고, 공급자는 수탁자이다.</p>
+<p id="c1-2">1.2. 계정, 결제, 예약 및 동의에 관한 정보와 공급자의 개인정보처리방침이 공급자의 것으로 정한 그 밖의 기록에 관하여는 공급자가 개인정보처리자이며, 본 계약이 아니라 공급자의 개인정보처리방침이 적용된다.</p>
+<p id="c1-3">1.3. 본 계약은 EU 일반 개인정보 보호법(이하 "<b>GDPR</b>") 제28조 제3항, 영국 GDPR의 같은 조항 및 개인정보 보호법 제26조가 요구하는 계약이다.</p>
+</section>
+<section id="s2">
+<h2>제2조 (지시 및 목적)</h2>
+<p id="c2-1">2.1. 공급자는 고객의 문서화된 지시에 따라서만 고객 개인정보를 처리한다. 고객 계약, 본 계약, 고객이 보내는 요청, 고객이 시작하거나 예약하는 기능 및 고객이 선택하는 설정이 그 지시이다. 고객은 서면으로 합리적인 추가 지시를 할 수 있다.</p>
+<p id="c2-2">2.2. 공급자는 고객 개인정보를 고객에게 서비스하는 것 외의 목적으로 이용하지 아니한다. 공급자는 이를 모델 학습에 이용하거나, 판매하거나, 다른 고객의 데이터와 결합하거나, 공급자 자신의 목적으로 처리하지 아니한다.</p>
+<p id="c2-3">2.3. 공급자는 어떤 지시가 개인정보 보호 법령에 위반된다고 판단하면 고객에게 알린다. 법령이 공급자에게 다르게 처리하도록 요구하는 경우, 그 법령이 금지하지 않는 한 처리 전에 고객에게 알린다.</p>
+<p id="c2-4">2.4. 처리의 세부 사항은 다음과 같다.</p>
+<div class="scroll"><table>
+<tr><th>항목</th><th>내용</th></tr>
+<tr><td>목적 및 성격</td><td>고객이 보유한 플릿의 모델에 대한 고객의 요청 처리, 고객의 작업 상태 유지, 고객이 시작하거나 예약한 기능의 실행</td></tr>
+<tr><td>정보주체</td><td>고객의 요청, 파일 및 기능과 관련된 사람으로서 고객이 정하는 자</td></tr>
+<tr><td>개인정보</td><td>고객이 보내거나 저장하는 개인정보. 민감정보는 고객이 보내는 경우에만 처리하며 그 책임은 고객에게 있다</td></tr>
+<tr><td>기간</td><td>고객이 플릿을 보유하는 동안, 제9조에 따른 삭제 시까지</td></tr>
+<tr><td>장소</td><td>공급자가 한국에서 운영하는 플릿과 서버(한국에서 임차한 서버를 포함한다)에서만</td></tr>
+</table></div>
+</section>
+<section id="s3">
+<h2>제3조 (비밀유지 및 접근)</h2>
+<p id="c3-1">3.1. SparkPipe를 운영하는 사람만 고객 개인정보에 접근할 수 있다. 그들은 모두 비밀유지 의무를 지며, 서비스 운영, 지원, 보안 유지 또는 법적 의무 이행을 위하여서만 접근한다.</p>
+</section>
+<section id="s4">
+<h2>제4조 (안전성 확보 조치)</h2>
+<p id="c4-1">4.1. 공급자는 제12조의 기술적·관리적 조치를 취하고, 고객 개인정보를 처리하는 동안 적어도 그 수준을 유지한다.</p>
+<p id="c4-2">4.2. 고객은 자신의 시스템과 API 키의 보안, 보내기로 선택한 데이터, 그리고 자신의 사본 보관에 책임을 진다. 공급자는 작업 상태를 백업하지 아니한다(고객 계약 제6.3조).</p>
+</section>
+<section id="s5">
+<h2>제5조 (재위탁)</h2>
+<p id="c5-1">5.1. 고객은 아래의 재수탁자를 승인한다. 공급자는 그 밖의 재수탁자에게 고객 개인정보의 처리를 맡기지 아니한다.</p>
+<div class="scroll"><table>
+<tr><th>재수탁자</th><th>업무</th><th>장소</th></tr>
+<tr><td>KCInfra Inc.</td><td>공급자가 임차하여 운영하는 서버의 호스팅. 이 서버는 HTTPS를 종료하고 암호화된 터널로 플릿에 트래픽을 전달하며, 요청이나 응답을 저장하지 않는다</td><td>대한민국 서울</td></tr>
+</table></div>
+<p id="c5-2">5.2. 공급자는 재수탁자를 추가하거나 교체하기 전에 고객에게 이메일로 알리고 본 계약을 갱신한다. 고객은 14일 이내에 합리적인 개인정보 보호상의 이유로 이의를 제기할 수 있다. 공급자가 그 이의를 해소할 수 없으면, 고객은 그 변경의 영향을 받는 예약을 취소할 수 있으며, 그 예약에 쓴 HC는 고객의 계정으로 반환된다.</p>
+<p id="c5-3">5.3. 공급자는 각 재수탁자에게 서면으로 본 계약보다 보호 수준이 낮지 않은 개인정보 보호 의무를 부과하며, 재수탁자의 이행에 대하여 고객에게 책임을 진다.</p>
+</section>
+<section id="s6">
+<h2>제6조 (국외 이전)</h2>
+<p id="c6-1">6.1. 공급자는 고객 개인정보를 한국에서만 처리하며 국외로 이전하지 아니한다. 다만, 고객이 지정한 호스트와의 전송으로서 고객이 스스로 요청한 것은 예외로 한다(고객 계약 제6.5조).</p>
+<p id="c6-2">6.2. 유럽연합 집행위원회와 영국은 각각 한국이 적정한 보호 수준을 갖추었다고 인정하였으므로, EU, EEA 및 영국의 개인정보는 다른 이전 보호 조치 없이 플릿으로 올 수 있다. 어느 한 결정이 더 이상 적용되지 않게 되면, 당사자 사이에는 유럽연합 집행위원회의 표준계약조항(경우에 따라 개인정보처리자-수탁자 또는 수탁자-재수탁자 모듈) 또는 이에 대한 영국 부속서가 적용되며, 공급자는 요청에 따라 이에 서명한다.</p>
+</section>
+<section id="s7">
+<h2>제7조 (정보주체의 요청)</h2>
+<p id="c7-1">7.1. 고객은 자신이 보유한 플릿의 데이터를 통제하며, 언제든 작업 상태를 내보내거나 삭제할 수 있다. 공급자는 정보주체가 권리를 행사하는 경우 고객이 이에 응할 수 있도록, 적절한 기술적·관리적 조치로 가능한 범위에서 고객을 돕는다.</p>
+<p id="c7-2">7.2. 정보주체가 고객 개인정보에 관하여 공급자에게 연락하면, 공급자는 그 요청을 고객에게 전달하며, 고객이 요청하거나 법령이 요구하지 않는 한 직접 답하지 아니한다.</p>
+</section>
+<section id="s8">
+<h2>제8조 (개인정보 유출 등)</h2>
+<p id="c8-1">8.1. 공급자는 고객 개인정보에 영향을 미치는 개인정보 유출 등을 알게 된 때부터 지체 없이, 늦어도 48시간 이내에 고객에게 알린다. 공급자는 발생한 사실, 알고 있는 경우 관련된 개인정보의 항목과 대략적인 규모, 예상되는 결과, 이미 취하였거나 취할 조치를 알리고, 새로 알게 되는 정보를 추가로 알린다.</p>
+<p id="c8-2">8.2. 공급자는 처리의 성격과 공급자가 가진 정보를 고려하여, 고객이 감독기관과 정보주체에게 통지할 의무 및 개인정보 영향평가나 사전 협의에 관한 의무를 이행하도록 돕는다.</p>
+</section>
+<section id="s9">
+<h2>제9조 (삭제 및 반환)</h2>
+<p id="c9-1">9.1. 고객은 플릿을 보유하는 동안 언제든 작업 상태를 내보낼 수 있다(고객 계약 제7.5조).</p>
+<p id="c9-2">9.2. 작업 상태는 다른 고객의 그 플릿 예약이 시작될 때, 고객이 그 플릿에서 보유한 마지막 시간이 끝난 후 24시간이 지난 때, 또는 고객이 요청하면 그보다 일찍 삭제된다(고객 계약 제6.2조). 공급자는 플릿 밖에 사본을 두지 않으며 백업하지 아니한다.</p>
+<p id="c9-3">9.3. 공급자는 작업 상태 외에, 요청별 운영 기록으로서 모델, 토큰 수, 소요 시간과 요청, 세션 및 키의 식별자를 1년간 보관한다. 이 기록에는 프롬프트나 응답의 텍스트도, 토큰 번호도 들어 있지 아니하다. 고객은 서비스의 운영과 측정을 위하여 이 기록을 보관하도록 공급자에게 지시한다. 고객이 서면으로 요청하면, 공급자는 30일 이내에 고객의 요청에 관한 기록을 삭제한다.</p>
+</section>
+<section id="s10">
+<h2>제10조 (준수의 입증 및 감사)</h2>
+<p id="c10-1">10.1. 공급자는 본 계약의 준수를 입증하는 데 필요한 정보, 즉 본 계약, 공급자의 보안 페이지와 개인정보처리방침, 플릿을 서비스하는 엔진의 소스를 제공한다. 공급자는 고객의 합리적인 서면 질의에 답한다.</p>
+<p id="c10-2">10.2. 고객 또는 비밀유지 의무를 지는 독립된 감사인은 30일 전 서면 통지로 연 1회 공급자의 준수 여부를 감사할 수 있으며, 고객 개인정보에 영향을 미치는 개인정보 유출 등이 있은 후나 감독기관이 요구하는 경우에도 감사할 수 있다. 감사는 한국의 업무 시간에 고객의 비용으로 하며, 다른 고객의 데이터나 다른 고객이 보유한 플릿은 감사 대상에 포함되지 아니한다.</p>
+</section>
+<section id="s11">
+<h2>제11조 (책임, 우선순위, 준거법 및 언어)</h2>
+<p id="c11-1">11.1. 본 계약에 따른 책임은 고객 계약 제8조의 한도를 따른다. 다만, 개인정보 보호 법령이 그 한도를 허용하지 않는 경우에는 그러하지 아니하다.</p>
+<p id="c11-2">11.2. 고객 개인정보의 처리에 관하여 본 계약과 고객 계약이 충돌하면 본 계약이 우선한다.</p>
+<p id="c11-3">11.3. 본 계약은 대한민국 법에 따르며, 분쟁은 고객 계약 제12조에 따라 해결한다. 이는 GDPR 또는 영국 GDPR에 따른 정보주체의 권리를 제한하지 아니한다.</p>
+<p id="c11-4">11.4. 본 계약은 국문과 영문으로 공개되며, 국문본이 우선한다.</p>
+</section>
+<section id="s12">
+<h2>제12조 (안전성 확보 조치의 내용)</h2>
+<p id="c12-1">12.1. <b>격리.</b> 고객이 보유한 플릿은 그 고객의 요청만 처리한다. 각 고객의 작업 상태는 다른 고객과 격리되며 그것을 보유한 플릿에 남는다.</p>
+<p id="c12-2">12.2. <b>인계.</b> 고객이 바뀌면 작업 상태를 삭제하고, 다른 고객의 플릿 예약이 시작되기 전에 그 플릿의 소프트웨어를 공급자의 이미지로 복원한다. 기능의 코드를 실행하는 샌드박스 호스트도 고객이 바뀔 때마다 초기화한다.</p>
+<p id="c12-3">12.3. <b>샌드박스.</b> 고객의 코드를 빌드하거나 실행하는 기능은 플릿에 연결된 샌드박스 호스트에서, 실행마다 새 가상 머신으로, 고객이 허용하지 않는 한 네트워크 접근 없이 실행된다.</p>
+<p id="c12-4">12.4. <b>전송 구간 암호화.</b> 공급자의 공개 엔드포인트로의 모든 트래픽은 HTTPS를 사용하며, 서버 사이의 트래픽은 암호화된 터널을 지난다.</p>
+<p id="c12-5">12.5. <b>키와 자격 증명.</b> API 키는 해시로만 저장하며, 범위, 플릿, 만료 및 IP 주소로 제한할 수 있고 언제든 폐기할 수 있다. 다른 서비스의 자격 증명은 그것을 담은 요청이 실행되는 동안에만 메모리에 두며, 저장하거나 기록하거나 표시하지 아니한다.</p>
+<p id="c12-6">12.6. <b>접근 통제.</b> SparkPipe를 운영하는 사람만 각자의 개인 키로 공급자의 시스템에 접근할 수 있다. 서버는 로그인에 거듭 실패한 주소를 차단하는 방화벽 뒤에 있다. 공급자는 접근 기록을 보관하고, 사고가 있으면 검토한다.</p>
+<p id="c12-7">12.7. <b>물리적 보안.</b> 플릿은 공급자가 관리하는 한국의 시설에 있으며, 공개 서버는 서울의 데이터센터에 있다.</p>
+<p id="c12-8">12.8. <b>복원력.</b> 각 노드의 작업 상태는 짝 노드에 미러링되므로, 노드 하나가 고장 나도 어느 사본도 잃지 않는다.</p>
+<p id="c12-9">12.9. <b>투명성.</b> 플릿을 서비스하는 엔진의 소스가 공개되어 있으므로, 고객은 무엇이 자신의 데이터를 처리하는지 직접 읽을 수 있다.</p>
+</section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="terms-ko.html">약관 목록</a><a href="privacy-ko.html">개인정보처리방침</a><a href="index-ko.html">홈</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>
