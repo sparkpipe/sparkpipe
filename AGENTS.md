@@ -26,9 +26,13 @@
 
 ## Workflow
 
-- Claude is the lead developer. The user merges pull requests by hand, after
-  Claude reports a PR ready. A PR may stack on another open PR; say so in
-  its description.
+- Claude is the lead developer. Claude reports a PR ready once it works, then
+  merges it after the user gives permission. A PR may stack on another open PR;
+  say so in its description.
+- Copy files between machines with `sparkcp SRC... DST`, never scp or rsync by
+  hand: `sparkcp spark3:packs/a.sp lenovo7:packs/`. It runs from the Mac, the
+  hub or any node and picks the fastest path; see
+  [`docs/FLEET_COPY.md`](docs/FLEET_COPY.md).
 - Fleet host roles (the hub, the build host, the Sparks), releases and
   operations are in [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
   Read it before touching a fleet host. Deploy only by publishing a release

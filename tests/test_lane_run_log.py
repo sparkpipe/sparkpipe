@@ -26,17 +26,34 @@ class LaneRunLog(unittest.TestCase):
             (Path(directory) / "residentd.log").write_text("older launcher\n")
             first = self.prelude(directory, RUN_ID)
             self.assertEqual(first.returncode, 0, first.stderr)
-            self.assertEqual(os.readlink(Path(directory) / "residentd.log"), f"logs/residentd-{RUN_ID}.log")
+            self.assertFalse(os.path.lexists(Path(directory) / "residentd.log"))
             self.assertEqual((Path(directory) / f"logs/residentd-before-{RUN_ID}.log").read_text(), "older launcher\n")
             (Path(directory) / f"logs/residentd-{RUN_ID}.log").write_text("first run\n")
             again = self.prelude(directory, RUN_ID)
             self.assertEqual(again.returncode, 2)
             self.assertIn("refusing to overwrite", again.stderr)
             self.assertEqual((Path(directory) / f"logs/residentd-{RUN_ID}.log").read_text(), "first run\n")
+            (Path(directory) / "residentd.log").symlink_to(f"logs/residentd-{RUN_ID}.log")
             second = self.prelude(directory, "r20261004b")
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(os.readlink(Path(directory) / "residentd.log"), "logs/residentd-r20261004b.log")
+            self.assertFalse(os.path.lexists(Path(directory) / "residentd.log"))
             self.assertEqual((Path(directory) / f"logs/residentd-{RUN_ID}.log").read_text(), "first run\n")
+            self.assertEqual(sorted(path.name for path in Path(directory).rglob("*") if path.is_symlink()), [])
+            os.utime(Path(directory) / f"logs/residentd-{RUN_ID}.log", (1, 1))
+            latest = subprocess.run(["bash", "-c", f'. "{ROOT}/tools/lane_run_log.sh"; eval "tail -1 $(lane_latest_log "{directory}")"'], capture_output=True, text=True)
+            self.assertEqual(latest.stdout, "started\n", latest.stderr)
+
+    def test_status_tails_the_newest_run_log(self):
+        for tool, extra in (("k3_lane.sh", {}), ("stage_lane.sh", {"STAGE_RECORD": "glm-5.3"})):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as directory:
+                result, calls = self.lane(directory, tool, ["status"], extra)
+                statuses = [call for call in calls if call.startswith("ssh ") and "tail -1" in call]
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(statuses), 16)
+                for call in statuses:
+                    self.assertIn('tail -1 "$(ls -t ', call)
+                    self.assertIn('/root/logs/residentd-*.log 2>/dev/null | head -1)"', call)
+                    self.assertNotIn("/residentd.log", call)
 
     def lane(self, directory, tool, command, extra):
         fake = Path(directory) / "fake"
@@ -47,10 +64,11 @@ class LaneRunLog(unittest.TestCase):
                 (fake / name).write_text(f'#!/bin/sh\nmkdir -p "{log}"\nline=\'{name}\'\nfor a in "$@"; do line="$line [$a]"; done\nprintf \'%s\\n\' "$line" > "{log}/$$"\ncase "$line" in *"tail -1"*) echo "model_residentd ready" ;; *"echo \\$n"*) echo 0 ;; *"[$FAKE_REFUSING_HOST]"*"--deployment"*) exit 2 ;; esac\n')
                 (fake / name).chmod(0o755)
         shutil.rmtree(log, ignore_errors=True)
-        settings = {key: value for key, value in TOOLS[tool].items() if key not in ("RUN", "FIRMWARE", "ARGS")}
-        settings[TOOLS[tool]["FIRMWARE"]] = directory
+        spec = TOOLS.get(tool, {"RUN": "STAGE_RUN_ID", "FIRMWARE": "STAGE_FIRMWARE"})
+        settings = {key: value for key, value in spec.items() if key not in ("RUN", "FIRMWARE", "ARGS")}
+        settings[spec["FIRMWARE"]] = directory
         environment = {"PATH": f"{fake}:{Path(sys.executable).parent}:/usr/bin:/bin", "HOME": directory, "TMPDIR": directory, **settings, **extra}
-        result = subprocess.run(["bash", str(ROOT / "tools" / tool), *TOOLS[tool].get("ARGS", []), *command], capture_output=True, text=True, env=environment)
+        result = subprocess.run(["bash", str(ROOT / "tools" / tool), *spec.get("ARGS", []), *command], capture_output=True, text=True, env=environment)
         calls = [line for call in sorted(log.glob("*")) for line in call.read_text().splitlines()] if log.exists() else []
         return result, calls
 
@@ -63,7 +81,7 @@ class LaneRunLog(unittest.TestCase):
                 self.assertEqual(len(starts), 16)
                 for call in starts:
                     self.assertIn(f"> logs/residentd-{RUN_ID}.log", call)
-                    self.assertIn(f"ln -sfn logs/residentd-{RUN_ID}.log residentd.log", call)
+                    self.assertNotRegex(call, r"ln -s\S* \S+ residentd\.log")
                     self.assertIn("refusing to overwrite", call)
                     self.assertNotIn("> residentd.log", call)
                 result, calls = self.lane(directory, tool, ["start"], {spec["RUN"]: RUN_ID, "FAKE_REFUSING_HOST": "sparkb"})

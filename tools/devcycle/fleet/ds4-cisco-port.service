@@ -1,0 +1,12 @@
+[Unit]
+Description=DS4 Cisco fabric port on a node outside the 16-rank fleet
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ds4-cisco-port-apply
+RemainAfterExit=yes
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=30
