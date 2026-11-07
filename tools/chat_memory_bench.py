@@ -183,8 +183,14 @@ def first_tokens(chat_log, records):
         found = seen.get((record["prompt_tokens"], record["cached_tokens"]))
         if found:
             event = found.pop(0)
-            record.update(ttft_seconds=event.get("ttft_s"), decode_tokens_per_second=event.get("decode_tok_s"))
+            record.update(ttft_seconds=event.get("ttft_s"), decode_tokens_per_second=event.get("decode_tok_s"),
+                          engine_rounds=event.get("engine_rounds", 1), new_prefill_tokens=event.get("engine_prefill_tokens"))
     return records
+
+
+def new_prefill(record):
+    joined = record.get("new_prefill_tokens")
+    return record["prompt_tokens"] - record["cached_tokens"] if joined is None else joined
 
 
 def summary(records):
@@ -196,7 +202,8 @@ def summary(records):
     for arm, kinds in table.items():
         report[arm] = {kind: {"questions": len(rows), "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 4),
                               "mean_prompt_tokens": round(sum(r["prompt_tokens"] for r in rows) / len(rows)),
-                              "mean_new_prefill_tokens": round(sum(r["prompt_tokens"] - r["cached_tokens"] for r in rows) / len(rows)),
+                              "mean_new_prefill_tokens": round(sum(new_prefill(r) for r in rows) / len(rows)),
+                              "answers_with_memory_rounds": sum(1 for r in rows if (r.get("engine_rounds") or 1) > 1),
                               "mean_seconds": round(sum(r["seconds"] for r in rows) / len(rows), 2),
                               "mean_ttft_seconds": (round(sum(r["ttft_seconds"] for r in rows if r.get("ttft_seconds") is not None)
                                                           / max(1, sum(1 for r in rows if r.get("ttft_seconds") is not None)), 2)
