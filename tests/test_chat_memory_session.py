@@ -58,6 +58,7 @@ class Frontend:
         self.continued = []
         self.block = None
         self.block_kinds = None
+        self.fail_kinds = ()
 
     async def memory_model_ready(self, model):
         return self.ready
@@ -81,6 +82,8 @@ class Frontend:
         assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
         if self.block is not None and (self.block_kinds is None or kind in self.block_kinds):
             await self.block.wait()
+        if kind in self.fail_kinds:
+            raise RuntimeError(f"the engine refused a {kind} request")
         if max_tokens == 1:
             return ""
         return self.replies.pop(0) if self.replies else "not json"
@@ -557,6 +560,11 @@ async def run():
         assert prewarmed[:-1] == later.messages[:len(prewarmed) - 1] and prewarmed[-1]["content"] == cm.SENTINEL, \
             "the pre-warm renders the next request's layout up to its last tool result"
         assert later.layout["lined"] == first.layout["lined"], "the turn's exchange layout stays frozen while its rounds fold"
+        frontend.fail_kinds = ("prewarm",)
+        failing = agentic.session(agent, headers("ag2", "a1", "ag2a", chat="chat-failing"), turn_with(6), [], {})
+        await settle(agentic, agent)
+        frontend.fail_kinds = ()
+        assert failing.collapse == 0 and not agentic.store.load("user-1", "chat-failing")["round_bases"], "a round build that fails publishes nothing and is not retried in a loop"
 
 
 asyncio.run(run())
