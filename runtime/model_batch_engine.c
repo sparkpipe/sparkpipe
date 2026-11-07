@@ -130,6 +130,7 @@ typedef struct SparkModelBatchRequestState
 	uint64_t trace_completed_ns;
 	uint32_t model_backoff_until;
 	uint32_t model_backoff_tokens;
+	uint32_t model_failure_tokens;
 	SparkSpeculationLookupIndex lookup;
 	SparkRowSampling sampling;
 	SparkModelBatchRequestHandle handle;
@@ -1396,19 +1397,25 @@ static uint32_t SparkModelBatchChainCheckpoint(const SparkModelBatchEngine *engi
 	return(request->state != SPARK_MODEL_BATCH_REQUEST_READY_DECODE || after / engine->cache_block_token_count > before / engine->cache_block_token_count ? 1u : 0u);
 }
 
-static void SparkModelBatchModelBackoffFrom(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request, uint32_t first)
+static void SparkModelBatchModelBackoff(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
 {
-	if ( request->model_backoff_tokens < first )
-		request->model_backoff_tokens = first;
+	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS )
+		request->model_backoff_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS;
 	request->model_backoff_until = request->generated_token_count + request->model_backoff_tokens;
 	if ( request->model_backoff_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
 		request->model_backoff_tokens *= 2u;
 	engine->model_draft_backoffs++;
 }
 
-static void SparkModelBatchModelBackoff(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
+static void SparkModelBatchModelDraftFailed(SparkModelBatchEngine *engine, SparkModelBatchRequestState *request)
 {
-	SparkModelBatchModelBackoffFrom(engine,request,SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_TOKENS);
+	if ( request->model_failure_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS )
+		request->model_failure_tokens = SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS;
+	request->model_backoff_until = request->generated_token_count + request->model_failure_tokens;
+	if ( request->model_failure_tokens < SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS )
+		request->model_failure_tokens *= 2u;
+	engine->model_draft_failures++;
+	engine->model_draft_backoffs++;
 }
 
 static void SparkModelBatchObserveModelRate(
@@ -3228,12 +3235,12 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
-		engine->model_draft_failures++;
-		SparkModelBatchModelBackoffFrom(engine,request,SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS);
-		fprintf(stderr,"batch_model_draft_failed status=%d server_status=%u request=%llu backoff_tokens=%u failures=%llu\n",(int)status,info.server_status,
-			(unsigned long long)request->request_id,request->model_backoff_tokens,(unsigned long long)engine->model_draft_failures);
+		SparkModelBatchModelDraftFailed(engine,request);
+		fprintf(stderr,"batch_model_draft_failed status=%d server_status=%u request=%llu next_tokens=%u failures=%llu\n",(int)status,info.server_status,
+			(unsigned long long)request->request_id,request->model_failure_tokens,(unsigned long long)engine->model_draft_failures);
 		return(0u);
 	}
+	request->model_failure_tokens = 0u;
 	{
 		const uint32_t context = position + 1u > plan->context ? position + 1u : plan->context;
 		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
