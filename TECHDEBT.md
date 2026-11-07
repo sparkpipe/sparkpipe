@@ -1490,6 +1490,15 @@ and the multidev docs on 2026-09-28. Line numbers are in
   recomputed with the fixed tool (h now also carries the GPU accumulation
   error) and Metal's HY4 logits are re-judged against them. CUDA's HY4 has no
   reference-floor gate yet (its entry under Production qualification).
+- GLM 5.3 Flash's Metal gate passed on a hand-written prompt format, not the
+  publisher's (2026-11-07). Its gate prompts are assembled from
+  `model-families/glm5_next/chat_template.json` (a newline after each role
+  tag, thinking closed with an empty block); the publisher's
+  `chat_template.jinja` at 46a050be renders a single user turn as
+  `[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>...<|assistant|><think>`.
+  Closing it: render the gate prompts from that jinja, record the template's
+  revision and sha256 in `gate_prompts.json` and every gate receipt, recompute
+  references a, b and h on them and re-gate Metal.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
   Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
@@ -1660,7 +1669,8 @@ Metal backend and the single-Studio stage are in
   and `device_layers.c`), plus its packs and gates; the models larger than
   one Studio gate at TP8 on one Studio with the packs paged from the SSD.
   Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
-  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash and A.X K2; the paired
+  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash (on the hand-written
+  prompt format; the re-gate on the publisher's follows) and A.X K2; the paired
   test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
   (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
   (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its

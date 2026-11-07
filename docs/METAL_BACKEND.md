@@ -1172,6 +1172,13 @@ the Ling reference's FP32 variants):
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh glm-5.3-flash PACKS/glm53flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+Its gate passed on a hand-written prompt format
+(`model-families/glm5_next/chat_template.json`: a newline after each role tag,
+thinking closed), not the publisher's. The publisher's `chat_template.jinja`
+(46a050be) renders a single user turn as `[gMASK]<sop><|system|>Reasoning
+Effort: Max<|user|>...<|assistant|><think>`; the re-gate on prompts rendered
+from it follows.
+
 ### GLM 5.3 on eight ranks
 
 GLM 5.3 (Full: 78 layers of 6,144, latent attention on every layer, 256 FP8
