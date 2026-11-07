@@ -2,47 +2,39 @@
 
 SparkPipe supports four-, eight-, and sixteen-Spark deployment profiles, and
 is designed to support pools of one to eight Mac Studios on their own or
-alongside Sparks. Every profile is generated from one hardware contract. The
-four- and eight-Spark profiles contain complete direct pairs; the sixteen-Spark
-fleet has seven.
+alongside Sparks. Every profile is generated from one hardware contract. Every
+Spark sits on two switched rails; the profile schema below still names
+`rank XOR 1` partners, which weightd reaches over rail 2 (see TECHDEBT).
 
 ## Spark node contract
 
 Each Spark contributes:
 
-- one 100 Gb/s port on the CRS804 switched all-to-all fabric;
-- one nominal 200 Gb/s port connected directly to `rank XOR 1`, except ranks
-  14 and 15 (below);
+- one 100 Gb/s port on the CRS804 switched all-to-all fabric (rail 1);
+- one 100 Gb/s port on the `cisco0` switched all-to-all fabric (rail 2). The
+  direct `rank XOR 1` links are gone since 2026-11-06; rail 2 still reaches
+  the partner, now through the switch ([FLEET_FABRIC.md](FLEET_FABRIC.md));
 - 128 GB unified memory;
 - one 4 TB internal NVMe; and
 - at least one 4 TB external NVMe.
 
-The useful direct-link payload is capped near 110 Gb/s by the GB10 PCIe path and
-normally lands near 100 Gb/s. The switched and direct rails are therefore
-treated as equal-rate useful data paths.
+Each rail has its own PCIe Gen5 x4 link and carries about 98 Gb/s of RoCE
+payload, so the two rails are equal-rate data paths.
 
 ## Supported Spark sizes
 
-| Nodes | Ranks | Direct pairs |
+| Nodes | Ranks | Partner pairs (rail 2) |
 | ---: | --- | --- |
 | 4 | `0-3` | `0<->1`, `2<->3` |
 | 8 | `0-7` | `0<->1`, `2<->3`, `4<->5`, `6<->7` |
 | 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D`, `E<->F` |
 
-Every node remains on the switched fabric. Direct pairing adds a second path;
-it does not partition the switched topology.
-
-Since 2026-10-23 all eight pairs are cabled again: the sparke (rank 14) and
-sparkf (rank 15) direct link, removed on 2026-10-16 for a hub link, is back. The
-hub, rtx5090, has no direct high-speed link to any Spark; it reaches the fleet
-over its 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1), and
-the hub draft servers take the tap rank's stream on that address.
-`MESH_LINK_MAP` lists the cabled pairs. It appears in `tools/fleet_node_agent.sh`, which passes the weightd
-pair-link flags only to listed ranks, in `tools/devcycle/ds4_spark_brickproof.py`,
-which enables `ds4-direct-pair-fabric.timer` only on listed ranks, and in
-`tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh`, which leaves the port of
-an unlisted rank untouched. `tests/test_ds4_spark_brickproof.py` keeps the three
-copies equal.
+Both rails reach every rank. Partner traffic is not special on the wire any
+more: it crosses `cisco0` like any other rail 2 traffic. The hub, rtx5090, is on
+`cisco0` at `10.10.201.250`; its draft servers still take the tap rank's stream
+over the 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1).
+`MESH_LINK_MAP` in `tools/fleet_node_agent.sh` still lists the eight partner
+pairs, for which the agent passes weightd its rail 2 flags.
 
 ## Route contract
 

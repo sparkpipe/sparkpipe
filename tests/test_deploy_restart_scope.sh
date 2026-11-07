@@ -104,7 +104,7 @@ check "config: zero api drains" "$API_DRAINS" "0"
 check "config: fetched exactly 2 urls" "$(fetch_count)" "2"
 fetch_has "config/stage_00.json" && ok "config: stage fetched" || bad "config: stage fetched"
 fetch_has "sparkpipe_model_residentd" && bad "config: residentd refetched" || ok "config: residentd not refetched"
-[ "$(readlink "$NODE/config/stage.json")" = "stage_00.json" ] && ok "config: stage.json symlink relinked" || bad "config: stage.json symlink relinked"
+[ -z "$(find "$NODE" -type l)" ] && ok "config: no stage.json link, nothing under the root is linked" || bad "config: no stage.json link, nothing under the root is linked"
 grep -q stagecfg-v2 "$NODE/config/stage_00.json" && ok "config: node file updated" || bad "config: node file updated"
 
 echo "== C. driver .so publish -> exactly one residentd restart"

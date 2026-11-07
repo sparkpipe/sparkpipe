@@ -7,7 +7,7 @@ if [ "$#" -ne 5 ]; then
 fi
 model=$1
 pack=$2
-reference=$3
+reference=$(cd "$3" && pwd)
 out=$4
 revision=$5
 case $model in
@@ -52,9 +52,8 @@ if [ "$tp" -gt 1 ]; then
 fi
 mkdir -p "$control_dir"
 control_pack=$control_dir/$(basename "$pack")
-[ -n "${sidecar:-}" ] && ln -sfn "$(cd "$(dirname "$pack")" && pwd)/$sidecar" "$control_dir/$sidecar"
+[ -n "${sidecar:-}" ] && cp -p "$(dirname "$pack")/$sidecar" "$control_dir/$sidecar"
 mkdir -p "$out/metal" "$out/exact" "$out/compare"
-ln -sfn "$reference" "$out/ref"
 cd "$root"
 make -s build/test_device_contract_metal build/test_metal_bf16_convert build/test_metal_kernels build/device_bandwidth build/metal_stage_run build/logit_compare
 ./build/test_device_contract_metal > "$out/device_contract.txt"
@@ -66,7 +65,7 @@ controls="control:layers.$layer.$probe:swap-rows control_layers:layers.*.${probe
 pin=""
 if [ "$routed" = 1 ]; then
 	mkdir -p "$out/pinned" "$out/pinned64"
-	pin="--pin-routes $out/ref"
+	pin="--pin-routes $reference"
 	$run --pack "$pack" --mode teacher --out "$out/pinned" $pin $teacher_flags > "$out/pinned_teacher.log"
 	$run --pack "$pack" --mode teacher --out "$out/pinned64" $pin --prefill-rows 64 $teacher_flags > "$out/pinned64_teacher.log"
 	controls="$controls control_experts:layers.*.moe_w2:swap-rows"
@@ -100,21 +99,21 @@ fi
 rm -f "$out/compare/compare.jsonl"
 for name in $(python3 -I -c 'import json,sys; print(" ".join(p["name"] for p in json.load(open(sys.argv[1]))["prompts"]))' "$prompts"); do
 	split=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["prefill_positions"])' "$out/metal/$name.metal.json")
-	./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_h.logits" floor "$split" >> "$out/compare/compare.jsonl"
+	./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_a.logits" "$reference/$name.ref_h.logits" floor "$split" >> "$out/compare/compare.jsonl"
 	if [ "$routed" = 1 ]; then
-		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$out/ref/$name.ref_h.logits" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_h.logits" "$out/metal/$name.metal.logits" metal_vs_h "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
-		./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/ref/$name.ref_hp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_a.logits" "$out/metal/$name.metal.logits" metal "$split" "$reference/$name.ref_h.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_h.logits" "$out/metal/$name.metal.logits" metal_vs_h "$split" "$reference/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+		./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_a.logits" "$reference/$name.ref_hp.logits" pinned_floor "$split" >> "$out/compare/compare.jsonl"
 		for pass in pinned:metal pinned64:metal_rows64 control:control control_layers:control_layers control_rotate:control_rotate control_experts:control_experts; do
 			dir=${pass%%:*}
 			tag=pinned_${pass#*:}
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$out/ref/$name.ref_hp.logits" >> "$out/compare/compare.jsonl"
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_hp.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_h" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_a.logits" "$out/$dir/$name.metal.logits" "$tag" "$split" "$reference/$name.ref_hp.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_hp.logits" "$out/$dir/$name.metal.logits" "${tag}_vs_h" "$split" "$reference/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 		done
 	else
 		for label in metal control control_layers control_rotate; do
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$out/ref/$name.ref_h.logits" >> "$out/compare/compare.jsonl"
-			./build/logit_compare "$prompts" "$name" "$vocab" "$out/ref/$name.ref_h.logits" "$out/$label/$name.metal.logits" "${label}_vs_h" "$split" "$out/ref/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_a.logits" "$out/$label/$name.metal.logits" "$label" "$split" "$reference/$name.ref_h.logits" >> "$out/compare/compare.jsonl"
+			./build/logit_compare "$prompts" "$name" "$vocab" "$reference/$name.ref_h.logits" "$out/$label/$name.metal.logits" "${label}_vs_h" "$split" "$reference/$name.ref_a.logits" >> "$out/compare/compare.jsonl"
 		done
 	fi
 done
@@ -125,5 +124,5 @@ fi
 if [ "$spec" = 1 ]; then
 	$run --pack "$pack" --spec-prompts "$spec_prompts" --mode spec --new-tokens 256 --repeats 3 --draft-max 31 --out "$out/metal" > "$out/metal_spec.log"
 fi
-sh tools/metal_gate_floors.sh "$out" "$prompts" "$vocab"
-python3 -I tools/metal_gate_summary.py --out "$out" --revision "$revision" --prompts "$prompts" --tp-degree "$tp"
+sh tools/metal_gate_floors.sh "$out" "$prompts" "$vocab" "$reference"
+python3 -I tools/metal_gate_summary.py --out "$out" --reference "$reference" --revision "$revision" --prompts "$prompts" --tp-degree "$tp"

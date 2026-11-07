@@ -360,25 +360,28 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 	uint32_t rank, offset, index;
 	float total = 0.0f, scale, value, position;
 	LmDependentRelease();
-	for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
+	if ( blockIdx.y == 0u )
 	{
-		GlmProjectionSource(index, S::kQueryA, tp_degree, &rank, &offset);
-		value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + offset]);
-		query[index] = value;
-		total += value * value;
-	}
-	total = LmBlockSum<GLM_THREADS>(total, reduction);
-	scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
-	for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-		query_row[index] = LmFloatToBf16(S::kNormRoundFirst ? SparkMathNormGainRounded(query[index] * scale, LmScalarToFloat(query_norm[index])) :
-			query[index] * scale * LmScalarToFloat(query_norm[index]));
-	if constexpr ( S::kQueryConcat )
 		for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
 		{
-			query_input_out[(uint64_t)row * S::kQueryInput + index] = query_row[index];
-			query_input_out[(uint64_t)row * S::kQueryInput + S::kQueryA + index] = LmFloatToBf16(query[index]);
+			GlmProjectionSource(index, S::kQueryA, tp_degree, &rank, &offset);
+			value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + offset]);
+			query[index] = value;
+			total += value * value;
 		}
-	total = 0.0f;
+		total = LmBlockSum<GLM_THREADS>(total, reduction);
+		scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
+		for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
+			query_row[index] = LmFloatToBf16(S::kNormRoundFirst ? SparkMathNormGainRounded(query[index] * scale, LmScalarToFloat(query_norm[index])) :
+				query[index] * scale * LmScalarToFloat(query_norm[index]));
+		if constexpr ( S::kQueryConcat )
+			for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
+			{
+				query_input_out[(uint64_t)row * S::kQueryInput + index] = query_row[index];
+				query_input_out[(uint64_t)row * S::kQueryInput + S::kQueryA + index] = LmFloatToBf16(query[index]);
+			}
+		return;
+	}
 	for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
 	{
 		GlmProjectionSource(index, S::kSlot, tp_degree, &rank, &offset);
@@ -673,7 +676,7 @@ template<class S>
 static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	int32_t status;
-	GlmProjectionNormKernel<S><<<rows, GLM_THREADS, 0, stream>>>(b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
+	GlmProjectionNormKernel<S><<<dim3(rows, 2u), GLM_THREADS, 0, stream>>>(b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
 		b->q_compressed_bf16, b->kv_slot_bf16, rows, b->tp_degree, GlmProjectionSliceWidth<S>(b->tp_degree), GlmProjectionSliceMax(S::kQueryA, b->tp_degree),
 		S::kRope, S::kRopeTheta, S::kRmsEpsilon, b->q_input_bf16, b->rope_table);
 	if ( cudaPeekAtLastError() != cudaSuccess )

@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import ci_lanes
 
-LANE_TOKENS = re.compile(r"""(?<![\w.-])site(?:/|["']\s*[,)/])|sparkpipe_pay|site_terms|site_kr_networks|brand_logo|hyor-io\.conf|hyor\.io|sparkpipe-ai-ssl|sparkpipe-lang\.conf|sparkpipe-pay\.|rspamd-(?:dkim_signing|actions|redis)|postfix-ma(?:in|ster)\.cf|dovecot-(?:10-auth|99-sparkpipe)|certbot-reload-mail|PAYMENTS\.md|LITELLM_FRONTEND|docs/brand""")
+LANE_TOKENS = re.compile(r"""(?<![\w.-])site(?:/|["']\s*[,)/])|sparkpipe_pay|sparkpipe_cli|site_terms|site_kr_networks|brand_logo|hyor-io\.conf|hyor\.io|sparkpipe-ai-ssl|sparkpipe-lang\.conf|sparkpipe-pay\.|rspamd-(?:dkim_signing|actions|redis)|postfix-ma(?:in|ster)\.cf|dovecot-(?:10-auth|99-sparkpipe)|certbot-reload-mail|PAYMENTS\.md|LITELLM_FRONTEND|docs/brand""")
 WHOLE_TREE = re.compile(r"""\bROOT\s*\.rglob\(|os\.walk\(\s*ROOT\b|["']ls-files["']|\(\s*["']tests["']\s*,\s*["']tools["']""")
 
 
@@ -26,6 +26,9 @@ def check_classification(failures):
         (["Makefile"], True),
         (["deployment/vps/chat-local/index.html"], True),
         (["deployment/vps/sparkpipe-public-api.conf"], True),
+        (["tools/sparkpipe_cli.py", "tools/sparkpipe_cli_build.py", "tests/test_sparkpipe_cli.py"], False),
+        (["tools/client_release_check.py", "tests/test_client_release_check.py"], False),
+        (["tools/sparkpipe_cli.py", "tools/serving/chat_frontend.py"], True),
         (["tools/ci_lanes.py"], False),
         (["tests/test_ci_lanes.py", "tools/ci_lanes.py"], False),
         (["LICENSE", "LICENSE-APACHE-2.0", "LICENSE-PERMISSION.md", "NOTICE", "CLA.md", "CONTRIBUTING.md"], False),
