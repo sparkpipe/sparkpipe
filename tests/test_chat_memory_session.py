@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes; and a given conversation is imported in batches, one curator call per batch, with every exchange lined."""
+"""A chat-memory session is opened only for a verified Open WebUI identity on a real chat turn, and its bookkeeping holds across turns: requests without a valid token, with a task, without ids, with a client tool named like a memory tool or with Open WebUI's own summary are served raw; the first turns carry the system note and the expand and search_history tools but no ledger, and every finished exchange stays open with its id; a search_history call is answered inside the chat layer; after a finished answer the curator runs only once the engine is idle and is cancelled by a foreground request; its line for the current exchange binds on the next turn through the parent message id, older raw exchanges get their lines directly, and the open set follows; once the open exchanges pass the model's working budget the curator commits those least likely to be needed in full, with its earlier line or a final line that keeps the earlier facts, the oldest open exchange is committed when it frees too little, and the ledger lists commits in commit order; follow-ups reuse the frozen layout and replay each expansion at the tool round where it ran, with the text streamed before it said once, and only for the attempt that made it; two invalid curator replies leave fallback lines; the first curator attempt continues the answer's own prompt and reply tokens; checkpointed models get a ledger-end stem; the next turn's layout is pre-warmed up to its new question; a ledger over its budget is regrouped by the curator into nested group lines that expand to their children (stub lines when the curator fails), and follow-ups keep their frozen groups; and a prompt over the model's budget is fitted synchronously by dropping the open set, lining raw exchanges and folding the oldest ledger entries, while one that fits is left alone; a pre-warm that finishes publishes its layout as the chat's newest base, a new turn builds on the newest base its history holds, and an exchange committed after that base stays raw in the bridge until its own pre-warm finishes; and a given conversation is imported in batches, one curator call per batch, with every exchange lined; and background jobs run for up to background_jobs chats at once, never two for one chat, a job replaced while its task waits runs as the newer job, and with background_with_foreground the curator runs beside foreground requests."""
 import asyncio
 import base64
 import hashlib
@@ -86,6 +86,26 @@ class Frontend:
         return self.replies.pop(0) if self.replies else "not json"
 
 
+class Overlapping(Frontend):
+    def __init__(self):
+        super().__init__()
+        self.inside = {}
+        self.peak = {}
+        self.most = 0
+
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+        if not kind.startswith("curator"):
+            return await super().memory_complete(model, ids, max_tokens, reasoning_open, kind, trace)
+        chat = trace["chat"]
+        self.inside[chat] = self.inside.get(chat, 0) + 1
+        self.peak[chat] = max(self.peak.get(chat, 0), self.inside[chat])
+        self.most = max(self.most, sum(self.inside.values()))
+        try:
+            return await super().memory_complete(model, ids, max_tokens, reasoning_open, kind, trace)
+        finally:
+            self.inside[chat] -= 1
+
+
 def conversation(n):
     messages = [{"role": "system", "content": "Be helpful."}]
     for i in range(1, n):
@@ -96,8 +116,7 @@ def conversation(n):
 
 async def settle(memory, model):
     for _ in range(100):
-        task = memory.tasks.get(model.id)
-        if (task is None or task.done()) and not memory.jobs.get(model.id):
+        if not memory.running(model) and not memory.jobs.get(model.id):
             return
         await asyncio.sleep(0.02)
     raise AssertionError(f"background work did not settle: {memory.jobs.get(model.id)}")
@@ -258,7 +277,7 @@ async def run():
         session = memory.session(model, headers("u4", "a3", "a4"), conversation(4), [], {})
         session.finished(session.messages, "answer 4", "", [], "stop")
         await asyncio.sleep(0.1)
-        running = memory.tasks.get(model.id)
+        running = next(iter(memory.running(model).values()), None)
         assert running is not None and not running.done(), "the curator should be running while the engine is idle"
         memory.enter(model)
         await asyncio.sleep(0.05)
@@ -442,6 +461,62 @@ async def run():
         except ValueError:
             pass
 
+        overlap = Overlapping()
+        both = '{"lines": {"e1": "The user asked question 1.", "e2": "The user asked question 2."}, "open": []}'
+        parallel = cm.Memory({"store": tmp + "/parallel", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS, "background_jobs": 2}, overlap)
+        overlap.replies[:] = [both] * 4
+        overlap.block, overlap.block_kinds = asyncio.Event(), ("curator_render",)
+        for chat in ("p-a", "p-b", "p-c"):
+            opened = parallel.session(model, headers("q1", None, "r1", chat=chat), conversation(1), [], {})
+            opened.finished(opened.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.1)
+        assert sorted(chat for _, chat in parallel.running(model)) == ["p-a", "p-b"] and overlap.most == 2, "two chats curate at once and the third waits for a free job"
+        newer = parallel.session(model, headers("q2", "r1", "r2", chat="p-a"), conversation(2), [], {})
+        newer.finished(newer.messages, "answer 2", "", [], "stop")
+        await asyncio.sleep(0.05)
+        assert len(parallel.running(model)) == 2 and set(overlap.peak.values()) == {1}, "a chat's newer job waits while the chat's job runs"
+        overlap.block.set()
+        await settle(parallel, model)
+        assert overlap.most == 2 and set(overlap.peak.values()) == {1}, "never more jobs than background_jobs, never two for one chat"
+        assert all(parallel.store.load("user-1", chat)["pending"]["r1"]["line"] == "The user asked question 1." for chat in ("p-a", "p-b", "p-c"))
+        assert parallel.store.load("user-1", "p-a")["pending"]["r2"]["line"] == "The user asked question 2.", "the chat's newer job runs after the one it waited for"
+
+        sleepy = cm.Memory({"store": tmp + "/sleepy", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.2, "budgets": BUDGETS}, overlap)
+        overlap.calls.clear()
+        overlap.replies[:] = [both]
+        first = sleepy.session(model, headers("z1", None, "y1", chat="swap"), conversation(1), [], {})
+        first.finished(first.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.05)
+        second = sleepy.session(model, headers("z2", "y1", "y2", chat="swap"), conversation(2), [], {})
+        second.finished(second.messages, "answer 2", "", [], "stop")
+        await settle(sleepy, model)
+        swapped = sleepy.store.load("user-1", "swap")
+        assert "y1" not in swapped["pending"] and swapped["pending"]["y2"]["line"] == "The user asked question 2." and len(overlap.calls) == 1, \
+            "a job replaced while its task waits runs as the newer job"
+
+        beside = cm.Memory({"store": tmp + "/beside", "jwt_secret_file": tmp + "/secret", "idle_seconds": 0.01, "budgets": BUDGETS, "background_with_foreground": True}, overlap)
+        overlap.replies[:] = [both]
+        overlap.block = asyncio.Event()
+        beside.enter(model)
+        busy = beside.session(model, headers("f1", None, "g1", chat="beside"), conversation(1), [], {})
+        busy.finished(busy.messages, "answer 1", "", [], "stop")
+        await asyncio.sleep(0.05)
+        curating = next(iter(beside.running(model).values()), None)
+        assert curating is not None and not curating.done(), "with background_with_foreground the curator starts while a foreground request runs"
+        beside.enter(model)
+        await asyncio.sleep(0.02)
+        assert not curating.cancelled(), "a new foreground request leaves the curator running"
+        overlap.block.set()
+        await settle(beside, model)
+        assert beside.store.load("user-1", "beside")["pending"]["g1"]["line"] == "The user asked question 1."
+        beside.leave(model)
+        beside.leave(model)
+        try:
+            cm.Memory({"store": tmp + "/none", "jwt_secret_file": tmp + "/secret", "budgets": BUDGETS, "background_jobs": 0}, overlap)
+            raise AssertionError("background_jobs below one must be refused")
+        except SystemExit:
+            pass
+
 
 asyncio.run(run())
-print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge, and given conversations imported in batches of exchanges, one curator call per batch, every exchange lined")
+print("PASS test_chat_memory_session: every model gets memory with the shared budgets or a context target held within its tolerance (a hard limit at the true maximum) and a curator suffix from its reasoning close (or end) marker, a memory-off marker removed before rendering, verified identity only, system note, expand and search_history from the first turn, idle-only cancellable curation, lines bound through parent ids, ledger with open nodes, frozen follow-up layouts with replayed expansions, fallback lines, continued curator prompts, ledger-end stems, next-turn pre-warms, curator regroups, synchronous fits, tool results with ids and sections, collapsed after their turn to the kept sections, state that survives a restart, bases published only once their pre-warm finished, and new turns built on the last warm base with later commits raw in the bridge, and given conversations imported in batches of exchanges, one curator call per batch, every exchange lined, and background jobs for several chats at once, one per chat, beside foreground requests when configured")

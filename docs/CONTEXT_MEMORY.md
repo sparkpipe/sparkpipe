@@ -16,6 +16,11 @@ What is built (`tools/serving/chat_memory.py`):
   latest commits.
 - `tests/test_chat_memory_session.py` holds a commit raw while its pre-warm
   runs and in the ledger for the first turn after it.
+- **Concurrent builds.** The chat layer settings `background_jobs` (default
+  1) and `background_with_foreground` (default off) set how many chats build
+  at once per engine and whether builds run beside foreground requests. A
+  chat never runs two builds at once; its newer job waits for the running
+  one.
 - **Import.** `POST /v1/sparkpipe/memory/import` (the chat layer, with a
   memory identity: `model`, `messages`, and `batch` exchanges per curator
   call, default 8) brings a given conversation into memory without
@@ -94,8 +99,14 @@ agent's every assistant message is an answer.
    tokens in the engine's prefix cache. The build is published when the
    engine confirms the commit.
 
-At most one build runs per session. Builds run at background priority, which
-never delays a foreground request.
+At most one build runs per session, and up to `background_jobs` sessions
+build at once per engine. Builds run at background priority. By default a
+build waits for the engine to have no foreground request, and a foreground
+request cancels it; the cancelled build comes back as a catch-up. An agent's
+tool loop never leaves the engine idle, so agent sessions need
+`background_with_foreground`: builds then run beside foreground requests and
+share the engine with them, which the benchmarks measure as foreground
+slowdown.
 
 ## Nothing is lost
 

@@ -1018,6 +1018,10 @@ class Memory:
         self.curator_tokens = int(config.get("curator_max_tokens", 160))
         self.catch_up = int(config.get("catch_up_per_turn", 6))
         self.idle_seconds = float(config.get("idle_seconds", 1.0))
+        self.background_jobs = int(config.get("background_jobs", 1))
+        self.with_foreground = bool(config.get("background_with_foreground", False))
+        if self.background_jobs < 1:
+            raise SystemExit("chat_memory: background_jobs is at least 1")
         self.chat_list = config.get("open_webui_chat_list")
         self.prune_seconds = float(config.get("prune_seconds", 600))
         self.prune_grace_seconds = float(config.get("prune_grace_seconds", 3600))
@@ -1195,12 +1199,17 @@ class Memory:
         print(json.dumps({"event": "chat_memory_fit_short", "model": model.id, "lined": layout["lined"], "nodes": len(layout["nodes"])}), flush=True)
         return layout
 
+    def running(self, model):
+        tasks = self.tasks.setdefault(model.id, {})
+        for key in [key for key, task in tasks.items() if task.done()]:
+            del tasks[key]
+        return tasks
+
     async def settled(self, model, user, chat, timeout_seconds):
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            task = self.tasks.get(model.id)
             queued = any(job["session"].user == user and job["session"].chat == chat for job in self.jobs.get(model.id, []))
-            if not queued and (task is None or task.done()):
+            if not queued and (user, chat) not in self.running(model):
                 return True
             await asyncio.sleep(0.05)
         return False
@@ -1230,20 +1239,25 @@ class Memory:
         return {"exchanges": len(exchanges), "lined": sum(1 for exchange in exchanges if exchange_key(exchange) in state["lines"]),
                 "committed": len(state["commits"]), "bases": len(state["bases"])}
 
+    def idle_only(self, model):
+        return self.active.get(model.id, 0) != 0 and not self.with_foreground
+
     def enter(self, model):
         self.active[model.id] = self.active.get(model.id, 0) + 1
-        task = self.tasks.pop(model.id, None)
-        if task is not None and not task.done():
-            task.cancel()
+        if not self.with_foreground:
+            for task in self.tasks.pop(model.id, {}).values():
+                if not task.done():
+                    task.cancel()
 
     def leave(self, model):
         self.active[model.id] = max(0, self.active.get(model.id, 0) - 1)
         self.kick(model)
 
     def cancel_all(self):
-        for task in list(self.tasks.values()):
-            if not task.done():
-                task.cancel()
+        for tasks in self.tasks.values():
+            for task in tasks.values():
+                if not task.done():
+                    task.cancel()
         self.tasks.clear()
 
     def schedule(self, session, plan_messages, content, prompt_ids=(), token_ids=(), catch_up=None):
@@ -1256,23 +1270,37 @@ class Memory:
         self.kick(session.model)
 
     def kick(self, model):
-        if self.active.get(model.id, 0) or not self.jobs.get(model.id):
+        if self.idle_only(model):
             return
-        task = self.tasks.get(model.id)
-        if task is not None and not task.done():
-            return
-        self.tasks[model.id] = asyncio.ensure_future(self.run(model))
+        running = self.running(model)
+        for job in list(self.jobs.get(model.id) or []):
+            key = (job["session"].user, job["session"].chat)
+            if len(running) >= self.background_jobs:
+                break
+            if key not in running:
+                running[key] = asyncio.ensure_future(self.run(model, job))
 
-    async def run(self, model):
+    async def run(self, model, job):
+        key = (job["session"].user, job["session"].chat)
+        try:
+            await self.work(model, job)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            print(json.dumps({"event": "chat_memory_background_error", "model": model.id, "error": str(error)[:300]}), flush=True)
+        if self.tasks.get(model.id, {}).get(key) is asyncio.current_task():
+            del self.tasks[model.id][key]
+        self.kick(model)
+
+    async def work(self, model, job):
         await asyncio.sleep(self.idle_seconds)
         queue = self.jobs.get(model.id) or []
-        if not queue or self.active.get(model.id, 0):
+        session = job["session"]
+        if job not in queue or self.idle_only(model):
             return
         if not await self.frontend.memory_model_ready(model):
             self.jobs.pop(model.id, None)
             return
-        job = queue[0]
-        session = job["session"]
         try:
             done = await self.curate(model, job)
         except asyncio.CancelledError:
@@ -1284,14 +1312,11 @@ class Memory:
         if done or job["attempts"] >= 2:
             if not done:
                 self.fallback(model, job)
-            if queue and queue[0] is job:
-                queue.pop(0)
+            if job in queue:
+                queue.remove(job)
             if job.get("ledger_changed"):
                 await self.stem(model, session)
             await self.prewarm(model, session, job["content"])
-        if self.tasks.get(model.id) is asyncio.current_task():
-            self.tasks.pop(model.id, None)
-        self.kick(model)
 
     def node_tokens(self, session):
         sizes = {}
