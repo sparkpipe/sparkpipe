@@ -2130,7 +2130,8 @@ class Frontend:
         first, last, admitted = timing.get("first"), timing.get("last"), timing.get("admitted", started)
         completion = usage["completion"]
         prefill_ms = round((first - admitted) * 1000) if first else None
-        if prefill_ms is not None and self.replay is not None:
+        rounds = result.get("engine_rounds", 1)
+        if prefill_ms is not None and self.replay is not None and rounds == 1:
             self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
         try:
             rate = self.replay.prefill_rate(model.id, usage["prompt"]) if self.replay is not None else None
@@ -2141,7 +2142,7 @@ class Frontend:
         session, agent = plan.get("affinity") or (None, None)
         return {"request": plan["request_id"], "fleet": clean_header(headers.get(FLEET_HEADER), FLEET_VALUE), "model": model.id, "pack": plan.get("pack"),
                 "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"], "prefill_tokens": usage["prompt"] - usage["cached"],
-                "replayed_tokens": replayed_tokens(plan),
+                "replayed_tokens": replayed_tokens(plan), "engine_rounds": rounds,
                 "queue_ms": round((admitted - started) * 1000), "prefill_ms": prefill_ms, "ttft_ms": round((first - started) * 1000) if first else None,
                 "output_tokens": completion, "decode_tps": round((completion - 1) / (last - first), 2) if first and last and last > first and completion > 1 else None,
                 "draft_accept": round(engine.get("accepted_draft_tokens", 0) / drafted, 3) if isinstance(drafted, int) and drafted > 0 else None,
@@ -2764,7 +2765,8 @@ class Frontend:
             async for event in self.generate(model, plan["engine_body"], plan["parser"], "public_key" in plan, plan.get("timing")):
                 yield event
             return
-        completion = 0
+        trace = plan.get("trace")
+        completion, rounds, prefill = 0, 0, 0
         while True:
             internal, visible, content, reasoning = [], [], [], []
             result = {}
@@ -2784,6 +2786,8 @@ class Frontend:
                 yield kind, value
             usage = dict(result.get("usage") or {})
             completion += usage.get("completion_tokens", 0)
+            rounds += 1
+            prefill += usage.get("prompt_tokens", 0) - (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             if internal and not visible and session.can_continue():
                 messages = session.continue_with("".join(content), "".join(reasoning), internal)
                 plan = self.finish_plan(model, plan["body"], normalize_messages(messages), plan["tools"], plan["kwargs"], session)
@@ -2793,7 +2797,9 @@ class Frontend:
             session.finished(plan["messages"], "".join(content), "".join(reasoning), visible, result.get("engine_finish"),
                              plan["engine_body"]["prompt_token_ids"], result.get("token_ids") or [])
             reason = "tool_calls" if visible else ("length" if result.get("engine_finish") == "length" else "stop")
-            yield "finish", dict(result, usage=usage or result.get("usage"), finish_reason=reason)
+            if trace is not None:
+                trace.update(engine_rounds=rounds, engine_prefill_tokens=prefill)
+            yield "finish", dict(result, usage=usage or result.get("usage"), finish_reason=reason, engine_rounds=rounds)
             return
 
     async def memory_model_ready(self, model):
@@ -2917,7 +2923,7 @@ class Frontend:
         usage = usage or {}
         completion = usage.get("completion_tokens", 0)
         decode_seconds = now - first if first else 0.0
-        print(json.dumps(dict({"event": "chat", "model": model.id, "prompt_tokens": prompt_tokens,
+        print(json.dumps(dict({"event": "chat", "model": model.id, "prompt_tokens": usage.get("prompt_tokens", prompt_tokens),
                                "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0),
                                "completion_tokens": completion, "ttft_s": round(first - started, 3) if first else None,
                                "decode_tok_s": round((completion - 1) / decode_seconds, 2) if completion > 1 and decode_seconds > 0 else None,
