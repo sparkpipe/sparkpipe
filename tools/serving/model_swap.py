@@ -307,6 +307,8 @@ class Swapper:
             self.enter("stopping the fill lane")
             await self.stop(fill_lane, drain=False)
             self.check(await self.fan(model["node_reclaim"], 120, {}), f"{model['id']} cold arena release")
+            self.enter("checking memory")
+            await self.admit(model)
             await self.start(model)
             marks["reload_s"] = round(time.time() - mark, 1)
             self.active = model["id"]

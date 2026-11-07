@@ -21,15 +21,16 @@ for command in re.findall(r"[(] (.+?) [)]", sys.argv[2]) or [sys.argv[2]]:
     with open(os.path.join(os.path.dirname(sys.argv[0]), "ssh.log"), "a") as log:
         log.write(sys.argv[1] + " " + command + "\\n")
     if words[0] == "PROBE":
-        print(200 * 2 ** 30)
+        print(int(open(os.path.join(os.path.dirname(sys.argv[0]), "probe")).read()))
     elif words[0] == "READY":
         print("READY")
 """
 
 
-async def scenario(fail_fill=False):
+async def scenario(fail_fill=False, free_gib=200):
     with tempfile.TemporaryDirectory() as state:
         pathlib.Path(state, "fake_ssh.py").write_text(FAKE_SSH)
+        pathlib.Path(state, "probe").write_text(str(free_gib * GIB))
         order = pathlib.Path(state, "api")
         up = pathlib.Path(state, "up")
         up.touch()
@@ -95,7 +96,11 @@ def main():
     short, unknown, status, record, received, log, api, state, active = asyncio.run(scenario(fail_fill=True))
     assert status == 502 and not record["ok"] and "streamed fill answered 500" in record["error"], record
     assert state == "failed", state
-    print("PASS test_model_swap_fill: the prompt fills to its last checkpoint on the fill lane, then the decode lane reloads; the stop waits for live replies but not the quiet window of a model switch; a failed fill fails loudly")
+    short, unknown, status, record, received, log, api, state, active = asyncio.run(scenario(free_gib=1))
+    walk = [line for line in log if line.split()[0] in ("START", "WARM")]
+    assert status == 502 and not record["ok"] and "available per node" in record["error"] and state == "failed", record
+    assert walk == ["START fill"], walk
+    print("PASS test_model_swap_fill: the prompt fills to its last checkpoint on the fill lane, then the decode lane reloads; the stop waits for live replies but not the quiet window of a model switch; a failed fill fails loudly, and a decode lane that no longer fits is refused by name instead of dying on a node")
     return 0
 
 
