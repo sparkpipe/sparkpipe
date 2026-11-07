@@ -22,8 +22,8 @@ in the kernel. Mapped honestly to what exists:
 | Syscall ABI / process model | serving adapter ABI, module ABI, dlopen chain | exists, device-opaque |
 | Scheduler | batch engine (`runtime/model_batch_engine.c`): submission-wave continuous batching, expert-grouped MoE | exists; qualifying larger capacities is open (TECHDEBT §Dynamic batching) |
 | Virtual memory / paging | KV page store, prefix cache, JIT-KV NVMe overflow | exists for KV only |
-| Physical memory manager | weightd weight arenas (CUDA VMM, README §weightd); `SparkMemoryBuffer` (`include/sparkpipe/spark_memory_buffer.h`) for tagged buffers; direct CUDA allocation calls elsewhere in modules | partial: `SparkMemoryBuffer` is used by the dsv4, k3 and qwen38_27b serving adapters |
-| Block I/O / DMA engine | `SparkMemoryBufferCopy` (space-aware copy); open-coded cudaMemcpyAsync elsewhere; memlink lanes for network | partial |
+| Physical memory manager | weightd weight arenas (CUDA VMM, README §weightd); `SparkDeviceBuffer` (`include/sparkpipe/spark_device.h`) for tagged buffers; direct CUDA allocation calls elsewhere in modules | partial: the stage serving adapter, the KV binding and its copier allocate only through the device API; the KV pool is weightd's, adopted with `SparkDeviceAdopt`, or one device buffer for a runner that maps its own pack |
+| Block I/O / DMA engine | `SparkDeviceCopy` and `SparkDeviceFill` on queues, ordered by events, and `SparkDeviceCopySync`; open-coded cudaMemcpyAsync elsewhere in modules; memlink lanes for network | partial |
 | Filesystem / storage tiers | pack format v2, warm/ceph + cold archive, verifier | exists (model-scoped) |
 | Driver discovery | hardware probes (topology/kernel/transport, dlopen'd) | probe pattern exists |
 | Device drivers / HAL | `spark_device.h`: buffers in five spaces, register, map_file, queues, events, kernel launch; host, CUDA and Metal backends | exists; production modules still call CUDA directly |
@@ -32,8 +32,9 @@ in the kernel. Mapped honestly to what exists:
 When this was written, the two missing rows were both memory. That was the
 critique, and it was correct: "a pointer" in this tree meant five different
 things, depending on which family allocated it and on which hardware it
-ran. `SparkMemoryBuffer` has since started the fix: a buffer now carries its
-space tag.
+ran. The device API (`spark_device.h`) has since started the fix: a buffer
+carries its space tag, and the common serving path allocates, copies and
+waits only through it.
 
 ## The memory space model
 
@@ -104,11 +105,12 @@ this tree: memory is where families diverge most, and memory mistakes
 are the ones that silently work on GB10 and die on the first discrete
 port. Revised:
 
-1. **M1 — buffer handles + alloc/free/copy.** `SparkDeviceBuffer{ptr,
-   space, bytes}` and a space-aware copy. (Started as `SparkMemoryBuffer`
-   with `SparkMemoryBufferAllocate/Free/Copy`.) Lands inside the DRY adapter
-   template (Phase 1A) so it wraps ONE lifecycle, not seven — one new
-   call site per family, not fifty.
+1. **M1 — buffer handles + alloc/free/copy.** `SparkDeviceBuffer{host,
+   device, space, bytes}` and a space-aware copy:
+   `SparkDeviceAllocate/Adopt/Free/Copy`, which replaced the first cut,
+   `SparkMemoryBuffer`. It sits inside the common stage serving adapter, so
+   it wraps ONE lifecycle, not seven — one new call site per family, not
+   fifty.
 2. **M2 — register + map_file.** Absorb K3's chunked registration and
    the family pack loaders' mapping. This is where GB10's zero-copy
    weight trick becomes a backend behavior instead of a K3 secret.
@@ -208,14 +210,18 @@ hierarchical collective decomposition.
 Code carries no comments (`AGENTS.md`, invariant I48), so a buffer's space
 is recorded in the code itself:
 
-- **Allocate** non-weight buffers with `SparkMemoryBufferAllocate`. It
-  records the buffer's `SparkMemorySpace` and allocates host coherent, host
-  pinned or device private memory. A file-backed mapping is described with
-  `SPARK_MEMORY_BUFFER_VIEW`.
-- **Copy** between spaces with `SparkMemoryBufferCopy`. It chooses memcpy,
-  a device-to-device copy or a host-device copy from the two tags, and it
-  refuses file-backed buffers. Do not open-code a cudaMemcpy between an
-  untagged "host pointer" and "device pointer".
+- **Allocate** non-weight buffers with `SparkDeviceAllocate`. The buffer
+  records its `SparkDeviceSpace` and carries a host address only in a space
+  the host may touch. Memory another allocator owns, such as weightd's KV
+  pool, enters with `SparkDeviceAdopt`, a stream another component owns
+  with `SparkDeviceQueueAdopt`, and the device API frees neither.
+- **Copy and wait** on a `SparkDeviceQueue` with `SparkDeviceCopy`,
+  `SparkDeviceFill`, events and `SparkDeviceQueueWait`, or with
+  `SparkDeviceCopySync` for one blocking copy. The backend chooses the copy
+  from the two spaces. Shared host code copies and waits through queues and
+  events, never on a CUDA stream or event, and never open-codes a cudaMemcpy
+  between an untagged "host pointer" and "device pointer";
+  `tests/test_device_neutral.py` keeps device headers and calls out of it.
 - **Record new kinds.** A new allocation kind, or a new CUDA API category in
   a module, goes into TECHDEBT §Hardware independence. That keeps the
   device-layer inventory complete.
