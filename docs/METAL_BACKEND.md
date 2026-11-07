@@ -283,7 +283,9 @@ pack takes the device pool and refuses `device_collective`. A deployment
 root holds the adapter in `lib/` and the device library with
 `sparkpipe_kernels.metallib` in `lib/runtime_libs/`; the deployment names
 no weightd and no chat template, since the chat layer renders prompts and
-sends token ids.
+sends token ids. Off a Mac the target prints SKIP, and the CUDA compile gate
+(`tools/cuda13_sm121a_compile_gate.sh`) leaves every `*_METAL_SERVING_ADAPTER`
+out of the adapters it builds for sm_121a.
 
 **Proven** on one M5 Ultra
 ([receipt](../qualification/metal/qwen38_27b/serving-c671eccab/RECEIPT.json),
