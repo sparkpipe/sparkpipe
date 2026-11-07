@@ -30,7 +30,13 @@ What is built (`tools/serving/chat_memory.py`):
   its catch-up, commits and regroups as in a live chat, and the batch's
   pre-warm publishes a base. The reply counts the exchanges, the lined ones,
   the commits and the bases. A customer moving a long conversation in uses
-  it, and so do the recall benchmarks, whose histories are given.
+  it, and so do the recall benchmarks, whose histories are given. The import
+  takes a chat request's template settings (`reasoning_effort`,
+  `chat_template_kwargs`) and pre-warms at them, so it must be sent with the
+  settings the conversation will continue with: Qwen 3.8's template opens its
+  system block with the reasoning effort, so a base warmed at another effort
+  shares nothing past the first few tokens with the next request, which then
+  prefills the whole layout cold.
 
 ## Goal
 

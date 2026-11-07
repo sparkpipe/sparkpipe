@@ -14,6 +14,7 @@ MARKERS = ["<think>", "</think>", "<tool_call>", "</tool_call>", "<arg_key>", "<
 MARKER_SPLIT = re.compile("(" + "|".join(re.escape(marker) for marker in SPECIAL + MARKERS) + ")")
 TEMPLATE = (
     "{%- if tools %}<|im_start|>system\n# Tools\n{% for tool in tools %}{{ tool | tojson }}\n{% endfor %}<|im_end|>\n{% endif %}"
+    "{%- if effort %}<|im_start|>system\nReasoning effort: {{ effort }}<|im_end|>\n{% endif %}"
     "{%- for message in messages %}"
     "{%- if message.role == 'assistant' %}<|im_start|>assistant\n{{ message.content }}"
     "{%- for call in message.tool_calls or [] %}<tool_call>{{ call.function.name }}"
