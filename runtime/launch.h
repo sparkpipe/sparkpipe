@@ -5,9 +5,8 @@
 #include <stdint.h>
 
 #define LM_UNPAREN(...) __VA_ARGS__
-#ifdef __CUDACC__
 #include <stdio.h>
-#include <utility>
+
 static inline void LmSlowPath(const char *site, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension)
 {
 	static struct { const char *site; uint32_t input_dimension, output_dimension; } seen[128];
@@ -24,6 +23,8 @@ static inline void LmSlowPath(const char *site, uint32_t rows, uint32_t input_di
 	}
 	fprintf(stderr, "SLOW-PATH %s rows=%u input=%u output=%u\n", site, rows, input_dimension, output_dimension);
 }
+#ifdef __CUDACC__
+#include <utility>
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) \
 	LM_UNPAREN kernel<<<(grid), (block), (shared), (stream)>>>(__VA_ARGS__)
 
