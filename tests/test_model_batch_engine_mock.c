@@ -234,6 +234,8 @@ static SparkModelBatchEngine *TestConnect(const SparkModelResidentDeployment *de
 	return(TestConnectRows(deployment,state,runtime_root,4u));
 }
 
+static uint32_t test_long_fill_check;
+
 static SparkStatus TestSubmitPriority(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t sequence_id,uint32_t budget,const uint32_t *prompt,uint32_t prompt_count,uint32_t priority,SparkModelBatchRequestHandle *handle)
 {
 	SparkModelBatchSubmitRequest request;
@@ -248,6 +250,7 @@ static SparkStatus TestSubmitPriority(SparkModelBatchEngine *engine,uint64_t req
 	request.prompt_token_count = prompt_count;
 	request.output_token_budget = budget;
 	request.drafts_disabled = TestDraftsDisabled;
+	request.long_fill_check = test_long_fill_check;
 	*handle = 0;
 	return(SparkModelBatchEngineSubmit(engine,&request,handle));
 }
@@ -962,6 +965,40 @@ static void TestScenarioSharedPrefillRows(const SparkModelResidentDeployment *de
 	}
 	CHECK(submissions[0] != 0u && rows[0] > 4u,"shared rows: without a limit, one prefill wave carries several prompts past the shared size");
 	CHECK(submissions[1] != 0u && rows[1] <= 4u,"shared rows: a wave carrying several prompts stays within the shared limit, while one prompt alone may use the full budget");
+}
+
+static void TestScenarioLongFillRefused(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	SparkModelResidentDeployment limited = *deployment;
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane;
+	uint32_t prompt[11] = {61u,62u,63u,64u,65u,66u,67u,68u,69u,70u,71u};
+	uint32_t index,refused_lanes = 0u;
+	limited.long_fill_min_tokens = 8u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&limited,&state,runtime_root,6u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	test_long_fill_check = 1u;
+	TestSubmitPrompt(engine,1u,700u,1u,prompt,11u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	test_long_fill_check = 0u;
+	CHECK(state.error_events[1] == 1u && state.completed_events[1] == 0u,"long fill: a checked prompt past the minimum is refused");
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		refused_lanes += lane.request_id == 1u ? 1u : 0u;
+	CHECK(refused_lanes == 0u,"long fill: a refused prompt runs no wave");
+	TestSubmitPrompt(engine,2u,701u,1u,prompt,11u);
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[2] == 1u,"long fill: the same prompt without the check runs as waves");
+	test_long_fill_check = 1u;
+	TestSubmitPrompt(engine,3u,702u,1u,prompt,7u);
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	test_long_fill_check = 0u;
+	CHECK(state.completed_events[3] == 1u,"long fill: a checked prompt under the minimum runs as waves");
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment *deployment,const char *runtime_root)
@@ -3786,6 +3823,7 @@ int main(void)
 	TestScenarioCanonicalPrefillChunks(&deployment,runtime_root);
 	TestScenarioSharedPrefillRows(&deployment,runtime_root);
 	TestScenarioStreamedPrefillDefers(&deployment,runtime_root);
+	TestScenarioLongFillRefused(&deployment,runtime_root);
 	TestScenarioStreamedSpanBudget(&deployment,runtime_root);
 	TestScenarioInteractiveFirst(&deployment,runtime_root);
 	TestScenarioBackgroundNeverStreams(&deployment,runtime_root);

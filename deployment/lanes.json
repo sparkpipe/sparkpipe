@@ -75,6 +75,22 @@
     "restart": "on-failure",
     "log": "/srv/workspace/sparkpipe/logs/draftd.log",
     "lifecycle": "model"
+   },
+   "fill": {
+    "expert_pool_cap_bytes": 8589934592,
+    "memory_max": "96G",
+    "streamed_prefill": {
+     "node_rows": 32768,
+     "dense_buffers": 3,
+     "expert_slots": 32,
+     "min_tokens": 124928,
+     "partner_pack": "sparkdata/k3.mxfp4.tp16/partner/k3.stage0.rank{partner:02d}.pack",
+     "fabric_device": "rocep1s0f1",
+     "pair_device": "roceP2p1s0f0",
+     "gid_index": 3,
+     "pair_gid_index": 3,
+     "traffic_class": 106
+    }
    }
   },
   "qwen3.8-27b": {

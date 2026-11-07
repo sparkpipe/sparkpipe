@@ -32,6 +32,7 @@ class FakeModel:
         self.context_tokens = 4096
         self.max_output_tokens = 1024
         self.reasoning_effort = {}
+        self.long_fill = False
         self.gate = SimpleNamespace(state=lambda: {"waiting": 1 if name == "inside" else 0})
         self.sequences = chat_frontend.SequenceGate(8)
 

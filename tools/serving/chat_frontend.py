@@ -935,12 +935,15 @@ class WarmGate:
 
 
 class Model:
+    long_fill = False
+
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
         self.context_tokens = int(spec["context_tokens"])
         self.max_output_tokens = int(spec["max_output_tokens"])
         self.sampling_defaults = dict(spec["sampling_defaults"])
+        self.long_fill = bool(spec.get("long_fill"))
         if set(self.sampling_defaults) - set(SAMPLING_DEFAULT_KEYS) or not str(spec.get("sampling_source", "")).strip():
             raise SystemExit(f"chat_frontend: {self.id} sampling_defaults takes only {', '.join(SAMPLING_DEFAULT_KEYS)} and needs a sampling_source")
         try:
@@ -1277,6 +1280,7 @@ def number(body, name, low, high, integer=False):
 
 
 SAMPLING_DEFAULT_KEYS = ("temperature", "top_p", "top_k")
+LONG_FILL_SECONDS = 3600
 
 
 def sampling_fields(body, defaults):
@@ -1758,8 +1762,10 @@ class Frontend:
             model = Model(spec, base)
             self.models[model.id] = model
         self.control = config.get("control")
-        if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
-            raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
+        if self.control is not None and set(self.control) - {"fill_url"} not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
+            raise SystemExit("chat_frontend: control needs status_url, optionally both force_url and admin_url, and optionally fill_url")
+        if any(model.long_fill for model in self.models.values()) and "fill_url" not in (self.control or {}):
+            raise SystemExit("chat_frontend: a model with long_fill needs control fill_url")
         controlled = self.control is not None or any(model.gate.activation_url is not None for model in self.models.values())
         if controlled != ("controller_token_file" in config):
             raise SystemExit("chat_frontend: controller_token_file is needed exactly when the config has control or an activation_url")
@@ -2521,6 +2527,8 @@ class Frontend:
         engine_body = {"prompt_token_ids": prompt_ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids}
         engine_body.update(sampling_fields(body, model.sampling_defaults))
         engine_body["priority"] = request_priority(model, body)
+        if model.long_fill:
+            engine_body["long_fill_check"] = True
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
@@ -2547,13 +2555,26 @@ class Frontend:
                         event = json.loads(data)
                     except json.JSONDecodeError:
                         raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                    if isinstance(event.get("error"), dict) and event["error"].get("code") == "long_fill":
+                        raise RequestError(409, "long_fill", event["error"].get("message", ""))
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
 
+    async def long_fill(self, model, engine_body):
+        try:
+            async with self.session.post(self.control["fill_url"], headers=self.controller_headers, json={"model": model.id, "prompt_token_ids": engine_body["prompt_token_ids"]},
+                                         timeout=aiohttp.ClientTimeout(total=LONG_FILL_SECONDS)) as response:
+                record = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+            raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill did not finish: {error}")
+        if not isinstance(record, dict) or not record.get("ok"):
+            raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill failed: {record}")
+
     async def engine_stream(self, model, engine_body, public):
         deadline = None
+        filled = False
         while True:
             started = False
             events = self.engine_events(model, engine_body)
@@ -2563,6 +2584,12 @@ class Frontend:
                     yield chunk
                 return
             except RequestError as error:
+                if error.code == "long_fill" and not started:
+                    if filled:
+                        raise RequestError(502, "long_fill_failed", f"the {model.id} streamed fill finished, but the engine cannot resume from it and would compute the prompt again")
+                    await self.long_fill(model, engine_body)
+                    filled = True
+                    continue
                 if started or error.code not in ("engine_starting", "engine_unavailable"):
                     raise
             finally:

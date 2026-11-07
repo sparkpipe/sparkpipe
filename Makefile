@@ -699,6 +699,8 @@ PYTHON_TESTS := \
 	tests/test_open_webui_github_tool.py \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
+	tests/test_model_swap_fill.py \
+	tests/test_chat_frontend_long_fill.py \
 	tests/test_model_swap_deactivate.py \
 	tests/test_model_swap_token.py \
 	tests/test_swap_token_shell.py \
@@ -741,6 +743,9 @@ PYTHON_TESTS := \
 	tests/test_launchers_name_real_files.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_lane_streamed_prefill.py \
+	tests/test_fill_cutoff.py \
+	tests/test_fill_plan.py \
 	tests/test_chat_commands.py \
 	tests/test_chat_memory_qualify_checks.py \
 	tests/test_chat_api_keys.py \

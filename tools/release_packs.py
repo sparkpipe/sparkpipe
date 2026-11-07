@@ -38,10 +38,15 @@ def main() -> int:
             out = os.path.join(scratch, record)
             subprocess.run([sys.executable, str(ROOT / "tools" / "lane_config.py"), "render", record, out], check=True, stdout=subprocess.DEVNULL)
             for name in sorted(os.listdir(out)):
-                if not (name.startswith("adapter.") and name.endswith(".json")):
+                if not (name.startswith("adapter.") and name.endswith(".json")) or name.startswith("adapter.fill."):
                     continue
                 host = name[len("adapter."):-len(".json")]
-                pack = json.loads(pathlib.Path(out, name).read_text()).get("stage_pack_path")
+                adapter = json.loads(pathlib.Path(out, name).read_text())
+                pack = adapter.get("stage_pack_path")
+                fill = pathlib.Path(out, f"adapter.fill.{host}.json")
+                partner = (json.loads(fill.read_text()) if fill.exists() else adapter).get("streamed_prefill", {}).get("partner_pack")
+                if partner:
+                    print(host, partner, partner + ".sha256")
                 if pack:
                     digest = digest_file(pack, lanes[record]["runtime_root"].format(host=host))
                     if any(character.isspace() for character in pack + digest):
