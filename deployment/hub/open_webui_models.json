@@ -36,7 +36,7 @@
     {
       "id": "glm-5.3",
       "name": "GLM 5.3",
-      "description": "GLM 5.3, the largest GLM. 768K context. Switching to it takes about 40 s."
+      "description": "GLM 5.3, the largest GLM. 1M context. Switching to it takes about 40 s."
     },
     {
       "id": "glm-5.3-flash",
