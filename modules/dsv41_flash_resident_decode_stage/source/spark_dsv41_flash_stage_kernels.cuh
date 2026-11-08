@@ -549,6 +549,17 @@ static __global__ void D41GroupInputKernel(const uint16_t *__restrict__ gathered
 	}
 }
 
+static __global__ void D41SplitGroupsKernel(const uint16_t *__restrict__ merged, uint16_t *__restrict__ groups, uint32_t rows, uint32_t group_width,
+	uint32_t group_count)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < group_width * group_count; index += gridDim.x * blockDim.x )
+	{
+		const uint32_t group = index / group_width, element = index % group_width;
+		groups[((uint64_t)group * rows + row) * group_width + element] = merged[(uint64_t)row * group_width * group_count + index];
+	}
+}
+
 static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ input, uint16_t *__restrict__ output,
 	float *__restrict__ output_f32, uint32_t input_dimension, uint32_t output_dimension)
 {

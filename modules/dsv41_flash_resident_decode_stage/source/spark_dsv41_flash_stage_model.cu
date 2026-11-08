@@ -104,6 +104,12 @@ static_assert(SPARK_DSV41_FLASH_STAGE_FULL_ROW_LAYERS == D41_CANDIDATE_SOURCE &&
 #define D41_HIDDEN_SLICE (D41_HIDDEN / D41_TP)
 #define D41_MOE_ROW_ELEMENTS (D41_TOPK * D41_EXPERT_SLICE + D41_HIDDEN_SLICE)
 #define D41_WO_A_ROWS (D41_OGROUPS * D41_OLORA / D41_TP)
+#define D41_GROUP_HEADS (D41_HEADS / D41_OGROUPS)
+#define D41_GROUP_WIDTH (D41_GROUP_HEADS * D41_HEAD_DIM)
+#define D41_RANK_GROUPS (D41_LOCAL_HEADS / D41_GROUP_HEADS)
+static_assert(D41_RANK_GROUPS == 0u ? 2u * D41_LOCAL_HEADS == D41_GROUP_HEADS && 2u * D41_WO_A_ROWS == D41_OLORA :
+	D41_LOCAL_HEADS % D41_GROUP_HEADS == 0u && D41_RANK_GROUPS * D41_OLORA == D41_WO_A_ROWS,
+	"a rank holds half of one output group, shared with its pair, or whole output groups");
 #define D41_RING_ROWS (D41_WINDOW / D41_TP)
 #define D41_VERIFY_ROWS SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS
 #define D41_PAIR_CACHES 3u
@@ -310,8 +316,9 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
-static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, cudaStream_t stream)
+static int32_t D41LinearInto(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
+	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, uint32_t row_invariant,
+	cudaStream_t stream)
 {
 	const LmScaleTensor scale = LmScaleTensorBlockUe8m0(linear->scale, 1u, output_dimension, input_dimension, 1u, LM_MXFP8_GROUP);
 	if ( rows <= LM_SKINNY_ROWS_WIDE || row_invariant != 0u )
@@ -325,12 +332,29 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.rows = rows;
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
+		args.output_row_stride = output_row_stride;
+		args.output_column_offset = output_column_offset;
 		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return status;
 	}
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
-		output_dimension, 0u, 0u, multiprocessors, stream);
+		output_dimension, output_row_stride, output_column_offset, multiprocessors, stream);
+}
+
+static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
+	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, cudaStream_t stream)
+{
+	return D41LinearInto(linear, source, destination, rows, input_dimension, output_dimension, 0u, 0u, multiprocessors, row_invariant, stream);
+}
+
+static D41Fp8Linear D41Fp8Rows(const D41Fp8Linear *linear, uint32_t row_first, uint32_t columns)
+{
+	D41Fp8Linear view;
+	view.weight = linear->weight + (uint64_t)row_first * columns;
+	view.scale = linear->scale + (uint64_t)row_first * (columns / D41_FP8_BLOCK);
+	view.wide = linear->wide + (uint64_t)row_first * columns;
+	return view;
 }
 
 static LmSkinnyDenseTarget D41Target(const D41Fp8Linear *linear, uint16_t *destination, uint32_t input_dimension, uint32_t output_dimension)
@@ -701,7 +725,7 @@ static uint64_t D41DestinationStride(uint32_t rows, uint32_t record_heads)
 
 static uint32_t D41PairRecords(const D41ModelState *state, uint32_t rows)
 {
-	return rows <= D41_PAIR_RECORD_CHOSEN_ROWS && 2u * rows <= state->max_rows ? 1u : 0u;
+	return D41_RANK_GROUPS == 0u && rows <= D41_PAIR_RECORD_CHOSEN_ROWS && 2u * rows <= state->max_rows ? 1u : 0u;
 }
 
 static uint32_t D41LandingClass(uint32_t cache)
@@ -874,7 +898,13 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		D41Rope(merged, rows, record_heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	}
 	status = D41Launched();
-	if ( status == SPARK_STATUS_OK && pair == 0u )
+	if ( status == SPARK_STATUS_OK && D41_RANK_GROUPS != 0u )
+	{
+		D41SplitGroupsKernel<<<dim3(D41Blocks(D41_RANK_GROUPS * D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream>>>(state->attn_merged, state->group_input,
+			rows, D41_GROUP_WIDTH, D41_RANK_GROUPS);
+		status = D41Launched();
+	}
+	else if ( status == SPARK_STATUS_OK && pair == 0u )
 	{
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER, rows * D41_QUERY_SPLIT, D41_QUERY_PART, state->attn_merged,
 			state->attn_gathered);
@@ -887,9 +917,23 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41Fp8Qdq(state->group_input, (uint64_t)rows * 2u * local_width, stream);
-	if ( D41Linear(&layer->o_a, state->group_input, state->wo_a_out, rows, 2u * local_width, D41_WO_A_ROWS, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( D41_RANK_GROUPS != 0u )
+	{
+		D41Fp8Qdq(state->group_input, (uint64_t)rows * D41_RANK_GROUPS * D41_GROUP_WIDTH, stream);
+		for ( uint32_t group = 0u; group < D41_RANK_GROUPS; ++group )
+		{
+			const D41Fp8Linear rows_of_group = D41Fp8Rows(&layer->o_a, group * D41_OLORA, D41_GROUP_WIDTH);
+			if ( D41LinearInto(&rows_of_group, state->group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, state->wo_a_out, rows, D41_GROUP_WIDTH,
+				D41_OLORA, D41_WO_A_ROWS, group * D41_OLORA, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+	}
+	else
+	{
+		D41Fp8Qdq(state->group_input, (uint64_t)rows * 2u * local_width, stream);
+		if ( D41Linear(&layer->o_a, state->group_input, state->wo_a_out, rows, 2u * local_width, D41_WO_A_ROWS, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	D41Fp8Qdq(state->wo_a_out, (uint64_t)rows * D41_WO_A_ROWS, stream);
 	if ( D41Linear(&layer->o_b, state->wo_a_out, state->partial, rows, D41_WO_A_ROWS, D41_HIDDEN, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
