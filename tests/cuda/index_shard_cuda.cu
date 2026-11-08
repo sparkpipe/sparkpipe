@@ -185,6 +185,24 @@ static void ProbeCase(uint32_t context,uint32_t degree)
 		LmKvShardStoreKernel<ProbeIndexKv,128u><<<context,128u>>>(local,d_keys,d_token_sequence,d_token_position,context,PROBE_DIM);
 		PROBE_CUDA((LmWeightedSparseScoreLaunch<ProbeIndexKv,PROBE_HEADS,PROBE_DIM>(d_query,d_weight,local,d_sequence,d_context,d_position,rows,stride,scale,d_local,0)));
 		ProbeTopk(d_local,rows,stride,keep,d_local_selected);
+		PROBE_CUDA(cudaDeviceSynchronize());
+		{
+			std::vector<uint32_t> no_offset(1,0u);
+			uint32_t *d_no_offset = ProbeUpload(no_offset);
+			uint8_t *d_packed = 0;
+			float *d_packed_scores = 0;
+			PROBE_CUDA(cudaMalloc((void **)&d_packed,(uint64_t)stride * ProbeIndexKv::kSlotBytes));
+			PROBE_CUDA(cudaMalloc((void **)&d_packed_scores,(uint64_t)rows * stride * sizeof(float)));
+			PROBE_CUDA((LmKvShardGatherPackLaunch<ProbeIndexKv,128u>(local,d_sequence,d_no_offset,d_context,1u,stride,d_packed,0)));
+			const LmIndexScorePackedView packed = {local.pages,shard,d_packed};
+			PROBE_CUDA((LmWeightedSparseScoreLaunch<ProbeIndexKv,PROBE_HEADS,PROBE_DIM>(d_query,d_weight,packed,d_sequence,d_context,d_position,rows,stride,scale,d_packed_scores,0)));
+			PROBE_CUDA(cudaDeviceSynchronize());
+			std::vector<float> paged_scores = ProbeDownload(d_local,(uint64_t)rows * stride),packed_scores = ProbeDownload(d_packed_scores,(uint64_t)rows * stride);
+			ProbeCheck(memcmp(paged_scores.data(),packed_scores.data(),paged_scores.size() * sizeof(float)) == 0,"packed keys score bit-identically to the paged view");
+			cudaFree(d_no_offset);
+			cudaFree(d_packed);
+			cudaFree(d_packed_scores);
+		}
 		PROBE_CUDA(LmIndexShardCandidatePackLaunch<PROBE_THREADS>(shard,d_local,stride,d_local_selected,keep,rows,d_gathered + (uint64_t)rank * rows * keep,0));
 		PROBE_CUDA(cudaDeviceSynchronize());
 		std::vector<float> local_scores = ProbeDownload(d_local,(uint64_t)rows * stride);

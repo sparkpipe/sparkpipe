@@ -64,7 +64,7 @@ def write_safetensors(path, tensors):
             handle.write(blob)
 
 
-def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=128):
+def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=128, dsa=None):
     hidden, vocab = 64, 64
     q_lora, kv_lora, rope, nope, v_head, heads = 16, 32, 8, 16, 32, 2
     kda_heads, kda_head = 2, 32
@@ -81,6 +81,8 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
                                      "short_conv_kernel_size": 4},
               "layer_types": ["linear_attention", "full_attention",
                               "linear_attention"]}
+    if dsa is not None:
+        config["dsa_config"] = dsa
     (root / "config.json").write_text(json.dumps(config))
     t = {}
     t["model.embed_tokens.weight"] = ("BF16", bf16((vocab, hidden)))
@@ -124,6 +126,13 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=
             # released checkpoint (full_rank_output_gate): full-rank g_proj
             t[a + "g_proj.weight"] = ("BF16", bf16((heads * v_head, hidden)))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, heads * v_head)))
+            if dsa is not None:
+                index_heads, index_dim = dsa["index_num_heads"], dsa["index_head_dim"]
+                t[a + "indexer.wq_b.weight"] = ("BF16", bf16((index_heads * index_dim, q_lora)))
+                t[a + "indexer.wk.weight"] = ("BF16", bf16((index_dim, hidden)))
+                t[a + "indexer.weights_proj.weight"] = ("BF16", bf16((index_heads, hidden)))
+                t[a + "indexer.k_norm.weight"] = ("BF16", bf16((index_dim,)))
+                t[a + "indexer.k_norm.bias"] = ("BF16", bf16((index_dim,)))
         if layer == 0:
             # the dense replacement layer: one full-width MLP under the
             # mlp.gate_proj naming, no router, no experts
@@ -323,12 +332,52 @@ def main():
         if run.returncode == 0 or "0xff" not in run.stdout:
             print("  FAIL an E8M0 0xff was not refused")
             failures += 1
+        indexer = {"mla_index_query_weight": "wq_b.weight", "mla_index_key_weight": "wk.weight",
+                   "mla_index_head_weight": "weights_proj.weight", "mla_index_norm_weight": "k_norm.weight",
+                   "mla_index_norm_bias": "k_norm.bias"}
+        for layer in range(3):
+            for field in indexer:
+                if f"model.layers.{layer}.{field}" in entries:
+                    print(f"  FAIL a K3 checkpoint without dsa_config packed {field}")
+                    failures += 1
+        dsa = {"index_topk": 8, "index_num_heads": 4, "index_head_dim": 16, "index_rope_dim": 0, "index_k_norm_type": "layernorm",
+               "index_topk_freq": 1, "index_skip_topk_offset": 1}
+        for name in list(root.iterdir()):
+            if name.suffix == ".pack" or name.name.endswith(".payload"):
+                name.unlink()
+        src = mini_checkpoint(root, dsa=dsa)
+        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"), str(root), str(out)], capture_output=True, text=True)
+        if run.returncode != 0:
+            print("  FAIL the K3.1 checkpoint did not pack:", (run.stdout + run.stderr)[-300:])
+            failures += 1
+        else:
+            manifest31, tensor31 = read_pack(out)
+            entries31 = manifest31["tensors"]
+            for field, source in indexer.items():
+                name = "model.layers.1." + field
+                if name not in entries31 or tensor31(name) != src["model.layers.1.self_attn.indexer." + source][1].tobytes():
+                    print(f"  FAIL the MLA layer's {field} is not the checkpoint's indexer {source}, bit-preserved")
+                    failures += 1
+                for layer in (0, 2):
+                    if f"model.layers.{layer}.{field}" in entries31:
+                        print(f"  FAIL the KDA layer {layer} packed an indexer tensor {field}")
+                        failures += 1
+        for change in ({"index_topk_freq": 2}, {"index_rope_dim": 8}, {"index_k_norm_type": "rmsnorm"}):
+            for name in list(root.iterdir()):
+                if name.suffix == ".pack" or name.name.endswith(".payload"):
+                    name.unlink()
+            mini_checkpoint(root, dsa=dict(dsa, **change))
+            run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"), str(root), str(out)], capture_output=True, text=True)
+            if run.returncode == 0 or "dsa_config" not in run.stdout + run.stderr:
+                print(f"  FAIL a dsa_config with {change} was packed instead of refused")
+                failures += 1
     print(f"tensors packed {len(manifest['tensors'])}")
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
     print("\nthe pack is the checkpoint's bytes, plus exactly the folds "
-          "the table owes")
+          "the table owes; a K3.1 checkpoint adds its MLA layers' five indexer tensors bit-preserved, a K3 one none, "
+          "and an indexer other than the per-layer NoPE layer-normed one is refused")
     return 0
 
 

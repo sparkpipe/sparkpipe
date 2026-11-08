@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
+CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 SESSION_BLOCK_BASE = 18432
@@ -392,6 +393,22 @@ K3 = {
     "kv_page_bytes": 24 * 64 * (512 + 64) * 2 // WORLD,
     "recurrent_bytes": 69 * (6 * 128 * 128 * 4 + 6 * (2 * 128 + 128) * 4 * 2),
 }
+K31_PRO = {
+    **K3,
+    "swap_id": "kimi-k3.1-pro",
+    "api_port": 8481,
+    "kv_label": "k31_stage",
+    "node_memory_bytes": 104689827840 + (512 << 20),
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/kimi-k3.1-pro/tiktoken.model",
+    "pack": "sparkdata/k31_pro.cells.tp16/k31_pro.tp16.rank{rank:02d}.pack",
+    "adapter": "libk31_pro_tp16_serving_adapter.so",
+    "firmware_adapter": "libk31_pro_tp16_serving_adapter.so",
+    "program": "k3",
+    "node_target": "cuda.sm121.k31_pro.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+    "contract": "model_contracts/k31_pro_authoritative.json",
+    "expert_warm": {"model_tag": "kimi-k3.1-pro", "revision": "mxfp4", "layers": 93, "experts": 896, "timeout_s": 3600},
+    "kv_page_bytes": 24 * 64 * ((512 + 64) * 2 + 128 * 2) // WORLD,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
@@ -400,6 +417,7 @@ MODELS = {
     "glm53_full": GLM53_FULL,
     "hy4": HY4,
     "k3": K3,
+    "k31_pro": K31_PRO,
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
     "motif3": MOTIF3,
@@ -454,6 +472,11 @@ def model_hidden(model: dict) -> int:
     return json.loads((ROOT / model["contract"]).read_text())["source"]["config_json"]["hidden_size"]
 
 
+def streamed_config(streamed: dict, rank: int) -> dict:
+    fields = {key: value for key, value in streamed.items() if key not in ("partner_pack", "min_tokens")}
+    return {**fields, "partner_pack": f"/home/{HOSTS[rank]}/{streamed['partner_pack'].format(partner=rank ^ 1)}"}
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
@@ -470,6 +493,7 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
         "hidden": model_hidden(model),
         **({"taps": args.taps} if args.taps else {}),
+        **({"streamed_prefill": streamed_config(args.streamed_prefill, rank)} if args.streamed_prefill else {}),
         "device_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
@@ -500,7 +524,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
+            "control_endpoint": {"kind": "tcp", "host": CONTROL_HOST.format(rank=rank), "port": 23000 + 16 * lane + rank},
         })
     result = {
         "schema_version": 2,
@@ -516,6 +540,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
+            **({"streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
@@ -565,10 +590,10 @@ def expert_warm(model: dict, root: str) -> dict:
     warm = model.get("expert_warm")
     if warm is None:
         return {}
-    revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
+    revision = warm.get("revision") or json.loads((ROOT / model["contract"]).read_text())["revision"]
     return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
                           f"./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
-                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
+                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:
@@ -619,7 +644,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
-        taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
@@ -709,6 +734,7 @@ def main() -> int:
             parser.error("--model, --lane, --runtime-root and --weightd-socket are required without --record")
         output_dir = args.output_dir
         args.taps = None
+        args.streamed_prefill = None
         args.draft_server = None
     write_lane(args, output_dir)
     print(f"{args.model} lane {args.lane} rendered under {output_dir}")

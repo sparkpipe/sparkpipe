@@ -416,7 +416,7 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 		(selection.selected_positions != 0 && selection.split_positions == 0 ? LmLatentShardListBytes(selection.selected_count) : 0u);
 	static bool granted = false;
 	if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 || row_position == 0 ||
-		total_heads == 0u || (selection.padded_heads != 0u ? ROWS != 1u || selection.padded_heads != total_heads || block_heads % total_heads != 0u :
+		total_heads == 0u || (selection.padded_heads != 0u ? ROWS != 1u || selection.padded_heads != total_heads || total_heads >= block_heads :
 			(total_heads % block_heads) != 0u) ||
 		selection.record_heads == 0u || selection.record_copies == 0u || total_heads % selection.record_heads != 0u ||
 		(selection.selected_positions != 0 && (ROWS != 1u || split_count != 1u || (selection.split_positions == 0) != (selection.split_offsets == 0))) ||
@@ -650,7 +650,7 @@ static inline cudaError_t LmLatentShardAttendHeadsLaunch(
 	if constexpr (LmLatentShardTensorFits<Geometry, LATENT, ROPE>())
 	{
 		const uint64_t list = selected_positions != 0 && split_positions == 0 ? LmLatentShardListBytes(selected_count) : 0u;
-		const uint32_t padded = total_heads < LM_LATENT_SHARD_QUERIES && LM_LATENT_SHARD_QUERIES % total_heads == 0u ? total_heads : 0u;
+		const uint32_t padded = total_heads < LM_LATENT_SHARD_QUERIES ? total_heads : 0u;
 		if ( (total_heads % LM_LATENT_SHARD_QUERIES == 0u || padded != 0u) && row_position != 0 && (partial_rank_stride % 2u) == 0u &&
 			LmLatentShardPrefillSharedBytes<LATENT + ROPE>() + list <= LM_PREFILL_ATTN_SHARED_LIMIT)
 		{

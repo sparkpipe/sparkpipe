@@ -113,6 +113,7 @@ typedef struct LmPassRoundContext
 	uint32_t next_stage;
 	uint32_t rank;
 	uint32_t row_elements;
+	uint32_t max_rows;
 	uint64_t *sums;
 	uint64_t *sums_host;
 	uint64_t mismatches;
@@ -138,7 +139,8 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 	row_elements /= split;
 	{
 		const uint64_t row_bytes = (uint64_t)row_elements * sizeof(uint16_t);
-		const uint32_t block = (uint32_t)(LM_PASS_ROUND_BLOCK_BYTES / row_bytes != 0u ? LM_PASS_ROUND_BLOCK_BYTES / row_bytes : 1u);
+		const uint64_t block_rows = LM_PASS_ROUND_BLOCK_BYTES / row_bytes != 0u ? LM_PASS_ROUND_BLOCK_BYTES / row_bytes : 1u;
+		const uint32_t block = (uint32_t)(block_rows < round->max_rows ? block_rows : round->max_rows);
 		const uint32_t peers = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL ? LM_PASS_RANKS : 1u;
 		uint32_t first;
 		if ( round->send_stage[LM_PASS_ROUND_RING - 1u] == 0 || round->receive_stage[LM_PASS_ROUND_RING - 1u] == 0 || round->sums_host == 0 ||
@@ -391,6 +393,7 @@ struct LmPassModelLayout
 	uint32_t row_align;
 	uint32_t hidden;
 	uint32_t row_elements;
+	uint32_t round_rows;
 	const LmPassTensor *tensors;
 	const uint32_t *tensor_first;
 	const uint32_t *experts_per_layer;
@@ -671,7 +674,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 	p->own_direct_fd = -1;
 	p->tag = layout->tag;
 	if ( layout->layers == 0u || layout->layers > LM_PASS_MAX_LAYERS || layout->row_align == 0u || config->node_rows == 0u || (config->node_rows % layout->row_align) != 0u ||
-		layout->hidden == 0u || layout->row_elements == 0u || layout->vocab_bytes == 0u || layout->vocab_rows == 0u || layout->tensors == 0 || layout->tensor_first == 0 )
+		layout->hidden == 0u || layout->row_elements == 0u || layout->round_rows == 0u || layout->vocab_bytes == 0u || layout->vocab_rows == 0u || layout->tensors == 0 || layout->tensor_first == 0 )
 	{
 		fprintf(stderr, "%s: streamed prefill needs node rows in multiples of %u, at most %u layers and a vocab slice per rank\n", layout->tag, layout->row_align,
 			LM_PASS_MAX_LAYERS);
@@ -698,6 +701,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 	p->row_align = layout->row_align;
 	p->hidden = layout->hidden;
 	p->round.row_elements = layout->row_elements;
+	p->round.max_rows = layout->round_rows;
 	p->vocab_rows = layout->vocab_rows;
 	p->vocab.dense_count = 1u;
 	p->vocab.dense[0].offset = layout->vocab_offset;

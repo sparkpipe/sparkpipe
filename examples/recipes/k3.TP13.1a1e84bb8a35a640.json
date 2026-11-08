@@ -1,15 +1,15 @@
 {
-  "content_hash": "b72d55aeb56ee303",
+  "content_hash": "1a1e84bb8a35a640",
   "contract": {
     "path": "model_contracts/k3_authoritative.json",
     "sha256": "f9655b5bbeb298de9c6a7978f03aea5c9a2d930ff63fa2a12c82986dee284b0d"
   },
-  "datafile": "k3.TP16.b72d55aeb56ee303.json",
-  "degree": 16,
+  "datafile": "k3.TP13.1a1e84bb8a35a640.json",
+  "degree": 13,
   "family": "k3",
   "geometry_hash": "a51181eba5d37614",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "k3.TP16.a51181eba5d37614/",
+  "kv_entry_prefix": "k3.TP13.a51181eba5d37614/",
   "kv_geometry": {
     "attention_period": 4,
     "global_phase": 3,
@@ -52,12 +52,9 @@
       "spark-09",
       "spark-10",
       "spark-11",
-      "spark-12",
-      "spark-13",
-      "spark-14",
-      "spark-15"
+      "spark-12"
     ],
-    "nodes": 16,
+    "nodes": 13,
     "source": "examples/topologies/dual_switch_16node_production.json"
   },
   "tp": {
@@ -69,19 +66,19 @@
         "slices": {
           "dense_down": [
             0,
-            2112
+            33792
           ],
           "dense_gate_up": [
             0,
-            4224
+            67584
           ],
           "embed_and_head": [
             0,
-            10240
+            163840
           ],
           "expert_w1": [
             0,
-            384
+            6144
           ],
           "expert_w2": [
             0,
@@ -89,55 +86,55 @@
           ],
           "heads_in:kda_out_weight": [
             0,
-            768
+            12288
           ],
           "heads_in:mla_out_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:kda_gate_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
             0,
-            2310
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:mla_gate_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
             0,
-            768
+            12288
           ],
           "heads_out:mla_q_up_weight": [
             0,
-            1152
+            18432
           ],
           "routed_down": [
             0,
-            224
+            3584
           ],
           "routed_up": [
             0,
-            224
+            3584
           ]
         }
       },
@@ -146,76 +143,76 @@
         "rank": 1,
         "slices": {
           "dense_down": [
-            2112,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            4224,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            10240,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            384,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            2310,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            768,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            1152,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            224,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            224,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -224,76 +221,76 @@
         "rank": 2,
         "slices": {
           "dense_down": [
-            4224,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            8448,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            20480,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            768,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            4620,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            1536,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            2304,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            448,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            448,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -302,76 +299,76 @@
         "rank": 3,
         "slices": {
           "dense_down": [
-            6336,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            12672,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            30720,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            1152,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            6930,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            2304,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            3456,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            672,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            672,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -380,76 +377,76 @@
         "rank": 4,
         "slices": {
           "dense_down": [
-            8448,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            16896,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            40960,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            1536,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            9240,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            3072,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            4608,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            896,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            896,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -458,76 +455,76 @@
         "rank": 5,
         "slices": {
           "dense_down": [
-            10560,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            21120,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            51200,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            1920,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            11550,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            3840,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            5760,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            1120,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            1120,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -536,76 +533,76 @@
         "rank": 6,
         "slices": {
           "dense_down": [
-            12672,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            25344,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            61440,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            2304,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            13860,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            4608,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            6912,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            1344,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            1344,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -614,76 +611,76 @@
         "rank": 7,
         "slices": {
           "dense_down": [
-            14784,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            29568,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            71680,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            2688,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            16170,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            5376,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            8064,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            1568,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            1568,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -692,76 +689,76 @@
         "rank": 8,
         "slices": {
           "dense_down": [
-            16896,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            33792,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            81920,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            3072,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            18480,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            6144,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            9216,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            1792,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            1792,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -770,76 +767,76 @@
         "rank": 9,
         "slices": {
           "dense_down": [
-            19008,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            38016,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            92160,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            3456,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            20790,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            6912,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            10368,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            2016,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            2016,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -848,76 +845,76 @@
         "rank": 10,
         "slices": {
           "dense_down": [
-            21120,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            42240,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            102400,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            3840,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            23100,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            7680,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            11520,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            2240,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            2240,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -926,76 +923,76 @@
         "rank": 11,
         "slices": {
           "dense_down": [
-            23232,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            46464,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            112640,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            4224,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_in:mla_out_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            25410,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            8448,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            12672,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            2464,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            2464,
-            224
+            0,
+            3584
           ]
         }
       },
@@ -1004,310 +1001,76 @@
         "rank": 12,
         "slices": {
           "dense_down": [
-            25344,
-            2112
+            0,
+            33792
           ],
           "dense_gate_up": [
-            50688,
-            4224
+            0,
+            67584
           ],
           "embed_and_head": [
-            122880,
-            10240
+            0,
+            163840
           ],
           "expert_w1": [
-            4608,
-            384
+            0,
+            6144
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            9216,
-            768
-          ],
-          "heads_in:mla_out_weight": [
-            9216,
-            768
-          ],
-          "heads_out:kda_decay_up_weight": [
-            9216,
-            768
-          ],
-          "heads_out:kda_gate_weight": [
-            9216,
-            768
-          ],
-          "heads_out:kda_k_conv_weight": [
-            9216,
-            768
-          ],
-          "heads_out:kda_q_conv_weight": [
-            9216,
-            768
-          ],
-          "heads_out:kda_qkv_beta_weight": [
-            27720,
-            2310
-          ],
-          "heads_out:kda_v_conv_weight": [
-            9216,
-            768
-          ],
-          "heads_out:mla_gate_weight": [
-            9216,
-            768
-          ],
-          "heads_out:mla_kv_b_value_weight": [
-            9216,
-            768
-          ],
-          "heads_out:mla_q_up_weight": [
-            13824,
-            1152
-          ],
-          "routed_down": [
-            2688,
-            224
-          ],
-          "routed_up": [
-            2688,
-            224
-          ]
-        }
-      },
-      {
-        "node": "spark-13",
-        "rank": 13,
-        "slices": {
-          "dense_down": [
-            27456,
-            2112
-          ],
-          "dense_gate_up": [
-            54912,
-            4224
-          ],
-          "embed_and_head": [
-            133120,
-            10240
-          ],
-          "expert_w1": [
-            4992,
-            384
-          ],
-          "expert_w2": [
             0,
-            3072
-          ],
-          "heads_in:kda_out_weight": [
-            9984,
-            768
+            12288
           ],
           "heads_in:mla_out_weight": [
-            9984,
-            768
-          ],
-          "heads_out:kda_decay_up_weight": [
-            9984,
-            768
-          ],
-          "heads_out:kda_gate_weight": [
-            9984,
-            768
-          ],
-          "heads_out:kda_k_conv_weight": [
-            9984,
-            768
-          ],
-          "heads_out:kda_q_conv_weight": [
-            9984,
-            768
-          ],
-          "heads_out:kda_qkv_beta_weight": [
-            30030,
-            2310
-          ],
-          "heads_out:kda_v_conv_weight": [
-            9984,
-            768
-          ],
-          "heads_out:mla_gate_weight": [
-            9984,
-            768
-          ],
-          "heads_out:mla_kv_b_value_weight": [
-            9984,
-            768
-          ],
-          "heads_out:mla_q_up_weight": [
-            14976,
-            1152
-          ],
-          "routed_down": [
-            2912,
-            224
-          ],
-          "routed_up": [
-            2912,
-            224
-          ]
-        }
-      },
-      {
-        "node": "spark-14",
-        "rank": 14,
-        "slices": {
-          "dense_down": [
-            29568,
-            2112
-          ],
-          "dense_gate_up": [
-            59136,
-            4224
-          ],
-          "embed_and_head": [
-            143360,
-            10240
-          ],
-          "expert_w1": [
-            5376,
-            384
-          ],
-          "expert_w2": [
             0,
-            3072
-          ],
-          "heads_in:kda_out_weight": [
-            10752,
-            768
-          ],
-          "heads_in:mla_out_weight": [
-            10752,
-            768
+            12288
           ],
           "heads_out:kda_decay_up_weight": [
-            10752,
-            768
-          ],
-          "heads_out:kda_gate_weight": [
-            10752,
-            768
-          ],
-          "heads_out:kda_k_conv_weight": [
-            10752,
-            768
-          ],
-          "heads_out:kda_q_conv_weight": [
-            10752,
-            768
-          ],
-          "heads_out:kda_qkv_beta_weight": [
-            32340,
-            2310
-          ],
-          "heads_out:kda_v_conv_weight": [
-            10752,
-            768
-          ],
-          "heads_out:mla_gate_weight": [
-            10752,
-            768
-          ],
-          "heads_out:mla_kv_b_value_weight": [
-            10752,
-            768
-          ],
-          "heads_out:mla_q_up_weight": [
-            16128,
-            1152
-          ],
-          "routed_down": [
-            3136,
-            224
-          ],
-          "routed_up": [
-            3136,
-            224
-          ]
-        }
-      },
-      {
-        "node": "spark-15",
-        "rank": 15,
-        "slices": {
-          "dense_down": [
-            31680,
-            2112
-          ],
-          "dense_gate_up": [
-            63360,
-            4224
-          ],
-          "embed_and_head": [
-            153600,
-            10240
-          ],
-          "expert_w1": [
-            5760,
-            384
-          ],
-          "expert_w2": [
             0,
-            3072
-          ],
-          "heads_in:kda_out_weight": [
-            11520,
-            768
-          ],
-          "heads_in:mla_out_weight": [
-            11520,
-            768
-          ],
-          "heads_out:kda_decay_up_weight": [
-            11520,
-            768
+            12288
           ],
           "heads_out:kda_gate_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_k_conv_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_q_conv_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:kda_qkv_beta_weight": [
-            34650,
-            2310
+            0,
+            36960
           ],
           "heads_out:kda_v_conv_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_gate_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_kv_b_value_weight": [
-            11520,
-            768
+            0,
+            12288
           ],
           "heads_out:mla_q_up_weight": [
-            17280,
-            1152
+            0,
+            18432
           ],
           "routed_down": [
-            3360,
-            224
+            0,
+            3584
           ],
           "routed_up": [
-            3360,
-            224
+            0,
+            3584
           ]
         }
       }
@@ -1329,6 +1092,11 @@
           "kda_decay_down_weight",
           "kda_head_log_scale",
           "kda_out_norm_weight",
+          "mla_index_head_weight",
+          "mla_index_key_weight",
+          "mla_index_norm_bias",
+          "mla_index_norm_weight",
+          "mla_index_query_weight",
           "mla_kv_a_norm_weight",
           "mla_kv_a_weight",
           "mla_q_down_weight",
@@ -1350,9 +1118,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 10240,
-          "status": "sharded"
+          "reason": "163840 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 163840,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1370,9 +1138,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1389,9 +1157,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1408,9 +1176,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1427,9 +1195,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1446,9 +1214,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 2310,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 36960,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1465,9 +1233,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1484,9 +1252,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1503,9 +1271,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1522,9 +1290,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 1152,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 18432,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1541,9 +1309,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1560,9 +1328,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 768,
-          "status": "sharded"
+          "reason": "96 heads do not split 13 ways on whole head blocks",
+          "rows_per_rank": 12288,
+          "status": "replicated"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1579,9 +1347,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 224,
-          "status": "sharded"
+          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3584,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1598,9 +1366,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 224,
-          "status": "sharded"
+          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 3584,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1636,9 +1404,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 4224,
-          "status": "sharded"
+          "reason": "67584 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 67584,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1674,9 +1442,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 2112,
-          "status": "sharded"
+          "reason": "33792 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 33792,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1693,9 +1461,9 @@
       },
       {
         "degree_resolution": {
-          "reason": null,
-          "rows_per_rank": 384,
-          "status": "sharded"
+          "reason": "6144 rows do not split 13 ways on whole rows/head-blocks",
+          "rows_per_rank": 6144,
+          "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": 82432,
@@ -1712,7 +1480,7 @@
       },
       {
         "degree_resolution": {
-          "reason": "per-rank K 192 is not whole quantization groups of 128; a partial group cannot be sliced",
+          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
           "rows_per_rank": 3072,
           "status": "replicated"
         },

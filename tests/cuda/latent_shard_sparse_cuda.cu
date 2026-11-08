@@ -375,6 +375,10 @@ int main(void)
 	SparseCase<64u>(19u,6000u,16u,4u,2048u,2048u,0u);
 	SparseCase<0u>(37u,9000u,1u,4u,2112u,2048u,0u);
 	SparseCase<64u>(19u,6000u,1u,8u,2048u,2048u,0u);
+	SparseCase<64u>(19u,6000u,1u,6u,2048u,2048u,0u);
+	SparseCase<0u>(37u,9000u,1u,6u,2112u,2048u,0u);
+	SparseCase<64u>(19u,6000u,1u,3u,2048u,2048u,0u);
+	SparseCase<64u>(4096u,16384u,1u,6u,2048u,2048u,1u);
 	SparseCase<0u>(4096u,16384u,16u,4u,2112u,2048u,1u);
 	SparseCase<64u>(4096u,16384u,16u,4u,2048u,2048u,1u);
 	SparseCase<0u>(4096u,16384u,1u,4u,2112u,2048u,1u);
