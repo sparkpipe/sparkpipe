@@ -1764,6 +1764,8 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 	queued = request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT && SparkKvLaneTransactionsQueued(&binding->transactions,request) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvLaneTransactionsAdmit(&binding->transactions,request);
+	if ( status == SPARK_STATUS_OK && request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE && SparkKvLaneTransactionsQueued(&binding->transactions,request) != 0u )
+		queued = 1u;
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u && queued == 0u )
 		status = SparkStageKvBindingRecurrentAdmit(binding,request,&held);
 	if ( status == SPARK_STATUS_OK )

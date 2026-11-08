@@ -1521,6 +1521,49 @@ static void TestRecurrentRoundTrip(void)
 	printf("A11 recurrent state: captured only for publishing lanes, recorded at finish, restored on a prefix hit at claim, cleared by reset and by a failed finish: ok\n");
 }
 
+static void TestRecurrentChainedWaveContinues(void)
+{
+	TestStep seed,first,second;
+	TestFinished finished = {0},first_finished = {0},second_finished = {0};
+	SparkStageKvRecurrentCounters counters;
+	void *stream = (void *)(uintptr_t)0x52u;
+	uint32_t index;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	StepInit(&seed,1u,0u,0u,4u);
+	StepPublish(&seed,4u,0xa0u);
+	StepStart(&seed);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		RECURRENT.lanes[0][index] = (uint8_t)(0x40u + index);
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&seed.slot,1u,stream) == SPARK_STATUS_OK);
+	assert(StepFinish(&seed,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	ReleaseSequence(1u,0u);
+	StepInit(&first,2u,1u,4u,5u);
+	StepPrefix(&first,4u,0xa0u);
+	StepStart(&first);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&first.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.from_buffer == 1u);
+	assert(memcmp(RECURRENT.lanes[1],RECURRENT.lanes[0],TEST_RECURRENT_BYTES) == 0);
+	memset(RECURRENT.lanes[1],0x77,TEST_RECURRENT_BYTES);
+	StepInit(&second,2u,1u,5u,6u);
+	assert(StepAdmit(&second,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK);
+	assert((BINDING.lane_state_flags[1] & (SPARK_STAGE_KV_LANE_STATE_RESTORE_READY | SPARK_STAGE_KV_LANE_STATE_LOADING)) == 0u);
+	assert(StepAdmit(&second,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
+	assert(StepFinish(&first,SPARK_STATUS_OK,&first_finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && first_finished.status == SPARK_STATUS_OK);
+	assert(StepClaim(&second) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&second.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.from_buffer == 1u);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+		assert(RECURRENT.lanes[1][index] == 0x77u);
+	assert(StepFinish(&second,SPARK_STATUS_OK,&second_finished) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && second_finished.status == SPARK_STATUS_OK);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u);
+	Close();
+	printf("A11b chained wave: a resumed prompt's next wave, prepared while the first runs, schedules no restore and continues the state the first wave left: ok\n");
+}
+
 static void TestRecurrentStateSurvivesRestart(void)
 {
 	TestStep step;
@@ -1927,6 +1970,7 @@ int main(void)
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
+	TestRecurrentChainedWaveContinues();
 	TestRecurrentStateSurvivesRestart();
 	TestPromptCheckpointPersists();
 	TestRecurrentRefusals();
