@@ -715,11 +715,7 @@ PYTHON_TESTS := \
 	tests/test_fleet_gateway.py \
 	tests/test_ceph_canary.py \
 	tests/test_open_webui_fleet_tool.py \
-	tests/test_chat_memory_core.py \
-	tests/test_chat_memory_session.py \
-	tests/test_chat_memory_deployment.py \
-	tests/test_chat_memory_prune.py \
-	tests/test_open_webui_memory_off.py \
+	tests/test_memory_connector.py \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
@@ -746,10 +742,7 @@ PYTHON_TESTS := \
 	tests/test_launchers_name_real_files.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
-	tests/test_chat_commands.py \
-	tests/test_chat_memory_qualify_checks.py \
 	tests/test_chat_api_keys.py \
-	tests/test_open_webui_chat_tools.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
 	tests/test_chat_frontend_responses.py \

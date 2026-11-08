@@ -9,7 +9,7 @@
       "window_tokens": 1048576,
       "sources": {
         "prefill_tokens_per_s": "PERFORMANCE_STATUS.md, Prefill: 137.7K in 299 s (460 tok/s)",
-        "resume_tokens": "docs/FLEET_API.md 5.2 and docs/CHAT_MEMORY.md: K3 resumes on 16,384-token checkpoints",
+        "resume_tokens": "docs/FLEET_API.md 5.2: K3 resumes on 16,384-token checkpoints",
         "cache_bytes_per_token_node": "docs/FLEET_API.md 5.3: about 1.9 KB per token per node",
         "cache_bytes_node": "docs/FLEET_API.md 5.3: 500 GB per node",
         "tiktoken_pattern": "tokenization_kimi.py in the publisher's checkpoint; with its tiktoken.model"

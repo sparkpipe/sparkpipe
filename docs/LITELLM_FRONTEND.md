@@ -42,7 +42,9 @@ nothing more:
   `wait_seconds`, and `activation_url`, which is POSTed once per cold period
   or null when an operator starts the engine) until `/health` turns ready.
   A full queue or an expired wait answers 503 with Retry-After; `/health`
-  shows the queue.
+  shows the queue. With memory on, it also counts each model's background
+  memory jobs (`memory_jobs`: `queued`, `running` and `foreground`), so a client can tell
+  when memory work has drained.
 
 The layer is model-neutral. A model family supplies its configuration
 (`model-families/glm52/serving/chat_frontend.json`): the model directory
@@ -517,7 +519,9 @@ templates and tool-call parsers already live. `tools/serving/chat_shapes.py`
 (request translation and stream writers), `tools/serving/chat_replay.py`
 (the replay store), `tools/serving/working_state.py` (the deletion rule) and
 `tools/serving/codex_instructions.md` sit next to `chat_frontend.py` in
-`~/sparkpipe-chat`, as `chat_memory.py` does.
+`~/sparkpipe-chat`. Memory is a separate, separately licensed program that runs as its own
+user unit; the chat layer reaches it over localhost through the memory protocol
+([MEMORY_PROTOCOL.md](MEMORY_PROTOCOL.md)).
 
 | Path | What it does |
 | --- | --- |
@@ -831,12 +835,10 @@ Retention follows the privacy policy:
 
 - **Chat memory goes with its chat.**
   - A root timer, `open-webui-chat-list.timer`, runs every 5 minutes. It reads `webui.db` read-only and writes Open WebUI's chats, as hashed (user, chat) names, to `/srv/workspace/sparkpipe/open-webui-chats.json`. The chat layer's user cannot read the database itself.
-  - Every 10 minutes the chat layer deletes the memory file of each chat not on that list and drops that chat from RAM. Files written in the last hour are kept, for chats whose row is not stored yet.
+  - Every 10 minutes the memory program deletes the memory file of each chat not on that list and drops that chat from RAM. Files written in the last hour are kept, for chats whose row is not stored yet.
   - It deletes nothing when the list is missing, older than 30 minutes, or names no users.
   - Install:
-    1. Copy `tools/serving/open_webui_chat_list.py` to `/usr/local/lib/sparkpipe/` (root, 644).
-    2. Copy `deployment/hub/open-webui-chat-list.service` and `.timer` to `/etc/systemd/system/`.
-    3. Run `systemctl enable --now open-webui-chat-list.timer`.
+    The memory program ships the exporter and its `open-webui-chat-list.service` and `.timer`.
 - **Operational records:** `chat.log`, the LiteLLM logs and the model APIs' logs rotate monthly under `/etc/logrotate.d/sparkpipe-hub` (`deployment/hub/logrotate-sparkpipe-hub`). A rotated file is deleted 334 days after its last write, so no record is older than a year.
 
 `open_webui.env` is copied from `deployment/hub/open_webui.env`. v0.12.0
@@ -881,10 +883,9 @@ applied inside the container with `tools/serving/open_webui/open_webui_models.py
 description (context window and switch time), text-only input, web search
 and the code interpreter on by default, the GitHub tool, the trimmed
 built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
-memory serves every model (docs/CHAT_MEMORY.md), and the chat layer refuses a
+memory serves every model, and the memory program refuses a
 memory session once a compaction summary appears. The global "Full context"
-filter (`tools/serving/open_webui/functions/memory_off.py`, installed with
-`open_webui_functions.py` from `deployment/hub/open_webui_functions.json`) is
+filter, one of the Open WebUI functions the memory program installs, is
 the user's switch to turn memory off for a chat.
 
 The 15 public models carry a public read grant. Qwen 3.8 Flash carries none,
@@ -1020,7 +1021,7 @@ directory). Its callers:
 - the release scripts call `swap` in `scripts/rollover_lib.sh`, which reads
   the token on the hub and gives curl the header on stdin, so the token never
   appears in a process list (`tests/test_swap_token_shell.py`);
-  `tools/ds4_eval92_session.py` and `tools/chat_memory_phase1.py` read the
+  `tools/ds4_eval92_session.py` reads the
   file the chat layer's config names.
 
 A request for a model that is not loaded still swaps the fleet through the
@@ -1057,11 +1058,10 @@ printf 'Authorization: Bearer %s\n' "$(cat /srv/workspace/sparkpipe/swap-control
 
 ### Chat memory (K3, 2026-10-14)
 
-SparkPipe Chat's K3 conversations use the model-curated ledger described in
-`docs/CHAT_MEMORY.md` (stages A and B). The chat layer loads `chat_memory.py` because
-its config has a `chat_memory` block (store `/srv/workspace/sparkpipe/chat-memory`,
-one private directory per hashed user id; JWT secret
-`~/sparkpipe-chat/memory-jwt.secret`, 600). Open WebUI sends the signed
+SparkPipe Chat's K3 conversations use context memory, which the memory program runs.
+The chat layer reaches it because its config has a `memory` block. The program keeps its
+own store, one private directory per hashed user id, and the JWT secret
+`~/sparkpipe-chat/memory-jwt.secret` (600). Open WebUI sends the signed
 `X-OpenWebUI-User-Jwt` (`ENABLE_FORWARD_USER_INFO_HEADERS=true`, the same secret
 as `FORWARD_USER_INFO_HEADER_JWT_SECRET` in `secrets.env`) and the chat and
 message id headers from the connection's header templates (`openai.api_configs`

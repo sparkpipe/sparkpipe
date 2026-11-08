@@ -11,12 +11,12 @@ An engineer working with a coding agent waits for three things: prefill of conte
 | Saving | Mechanism | Starting point on `main` | Work | Acceptance test |
 | --- | --- | --- | --- | --- |
 | No re-prefill after a break | Automatic prefix cache, kept while the account holds the fleet | Prefix cache exists: hash-chained 64-token blocks, LRU (`cache/prefix_cache.c`). Retention is 24 h from last use (`spark_kv_snapshot.h:27`) | Held-hours retention and the wipe at a change of user (#1691, #1692). Snapshot store proven at the full per-node budget; today only 8 GiB per rank is proven (`TECHDEBT.md:579-599`). Prefix index that survives a release and a restart (`FLEET_RELEASE_RUNBOOK.md:298` drops it today) | Gate A |
-| Every turn resumes where the last one ended | Assistant turns replayed token-exact, so the next request matches up to the end of the previous reply | The chat layer keeps reply text byte-exact for chat (`LITELLM_FRONTEND.md:33-37`). Kimi K3 resumes only at 16,384-token checkpoints or at the end of a reply (`CHAT_MEMORY.md:22-33`) | The same guarantee for Anthropic Messages and Responses, including tool calls and reasoning (§3.2) | Gate A |
+| Every turn resumes where the last one ended | Assistant turns replayed token-exact, so the next request matches up to the end of the previous reply | The chat layer keeps reply text byte-exact for chat (`LITELLM_FRONTEND.md:33-37`). Kimi K3 resumes only at 16,384-token checkpoints or at the end of a reply (§5.1) | The same guarantee for Anthropic Messages and Responses, including tool calls and reasoning (§3.2) | Gate A |
 | Long agent sessions never fail | Bounded recurrent-state store | A K3 conversation fails after about 977 checkpointed requests (`PERFORMANCE_STATUS.md:450-452`) | Evict the oldest checkpoints instead of failing | Gate A |
 | No accidental cold fleet | Several models resident at once when they fit; a model that does not fit replaces another only on purpose | One model at a time, and "the last requested model wins" (`LITELLM_FRONTEND.md:132`). A switch takes 16–46 s, at worst 79 s (`PERFORMANCE_STATUS.md:174-202`). The cache is saved and restored: 137,600 tokens back in 2.7 s | Resident sets with a per-node memory budget for weights and cache, per-model cache pools, the alias table, and explicit replacement (§4.5). A background "haiku" call is served by a small resident model or the main one, and never swaps the fleet | Gate A |
 | Big prompts paid for once | Long prefill publishes its cache | The fast streamed 1M prefill (16.2 min) publishes no cache blocks and stops decode meanwhile (`TECHDEBT.md:308-326`). A reusable 1M prefill takes about 76 min (`PERFORMANCE_STATUS.md:68`) | Streamed prefill that publishes its blocks to the prefix cache and snapshot store | Gate C |
 | The codebase is already in context | Context packs (§5): a repository snapshot placed first in every prompt, kept warm | None | Pack builder, versioned aliases, and refresh in idle time | Gate D |
-| A session starts warm | Prefill-only warm-up of an exact future prefix, and pins that protect it | `max_tokens` must be 1 or more (`node/model_api.c:1622-1631`); `max_tokens` 1 commits a prompt (`CHAT_MEMORY.md:38`). No pinning | `POST /v1/cache/warm` and pins (§4) | Gate B |
+| A session starts warm | Prefill-only warm-up of an exact future prefix, and pins that protect it | `max_tokens` must be 1 or more (`node/model_api.c:1622-1631`); `max_tokens` 1 commits a prompt. No pinning | `POST /v1/cache/warm` and pins (§4) | Gate B |
 | Faster generation | Speculation | Lookup drafts from the request's own text, plus a model drafter for K3 and DeepSeek V4.1 Flash. 126.4 tok/s on K3 whole-file rewrites, against 15.3 plain. No speculation at batch 2 or more (`PERFORMANCE_STATUS.md:50-51`) | Per-fleet drafter choice (§8), and speculation at batch 2 and more | tok/s per request in telemetry |
 | Parallel agents | Batching | 8 sequences for K3, and 4 requests at once per key (`LITELLM_FRONTEND.md:401`) | Holder keys exempt from the per-key cap (#1692). Two sequences kept for interactive use while Functions run | Aggregate tok/s in telemetry |
 | A lost node pair costs hours, not days | The hub reports which part of the cache a pair failure destroyed. The market credits the rebuild hours (Agreement 6.6), and a Function rebuilds the cache | Pair mirror on branch (`docs/WORKING_STATE.md`, #1691/#1692); no loss report | Loss report from the hub, automatic credit, and the rebuild Function (§7.2) | Gate A |
@@ -199,14 +199,14 @@ Every response carries what it cost in time:
 ```json
 "sparkpipe": {
   "request": "r_7Q2…", "fleet": "F1A", "model": "kimi-k3", "pack": "core@a41f09",
-  "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580,
+  "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580, "engine_rounds": 1,
   "queue_ms": 0, "prefill_ms": 1240, "ttft_ms": 1310,
   "output_tokens": 912, "decode_tps": 15.8, "draft_accept": 0.71,
   "cold_prefill_ms_estimate": 312000
 }
 ```
 
-`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
+`cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `engine_rounds` counts the model's generations behind the response. It is more than one when context memory answered one of its own tool calls before the reply; then the prompt and cache counts are the last generation's, `output_tokens` counts every generation, and `prefill_ms` and `ttft_ms` run from the first. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
 
 ### 3.7 More inference features
 
@@ -218,6 +218,7 @@ Every response carries what it cost in time:
 - **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
   - **One name, two places.** A client that can set headers sends the `X-SparkPipe-Priority` header. One that can only set body fields sends the same name as a key of the request's `metadata` object, `"metadata": {"x-sparkpipe-priority": "background"}`, on any of the three shapes. The header wins when both are present. The chat layer reads the header today; reading the `metadata` key lands with the priority classes (E8, #1794).
   - **Harness hints.** Without either, the harness's own marks decide: Claude Code's `x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's `x-openai-subagent: compact`, run at background priority; everything else is interactive.
+- **Context memory.** `X-SparkPipe-Memory: on` gives a long session the context memory SparkPipe Chat uses: earlier exchanges are summarized, the newest are kept in full, and the model can read older detail through memory's own tools, whose calls the chat layer routes to the memory program, so the client never sees them ([MEMORY_PROTOCOL.md](MEMORY_PROTOCOL.md)). The session is the key's account and member plus the client's session id: `X-Claude-Code-Session-Id`, `X-Session-Id`, the Responses `prompt_cache_key` or the Messages `metadata` session; each Claude Code subagent has its own. Opting in without a session id answers 400, and the harness's own compaction requests stay raw. The client keeps sending its whole history and nothing in it is lost; usage counts the tokens the model read. While memory is unavailable, the request is served on its raw history.
 - **Images** on models that take them, in all three API shapes.
 - **Seeds.** `seed` gives reproducible sampling for the same prompt, model build and batch.
 
@@ -304,7 +305,7 @@ Prefills a prompt and commits it to the cache without generating anything.
 - **Body.** The body is a Messages, Responses or chat request (`format`: `anthropic`, `openai_responses` or `openai_chat`). It is rendered exactly as a real request would be, so the warmed prefix is the prefix a later request will match.
 - **Response.** `prompt_tokens`, `cached_tokens`, `committed_tokens` and `prefill_ms`.
 - **Priority and limit.** Warm requests run at low priority: they wait for interactive requests and never delay them. They count against a per-fleet budget of the cache, published on the Fleet List.
-- **Build.** The engine gets a commit-only request flag. Until then the chat layer sends `max_tokens` 1 and discards the token, as chat memory does (`tools/serving/chat_memory.py:1358-1365`).
+- **Build.** The engine gets a commit-only request flag. Until then the chat layer sends `max_tokens` 1 and discards the token, as chat memory's prewarm does.
 
 Warm-ups are used:
 - by the CLI and Functions after a handover, a release or a pack refresh;
@@ -373,7 +374,7 @@ A pack tree shares one stored prefix across many packs. Each level is a contiguo
 A leaf pack is root, trunk and leaf rendered one after another, named `<tree>/<leaf>` (for example `kimi-k3+core/net-crypto`).
 
 - **Stored once.** The prefix cache is hash-chained in 64-token blocks, so every leaf of a tree reuses the stored root and trunk; only each leaf's own tail is extra.
-- **Aligned to resume points.** Each level ends on the model's resume boundary: 16,384 tokens for K3 and 4,096 for GLM 5.3 Flash (`docs/CHAT_MEMORY.md`), and any 64-token block for models that resume anywhere. The builder pads a level with a fixed separator up to the boundary, so moving from one leaf to another never recomputes the shared part.
+- **Aligned to resume points.** Each level ends on the model's resume boundary: 16,384 tokens for K3 and 4,096 for GLM 5.3 Flash, and any 64-token block for models that resume anywhere. The builder pads a level with a fixed separator up to the boundary, so moving from one leaf to another never recomputes the shared part.
 - **Budget.** `max_leaf_tokens` caps a whole leaf pack (default 400K, up to the model's window).
 - **API.**
   - `POST /v1/packs/trees {"name": "core", "repo": "main", "root": [...], "trunks": {...}, "leaves": "auto" | {...}}` defines a tree. Leaves can be named by the customer, proposed by the anticipator, or both.

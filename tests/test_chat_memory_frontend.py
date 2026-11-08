@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The chat layer's memory helpers build prompts that line up with what the engine caches: the curator continuation is the answer's exact prompt and generated tokens (any trailing stop token dropped, template closing tokens the model already wrote not repeated) followed by the template's own tokens for the end of the assistant turn, the instruction as plain text in a user turn and the generation prompt, closing an opened reasoning channel with the model's suffix; and a cut renders the template up to a sentinel exactly as the full render would encode it."""
+"""The chat layer's memory helpers build prompts that line up with what the engine caches: the memory continuation is the answer's exact prompt and generated tokens (any trailing stop token dropped, template closing tokens the model already wrote not repeated) followed by the template's own tokens for the end of the assistant turn, the instruction as plain text in a user turn and the generation prompt, closing an opened reasoning channel with the model's suffix; and a cut renders the template up to a sentinel exactly as the full render would encode it."""
 import importlib.util
 import json
 import tempfile
@@ -67,7 +67,14 @@ def main():
               f"closing tokens the model already wrote are not repeated, and the suffix closes the reopened reasoning channel: {ids}")
         check(not reasoning_open, "the suffix leaves the reasoning channel closed")
         ids, reasoning_open = frontend.memory_continuation_ids(closing, messages, None, {}, prompt, generated, "summarize it", None)
-        check(reasoning_open and ids[-1] == token(THINK), "without a suffix the curator reply is parsed as reasoning first")
+        check(reasoning_open and ids[-1] == token(THINK), "without a suffix the memory reply is parsed as reasoning first")
+        ids, reasoning_open = frontend.memory_continuation_ids(closing, messages, None, {}, prompt, generated, "summarize it", "close", "a b")
+        check(ids[-3:] == [token("close"), token("a"), token("b")] and not reasoning_open, f"the memory reply starts after the suffix: {ids[-4:]}")
+        ids, reasoning_open = frontend.memory_render_ids(closing, messages, None, {}, "close", "a b")
+        check(ids[-4:] == [token(THINK), token("close"), token("a"), token("b")] and not reasoning_open, f"a rendered memory prompt starts its reply the same way: {ids[-4:]}")
+        plain = model(Path(scratch), words, "", "")
+        ids, reasoning_open = frontend.memory_render_ids(plain, messages, None, {}, "close", "a b")
+        check(ids[-3:] == [token("assistant"), token("a"), token("b")], f"with no reasoning channel the reply starts right after the assistant header: {ids[-3:]}")
     for body, expected in (({}, None), ({"num_ctx": -1}, None), ({"num_ctx": 0}, None), ({"num_ctx": 65536}, 65536), ({"num_ctx": 65536.0}, 65536), ({"num_ctx": "65536"}, 65536), ({"num_ctx": "-1"}, None)):
         check(chat_frontend.context_target(body) == expected, f"Open WebUI's context length {body} is the memory target {expected}")
     for body in ({"num_ctx": "lots"}, {"num_ctx": True}, {"num_ctx": -5}, {"num_ctx": 1.5}):
@@ -76,7 +83,7 @@ def main():
             check(False, f"{body} must be refused")
         except chat_frontend.RequestError as error:
             check(error.status == 400, f"{body} is a client error")
-    print("PASS test_chat_memory_frontend: curator continuations extend the answer's cached prompt and reply with the template's own tail; cuts match the full render up to the sentinel; Open WebUI's context length becomes the memory target")
+    print("PASS test_chat_memory_frontend: memory continuations extend the answer's cached prompt and reply with the template's own tail, and a memory reply starts with the given text after any reasoning close; cuts match the full render up to the sentinel; Open WebUI's context length becomes the memory target")
 
 
 if __name__ == "__main__":
