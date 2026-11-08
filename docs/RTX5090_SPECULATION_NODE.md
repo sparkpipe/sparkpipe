@@ -164,6 +164,53 @@ like the RadixArk drafter, and `block_draftd.py` serves it (DRAFTD-READY says
   RoPE, and checks the convolution, the window edge, chunked attention, the
   walk and the keyed sample on a tiny random checkpoint.
 
+## DSpine drafter (Tencent, Qwen3.8-27B, offline)
+
+`tools/spec_offline/dspine_drafter.py` runs checkpoints whose `dflash_config`
+has `selected_prefix_code_bridge` (tencent/Qwen3.8-27B-DSpine-b16, Apache-2.0,
+NOTICE): a 5-layer DFlash backbone with adjacent causal injection, block 16,
+15 drafts per round. `open_drafter` picks it before every other class, so
+`block_drafter.py` and `sampled_acceptance.py` score it and `block_draftd.py`
+serves it through the unchanged `DraftGraph` and `Context`.
+- **Inputs:** taps `o1,o16,o31,o46,o61` (the checkpoint's `target_layer_ids`
+  as 0-based layer outputs, no offset). The codebook (`[248320, 1024]`)
+  ships in the checkpoint; the greedy refinement tables (0.76 GB) are built
+  from the target LM head at load.
+- **Block:** rows `[t_A, mask x 15]` at A..A+15, causal inside the block, a
+  sliding window of 8,192 per row; the residual is BF16 at every add. After
+  every layer the code bridge writes `h = u + rms(u) W_l (g * m)` from the
+  predicted code of the row before (the anchor's code is its codebook row).
+- **Drafts:** the 16 best head logits per row, ascending by id; the last write
+  redone with each candidate's exact code as sender (`serial_table`), walked
+  greedily from the anchor; a sampled stream walks the FP32 refined table with
+  the verifier's keyed noise. The score is the refined choice's softmax mass.
+- **draftd:** `--window 8176` (8,192 minus the block) keeps every row inside
+  its own window, since draftd keeps one context per sequence. The graph path
+  re-ranks the 64 best of its own last-norm logits with the bridge's normed
+  rows, so it picks the offline path's candidates.
+- **Checks:** `tests/test_dspine_drafter.py` holds the forward to float64
+  references (backbone with the writes zeroed, full DSpine with them on), the
+  greedy chain to a brute-force decode that redoes the last write per row, the
+  FP32 sampled table to float64, and the graph segments to the offline path.
+- **Measured (2026-11-08, lenovo8, torch target reference):** GSM8K first 100,
+  xhigh, decode rounds (`--replay`), per-request mean: 6.99 at T=0 (card 7.20;
+  DFlash2 5.60, card 5.69) and 6.56 with rejection verify at T=1 (card 6.31;
+  DFlash2 5.39, card 5.45). Whole-file rewrites and code edits 9-15.7 tokens
+  per round against 5.4-8.0 for DFlash2 and the RadixArk DSpark; prose 2.1-2.2
+  against DFlash2's 2.4-2.6. Tap offset sweep peaks at 0 for both drafters.
+  A draftd graph round (15 drafts) takes 31.0 ms on an idle GB10 at 8,176
+  context positions; its first draft matches the offline path on 233 of 233
+  anchors and the whole chain on 93%.
+
+`tools/spec_offline/selector_block_drafter.py` runs DFlash2 checkpoints with
+grouped-query attention (incoai Qwen3.8-27B DFlash2): the block convolutions
+and the transition selector of the latent drafter around GQA attention,
+sliding window 2,048, 7 drafts per round. `tools/spec_offline/qwen38_27b_target.py`
+is a torch reference of the Qwen3.8-27B decoder (chunked GatedDeltaNet prefill,
+batched decode, greedy or keyed sampling) that records these tap streams on a
+GB10 and writes the `--target-shard` (embed, head, final norm with its 1 + w
+folded in).
+
 ## Draft farm
 
 Only qwen38_27b consumes remote drafts, with the tap-free sources NGRAM,

@@ -152,6 +152,9 @@ def render(record_id: str, directory: Path) -> None:
                        env=dict(environment, STAGE_RECORD=record_id), check=True)
 
 
+TARGET_NAMES = ("embed", "head", "norm")
+
+
 def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     lane = record(record_id)
     spec, server = lane.get("draftd"), lane.get("draft_server")
@@ -171,6 +174,13 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
                    "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
                    "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+    names = spec.get("target_names")
+    if names is not None:
+        if not isinstance(names, dict) or set(names) != set(TARGET_NAMES) or not all(isinstance(value, str) and value for value in names.values()):
+            raise SystemExit(f"{record_id}: draftd target_names names the target shard's {', '.join(TARGET_NAMES)} tensors, each a non-empty string")
+        if not spec.get("target_shard"):
+            raise SystemExit(f"{record_id}: draftd target_names name tensors in the target shard, and the record has none")
+        environment.update({f"DRAFTD_TARGET_{key.upper()}": names[key] for key in TARGET_NAMES})
     return spec["source"], environment
 
 
@@ -179,6 +189,7 @@ def draftd_flags(environment: dict[str, str]) -> list[str]:
              f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
     if environment["DRAFTD_TARGET_SHARD"]:
         flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
+    flags += [f"--{key} {environment[f'DRAFTD_TARGET_{key.upper()}']}" for key in TARGET_NAMES if f"DRAFTD_TARGET_{key.upper()}" in environment]
     return flags
 
 

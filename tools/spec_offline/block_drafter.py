@@ -7,7 +7,15 @@ context features of positions < a only, drafts a block from the anchor
 token and is scored against the tokens the target committed. Arms:
   --delta        tap layer offset added to the drafter's target layer ids;
   --convention   shift: query slot j predicts position a+1+j (block drafts);
-                 inplace: slot j >= 1 predicts position a+j (block-1 drafts).
+                 inplace: slot j >= 1 predicts position a+j (block-1 drafts);
+  --replay       anchors follow the rounds a speculative decode takes on the
+                 recorded reply instead of spreading over it: the first round
+                 starts at the reply's first token and each next one at the
+                 last token the round committed (accepted drafts + 1), the
+                 greedy drafts deciding on a greedy stream and the keyed ones
+                 on a sampled stream, so tokens per round is the decode's
+                 (pooled over rounds, and the mean of each request's, the
+                 per-request figure drafter vendors publish).
 The target head on norm(final) must reproduce the committed next token
 (check printed as final_head_agreement).
 """
@@ -25,7 +33,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tapstream import frames  # noqa: E402
 
-DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32)}
+DTYPES = {"BF16": (np.uint16, torch.bfloat16), "F32": (np.float32, torch.float32), "I64": (np.int64, torch.int64)}
 
 
 SPLITMIX_INCREMENT = 0x9e3779b97f4a7c15 - (1 << 64)
@@ -159,6 +167,7 @@ class BlockDrafter:
         self.target_norm = target.load(names["norm"], device)
         self.inv, self.attention = yarn_frequencies(c, device)
         self.window = None
+        self.logits_of = (None, None)
 
     def context(self, taps, positions, chunk=4096):
         keys, values = [[] for _ in self.layers], [[] for _ in self.layers]
@@ -319,13 +328,27 @@ class BlockDrafter:
         tokens, scores = self.walk(y, base, torch.tensor(int(anchor_token), device=self.device), count)
         return tokens.tolist(), (scores.tolist() if scores is not None else [])
 
+    def slot_logits(self, y, slot, previous):
+        if self.logits_of[0] is not y:
+            self.logits_of = (y, (y @ self.head.t()).float())
+        logits = self.logits_of[1][slot]
+        if self.markov_w1 is not None:
+            logits = logits + self.markov_w2.float() @ self.markov_w1[int(previous)].float()
+        return logits
+
 
 def open_drafter(directory, shard, names, device):
+    from dspine_drafter import DSpineDrafter, is_dspine_checkpoint
     from k3_dspark_drafter import K3DsparkDrafter, is_k3_dspark_checkpoint
     from latent_block_drafter import LatentBlockDrafter, is_latent_checkpoint
+    from selector_block_drafter import SelectorBlockDrafter, is_selector_checkpoint
+    if is_dspine_checkpoint(directory):
+        return DSpineDrafter(directory, shard, names, device)
     if is_k3_dspark_checkpoint(directory):
         return K3DsparkDrafter(directory, shard, names, device)
-    return (LatentBlockDrafter if is_latent_checkpoint(directory) else BlockDrafter)(directory, shard, names, device)
+    if is_latent_checkpoint(directory):
+        return LatentBlockDrafter(directory, shard, names, device)
+    return (SelectorBlockDrafter if is_selector_checkpoint(directory) else BlockDrafter)(directory, shard, names, device)
 
 
 class DraftGraph:
@@ -450,6 +473,7 @@ def main():
     parser.add_argument("--window", type=int, default=4096, help="context positions a block drafter attends to, as draftd keeps them; latent drafters use their own layer windows")
     parser.add_argument("--donor-taps", nargs="*", default=[], help="recordings that only lend context: a request recorded from position s > 0 takes positions below s from the latest earlier request that holds them all and matches its recorded prompt rows")
     parser.add_argument("--max-anchors", type=int, default=400, help="per request, spread over the reply")
+    parser.add_argument("--replay", action="store_true", help="anchors follow the rounds of a speculative decode of the recorded reply (module docstring)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--anchors-out", help="JSON lines, one per anchor: request, position, accepted, drafts, confidence")
     parser.add_argument("--temperature", type=float, default=0.0, help="the recorded streams' sampling; above 0 also scores drafts made with the verifier's keyed noise")
@@ -477,7 +501,8 @@ def main():
     columns = [hello["entries"].index(name) for name in wanted]
     final_column = hello["entries"].index("final")
     slots = list(range(drafter.block)) if args.convention == "shift" else list(range(1, drafter.block))
-    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "window": getattr(drafter, "window", None), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed}, "requests": []}
+    report = {"arm": {"delta": args.delta, "convention": args.convention, "layers": wanted, "window": getattr(drafter, "window", None), "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed,
+                      "replay": args.replay}, "requests": []}
     rule = None
     if args.temperature > 0.0:
         seed = args.seed - (1 << 64) if args.seed >= (1 << 63) else args.seed
@@ -525,11 +550,20 @@ def main():
         reply_agree += reply_hits
         reply_total += reply_count
         anchors = list(range(first, len(records)))
-        if len(anchors) > args.max_anchors:
+        if len(anchors) > args.max_anchors and not args.replay:
             step = len(anchors) / args.max_anchors
             anchors = [anchors[int(i * step)] for i in range(args.max_anchors)]
         lengths = []
-        for anchor in anchors:
+        coupled_lengths = []
+        spread = None if args.replay else iter(anchors)
+        anchor = first
+        while True:
+            if spread is not None:
+                anchor = next(spread, None)
+                if anchor is None:
+                    break
+            elif anchor >= len(records) - 1:
+                break
             y, base = drafter.draft(int(tokens[anchor]), start + anchor, keys, values, anchor)
             drafts, confidence = drafter.sequential(y, base, int(tokens[anchor]), slots)
             truth = tokens[anchor + 1: anchor + 1 + len(drafts)].tolist()
@@ -556,19 +590,26 @@ def main():
                         break
                     coupled += 1
                 coupled_accepted += coupled
+                coupled_lengths.append(coupled)
             if anchor_log:
                 anchor_log.write(json.dumps({"request": key[1], "position": start + anchor, "reply": anchor >= first, "accepted": accepted, "coupled_accepted": coupled,
                                              "drafts": drafts, "confidence": [round(c, 4) for c in confidence]}) + "\n")
+            if spread is None:
+                anchor += 1 + (coupled if coupled is not None else accepted)
         totals["anchors"] += len(lengths)
         totals["accepted"] += sum(lengths)
         report["requests"].append({"request_id": key[1], "positions": len(records), "recorded_from": recorded_from, "context_from": start, "reply": len(records) - first, "anchors": len(lengths),
                                    "tokens_per_round": 1 + sum(lengths) / max(1, len(lengths)),
+                                   "coupled_tokens_per_round": 1 + sum(coupled_lengths) / max(1, len(coupled_lengths)) if rule is not None else None,
                                    "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - own - 1),
                                    "reply_head_agreement": reply_hits / max(1, reply_count)})
         print(f"request {key[1]} positions {len(records)} recorded_from {recorded_from} context_from {start} reply {reply_count} anchors {len(lengths)}"
               f" tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f} head {agree / max(1, len(records) - own - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
     report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
     report["coupled_tokens_per_round"] = 1 + coupled_accepted / max(1, totals["anchors"]) if rule is not None else None
+    scored = [entry for entry in report["requests"] if entry["anchors"]]
+    report["request_mean_tokens_per_round"] = sum(entry["tokens_per_round"] for entry in scored) / max(1, len(scored))
+    report["request_mean_coupled_tokens_per_round"] = sum(entry["coupled_tokens_per_round"] for entry in scored) / max(1, len(scored)) if rule is not None else None
     report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]
     report["final_head_agreement"] = head_agree / max(1, head_total)
     report["reply_head_agreement"] = reply_agree / max(1, reply_total)
@@ -576,7 +617,8 @@ def main():
         anchor_log.close()
     report["confidence_bins"] = {str(b): {"n": v[0], "accepted": v[1] / v[0] if v[0] else None} for b, v in sorted(calibration.items())}
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "coupled_tokens_per_round", "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
+    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "coupled_tokens_per_round", "request_mean_tokens_per_round", "request_mean_coupled_tokens_per_round",
+                                             "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
 
 
 if __name__ == "__main__":
