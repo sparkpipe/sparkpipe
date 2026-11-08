@@ -1205,7 +1205,7 @@ def notice_flows(failures, work):
             failures.append(f"the ledger holds notices, webhooks, lost paths, context names or hub event data: {sorted(kinds)} {sorted(mailed)}")
         if raw_call(port, "PUT", "/v1/webhooks", json.dumps({"url": url(good), "events": ["*"]}).encode(), {"X-Api-Key": m.create_key(W, {})["key"]})[0] != 403:
             failures.append("an API key manages webhooks")
-        until(lambda: any(o["target"] == stuck["id"] for o in app.notifier.deliveries.items()), 5)
+        until(lambda: any(o["target"] == stuck["id"] for o in app.notifier.deliveries.items()) and sum(o["attempts"] for o in app.notifier.deliveries.items() if o["target"] == retried["id"]) >= 6, 5)
         outcomes = [o for o in app.notifier.deliveries.items() if o["target"] != stuck["id"]]
         if {o["outcome"] for o in outcomes} != {"delivered"} or sum(o["attempts"] for o in outcomes if o["target"] == retried["id"]) != 6 or {o["attempts"] for o in outcomes if o["target"] != retried["id"]} != {1}:
             failures.append(f"webhook outcomes are not recorded: {[o for o in outcomes if o['target'] == retried['id']]}")
