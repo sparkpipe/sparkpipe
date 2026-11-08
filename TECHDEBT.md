@@ -10,6 +10,23 @@ purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
 accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
+## Separately licensed modules
+
+- The site (security page, section 8) and Customer Agreement clause 7.8
+  describe separately licensed modules, listed on the website, that run only
+  on our machines and send nothing elsewhere. The chat layer reaches only one,
+  memory, through a memory-specific connector
+  (`tools/serving/memory_connector.py`,
+  [MEMORY_PROTOCOL.md](docs/MEMORY_PROTOCOL.md)). Generalize it into a module
+  host: modules declared by kind in the chat layer's config, a hello that
+  reports each module's name, version, kind and hooks, each hook routed to the
+  module that declared it, a fallback per kind when none is reachable, and a
+  log of the module name and version that served each request. Memory becomes
+  the first kind.
+- Until the hub runs the memory program (rollout approved 2026-11-08, gated on
+  9 of 20 tuning questions), production chat memory runs from the release
+  before #1886.
+
 ## Dual-rail topology contract
 
 - The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,

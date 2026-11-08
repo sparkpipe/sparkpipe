@@ -157,14 +157,14 @@ PAGES = [
         "title": "SparkPipe Data Processing Agreement", "other": "dpa-ko.html",
         "desc": "Draft SparkPipe Data Processing Agreement for personal data processed on a customer's fleets, under GDPR Article 28, the UK GDPR and Korea's PIPA, published for review.",
         "lead": "This DPA is part of the Customer Agreement and applies whenever we process personal data for a customer on its fleets. The Korean text prevails (clause 11.4).",
-        "version": "Version of 5 November 2026", "notice": "review",
+        "version": "Version of 8 November 2026", "notice": "review",
     },
     {
         "src": "dpa-ko.md", "out": "dpa-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 데이터 처리 계약", "other": "dpa.html",
         "desc": "고객의 플릿에서 처리하는 개인정보에 관한 SparkPipe 데이터 처리 계약 검토용 공개 문안. GDPR 제28조, 영국 GDPR, 개인정보 보호법.",
         "lead": "본 계약은 고객 계약의 일부이며, 공급자가 고객의 플릿에서 고객을 위하여 개인정보를 처리하는 모든 경우에 적용된다. 국문본이 우선한다(제11.4조).",
-        "version": "2026년 11월 5일 판", "notice": "review",
+        "version": "2026년 11월 8일 판", "notice": "review",
     },
 ]
 

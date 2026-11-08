@@ -13,9 +13,9 @@ licensed under the Apache License, Version 2.0, and stays so.
 Model weights, tokenizers and stage packs built from them keep their
 publishers' licenses; neither license above covers them.
 
-The SparkPipe memory library, a separate program that SparkPipe can use, is
-licensed separately. Neither license above covers it, or the patents and patent
-applications that cover it, and SparkPipe runs without it.
+SparkPipe can use separately licensed modules, such as its memory program.
+Each is a separate program: neither license above covers it, or the patents
+and patent applications that cover it, and SparkPipe runs without it.
 
 SparkPipe third-party notices
 
