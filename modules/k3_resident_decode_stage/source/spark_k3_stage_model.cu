@@ -329,7 +329,7 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_INDEX )
 	{
-		const uint32_t count = K3LayerIndexChunkCount(b, rows);
+		const uint32_t count = K3LayerIndexChunkCount(b, rows), share = K3LayerIndexShare(b, count);
 		if ( b->index_active == 0u || count == 0u || b->index_keep == 0u || b->index_send == 0 || b->index_received == 0 )
 		{
 			K3ModelFail(state);
@@ -338,8 +338,22 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 		const uint32_t width = b->index_keep * (uint32_t)(sizeof(uint2) / sizeof(uint16_t));
 		const uint32_t split = width > K3_HIDDEN ? 2u : 1u;
 		static_assert(K3_INDEX_TOPK * (sizeof(uint2) / sizeof(uint16_t)) / 2u <= K3_HIDDEN, "half an index candidate row fits one collective row");
-		K3RunnerRound(state, stream, count * split, b->index_send, b->index_received,
-			width / split, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		K3RunnerRound(state, stream, (share != 0u ? share : count) * split, b->index_send, b->index_received, width / split,
+			share != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		return;
+	}
+	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_SELECTED )
+	{
+		const uint32_t count = K3LayerIndexChunkCount(b, rows), share = K3LayerIndexShare(b, count);
+		static_assert(K3_INDEX_TOPK * (sizeof(uint32_t) / sizeof(uint16_t)) <= K3_HIDDEN, "a selected index row fits one collective row");
+		if ( b->index_active == 0u || count == 0u || b->index_selected == 0 || b->index_selected_own == 0 )
+		{
+			K3ModelFail(state);
+			return;
+		}
+		if ( share != 0u )
+			K3RunnerRound(state, stream, share, b->index_selected_own, b->index_selected + (uint64_t)K3LayerIndexChunkFirst(b) * K3_INDEX_TOPK,
+				K3_INDEX_TOPK * (uint32_t)(sizeof(uint32_t) / sizeof(uint16_t)), SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
 		return;
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_PARTIALS )
@@ -480,7 +494,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	if ( b->tp_sharded == 0u )
 		return;
 	if ( base == K3_COLLECTIVE_MLA_QUERY || base == K3_COLLECTIVE_MLA_PARTIALS || base == K3_COLLECTIVE_MLA_KEYS ||
-		base == K3_COLLECTIVE_MLA_MHA_QUERY || base == K3_COLLECTIVE_MLA_MHA_PARTIALS || base == K3_COLLECTIVE_MLA_INDEX )
+		base == K3_COLLECTIVE_MLA_MHA_QUERY || base == K3_COLLECTIVE_MLA_MHA_PARTIALS || base == K3_COLLECTIVE_MLA_INDEX ||
+		base == K3_COLLECTIVE_MLA_SELECTED )
 	{
 		K3RunnerShardExchange(state, b, stream, rows, phase);
 		return;

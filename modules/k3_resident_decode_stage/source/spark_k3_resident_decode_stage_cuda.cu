@@ -452,10 +452,12 @@ int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
 	const uint64_t rows = d->attention_rows, chunk = rows < K3_DISPATCH_INDEX_CHUNK_ROWS ? rows : K3_DISPATCH_INDEX_CHUNK_ROWS;
 	const uint64_t stride = SparkKvShardGatherKeys(b->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
+	const uint64_t share = (chunk + d->tp_degree - 1u) / d->tp_degree;
 	const uint64_t sizes[] = {
 		rows * K3_INDEX_QUERY * sizeof(uint16_t), rows * K3_INDEX_DIM * sizeof(uint16_t), rows * K3_INDEX_HEADS * sizeof(uint16_t),
-		chunk * stride * sizeof(float), chunk * K3_INDEX_TOPK * sizeof(uint2), (uint64_t)d->tp_degree * chunk * K3_INDEX_TOPK * sizeof(uint2),
-		chunk * 2u * words * sizeof(uint32_t), rows * K3_INDEX_TOPK * sizeof(uint32_t), sizeof(LmFrameError)};
+		chunk * stride * sizeof(float), share * d->tp_degree * K3_INDEX_TOPK * sizeof(uint2), (uint64_t)d->tp_degree * chunk * K3_INDEX_TOPK * sizeof(uint2),
+		chunk * 2u * words * sizeof(uint32_t), (rows + d->tp_degree) * K3_INDEX_TOPK * sizeof(uint32_t), sizeof(LmFrameError),
+		share * K3_INDEX_TOPK * sizeof(uint32_t)};
 	uint8_t *carve[sizeof(sizes) / sizeof(sizes[0])];
 	uint64_t total = 0u;
 	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
@@ -489,6 +491,7 @@ int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
 	b->index_bitmap_words = (uint32_t)words;
 	b->index_selected = (uint32_t *)carve[7];
 	b->index_error = (LmFrameError *)carve[8];
+	b->index_selected_own = (uint32_t *)carve[9];
 	b->index_chunk_rows = (uint32_t)chunk;
 	d->slice_state->index_cache = d->index_cache;
 	d->indexed = 1u;

@@ -11,6 +11,7 @@
 #define K3_COLLECTIVE_MLA_MHA_QUERY 8u
 #define K3_COLLECTIVE_MLA_MHA_PARTIALS 9u
 #define K3_COLLECTIVE_MLA_INDEX 10u
+#define K3_COLLECTIVE_MLA_SELECTED 11u
 #define K3_COLLECTIVE_FINISH 0x100u
 #define K3_COLLECTIVE_BEGIN 0x200u
 #define K3_COLLECTIVE_ROWS 0x400u
@@ -158,6 +159,8 @@ struct K3Schedule
 				break;
 			B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_INDEX);
 			status = B::MlaIndexMerge(c, K3_LANE_A, K3_STREAM_MAIN);
+			if ( status == B::kOk )
+				B::Collective(c, K3_LANE_A, K3_STREAM_MAIN, layer, K3_COLLECTIVE_MLA_SELECTED);
 		}
 		if ( status != B::kOk )
 			return status;

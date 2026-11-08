@@ -214,6 +214,7 @@ struct K3LayerBuffers
 	uint32_t *index_bitmaps;
 	uint32_t index_bitmap_words;
 	uint32_t *index_selected;
+	uint32_t *index_selected_own;
 	LmFrameError *index_error;
 	uint32_t index_chunk_rows;
 	uint32_t index_chunk;
@@ -687,6 +688,18 @@ static uint32_t K3LayerIndexChunkCount(const K3LayerBuffers *b, uint32_t rows)
 	return(first >= rows ? 0u : rows - first < b->index_chunk_rows ? rows - first : b->index_chunk_rows);
 }
 
+static uint32_t K3LayerIndexShare(const K3LayerBuffers *b, uint32_t count)
+{
+	const uint32_t degree = b->kv_shard.degree;
+	return(degree < 2u || count < degree ? 0u : (count + degree - 1u) / degree);
+}
+
+static uint32_t K3LayerIndexOwnRows(const K3LayerBuffers *b, uint32_t count, uint32_t share)
+{
+	const uint32_t first = b->kv_shard.rank * share;
+	return(first >= count ? 0u : count - first < share ? count - first : share);
+}
+
 static void K3LayerIndexPlan(K3LayerBuffers *b, uint32_t context)
 {
 	const uint32_t stride = SparkKvShardGatherKeys(b->kv_shard, context);
@@ -736,12 +749,16 @@ static int32_t K3LayerMlaIndexSelect(const K3LayerBuffers *b, uint32_t rows, cud
 
 static int32_t K3LayerMlaIndexMerge(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
-	const uint32_t first = K3LayerIndexChunkFirst(b), count = K3LayerIndexChunkCount(b, rows);
-	if ( b->index_active == 0u || count == 0u )
+	const uint32_t count = K3LayerIndexChunkCount(b, rows), share = K3LayerIndexShare(b, count), own = K3LayerIndexOwnRows(b, count, share);
+	const uint32_t first = K3LayerIndexChunkFirst(b) + b->kv_shard.rank * share, merged = share != 0u ? own : count;
+	if ( b->index_active == 0u || count == 0u || (share != 0u && b->index_selected_own == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(b->index_received,(uint64_t)count * b->index_keep,b->kv_shard,b->index_keep,
-		b->sequence_of_row + first,b->context_length,b->positions + first,K3_INDEX_TOPK,K3_INDEX_TOPK,count,b->index_bitmap_words,b->index_bitmaps,
-		b->index_selected + (uint64_t)first * K3_INDEX_TOPK,b->index_error,stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( merged == 0u )
+		return(LM_LAUNCH_OK);
+	return(LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(b->index_received,(uint64_t)(share != 0u ? share : count) * b->index_keep,b->kv_shard,b->index_keep,
+		b->sequence_of_row + first,b->context_length,b->positions + first,K3_INDEX_TOPK,K3_INDEX_TOPK,merged,b->index_bitmap_words,b->index_bitmaps,
+		share != 0u ? b->index_selected_own : b->index_selected + (uint64_t)first * K3_INDEX_TOPK,b->index_error,stream) == cudaSuccess ? LM_LAUNCH_OK :
+		LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t K3LayerMlaGate(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
