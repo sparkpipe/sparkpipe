@@ -115,7 +115,7 @@ with two more cluster syncs. The result is bitwise equal
 (`test_glm5_next_hc_mix`, `ROOFLINE-HASH`). Only CTA 0 writes `mixes`, `pre`
 and `post` to global memory.
 
-For prefill a cluster takes `G5N_HC_ROWS` (8) rows. Each `fn` vector is loaded
+For prefill a cluster takes `LM_HC_SITE_ROWS` (8) rows. Each `fn` vector is loaded
 once and applied to all eight rows, so a 2,048-row site reads the 1.5 MiB
 matrix 256 times instead of 2,048 times. The rows are staged as bf16, which
 converts to the same floats, so each row's dot product, Sinkhorn and collapse
