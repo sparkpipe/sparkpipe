@@ -59,7 +59,8 @@
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_SCATTER_ROWS 256u
 #define GLM_SPLIT_PARTITIONS 16u
-#define GLM_PREFILL_BLOCK_ROWS 4u
+#define GLM_PREFILL_HEADS 4u
+#define GLM_PREFILL_BLOCK_ROWS LM_PREFILL_ATTN_BLOCK_ROWS(GLM_PREFILL_HEADS)
 #define GLM_PREFILL_SPANS 8u
 #define GLM_PREFILL_TABLE_BLOCKS(rows) (((rows) + GLM_PREFILL_BLOCK_ROWS - 1u) / GLM_PREFILL_BLOCK_ROWS + GLM_PREFILL_SPANS)
 #define GLM_PLAN_ARRAYS 3u
@@ -961,24 +962,24 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 template<class S>
 static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
-	int32_t status = GlmExpertsGateUp<S>(b, rows, packed_rows, sms, stream);
-	if ( status != LM_LAUNCH_OK )
-		return status;
-	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), packed_rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->expert_intermediate, false);
-	status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
-	if ( status != LM_LAUNCH_OK )
-		return status;
-	LM_LAUNCH((LmMoeFinalizeKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
-		b->expert_out_bf16, b->route_packed_row, b->route_weight, b->hidden_bf16, rows, S::kTopK, S::kHidden);
-	status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows, b->shared_gate_up_rows, 0u, sms, b->row_exact, stream);
+	static_assert(S::kHidden % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
+	int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows, b->shared_gate_up_rows, 0u, sms,
+		b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->shared_intermediate, false);
 	status = GlmLinear<S>(b->intermediate_bf16, b->weights->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmAddRowsKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
-		b->hidden_bf16, b->shared_out_bf16, b->hidden_bf16, rows, S::kHidden);
+	status = GlmExpertsGateUp<S>(b, rows, packed_rows, sms, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), packed_rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->expert_intermediate, false);
+	status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	LM_LAUNCH((LmMoeFinalizeAddKernel<GLM_THREADS>), dim3((S::kHidden / LM_MOE_FINALIZE_ADD_ELEMENTS + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
+		b->expert_out_bf16, b->route_packed_row, b->route_weight, b->shared_out_bf16, b->hidden_bf16, rows, S::kTopK, S::kHidden);
 	return GlmLaunched();
 }
 
@@ -1489,7 +1490,7 @@ struct GlmModel
 		state->selection_rows = LmTopkExactGatherSelectionRows(state->max_rows, state->max_positions, state->tp_degree);
 		state->topk_entries = LmTopkExactScratchEntries(state->selection_rows, state->max_positions, S::kSelected);
 		state->union_entries = state->max_positions > S::kSelected ?
-			(uint64_t)GLM_PREFILL_TABLE_BLOCKS(state->max_rows) * GLM_PREFILL_BLOCK_ROWS * S::kSelected : 0u;
+			LmPrefillSparseUnionEntries(GLM_PREFILL_TABLE_BLOCKS(state->max_rows), GLM_PREFILL_HEADS, S::kSelected) : 0u;
 		ScatterSizes(state, state->scatter_rows, &state->query_units_max, &state->indexing_units_max, &state->partial_units_max, &candidate_offset);
 		state->latent_max = GatherLayout(state, state->max_positions);
 		if ( state->latent_max.chunks == 0u )
@@ -1536,7 +1537,7 @@ struct GlmModel
 		state->shard.degree = state->tp_degree;
 		state->shard.rank = state->tp_rank;
 		state->shard.grain = 1u;
-		if ( state->heads != GLM_PREFILL_BLOCK_ROWS || SparkKvShardValid(state->shard, GLM_PAGE_SLOTS) == 0u )
+		if ( state->heads != GLM_PREFILL_HEADS || SparkKvShardValid(state->shard, GLM_PAGE_SLOTS) == 0u )
 		{
 			fprintf(stderr, "%s: TP%u gives %u heads per rank; the packed prefill tables and the context split need 4\n", G::Tag(), state->tp_degree, state->heads);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2253,7 +2254,7 @@ struct GlmModel
 		{
 			LmKvView cache;
 			View(state, &cache, state->kv_pool);
-			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_BLOCK_ROWS>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
+			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_HEADS>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
 					stream) != cudaSuccess )
 				return Fail("prefill block table", 0u, LM_LAUNCH_ERR_LAUNCH);
 		}

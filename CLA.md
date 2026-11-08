@@ -1,6 +1,6 @@
 # SparkPipe Contributor License Agreement
 
-Version 1.0, 2 November 2026
+Version 1.1, 8 November 2026
 
 This agreement is between you ("You"), the person or entity that submits a Contribution, and HYOR AI Tech Ltd. (효르에이아이테크 유한회사), a company registered in the Republic of Korea ("HYOR"). It applies to every Contribution You submit to HYOR for SparkPipe, now or later.
 
@@ -23,7 +23,7 @@ You grant HYOR, and everyone who receives software that HYOR distributes, a perp
 - make, have made, use, offer to sell, sell, import and otherwise transfer Your Contributions;
 - do the same with Your Contributions as combined with SparkPipe.
 
-The license covers the patent claims You can license that Your Contribution infringes, alone or in that combination.
+The license covers the patent claims You can license that Your Contribution infringes, alone or in that combination. It does not cover any patent or patent application that covers a separately licensed module, as SparkPipe's NOTICE describes them.
 
 If anyone starts patent litigation alleging that SparkPipe or a Contribution infringes a patent, the patent licenses granted to them under this agreement end on the date the litigation is filed.
 
@@ -58,6 +58,6 @@ This agreement is governed by the laws of the Republic of Korea. Disputes under 
 
 Before your first pull request is merged, add this sentence to the pull request's description or a comment, under the GitHub account you contribute from:
 
-> I have read the SparkPipe Contributor License Agreement, version 1.0 (CLA.md), and I agree to it for this and all my future contributions to SparkPipe.
+> I have read the SparkPipe Contributor License Agreement, version 1.1 (CLA.md), and I agree to it for this and all my future contributions to SparkPipe.
 
 If you contribute on behalf of an entity, also name the entity.

@@ -554,6 +554,44 @@ void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_
 	}
 }
 
+#define LM_MOE_FINALIZE_ADD_ELEMENTS 8u
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmMoeFinalizeAddKernel(const uint16_t *__restrict__ packed_bf16, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight,
+	const uint16_t *__restrict__ addend_bf16, uint16_t *__restrict__ output_bf16, uint32_t tokens, uint32_t top_k, uint32_t dimension)
+{
+	const uint32_t element = ((blockIdx.x * THREADS) + threadIdx.x) * LM_MOE_FINALIZE_ADD_ELEMENTS;
+	uint32_t token, route, index, words[4];
+	if ( element >= dimension )
+		return;
+	for (token = blockIdx.y; token < tokens; token += gridDim.y)
+	{
+		float total[LM_MOE_FINALIZE_ADD_ELEMENTS];
+		uint4 value;
+		for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; ++index)
+			total[index] = 0.0f;
+		for (route = 0u; route < top_k; ++route)
+		{
+			const uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+			const float weight = route_weight[((uint64_t)token * top_k) + route];
+			value = *(const uint4 *)(packed_bf16 + ((uint64_t)packed_row * dimension) + element);
+			words[0] = value.x; words[1] = value.y; words[2] = value.z; words[3] = value.w;
+			for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; ++index)
+				total[index] += LmBf16ToFloat((uint16_t)(words[index / 2u] >> (16u * (index % 2u)))) * weight;
+		}
+		value = *(const uint4 *)(addend_bf16 + ((uint64_t)token * dimension) + element);
+		words[0] = value.x; words[1] = value.y; words[2] = value.z; words[3] = value.w;
+		for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; index += 2u)
+		{
+			const float low = LmBf16ToFloat(LmFloatToBf16(total[index])) + LmBf16ToFloat((uint16_t)words[index / 2u]);
+			const float high = LmBf16ToFloat(LmFloatToBf16(total[index + 1u])) + LmBf16ToFloat((uint16_t)(words[index / 2u] >> 16u));
+			words[index / 2u] = (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+		}
+		*(uint4 *)(output_bf16 + ((uint64_t)token * dimension) + element) = make_uint4(words[0], words[1], words[2], words[3]);
+	}
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__restrict__ b_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t dimension)

@@ -26,6 +26,52 @@ __global__ void ProbeFillKernel(uint16_t *values,uint64_t count,uint64_t salt)
 	}
 }
 
+static double ProbeBf16(uint16_t value)
+{
+	uint32_t bits = (uint32_t)value << 16u;
+	float out;
+	memcpy(&out,&bits,sizeof(out));
+	return (double)out;
+}
+
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
+static void ProbeReference(const char *label, const uint16_t *input_device, const uint16_t *weight_device, uint32_t rows, const std::vector<uint16_t> &tile,
+	const std::vector<uint16_t> &chain)
+{
+	std::vector<uint16_t> input((uint64_t)rows * PROBE_HEADS * INPUT_HEAD_DIM),weight((uint64_t)PROBE_HEADS * OUT_DIM * IN_DIM);
+	uint64_t worse = 0u,checked = 0u,apart = 0u;
+	double worst = 0.0;
+	PROBE_CUDA(cudaMemcpy(input.data(),input_device,input.size() * 2u,cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemcpy(weight.data(),weight_device,weight.size() * 2u,cudaMemcpyDeviceToHost));
+	for (uint32_t row=0u; row<rows; row++)
+		for (uint32_t head=0u; head<PROBE_HEADS; head++)
+			for (uint32_t out=0u; out<OUT_DIM; out++)
+			{
+				const uint64_t at = ((uint64_t)row * PROBE_HEADS + head) * OUT_DIM + out;
+				double exact = 0.0,magnitude = 0.0,error,bound;
+				for (uint32_t k=0u; k<IN_DIM; k++)
+				{
+					const double product = ProbeBf16(input[((uint64_t)row * PROBE_HEADS + head) * INPUT_HEAD_DIM + INPUT_OFFSET + k]) *
+						ProbeBf16(weight[((uint64_t)head * OUT_DIM + out) * IN_DIM + k]);
+					exact += product;
+					magnitude += product < 0.0 ? -product : product;
+				}
+				error = ProbeBf16(chain[at]) - exact;
+				error = error < 0.0 ? -error : error;
+				bound = (exact < 0.0 ? -exact : exact) / 128.0 + magnitude * 1e-6;
+				worse += error > bound ? 1u : 0u;
+				worst = error / (bound > 0.0 ? bound : 1.0) > worst ? error / (bound > 0.0 ? bound : 1.0) : worst;
+				apart += (tile[at] > chain[at] ? tile[at] - chain[at] : chain[at] - tile[at]) > 1u ? 1u : 0u;
+				checked++;
+			}
+	if ( worse != 0u || apart * 1000u > checked )
+	{
+		printf("FAIL %s: %llu of %llu outputs miss the exact product by more than bf16 rounding (worst %.2f of the bound), %llu more than one bf16 step from the tile kernel\n",
+			label,(unsigned long long)worse,(unsigned long long)checked,worst,(unsigned long long)apart);
+		probe_failures++;
+	}
+}
+
 template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
 static void ProbeShape(uint32_t rows)
 {
@@ -50,13 +96,15 @@ static void ProbeShape(uint32_t rows)
 	PROBE_CUDA(cudaMemset(output,0xff,output_count * 2u));
 	PROBE_CUDA((LmPerHeadProjectChainLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input,weight,output,PROBE_HEADS,rows,0)));
 	PROBE_CUDA(cudaMemcpy(chain.data(),output,output_count * 2u,cudaMemcpyDeviceToHost));
-	if ( memcmp(tile.data(),chain.data(),output_count * 2u) != 0 )
+	if ( rows <= LM_PROJECT_CHAIN_ROWS && memcmp(tile.data(),chain.data(),output_count * 2u) != 0 )
 	{
 		for (index=0u; index<output_count && tile[index] == chain[index]; index++)
 			;
 		printf("FAIL %s: chain output differs from the tile kernel at %u (%04x vs %04x)\n",label,index,chain[index],tile[index]);
 		probe_failures++;
 	}
+	if ( rows > LM_PROJECT_CHAIN_ROWS )
+		ProbeReference<IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(label,input,weight,rows,tile,chain);
 	PROBE_CUDA(cudaEventRecord(begin));
 	for (index=0u; index<PROBE_REPEATS; index++)
 		PROBE_CUDA((LmPerHeadProjectRowsLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input,weight,output,PROBE_HEADS,rows,0)));
@@ -69,7 +117,8 @@ static void ProbeShape(uint32_t rows)
 	PROBE_CUDA(cudaEventRecord(end));
 	PROBE_CUDA(cudaEventSynchronize(end));
 	PROBE_CUDA(cudaEventElapsedTime(&chain_ms,begin,end));
-	printf("%s %s: bit-equal to the tile kernel, us tile %.1f chain %.1f\n",probe_failures == 0 ? "PASS" : "FAIL",label,tile_ms * 1000.0f / PROBE_REPEATS,chain_ms * 1000.0f / PROBE_REPEATS);
+	printf("%s %s: %s, us tile %.1f chain %.1f\n",probe_failures == 0 ? "PASS" : "FAIL",label,rows <= LM_PROJECT_CHAIN_ROWS ? "bit-equal to the tile kernel" :
+		"tensor cores within bf16 rounding of the exact product",tile_ms * 1000.0f / PROBE_REPEATS,chain_ms * 1000.0f / PROBE_REPEATS);
 	cudaFree(input); cudaFree(weight); cudaFree(output);
 	cudaEventDestroy(begin);
 	cudaEventDestroy(end);
@@ -86,11 +135,18 @@ int main(void)
 	}
 	ProbeShape<512u,256u,512u,0u>(16u);
 	ProbeShape<192u,512u,256u,0u>(13u);
+	ProbeShape<64u,128u,256u,192u>(9u);
+	ProbeShape<128u,512u,320u,0u>(100u);
+	ProbeShape<512u,128u,512u,0u>(64u);
+	ProbeShape<192u,512u,256u,0u>(2048u);
+	ProbeShape<512u,256u,512u,0u>(2048u);
+	ProbeShape<128u,512u,320u,0u>(4096u);
+	ProbeShape<512u,128u,512u,0u>(4096u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS per-head chain projection on the device: rows 1..8 and the tile fallback above 8 are bit-equal to the tile kernel\n");
+	printf("PASS per-head chain projection on the device: rows 1..8 are bit-equal to the tile kernel; above 8 rows the tensor-core kernel is within bf16 rounding of the exact product\n");
 	return 0;
 }

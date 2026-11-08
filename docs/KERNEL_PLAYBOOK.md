@@ -434,6 +434,63 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   against 91 to 97 ms (three runs each, `tests/cuda/attn_prefill_cuda.cu
   --time` with longer cases). The kernel is not bound by its MMAs alone, so
   the gain is less than the third of its MMAs that the low part was.
+- A block of `LmLatentAttentionPrefillKernel` holds `LM_PREFILL_ATTN_QUERIES`
+  = 16 queries: 4 rows of 4 heads, all reading one latent key per position.
+  The count is a template parameter; 32 (8 rows) builds and passes the same
+  tests. 16 stays the default because it is bit-equal to the earlier kernel;
+  32 changes tile boundaries over the block's union and waits for the fleet's
+  measured 8-row union sizes.
+  - The 16 queries of each MMA row tile are staged through the second key
+    buffer into registers, 72 per thread (a k-half of 288 columns), as in
+    `LmLatentShardPrefillKernel`. Two 32-key tiles still double-buffer in
+    85,888 bytes of shared memory. 32 queries held in shared memory next to
+    two key tiles would not fit.
+  - A block loads each union key once for 8 rows instead of 4, which halves
+    the key bytes per query when the rows' selections overlap.
+  - Key slots resolve without stalling the block. Each tile loads the union
+    positions three tiles ahead and prefetches the page-table entries two
+    tiles ahead into L1. It resolves the slots two tiles ahead after its P·V.
+    The old kernel looked the slot up at the top of every tile: two
+    dependent global loads with branches, between barriers.
+  - The softmax gives each query 8 threads (16 at 16 queries). A thread holds
+    keys `k, k+8, k+16, k+24` and adds them in the order of the old 32-lane
+    butterfly, so the running sums keep their bits.
+- `LmPrefillSparseUnionKernel` marks each 131,072-position window of
+  selected positions in a shared bitmap. It counts bits per word to give
+  each position its union index, and ORs each row's bit into that index's
+  membership byte. The union comes out ascending, as from the merge it
+  replaced. That merge binary-searched every other row's list in global
+  memory for every entry and took 0.87 ms of a 3.9 ms call. The bitmap takes
+  0.06 to 0.3 ms.
+- Bits: dense outputs are equal at 16 and 32 queries and equal to the
+  16-query kernel before this change. So are sparse outputs at 16 queries,
+  on every bench pattern at 64K and 300K context. At 32 queries a block's
+  union covers 8 rows, so its 32-key tiles and their BF16 weights differ
+  wherever two 4-row halves select different keys. Outputs then move by up
+  to one BF16 step of the head's largest output
+  (`tests/cuda/attn_prefill_sparse_cuda.cu`).
+- lenovo8 (GB10), 2,048 rows of 4 heads after 65,536 cached positions
+  (78 MB of keys), top 2,048 per row, times in ms including the union
+  kernel. Rows share a selection in groups of 4 (the old bench) or 8:
+
+  | Selections | Before (16 queries) | 16 queries (default) | 32 queries |
+  |---|---|---|---|
+  | Same set in groups of 4 / 8 | 3.97 / 3.48 | 2.80 / 1.96 | 1.99 / 1.53 |
+  | 75% shared in groups of 4 / 8 | 5.35 / 5.17 | 3.31 / 3.15 | 2.93 / 2.42 |
+  | 50% shared in groups of 4 / 8 | 6.33 / 6.36 | 3.56 / 3.58 | 4.01 / 3.66 |
+  | Disjoint | 8.60 | 4.45 | 6.01 |
+  | Most recent 2,048 | 2.66 | 1.27 | 0.99 |
+
+  - Same set, 8-row groups: the 32-query attention takes 1.39 ms. A bare
+    `cp.async` gather of the same random 1,152-byte rows takes 1.43 ms
+    (420 GB/s). So the attention runs at the gather rate of this cache;
+    L2-resident gathers reach 1.6 to 1.8 TB/s.
+  - With the 4 or 8 rows' selections mostly disjoint, 32 queries do twice
+    the MMA work per key that 16 do, for little saving in bytes.
+  - After 300,000 cached positions (348 MB), 32 queries are faster in every
+    case. Same set: 2.42 against 2.60 at 16 queries (groups of 8) and 4.04
+    against 4.57 (groups of 4), from 3.86 and 5.38 before. Disjoint: 7.85
+    against 11.2, from 13.1 before.
 
 **Projections (`project.cuh`)**
 

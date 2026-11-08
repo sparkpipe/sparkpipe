@@ -616,6 +616,7 @@ PYTHON_TESTS := \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
+	tests/test_moe_finalize_add_cuda.py \
 	tests/test_mesh_copy_down_cuda.py \
 	tests/test_k3_tp_context_cuda.py \
 	tests/test_k3_index_exchange_cuda.py \
@@ -632,6 +633,7 @@ PYTHON_TESTS := \
 	tests/test_skinny_dependent_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_attn_prefill_cuda.py \
+	tests/test_attn_prefill_sparse_cuda.py \
 	tests/test_score_merge.py \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \

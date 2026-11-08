@@ -100,6 +100,8 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 7.7. **Our software.** Customer must not copy, extract, decompile or reverse engineer software of the service or of the Functions, except software whose source code we publish, which its own licence governs, and except where the law allows it despite this clause. This clause does not limit Customer's rights in its data and outputs under clause 6.1 or their export under clause 7.5.
 
+7.8. **Modules.** Parts of the service may run as separately licensed software modules, our own or licensed from others, which our website lists. A module runs only on Fleets and servers we operate in Korea, processes Customer data only to serve Customer, and sends it nowhere else (clause 6.5). Modules are software of the service under clause 7.7. We may add, change or withdraw modules without amending this Agreement.
+
 ## 8. Liability
 
 8.1. Our aggregate liability for all causes combined is capped at the amounts we received from Customer for HC in the 6 months before the event giving rise to the claim.
