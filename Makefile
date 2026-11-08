@@ -680,6 +680,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
 	tests/test_dsv41_flash_engram_shard.py \
+	tests/test_spark_ck128.py \
 	tests/test_gemma4_verify_existing.py \
 	tests/test_gemma4_verify_frames.py \
 	tests/test_ling_verify_frames.py \
@@ -874,7 +875,11 @@ TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 
 all: $(LIBRARIES) tools $(K3_SERVING_ADAPTER) $(K3_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER)
 
-tools: $(TOOL_BINARIES)
+tools: $(TOOL_BINARIES) build/libsparkpipe_ck128.$(SHARED_LIBRARY_EXT)
+
+build/libsparkpipe_ck128.$(SHARED_LIBRARY_EXT): src/spark_ck128.c include/sparkpipe/spark_ck128.h
+	@mkdir -p build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) src/spark_ck128.c -o $@
 
 .PHONY: core model_common deployment audit-boundaries architecture_audit model_driver_contracts non_glm_model_driver_contracts
 

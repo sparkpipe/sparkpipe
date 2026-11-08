@@ -11,6 +11,7 @@ TOOL = ROOT / "tools/dsv41_flash_engram_shard.py"
 
 
 def main() -> int:
+    subprocess.run(["make", "-s", f"build/libsparkpipe_ck128.{'dylib' if sys.platform == 'darwin' else 'so'}"], cwd=ROOT, check=True)
     for prefix in ([], ["--ranks", "4"]):
         result = subprocess.run([sys.executable, str(TOOL), *prefix, "selftest"], capture_output=True, text=True, timeout=600)
         print(result.stdout + result.stderr, end="")

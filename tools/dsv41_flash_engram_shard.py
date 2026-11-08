@@ -35,6 +35,8 @@ import struct
 import sys
 import tempfile
 
+from spark_ck128 import ck128
+
 RANKS = 16
 LAYER_IDS = (1, 14)
 ENTRIES = {1: 384006168, 14: 384016682}
@@ -284,64 +286,6 @@ def read_range(path: str, offset: int, length: int) -> bytes:
     if len(data) != length:
         fail(f"{path}: short read {len(data)} != {length} at {offset}")
     return data
-
-
-MASK64 = (1 << 64) - 1
-CK_C1 = 0x87c37b91114253d5
-CK_C2 = 0x4cf5ad432745937f
-
-
-def _rotl64(x: int, r: int) -> int:
-    return ((x << r) | (x >> (64 - r))) & MASK64
-
-
-def _fmix64(k: int) -> int:
-    k ^= k >> 33
-    k = (k * 0xff51afd7ed558ccd) & MASK64
-    k ^= k >> 33
-    k = (k * 0xc4ceb9fe1a85ec53) & MASK64
-    k ^= k >> 33
-    return k
-
-
-def ck128(data: bytes) -> bytes:
-    h1 = h2 = 0
-    total = len(data)
-    aligned = total - (total % 16)
-    for k1, k2 in struct.iter_unpack("<QQ", memoryview(data)[:aligned]):
-        k1 = (k1 * CK_C1) & MASK64
-        k1 = _rotl64(k1, 31)
-        k1 = (k1 * CK_C2) & MASK64
-        h1 ^= k1
-        h1 = (_rotl64(h1, 27) + h2) & MASK64
-        h1 = (h1 * 5 + 0x52dce729) & MASK64
-        k2 = (k2 * CK_C2) & MASK64
-        k2 = _rotl64(k2, 33)
-        k2 = (k2 * CK_C1) & MASK64
-        h2 ^= k2
-        h2 = (_rotl64(h2, 31) + h1) & MASK64
-        h2 = (h2 * 5 + 0x38495ab5) & MASK64
-    tail = data[aligned:]
-    if len(tail) > 8:
-        k2 = int.from_bytes(tail[8:16].ljust(8, b"\0"), "little")
-        k2 = (k2 * CK_C2) & MASK64
-        k2 = _rotl64(k2, 33)
-        k2 = (k2 * CK_C1) & MASK64
-        h2 ^= k2
-    k1 = int.from_bytes(tail[:8].ljust(8, b"\0"), "little")
-    k1 = (k1 * CK_C1) & MASK64
-    k1 = _rotl64(k1, 31)
-    k1 = (k1 * CK_C2) & MASK64
-    h1 ^= k1
-    h1 ^= total
-    h2 ^= total
-    h1 = (h1 + h2) & MASK64
-    h2 = (h2 + h1) & MASK64
-    h1 = _fmix64(h1)
-    h2 = _fmix64(h2)
-    h1 = (h1 + h2) & MASK64
-    h2 = (h2 + h1) & MASK64
-    return struct.pack("<QQ", h1, h2)
 
 
 def build_header(rank: int, tensor_count: int, file_bytes: int,
