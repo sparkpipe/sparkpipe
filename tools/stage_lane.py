@@ -93,6 +93,7 @@ DSV41_FLASH_PP = {
     "tp": 4,
     "pipeline_transport": "host-staged",
     "kv_page_bytes": (3 * 128 + 256) * 1280 // 4,
+    "recurrent_bytes": (40 * 32 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
 QWEN38_MAX = {
