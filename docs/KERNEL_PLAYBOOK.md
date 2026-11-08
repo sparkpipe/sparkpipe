@@ -330,15 +330,57 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - `LmLatentShardPartialKernel` is the scalar kernel: one block per row and
   up to four heads, with every key re-read by each block.
 - `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
-  row and 32 heads per block, 32-key tiles through a cp.async double buffer,
+  row and 32 heads per block row, 32-key tiles through a two-buffer ring,
   QK and PV on `mma.sync`, one BF16 copy of each tile's weights against
   the running maximum (the publishers' flash form, Latent prefill below).
+  - A block is 8 consumer warps and two producer warps, one block an SM,
+    persistent over a grid stride of row blocks. The planner warp reads
+    each row's sequence, positions and selection and fills a 4-row plan
+    ring: tile range, key window, one key count per query and the first
+    tile's split-list positions. It compacts in-kernel lists with warp
+    ballots; a block's first row is compacted by the whole block. The
+    issuer warp resolves slots one tile ahead, prefetches the next tile's
+    page-table line into L1, loads each key row with one `cp.async.bulk`
+    into an unswizzled row at a 16-byte padded pitch, zeroes null rows not
+    already zero, and prefetches the next row's queries into L2. Full and
+    empty mbarriers pace the two-buffer ring.
+  - The consumers are two query groups of 4 warps (16 queries each) with
+    their own named barriers. QK splits a group's tile into 2 k-halves x 2
+    key pairs, the softmax gives each query 8 threads (keys k, k+8, k+16,
+    k+24, summed in the 32-lane butterfly's pairing), and P·V gives each
+    warp 128 value columns. A padded head group of at most 16 heads runs
+    one query group. Queries for the next row load into registers after a
+    row's last QK.
+  - lenovo8 (GB10), against the one-row-per-block kernel this replaced
+    (1,440 DSV4.1 calls of 410 µs in a 16K fleet prefill), ms a launch:
+
+    | Wave | Before | Now |
+    |---|---|---|
+    | DSV4.1 landed keys, 2,048 rows, 4 heads, top 512 split, per source | 0.365 | 0.141 |
+    | K3 dense, 2,048 rows, 96 heads, 8K / 64K / 256K | 5.93 / 39.6 / 173 | 4.00 / 28.1 / 138 |
+    | K3 gather, 2,048 rows, 6 heads, 64K, per source | 2.38 | 1.63 |
+    | Ling 3, 2,048 rows, 32 heads, 16K dense | 3.53 | 2.45 |
+    | K3 top 2,048 compacted, 2,048 rows, 8K / 64K / 256K | 4.07 / 3.89 / 5.03 | 3.41 / 3.93 / 4.06 |
+    | DSV4.1 64 heads, top 512 compacted, 2,048 rows | 1.90 | 2.01 |
+    | K3 decode, 1 / 4 / 16 rows at 64K | 0.039 / 0.098 / 0.319 | 0.033 / 0.076 / 0.228 |
+    | K3 top 2,048 decode, 1 / 4 / 16 rows at 64K | 0.027 / 0.027 / 0.029 | 0.022 / 0.021 / 0.023 |
+    | DSV4.1 64 heads pair records, 1 / 16 rows at 64K | 0.0164 / 0.0205 | 0.0171 / 0.0209 |
+
+    The dense and gather waves are bound by the two-buffer ring: with no
+    QK, softmax or P·V the producers alone take 90% of the time, and a
+    third 37 KB buffer does not fit. The compacted 96- and 64-head waves
+    are bound by DRAM: they write 404 and 269 MB of FP32 records a launch
+    (GB10 writes 198 GB/s) and read 226 and 134 MB of queries. A single
+    compacted DSV4.1 row pays about 0.7 µs more than before for the
+    planner and issuer hand-offs before its first tile. Records are main's
+    bits in every case (`tests/cuda/latent_shard_prefill_bits_cuda.cu`
+    keeps the old kernel).
   - Rows past the dense limit read their selected positions, either from
     a list compacted in shared memory or from the caller's split lists
     (`LmLatentShardSplitLaunch`). The two orders are the same, so both
     give the same records.
-  - Each block holds one row, so a row's record does not depend on the other
-    rows: decode, verify frames and prefill waves agree bit for bit.
+  - A row's record does not depend on the other rows of its block's
+    stride: decode, verify frames and prefill waves agree bit for bit.
   - Pair-grouped records (`record_heads`, `record_copies`) are written as
     the scalar kernel writes them, and a row at position `0xffffffff` has no
     keys.
@@ -348,8 +390,9 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter waves, A.X K2,
   Ling 3's MLA layers, Hy4 and both DSV4.1 attention paths call them.
 - A head count that is a multiple of 32 fills each block. A head count below
-  32 that divides 32 (`padded_heads`) runs one row per block with its heads
-  repeated across the 32 query slots, and only the first copy writes records.
+  32 that divides 32 (`padded_heads`) runs one row per block row with its
+  heads repeated across the query slots, and only the first copy writes
+  records.
   MMA rows are independent, so each head computes exactly what it would in a
   full block. DSV4.1's landing path (4 heads per rank) therefore still equals
   its records path (64 heads) bit for bit (`tests/test_dsv41_flash_landing.cu`).

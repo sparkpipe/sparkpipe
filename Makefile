@@ -589,6 +589,7 @@ PYTHON_TESTS := \
 	tests/test_poly_norm_diff_cuda.py \
 	tests/test_glm5_next_pool_score_cuda.py \
 	tests/test_latent_shard_sparse_cuda.py \
+	tests/test_latent_shard_prefill_bits_cuda.py \
 	tests/test_glm5_next_verify_cuda.py \
 	tests/test_skinny_split.py \
 	tests/test_skinny_cell_rows.py \
