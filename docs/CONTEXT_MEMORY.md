@@ -218,13 +218,22 @@ Called state of the art only with receipts: recall within 2 points of the full
 history, task success equal to the full history and above compaction, and at
 least 5 times less new prefill per agent step on long sessions.
 
+Not there yet. The first receipt,
+`qualification/chat_memory/qwen3.8-27b/longmemeval-s5/`, ran 35 LongMemEval_S
+questions on Qwen 3.8 27B: the full history recalled 23, memory 20 and
+`/compact full` 9. Two of memory's misses came from curator replies cut short
+at their output budget, which left automatic lines. Its README has every
+miss, both regimes, the KV each arm keeps and what an import costs.
+
 `tools/chat_memory_bench.py` runs the recall arms through the chat layer, with
 LongMemEval's own judge prompts:
 - The full arm sends the whole history with memory off. The compaction arm
-  compacts it with `/compact full` and asks on the summary. The memory arm
-  imports it and asks on its base. Each history is imported or compacted once,
-  and `setup.jsonl` in the output keeps the chats, so a later run, or one after
-  a restart, answers on the same setups.
+  compacts it with `/compact full` and asks on the summary; `/compact` lists
+  each user message clipped to 600 characters and each assistant message to
+  400, so this arm is weaker than the provider-style compaction named above.
+  The memory arm imports it and asks on its base. Each history is imported or
+  compacted once, and `setup.jsonl` in the output keeps the chats, so a later
+  run, or one after a restart, answers on the same setups.
 - Two regimes, both reported. Cold: nothing is cached, so the new prefill is
   the whole prompt, the arm's prompt size. Warm: the arm's prefix is cached.
   In a plain run every question brings a new history, so full and compaction
