@@ -739,6 +739,18 @@ struct D41Device
 		return SPARK_STATUS_OK;
 	}
 
+	static uint32_t FirstLayer(const State *state)
+	{
+		(void)state;
+		return 0u;
+	}
+
+	static uint32_t LayerLimit(const State *state)
+	{
+		(void)state;
+		return SPARK_DSV41_FLASH_MODEL_LAYER_COUNT;
+	}
+
 	static bool HasRows(const Frame &frame)
 	{
 		return frame.t.rows != 0u;

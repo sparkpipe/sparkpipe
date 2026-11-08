@@ -91,6 +91,11 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 	D41_EXPERTS == SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT && D41_TOPK == SPARK_DSV41_FLASH_MODEL_EXPERTS_PER_TOKEN &&
 	D41_MOE_INTER == SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION,
 	"the stage reads the tensors the pack contract shapes");
+static_assert(SPARK_DSV41_FLASH_STAGE_FULL_ROW_LAYERS == D41_CANDIDATE_SOURCE &&
+	SPARK_DSV41_FLASH_STAGE_FULL_ROW_LAYERS % SPARK_DSV41_FLASH_STAGE_PP_STAGES == 0u &&
+	SPARK_DSV41_FLASH_STAGE_FIRST_LAYER(SPARK_DSV41_FLASH_STAGE_PP_STAGES - 1u) +
+	SPARK_DSV41_FLASH_STAGE_LAYER_COUNT(SPARK_DSV41_FLASH_STAGE_PP_STAGES - 1u) == D41_LAYERS,
+	"pipeline stages split the full-row layers before the candidate source evenly, and the last stage runs on through the tail to the head");
 #define D41_A2A_HEADS SPARK_DSV41_FLASH_STAGE_A2A_HEADS
 #define D41_LOCAL_HEADS (D41_HEADS / D41_TP)
 #define D41_LOCAL_INDEX_HEADS (D41_INDEX_HEADS / D41_TP)
@@ -182,6 +187,7 @@ typedef struct D41ModelState
 {
 	const SparkStageRunnerServices *services;
 	uint32_t tp_rank, max_rows, slots, context_slots, max_context;
+	uint32_t stage_index, first_layer, layer_count;
 	FILE *pack_file;
 	D41PackHeader header;
 	D41PackEntry *entries;
@@ -1191,6 +1197,16 @@ struct D41Cuda
 		return SPARK_STATUS_OK;
 	}
 
+	static uint32_t FirstLayer(const D41ModelState *state)
+	{
+		return state->first_layer;
+	}
+
+	static uint32_t LayerLimit(const D41ModelState *state)
+	{
+		return state->first_layer + state->layer_count;
+	}
+
 	static SparkStatus LayerRows(D41ModelState *state, Frame &frame, uint32_t index)
 	{
 		const uint32_t first = D41TailFirstRow(state, index, frame.step->rows);
@@ -1637,7 +1653,8 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	D41ModelState *state;
 	uint64_t pack_bytes;
 	SparkStatus status;
-	if ( configuration->stage_count != 1u || configuration->tp_degree != D41_TP || configuration->max_input_row_count == 0u ||
+	if ( configuration->stage_count != SPARK_DSV41_FLASH_STAGE_PP_STAGES || configuration->stage_index >= SPARK_DSV41_FLASH_STAGE_PP_STAGES ||
+		configuration->tp_degree != D41_TP || configuration->max_input_row_count == 0u ||
 		configuration->state_budget_bytes == 0u || configuration->kv_pages_per_sequence == 0u ||
 		configuration->linear_weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1647,6 +1664,9 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	*model = state;
 	state->services = request->services;
 	state->tp_rank = configuration->tp_rank;
+	state->stage_index = configuration->stage_index;
+	state->first_layer = SPARK_DSV41_FLASH_STAGE_FIRST_LAYER(configuration->stage_index);
+	state->layer_count = SPARK_DSV41_FLASH_STAGE_LAYER_COUNT(configuration->stage_index);
 	state->max_rows = configuration->max_input_row_count;
 	state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
@@ -1667,17 +1687,18 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	status = D41ReadFile(configuration->rank_pack_path, 0u, &state->header, sizeof(state->header));
 	if ( status != SPARK_STATUS_OK || state->header.magic != SPARK_DSV41_FLASH_STAGEPACK_MAGIC ||
 		state->header.format_version != SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION || state->header.tp_degree != D41_TP ||
-		state->header.tp_rank != configuration->tp_rank || state->header.hidden_dimension != D41_HIDDEN || state->header.layer_count != D41_LAYERS ||
+		state->header.tp_rank != configuration->tp_rank || state->header.hidden_dimension != D41_HIDDEN || state->header.layer_count != state->layer_count ||
 		state->header.vocab_count != D41_VOCAB || state->header.file_bytes != pack_bytes || state->header.tensor_count == 0u ||
 		state->header.header_bytes != sizeof(state->header) || state->header.directory_entry_bytes != sizeof(D41PackEntry) ||
 		state->header.codec_abi_version != SPARK_WEIGHT_CODEC_ABI_VERSION || (state->header.flags & ~SPARK_DSV41_FLASH_STAGEPACK_KNOWN_FLAGS) != 0u ||
-		state->header.stage_count != 1u || state->header.stage_index != 0u || state->header.first_layer_index != 0u ||
+		state->header.stage_count != SPARK_DSV41_FLASH_STAGE_PP_STAGES || state->header.stage_index != state->stage_index ||
+		state->header.first_layer_index != state->first_layer ||
 		state->header.total_layer_count != D41_LAYERS || state->header.routed_expert_count != D41_EXPERTS ||
 		state->header.linear_weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || state->header.expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 ||
 		state->header.directory_offset < state->header.header_bytes || state->header.directory_offset > pack_bytes ||
 		state->header.tensor_count > (pack_bytes - state->header.directory_offset) / sizeof(D41PackEntry) )
 	{
-		fprintf(stderr, "sparkpipe_dsv41_flash: %s is not this rank's TP16 DSV4.1 stage pack of format %u (expert slices)\n",
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s is not this rank's DSV4.1 stage pack (its stage, layer range and TP slice) of format %u (expert slices)\n",
 			configuration->rank_pack_path, SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION);
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	}
@@ -1864,7 +1885,7 @@ static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, cons
 static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *lazy_pack, uint64_t *side_bytes)
 {
 	uint64_t cursor = 0u;
-	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+	for ( uint32_t index = state->first_layer; index < state->first_layer + state->layer_count; ++index )
 	{
 		D41Layer *layer = &state->layers[index];
 		D41_PAYLOAD(ATTN_NORM, index, layer->attn_norm);
@@ -1979,7 +2000,7 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 	uint8_t *place[D41_LAYERS][2];
 	uint64_t separate = 0u, in_place = 0u;
 	uint8_t *scratch = 0;
-	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+	for ( uint32_t index = state->first_layer; index < state->first_layer + state->layer_count; ++index )
 		for ( uint32_t m = 0u; m < 2u; ++m )
 		{
 			const D41PackEntry *entry = D41Find(state, kinds[m], index);
@@ -2009,7 +2030,7 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	separate = 0u;
-	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
+	for ( uint32_t index = state->first_layer; index < state->first_layer + state->layer_count; ++index )
 	{
 		D41Layer *layer = &state->layers[index];
 		const uint8_t *payload[2] = {layer->e_w13, layer->e_w2}, *scale[2] = {layer->e_w13_scale, layer->e_w2_scale};

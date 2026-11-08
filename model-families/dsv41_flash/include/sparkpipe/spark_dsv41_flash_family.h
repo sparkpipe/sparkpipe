@@ -91,7 +91,7 @@ struct D41Schedule
 		SparkStatus status = B::Begin(state, step, queue, &frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; ++index )
+		for ( uint32_t index = B::FirstLayer(state); index < B::LayerLimit(state) && status == SPARK_STATUS_OK; ++index )
 		{
 			status = B::LayerRows(state, frame, index);
 			if ( status == SPARK_STATUS_OK && B::HasRows(frame) )
