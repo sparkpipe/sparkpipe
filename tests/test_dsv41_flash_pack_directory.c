@@ -47,19 +47,23 @@ static uint64_t Place(SparkDsv41FlashStagePackEntry *entry, uint32_t kind, uint3
 	return cursor;
 }
 
-static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries)
+static uint32_t BuildRange(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries, uint32_t first, uint32_t layers)
 {
 	static const uint32_t globals[] = { SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM,
 		SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD };
 	uint32_t count = 0u, layer, kind;
 	uint64_t cursor;
-	for ( layer = 0u; layer < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++ )
+	for ( layer = first; layer < first + layers; layer++ )
 		for ( kind = 0u; kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++ )
 			if ( SparkDsv41FlashStagePackKindInLayer(kind, layer) != 0u )
 				count++;
 	count += 3u;
 	memset(header, 0, sizeof(*header));
 	header->tp_degree = 16u;
+	header->stage_count = layers == SPARK_DSV41_FLASH_MODEL_LAYER_COUNT ? 1u : 4u;
+	header->first_layer_index = first;
+	header->layer_count = layers;
+	header->total_layer_count = SPARK_DSV41_FLASH_MODEL_LAYER_COUNT;
 	header->expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 	header->tensor_count = count;
 	header->directory_offset = 512u;
@@ -67,12 +71,17 @@ static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashSta
 	count = 0u;
 	for ( kind = 0u; kind < 3u; kind++ )
 		cursor = Place(&entries[count++], globals[kind], SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER, cursor);
-	for ( layer = 0u; layer < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++ )
+	for ( layer = first; layer < first + layers; layer++ )
 		for ( kind = 0u; kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++ )
 			if ( SparkDsv41FlashStagePackKindInLayer(kind, layer) != 0u )
 				cursor = Place(&entries[count++], kind, layer, cursor);
 	header->file_bytes = cursor;
 	return count;
+}
+
+static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries)
+{
+	return BuildRange(header, entries, 0u, SPARK_DSV41_FLASH_MODEL_LAYER_COUNT);
 }
 
 static uint32_t Find(const SparkDsv41FlashStagePackEntry *entries, uint32_t count, uint32_t kind, uint32_t layer)
@@ -322,11 +331,30 @@ int main(void)
 		Check(Run(&header, entries) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER, "a well-formed indexer tensor in an SWA-only layer is refused");
 	}
 
+	{
+		static SparkDsv41FlashStagePackEntry staged[ENTRIES_MAX];
+		SparkDsv41FlashStagePackHeader stage;
+		const uint32_t staged_count = BuildRange(&stage, staged, 5u, 5u);
+		const uint32_t last_layer = staged[staged_count - 1u].layer_index;
+		Check(Run(&stage, staged) == 0, "a stage pack holding exactly layers 5-9 passes without the other 35 layers");
+		edited = stage;
+		edited.tensor_count = staged_count - 1u;
+		Check(Run(&edited, staged) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET, "a stage pack missing its last layer's last tensor is refused");
+		staged[staged_count - 1u].layer_index = 10u;
+		Check(Run(&stage, staged) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER, "a stage pack holding a tensor of a layer outside its range is refused");
+		staged[staged_count - 1u].layer_index = last_layer;
+		edited = stage;
+		edited.layer_count = SPARK_DSV41_FLASH_MODEL_LAYER_COUNT;
+		Check(Run(&edited, staged) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET, "a stage range running past the last layer is refused");
+		edited.layer_count = 0u;
+		Check(Run(&edited, staged) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET, "a stage with no layers is refused");
+	}
+
 	TestIdentityAndEngram(&header);
 	if ( failures != 0u )
 		return 1;
 	printf("PASS dsv41 flash pack directory: a contract-built directory of %u tensors passes; wrong rows, short payloads, half scales, misalignment, "
-		"tensors past the file, duplicates, overlaps, a global with a layer, a missing tensor and a misplaced indexer tensor are each refused; "
+		"tensors past the file, duplicates, overlaps, a global with a layer, a missing tensor and a misplaced indexer tensor are each refused; a stage pack passes with only its own layers and is refused for a missing, out-of-range or empty layer range; "
 		"a pack off the compiled contract or without a revision or source digests is refused; an engram shard of another rank, degree, "
 		"format, size or checkpoint is refused, and so is every malformed engram entry\n", count);
 	return 0;

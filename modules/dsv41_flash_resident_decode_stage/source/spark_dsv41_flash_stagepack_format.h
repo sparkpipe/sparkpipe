@@ -399,6 +399,10 @@ static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41Fla
 	SparkDsv41FlashStagePackTensorShape shape;
 	const SparkDsv41FlashStagePackEntry *entry,*right;
 	uint32_t index,other,layer,kind;
+	*at = header->first_layer_index;
+	if ( header->layer_count == 0u || header->first_layer_index >= SPARK_DSV41_FLASH_MODEL_LAYER_COUNT ||
+		header->layer_count > SPARK_DSV41_FLASH_MODEL_LAYER_COUNT - header->first_layer_index )
+		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER_SET);
 	directory_end = header->directory_offset + (uint64_t)header->tensor_count * sizeof(SparkDsv41FlashStagePackEntry);
 	global_seen = 0u;
 	memset(layer_seen,0,sizeof(layer_seen));
@@ -426,7 +430,8 @@ static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41Fla
 		}
 		else
 		{
-			if ( entry->layer_index >= SPARK_DSV41_FLASH_MODEL_LAYER_COUNT || SparkDsv41FlashStagePackKindInLayer(entry->tensor_kind,entry->layer_index) == 0u ||
+			if ( entry->layer_index < header->first_layer_index || entry->layer_index - header->first_layer_index >= header->layer_count ||
+				SparkDsv41FlashStagePackKindInLayer(entry->tensor_kind,entry->layer_index) == 0u ||
 				(layer_seen[entry->layer_index] & bit) != 0u )
 				return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER);
 			layer_seen[entry->layer_index] |= bit;
@@ -447,7 +452,7 @@ static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41Fla
 	if ( global_seen != ((UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING) | (UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM) |
 		(UINT64_C(1) << SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD)) )
 		return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_GLOBALS);
-	for ( layer = 0u; layer < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++ )
+	for ( layer = header->first_layer_index; layer < header->first_layer_index + header->layer_count; layer++ )
 	{
 		expected = 0u;
 		for ( kind = 0u; kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++ )
