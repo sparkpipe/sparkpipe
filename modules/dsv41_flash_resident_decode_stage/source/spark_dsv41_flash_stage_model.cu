@@ -576,10 +576,11 @@ static uint32_t D41StageSourceCache(uint32_t stage, uint32_t *sources)
 	return cache;
 }
 
-#define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t) + D41_INDEX_TOPK * (uint32_t)sizeof(uint32_t))
+#define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t) + D41_INDEX_TOPK * (uint32_t)sizeof(uint32_t) + \
+	D41K_HC * (uint32_t)sizeof(float))
 #define D41_STREAM_ROW_BYTES (D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t))
 static_assert(D41_STREAM_ROW_BYTES + D41_FORWARD_ROW_BYTES == SPARK_DSV41_FLASH_STAGE_SIDEBAND_ROW_BYTES,
-	"the adapter declares the sideband the stages exchange: four streams, one forwarded cache entry and its index selection a row");
+	"the adapter declares the sideband the stages exchange: four streams, one forwarded cache entry, its index selection and the next pre-mix a row");
 
 static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
@@ -1388,10 +1389,10 @@ struct D41Cuda
 		if ( part == D41_FFN_PART )
 		{
 			D41CollapseNormQdq(state->streams, state->pre_attn, layer->ffn_norm, state->x, state->xq, rows, frame.stream);
-			return index < 2u ? D41DumpRows(state, index, 4u, state->x, rows, D41_HIDDEN, frame.stream) : SPARK_STATUS_OK;
+			return D41DumpRows(state, index, 4u, state->x, rows, D41_HIDDEN, frame.stream);
 		}
 		D41CollapseNormQdq(state->streams, index == 0u ? state->pre_init : state->pre_head, layer->attn_norm, state->x, state->xq, rows, frame.stream);
-		return index < 2u ? D41DumpRows(state, index, 3u, state->x, rows, D41_HIDDEN, frame.stream) : SPARK_STATUS_OK;
+		return D41DumpRows(state, index, 3u, state->x, rows, D41_HIDDEN, frame.stream);
 	}
 
 	static SparkStatus Attention(D41ModelState *state, Frame &frame, uint32_t index)
@@ -1404,7 +1405,7 @@ struct D41Cuda
 		const uint32_t rows = frame.current->rows;
 		SparkStatus status = D41Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, rows, 0u, state->partial,
 			state->partial);
-		if ( status == SPARK_STATUS_OK && index < 2u )
+		if ( status == SPARK_STATUS_OK )
 			status = D41DumpRows(state, index, 1u, state->partial, rows, D41_HIDDEN, frame.stream);
 		return status;
 	}
@@ -1423,7 +1424,7 @@ struct D41Cuda
 		SparkStatus status = D41Moe(state, &state->layers[index], frame.current, frame.stream);
 		if ( status == SPARK_STATUS_OK && index < 2u )
 			status = D41DumpRows(state, index, 5u, state->shared_out, rows, D41_HIDDEN, frame.stream);
-		if ( status == SPARK_STATUS_OK && index < 2u )
+		if ( status == SPARK_STATUS_OK )
 			status = D41DumpRows(state, index, 2u, state->partial, rows, D41_HIDDEN, frame.stream);
 		return status;
 	}
@@ -2345,9 +2346,10 @@ static SparkStatus D41Sideband(void *model, uint32_t to_buffer, const void *hidd
 	}
 	{
 		uint8_t *planes = (uint8_t *)buffer;
-		void *local[5] = { state->streams, state->forward_latent, state->forward_index, state->forward_emit, state->selected };
-		const uint64_t length[5] = { stream_bytes, latent_bytes, index_bytes, (uint64_t)rows * sizeof(uint32_t), (uint64_t)rows * D41_INDEX_TOPK * sizeof(uint32_t) };
-		for ( uint32_t plane = 0u; plane < 5u; plane++ )
+		void *local[6] = { state->streams, state->forward_latent, state->forward_index, state->forward_emit, state->selected, state->pre_head };
+		const uint64_t length[6] = { stream_bytes, latent_bytes, index_bytes, (uint64_t)rows * sizeof(uint32_t), (uint64_t)rows * D41_INDEX_TOPK * sizeof(uint32_t),
+			(uint64_t)rows * D41K_HC * sizeof(float) };
+		for ( uint32_t plane = 0u; plane < 6u; plane++ )
 		{
 			if ( cudaMemcpyAsync(to_buffer != 0u ? (void *)planes : local[plane], to_buffer != 0u ? (const void *)local[plane] : (const void *)planes,
 				length[plane], cudaMemcpyDefault, (cudaStream_t)stream) != cudaSuccess )
