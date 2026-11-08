@@ -392,8 +392,11 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   --time` with longer cases). The kernel is not bound by its MMAs alone, so
   the gain is less than the third of its MMAs that the low part was.
 - A block of `LmLatentAttentionPrefillKernel` holds `LM_PREFILL_ATTN_QUERIES`
-  = 32 queries: 8 rows of 4 heads, all reading one latent key per position.
-  The count is a template parameter, so tests and benches also build 16.
+  = 16 queries: 4 rows of 4 heads, all reading one latent key per position.
+  The count is a template parameter; 32 (8 rows) builds and passes the same
+  tests. 16 stays the default because it is bit-equal to the earlier kernel;
+  32 changes tile boundaries over the block's union and waits for the fleet's
+  measured 8-row union sizes.
   - The 16 queries of each MMA row tile are staged through the second key
     buffer into registers, 72 per thread (a k-half of 288 columns), as in
     `LmLatentShardPrefillKernel`. Two 32-key tiles still double-buffer in
@@ -427,7 +430,7 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   (78 MB of keys), top 2,048 per row, times in ms including the union
   kernel. Rows share a selection in groups of 4 (the old bench) or 8:
 
-  | Selections | Before (16 queries) | 16 queries | 32 queries (default) |
+  | Selections | Before (16 queries) | 16 queries (default) | 32 queries |
   |---|---|---|---|
   | Same set in groups of 4 / 8 | 3.97 / 3.48 | 2.80 / 1.96 | 1.99 / 1.53 |
   | 75% shared in groups of 4 / 8 | 5.35 / 5.17 | 3.31 / 3.15 | 2.93 / 2.42 |
