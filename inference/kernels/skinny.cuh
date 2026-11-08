@@ -23,6 +23,9 @@
 #define LM_SKINNY_GROUPED_NEURONS 4u
 #define LM_SKINNY_GROUPED_MAX_GROUPS 1024u
 #define LM_SKINNY_ROWS_MIN_TASKS 256u
+#define LM_SKINNY_FRAME_DEPTH 4u
+#define LM_SKINNY_FRAME_MIN_BLOCKS 2u
+#define LM_SKINNY_FRAME_WARPS_PER_SM 8u
 
 typedef struct LmSkinnyArguments
 {
@@ -500,6 +503,7 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyKernel(const __grid
 
 #define LM_SKINNY_SPLIT_WARPS (LM_SKINNY_THREADS / LM_WARP_LANES)
 #define LM_SKINNY_SPLIT_MAX_OUTPUTS 256u
+#define LM_SKINNY_SPLIT_BLOCKS_PER_SM 3u
 
 template<class Format, uint32_t ROWS>
 __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnySplitKernel(const __grid_constant__ LmSkinnyArguments args)
@@ -548,6 +552,15 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnySplitKernel(const _
 		args.output_bf16[index] = LmFloatToBf16(total);
 }
 
+static int32_t LmSkinnyMultiprocessors(uint32_t *count)
+{
+	int device = 0, value = 0;
+	if ( cudaGetDevice(&device) != cudaSuccess || cudaDeviceGetAttribute(&value,cudaDevAttrMultiProcessorCount,device) != cudaSuccess || value <= 0 )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	*count = (uint32_t)value;
+	return(LM_LAUNCH_OK);
+}
+
 template<class Format, uint32_t ROWS>
 static int32_t LmSkinnySplitShape(const LmSkinnyArguments *args, cudaStream_t stream)
 {
@@ -559,13 +572,20 @@ template<class Format>
 static int32_t LmSkinnySplitRows(const LmSkinnyArguments *args, cudaStream_t stream)
 {
 	LmWeightPrefetchNote(stream,args->weight,(uint64_t)args->output_dimension * (args->input_dimension / LmSkinnyFormat<Format>::kElements) * LM_SKINNY_CHUNK_BYTES);
-	if ( args->rows > LM_SKINNY_ROWS )
+	uint32_t multiprocessors = 0u;
+	uint64_t enough;
+	if ( args->rows > LM_SKINNY_ROWS_WIDE )
 		return(LmSkinnySplitShape<Format,LM_SKINNY_ROWS_WIDE>(args,stream));
-	if ( args->rows > LM_SKINNY_ROWS_MID )
-		return(LmSkinnySplitShape<Format,LM_SKINNY_ROWS>(args,stream));
-	if ( args->rows != 1u )
-		return(LmSkinnySplitShape<Format,LM_SKINNY_ROWS_MID>(args,stream));
-	return(LmSkinnySplitShape<Format,1u>(args,stream));
+	if ( args->rows == 1u )
+		return(LmSkinnySplitShape<Format,1u>(args,stream));
+	if ( LmSkinnyMultiprocessors(&multiprocessors) != LM_LAUNCH_OK )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	enough = (uint64_t)multiprocessors * LM_SKINNY_SPLIT_BLOCKS_PER_SM > args->output_dimension ? (uint64_t)multiprocessors * LM_SKINNY_SPLIT_BLOCKS_PER_SM : args->output_dimension;
+	if ( (uint64_t)args->output_dimension * args->rows <= enough )
+		return(LmSkinnySplitShape<Format,1u>(args,stream));
+	if ( (uint64_t)args->output_dimension * LmSkinnyRowBlocks<2u>(args->rows) <= enough )
+		return(LmSkinnySplitShape<Format,2u>(args,stream));
+	return(LmSkinnySplitShape<Format,LM_SKINNY_ROWS_MID>(args,stream));
 }
 
 #define LM_SKINNY_MULTI_MAX 4u
@@ -586,6 +606,133 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyMultiKernel(const _
 	while ( part + 1u < multi.count && task >= multi.first_task[part + 1u] )
 		part++;
 	LmSkinnyTask<Format,LANES,ROWS,NPG>(multi.part[part],task - multi.first_task[part],(blockIdx.x % blocks) * ROWS);
+}
+
+template<class Format, uint32_t LANES, uint32_t U, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyFrameLoad(const LmSkinnyArguments &args, uint32_t neuron, uint32_t chunk, uint32_t chunks, uint4 (*weight)[NPG], float (*low)[NPG], float (*high)[NPG])
+{
+	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
+	const uint4 *rows[NPG];
+	uint32_t u, n, c;
+	LmSkinnyWeightRows<Format,NPG>(args,0u,neuron,rows);
+	#pragma unroll
+	for ( u = 0u; u < U; u++ )
+	{
+		c = chunk + u * LANES;
+		#pragma unroll
+		for ( n = 0u; n < NPG; n++ )
+		{
+			weight[u][n] = c < chunks ? __ldcs(rows[n] + c) : make_uint4(0u,0u,0u,0u);
+			low[u][n] = c < chunks ? LmSkinnyScale<Format>(&args.scale,0u,neuron + n < args.output_dimension ? neuron + n : neuron,c * elements) : 1.0f;
+			if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+				high[u][n] = c < chunks ? LmSkinnyScale<Format>(&args.scale,0u,neuron + n < args.output_dimension ? neuron + n : neuron,c * elements + Format::kScaleGroup) : 1.0f;
+		}
+	}
+}
+
+template<class Format, uint32_t LANES, uint32_t RG, uint32_t U, uint32_t NPG>
+static __device__ __forceinline__ void LmSkinnyFrameCompute(const uint16_t *activation, uint64_t stride, uint32_t count, uint32_t chunk, uint32_t chunks, const uint4 (*weight)[NPG], const float (*low)[NPG], const float (*high)[NPG], float (*accumulator)[RG])
+{
+	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
+	typename LmSkinnyFormat<Format>::Activation staged[RG];
+	uint32_t u, n, r, c;
+	#pragma unroll
+	for ( u = 0u; u < U; u++ )
+	{
+		c = chunk + u * LANES;
+		if ( c >= chunks )
+			break;
+		#pragma unroll
+		for ( r = 0u; r < RG; r++ )
+			staged[r] = LmSkinnyFormat<Format>::Load(activation + (r < count ? r : 0u) * stride + c * elements);
+		if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+		{
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+				#pragma unroll
+				for ( r = 0u; r < RG; r++ )
+				{
+					const float2 part = LmSkinnyFormat<Format>::Halves(weight[u][n],staged[r]);
+					accumulator[n][r] = fmaf(high[u][n],part.y,fmaf(low[u][n],part.x,accumulator[n][r]));
+				}
+		}
+		else if constexpr ( LmSkinnyDecodeOnce<Format>::kValue )
+		{
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+			{
+				const typename LmSkinnyFormat<Format>::Decoded decoded = LmSkinnyFormat<Format>::Decode(weight[u][n]);
+				#pragma unroll
+				for ( r = 0u; r < RG; r++ )
+					accumulator[n][r] = fmaf(low[u][n],LmSkinnyFormat<Format>::ChunkDecoded(decoded,staged[r]),accumulator[n][r]);
+			}
+		}
+		else
+		{
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+				#pragma unroll
+				for ( r = 0u; r < RG; r++ )
+					accumulator[n][r] = fmaf(low[u][n],LmSkinnyFormat<Format>::Chunk(weight[u][n],staged[r]),accumulator[n][r]);
+		}
+	}
+}
+
+template<bool MULTI>
+static __device__ __forceinline__ uint32_t LmSkinnyFramePart(const LmSkinnyMultiArguments &multi, uint32_t neuron_task)
+{
+	uint32_t part = 0u;
+	if constexpr ( MULTI )
+		while ( part + 1u < multi.count && neuron_task >= multi.first_task[part + 1u] )
+			part++;
+	return(part);
+}
+
+template<class Format, uint32_t LANES, uint32_t RG, uint32_t NPG, bool MULTI>
+__global__ __launch_bounds__(LM_SKINNY_THREADS,LM_SKINNY_FRAME_MIN_BLOCKS) void LmSkinnyFrameKernel(const __grid_constant__ LmSkinnyMultiArguments multi)
+{
+	constexpr uint32_t U = LM_SKINNY_FRAME_DEPTH / NPG != 0u ? LM_SKINNY_FRAME_DEPTH / NPG : 1u, elements = LmSkinnyFormat<Format>::kElements, lane_groups = LM_SKINNY_THREADS / LANES;
+	const LmSkinnyArguments &head = multi.part[0];
+	const uint32_t groups = (head.rows + RG - 1u) / RG, neuron_tasks = multi.first_task[multi.count], tasks = neuron_tasks * groups, stride = gridDim.x * lane_groups;
+	const uint32_t chunks = head.input_dimension / elements, iterations = ((chunks + LANES - 1u) / LANES + U - 1u) / U, sub = threadIdx.x % LANES;
+	uint32_t base = blockIdx.x * lane_groups, task = base + threadIdx.x / LANES, it = 0u, part, u, n;
+	uint4 weight[U][NPG], next_weight[U][NPG];
+	float low[U][NPG], high[U][NPG], next_low[U][NPG], next_high[U][NPG], accumulator[NPG][RG];
+	part = LmSkinnyFramePart<MULTI>(multi,task / groups);
+	LmDependentWait();
+	LmSkinnyClear<NPG,RG>(accumulator);
+	if ( task < tasks )
+		LmSkinnyFrameLoad<Format,LANES,U,NPG>(multi.part[part],(task / groups - multi.first_task[part]) * NPG,sub,chunks,weight,low,high);
+	while ( base < tasks )
+	{
+		const uint32_t next_it = it + 1u < iterations ? it + 1u : 0u, next_task = next_it == 0u ? task + stride : task;
+		const uint32_t next_part = next_it == 0u ? LmSkinnyFramePart<MULTI>(multi,next_task / groups) : part;
+		if ( next_task < tasks )
+			LmSkinnyFrameLoad<Format,LANES,U,NPG>(multi.part[next_part],(next_task / groups - multi.first_task[next_part]) * NPG,sub + next_it * U * LANES,chunks,next_weight,next_low,next_high);
+		const uint32_t live = task < tasks ? 1u : 0u, first = live != 0u ? (task % groups) * RG : 0u, count = head.rows - first < RG ? head.rows - first : RG;
+		const uint32_t neuron = live != 0u ? (task / groups - multi.first_task[part]) * NPG : 0u;
+		if ( live != 0u )
+			LmSkinnyFrameCompute<Format,LANES,RG,U,NPG>(head.activation + (uint64_t)first * head.input_dimension,head.input_dimension,count,sub + it * U * LANES,chunks,weight,low,high,accumulator);
+		if ( next_it == 0u )
+		{
+			LmSkinnyStore<LANES,RG,NPG>(multi.part[part],accumulator,sub,live,first,neuron,count);
+			LmSkinnyClear<NPG,RG>(accumulator);
+			base += stride;
+		}
+		#pragma unroll
+		for ( u = 0u; u < U; u++ )
+			#pragma unroll
+			for ( n = 0u; n < NPG; n++ )
+			{
+				weight[u][n] = next_weight[u][n];
+				low[u][n] = next_low[u][n];
+				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
+					high[u][n] = next_high[u][n];
+			}
+		it = next_it;
+		task = next_task;
+		part = next_part;
+	}
 }
 
 template<uint32_t ROWS>
@@ -717,6 +864,59 @@ static int32_t LmSkinnyMultiShape(LmSkinnyMultiArguments *multi, cudaStream_t st
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+static uint64_t LmSkinnyFrameWarps(const LmSkinnyMultiArguments *multi, uint32_t lanes, uint32_t rows_per_task, uint32_t neurons)
+{
+	uint64_t tasks = 0u;
+	uint32_t part;
+	for ( part = 0u; part < multi->count; part++ )
+		tasks += (multi->part[part].output_dimension + neurons - 1u) / neurons;
+	return((tasks * ((multi->part[0].rows + rows_per_task - 1u) / rows_per_task) * lanes + LM_WARP_LANES - 1u) / LM_WARP_LANES);
+}
+
+template<class Format, uint32_t LANES, uint32_t RG, uint32_t NPG, bool MULTI>
+static int32_t LmSkinnyFrameLaunch(LmSkinnyMultiArguments *multi, uint32_t multiprocessors, cudaStream_t stream)
+{
+	constexpr uint32_t lane_groups = LM_SKINNY_THREADS / LANES;
+	static thread_local int resident = 0;
+	uint32_t part, blocks, cap;
+	if ( resident == 0 && (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&resident,LmSkinnyFrameKernel<Format,LANES,RG,NPG,MULTI>,(int)LM_SKINNY_THREADS,0) != cudaSuccess || resident <= 0) )
+	{
+		resident = 0;
+		return(LM_LAUNCH_ERR_LAUNCH);
+	}
+	multi->first_task[0] = 0u;
+	for ( part = 0u; part < multi->count; part++ )
+		multi->first_task[part + 1u] = multi->first_task[part] + (multi->part[part].output_dimension + NPG - 1u) / NPG;
+	blocks = (uint32_t)(((uint64_t)multi->first_task[multi->count] * ((multi->part[0].rows + RG - 1u) / RG) + lane_groups - 1u) / lane_groups);
+	cap = multiprocessors * (uint32_t)resident;
+	LM_LAUNCH_DEPENDENT((LmSkinnyFrameKernel<Format,LANES,RG,NPG,MULTI>),blocks < cap ? blocks : cap,LM_SKINNY_THREADS,0u,stream,*multi);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<class Format, uint32_t LANES, uint32_t RG, uint32_t NPG>
+static int32_t LmSkinnyFrameShape(LmSkinnyMultiArguments *multi, uint32_t multiprocessors, cudaStream_t stream)
+{
+	return(multi->count > 1u ? LmSkinnyFrameLaunch<Format,LANES,RG,NPG,true>(multi,multiprocessors,stream) : LmSkinnyFrameLaunch<Format,LANES,RG,NPG,false>(multi,multiprocessors,stream));
+}
+
+template<class Format, uint32_t LANES>
+static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, cudaStream_t stream)
+{
+	const uint32_t rows = multi->part[0].rows;
+	uint32_t multiprocessors = 0u;
+	uint64_t enough;
+	if ( LmSkinnyMultiprocessors(&multiprocessors) != LM_LAUNCH_OK )
+		return(LM_LAUNCH_ERR_LAUNCH);
+	enough = (uint64_t)multiprocessors * LM_SKINNY_FRAME_WARPS_PER_SM;
+	if ( rows > 2u && LmSkinnyFrameWarps(multi,LANES,4u,2u) >= enough )
+		return(LmSkinnyFrameShape<Format,LANES,4u,2u>(multi,multiprocessors,stream));
+	if ( rows > 2u && LmSkinnyFrameWarps(multi,LANES,4u,1u) >= enough )
+		return(LmSkinnyFrameShape<Format,LANES,4u,1u>(multi,multiprocessors,stream));
+	if ( LmSkinnyFrameWarps(multi,LANES,2u,1u) >= enough )
+		return(LmSkinnyFrameShape<Format,LANES,2u,1u>(multi,multiprocessors,stream));
+	return(LmSkinnyFrameShape<Format,LANES,1u,1u>(multi,multiprocessors,stream));
+}
+
 template<class Format>
 struct LmSkinnyFrameNeurons
 {
@@ -752,14 +952,8 @@ static int32_t LmSkinnyMultiGroup(LmSkinnyMultiArguments *multi, uint32_t rows, 
 				return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_WIDE,2u>(multi,stream));
 		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(multi,stream));
 	}
-	if ( rows > LM_SKINNY_ROWS )
-		return(LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(multi,stream));
-	if ( rows > LM_SKINNY_ROWS_MID )
-		return(neurons == 4u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,4u>(multi,stream) :
-			neurons == 2u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,2u>(multi,stream) : LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS,1u>(multi,stream));
 	if ( rows != 1u )
-		return(neurons == 4u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,4u>(multi,stream) :
-			neurons == 2u ? LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,2u>(multi,stream) : LmSkinnyMultiShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(multi,stream));
+		return(LmSkinnyFrameGroup<Format,LANES>(multi,stream));
 	if ( per_lane >= 8u )
 		return(LmSkinnyMultiShape<Format,LANES,1u,1u>(multi,stream));
 	if ( per_lane >= 4u )
@@ -784,14 +978,14 @@ static int32_t LmSkinnyLaunchGroup(const LmSkinnyArguments *args, uint32_t chunk
 				return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_WIDE,2u>(args,stream));
 		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(args,stream));
 	}
-	if ( args->rows > LM_SKINNY_ROWS )
-		return(LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_WIDE,1u>(args,stream));
-	if ( args->rows > LM_SKINNY_ROWS_MID )
-		return(neurons == 4u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,4u>(args,stream) :
-			neurons == 2u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,2u>(args,stream) : LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS,1u>(args,stream));
 	if ( args->rows != 1u )
-		return(neurons == 4u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,4u>(args,stream) :
-			neurons == 2u ? LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,2u>(args,stream) : LmSkinnyLaunchShape<Format,LANES,LM_SKINNY_ROWS_MID,1u>(args,stream));
+	{
+		LmSkinnyMultiArguments multi;
+		memset(&multi,0,sizeof(multi));
+		multi.part[0] = *args;
+		multi.count = 1u;
+		return(LmSkinnyFrameGroup<Format,LANES>(&multi,stream));
+	}
 	if ( per_lane >= 8u )
 		return(LmSkinnyLaunchShape<Format,LANES,1u,1u>(args,stream));
 	if ( per_lane >= 4u )

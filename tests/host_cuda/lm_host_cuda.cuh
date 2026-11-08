@@ -161,6 +161,11 @@ typedef int cudaError_t;
 #define cudaSuccess 0
 #define cudaErrorInvalidValue 1
 #define cudaErrorNotSupported 801
+enum cudaDeviceAttr { cudaDevAttrMultiProcessorCount = 16 };
+#define LM_HOST_MULTIPROCESSORS 4
+static inline cudaError_t cudaGetDevice(int *device) { *device = 0; return cudaSuccess; }
+static inline cudaError_t cudaDeviceGetAttribute(int *value, cudaDeviceAttr attribute, int) { *value = attribute == cudaDevAttrMultiProcessorCount ? LM_HOST_MULTIPROCESSORS : 0; return cudaSuccess; }
+template <typename Kernel> static inline cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, Kernel, int, size_t) { *blocks = 1; return cudaSuccess; }
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaMemsetAsync(void *, int, unsigned long long, dim3) { return cudaSuccess; }
