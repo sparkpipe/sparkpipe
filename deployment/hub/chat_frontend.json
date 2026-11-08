@@ -212,7 +212,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid5/models/kimi-k3.1-pro-d9e99b0792a5/README.md (reasoning effort max, temperature 1.0, top-p 0.95)",
+   "sampling_source": "kimi-k3.1-pro/README.md (reasoning effort max, temperature 1.0, top-p 0.95)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
