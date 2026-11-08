@@ -42,7 +42,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 5. Sub-processors
 
-5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data.
+5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines (Customer Agreement clause 7.8) is not a sub-processor: its licensor receives no Customer personal data.
 
 | Sub-processor | Task | Location |
 | --- | --- | --- |
