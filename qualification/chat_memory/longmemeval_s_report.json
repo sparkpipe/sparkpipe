@@ -1,0 +1,47 @@
+{
+ "dataset": "longmemeval_s_cleaned.json",
+ "seed": 1109,
+ "excludes": [
+  {
+   "per_type": 5,
+   "seed": 1107
+  },
+  "longmemeval_s_tuning.json"
+ ],
+ "ids": {
+  "abstention": [
+   "a96c20ee_abs"
+  ],
+  "knowledge-update": [
+   "71315a70",
+   "1cea1afa",
+   "affe2881",
+   "945e3d21",
+   "5831f84d",
+   "4b24c848",
+   "9bbe84a2"
+  ],
+  "multi-session": [
+   "b5ef892d",
+   "5025383b",
+   "bb7c3b45",
+   "1c549ce4",
+   "1192316e",
+   "gpt4_a56e767c",
+   "gpt4_d12ceb0e"
+  ],
+  "single-session-assistant": [
+   "1b9b7252"
+  ],
+  "single-session-preference": [
+   "caf03d32"
+  ],
+  "single-session-user": [
+   "1e043500"
+  ],
+  "temporal-reasoning": [
+   "gpt4_5438fa52",
+   "0bc8ad92"
+  ]
+ }
+}

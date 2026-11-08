@@ -1,10 +1,12 @@
 {
  "dataset": "longmemeval_s_cleaned.json",
  "seed": 1108,
- "outside": {
-  "per_type": 5,
-  "seed": 1107
- },
+ "excludes": [
+  {
+   "per_type": 5,
+   "seed": 1107
+  }
+ ],
  "ids": {
   "abstention": [
    "eeda8a6d_abs"
