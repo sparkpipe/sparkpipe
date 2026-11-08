@@ -215,6 +215,32 @@ static void TestModelResidentBuildPrefill(
 	submission->row_sequence_ids = sequences;
 }
 
+static void TestModelResidentBuildNextWave(
+	SparkModelServingSubmission *submission,
+	SparkModelServingLane *lanes,
+	uint64_t *positions,
+	uint64_t *sequences,
+	uint64_t submission_id)
+{
+	lanes[0].sequence_position = 4u;
+	lanes[0].context_token_count = 6u;
+	positions[0] = 4u;
+	positions[1] = 5u;
+	sequences[0] = 200u;
+	sequences[1] = 200u;
+	submission->submission_id = submission_id;
+	submission->transaction_id = 1000u + submission_id;
+	submission->dispatch_generation = 2000u + submission_id;
+	submission->step_generation = 3000u + submission_id;
+	submission->sequence_position = 4u;
+	submission->residency.word0 = submission_id;
+	submission->residency.word1 = 100u + submission_id;
+	submission->residency.generation = 200u + submission_id;
+	submission->new_token_count = 2u;
+	submission->row_count = 2u;
+	submission->token_count = 2u;
+}
+
 static void TestModelResidentBuildRelease(
 	SparkModelServingSubmission *submission,
 	SparkModelServingLane *lanes,
@@ -340,6 +366,7 @@ static void TestModelResidentRunCase(
 	SparkModelResidentClientConfiguration configuration;
 	SparkModelResidentClientView view;
 	SparkModelServingSubmission submission;
+	SparkModelDriverResidencyToken residency;
 	SparkModelServingLane lanes[2];
 	SparkModelResidentClient *client;
 	TestModelResidentState state;
@@ -420,22 +447,41 @@ static void TestModelResidentRunCase(
 		assert(state.completion.token_ids[1] == 4201u);
 	}
 	TestModelResidentBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences);
+	residency = submission.residency;
 	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
 	TestModelResidentWaitForResult(client,&state,3u);
 	assert(state.result_submission_id == 503u);
 	assert(state.result_status == SPARK_STATUS_OK);
+	TestModelResidentBuildNextWave(&submission,lanes,positions,sequences,504u);
+	lanes[0].request_id = 903u;
+	lanes[0].sequence_id = 201u;
+	sequences[0] = 201u;
+	sequences[1] = 201u;
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
+	TestModelResidentWaitForResult(client,&state,4u);
+	assert(state.result_submission_id == 504u);
+	assert(state.result_status == SPARK_STATUS_BUSY);
+	TestModelResidentBuildPrefill(&submission,lanes,tokens,row_lanes,positions,sequences);
+	TestModelResidentBuildNextWave(&submission,lanes,positions,sequences,505u);
+	assert(SparkModelResidentClientPrepare(client,&submission) == SPARK_STATUS_OK);
+	TestModelResidentWaitForResult(client,&state,5u);
+	assert(state.result_submission_id == 505u);
+	assert(state.result_status == SPARK_STATUS_OK);
 	assert(SparkModelResidentClientCommit(client,503u) == SPARK_STATUS_OK);
 	TestModelResidentWaitForCompletion(client,&state,2u);
-	assert(state.result_count == 3u);
-	assert(state.result_submission_id == 503u);
-	assert(state.result_status == SPARK_STATUS_OK);
+	assert(state.result_count == 5u);
 	assert(state.completion.submission_id == 503u);
-	assert(memcmp(&state.completion.residency,&submission.residency,
-		sizeof(submission.residency)) == 0);
+	assert(memcmp(&state.completion.residency,&residency,
+		sizeof(residency)) == 0);
 	assert(state.completion.completion_flags == (expect_tokens != 0u ? SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS : 0u));
 	assert(state.completion.token_count == (expect_tokens != 0u ? 1u : 0u));
 	if ( expect_tokens != 0u )
 		assert(state.completion.token_ids[0] == 4203u);
+	assert(SparkModelResidentClientCommit(client,505u) == SPARK_STATUS_OK);
+	TestModelResidentWaitForCompletion(client,&state,3u);
+	assert(state.completion.submission_id == 505u);
+	assert(state.completion.status == SPARK_STATUS_OK);
+	assert(state.completion.token_count == (expect_tokens != 0u ? 1u : 0u));
 	release_request_ids[0] = 900u;
 	release_request_ids[1] = 901u;
 	release_sequence_ids[0] = 100u;
@@ -445,21 +491,21 @@ static void TestModelResidentRunCase(
 	release_slots[0] = 7u;
 	release_slots[1] = 3u;
 	TestModelResidentBuildRelease(&submission,lanes,release_request_ids,
-		release_sequence_ids,release_positions,release_slots,2u,505u);
+		release_sequence_ids,release_positions,release_slots,2u,506u);
 	assert(SparkModelResidentClientContinue(client,&submission) ==
 		SPARK_STATUS_OK);
-	TestModelResidentWaitForResult(client,&state,4u);
-	TestModelResidentWaitForCompletion(client,&state,3u);
+	TestModelResidentWaitForResult(client,&state,6u);
+	TestModelResidentWaitForCompletion(client,&state,4u);
 	release_request_ids[0] = 902u;
 	release_sequence_ids[0] = 200u;
-	release_positions[0] = 4u;
+	release_positions[0] = 6u;
 	release_slots[0] = 5u;
 	TestModelResidentBuildRelease(&submission,lanes,release_request_ids,
-		release_sequence_ids,release_positions,release_slots,1u,506u);
+		release_sequence_ids,release_positions,release_slots,1u,507u);
 	assert(SparkModelResidentClientContinue(client,&submission) ==
 		SPARK_STATUS_OK);
-	TestModelResidentWaitForResult(client,&state,5u);
-	TestModelResidentWaitForCompletion(client,&state,4u);
+	TestModelResidentWaitForResult(client,&state,7u);
+	TestModelResidentWaitForCompletion(client,&state,5u);
 	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
 	assert(view.connected == 1u);
 	assert(view.pending_submission_count == 0u);
@@ -469,11 +515,11 @@ static void TestModelResidentRunCase(
 	assert(view.resident_sequence_capacity == 8u);
 	assert(view.kv_logical_page_capacity == 16u);
 	assert(view.kv_physical_page_capacity == 8u);
-	assert(view.submitted_count == 5u);
-	assert(view.admitted_count == 4u);
-	assert(view.rejected_count == 1u);
+	assert(view.submitted_count == 7u);
+	assert(view.admitted_count == 5u);
+	assert(view.rejected_count == 2u);
 	assert(view.continued_count == 2u);
-	assert(view.completed_count == 4u);
+	assert(view.completed_count == 5u);
 	SparkModelResidentClientDestroy(client);
 	SparkModelServingAdapterUnloadInterface(&adapter);
 	assert(kill(child,SIGTERM) == 0);

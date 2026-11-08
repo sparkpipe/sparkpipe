@@ -39,6 +39,7 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_kv_ledger.h"
+#include "sparkpipe/spark_kv_page_cache.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
@@ -215,6 +216,8 @@ typedef struct SparkModelResidentdRoute
 typedef struct SparkModelResidentdSequenceSlot
 {
 	uint32_t active_owner;
+	uint32_t queued_owners[SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH];
+	uint32_t queued_count;
 	uint32_t bound;
 	uint64_t request_id;
 	uint64_t request_generation;
@@ -855,10 +858,55 @@ static void SparkModelResidentdReportSlotOwner(const SparkModelResidentdRuntime 
 	fprintf(stderr,"SLOT-BUSY slot=%u submission=%llu kind=%u owner=%llu owner_kind=%u owner_state=%u owner_active=%u owner_age_ms=%llu owner_fifo=%u owner_result=%u\n",slot,(unsigned long long)route->submission_id,route->submission.work_kind,(unsigned long long)owner->submission_id,owner->submission.work_kind,owner->state,owner->active,(unsigned long long)(owner->active_since_ns != 0u && now_ns > owner->active_since_ns ? (now_ns - owner->active_since_ns) / UINT64_C(1000000) : 0u),owner->committed_fifo_queued,owner->result_queued);
 }
 
+static uint32_t SparkModelResidentdSlotHolds(const SparkModelResidentdSequenceSlot *slot,uint32_t owner)
+{
+	uint32_t index;
+	for (index=0u; index<slot->queued_count; index++)
+		if ( slot->queued_owners[index] == owner )
+			return(1u);
+	return(slot->active_owner == owner ? 1u : 0u);
+}
+
+static void SparkModelResidentdSlotLeave(SparkModelResidentdSequenceSlot *slot,uint32_t owner)
+{
+	uint32_t index,kept = 0u;
+	if ( slot->active_owner == owner )
+	{
+		slot->active_owner = slot->queued_count != 0u ? slot->queued_owners[0] : 0u;
+		owner = slot->active_owner;
+	}
+	for (index=0u; index<slot->queued_count; index++)
+		if ( slot->queued_owners[index] != owner )
+			slot->queued_owners[kept++] = slot->queued_owners[index];
+	slot->queued_count = kept;
+}
+
+static uint32_t SparkModelResidentdRouteChains(const SparkModelResidentdRuntime *runtime,const SparkModelResidentdRoute *route,const SparkModelServingLane *lane)
+{
+	const SparkModelResidentdSequenceSlot *slot = &runtime->sequence_slots[lane->resident_sequence_slot];
+	const uint32_t newest = slot->queued_count != 0u ? slot->queued_owners[slot->queued_count - 1u] : slot->active_owner;
+	const SparkModelResidentdRoute *previous;
+	const SparkModelServingLane *tail = 0;
+	uint32_t index;
+	if ( newest == 0u || newest > runtime->route_capacity || slot->queued_count >= SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH ||
+		route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || (route->submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+		return(0u);
+	previous = &runtime->routes[newest - 1u];
+	if ( previous->active == 0u || previous->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ||
+		(previous->submission.flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
+		return(0u);
+	for (index=0u; index<previous->submission.active_sequence_count; index++)
+		if ( previous->submission.lanes[index].resident_sequence_slot == lane->resident_sequence_slot )
+			tail = &previous->submission.lanes[index];
+	return(tail != 0 && tail->request_id == lane->request_id && tail->request_generation == lane->request_generation && tail->sequence_id == lane->sequence_id &&
+		(uint64_t)tail->context_token_count == lane->sequence_position && (uint64_t)lane->context_token_count > lane->sequence_position ? 1u : 0u);
+}
+
 static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route)
 {
+	SparkModelResidentdSequenceSlot *held;
 	SparkStatus status;
 	uint32_t lane,owner,slot;
 	if ( route->resident_slots_claimed != 0u )
@@ -869,7 +917,7 @@ static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
 		slot = route->submission.lanes[lane].resident_sequence_slot;
 		if ( slot >= runtime->runtime_limits.resident_sequence_capacity )
 			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( runtime->sequence_slots[slot].active_owner != 0u )
+		if ( runtime->sequence_slots[slot].active_owner != 0u && SparkModelResidentdRouteChains(runtime,route,&route->submission.lanes[lane]) == 0u )
 		{
 			SparkModelResidentdReportSlotOwner(runtime,route,slot);
 			return(SPARK_STATUS_BUSY);
@@ -879,7 +927,13 @@ static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
 			SPARK_RETURN(status);
 	}
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
-		runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot].active_owner = owner;
+	{
+		held = &runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot];
+		if ( held->active_owner == 0u )
+			held->active_owner = owner;
+		else
+			held->queued_owners[held->queued_count++] = owner;
+	}
 	route->resident_slots_claimed = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -897,12 +951,12 @@ static SparkStatus SparkModelResidentdReleaseResidentSlotsLocked(
 		slot = route->submission.lanes[lane].resident_sequence_slot;
 		if ( slot >= runtime->runtime_limits.resident_sequence_capacity )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		if ( runtime->sequence_slots[slot].active_owner != owner &&
+		if ( SparkModelResidentdSlotHolds(&runtime->sequence_slots[slot],owner) == 0u &&
 			runtime->sequence_slots[slot].active_owner != 0u )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	for (lane=0u; lane<route->submission.active_sequence_count; lane++)
-		runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot].active_owner = 0u;
+		SparkModelResidentdSlotLeave(&runtime->sequence_slots[route->submission.lanes[lane].resident_sequence_slot],owner);
 	route->resident_slots_claimed = 0u;
 	return(SPARK_STATUS_OK);
 }
@@ -918,7 +972,7 @@ static void SparkModelResidentdSettleRanSlotsLocked(SparkModelResidentdRuntime *
 		if ( lane->resident_sequence_slot >= runtime->runtime_limits.resident_sequence_capacity )
 			continue;
 		slot = &runtime->sequence_slots[lane->resident_sequence_slot];
-		if ( slot->active_owner != owner )
+		if ( SparkModelResidentdSlotHolds(slot,owner) == 0u )
 			continue;
 		slot->bound = route->submission.work_kind != SPARK_MODEL_SERVING_WORK_KIND_RELEASE ? 1u : 0u;
 		slot->request_id = slot->bound != 0u ? lane->request_id : 0u;
@@ -934,9 +988,9 @@ static void SparkModelResidentdDropClaimsLocked(SparkModelResidentdRuntime *runt
 	for (lane=0u; route->resident_slots_claimed != 0u && lane<route->submission.active_sequence_count; lane++)
 	{
 		slot = route->submission.lanes[lane].resident_sequence_slot;
-		if ( slot >= runtime->runtime_limits.resident_sequence_capacity || runtime->sequence_slots[slot].active_owner != owner )
+		if ( slot >= runtime->runtime_limits.resident_sequence_capacity || SparkModelResidentdSlotHolds(&runtime->sequence_slots[slot],owner) == 0u )
 			continue;
-		runtime->sequence_slots[slot].active_owner = 0u;
+		SparkModelResidentdSlotLeave(&runtime->sequence_slots[slot],owner);
 		SparkModelContinuationLeaseInvalidate(&runtime->sequence_slots[slot].lease);
 	}
 	route->resident_slots_claimed = 0u;
@@ -1023,7 +1077,7 @@ static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
-		slot->active_owner = 0u;
+		SparkModelResidentdSlotLeave(slot,owner);
 	}
 	route->resident_slots_claimed = 0u;
 	return(SPARK_STATUS_OK);

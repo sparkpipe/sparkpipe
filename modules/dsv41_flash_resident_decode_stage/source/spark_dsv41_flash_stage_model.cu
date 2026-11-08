@@ -552,10 +552,10 @@ static uint32_t D41StageSourceCache(uint32_t stage, uint32_t *sources)
 	return cache;
 }
 
-#define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t))
+#define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t) + D41_INDEX_TOPK * (uint32_t)sizeof(uint32_t))
 #define D41_STREAM_ROW_BYTES (D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t))
 static_assert(D41_STREAM_ROW_BYTES + D41_FORWARD_ROW_BYTES == SPARK_DSV41_FLASH_STAGE_SIDEBAND_ROW_BYTES,
-	"the adapter declares the sideband the stages exchange: four streams and one forwarded cache entry a row");
+	"the adapter declares the sideband the stages exchange: four streams, one forwarded cache entry and its index selection a row");
 
 static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
@@ -1228,6 +1228,13 @@ struct D41Cuda
 					state->forward_index, state->forward_emit, step->sequence_of_row, D41_INDEX_DIM);
 		}
 		state->forward_loaded = 0u;
+		if ( state->received_cache != UINT32_MAX && !D41KvSource(state->first_layer) && state->local_attention != 0u )
+		{
+			status = state->received_cache < 3u ? D41LandCache<D41Ratio2Kv>(state, state->received_cache, step, stream) :
+				D41LandCache<D41Ratio1Kv>(state, state->received_cache, step, stream);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+		}
 		if ( state->local_attention != 0u || state->local_upper != 0u )
 		{
 			D41RingPackKernel<<<D41_LAYERS, D41_THREADS, 0, stream>>>((const uint16_t *)state->recurrent, step->recurrent_index,
@@ -2294,9 +2301,9 @@ static SparkStatus D41Sideband(void *model, uint32_t to_buffer, const void *hidd
 	}
 	{
 		uint8_t *planes = (uint8_t *)buffer;
-		void *local[4] = { state->streams, state->forward_latent, state->forward_index, state->forward_emit };
-		const uint64_t length[4] = { stream_bytes, latent_bytes, index_bytes, (uint64_t)rows * sizeof(uint32_t) };
-		for ( uint32_t plane = 0u; plane < 4u; plane++ )
+		void *local[5] = { state->streams, state->forward_latent, state->forward_index, state->forward_emit, state->selected };
+		const uint64_t length[5] = { stream_bytes, latent_bytes, index_bytes, (uint64_t)rows * sizeof(uint32_t), (uint64_t)rows * D41_INDEX_TOPK * sizeof(uint32_t) };
+		for ( uint32_t plane = 0u; plane < 5u; plane++ )
 		{
 			if ( cudaMemcpyAsync(to_buffer != 0u ? (void *)planes : local[plane], to_buffer != 0u ? (const void *)local[plane] : (const void *)planes,
 				length[plane], cudaMemcpyDefault, (cudaStream_t)stream) != cudaSuccess )
