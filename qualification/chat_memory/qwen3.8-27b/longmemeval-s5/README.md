@@ -214,8 +214,9 @@ Memory pays once to import a history and a little after every answer.
    whose per-question results are not read before that run.
 4. A provider-style compaction arm, one summary of every word, before memory
    is compared with compaction again.
-5. Then LoCoMo, the agent arm, and import time: 49 to 58 minutes a history
-   today, which also caps how many questions a run can afford.
+5. Then LoCoMo, the agent arm, and import time: about 49 minutes a history
+   with three imports and nothing else, 58 beside the other arms. It also
+   caps how many questions a run can afford.
 
 ## Files
 
