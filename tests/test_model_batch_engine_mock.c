@@ -1932,6 +1932,37 @@ static void TestScenarioRankKilledAndRevived(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioSelfHealBeforeDispatch(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	TestSubmit(engine,1u,510u,3u);
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientKill(1u);
+	TestDrive(engine,5u);
+	CHECK( SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.inflight_submission_count == 0u,
+		"self-heal: nothing is in flight while a rank is down");
+	MockResidentClientRevive(1u);
+	MockResidentClientDisconnect(1u);
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK( SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_OK && view.inflight_submission_count == 1u,
+		"self-heal: the progress whose pipeline pass heals the session dispatches into the new session");
+	(void)MockResidentClientDriveAll();
+	TestDriveUntilTerminal(engine,&state,1u,2000u);
+	CHECK( state.completed_events[1] == 1u && state.error_events[1] == 0u,
+		"self-heal: a submission dispatched right after the heal completes instead of wedging the next session check");
+	CHECK( SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_OK,
+		"self-heal: the engine stays healthy across the session change");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 /* A rank answering BUSY is transient backpressure, not a fault: the
  * pipeline must NOT fail-stop (that reconnects every rank and resets every
  * engine session, killing all in-flight chains fleet-wide). The request
@@ -3906,6 +3937,7 @@ int main(void)
 	TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
 	TestScenarioRankDiesMidDecode(&deployment,runtime_root);
 	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
+	TestScenarioSelfHealBeforeDispatch(&deployment,runtime_root);
 	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
 	TestScenarioPrefixIndexSurvivesRestart(&deployment,runtime_root);
 	TestScenarioPeerPrefixIndex(&deployment,runtime_root);
