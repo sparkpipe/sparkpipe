@@ -126,10 +126,12 @@
   const context = (st) => {
     const now = Date.parse(st.now);
     const weekStart = monday(now);
+    const weekEnd = weekStart + WEEK;
     return {
       now,
       weekStart,
-      weekEnd: weekStart + WEEK,
+      weekEnd,
+      decide: now < weekEnd - DAY ? weekEnd : weekEnd + WEEK,
       locks: (st.waitlist && st.waitlist.locks) || 0,
       hourDays: (st.bookings && st.bookings.hourFleetDaysAhead) || 7,
       hoursFrom: st.sandbox || !st.hoursFrom ? 0 : Date.parse(st.hoursFrom + 'T00:00:00+09:00'),
@@ -139,9 +141,9 @@
   const fleetData = (f) => ({ f, pinned: spans(f.pinned), booked: spans(f.booked), maint: spans(f.maintenance), first: f.firstWeek ? Date.parse(f.firstWeek) : 0 });
 
   const nextWeek = (d, c) => {
-    if (within(d.pinned, c.weekEnd + HOUR)) return 'pinned';
+    if (within(d.pinned, c.decide + HOUR)) return 'pinned';
     if (d.first) return 'pin';
-    if (within(d.pinned, c.weekEnd - HOUR)) return 'hold';
+    if (within(d.pinned, c.decide - HOUR)) return 'hold';
     if (d.f.hourFleet) return null;
     return c.locks ? 'wait' : 'later';
   };
@@ -154,22 +156,25 @@
     if (within(d.booked, t)) return 'booked';
     if (c.hoursFrom && t < c.hoursFrom) return 'later';
     if (d.f.hourFleet) {
-      if (t >= c.weekEnd && t < c.weekEnd + WEEK && within(d.pinned, c.weekEnd - HOUR)) return 'hold';
+      if (t >= c.decide && t < c.decide + WEEK && within(d.pinned, c.decide - HOUR)) return 'hold';
       return t < c.now + c.hourDays * DAY ? 'open' : 'later';
     }
     if (t < c.weekEnd) return 'open';
-    if (t < c.weekEnd + WEEK) return nextWeek(d, c);
+    if (t < c.decide) return d.first ? 'pin' : 'later';
+    if (t < c.decide + WEEK) return nextWeek(d, c);
     return 'later';
   };
 
   const weekState = (d, w, c) => {
     if (d.f.serving === false) return 'building';
     if (within(d.pinned, w + HOUR)) return 'pinned';
+    if (c.hoursFrom && w + WEEK <= c.hoursFrom) return 'later';
     if (w === c.weekStart) return overlaps(d.booked, w, w + WEEK) ? 'booked' : 'open';
-    if (w === c.weekEnd) {
-      if (d.f.hourFleet) return within(d.pinned, c.weekEnd - HOUR) ? 'hold' : 'open';
+    if (w === c.decide) {
+      if (d.f.hourFleet) return within(d.pinned, c.decide - HOUR) ? 'hold' : 'open';
       return nextWeek(d, c);
     }
+    if (w < c.decide && !d.f.hourFleet) return d.first ? 'pin' : 'later';
     if (d.f.hourFleet && w < c.now + c.hourDays * DAY) return overlaps(d.booked, w, w + WEEK) ? 'booked' : 'open';
     return 'later';
   };
@@ -263,7 +268,7 @@
         if (label && r.n * cw > label.length * 6.4 + 10) svg.append(el('text', { x: r.i * cw + 6, y: top + ROW / 2 + 4, class: `av-label on-${r.s}` }, label));
       });
     });
-    const sunday = c.weekEnd - DAY;
+    const sunday = c.decide - DAY;
     const sx = ((sunday - start) / step) * cw;
     if (sx > 0 && sx < width) {
       svg.append(el('line', { x1: sx, x2: sx, y1: HEAD - 4, y2: height, class: 'av-sunday' }));
@@ -325,7 +330,7 @@
       let text;
       if (d.f.serving === false) text = T.summary.building;
       else {
-        const span = d.pinned.find(([a, z]) => z > c.now && a < c.weekEnd + WEEK);
+        const span = d.pinned.find(([a, z]) => z > c.now && a < c.decide + WEEK);
         if (span) {
           text = T.summary.pinned(span[0] > c.now ? span[0] : 0, runEnd(d.pinned, span));
         } else if (d.f.hourFleet) {
@@ -354,7 +359,7 @@
       weekly.length ? T.pinnedA(pinned, next, weekly.length, dayText(c.weekEnd)) : T.noneServing,
       T.locks(c.locks),
       T.pairs((st.pairs && st.pairs.open) || 0, (st.pairs && st.pairs.limit) || 0),
-      T.sunday(dayText(c.weekEnd - DAY), left(c.weekEnd - DAY - c.now)),
+      T.sunday(dayText(c.decide - DAY), left(c.decide - DAY - c.now)),
     ];
     $('av-chips').replaceChildren(...items.map((text) => {
       const li = document.createElement('li');
@@ -383,7 +388,7 @@
       text = T.detail.pinned(span[0], span[1], d.f.hourFleet);
     } else if (s === 'open' || s === 'later') text = T.detail[s](d.f.hourFleet);
     else if (s === 'pin') text = T.detail.pin(d.first || c.weekEnd);
-    else if (s === 'hold') text = T.detail.hold(c.weekEnd, c.locks);
+    else if (s === 'hold') text = T.detail.hold(c.decide, c.locks);
     else if (s === 'wait') text = T.detail.wait(c.locks);
     else text = T.detail[s];
     $('av-detail').textContent = `${fleetName(d.f)} · ${when} KST · ${T.names[s]}. ${text}`;
