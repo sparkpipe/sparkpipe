@@ -1258,9 +1258,9 @@ def notice_flows(failures, work):
         if early or hours != [72, 48, 6, 2] or notices(app, W, "booking.deadline")[0]["data"]["deadline"] != slot(deadline) or {n["data"]["auto_extend"] for n in notices(app, W, "booking.deadline")} != {0}:
             failures.append(f"booking.deadline does not fire once each 72, 48, 6 and 2 hours before the Sunday deadline: {early} {hours}")
         until(lambda: len(stopper.posts) >= 2, 5)
-        sent_stop = [json.loads(body)["data"] for _, body in stopper.posts]
+        sent_stop = [payload["data"] for payload in sorted((json.loads(body) for _, body in stopper.posts), key=lambda payload: payload["created"])]
         if [(d.get("early"), d.get("reason"), d.get("stopped")) for d in sent_stop] != [(True, "insufficient_hc", None), (None, "insufficient_hc", True)] or not all(signed("n" * 24, headers, body) for headers, body in stopper.posts):
-            failures.append(f"a webhook does not receive the auto-extend wait and stop notices, signed: {sent_stop}")
+            failures.append(f"a webhook does not receive the auto-extend wait and stop notices, signed, in the order they were created: {sent_stop}")
         pair_loss(failures, app, m, port, W, O, mine["fleet"])
         app.uptime.observe("F5", True, m.now(), watch=False)
         app.uptime.observe(mine["fleet"], False, m.now(), watch=False)
@@ -1324,7 +1324,7 @@ def notice_flows(failures, work):
             failures.append(f"the ledger holds notices, webhooks, lost paths, context names or hub event data: {sorted(kinds)} {sorted(mailed)}")
         if raw_call(port, "PUT", "/v1/webhooks", json.dumps({"url": url(good), "events": ["*"]}).encode(), {"X-Api-Key": m.create_key(W, {})["key"]})[0] != 403:
             failures.append("an API key manages webhooks")
-        until(lambda: any(o["target"] == stuck["id"] for o in app.notifier.deliveries.items()), 5)
+        until(lambda: any(o["target"] == stuck["id"] for o in app.notifier.deliveries.items()) and sum(o["attempts"] for o in app.notifier.deliveries.items() if o["target"] == retried["id"]) >= 6, 5)
         outcomes = [o for o in app.notifier.deliveries.items() if o["target"] != stuck["id"]]
         if {o["outcome"] for o in outcomes} != {"delivered"} or sum(o["attempts"] for o in outcomes if o["target"] == retried["id"]) != 6 or {o["attempts"] for o in outcomes if o["target"] != retried["id"]} != {1}:
             failures.append(f"webhook outcomes are not recorded: {[o for o in outcomes if o['target'] == retried['id']]}")
