@@ -149,7 +149,7 @@ Both services also need `SPARKPIPE_GATEWAY_CAPACITY`, the number of requests the
 3. Write a request body: `printf '%s' '{"model":"kimi-k3","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' > /tmp/capacity_body.json`.
 4. Run `python3 tools/gateway_capacity_check.py http://127.0.0.1:18091/v1/chat/completions --key-file ~/sandbox_key --body-file /tmp/capacity_body.json --concurrency 64 --seconds 60 --out /tmp/gateway_capacity.json` on the VPS. It refuses any URL that is not loopback, sandbox or staging.
 5. It writes the sustained 2xx requests per second, p50 and p99 latency, the statuses, and `capacity_per_window`, which is that rate times 600. It fails on any 429 or error, because a measurement that met a limit is not the gateway's capacity.
-6. Raise `--concurrency` until the rate stops growing or p99 passes 1 s. Set `SPARKPIPE_GATEWAY_CAPACITY` in `/etc/sparkpipe-pay/env` to the `capacity_per_window` of the best run that kept p99 under 1 s.
+6. Raise `--concurrency` until the rate stops growing or p99 passes 1 s. Set `SPARKPIPE_GATEWAY_CAPACITY` in `/etc/sparkpipe-pay/env` to the `capacity_per_window` of the best run that kept p99 under 1 s. The service queues up to 1,024 connections that arrive while it is busy, and the kernel caps that queue at `net.core.somaxconn`: check that it is at least 1,024 on the VPS, or bursts of connections are reset before the service sees them.
 7. Set the sandbox back to the same value, then restart both services.
 
 ```sh
