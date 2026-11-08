@@ -119,12 +119,18 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 static_assert(D41_PAIR_RECORD_ROWS >= 1u, "a pair-duplicated record row fits a staging slot");
 #define D41_PAIR_RECORD_CHOSEN_ROWS 1u
 static_assert(D41_PAIR_RECORD_CHOSEN_ROWS <= D41_PAIR_RECORD_ROWS, "pair-duplicated records are chosen only where they fit a staging slot");
-static_assert(D41_RECORD_ROW_ELEMENTS <= D41_HIDDEN && D41_RECORD_ROW_ELEMENTS % 8u == 0u,
-	"one row of attention records fits a collective row and keeps 16-byte copies");
+#define D41_RECORD_SPLIT ((D41_RECORD_ROW_ELEMENTS + D41_HIDDEN - 1u) / D41_HIDDEN)
+#define D41_RECORD_PART (D41_RECORD_ROW_ELEMENTS / D41_RECORD_SPLIT)
+static_assert(D41_RECORD_ROW_ELEMENTS % D41_RECORD_SPLIT == 0u && D41_RECORD_PART <= D41_HIDDEN && D41_RECORD_PART % 8u == 0u,
+	"a row of attention records splits into whole collective rows that keep 16-byte copies");
 static_assert(D41_ENGRAM_EMBED % 2u == 0u && D41_ENGRAM_HALF <= D41_HIDDEN && D41_ENGRAM_HALF % 8u == 0u,
 	"an engram embedding row splits into two collective rows");
-static_assert(D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK <= D41_HIDDEN && D41_INDEX_PACK % 8u == 0u,
-	"the index query pack rides in the query all-gather row and keeps 16-byte copies");
+#define D41_QUERY_JOINED (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK <= D41_HIDDEN ? 1u : 0u)
+#define D41_QUERY_SPLIT ((D41_LOCAL_HEADS * D41_HEAD_DIM + D41_HIDDEN - 1u) / D41_HIDDEN)
+#define D41_QUERY_PART (D41_LOCAL_HEADS * D41_HEAD_DIM / D41_QUERY_SPLIT)
+static_assert(D41_INDEX_PACK % 8u == 0u && D41_INDEX_PACK <= D41_HIDDEN && (D41_LOCAL_HEADS * D41_HEAD_DIM) % D41_QUERY_SPLIT == 0u &&
+	D41_QUERY_PART <= D41_HIDDEN && D41_QUERY_PART % 8u == 0u,
+	"the local query heads gather as whole collective rows with 16-byte copies, with the index query pack in the same row or its own gather");
 static_assert(D41_HEAD_DIM % D41_THREADS == 0u && (D41_HEAD_DIM - D41_ROPE) % D41_FP8_BLOCK == 0u && D41_ROPE == 2u * D41K_ROPE_PAIRS,
 	"the key/value norm covers whole rows per thread block, and its rotary pairs sit in whole fp8 groups of one warp");
 static_assert(D41_MOE_INTER % D41_TP == 0u && D41_HIDDEN % D41_TP == 0u && D41_EXPERT_SLICE % 16u == 0u && D41_HIDDEN_SLICE % 32u == 0u,
@@ -734,7 +740,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	const uint32_t local_width = D41_LOCAL_HEADS * D41_HEAD_DIM;
 	const uint32_t indexed = ratio > 0u && D41IndexSource(index) ? 1u : 0u;
 	const uint32_t gather_width = local_width + (indexed != 0u ? D41_INDEX_PACK : 0u);
-	const uint64_t query_rank_stride = (uint64_t)rows * gather_width;
+	const uint64_t query_rank_stride = (uint64_t)rows * (D41_QUERY_JOINED != 0u ? gather_width : local_width);
 	uint16_t *ring = (uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM;
 	SparkStatus status;
 	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms, state->row_invariant, stream) !=
@@ -756,8 +762,16 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 			D41LandCache<D41Ratio1Kv>(state, D41CacheIndex(index), step, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41IndexQuery(state, layer, index, step, state->q_local + (uint64_t)rows * local_width, stream);
-	if ( status == SPARK_STATUS_OK && local == 0u )
+	if ( status == SPARK_STATUS_OK && local == 0u && D41_QUERY_JOINED != 0u )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, gather_width, state->q_local, state->q_gathered);
+	else if ( status == SPARK_STATUS_OK && local == 0u )
+	{
+		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows * D41_QUERY_SPLIT, D41_QUERY_PART, state->q_local,
+			state->q_gathered);
+		if ( status == SPARK_STATUS_OK && indexed != 0u )
+			status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_INDEX_PACK,
+				state->q_local + (uint64_t)rows * local_width, state->q_gathered + (uint64_t)D41_TP * rows * local_width);
+	}
 	else if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_INDEX_PACK,
 			state->q_local + (uint64_t)rows * local_width, state->q_gathered);
@@ -765,8 +779,8 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		status = D41Launched();
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 	{
-		const uint16_t *packed = local != 0u ? state->q_gathered : state->q_gathered + (uint64_t)rows * local_width;
-		const uint64_t packed_stride = local != 0u ? (uint64_t)rows * D41_INDEX_PACK : query_rank_stride;
+		const uint16_t *packed = local != 0u ? state->q_gathered : state->q_gathered + (uint64_t)(D41_QUERY_JOINED != 0u ? 1u : D41_TP) * rows * local_width;
+		const uint64_t packed_stride = local != 0u || D41_QUERY_JOINED == 0u ? (uint64_t)rows * D41_INDEX_PACK : query_rank_stride;
 		status = D41CacheIndex(index) < 3u ? D41Select<D41Ratio2Kv>(state, index, step, bound, length, packed, packed_stride, stream) :
 			D41Select<D41Ratio1Kv>(state, index, step, bound, length, packed, packed_stride, stream);
 	}
@@ -813,7 +827,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		state->tp_rank, rows, step->commit, (const uint32_t *)0);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && local == 0u )
-		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, record_copies * rows, D41_RECORD_ROW_ELEMENTS,
+		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, record_copies * rows * D41_RECORD_SPLIT, D41_RECORD_PART,
 			state->records_send, state->records_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
