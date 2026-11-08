@@ -52,12 +52,12 @@ def refused(call):
 def site(work, serving=True):
     tp.site_copy(work)
     path = work / "site" / "pricing.js"
-    pricing = json.loads(path.read_text().split("=", 1)[1].strip().rstrip(";"))
+    pricing = tp.read_pricing(path)
     if serving:
         for fleet in pricing["fleets"]:
             fleet["state"] = "serving"
         pricing["fleets"] += [dict(pricing["fleets"][-1], id=f"F{n}", name=f"Fleet {n}") for n in (4, 5)]
-    path.write_text("window.SP_PRICING = " + json.dumps(pricing, indent=2) + ";\n")
+    tp.write_pricing(path, pricing)
     (work / "pool_key").write_text(POOL_KEY + "\n")
 
 

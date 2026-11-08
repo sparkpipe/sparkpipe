@@ -32,6 +32,7 @@ SECRET = b"test-client-secret"
 CLIENT = "test-client-id"
 TOSS_LIVE = ("live_gck_fake_client", "live_gsk_fake_secret")
 TOSS_TEST = ("test_gck_fake_client", "test_gsk_fake_secret")
+HC_LADDER = [{"from": 1, "usd": 20, "krw": 26000}, {"from": 144, "usd": 15, "krw": 19500}]
 NOW = [datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)]
 
 
@@ -314,9 +315,19 @@ def lines_of(cfg, kind=None):
     return [line["type"] for line in found] if kind is None else [line["data"] for line in found if line["type"] == kind]
 
 
+def read_pricing(path):
+    return json.loads(path.read_text().split("=", 1)[1].strip().rstrip(";"))
+
+
+def write_pricing(path, pricing):
+    path.write_text("window.SP_PRICING = " + json.dumps(pricing, indent=2) + ";\n")
+
+
 def site_copy(work):
     (work / "site" / "terms").mkdir(parents=True)
-    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
+    pricing = read_pricing(ROOT / "site" / "pricing.js")
+    pricing["hc"]["prices"] = HC_LADDER
+    write_pricing(work / "site" / "pricing.js", pricing)
     for name in sp.TERMS.values():
         shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
     (work / "secret").write_text("test-client-secret\n")
