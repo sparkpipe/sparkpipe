@@ -240,7 +240,7 @@ int main(int argc, char **argv)
 			failed != 0 ? "a rank failed" : "every rank finished",(unsigned long long)bad,(unsigned long long)held_bad);
 		return 1;
 	}
-	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (pair relay, partial last chunk), %u rotation steps of %llu-byte blocks in halves, "
+	printf("PASS weight stream loopback: %u ranks, %u back-to-back broadcasts of %llu bytes (direct on both rails, partial last chunk), %u rotation steps of %llu-byte blocks in halves, "
 		"%u exchanges of a distinct %llu-byte block per destination from a %llu-byte pitch, every byte checked; "
 		"then one reused landing with no barriers while rank %u holds each landing %ld ms: nothing written before it entered the next call\n",
 		LOOP_RANKS,LOOP_BROADCASTS,(unsigned long long)LOOP_DENSE,LOOP_ROUNDS * LOOP_RANKS,(unsigned long long)LOOP_BLOCK,LOOP_EXCHANGES,(unsigned long long)LOOP_EXCHANGE,

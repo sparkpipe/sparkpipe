@@ -13,27 +13,28 @@ sys.path.insert(0, str(ROOT / "tools" / "serving"))
 import model_swap  # noqa: E402
 
 GIB = 2 ** 30
-FAKE_SSH = """import glob, json, os, sys
-host, command = sys.argv[1], sys.argv[2]
+FAKE_SSH = """import glob, json, os, re, sys
+host, joined = sys.argv[1], sys.argv[2]
 state = os.environ["SWAP_TEST_STATE"]
-with open(os.path.join(state, "log"), "a") as handle:
-    handle.write(json.dumps([host, command]) + "\\n")
-words = command.split()
-if words[0] == "PROBE":
-    print(200 * 2 ** 30)
-elif words[0] == "START":
-    open(os.path.join(state, "holder-" + host + "-" + words[2] + "-" + words[1]), "w").close()
-    open(os.path.join(state, "up-" + words[1] + "-" + host), "w").close()
-elif words[0] == "STOP":
-    for path in glob.glob(os.path.join(state, "holder-" + host + "-*-" + words[1])) + glob.glob(os.path.join(state, "up-" + words[1] + "-" + host)):
-        os.remove(path)
-elif words[0] == "DROP":
-    holders = glob.glob(os.path.join(state, "holder-" + host + "-" + words[1] + "-*"))
-    if holders:
-        print("pool " + words[1] + " still attached by " + os.path.basename(holders[0]).split("-")[-1])
-        sys.exit(1)
-elif words[0] == "READY":
-    print("READY")
+for command in re.findall(r"[(] (.+?) [)]", joined) or [joined]:
+    with open(os.path.join(state, "log"), "a") as handle:
+        handle.write(json.dumps([host, command]) + "\\n")
+    words = command.split()
+    if words[0] == "PROBE":
+        print(200 * 2 ** 30)
+    elif words[0] == "START":
+        open(os.path.join(state, "holder-" + host + "-" + words[2] + "-" + words[1]), "w").close()
+        open(os.path.join(state, "up-" + words[1] + "-" + host), "w").close()
+    elif words[0] == "STOP":
+        for path in glob.glob(os.path.join(state, "holder-" + host + "-*-" + words[1])) + glob.glob(os.path.join(state, "up-" + words[1] + "-" + host)):
+            os.remove(path)
+    elif words[0] == "DROP":
+        holders = glob.glob(os.path.join(state, "holder-" + host + "-" + words[1] + "-*"))
+        if holders:
+            print("pool " + words[1] + " still attached by " + os.path.basename(holders[0]).split("-")[-1])
+            sys.exit(1)
+    elif words[0] == "READY":
+        print("READY")
 """
 
 

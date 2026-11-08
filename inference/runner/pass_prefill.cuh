@@ -7,10 +7,12 @@
 #include <ctime>
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "runtime/launch.h"
 #include "inference/kernels/dtype.cuh"
+#include "sparkpipe/spark_huge_pages.h"
 #include "sparkpipe/spark_pack_window.h"
 #include "sparkpipe/spark_pass_plan.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -536,6 +538,17 @@ static SparkStatus LmPassGather(void *context, const void *mine, void *all, uint
 	return SPARK_STATUS_OK;
 }
 
+static int LmPassOnHugePages(const LmPass *p, const void *region, uint64_t bytes, const char *name)
+{
+	const uint64_t held = SparkHugePageBytes(region, bytes);
+	fprintf(stderr, "%s: the %llu-byte streamed %s holds %llu bytes of huge pages\n", p->tag, (unsigned long long)bytes, name, (unsigned long long)held);
+	if ( held * 2u >= bytes )
+		return 1;
+	fprintf(stderr, "%s: the streamed %s got only %llu of %llu bytes on huge pages, and streaming on 4 KB pages is slower through the IOMMU; free memory on this node is too fragmented\n",
+		p->tag, name, (unsigned long long)held, (unsigned long long)bytes);
+	return 0;
+}
+
 static void LmPassDestroy(LmPass *p)
 {
 	uint32_t index;
@@ -707,6 +720,8 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 		p->rows_block_bytes = (layout->rows_block_bytes + (2ull << 20) - 1u) & ~((2ull << 20) - 1u);
 		p->rows_region_bytes = 2u * (uint64_t)LM_PASS_RANKS * p->rows_block_bytes;
 		p->rows_region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)p->rows_region_bytes);
+		if ( p->rows_region != 0 )
+			(void)madvise(p->rows_region, (size_t)p->rows_region_bytes, MADV_HUGEPAGE);
 		if ( p->rows_region == 0 || cudaHostRegister(p->rows_region, (size_t)p->rows_region_bytes, cudaHostRegisterDefault) != cudaSuccess )
 		{
 			fprintf(stderr, "%s: the %llu-byte streamed row exchange region could not be allocated and registered\n", p->tag, (unsigned long long)p->rows_region_bytes);
@@ -722,6 +737,8 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 	p->region_bytes = SparkPackWindowRegionBytes(LM_PASS_RANKS, p->config.dense_buffers, dense_capacity, p->streams_experts != 0u ? p->config.expert_slots : 0u, expert_capacity);
 	p->region_bytes = (p->region_bytes + (2ull << 20) - 1u) & ~((2ull << 20) - 1u);
 	p->region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)p->region_bytes);
+	if ( p->region != 0 )
+		(void)madvise(p->region, (size_t)p->region_bytes, MADV_HUGEPAGE);
 	if ( p->region == 0 || cudaHostRegister(p->region, (size_t)p->region_bytes, cudaHostRegisterDefault) != cudaSuccess )
 	{
 		fprintf(stderr, "%s: the %llu-byte streamed weight window could not be allocated and registered\n", p->tag, (unsigned long long)p->region_bytes);
@@ -730,6 +747,12 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 			free(p->region);
 			p->region = 0;
 		}
+		LmPassDestroy(p);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	if ( LmPassOnHugePages(p, p->region, p->region_bytes, "weight window") == 0 ||
+		(p->rows_region != 0 && LmPassOnHugePages(p, p->rows_region, p->rows_region_bytes, "row exchange region") == 0) )
+	{
 		LmPassDestroy(p);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}

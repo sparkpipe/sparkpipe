@@ -422,6 +422,44 @@ static void SnapTestChainExpiry(const char *directory)
 	printf("kv snapshot: a %u-file chain idle for 24 hours expires completely in one call, more than one sweep batch, leaving no orphan\n",(unsigned)depth);
 }
 
+#if defined(__linux__)
+static uint32_t snap_fsync_calls,snap_syncfs_calls;
+int syncfs(int descriptor);
+
+int fsync(int descriptor)
+{
+	(void)descriptor;
+	snap_fsync_calls++;
+	return(0);
+}
+
+int syncfs(int descriptor)
+{
+	(void)descriptor;
+	snap_syncfs_calls++;
+	return(0);
+}
+
+static void SnapTestSavesSyncOnce(const char *directory)
+{
+	enum { files = 64 };
+	SparkKvSnapshotStore store;
+	SparkKvSnapshotKey key;
+	uint32_t index;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota((files + 4u) * 2u * SPARK_KV_SNAPSHOT_ALIGNMENT),1u << 20u) == SPARK_STATUS_OK);
+	snap_fsync_calls = snap_syncfs_calls = 0u;
+	for (index=0u; index<files; index++)
+	{
+		SnapKey(&key,0x62u,0x07u,4u * (index + 1u));
+		CHECK(SnapTreeWrite(&store,&key,0) == SPARK_STATUS_OK);
+	}
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.file_count == files && snap_fsync_calls == 0u && snap_syncfs_calls == 0u);
+	CHECK(SparkKvSnapshotSyncDisk(&store) == SPARK_STATUS_OK && snap_fsync_calls == 0u && snap_syncfs_calls == 1u);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: %u saved files cost no per-file disk sync, and one disk sync commits them all\n",(uint32_t)files);
+}
+#endif
+
 static int32_t SnapStoreOpen(SparkKvPageStore *store,char *path,void *staging,uint64_t page_bytes)
 {
 	SparkKvPageStoreConfiguration configuration = {0};
@@ -1638,6 +1676,12 @@ int main(void)
 		return(2);
 	SnapTestChainExpiry(directory);
 	SnapRemoveAll(directory);
+#if defined(__linux__)
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestSavesSyncOnce(directory);
+	SnapRemoveAll(directory);
+#endif
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestSaveDefersWhenQueueIsFull(directory);
