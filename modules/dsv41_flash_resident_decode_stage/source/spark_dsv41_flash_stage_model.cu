@@ -187,7 +187,9 @@ typedef struct D41ModelState
 {
 	const SparkStageRunnerServices *services;
 	uint32_t tp_rank, max_rows, slots, context_slots, max_context;
-	uint32_t stage_index, first_layer, layer_count, streams_loaded;
+	uint32_t stage_index, first_layer, layer_count, streams_loaded, forward_cache, received_cache, forward_loaded;
+	uint16_t *forward_latent, *forward_index;
+	uint32_t *forward_emit;
 	FILE *pack_file;
 	D41PackHeader header;
 	D41PackEntry *entries;
@@ -532,6 +534,23 @@ static void D41StoreCompressed(D41ModelState *state, uint32_t cache, const Spark
 		state->idx_key, state->emit_row, step->sequence_of_row, D41_INDEX_DIM);
 }
 
+static uint32_t D41StageSourceCache(uint32_t stage, uint32_t *sources)
+{
+	const uint32_t first = SPARK_DSV41_FLASH_STAGE_FIRST_LAYER(stage), count = SPARK_DSV41_FLASH_STAGE_LAYER_COUNT(stage);
+	uint32_t cache = UINT32_MAX;
+	*sources = 0u;
+	for ( uint32_t layer = first; layer < first + count; ++layer )
+		if ( D41KvSource(layer) )
+		{
+			cache = D41CacheIndex(layer);
+			(*sources)++;
+		}
+	return cache;
+}
+
+#define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t))
+#define D41_STREAM_ROW_BYTES (D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t))
+
 static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
 {
@@ -573,6 +592,11 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 		D41StoreCompressed<D41Ratio2Kv>(state, cache, step, stream);
 	else
 		D41StoreCompressed<D41Ratio1Kv>(state, cache, step, stream);
+	if ( cache == state->forward_cache &&
+		(cudaMemcpyAsync(state->forward_latent, state->c_latent_store, (uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->forward_index, state->idx_key, (uint64_t)rows * D41_INDEX_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->forward_emit, state->emit_row, (uint64_t)rows * sizeof(uint32_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess) )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return D41Launched();
 }
 
@@ -1182,6 +1206,22 @@ struct D41Cuda
 		if ( state->streams_loaded == 0u )
 			D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
 		state->streams_loaded = 0u;
+		if ( state->received_cache != UINT32_MAX && state->forward_loaded == 0u )
+		{
+			fprintf(stderr, "sparkpipe_dsv41_flash: stage %u reads cache %u from the previous stage and did not receive this wave's entries\n",
+				state->stage_index, state->received_cache);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		if ( state->received_cache != UINT32_MAX )
+		{
+			if ( state->received_cache < 3u )
+				D41StoreCompressedKernel<D41Ratio2Kv><<<rows, D41_THREADS, 0, stream>>>(state->latent_views[state->received_cache], state->forward_latent,
+					state->forward_index, state->forward_emit, step->sequence_of_row, D41_INDEX_DIM);
+			else
+				D41StoreCompressedKernel<D41Ratio1Kv><<<rows, D41_THREADS, 0, stream>>>(state->latent_views[state->received_cache], state->forward_latent,
+					state->forward_index, state->forward_emit, step->sequence_of_row, D41_INDEX_DIM);
+		}
+		state->forward_loaded = 0u;
 		if ( state->local_attention != 0u || state->local_upper != 0u )
 		{
 			D41RingPackKernel<<<D41_LAYERS, D41_THREADS, 0, stream>>>((const uint16_t *)state->recurrent, step->recurrent_index,
@@ -1449,6 +1489,8 @@ static SparkStatus D41PlanArena(D41ModelState *state, uint64_t *bytes, uint8_t *
 		{ (void **)&state->c_kv, r * D41_HEAD_DIM * 4u }, { (void **)&state->c_score, r * D41_HEAD_DIM * 4u },
 		{ (void **)&state->c_latent, r * D41_HEAD_DIM * 2u }, { (void **)&state->c_latent_store, r * D41_HEAD_DIM * 2u },
 		{ (void **)&state->idx_key, r * D41_INDEX_DIM * 2u },
+		{ (void **)&state->forward_latent, r * D41_HEAD_DIM * 2u }, { (void **)&state->forward_index, r * D41_INDEX_DIM * 2u },
+		{ (void **)&state->forward_emit, r * 4u },
 		{ (void **)&state->idx_pack_local, r * D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM * 2u },
 		{ (void **)&state->idx_query, r * D41_INDEX_HEADS * D41_INDEX_DIM * 2u }, { (void **)&state->idx_w_full, r * D41_INDEX_HEADS * 2u },
 		{ (void **)&state->emit_row, r * 4u }, { (void **)&state->bound_ratio2, r * 4u }, { (void **)&state->bound_ratio1, r * 4u },
@@ -1675,6 +1717,19 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 	state->stage_index = configuration->stage_index;
 	state->first_layer = SPARK_DSV41_FLASH_STAGE_FIRST_LAYER(configuration->stage_index);
 	state->layer_count = SPARK_DSV41_FLASH_STAGE_LAYER_COUNT(configuration->stage_index);
+	{
+		uint32_t sources = 0u, previous = 0u;
+		const uint32_t last = configuration->stage_index + 1u == SPARK_DSV41_FLASH_STAGE_PP_STAGES ? 1u : 0u;
+		const uint32_t own = D41StageSourceCache(configuration->stage_index, &sources);
+		state->forward_cache = last != 0u ? UINT32_MAX : own;
+		state->received_cache = configuration->stage_index == 0u ? UINT32_MAX : D41StageSourceCache(configuration->stage_index - 1u, &previous);
+		if ( (last == 0u && sources != 1u) || (configuration->stage_index != 0u && previous != 1u) )
+		{
+			fprintf(stderr, "sparkpipe_dsv41_flash: stage %u (layers %u-%u) needs exactly one KV source layer in itself and in the stage before it\n",
+				configuration->stage_index, state->first_layer, state->first_layer + state->layer_count - 1u);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+	}
 	state->max_rows = configuration->max_input_row_count;
 	state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
@@ -1798,7 +1853,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		geometry->head_offset = head->payload_offset;
 		geometry->head_bytes = head->payload_bytes;
 		geometry->head_rows = head->rows;
-		geometry->sideband_bytes_per_row = SPARK_DSV41_FLASH_STAGE_PP_STAGES > 1u ? D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t) : 0u;
+		geometry->sideband_bytes_per_row = SPARK_DSV41_FLASH_STAGE_PP_STAGES > 1u ? D41_STREAM_ROW_BYTES + D41_FORWARD_ROW_BYTES : 0u;
 		geometry->kv_layer_count = 3u;
 		geometry->kv_layer_page_bytes = D41Ratio2Kv::kPageBytes;
 		geometry->kv_second_layer_count = 1u;
@@ -2206,23 +2261,37 @@ static SparkStatus D41ResetSlot(void *model, uint32_t slot, void *stream)
 static SparkStatus D41Sideband(void *model, uint32_t to_buffer, const void *hidden, void *buffer, uint64_t bytes, uint32_t rows, void *stream)
 {
 	D41ModelState *state = (D41ModelState *)model;
-	const uint64_t stream_bytes = (uint64_t)rows * D41K_HC * D41_HIDDEN * sizeof(uint16_t);
+	const uint64_t stream_bytes = (uint64_t)rows * D41_STREAM_ROW_BYTES;
+	const uint64_t latent_bytes = (uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), index_bytes = (uint64_t)rows * D41_INDEX_DIM * sizeof(uint16_t);
 	(void)hidden;
 	if ( state == 0 || state->streams == 0 || rows == 0u || rows > state->max_rows )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( to_buffer == 0u && buffer == 0 && state->first_layer == 0u )
 		return SPARK_STATUS_OK;
-	if ( buffer == 0 || bytes != stream_bytes )
+	if ( buffer == 0 || bytes != stream_bytes + (uint64_t)rows * D41_FORWARD_ROW_BYTES )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: stage %u %s %llu bytes of hyper-connection streams for %u rows, not %llu\n", state->stage_index,
-			to_buffer != 0u ? "was asked to send" : "received", (unsigned long long)(buffer == 0 ? 0u : bytes), rows, (unsigned long long)stream_bytes);
+			to_buffer != 0u ? "was asked to send" : "received", (unsigned long long)(buffer == 0 ? 0u : bytes), rows,
+			(unsigned long long)(stream_bytes + (uint64_t)rows * D41_FORWARD_ROW_BYTES));
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( cudaMemcpyAsync(to_buffer != 0u ? buffer : (void *)state->streams, to_buffer != 0u ? (const void *)state->streams : (const void *)buffer,
-		stream_bytes, cudaMemcpyDefault, (cudaStream_t)stream) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	{
+		uint8_t *planes = (uint8_t *)buffer;
+		void *local[4] = { state->streams, state->forward_latent, state->forward_index, state->forward_emit };
+		const uint64_t length[4] = { stream_bytes, latent_bytes, index_bytes, (uint64_t)rows * sizeof(uint32_t) };
+		for ( uint32_t plane = 0u; plane < 4u; plane++ )
+		{
+			if ( cudaMemcpyAsync(to_buffer != 0u ? (void *)planes : local[plane], to_buffer != 0u ? (const void *)local[plane] : (const void *)planes,
+				length[plane], cudaMemcpyDefault, (cudaStream_t)stream) != cudaSuccess )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			planes += length[plane];
+		}
+	}
 	if ( to_buffer == 0u )
+	{
 		state->streams_loaded = 1u;
+		state->forward_loaded = state->received_cache != UINT32_MAX ? 1u : 0u;
+	}
 	return SPARK_STATUS_OK;
 }
 
