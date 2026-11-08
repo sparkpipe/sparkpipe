@@ -319,6 +319,7 @@ struct LmPass
 	int partner_direct_fd;
 	int own_direct_fd;
 	uint8_t *bounce;
+	uint8_t *stage_bounce;
 	const uint8_t *pool;
 	uint8_t *region;
 	uint64_t region_bytes;
@@ -368,6 +369,12 @@ struct LmPass
 	const uint8_t *slot_block[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
 	LmPassRoundContext round;
 	uint64_t spent[LM_PASS_SPENT];
+	uint64_t stage_ready;
+	uint64_t stage_consumed;
+	uint64_t stage_held[SPARK_PACK_WINDOW_STAGES][2];
+	uint64_t step_ns[LM_PASS_RANKS][4];
+	uint64_t step_count[LM_PASS_RANKS];
+	uint64_t step_end_ns;
 	void *allocations[LM_PASS_MAX_ALLOCATIONS];
 	uint32_t allocation_count;
 };
@@ -456,6 +463,17 @@ static SparkStatus LmPassPread(int fd, int direct_fd, uint8_t *bounce, uint64_t 
 		const SparkStatus status = LmPassPreadSpan(fd, pack_offset, bytes, destination);
 		(void)posix_fadvise(fd, (off_t)pack_offset, (off_t)bytes, POSIX_FADV_DONTNEED);
 		return status;
+	}
+	if ( ((pack_offset | bytes | (uint64_t)(uintptr_t)destination) % LM_PASS_DIRECT_ALIGN) == 0u )
+	{
+		while ( done < bytes )
+		{
+			const ssize_t part = pread(direct_fd, destination + done, (size_t)(bytes - done < LM_PASS_DIRECT_CHUNK ? bytes - done : LM_PASS_DIRECT_CHUNK), (off_t)(pack_offset + done));
+			if ( part <= 0 )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+			done += (uint64_t)part;
+		}
+		return SPARK_STATUS_OK;
 	}
 	while ( done < bytes )
 	{
@@ -577,6 +595,7 @@ static void LmPassDestroy(LmPass *p)
 	if ( p->own_direct_fd >= 0 )
 		close(p->own_direct_fd);
 	free(p->bounce);
+	free(p->stage_bounce);
 	free(p->tensors);
 	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS; index++)
 		if ( p->slot_done[index] != 0 )
@@ -764,6 +783,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 	p->own_direct_fd = layout->own_pack_path != 0 ? open(layout->own_pack_path, O_RDONLY | O_CLOEXEC | O_DIRECT) : -1;
 	p->bounce = p->own_direct_fd >= 0 && (p->partner_direct_fd >= 0 || p->streams_experts == 0u) ?
 		(uint8_t *)aligned_alloc(LM_PASS_DIRECT_ALIGN, (size_t)(LM_PASS_DIRECT_CHUNK + LM_PASS_DIRECT_ALIGN)) : 0;
+	p->stage_bounce = p->bounce != 0 ? (uint8_t *)aligned_alloc(LM_PASS_DIRECT_ALIGN, (size_t)(LM_PASS_DIRECT_CHUNK + LM_PASS_DIRECT_ALIGN)) : 0;
 	status = (p->partner_fd >= 0 || p->streams_experts == 0u) && p->own_fd >= 0 ? LmPassBuffers(p) : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK && (cudaStreamCreateWithFlags(&p->gather_stream, cudaStreamNonBlocking) != cudaSuccess ||
 		cudaStreamCreateWithFlags(&p->copy_stream, cudaStreamNonBlocking) != cudaSuccess) )
@@ -1021,10 +1041,9 @@ static SparkStatus LmPassStreamDense(LmPass *p, const SparkPackWindowLayer *rang
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus LmPassStreamStep(LmPass *p, uint32_t layer, uint32_t step, uint64_t item)
+static SparkStatus LmPassStreamStep(LmPass *p, uint32_t layer, uint32_t step, uint64_t item, uint32_t stage)
 {
 	const uint32_t slot = (uint32_t)(item % p->config.expert_slots);
-	const uint64_t half = p->ranges[layer].experts.bytes / 2u;
 	const uint8_t *block = 0;
 	uint32_t source = UINT32_MAX;
 	SparkStatus status = LmPassAwaitRelease(p, &p->expert_released, item, p->config.expert_slots, p->slot_done[slot]);
@@ -1032,23 +1051,29 @@ static SparkStatus LmPassStreamStep(LmPass *p, uint32_t layer, uint32_t step, ui
 	if ( status == SPARK_STATUS_OK )
 		status = SparkPackWindowExpertStep(&p->window, &p->ranges[layer], step, slot, p->tag_counter++, &source, &block);
 	p->spent[5] += LmPassNowNs() - mark;
+	if ( status == SPARK_STATUS_OK && step < LM_PASS_RANKS )
+	{
+		p->step_ns[step][0] += p->window.last_rotation.ready_ns;
+		p->step_ns[step][1] += p->window.last_rotation.posted_ns;
+		p->step_ns[step][2] += p->window.last_rotation.total_ns;
+		p->step_ns[step][3] += p->step_end_ns != 0u ? mark - p->step_end_ns : 0u;
+		p->step_count[step]++;
+		p->step_end_ns = LmPassNowNs();
+	}
 	if ( status == SPARK_STATUS_OK && (source >= LM_PASS_RANKS || (source != p->rank && block == 0)) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK && source == p->rank && p->pool == 0 )
-	{
-		uint8_t *landing = p->region + p->window.expert_slot[slot];
-		const uint64_t own = LmPassNowNs();
-		memcpy(landing, p->region + p->window.own_staging, (size_t)half);
-		status = LmPassPread(p->own_fd, p->own_direct_fd, p->bounce, p->ranges[layer].experts.offset + half, half, landing + half);
-		block = landing;
-		p->spent[3] += LmPassNowNs() - own;
-	}
+		block = p->region + p->window.own_staging;
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "%s: streamed prefill expert step %u failed at layer %u status=%d\n", p->tag, step, layer, (int)status);
 		return status;
 	}
 	pthread_mutex_lock(&p->lock);
+	if ( source == p->rank && p->pool == 0 )
+		p->stage_held[stage][0] = item;
+	else if ( source == (p->rank ^ 1u) )
+		p->stage_held[stage][1] = item;
 	p->slot_source[slot] = source;
 	p->slot_block[slot] = block;
 	p->expert_published = item + 1u;
@@ -1057,10 +1082,90 @@ static SparkStatus LmPassStreamStep(LmPass *p, uint32_t layer, uint32_t step, ui
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t LmPassLayerStaged(const LmPass *p, uint32_t layer)
+{
+	return p->experts_per_layer[layer] != 0u && p->ranges[layer].experts.bytes != 0u ? 1u : 0u;
+}
+
+static SparkStatus LmPassStageFree(LmPass *p, uint64_t sequence)
+{
+	const uint32_t stage = (uint32_t)(sequence % SPARK_PACK_WINDOW_STAGES);
+	SparkStatus status;
+	uint32_t index;
+	uint64_t held[2];
+	pthread_mutex_lock(&p->lock);
+	while ( p->stream_status == SPARK_STATUS_OK && p->stage_consumed + SPARK_PACK_WINDOW_STAGES <= sequence )
+		pthread_cond_wait(&p->changed, &p->lock);
+	held[0] = p->stage_held[stage][0];
+	held[1] = p->stage_held[stage][1];
+	p->stage_held[stage][0] = p->stage_held[stage][1] = UINT64_MAX;
+	while ( p->stream_status == SPARK_STATUS_OK &&
+		((held[0] != UINT64_MAX && p->expert_released <= held[0]) || (held[1] != UINT64_MAX && p->expert_released <= held[1])) )
+		pthread_cond_wait(&p->changed, &p->lock);
+	status = p->stream_status;
+	pthread_mutex_unlock(&p->lock);
+	for (index = 0u; index < 2u && status == SPARK_STATUS_OK; index++)
+		if ( held[index] != UINT64_MAX && cudaEventSynchronize(p->slot_done[held[index] % p->config.expert_slots]) != cudaSuccess )
+			status = SPARK_STATUS_IO_ERROR;
+	return status;
+}
+
+static SparkStatus LmPassStageRead(LmPass *p, const SparkPackWindowRange *experts, uint32_t stage)
+{
+	const uint64_t half = experts->bytes / 2u, mark = LmPassNowNs();
+	SparkStatus status = p->pool == 0 ?
+		LmPassPread(p->own_fd, p->own_direct_fd, p->stage_bounce, experts->offset, experts->bytes, p->region + p->window.stage_own[stage]) :
+		LmPassReadOwn(p, experts->offset, half, p->region + p->window.stage_own[stage]);
+	if ( status == SPARK_STATUS_OK )
+		status = LmPassPread(p->partner_fd, p->partner_direct_fd, p->stage_bounce, experts->offset + half, half, p->region + p->window.stage_partner[stage] + half);
+	p->spent[6] += LmPassNowNs() - mark;
+	return status;
+}
+
+static void *LmPassStager(void *argument)
+{
+	LmPass *p = (LmPass *)argument;
+	uint64_t sequence = 0u;
+	uint32_t pass, layer;
+	SparkStatus status = cudaSetDevice(p->device) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	for (pass = 0u; pass < p->stream_passes && status == SPARK_STATUS_OK; pass++)
+		for (layer = 0u; layer < p->layers && status == SPARK_STATUS_OK; layer++)
+		{
+			if ( LmPassLayerStaged(p, layer) == 0u )
+				continue;
+			status = LmPassStageFree(p, sequence);
+			if ( status == SPARK_STATUS_OK )
+				status = LmPassStageRead(p, &p->ranges[layer].experts, (uint32_t)(sequence % SPARK_PACK_WINDOW_STAGES));
+			if ( status == SPARK_STATUS_OK )
+			{
+				pthread_mutex_lock(&p->lock);
+				p->stage_ready = ++sequence;
+				pthread_cond_broadcast(&p->changed);
+				pthread_mutex_unlock(&p->lock);
+			}
+		}
+	if ( status != SPARK_STATUS_OK )
+		LmPassStreamFail(p, status);
+	return 0;
+}
+
+static SparkStatus LmPassAwaitStage(LmPass *p, uint64_t sequence)
+{
+	const uint64_t mark = LmPassNowNs();
+	SparkStatus status;
+	pthread_mutex_lock(&p->lock);
+	while ( p->stage_ready <= sequence && p->stream_status == SPARK_STATUS_OK )
+		pthread_cond_wait(&p->changed, &p->lock);
+	status = p->stream_status;
+	pthread_mutex_unlock(&p->lock);
+	p->spent[3] += LmPassNowNs() - mark;
+	return status;
+}
+
 static void *LmPassStreamer(void *argument)
 {
 	LmPass *p = (LmPass *)argument;
-	uint64_t dense = 0u, experts = 0u;
+	uint64_t dense = 0u, experts = 0u, stage = 0u;
 	uint32_t pass, layer, step;
 	SparkStatus status = cudaSetDevice(p->device) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	for (pass = 0u; pass < p->stream_passes && status == SPARK_STATUS_OK; pass++)
@@ -1068,9 +1173,22 @@ static void *LmPassStreamer(void *argument)
 		status = LmPassStreamDense(p, &p->vocab, dense++);
 		for (layer = 0u; layer < p->layers && status == SPARK_STATUS_OK; layer++)
 		{
+			const uint32_t staged = LmPassLayerStaged(p, layer);
+			const uint32_t set = (uint32_t)(stage % SPARK_PACK_WINDOW_STAGES);
 			status = LmPassStreamDense(p, &p->ranges[layer], dense++);
+			if ( status == SPARK_STATUS_OK && staged != 0u )
+				status = LmPassAwaitStage(p, stage);
+			if ( status == SPARK_STATUS_OK && staged != 0u )
+				SparkPackWindowUseStage(&p->window, &p->ranges[layer], set);
 			for (step = 0u; step < p->experts_per_layer[layer] && status == SPARK_STATUS_OK; step++)
-				status = LmPassStreamStep(p, layer, step, experts++);
+				status = LmPassStreamStep(p, layer, step, experts++, set);
+			if ( status == SPARK_STATUS_OK && staged != 0u )
+			{
+				pthread_mutex_lock(&p->lock);
+				p->stage_consumed = ++stage;
+				pthread_cond_broadcast(&p->changed);
+				pthread_mutex_unlock(&p->lock);
+			}
 		}
 	}
 	if ( status != SPARK_STATUS_OK )
@@ -1190,7 +1308,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 	uint32_t pass, layer, row, rows, balanced, measured_from = 0u;
 	uint64_t dense_item = 0u, expert_item = 0u;
 	SparkPassPlan plan;
-	pthread_t streamer;
+	pthread_t streamer, stager;
 	LmPassVocab vocab;
 	SparkStatus status;
 	if ( request == 0 || request->token_ids == 0 || request->token_count == 0u || keys > UINT32_MAX ||
@@ -1210,9 +1328,17 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 	p->stream_passes = plan.passes;
 	p->stream_status = SPARK_STATUS_OK;
 	p->dense_published = p->dense_released = p->expert_published = p->expert_released = 0u;
+	p->stage_ready = p->stage_consumed = 0u;
+	memset(p->stage_held, 0xff, sizeof(p->stage_held));
 	memset(p->spent, 0, sizeof(p->spent));
 	if ( pthread_create(&streamer, 0, LmPassStreamer, p) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( p->streams_experts != 0u && pthread_create(&stager, 0, LmPassStager, p) != 0 )
+	{
+		LmPassStreamFail(p, SPARK_STATUS_INTERNAL_ERROR);
+		(void)pthread_join(streamer, 0);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	for (pass = 0u; pass < plan.passes && status == SPARK_STATUS_OK; pass++)
 	{
 		LmPassStep step;
@@ -1294,15 +1420,30 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 			LmPassReportHelp(p, pass);
 		}
 		fprintf(stderr, "%s: streamed prefill pass %u/%u rows %u x %u keys to %llu status=%d at %.1f s; streamer waited %.1f s for the GPU to release buffers, "
-			"compute waited %.1f s for dense and %.1f s for expert blocks, own blocks took %.1f s; streamer spent %.1f s in dense broadcasts and %.1f s in expert steps, "
+			"compute waited %.1f s for dense and %.1f s for expert blocks; streamer waited %.1f s for the pack reader and spent %.1f s in dense broadcasts and %.1f s in expert steps, "
 			"%.1f s of them reading the packs\n", p->tag, pass + 1u, plan.passes, rows, LM_PASS_RANKS,
 			(unsigned long long)(step.base + step.pass_tokens), (int)status, (double)(LmPassNowNs() - started) / 1e9, (double)p->spent[0] / 1e9, (double)p->spent[1] / 1e9,
 			(double)p->spent[2] / 1e9, (double)p->spent[3] / 1e9, (double)p->spent[4] / 1e9, (double)p->spent[5] / 1e9, (double)p->spent[6] / 1e9);
+		{
+			char steps[1024];
+			uint32_t length = 0u, index;
+			for (index = 0u; index < LM_PASS_RANKS && length + 48u < sizeof(steps); index++)
+			{
+				const double count = p->step_count[index] != 0u ? (double)p->step_count[index] * 1e6 : 1e6;
+				length += (uint32_t)snprintf(steps + length, sizeof(steps) - length, " %u:%.1f/%.1f/%.1f/%.1f", index, (double)p->step_ns[index][0] / count, (double)p->step_ns[index][1] / count,
+					(double)p->step_ns[index][2] / count, (double)p->step_ns[index][3] / count);
+			}
+			fprintf(stderr, "%s: streamed prefill pass %u step ms ready/posted/done/gap:%s\n", p->tag, pass + 1u, steps);
+			memset(p->step_ns, 0, sizeof(p->step_ns));
+			memset(p->step_count, 0, sizeof(p->step_count));
+		}
 		memset(p->spent, 0, sizeof(p->spent));
 	}
 	if ( status != SPARK_STATUS_OK )
 		LmPassStreamFail(p, status);
 	(void)pthread_join(streamer, 0);
+	if ( p->streams_experts != 0u )
+		(void)pthread_join(stager, 0);
 	if ( status == SPARK_STATUS_OK && p->stream_status != SPARK_STATUS_OK )
 		status = p->stream_status;
 	if ( status == SPARK_STATUS_OK )
