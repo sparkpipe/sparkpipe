@@ -95,8 +95,10 @@ Times are the median of the three; prompts and prefill are their mean.
 - Memory's warm follow-ups prefilled 454 new tokens on average where the full
   history's needed 33. The follow-ups to the two first answers that took
   memory rounds (0a995998 and 58470ed2, three engine rounds each) prefilled
-  472 and 871; the one after a single round, 20. Why the pre-warm misses more
-  after memory rounds is not traced yet.
+  472 and 871; the one after a single round, 20. This fits a documented rule
+  in `docs/CONTEXT_MEMORY.md`: a reply that used `expand` or `search_history`
+  is not recorded for replay, so the next turn prefills that reply again.
+  Recording the reply with its tool rounds would remove the difference.
 - Alone, memory's upkeep after each answer took 8.3 s of job time: one
   curator call (2,335 new prefill and 69 output tokens) and one pre-warm (44).
 - Recall here: full 2 of 3, memory 2 of 3, compaction 1 of 3. All three arms
