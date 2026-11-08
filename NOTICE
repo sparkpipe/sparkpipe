@@ -409,3 +409,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Files: tools/spec_offline/dspine_drafter.py
+Upstream: https://github.com/Tencent/DSpine
+Commit: 6450af726375cb3c6bac4de95d98ebc8df99fbd4
+License: Apache-2.0
+
+tools/spec_offline/dspine_drafter.py reimplements the DSpine draft forward of
+Tencent DSpine (https://github.com/Tencent/DSpine, commit
+6450af726375cb3c6bac4de95d98ebc8df99fbd4): the code bridge with independent
+feature writes after every draft layer (sglang_dspine/models/dspine.py), the
+serial last-write refinement tables, greedy chain and FP32 refined table
+(sglang_dspine/kernels/dspine.py, sglang_dspine/runtime/worker.py), with
+their rounding points, for the tencent/Qwen3.8-27B-DSpine-b16 checkpoint.
+No upstream code is copied.
+Copyright (C) 2026 Tencent. All rights reserved.
+Licensed under the Apache License, Version 2.0 (LICENSE-APACHE-2.0).
