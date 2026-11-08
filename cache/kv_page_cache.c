@@ -3772,15 +3772,22 @@ static SparkStatus SparkKvLaneTransactionsBeginQueued(SparkKvLaneTransactions *t
 			owner->phase = SPARK_KV_LANE_TRANSACTION_EMPTY;
 			break;
 		}
-		for (move=1u; move<transactions->queued_count[slot]; move++)
-		{
-			queue[move - 1u] = queue[move];
-			SparkKvLaneOwnIdentities(&queue[move - 1u]);
-		}
-		transactions->queued_count[slot]--;
 	}
 	if ( status == SPARK_STATUS_OK )
+	{
+		for (index=0u; index<frame->cache_lane_count; index++)
+		{
+			slot = frame->cache_lanes[index].resident_sequence_slot;
+			queue = SparkKvLaneQueue(transactions,slot);
+			for (move=1u; move<transactions->queued_count[slot]; move++)
+			{
+				queue[move - 1u] = queue[move];
+				SparkKvLaneOwnIdentities(&queue[move - 1u]);
+			}
+			transactions->queued_count[slot]--;
+		}
 		return(SPARK_STATUS_OK);
+	}
 	while ( index != 0u )
 	{
 		index--;
@@ -3789,8 +3796,6 @@ static SparkStatus SparkKvLaneTransactionsBeginQueued(SparkKvLaneTransactions *t
 		if ( rollback != SPARK_STATUS_OK )
 			status = rollback;
 	}
-	for (index=0u; index<frame->cache_lane_count; index++)
-		transactions->queued_count[frame->cache_lanes[index].resident_sequence_slot] = 0u;
 	SPARK_RETURN(status);
 }
 
