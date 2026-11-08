@@ -216,23 +216,24 @@ async def run():
         second = await turn(memory, frontend, working, 2, "u2", "a1", "a2", '{"lines": {"e2": "The user asked question 2; the assistant gave answer 2."}, "open": ["e1"], "commit": {"e1": "="}}')
         key1 = cm.exchange_key(conversation(2)[1:3])
         assert state["lines"][key1].startswith("The user asked question 1") and second.layout["lined"] == 0 and second.layout["working"] == [0]
+        assert memory.ledger_lines(state)[key1] == "(" + cm.today() + ") " + state["lines"][key1], "a live exchange's line carries the date it arrived"
         assert '"commit"' in frontend.calls[-1][-1]["content"] and "e1 " in frontend.calls[-1][-1]["content"].split("Open exchanges")[-1], "an over-budget working set asks the curator what to commit"
         assert state["commits"] == [key1] and key1 not in state["final"], "the curator committed e1 with its earlier line"
-        assert len(frontend.cuts) == 3 and frontend.cuts[1][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.SENTINEL, frontend.cuts
+        assert len(frontend.cuts) == 3 and frontend.cuts[1][-1]["content"] == cm.LEDGER_OPEN + "[e1] " + memory.ledger_lines(state)[key1] + "\n" + cm.SENTINEL, frontend.cuts
         assert state["open_by_message"]["a2"] == ["e1"]
         prewarm = frontend.cuts[2]
 
         third = await turn(memory, frontend, working, 3, "u3", "a2", "a3", '{"lines": {"e3": "The user asked question 3."}, "open": [], "commit": {"e2": "The user asked question 2, and later questions built on its answer 2."}}')
         assert third.layout["lined"] == 1 and third.layout["open"] == ["e1"] and third.layout["working"] == [1], third.layout
         users = [m for m in third.messages if m["role"] == "user"]
-        assert users[0]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n" + cm.LEDGER_CLOSE + "[e2] question 2"
+        assert users[0]["content"] == cm.LEDGER_OPEN + "[e1] " + memory.ledger_lines(state)[key1] + "\n" + cm.LEDGER_CLOSE + "[e2] question 2"
         assert users[-1]["content"].startswith("[e3] question 3" + cm.REFERENCE_OPEN) and 'history id="e1"' in users[-1]["content"] and users[-1]["content"].endswith(cm.REFERENCE_CLOSE)
         assert prewarm[:-1] == third.messages[:-1] and prewarm[-1]["content"] == users[-1]["content"].replace("[e3] question 3", "[e3] " + cm.SENTINEL, 1), \
             "the pre-warm renders the next turn's layout up to its new question"
         key2 = cm.exchange_key(conversation(3)[3:5])
         assert state["commits"] == [key1, key2] and state["final"][key2].startswith("The user asked question 2, and later"), "a final line written with hindsight that keeps the earlier facts is used"
         stem, warm = frontend.cuts[-2], frontend.cuts[-1]
-        assert stem[-1]["content"] == cm.LEDGER_OPEN + "[e1] " + state["lines"][key1] + "\n[e2] " + state["final"][key2] + "\n" + cm.SENTINEL
+        assert stem[-1]["content"] == cm.LEDGER_OPEN + "[e1] " + memory.ledger_lines(state)[key1] + "\n[e2] " + memory.ledger_lines(state)[key2] + "\n" + cm.SENTINEL
         assert warm[-1]["content"] == "[e4] " + cm.SENTINEL and warm[-2] == {"role": "assistant", "content": "answer 3"}, warm[-1]
         fourth = await turn(memory, frontend, working, 4, "u4w", "a3", "a4w", '{"lines": {"e4": "The user asked question 4."}, "open": []}')
         key3 = cm.exchange_key(conversation(4)[5:7])

@@ -67,6 +67,16 @@ async def run(tmp, check):
                                   identity)
         check(status == 200 and json.loads(text)["lined"] == 3, f"the import lines every exchange: {status} {text[:200]}")
         warmed = list(engine.requests[-1]["prompt_token_ids"])
+        stamped = [dict(message, timestamp=stamp) if stamp is not None else message
+                   for message, stamp in zip(HISTORY, [None, "2023-11-04T09:30:00", None, 1699200000, None, None, None])]
+        stamped[1] = dict(stamped[1], content="Read a.txt, which I wrote on October 15th")
+        engine.reply(json.dumps({"lines": {"e1": "The user read a.txt.", "e2": "The user read b.txt.", "e3": "The user read c.txt."}, "open": []}))
+        status, text = await post(harness, "/v1/sparkpipe/memory/import", {"model": "alpha", "messages": stamped, "batch": 8, "reasoning_effort": "low"},
+                                  dict(identity, **{"X-OpenWebUI-Chat-Id": "chat-dated"}))
+        dates = cm.ChatStore(str(tmp / "memory-store")).load("user-1", "chat-dated")["dates"]
+        dated = [dates.get(cm.exchange_key(exchange)) for exchange in cm.exchanges_of(stamped)[1]]
+        check(status == 200 and dated == [{"date": "2023-11-04", "notes": "October 15th = 2023-10-15 Sun"}, {"date": "2023-11-05", "notes": ""}, None],
+              f"an import dates each exchange by its message's timestamp, resolves its relative dates, and leaves an exchange without one undated: {status} {dated}")
         check("<|im_start|>system\nReasoning effort: low<|im_end|>" in harness.prompt_text(), f"the import pre-warms at the effort it was given: {harness.prompt_text()[:160]}")
 
         last = cm.exchanges_of(HISTORY)[1][-1]

@@ -70,6 +70,19 @@ What is built (`tools/serving/chat_memory.py`):
   that raised a coffee limit never showed and the answer took the older limit.
   Another answer counted 9 rollercoaster rides of 10 from the ledger without
   searching, though every ride had its line.
+- **Dated exchanges.** Code dates every exchange; no model is asked.
+  - The date comes from the exchange's first message's `timestamp` (an ISO
+    date or time, or epoch seconds or milliseconds), which an import may send
+    with every message. Without one, a live exchange takes the UTC day its
+    user message arrived, and an imported exchange stays undated.
+  - The ledger line starts with that date and ends with the dates the user's
+    relative mentions resolve to, as in "(2023-11-04) … [October 15th =
+    2023-10-15 Sun; two weeks ago = 2023-10-21 Sat]".
+  - `tools/serving/value_grammar.py` resolves them: a tokenizer and a typed
+    grammar of numbers, quantities, counts, durations and dates, with no
+    regular expressions.
+  - The dates are `dated` store records, so every rendering of the ledger, the
+    stem's and the pre-warm's included, shows them the same way.
 
 ## Goal
 

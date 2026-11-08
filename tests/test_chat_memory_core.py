@@ -119,6 +119,15 @@ assert cm.parse_curator('{"lines": {"e4": "The user asked A.", "e5": "The us', m
 assert cm.reply_fields('{"lines": {"e4": "it said \\"open\\": [9] here"}, "open": ["e1"], "commit": {"e2": "Th') == {"lines": {"e4": 'it said "open": [9] here'}, "open": ["e1"]}, "a field name quoted inside a line is not a field"
 assert cm.commit_fill({"sizes": {0: 30, 1: 50, 2: 40}, "needed": 70}, {}) == [0, 1] and cm.commit_fill({"sizes": {0: 30, 1: 50, 2: 40}, "needed": 70}, {1: None}) == [0]
 assert cm.fallback_line([{"role": "user", "content": "What is 2+2? Please"}, {"role": "assistant", "content": "It is 4. Nothing else."}]) == "(auto) The user said: What is 2+2? Please; the assistant answered: It is 4."
+assert cm.message_day({"timestamp": "2023-05-20T04:54:00"}) == "2023-05-20" and cm.message_day({"timestamp": 1699200000}) == "2023-11-05" \
+    and cm.message_day({"timestamp": 1699200000000}) == "2023-11-05", "a message's timestamp is an ISO date or time, or epoch seconds or milliseconds"
+assert [cm.message_day(message) for message in ({"timestamp": True}, {"timestamp": "soon"}, {})] == [None, None, None]
+dated_exchange = [{"role": "user", "content": "[Session date: 2023/11/04 (Sat)] I rode it on October 15th and two weeks ago, every Saturday."},
+                  {"role": "assistant", "content": "Fun, see you on October 20th."}]
+assert cm.date_notes(dated_exchange, "2023-11-04") == "October 15th = 2023-10-15 Sun; two weeks ago = 2023-10-21 Sat", \
+    "the user's relative dates resolve against the exchange's date; its own date, habits and the assistant's dates are left out"
+assert cm.dated_line("The user rode it.", {"date": "2023-11-04", "notes": "October 15th = 2023-10-15 Sun"}) == "(2023-11-04) The user rode it. [October 15th = 2023-10-15 Sun]"
+assert cm.dated_line("The user rode it.", {"date": "2023-11-04", "notes": ""}) == "(2023-11-04) The user rode it." and cm.dated_line("The user rode it.", None) == "The user rode it."
 
 with tempfile.TemporaryDirectory() as tmp:
     store = cm.ChatStore(tmp)

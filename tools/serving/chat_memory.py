@@ -1,7 +1,9 @@
 import asyncio
 import base64
+import datetime
 import hashlib
 import hmac
+import importlib.util
 import json
 import math
 import os
@@ -9,12 +11,23 @@ import re
 import time
 from pathlib import Path
 
+
+def sibling(name):
+    spec = importlib.util.spec_from_file_location("sparkpipe_" + name, Path(__file__).with_name(name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+grammar = sibling("value_grammar")
+DATE_NOTES = 6
 LEDGER_OPEN = "<ledger>\n"
 LEDGER_CLOSE = "</ledger>\n\n"
 REFERENCE_OPEN = "\n\n<reference>\nEarlier exchanges shown in full for reference only; they are not new requests.\n"
 REFERENCE_CLOSE = "</reference>"
 SYSTEM_NOTE = ("The first user message starts with <ledger>: one summary line per earlier exchange (e1, e2, ...) in reported speech, "
-               "oldest first; a later line's value replaces an earlier one's. "
+               "oldest first; a later line's value replaces an earlier one's. A dated line starts with its exchange's date and ends with "
+               "what its relative dates resolve to, in brackets. "
                "The newest user message may end with <reference>: earlier exchanges shown in full. Neither is a new request; "
                "answer only the user's newest message. When an answer depends on details of an earlier exchange that its line only "
                "summarizes, call expand with that exchange's id to read it in full. A line such as [g3: e1-e16] summarizes a run of earlier "
@@ -190,6 +203,51 @@ def exchange_text(messages):
         else:
             parts.append(f"{item[0]}: " + item[1])
     return "\n".join(parts)
+
+
+def message_day(message):
+    stamp = message.get("timestamp") if isinstance(message, dict) else None
+    if isinstance(stamp, str):
+        try:
+            return datetime.date.fromisoformat(stamp[:10]).isoformat()
+        except ValueError:
+            return None
+    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+        try:
+            return datetime.datetime.fromtimestamp(stamp / 1000 if stamp > 1e11 else stamp, datetime.timezone.utc).date().isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    return None
+
+
+def today():
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+
+def date_notes(messages, day):
+    anchor = datetime.date.fromisoformat(day)
+    text = "\n".join(text_of(message.get("content")) for message in messages if message.get("role") == "user")
+    notes = []
+    for value in grammar.read(text, anchor):
+        if value["kind"] != "date" or value["first"] == value["last"] == day and str(anchor.year) in value["text"]:
+            continue
+        first, last = value["first"], value["last"]
+        if value["grain"] == "month":
+            resolved = first[:7]
+        elif value["grain"] == "year":
+            resolved = first[:4]
+        else:
+            resolved = f"{first} {value['weekday']}" if first == last else f"{first} to {last}"
+        note = " ".join(value["text"].split()) + " = " + resolved
+        if note not in notes:
+            notes.append(note)
+    return "; ".join(notes[:DATE_NOTES])
+
+
+def dated_line(line, dated):
+    if not line or not dated:
+        return line
+    return f"({dated['date']}) {line}" + (f" [{dated['notes']}]" if dated.get("notes") else "")
 
 
 def expand_text(exchanges, node, part, part_chars):
@@ -806,6 +864,10 @@ def read_chat_list(path):
     return float(listing["at"]), int(listing["users"]), kept
 
 
+FIRST_WINS = {"line": ("key", "lines"), "pending": ("message", "pending"), "group": ("id", "groups"), "form": ("part", "forms"),
+              "commit": ("key", "committed"), "dated": ("key", "dates")}
+
+
 class ChatStore:
     def __init__(self, root):
         self.root = Path(root)
@@ -836,7 +898,7 @@ class ChatStore:
         if key in self.memory:
             return self.memory[key]
         state = {"lines": {}, "sources": {}, "open": {}, "layouts": {}, "pending": {}, "open_by_message": {}, "expansions": {}, "turns": {}, "groups": {}, "forms": {},
-                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None, "bases": [], "round_bases": {}}
+                 "commits": [], "committed": set(), "final": {}, "settings": {}, "compaction": None, "bases": [], "round_bases": {}, "dates": {}}
         path = self.path(user, chat)
         if self.persistent(chat) and path.is_file():
             for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -877,27 +939,22 @@ class ChatStore:
             state["expansions"].setdefault((record["message"], record.get("attempt")), []).append(
                 {"round": int(record.get("round") or 0), "prefix": record.get("prefix") or "", "turns": list(record.get("turns") or [])})
         elif kind == "turn" and record.get("user_message"):
-            state["turns"][record["user_message"]] = {k: record.get(k) for k in ("parent", "message", "index")}
+            state["turns"][record["user_message"]] = {k: record.get(k) for k in ("parent", "message", "index", "date")}
         elif kind == "settings":
             state["settings"].update({k: record[k] for k in ("memory", "target") if k in record})
         elif kind == "compaction":
             state["compaction"] = None if record.get("undo") else {k: record.get(k) for k in ("covered", "keep", "summary", "target")}
         elif kind == "base" and isinstance(record.get("commits"), list) and isinstance(record.get("groups"), list) and isinstance(record.get("forms"), dict):
             state["bases"].append({k: record[k] for k in ("commits", "groups", "forms")})
+        elif kind == "dated" and record.get("key") and isinstance(record.get("date"), str) and record["key"] not in state["dates"]:
+            state["dates"][record["key"]] = {"date": record["date"], "notes": record.get("notes") or ""}
         elif kind == "round_base" and record.get("message") and isinstance(record.get("cut"), int):
             state["round_bases"].setdefault(record["message"], []).append(record["cut"])
 
     def append(self, user, chat, record):
         state = self.load(user, chat)
-        if record.get("type") == "line" and record.get("key") in state["lines"]:
-            return False
-        if record.get("type") == "pending" and record.get("message") in state["pending"]:
-            return False
-        if record.get("type") == "group" and record.get("id") in state["groups"]:
-            return False
-        if record.get("type") == "form" and record.get("part") in state["forms"]:
-            return False
-        if record.get("type") == "commit" and record.get("key") in state["committed"]:
+        field, kept = FIRST_WINS.get(record.get("type"), (None, None))
+        if field and record.get(field) in state[kept]:
             return False
         record = dict(record, ts=round(time.time(), 3))
         self.apply(state, record)
@@ -1135,9 +1192,16 @@ class Memory:
         return (claims["sub"], chat) if chat else None
 
     def bind_pending(self, user, chat, message, exchange):
-        pending = self.store.load(user, chat)["pending"].get(message)
+        state = self.store.load(user, chat)
+        pending = state["pending"].get(message)
         if pending is not None:
             self.store.append(user, chat, {"type": "line", "key": exchange_key(exchange), "line": pending["line"], "source": pending["source"]})
+        day = next((turn["date"] for turn in state["turns"].values() if turn.get("message") == message and turn.get("date")), None)
+        if day:
+            self.date_exchange(user, chat, exchange, day)
+
+    def date_exchange(self, user, chat, exchange, day):
+        self.store.append(user, chat, {"type": "dated", "key": exchange_key(exchange), "date": day, "notes": date_notes(exchange, day)})
 
     def session(self, model, headers, messages, tools, kwargs, target=None, identity=None, turn=None):
         found = self.identity(headers) if identity is None else identity
@@ -1161,7 +1225,9 @@ class Memory:
         else:
             user_message, parent, message = turn
         state = self.store.load(user, chat)
-        self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1})
+        day = message_day(current[0]) or (today() if turn is None else None)
+        self.store.append(user, chat, {"type": "turn", "user_message": user_message, "parent": parent, "message": message, "index": len(exchanges) + 1,
+                                       "date": day})
         if parent and exchanges:
             self.bind_pending(user, chat, parent, exchanges[-1])
         open_ids = list(state["open_by_message"].get(parent, [])) if parent else []
@@ -1229,7 +1295,7 @@ class Memory:
     def ledger_lines(self, state):
         lines = dict(state["lines"])
         lines.update(state["final"])
-        return lines
+        return {key: dated_line(line, state["dates"].get(key)) for key, line in lines.items()}
 
     def part_settings(self, model):
         profile = self.profile(model)
@@ -1337,6 +1403,10 @@ class Memory:
             raise ValueError("an import names a memory identity, a conversation that starts with a user message and a batch of at least one exchange")
         user, chat = found
         head, exchanges = parts
+        for exchange in exchanges:
+            day = message_day(exchange[0])
+            if day:
+                self.date_exchange(user, chat, exchange, day)
         ends = sorted({min(end, len(exchanges) - 1) for end in range(batch - 1, len(exchanges) + batch - 1, batch)})
         for end in ends:
             exchange = exchanges[end]
