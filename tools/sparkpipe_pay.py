@@ -1909,6 +1909,7 @@ class App:
         actions = {
             "/market/buy": lambda: self.buy(body, account, ip, agent),
             "/market/quote-weeks": lambda: self.market.quote_weeks(account, body),
+            "/market/quote-hours": lambda: self.market.quote_hours(account, body),
             "/market/book-hours": lambda: self.market.book_hours(account, body),
             "/market/book-weeks": lambda: self.market.book_weeks(account, body),
             "/market/waitlist": lambda: self.market.join(account, body),

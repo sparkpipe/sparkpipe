@@ -180,7 +180,7 @@ Exit: a customer pins a whole fleet and keeps it without our help.
 
 - It opens an account with its legal name and a work email confirmed by a 6-digit code, and accepts the Customer Agreement with a box recorded against the text's hash.
 - It buys HC in won, in USDC or USDT, or in US dollars by bank transfer, and the HC appears once the payment clears.
-- It books a demo hour, pins a free fleet by booking a first week, or joins the waitlist when every fleet is held. Auto-extend keeps its next weeks booked.
+- It books hours on an Hour Fleet, pins a free fleet by booking a first week, or joins the waitlist when every fleet is held. Auto-extend keeps its next weeks booked.
 - During its weeks only its keys reach the fleet, and its working state is kept until another customer's first hour.
 - Every payment, issue of HC, booking, credit and use is a line in the hash-chained ledger.
 - Downtime credits are issued from the fleet's own records, without a claim, and a held fleet that is down fails over to a free one.

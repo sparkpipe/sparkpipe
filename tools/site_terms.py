@@ -141,16 +141,16 @@ PAGES = [
     {
         "src": "agreement-en.md", "out": "agreement.html", "lang": "en", "tag": "terms",
         "title": "SparkPipe Customer Agreement", "other": "agreement-ko.html",
-        "desc": "Draft SparkPipe Customer Agreement for hour-credits, demo hours, weeks on a pinned fleet and the waitlist, published for review.",
+        "desc": "Draft SparkPipe Customer Agreement for hour-credits, hours on Hour Fleets, weeks on a pinned fleet and the waitlist, published for review.",
         "lead": "This Agreement is accepted online while signed in to the account, and we record the hashes of its exact texts. The Korean text prevails (clause 12.3).",
-        "version": "Version of 2 November 2026", "notice": "booking",
+        "version": "Version of 7 November 2026", "notice": "booking",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 고객 계약", "other": "agreement.html",
-        "desc": "SparkPipe 시간 크레딧, 데모 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
+        "desc": "SparkPipe 시간 크레딧, 시간 플릿의 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
         "lead": "본 계약은 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
-        "version": "2026년 11월 2일 판", "notice": "booking",
+        "version": "2026년 11월 7일 판", "notice": "booking",
     },
     {
         "src": "dpa-en.md", "out": "dpa.html", "lang": "en", "tag": "terms",
@@ -170,8 +170,8 @@ PAGES = [
 
 NOTICE = {
     "booking": {
-        "en": "<b>Published for review.</b> Demo hours can be booked from 1 December 2026 and weeks on a pinned fleet from 4 January 2027. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
-        "ko": "<b>검토용으로 공개한 문안입니다.</b> 데모 시간은 2026년 12월 1일부터, 고정 플릿의 주는 2027년 1월 4일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
+        "en": "<b>Published for review.</b> Hours on Hour Fleets can be booked from 1 December 2026 and weeks on a pinned fleet from 4 January 2027. This text may still change. Send comments to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
+        "ko": "<b>검토용으로 공개한 문안입니다.</b> 시간 플릿의 시간은 2026년 12월 1일부터, 고정 플릿의 주는 2027년 1월 4일부터 예약할 수 있습니다. 문안은 바뀔 수 있습니다. 의견은 <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>로 보내 주십시오.",
     },
     "review": {
         "en": "<b>Published for review.</b> This text may still change. To have it countersigned, or to send comments, write to <a href=\"mailto:hyor@sparkpipe.ai\">hyor@sparkpipe.ai</a>.",
