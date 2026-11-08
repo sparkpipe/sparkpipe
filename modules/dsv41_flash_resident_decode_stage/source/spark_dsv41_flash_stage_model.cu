@@ -187,7 +187,7 @@ typedef struct D41ModelState
 {
 	const SparkStageRunnerServices *services;
 	uint32_t tp_rank, max_rows, slots, context_slots, max_context;
-	uint32_t stage_index, first_layer, layer_count;
+	uint32_t stage_index, first_layer, layer_count, streams_loaded;
 	FILE *pack_file;
 	D41PackHeader header;
 	D41PackEntry *entries;
@@ -1173,7 +1173,15 @@ struct D41Cuda
 			state->context_slots, 2u);
 		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
 			state->context_slots, 1u);
-		D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
+		if ( state->streams_loaded == 0u && state->first_layer != 0u )
+		{
+			fprintf(stderr, "sparkpipe_dsv41_flash: stage %u starts at layer %u without the previous stage's hyper-connection streams\n",
+				state->stage_index, state->first_layer);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		if ( state->streams_loaded == 0u )
+			D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
+		state->streams_loaded = 0u;
 		if ( state->local_attention != 0u || state->local_upper != 0u )
 		{
 			D41RingPackKernel<<<D41_LAYERS, D41_THREADS, 0, stream>>>((const uint16_t *)state->recurrent, step->recurrent_index,
@@ -1790,6 +1798,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		geometry->head_offset = head->payload_offset;
 		geometry->head_bytes = head->payload_bytes;
 		geometry->head_rows = head->rows;
+		geometry->sideband_bytes_per_row = SPARK_DSV41_FLASH_STAGE_PP_STAGES > 1u ? D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t) : 0u;
 		geometry->kv_layer_count = 3u;
 		geometry->kv_layer_page_bytes = D41Ratio2Kv::kPageBytes;
 		geometry->kv_second_layer_count = 1u;
@@ -2196,8 +2205,25 @@ static SparkStatus D41ResetSlot(void *model, uint32_t slot, void *stream)
 
 static SparkStatus D41Sideband(void *model, uint32_t to_buffer, const void *hidden, void *buffer, uint64_t bytes, uint32_t rows, void *stream)
 {
-	(void)model; (void)to_buffer; (void)hidden; (void)buffer; (void)bytes; (void)rows; (void)stream;
-	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	D41ModelState *state = (D41ModelState *)model;
+	const uint64_t stream_bytes = (uint64_t)rows * D41K_HC * D41_HIDDEN * sizeof(uint16_t);
+	(void)hidden;
+	if ( state == 0 || state->streams == 0 || rows == 0u || rows > state->max_rows )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( to_buffer == 0u && buffer == 0 && state->first_layer == 0u )
+		return SPARK_STATUS_OK;
+	if ( buffer == 0 || bytes != stream_bytes )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: stage %u %s %llu bytes of hyper-connection streams for %u rows, not %llu\n", state->stage_index,
+			to_buffer != 0u ? "was asked to send" : "received", (unsigned long long)(buffer == 0 ? 0u : bytes), rows, (unsigned long long)stream_bytes);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	if ( cudaMemcpyAsync(to_buffer != 0u ? buffer : (void *)state->streams, to_buffer != 0u ? (const void *)state->streams : (const void *)buffer,
+		stream_bytes, cudaMemcpyDefault, (cudaStream_t)stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( to_buffer == 0u )
+		state->streams_loaded = 1u;
+	return SPARK_STATUS_OK;
 }
 
 static const void *D41ProbeBuffers(void *model)
