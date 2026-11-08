@@ -77,6 +77,18 @@ def check_summary(check):
           f"each arm lists the questions it missed: {arms['memory']['all']['missed']} {arms['full']['all']['missed']}")
 
 
+def check_stamps(check):
+    messages = bench.session_messages([("2023/05/20 (Sat) 04:54", [("user", "I ran."), ("assistant", "Nice.")]), ("2023/05/21", [("assistant", "Hi again.")]),
+                                       ("1:56 pm on 8 May, 2023", [("user", "Hey")])])
+    stamps = [message.get("timestamp") for message in messages]
+    check(stamps == ["2023-05-20T04:54:00", "2023-05-20T04:54:00", "2023-05-21T00:00:00", "2023-05-21T00:00:00", None, None],
+          f"each message carries its session's date, and a session dated in another form none: {stamps}")
+    off = type("Memory", (), {"MEMORY_OFF": " (memory off)"})
+    check(all("timestamp" not in message for message in bench.conversation({"history": messages}, off, False))
+          and bench.conversation({"history": messages}, off, True)[1]["timestamp"] == "2023-05-20T04:54:00",
+          "only the memory arm sends the dates; the full history and compaction prompts are unchanged")
+
+
 async def run(tmp, check):
     secret = tmp / "memory.secret"
     secret.write_text(SECRET)
@@ -154,6 +166,7 @@ async def run(tmp, check):
 def main():
     checks = fixture.Checks("test_chat_memory_bench")
     check_summary(checks)
+    check_stamps(checks)
     with tempfile.TemporaryDirectory() as tmp:
         asyncio.run(run(Path(tmp), checks))
     checks.finish("the memory bench prepares histories once, answers each alone with a warm follow-up and joins its chat log into misses, times and jobs")

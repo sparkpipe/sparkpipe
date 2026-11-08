@@ -234,6 +234,11 @@ LongMemEval's own judge prompts:
   The memory arm imports it and asks on its base. Each history is imported or
   compacted once, and `setup.jsonl` in the output keeps the chats, so a later
   run, or one after a restart, answers on the same setups.
+- The memory arm's messages carry their session's date as `timestamp`, and its
+  questions carry the question's date, so memory can date each exchange. Only
+  LongMemEval's `YYYY/MM/DD` dates convert; a session dated in another form
+  stays undated. The full and compaction arms send no timestamps, so their
+  prompts are unchanged.
 - Two regimes, both reported. Cold: nothing is cached, so the new prefill is
   the whole prompt, the arm's prompt size. Warm: the arm's prefix is cached.
   In a plain run every question brings a new history, so full and compaction

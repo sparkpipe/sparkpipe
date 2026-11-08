@@ -52,9 +52,22 @@ IDLE_QUIET_POLLS = 2
 IDLE_TIMEOUT_SECONDS = 3600
 
 
+def session_stamp(date):
+    day, _, rest = date.partition(" ")
+    parts = day.split("/")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return None
+    return "-".join(parts) + "T" + (rest.rsplit(" ", 1)[-1] if ":" in rest else "00:00") + ":00"
+
+
+def stamped(message, stamp):
+    return dict(message, timestamp=stamp) if stamp else message
+
+
 def session_messages(sessions):
     messages = []
     for date, turns in sessions:
+        stamp = session_stamp(date)
         if turns and turns[0][0] == "assistant":
             turns = [("user", "")] + list(turns)
         for index, (role, text) in enumerate(turns):
@@ -62,9 +75,9 @@ def session_messages(sessions):
             if messages and messages[-1]["role"] == role:
                 messages[-1]["content"] += "\n" + content
             else:
-                messages.append({"role": role, "content": content})
+                messages.append(stamped({"role": role, "content": content}, stamp))
         if messages and messages[-1]["role"] == "user":
-            messages.append({"role": "assistant", "content": "(no reply)"})
+            messages.append(stamped({"role": "assistant", "content": "(no reply)"}, stamp))
     return messages
 
 
@@ -148,7 +161,8 @@ def turn_headers(headers, parent):
 
 
 def conversation(item, memory, remembered):
-    return [{"role": "system", "content": SYSTEM if remembered else SYSTEM + memory.MEMORY_OFF}] + item["history"]
+    history = item["history"] if remembered else [{key: value for key, value in message.items() if key != "timestamp"} for message in item["history"]]
+    return [{"role": "system", "content": SYSTEM if remembered else SYSTEM + memory.MEMORY_OFF}] + history
 
 
 def setup(args, item, arm, secret, memory, prepared, claim=False):
@@ -170,7 +184,8 @@ def setup(args, item, arm, secret, memory, prepared, claim=False):
 
 
 def answer(args, item, arm, secret, memory, prepared, before=None):
-    question = {"role": "user", "content": ASK.format(item["date"], item["question"])}
+    asked = session_stamp(item["date"]) if arm == "memory" else None
+    question = stamped({"role": "user", "content": ASK.format(item["date"], item["question"])}, asked)
     record = {"id": item["id"], "kind": item["kind"], "arm": arm, "turn": 1 if before is None else 2, "history": memory.exchange_key(item["history"])}
     messages = conversation(item, memory, arm == "memory") + [question]
     headers, parent = {}, None
@@ -184,7 +199,7 @@ def answer(args, item, arm, secret, memory, prepared, before=None):
         if arm == "memory":
             parent = "import-reply-" + memory.exchange_key(memory.exchanges_of(item["history"])[1][-1])[:24]
     if before is not None:
-        messages += [{"role": "assistant", "content": before["reply"]}, {"role": "user", "content": FOLLOW_UP}]
+        messages += [{"role": "assistant", "content": before["reply"]}, stamped({"role": "user", "content": FOLLOW_UP}, asked)]
         parent = before.get("message")
     if headers:
         headers = turn_headers(headers, parent)
