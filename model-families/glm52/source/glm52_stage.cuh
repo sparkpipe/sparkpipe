@@ -961,24 +961,24 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 template<class S>
 static int32_t GlmMoeExperts(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
-	int32_t status = GlmExpertsGateUp<S>(b, rows, packed_rows, sms, stream);
-	if ( status != LM_LAUNCH_OK )
-		return status;
-	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), packed_rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->expert_intermediate, false);
-	status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
-	if ( status != LM_LAUNCH_OK )
-		return status;
-	LM_LAUNCH((LmMoeFinalizeKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
-		b->expert_out_bf16, b->route_packed_row, b->route_weight, b->hidden_bf16, rows, S::kTopK, S::kHidden);
-	status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows, b->shared_gate_up_rows, 0u, sms, b->row_exact, stream);
+	static_assert(S::kHidden % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
+	int32_t status = GlmLinear<S>(b->normed_bf16, b->weights->shared_gate_up, b->gate_up_bf16, rows, S::kHidden, b->shared_gate_up_rows, b->shared_gate_up_rows, 0u, sms,
+		b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->shared_intermediate, false);
 	status = GlmLinear<S>(b->intermediate_bf16, b->weights->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, S::kHidden, S::kHidden, 0u, sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmAddRowsKernel<GLM_THREADS>), dim3((S::kHidden + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
-		b->hidden_bf16, b->shared_out_bf16, b->hidden_bf16, rows, S::kHidden);
+	status = GlmExpertsGateUp<S>(b, rows, packed_rows, sms, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	LM_LAUNCH((LmSiluMulKernel<GLM_THREADS>), packed_rows, GLM_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16, b->expert_intermediate, false);
+	status = GlmExpertsDown<S>(b, rows, packed_rows, sms, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	LM_LAUNCH((LmMoeFinalizeAddKernel<GLM_THREADS>), dim3((S::kHidden / LM_MOE_FINALIZE_ADD_ELEMENTS + GLM_THREADS - 1u) / GLM_THREADS, rows), GLM_THREADS, 0, stream,
+		b->expert_out_bf16, b->route_packed_row, b->route_weight, b->shared_out_bf16, b->hidden_bf16, rows, S::kTopK, S::kHidden);
 	return GlmLaunched();
 }
 
