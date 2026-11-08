@@ -3067,11 +3067,52 @@ static void TestScenarioPipelinedPrefillRejected(const SparkModelResidentDeploym
 	count = TestLoggedPrefillPositions(1u,positions,16u);
 	for (index=0u; index<count; index++)
 		repeats += positions[index] == rejected_position ? 1u : 0u;
+	if ( reject_newest != 0u )
+	{
+		CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && TestScriptedOutputMatches(&state,1u,script,40u,4u) != 0u,
+			"pipelined newest rejected: the earlier waves complete, the rejected wave is retried, and the stream is exact");
+		CHECK(repeats == 2u,"pipelined newest rejected: only the rejected wave is dispatched again");
+	}
+	else
+	{
+		CHECK(state.completed_events[1] == 0u && state.error_events[1] == 1u,
+			"pipelined oldest rejected: later waves that ran without its KV leave the ranks past a gap, so the request fails once instead of restarting into a sequence the ranks cannot rewind");
+		CHECK(repeats == 1u,"pipelined oldest rejected: the prompt start is never dispatched again");
+	}
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPipelinedPrefillRejectedTail(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	uint64_t oldest,newest,positions[16];
+	uint32_t script[64],count,index,rank,delivered = 0u,first = 0u,middle = 0u,last = 0u;
+	engine = TestStartPipelinedPrefill(deployment,&state,runtime_root,script,0u);
+	if ( engine == 0 )
+		return;
+	CHECK(TestPendingRange(0u,MOCK_EVENT_RESULT,&oldest,&newest) == TEST_RANKS && newest == oldest + 2u,
+		"pipelined tail rejected: three waves of one prompt are in flight");
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		delivered += MockResidentClientDeliverEvent(rank,oldest + 1u,MOCK_EVENT_RESULT,rank == 0u ? SPARK_STATUS_BUSY : SPARK_STATUS_OK,1u);
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	(void)MockResidentClientDriveDecisions();
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		delivered += MockResidentClientDeliverEvent(rank,newest,MOCK_EVENT_RESULT,rank == 0u ? SPARK_STATUS_BUSY : SPARK_STATUS_OK,1u);
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(delivered == 2u * TEST_RANKS,"pipelined tail rejected: a stage refuses the middle wave, then the newest wave, while the oldest is still in flight");
+	TestDriveUntilTerminal(engine,&state,1u,1600u);
+	count = TestLoggedPrefillPositions(1u,positions,16u);
+	for (index=0u; index<count; index++)
+	{
+		first += positions[index] == 0u ? 1u : 0u;
+		middle += positions[index] == 8u ? 1u : 0u;
+		last += positions[index] == 16u ? 1u : 0u;
+	}
 	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && TestScriptedOutputMatches(&state,1u,script,40u,4u) != 0u,
-		reject_newest != 0u ? "pipelined newest rejected: the earlier waves complete, the rejected wave is retried, and the stream is exact" :
-			"pipelined oldest rejected: the later waves that ran without its KV are discarded, the prompt restarts, and the stream is exact");
-	CHECK(repeats == 2u,reject_newest != 0u ? "pipelined newest rejected: only the rejected wave is dispatched again" :
-		"pipelined oldest rejected: the prompt start is dispatched again");
+		"pipelined tail rejected: no later wave ran past the refused one, so the prompt holds, retries from the middle wave, and the stream is exact");
+	CHECK(first == 1u && middle == 2u && last == 2u,"pipelined tail rejected: the first wave runs once and both refused waves are dispatched again");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3949,6 +3990,7 @@ int main(void)
 	TestScenarioPipelinedPrefillOrder(&deployment,runtime_root);
 	TestScenarioPipelinedPrefillRejected(&deployment,runtime_root,1u);
 	TestScenarioPipelinedPrefillRejected(&deployment,runtime_root,0u);
+	TestScenarioPipelinedPrefillRejectedTail(&deployment,runtime_root);
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
 	TestScenarioSingleTokenEosPublishesTail(&deployment,runtime_root);

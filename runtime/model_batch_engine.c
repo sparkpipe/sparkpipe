@@ -1182,26 +1182,21 @@ static void SparkModelBatchDrainPoisonedPrefill(
 	const uint32_t kind = request->prefill_poisoned;
 	const SparkStatus failure = (SparkStatus)request->prefill_failure_status;
 	SparkStatus status = SPARK_STATUS_OK;
-	fprintf(stderr,"batch_pipelined_prefill_poisoned request=%llu computed=%u dispatched=%u status=%s kind=%u: a wave did not run while later waves of the same prompt did, so they ran without its KV and were discarded; %s\n",
+	fprintf(stderr,"batch_pipelined_prefill_poisoned request=%llu computed=%u dispatched=%u status=%s kind=%u: %s\n",
 		(unsigned long long)request->request_id,request->computed_prompt_token_count,request->dispatched_prompt_token_count,
-		SparkStatusToString(failure),kind,kind == SPARK_MODEL_BATCH_PREFILL_POISON_FAILED ? "the request fails" : "the prompt restarts from its longest published prefix");
+		SparkStatusToString(failure),kind,kind == SPARK_MODEL_BATCH_PREFILL_POISON_STALE ?
+			"a wave found its prefix gone while later waves of the same prompt ran; the prompt restarts from its longest published prefix" :
+		kind == SPARK_MODEL_BATCH_PREFILL_POISON_REJECTED ?
+			"a later wave ran after an earlier wave of the same prompt did not, so the ranks hold KV past a gap the engine cannot rewind; the request fails" :
+			"a wave failed; the request fails");
 	request->prefill_poisoned = 0u;
 	request->prefill_held = 0u;
 	request->dispatched_prompt_token_count = request->computed_prompt_token_count;
 	if ( kind == SPARK_MODEL_BATCH_PREFILL_POISON_STALE )
 		status = SparkModelBatchRecomputeStalePrefix(engine,request);
-	else if ( kind == SPARK_MODEL_BATCH_PREFILL_POISON_REJECTED )
+	if ( kind != SPARK_MODEL_BATCH_PREFILL_POISON_STALE || status != SPARK_STATUS_OK )
 	{
-		status = SparkPrefixCacheReleaseSequence(&engine->prefix_cache,request->sequence_id);
-		if ( status == SPARK_STATUS_OK || status == SPARK_STATUS_NOT_FOUND )
-		{
-			SparkModelBatchResetPromptProgress(request);
-			status = SPARK_STATUS_OK;
-		}
-	}
-	if ( kind == SPARK_MODEL_BATCH_PREFILL_POISON_FAILED || status != SPARK_STATUS_OK )
-	{
-		SparkModelBatchFailRequest(engine,request,kind == SPARK_MODEL_BATCH_PREFILL_POISON_FAILED ? failure : status);
+		SparkModelBatchFailRequest(engine,request,kind != SPARK_MODEL_BATCH_PREFILL_POISON_STALE ? failure : status);
 		return;
 	}
 	if ( request->cancel_pending != 0u )
@@ -1220,22 +1215,23 @@ static uint32_t SparkModelBatchPoisonPrefillChunk(
 {
 	if ( request->prefill_inflight_chunks != 0u )
 		request->prefill_inflight_chunks--;
-	if ( request->prefill_poisoned == 0u && pending->prompt_begin + prefill_count == request->dispatched_prompt_token_count )
+	if ( request->prefill_poisoned == 0u && kind != SPARK_MODEL_BATCH_PREFILL_POISON_FAILED &&
+		(kind == SPARK_MODEL_BATCH_PREFILL_POISON_REJECTED || pending->prompt_begin + prefill_count == request->dispatched_prompt_token_count) )
 	{
+		if ( request->prefill_held == 0u || pending->prompt_begin < request->dispatched_prompt_token_count )
+			request->dispatched_prompt_token_count = pending->prompt_begin;
 		if ( request->prefill_inflight_chunks == 0u )
 		{
 			request->dispatched_prompt_token_count = request->computed_prompt_token_count;
 			request->prefill_held = 0u;
 			return(0u);
 		}
-		if ( kind != SPARK_MODEL_BATCH_PREFILL_POISON_FAILED )
-		{
-			fprintf(stderr,"batch_pipelined_prefill_held request=%llu begin=%u status=%s: the newest wave did not run; the prompt waits for its %u earlier waves, then retries it\n",
-				(unsigned long long)request->request_id,pending->prompt_begin,SparkStatusToString(status),request->prefill_inflight_chunks);
-			request->dispatched_prompt_token_count = pending->prompt_begin;
-			request->prefill_held = 1u;
-			return(1u);
-		}
+		fprintf(stderr,"batch_pipelined_prefill_held request=%llu begin=%u status=%s: a wave did not run; the prompt waits for its %u other waves in flight and retries from %u, and fails if a later wave ran without it\n",
+			(unsigned long long)request->request_id,pending->prompt_begin,SparkStatusToString(status),request->prefill_inflight_chunks,
+			request->dispatched_prompt_token_count);
+		request->prefill_held = 1u;
+		request->prefill_failure_status = (uint32_t)status;
+		return(1u);
 	}
 	if ( request->prefill_poisoned == 0u )
 	{
@@ -1516,6 +1512,8 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 		if ( request->prefill_inflight_chunks != 0u )
 			request->prefill_inflight_chunks--;
 		request->resident_bound = 1u;
+		if ( request->prefill_poisoned == 0u && request->prefill_held != 0u && lane_pending[lane].prompt_begin >= request->dispatched_prompt_token_count )
+			request->prefill_poisoned = SPARK_MODEL_BATCH_PREFILL_POISON_REJECTED;
 		if ( request->prefill_poisoned != 0u )
 		{
 			if ( request->prefill_inflight_chunks == 0u )
