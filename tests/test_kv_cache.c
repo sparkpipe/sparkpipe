@@ -1964,9 +1964,13 @@ static int32_t SparkTestKvTransactionsPipelinedChain(void)
 		return(-307);
 	if ( SparkTestKvChainClaim(&fixture,&a,1u) != SPARK_STATUS_OK || SparkTestKvChainClaim(&fixture,&b,2u) == SPARK_STATUS_OK )
 		return(-308);
+	if ( SparkTestKvChainStep(&fixture,&b,2u,0u) != SPARK_STATUS_BUSY || queued_count[0] != 1u )
+		return(-321);
 	if ( SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u},1u,SPARK_STATUS_OK,0u) != SPARK_STATUS_OK ||
 		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY || fixture.pages.cache.sequences[0].next_token_position != SPARK_TEST_BLOCK_TOKENS )
 		return(-309);
+	if ( SparkTestKvChainStep(&fixture,&b,2u,0u) != SPARK_STATUS_OK || queued_count[0] != 1u || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
+		return(-322);
 	if ( SparkTestKvChainClaim(&fixture,&b,2u) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].request.submission_id != 2u ||
 		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
 		return(-310);
@@ -1980,6 +1984,8 @@ static int32_t SparkTestKvTransactionsPipelinedChain(void)
 	if ( SparkTestKvChainStep(&fixture,&c,3u,prepare) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&d,4u,prepare) != SPARK_STATUS_OK ||
 		SparkTestKvChainStep(&fixture,&e,5u,prepare) != SPARK_STATUS_OK || queued_count[0] != 2u )
 		return(-312);
+	if ( SparkTestKvChainStep(&fixture,&d,4u,0u) != SPARK_STATUS_BUSY )
+		return(-323);
 	if ( SparkTestKvChainStep(&fixture,&d,4u,abort_flag) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].request.submission_id != 3u ||
 		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_PREPARED )
 		return(-313);
