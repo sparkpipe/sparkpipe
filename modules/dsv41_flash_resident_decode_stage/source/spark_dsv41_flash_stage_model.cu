@@ -130,6 +130,10 @@ static_assert(D41_RECORD_ROW_ELEMENTS % D41_RECORD_SPLIT == 0u && D41_RECORD_PAR
 	"a row of attention records splits into whole collective rows that keep 16-byte copies");
 static_assert(D41_ENGRAM_EMBED % 2u == 0u && D41_ENGRAM_HALF <= D41_HIDDEN && D41_ENGRAM_HALF % 8u == 0u,
 	"an engram embedding row splits into two collective rows");
+#define D41_ENGRAM_KV_SPLIT ((D41_ENGRAM_KV_LOCAL + D41_HIDDEN - 1u) / D41_HIDDEN)
+#define D41_ENGRAM_KV_PART (D41_ENGRAM_KV_LOCAL / D41_ENGRAM_KV_SPLIT)
+static_assert(D41_ENGRAM_KV_LOCAL % D41_ENGRAM_KV_SPLIT == 0u && D41_ENGRAM_KV_PART <= D41_HIDDEN && D41_ENGRAM_KV_PART % 8u == 0u,
+	"a rank's engram key/value row splits into whole collective rows that keep 16-byte copies");
 #define D41_QUERY_JOINED (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK <= D41_HIDDEN ? 1u : 0u)
 #define D41_QUERY_SPLIT ((D41_LOCAL_HEADS * D41_HEAD_DIM + D41_HIDDEN - 1u) / D41_HIDDEN)
 #define D41_QUERY_PART (D41_LOCAL_HEADS * D41_HEAD_DIM / D41_QUERY_SPLIT)
@@ -515,8 +519,8 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	if ( D41Linear(&engram->wkv, state->engram_embed, state->engram_kv_local, rows, D41_ENGRAM_EMBED, D41_ENGRAM_KV_LOCAL,
 		step->multiprocessors, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_ENGRAM_KV_LOCAL, state->engram_kv_local,
-		state->engram_kv_gathered);
+	status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows * D41_ENGRAM_KV_SPLIT, D41_ENGRAM_KV_PART,
+		state->engram_kv_local, state->engram_kv_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41GroupInputKernel<<<dim3(D41Blocks(D41_ENGRAM_KV_ROWS), rows), D41_THREADS, 0, stream>>>(state->engram_kv_gathered, state->engram_kv,
@@ -872,7 +876,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && pair == 0u )
 	{
-		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER, rows, local_width, state->attn_merged,
+		status = D41Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER, rows * D41_QUERY_SPLIT, D41_QUERY_PART, state->attn_merged,
 			state->attn_gathered);
 		if ( status == SPARK_STATUS_OK )
 		{
