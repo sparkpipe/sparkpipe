@@ -1580,6 +1580,14 @@ static void D41Sibling(const char *pack_path, const char *name, char *out, size_
 	snprintf(out, capacity, "%.*s/%s", prefix, slash != 0 ? pack_path : ".", name);
 }
 
+static uint32_t D41StageHoldsEngram(const D41ModelState *state)
+{
+	for ( uint32_t layer = state->first_layer; layer < state->first_layer + state->layer_count; ++layer )
+		if ( D41EngramIndex(layer) >= 0 )
+			return 1u;
+	return 0u;
+}
+
 static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_path)
 {
 	char path[1024];
@@ -1782,11 +1790,14 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		status = D41PackDirectoryCheck(state, configuration->rank_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	status = D41OpenEngramTables(state, configuration->rank_pack_path);
-	if ( status == SPARK_STATUS_OK )
-		status = D41OpenEngramShard(state, configuration->rank_pack_path);
-	if ( status != SPARK_STATUS_OK )
-		return status;
+	if ( D41StageHoldsEngram(state) != 0u )
+	{
+		status = D41OpenEngramTables(state, configuration->rank_pack_path);
+		if ( status == SPARK_STATUS_OK )
+			status = D41OpenEngramShard(state, configuration->rank_pack_path);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+	}
 	if ( cudaMalloc(&state->full_frequency, 2u * D41K_ROPE_PAIRS * sizeof(float)) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->compress_frequency = state->full_frequency + D41K_ROPE_PAIRS;
@@ -2139,14 +2150,14 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	uint64_t bytes = 0u;
 	SparkStatus status;
 	(void)geometry;
-	status = D41AttachEngram(state, D41BindConfiguration);
+	status = D41StageHoldsEngram(state) != 0u ? D41AttachEngram(state, D41BindConfiguration) : SPARK_STATUS_OK;
 	if ( status != SPARK_STATUS_OK )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: weightd refused the engram shard %s status=%d\n", state->engram_path, (int)status);
 		return status;
 	}
 	status = D41BindLayers(state, lazy_pack, &bytes);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && D41StageHoldsEngram(state) != 0u )
 		status = D41BindEngram(state, &bytes, D41BindConfiguration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -2159,7 +2170,7 @@ static SparkStatus D41Bind(void *model, SparkWeightdLazyPack *lazy_pack, SparkSt
 	}
 	bytes = 0u;
 	status = D41BindLayers(state, lazy_pack, &bytes);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && D41StageHoldsEngram(state) != 0u )
 		status = D41BindEngram(state, &bytes, D41BindConfiguration);
 	if ( status != SPARK_STATUS_OK )
 		return status;
