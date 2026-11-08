@@ -250,3 +250,10 @@ LongMemEval's own judge prompts:
   or the compaction) and the jobs after it. Per arm and question type it lists
   the questions missed, and across arms which of those the full history
   answered.
+- Memory's prompts are tuned on a fixed held-out set, never on a report
+  sample: `qualification/chat_memory/longmemeval_s_heldout.json` holds 20
+  LongMemEval_S questions from outside the report sample (`--per-type 5
+  --seed 1107`), drawn per type with seed 1108: 7 knowledge updates, 7
+  multi-session, 2 temporal reasoning and one of each other type. A tuning run
+  passes its ids with `--per-type 200 --ids`, and a change is reported only
+  after the report sample runs again on it.
