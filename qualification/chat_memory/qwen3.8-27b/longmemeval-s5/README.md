@@ -1,9 +1,11 @@
 # Context memory on LongMemEval_S: Qwen 3.8 27B
 
 **Not state of the art yet.** Over 35 questions, memory recalled 20, the full
-history 23 and compaction 9. The bar in `docs/CONTEXT_MEMORY.md` is recall
-within 2 points of the full history, and memory is 8.6 points below it. It
-answers from a prompt a quarter the size of the full history's.
+history 23 and compaction 9. Paired over the same questions, 5 misses are
+memory's alone and 2 the full history's alone. The bar in
+`docs/CONTEXT_MEMORY.md` is recall within 2 points of the full history, and
+memory is 8.6 points below it. It answers from a prompt a quarter the size of
+the full history's: cold, it starts in 29 s where the full history takes 167 s.
 
 ## Recall
 
@@ -40,9 +42,9 @@ The compaction arm is the chat layer's `/compact full`. Its listing clips each
 user message to 600 characters and each assistant message to 400, so a
 111K-token history reaches the summarizer as about 37K tokens. That fits its 0
 of 5 on single-session assistant questions, whose answers sit in the
-assistant's replies. The docs' baseline is
-provider-style compaction, one summary of the whole text; this arm is weaker
-than that, so memory's lead over it says little.
+assistant's replies. The docs' baseline is provider-style compaction, one
+summary of the whole text; this arm is weaker than that, so memory's lead over
+it says little.
 
 ## Two regimes
 
@@ -61,8 +63,44 @@ times include waiting behind the other questions' prefill.
 | compaction | cold | 14,311 | 14,311 / 14,298 | 13.3 s / 13.2 s |
 | memory | warm | 26,960 | 430 / 63 | 1.8 s / 2.7 s |
 
-The isolated pass, every arm both ways with nothing else running, follows in
-the next commit.
+The isolated pass below measures every arm both ways, with nothing else
+running.
+
+## Isolated pass: every arm alone, cold and then warm
+
+Three of the 35 questions: 0a995998, 58470ed2 and 36580ce8.
+- Their histories were imported and compacted first, the three imports
+  together with nothing else on M5U0.
+- The engine then restarted with an empty snapshot store, so every first
+  answer was cold, memory's included.
+- Each answer was taken alone: no other request in the engine, and no memory
+  job queued or running.
+- A follow-up turn in the same chat then found the first turn cached, which
+  measures every arm warm.
+
+| arm | cold: prompt | cold: time to first token | warm: new prefill | warm: time to first token |
+|---|---|---|---|---|
+| full | 110,591 | 167 s | 33 | 0.81 s |
+| compaction | 14,280 | 11.6 s | 36 | 0.37 s |
+| memory | 31,333 | 29.4 s | 454 | 1.38 s |
+
+Times are the median of the three; prompts and prefill are their mean.
+
+- Cold, memory starts 5.7 times sooner than the full history. Compaction is
+  sooner still, at 11.6 s, but it recalled 9 of 35.
+- Warm, the full history starts in 0.81 s, but only while its 6.8 GiB of KV
+  stays cached. Memory keeps 1.6 GiB, and its import pre-warms it. So in the
+  main bench its first answer was already warm: 1.8 s, with three questions
+  in flight.
+- Memory's warm follow-ups prefilled 454 new tokens on average where the full
+  history's needed 33. The follow-ups to the two first answers that took
+  memory rounds (0a995998 and 58470ed2, three engine rounds each) prefilled
+  472 and 871; the one after a single round, 20. Why the pre-warm misses more
+  after memory rounds is not traced yet.
+- Alone, memory's upkeep after each answer took 8.3 s of job time: one
+  curator call (2,335 new prefill and 69 output tokens) and one pre-warm (44).
+- Recall here: full 2 of 3, memory 2 of 3, compaction 1 of 3. All three arms
+  missed 0a995998.
 
 ## A continuing chat: the KV it keeps and the window it leaves
 
@@ -89,7 +127,7 @@ Memory pays once to import a history and a little after every answer.
 | | jobs | new prefill tokens | output tokens | job time |
 |---|---|---|---|---|
 | import of one history (about 111K tokens, 250 exchanges) | 73: 36 curator renders, 32 pre-warms, 5 stems | 315,432 | 18,400 | 58 min |
-| upkeep after each live answer | 2: one curator call, one pre-warm | 2,545 | 90 | – |
+| upkeep after each live answer | 2: one curator call, one pre-warm | 2,545 | 90 | 8.3 s |
 
 - The import's time is mostly its curator renders' 18,400 output tokens. A
   third of all render output, 291,200 of 858,143 tokens, went to replies cut
@@ -98,11 +136,13 @@ Memory pays once to import a history and a little after every answer.
 - Every pre-warm is reused in full by the next render, so skipping pre-warms
   would save no tokens.
 - The import times above ran beside the other arms, three or four imports at
-  once.
+  once. In the isolated pass, with only its three imports running, an import
+  took 2,916 s on average for the same work: 73 jobs, 316,320 new prefill and
+  17,785 output tokens.
 - A compaction costs one call: 38,714 new prefill tokens and 652 output
   tokens, 128 s.
-- The upkeep's job time is left out: with other questions in flight, it
-  measures the queue, not the job.
+- The upkeep's job time is from the isolated pass: 8.3 s per answer. In the
+  main bench, with other questions in flight, it measured the queue.
 
 ## How it ran
 
@@ -130,7 +170,8 @@ Memory pays once to import a history and a little after every answer.
 - Code: the first 95 records ran on `metal/serve-memory` at d5400c149, whose
   memory code equals #1859 at 8056d464c. The last 10 ran on
   `memory/bench-receipts` at 775f8778f, whose chat layer adds the import fix
-  below as 7c5001831.
+  below as 7c5001831. The isolated pass ran on 203c2e20c, with the fix as
+  #1859 carries it (4512c6ce9).
 
 ## Defects the run found
 
@@ -143,6 +184,13 @@ Memory pays once to import a history and a little after every answer.
   words of each exchange. 1,523 of the store's 11,890 lines are such
   fallbacks, about one in eight. Every recall figure above carries this
   defect.
+- **Search buried newer facts** (fixed in #1876). With match any, a query
+  word matched inside other words, so "of" matched in "coffee" and "cups of
+  coffee" hit nearly every exchange. Results ran oldest first and stopped at
+  20, so c6853660's searches never showed the exchanges that raised the coffee
+  limit. Memory also searched in only 1 of its 5 multi-session answers;
+  gpt4_e05b82a6 counted 9 of 10 rides from the ledger, though every ride had
+  its line.
 - **An import that outlived its token failed** (fixed in #1859, 4512c6ce9).
   The import checked the user's token again before every batch. One import ran
   past the bench token's hour and failed at its next batch with "the
@@ -157,16 +205,17 @@ Memory pays once to import a history and a little after every answer.
 
 ## Next
 
-1. Run again on the curator fix (#1875), so no line is a fallback.
-2. Knowledge updates: when a later exchange changes a fact, the older line
-   should say so. In b6019101 and 9ea5eabc both facts were in the ledger and
-   the answer took the older one.
-3. A provider-style compaction arm, one summary of every word, before memory
+1. Tune #1875 and #1876 on `../../longmemeval_s_tuning.json`. #1876 makes an
+   updated value win: the new line states it as current and names the line it
+   replaces. It also keeps every concrete value in lines and sends counting
+   questions to search first.
+2. Run these 35 again for regressions.
+3. Take the next published number only from `../../longmemeval_s_report.json`,
+   whose per-question results are not read before that run.
+4. A provider-style compaction arm, one summary of every word, before memory
    is compared with compaction again.
-4. Import time: 58 minutes a history. Shorter lines, batches of 16, renders
-   without the open tail, measured one at a time on an idle host.
-5. More questions: the 2-point bar needs most of LongMemEval_S's 500, which
-   the import time puts out of reach today.
+5. Then LoCoMo, the agent arm, and import time: 49 to 58 minutes a history
+   today, which also caps how many questions a run can afford.
 
 ## Files
 
@@ -175,3 +224,5 @@ Memory pays once to import a history and a little after every answer.
   from the chat layer's log.
 - `records.jsonl`: one line per answer: the question's id and type, the arm,
   the reply, the verdict, prompt and cached tokens, and the import's result.
+- `isolated/`: the isolated pass's `summary.json` and `records.jsonl`, with a
+  first answer (turn 1) and a follow-up (turn 2) for each arm and question.

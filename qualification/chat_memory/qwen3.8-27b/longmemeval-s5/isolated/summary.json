@@ -1,0 +1,499 @@
+{
+  "dataset": "longmemeval",
+  "model": "qwen3.8-27b",
+  "judge": "qwen3.8-27b",
+  "judge_prompts": "xiaowu0162/LongMemEval src/evaluation/evaluate_qa.py at 9e0b455f4ef0, MIT",
+  "seed": 1107,
+  "arms": {
+    "full": {
+      "multi-session": {
+        "questions": 1,
+        "mean_prompt_tokens": 111705,
+        "mean_new_prefill_tokens": 111705,
+        "median_new_prefill_tokens": 111705,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 174.33,
+        "mean_ttft_seconds": 169.56,
+        "median_ttft_seconds": 169.56,
+        "accuracy": 0.0,
+        "missed": [
+          "0a995998"
+        ],
+        "setup_seconds_per_history": null
+      },
+      "single-session-assistant": {
+        "questions": 1,
+        "mean_prompt_tokens": 110764,
+        "mean_new_prefill_tokens": 110764,
+        "median_new_prefill_tokens": 110764,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 168.84,
+        "mean_ttft_seconds": 167.47,
+        "median_ttft_seconds": 167.47,
+        "accuracy": 1.0,
+        "missed": [],
+        "setup_seconds_per_history": null
+      },
+      "single-session-user": {
+        "questions": 1,
+        "mean_prompt_tokens": 109303,
+        "mean_new_prefill_tokens": 109303,
+        "median_new_prefill_tokens": 109303,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 165.05,
+        "mean_ttft_seconds": 164.26,
+        "median_ttft_seconds": 164.26,
+        "accuracy": 1.0,
+        "missed": [],
+        "setup_seconds_per_history": null
+      },
+      "all": {
+        "questions": 3,
+        "mean_prompt_tokens": 110591,
+        "mean_new_prefill_tokens": 110591,
+        "median_new_prefill_tokens": 110764,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 169.41,
+        "mean_ttft_seconds": 167.1,
+        "median_ttft_seconds": 167.47,
+        "accuracy": 0.6667,
+        "missed": [
+          "0a995998"
+        ],
+        "setup_seconds_per_history": null
+      },
+      "follow_up": {
+        "questions": 3,
+        "mean_prompt_tokens": 110645,
+        "mean_new_prefill_tokens": 33,
+        "median_new_prefill_tokens": 34,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 2.78,
+        "mean_ttft_seconds": 0.81,
+        "median_ttft_seconds": 0.81,
+        "jobs_after_each_answer": null
+      }
+    },
+    "compaction": {
+      "multi-session": {
+        "questions": 1,
+        "mean_prompt_tokens": 13934,
+        "mean_new_prefill_tokens": 13934,
+        "median_new_prefill_tokens": 13934,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 13.65,
+        "mean_ttft_seconds": 11.58,
+        "median_ttft_seconds": 11.58,
+        "accuracy": 0.0,
+        "missed": [
+          "0a995998"
+        ],
+        "setup_seconds_per_history": 155.2,
+        "setup_jobs_per_history": {
+          "compact": {
+            "jobs": 1,
+            "new_prefill_tokens": 37043,
+            "output_tokens": 707,
+            "seconds": 154.9
+          },
+          "total": {
+            "jobs": 1,
+            "new_prefill_tokens": 37043,
+            "output_tokens": 707,
+            "seconds": 154.9
+          }
+        }
+      },
+      "single-session-assistant": {
+        "questions": 1,
+        "mean_prompt_tokens": 13329,
+        "mean_new_prefill_tokens": 13329,
+        "median_new_prefill_tokens": 13329,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 17.47,
+        "mean_ttft_seconds": 11.07,
+        "median_ttft_seconds": 11.07,
+        "accuracy": 0.0,
+        "missed": [
+          "58470ed2"
+        ],
+        "setup_seconds_per_history": 113.5,
+        "setup_jobs_per_history": {
+          "compact": {
+            "jobs": 1,
+            "new_prefill_tokens": 34976,
+            "output_tokens": 240,
+            "seconds": 113.2
+          },
+          "total": {
+            "jobs": 1,
+            "new_prefill_tokens": 34976,
+            "output_tokens": 240,
+            "seconds": 113.2
+          }
+        }
+      },
+      "single-session-user": {
+        "questions": 1,
+        "mean_prompt_tokens": 15576,
+        "mean_new_prefill_tokens": 15576,
+        "median_new_prefill_tokens": 15576,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 15.51,
+        "mean_ttft_seconds": 13.12,
+        "median_ttft_seconds": 13.12,
+        "accuracy": 1.0,
+        "missed": [],
+        "setup_seconds_per_history": 66.5,
+        "setup_jobs_per_history": {
+          "compact": {
+            "jobs": 1,
+            "new_prefill_tokens": 40655,
+            "output_tokens": 74,
+            "seconds": 66.3
+          },
+          "total": {
+            "jobs": 1,
+            "new_prefill_tokens": 40655,
+            "output_tokens": 74,
+            "seconds": 66.3
+          }
+        }
+      },
+      "all": {
+        "questions": 3,
+        "mean_prompt_tokens": 14280,
+        "mean_new_prefill_tokens": 14280,
+        "median_new_prefill_tokens": 13934,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 15.54,
+        "mean_ttft_seconds": 11.92,
+        "median_ttft_seconds": 11.58,
+        "accuracy": 0.3333,
+        "missed": [
+          "0a995998",
+          "58470ed2"
+        ],
+        "setup_seconds_per_history": 111.7,
+        "setup_jobs_per_history": {
+          "compact": {
+            "jobs": 1,
+            "new_prefill_tokens": 37558,
+            "output_tokens": 340.3,
+            "seconds": 111.5
+          },
+          "total": {
+            "jobs": 1,
+            "new_prefill_tokens": 37558,
+            "output_tokens": 340.3,
+            "seconds": 111.5
+          }
+        }
+      },
+      "follow_up": {
+        "questions": 3,
+        "mean_prompt_tokens": 14364,
+        "mean_new_prefill_tokens": 36,
+        "median_new_prefill_tokens": 25,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 1.44,
+        "mean_ttft_seconds": 0.38,
+        "median_ttft_seconds": 0.37,
+        "jobs_after_each_answer": null
+      }
+    },
+    "memory": {
+      "multi-session": {
+        "questions": 1,
+        "mean_prompt_tokens": 36939,
+        "mean_new_prefill_tokens": 36799,
+        "median_new_prefill_tokens": 36799,
+        "answers_with_memory_rounds": 1,
+        "mean_seconds": 54.08,
+        "mean_ttft_seconds": 33.82,
+        "median_ttft_seconds": 33.82,
+        "accuracy": 0.0,
+        "missed": [
+          "0a995998"
+        ],
+        "setup_seconds_per_history": 2835.7,
+        "setup_jobs_per_history": {
+          "curator_render": {
+            "jobs": 34,
+            "new_prefill_tokens": 165452,
+            "output_tokens": 16616,
+            "seconds": 2205.1
+          },
+          "prewarm": {
+            "jobs": 31,
+            "new_prefill_tokens": 128964,
+            "output_tokens": 0,
+            "seconds": 580.3
+          },
+          "stem": {
+            "jobs": 5,
+            "new_prefill_tokens": 9416,
+            "output_tokens": 0,
+            "seconds": 37.3
+          },
+          "total": {
+            "jobs": 70,
+            "new_prefill_tokens": 303832,
+            "output_tokens": 16616,
+            "seconds": 2822.7
+          }
+        },
+        "jobs_after_each_answer": {
+          "curator": {
+            "jobs": 1,
+            "new_prefill_tokens": 2241,
+            "output_tokens": 90,
+            "seconds": 9.8
+          },
+          "prewarm": {
+            "jobs": 1,
+            "new_prefill_tokens": 76,
+            "output_tokens": 0,
+            "seconds": 0.4
+          },
+          "total": {
+            "jobs": 2,
+            "new_prefill_tokens": 2317,
+            "output_tokens": 90,
+            "seconds": 10.2
+          }
+        }
+      },
+      "single-session-assistant": {
+        "questions": 1,
+        "mean_prompt_tokens": 26104,
+        "mean_new_prefill_tokens": 26079,
+        "median_new_prefill_tokens": 26079,
+        "answers_with_memory_rounds": 1,
+        "mean_seconds": 29.42,
+        "mean_ttft_seconds": 27.67,
+        "median_ttft_seconds": 27.67,
+        "accuracy": 1.0,
+        "missed": [],
+        "setup_seconds_per_history": 3001.5,
+        "setup_jobs_per_history": {
+          "curator_render": {
+            "jobs": 35,
+            "new_prefill_tokens": 164488,
+            "output_tokens": 18244,
+            "seconds": 2247.1
+          },
+          "prewarm": {
+            "jobs": 30,
+            "new_prefill_tokens": 148236,
+            "output_tokens": 0,
+            "seconds": 626.1
+          },
+          "stem": {
+            "jobs": 6,
+            "new_prefill_tokens": 9810,
+            "output_tokens": 0,
+            "seconds": 115.4
+          },
+          "total": {
+            "jobs": 71,
+            "new_prefill_tokens": 322534,
+            "output_tokens": 18244,
+            "seconds": 2988.7
+          }
+        },
+        "jobs_after_each_answer": {
+          "curator": {
+            "jobs": 1,
+            "new_prefill_tokens": 2236,
+            "output_tokens": 77,
+            "seconds": 7.3
+          },
+          "prewarm": {
+            "jobs": 1,
+            "new_prefill_tokens": 44,
+            "output_tokens": 0,
+            "seconds": 0.3
+          },
+          "total": {
+            "jobs": 2,
+            "new_prefill_tokens": 2280,
+            "output_tokens": 77,
+            "seconds": 7.6
+          }
+        }
+      },
+      "single-session-user": {
+        "questions": 1,
+        "mean_prompt_tokens": 30955,
+        "mean_new_prefill_tokens": 30955,
+        "median_new_prefill_tokens": 30955,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 30.54,
+        "mean_ttft_seconds": 29.38,
+        "median_ttft_seconds": 29.38,
+        "accuracy": 1.0,
+        "missed": [],
+        "setup_seconds_per_history": 2911.1,
+        "setup_jobs_per_history": {
+          "curator_render": {
+            "jobs": 38,
+            "new_prefill_tokens": 176284,
+            "output_tokens": 18493,
+            "seconds": 2161.1
+          },
+          "prewarm": {
+            "jobs": 35,
+            "new_prefill_tokens": 135096,
+            "output_tokens": 3,
+            "seconds": 639.2
+          },
+          "stem": {
+            "jobs": 5,
+            "new_prefill_tokens": 11214,
+            "output_tokens": 0,
+            "seconds": 96.1
+          },
+          "total": {
+            "jobs": 78,
+            "new_prefill_tokens": 322594,
+            "output_tokens": 18496,
+            "seconds": 2896.3
+          }
+        },
+        "jobs_after_each_answer": {
+          "curator": {
+            "jobs": 1,
+            "new_prefill_tokens": 2528,
+            "output_tokens": 39,
+            "seconds": 6.6
+          },
+          "prewarm": {
+            "jobs": 1,
+            "new_prefill_tokens": 11,
+            "output_tokens": 0,
+            "seconds": 0.3
+          },
+          "total": {
+            "jobs": 2,
+            "new_prefill_tokens": 2539,
+            "output_tokens": 39,
+            "seconds": 6.9
+          }
+        }
+      },
+      "all": {
+        "questions": 3,
+        "mean_prompt_tokens": 31333,
+        "mean_new_prefill_tokens": 31278,
+        "median_new_prefill_tokens": 30955,
+        "answers_with_memory_rounds": 2,
+        "mean_seconds": 38.01,
+        "mean_ttft_seconds": 30.29,
+        "median_ttft_seconds": 29.38,
+        "accuracy": 0.6667,
+        "missed": [
+          "0a995998"
+        ],
+        "setup_seconds_per_history": 2916.1,
+        "setup_jobs_per_history": {
+          "curator_render": {
+            "jobs": 35.7,
+            "new_prefill_tokens": 168741.3,
+            "output_tokens": 17784.3,
+            "seconds": 2204.4
+          },
+          "prewarm": {
+            "jobs": 32,
+            "new_prefill_tokens": 137432,
+            "output_tokens": 1,
+            "seconds": 615.2
+          },
+          "stem": {
+            "jobs": 5.3,
+            "new_prefill_tokens": 10146.7,
+            "output_tokens": 0,
+            "seconds": 82.9
+          },
+          "total": {
+            "jobs": 73,
+            "new_prefill_tokens": 316320,
+            "output_tokens": 17785.3,
+            "seconds": 2902.6
+          }
+        },
+        "jobs_after_each_answer": {
+          "curator": {
+            "jobs": 1,
+            "new_prefill_tokens": 2335,
+            "output_tokens": 68.7,
+            "seconds": 7.9
+          },
+          "prewarm": {
+            "jobs": 1,
+            "new_prefill_tokens": 43.7,
+            "output_tokens": 0,
+            "seconds": 0.4
+          },
+          "total": {
+            "jobs": 2,
+            "new_prefill_tokens": 2378.7,
+            "output_tokens": 68.7,
+            "seconds": 8.3
+          }
+        }
+      },
+      "follow_up": {
+        "questions": 3,
+        "mean_prompt_tokens": 30731,
+        "mean_new_prefill_tokens": 454,
+        "median_new_prefill_tokens": 472,
+        "answers_with_memory_rounds": 0,
+        "mean_seconds": 2.6,
+        "mean_ttft_seconds": 1.32,
+        "median_ttft_seconds": 1.38,
+        "jobs_after_each_answer": {
+          "curator": {
+            "jobs": 1,
+            "new_prefill_tokens": 2340.7,
+            "output_tokens": 53.3,
+            "seconds": 6.4
+          },
+          "prewarm": {
+            "jobs": 1,
+            "new_prefill_tokens": 103.3,
+            "output_tokens": 0,
+            "seconds": 0.4
+          },
+          "total": {
+            "jobs": 2,
+            "new_prefill_tokens": 2444,
+            "output_tokens": 53.3,
+            "seconds": 6.8
+          }
+        }
+      }
+    }
+  },
+  "misses": {
+    "questions": 3,
+    "missed": {
+      "full": [
+        "0a995998"
+      ],
+      "compaction": [
+        "0a995998",
+        "58470ed2"
+      ],
+      "memory": [
+        "0a995998"
+      ]
+    },
+    "compaction_not_full": [
+      "58470ed2"
+    ],
+    "full_not_compaction": [],
+    "memory_not_full": [],
+    "full_not_memory": []
+  }
+}
