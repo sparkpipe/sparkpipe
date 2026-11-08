@@ -15,7 +15,7 @@ extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_sta
 	uint32_t multiprocessors, void *stream);
 #define K3_DISPATCH_PAIR_IDENTITY 16u
 #define K3_DISPATCH_GATHER_WINDOW_GRAIN 224u
-#define K3_DISPATCH_INDEX_CHUNK_ROWS 64u
+#define K3_DISPATCH_INDEX_CHUNK_ROWS 256u
 
 static_assert(K3_DISPATCH_GATHER_WINDOW_GRAIN % LM_PREFILL_ATTN_TILE == 0u, "a gather window starts on an attention key tile");
 static_assert((K3_DISPATCH_GATHER_WINDOW_GRAIN * K3_MLA_KV_A_DIM * sizeof(uint16_t)) % (K3_HIDDEN * sizeof(uint16_t)) == 0u,
