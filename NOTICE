@@ -13,6 +13,10 @@ licensed under the Apache License, Version 2.0, and stays so.
 Model weights, tokenizers and stage packs built from them keep their
 publishers' licenses; neither license above covers them.
 
+The SparkPipe memory library that SparkPipe can load is licensed separately.
+Neither license above covers it, or the patents and patent applications that
+cover it, and SparkPipe runs without it.
+
 SparkPipe third-party notices
 
 Files: tools/exl3_expert_dequant.py
