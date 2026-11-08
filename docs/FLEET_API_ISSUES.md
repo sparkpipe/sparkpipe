@@ -57,13 +57,14 @@ State on 6 November 2026:
 | G2 | Key options | Scopes, `fleet`, `allow_swap`, expiry, IP allowlist and rotation (the old key valid for an hour) are enforced and tested | M | |
 | G3 | Usage records and `GET /v1/requests` | Records arrive from the hub per request, are kept a year, and sum into `stats` | M | C4 |
 | G4 | Bearer sessions for the CLI on `/market/...` | The CLI books a week and joins the waitlist with a bearer session | S | |
-| G5 | Teams | Invites, roles (owner, admin, member), per-member keys and usage; a member cannot book or pay | L | G2 |
-| G6 | Audit log | Every event in §12 is logged and listed by `GET /v1/audit`, without prompts or replies | M | G5 |
+| G5 | Teams | Invites, roles (owner, admin, member), per-member keys and usage; a member cannot book or pay; the gateway sends `X-SparkPipe-Member` for fair share per member (C8) | L | G2 |
+| G6 | Audit log | Every event in §12 is logged and listed by `GET /v1/audit`, without prompts or replies; the hub reports its own events (model switches, wipes, storage access, fetches, runs) to `POST /hub/audit` | M | G5 |
 | G7 | Webhooks and email notifications | Every event in §13 is delivered signed, with retries. `booking.deadline` fires 72 h, 48 h, 6 h and 2 h before the Sunday deadline, and when auto-extend waits or stops | M | |
 | G8 | Auto-extend | On by default from the first booked or granted week, one week ahead, with a one-click off switch and the weeks-ahead setting on the account page. A fleet with auto-extend keeps its weeks booked ahead across a simulated year, a holder who does nothing keeps the fleet, and a short balance triggers an early warning | M | G7 |
 | G9 | Several fleets: prefix-affinity routing | With two held fleets and `fleet: "any"`, a session's turns all land on the fleet where its prefix is warm | M | C4 |
 | G11 | Uptime records and the automatic downtime credit (Agreement 4.4) | The VPS probes each Fleet's hub every 30 seconds and records every period without a good probe, gaps in its own probing included. Every booked hour a period of more than 15 minutes touches is credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily, and at its end, never twice with maintenance. `status.html` and its Korean twin show status, uptime and periods from those records | M | |
 | G12 | Failover to a free fleet (Agreement 15.7) | Each fleet has its own upstream. While a held fleet is down, its holder's requests go to the first free, serving, healthy fleet as that fleet, without working state, and come back when it serves again; a booking of the free fleet takes it back. The free fleet's holder schedule names the account, and `fleet.failover` says where the account is served | M | G11 |
+| G13 | Delete an account's request records on request (DPA 9.3) | `DELETE /v1/requests` and `sparkpipe_pay.py erase-records` delete the VPS's usage records of the account at once, and records sent again for that time are refused. The hub's `request_record` lines, which hold the reply's token numbers, need a per-account store on the hub that can be deleted the same way | S | G3 |
 | G10 | Automatic rebuild credit (Agreement 6.6) | A pair-loss report from E14 credits 24 hours of the fleet within an hour, once per event, and sends `working_state.lost` | S | E14, G7 |
 
 ## Storage, repositories and packs
@@ -78,9 +79,9 @@ State on 6 November 2026:
 | P4 | Pack builder | Least-changed files first, deterministic rendering, budget and versions; the same commit always gives the same tokens | M | P3 |
 | P5 | Pack refresh and warm-up | After a push, the new version is warm in the background, and only the part after the first changed file is prefilled again | M | P4, E5, E8 |
 | P10 | Pack trees (§5.2) | A tree of one root, three trunks and twelve leaves stores the root and trunks once (cache bytes measured), each level ends on the model's resume boundary, and moving a session from one leaf to another recomputes only the leaf's tail | M | P4, E6 |
-| P11 | Anticipator planner (§5.3) | On the Customer Zero repository it turns structure, history, session evidence and hints into a plan within the compute and cache budgets, in under 5 minutes, with reasons for every leaf. The same inputs always give the same plan | L | P3, P10, C12 |
+| P11 | Anticipator planner (§5.3). Planner built in `tools/anticipator.py` (`docs/ANTICIPATOR.md`); the fleet run waits on P3, P10 and C12 | On the Customer Zero repository it turns structure, history, session evidence and hints into a plan within the compute and cache budgets, in under 5 minutes, with reasons for every leaf. The same inputs always give the same plan | L | P3, P10, C12 |
 | P12 | Automatic pack selection, `+auto` (§5.4) | Claude Code, Codex and OpenCode sessions started in three different subdirectories each land on the expected leaf at their first request, keep it for the whole session, and report it in telemetry; an unmatched session starts without a pack | M | C9, P10 |
-| P13 | Anticipator controls and report (§5.6, §5.7) | Every setting is enforced, and `plan` mode builds nothing until approved. Focus hints change the next plan, and excluded paths never enter a pack. The morning report's figures reconcile with the telemetry records | M | P11, G3, F1 |
+| P13 | Anticipator controls and report (§5.6, §5.7). Settings, approval, focus and the report built in `tools/anticipator.py`; serving the routes waits on the chat layer and G3 | Every setting is enforced, and `plan` mode builds nothing until approved. Focus hints change the next plan, and excluded paths never enter a pack. The morning report's figures reconcile with the telemetry records | M | P11, G3, F1 |
 | P6 | Export and restore | An archive of storage, drafters and pack definitions restores on another fleet | M | P1 |
 | P7 | Daily backup by pull | `GET /v1/storage/changes` and `sparkpipe storage sync` copy only the day's changes to a local directory or a bucket the customer's machine writes to; the morning report shows each path's last pull | M | P1, L1 |
 
@@ -103,6 +104,12 @@ State on 6 November 2026:
 | --- | --- | --- | --- | --- |
 | M1 | MCP server at `/mcp` (§10) | Claude Code, Codex and OpenCode each call every tool. `run` executes the test suite with the local diff applied on the sandbox host | L | P3, F3 |
 | M2 | `sparkpipe mcp` stdio bridge | A client that only starts local servers uses every tool through it | S | M1, L1 |
+| M3 | Language servers (§10 `definition`, `references`, `hover`, `diagnostics`, `rename_preview`) | On the Customer Zero repository, warm servers for C and C++, Python, Rust, Go and TypeScript answer every tool, and `diagnostics` matches the project's own build within 30 s of a push | L | P3, F3 |
+| M4 | Warm builds and affected tests (§10 `run`) | On the Customer Zero repository, a second `run` of the test suite after a one-line change reuses the build caches and runs only the affected tests, at least five times faster than the first, with the same result as a full run | L | M1, F1 |
+| M5 | Semantic search over code and history (§10 `search_code`, `search_history`) | For 50 written questions about the Customer Zero repository, the right file or commit is in the top five answers for at least 40 of them | M | P3 |
+| M6 | Dependency mirror (§10 `deps`) | The pinned dependency versions of three sample repositories (pip, npm, cargo) are mirrored, hash-checked and searchable; turning the mirror off deletes it | M | P2, P9 |
+| M7 | Headless browser (§10 `browse`) | A scripted check of a web app served by `run` returns screenshots and the console and network errors, with no network beyond the sandbox unless allowed | M | F3 |
+| M8 | Fan-out reading (§10 `map`) | 1,000 files are summarized in under 10 minutes with no decode by the main model, and interactive latency on the main model does not change meanwhile | M | M1 |
 
 ## Draft models
 

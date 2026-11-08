@@ -99,6 +99,8 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
 
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_ck128.h"
+#define SPARK_WEIGHTD_LOAD_WORKERS 4u
+#define SPARK_WEIGHTD_LOAD_WORKER_MIN_BYTES (512ull * 1024ull * 1024ull)
 
 #define SPARK_WEIGHTD_LOAD_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 
@@ -154,7 +156,7 @@ typedef struct SparkWeightdArena
     uint32_t live_slot_count;
     uint32_t free_slot_count;
     uint8_t *staging;
-    SparkWeightdDirect *direct;
+    SparkWeightdDirect *direct[SPARK_WEIGHTD_LOAD_WORKERS];
     uint64_t *recorded_keys;
     uint8_t *recorded_groups;
     uint32_t recorded_count;
@@ -831,8 +833,11 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
     }
     free(arena->chunk_refs);
     free(arena->staging);
-    SparkWeightdDirectDestroy(arena->direct);
-    arena->direct = 0;
+    for (uint32_t worker = 0u; worker < SPARK_WEIGHTD_LOAD_WORKERS; worker++)
+    {
+        SparkWeightdDirectDestroy(arena->direct[worker]);
+        arena->direct[worker] = 0;
+    }
     free(arena->recorded_keys);
     arena->recorded_keys = 0;
     free(arena->recorded_groups);
@@ -2491,8 +2496,22 @@ typedef struct SparkWeightdLeaseSink
 	SparkWeightdServer *server;
 	SparkWeightdArena *arena;
 	const SparkWeightdRange **ranges;
+	pthread_mutex_t *pace;
 	SparkCk128Context context;
 } SparkWeightdLeaseSink;
+
+typedef struct SparkWeightdLoadWork
+{
+	SparkWeightdServer *server;
+	SparkWeightdArena *arena;
+	SparkWeightdDirect *direct;
+	pthread_mutex_t *pace;
+	const SparkWeightdRange **ranges;
+	uint32_t count;
+	int32_t fd;
+	uint32_t is_direct;
+	SparkStatus status;
+} SparkWeightdLoadWork;
 
 static int SparkWeightdCompareRangeOffset(const void *left,const void *right)
 {
@@ -2506,7 +2525,10 @@ static SparkStatus SparkWeightdLeaseSinkRange(void *context,uint32_t span_index,
 	SparkWeightdLeaseSink *sink = context;
 	const SparkWeightdRange *range = sink->ranges[span_index];
 	uint8_t digest[16];
-	SparkStatus paced = SparkWeightdServerPace(sink->server,bytes);
+	SparkStatus paced;
+	pthread_mutex_lock(sink->pace);
+	paced = SparkWeightdServerPace(sink->server,bytes);
+	pthread_mutex_unlock(sink->pace);
 	if ( paced != SPARK_STATUS_OK )
 		SPARK_RETURN(paced);
 	if ( span_offset == 0u && bytes == range->bytes )
@@ -2530,35 +2552,77 @@ static SparkStatus SparkWeightdLeaseSinkRange(void *context,uint32_t span_index,
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkWeightdLoadRanges(SparkWeightdServer *server,SparkWeightdArena *arena,int32_t fd,uint32_t is_direct,const SparkWeightdRange **ranges,uint32_t count)
+static void *SparkWeightdLoadWorker(void *context)
 {
-	SparkWeightdDirectSpan *spans;
+	SparkWeightdLoadWork *work = context;
+	SparkWeightdDirectSpan *spans = calloc(work->count,sizeof(*spans));
 	SparkWeightdLeaseSink sink;
-	SparkStatus status;
 	uint32_t i;
-	if ( count == 0u )
-		return(SPARK_STATUS_OK);
-	if ( arena->direct == 0 )
-	{
-		status = SparkWeightdDirectCreate(SPARK_WEIGHTD_DIRECT_BLOCK_BYTES,SPARK_WEIGHTD_DIRECT_READERS,&arena->direct);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-	}
-	spans = calloc(count,sizeof(*spans));
 	if ( spans == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	qsort(ranges,count,sizeof(*ranges),SparkWeightdCompareRangeOffset);
-	for (i=0u; i<count; i++)
 	{
-		spans[i].offset = ranges[i]->offset;
-		spans[i].bytes = ranges[i]->bytes;
+		work->status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		return(0);
+	}
+	for (i=0u; i<work->count; i++)
+	{
+		spans[i].offset = work->ranges[i]->offset;
+		spans[i].bytes = work->ranges[i]->bytes;
 	}
 	memset(&sink,0,sizeof(sink));
-	sink.server = server;
-	sink.arena = arena;
-	sink.ranges = ranges;
-	status = SparkWeightdDirectStream(arena->direct,fd,is_direct,spans,count,SparkWeightdLeaseSinkRange,&sink,0);
+	sink.server = work->server;
+	sink.arena = work->arena;
+	sink.ranges = work->ranges;
+	sink.pace = work->pace;
+	work->status = SparkWeightdDirectStream(work->direct,work->fd,work->is_direct,spans,work->count,SparkWeightdLeaseSinkRange,&sink,0);
 	free(spans);
+	return(0);
+}
+
+static SparkStatus SparkWeightdLoadRanges(SparkWeightdServer *server,SparkWeightdArena *arena,int32_t fd,uint32_t is_direct,const SparkWeightdRange **ranges,uint32_t count)
+{
+	SparkWeightdLoadWork works[SPARK_WEIGHTD_LOAD_WORKERS];
+	pthread_t threads[SPARK_WEIGHTD_LOAD_WORKERS];
+	pthread_mutex_t pace = PTHREAD_MUTEX_INITIALIZER;
+	uint64_t total = 0u,share,taken = 0u;
+	uint32_t i,first = 0u,workers,used = 0u,launched = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	qsort(ranges,count,sizeof(*ranges),SparkWeightdCompareRangeOffset);
+	for (i=0u; i<count; i++)
+		total += ranges[i]->bytes;
+	workers = total / SPARK_WEIGHTD_LOAD_WORKER_MIN_BYTES < SPARK_WEIGHTD_LOAD_WORKERS ? (uint32_t)(total / SPARK_WEIGHTD_LOAD_WORKER_MIN_BYTES) : SPARK_WEIGHTD_LOAD_WORKERS;
+	workers = workers != 0u ? workers : 1u;
+	share = total / workers + 1u;
+	for (i=0u; i<workers && status == SPARK_STATUS_OK; i++)
+		if ( arena->direct[i] == 0 )
+			status = SparkWeightdDirectCreate(SPARK_WEIGHTD_DIRECT_BLOCK_BYTES,SPARK_WEIGHTD_DIRECT_READERS,&arena->direct[i]);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	for (i=0u; i<count && used < workers; i++)
+	{
+		taken += ranges[i]->bytes;
+		if ( taken >= share * (used + 1u) || i + 1u == count )
+		{
+			works[used] = (SparkWeightdLoadWork){server,arena,arena->direct[used],&pace,&ranges[first],i + 1u - first,fd,is_direct,SPARK_STATUS_OK};
+			first = i + 1u;
+			used++;
+		}
+	}
+	for (i=1u; i<used; i++)
+	{
+		if ( pthread_create(&threads[launched],0,SparkWeightdLoadWorker,&works[i]) != 0 )
+			break;
+		launched++;
+	}
+	(void)SparkWeightdLoadWorker(&works[0]);
+	for (i=1u + launched; i<used; i++)
+		(void)SparkWeightdLoadWorker(&works[i]);
+	for (i=0u; i<launched; i++)
+		pthread_join(threads[i],0);
+	for (i=0u; i<used; i++)
+		if ( status == SPARK_STATUS_OK )
+			status = works[i].status;
 	SPARK_RETURN(status);
 }
 

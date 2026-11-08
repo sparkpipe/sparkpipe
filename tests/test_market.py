@@ -62,7 +62,7 @@ def site(work, serving=True):
 
 
 def live(work, name, mailbox, upstream=None, extra=None):
-    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+    env = {"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": tp.CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
            "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key"), "SPARKPIPE_PAY_HEALTH_SECONDS": "0"}
     env.update(extra or {})
     if upstream:
@@ -536,7 +536,7 @@ def passthrough(failures, app, m, port, upstream, state):
     status, _, answer = raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": keys[D]})
     if json.loads(answer) != {"type": "error", "error": {"type": "fleet_not_held", "message": "This account holds no Fleet now. Book an Hour or a Week to send requests."}}:
         failures.append(f"a refusal on /v1/messages does not use Anthropic's error body: {answer!r}")
-    for method, path in (("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/v1/storage/../sparkpipe/status"), ("GET", "/v1/storage/%2e%2e/%2E%2E/sparkpipe/status"), ("GET", "/v1/members"), ("GET", "/v1/audit"), ("GET", "/git/../v1/sparkpipe/status")):
+    for method, path in (("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/v1/storage/../sparkpipe/status"), ("GET", "/v1/storage/%2e%2e/%2E%2E/sparkpipe/status"), ("GET", "/v1/teams"), ("GET", "/git/../v1/sparkpipe/status")):
         status, _, _ = raw_call(port, method, path, b"{}" if method == "POST" else None, {"Authorization": f"Bearer {keys[H]}"})
         if status != 404:
             failures.append(f"{method} {path}, which is not in the API, is not refused: {status}")
@@ -1568,6 +1568,135 @@ def failover_flows(failures, work):
         mailbox.shutdown()
 
 
+def sign_in(port, mailbox, email, bearer=False):
+    found = tp.Client(port, origin="https://sparkpipe.ai")
+    found("POST", "/code", {"email": email})
+    status, summary = found("POST", "/verify", dict({"email": email, "code": tp.last_code(mailbox, email)}, **({"bearer": True} if bearer else {})))
+    if bearer and status == 200:
+        found.cookie, found.bearer = None, {"Authorization": f"Bearer {summary['session']}"}
+    return found, status, summary
+
+
+def team_flows(failures, work):
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    upstream = tp.serve(FakeUpstream, seen=[], calls=[])
+    server, app, port = live(work, "teams", mailbox, upstream)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 8, 12)
+        O, X = person(app, "owner", 2000), person(app, "outsider", 10)
+        owner = client(app, port, O)
+        m.book_weeks(O, {"fleet": "F3", "weeks": 2})
+        owner_key = m.create_key(O, {"note": "owner"})["key"]
+        invited = [owner("POST", "/v1/members", {"email": email, "role": role}) for email, role in (("ann@example.com", "admin"), ("bob@example.com", "member"))]
+        refused_invites = [owner("POST", "/v1/members", body)[0] for body in ({"email": "owner@example.com", "role": "admin"}, {"email": "outsider@example.com", "role": "member"}, {"email": "cat@example.com", "role": "owner"})]
+        refused_invites.append(raw_call(port, "POST", "/v1/members", json.dumps({"email": "cat@example.com", "role": "member"}).encode(), {"X-Api-Key": owner_key, "Content-Type": "application/json"})[0])
+        app.mails.join()
+        if [(status, found.get("state"), found.get("role")) for status, found in invited] != [(200, "invited", "admin"), (200, "invited", "member")] or refused_invites != [400, 409, 400, 403]:
+            failures.append(f"the owner cannot invite members by email with a role, or invites the owner, another account's email, a second owner, or with an API key: {invited} {refused_invites}")
+        if not any(rcpt == ["ann@example.com"] and mail["Subject"] == "Owner invited you to SparkPipe" and "as an admin" in mail.get_content() for rcpt, mail in mailbox.mail):
+            failures.append("an invited member is not emailed the invitation")
+        ann, status_a, summary_a = sign_in(port, mailbox, "ann@example.com")
+        bob, status_b, summary_b = sign_in(port, mailbox, "bob@example.com", bearer=True)
+        A, B = summary_a.get("member"), summary_b.get("member")
+        listed = owner("GET", "/v1/members")[1]["data"]
+        if (status_a, summary_a.get("role"), summary_a.get("company"), status_b, summary_b.get("role")) != (200, "admin", "Owner", 200, "member") or not (A or "").startswith("MB") or [(x["email"], x["role"], x["state"]) for x in listed] != [("owner@example.com", "owner", "member"), ("ann@example.com", "admin", "member"), ("bob@example.com", "member", "member")]:
+            failures.append(f"an invited member does not join by signing in with its own email code: {summary_a} {summary_b} {listed}")
+        NOW[0] = kst(2027, 1, 12, 10)
+        denied = [bob("POST", path, body, headers=bob.bearer)[1].get("reason") for path, body in (("/market/book-weeks", {"fleet": "F3", "weeks": 1}), ("/market/buy", {"hc": 10}), ("/market/waitlist", {"lock": 144}), ("/order", {"product": "credits", "hc": 144, "processor": "toss"}))]
+        denied.append(bob("PUT", "/market/auto-extend", {"fleet": "F3", "weeks_ahead": 0}, headers=bob.bearer)[1].get("reason"))
+        if denied != ["role"] * 5:
+            failures.append(f"a member books, pays or joins the waitlist: {denied}")
+        status, made = bob("POST", "/v1/keys", {"note": "bob laptop"}, headers=bob.bearer)
+        wide = [bob("POST", "/v1/keys", body, headers=bob.bearer)[1].get("error", {}).get("code") for body in ({"scopes": ["storage"]}, {"allow_swap": True})]
+        if status != 200 or made.get("member") != B or made.get("scopes") != ["inference", "functions", "account:read"] or wide != ["role", "role"]:
+            failures.append(f"a member's keys are not its own, limited to inference, functions and account:read: {made} {wide}")
+        before = len(upstream.calls)
+        raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": made["key"]})
+        got = upstream.calls[-1] if len(upstream.calls) > before else {"items": []}
+        if [sent(got, name) for name in ("x-sparkpipe-account", "x-sparkpipe-member", "x-sparkpipe-role", "x-sparkpipe-scopes", "x-sparkpipe-allow-swap")] != [[O], [B], ["member"], ["inference,functions,account:read"], ["0"]]:
+            failures.append(f"the hub is not told which member sends a request, its role and scopes, for fair share per member: {got['items']}")
+        blocked = [raw_call(port, "GET", "/v1/storage", headers={"X-Api-Key": made["key"]})[0], raw_call(port, "GET", "/v1/state", headers=bob.bearer)[0]]
+        if blocked != [403, 403]:
+            failures.append(f"a member reaches storage or state: {blocked}")
+        own = [k["id"] for k in bob("GET", "/v1/keys", headers=bob.bearer)[1]["data"]]
+        owner_id = m.key_account(owner_key)["key"]
+        if own != [made["id"]] or bob("DELETE", f"/v1/keys/{owner_id}", headers=bob.bearer)[0] != 404:
+            failures.append(f"a member sees or revokes keys other than its own: {own}")
+        admin_key = ann("POST", "/v1/keys", {"scopes": ["inference", "state", "storage", "models"], "allow_swap": True})[1]
+        hook = ann("PUT", "/v1/webhooks", {"email": "owner@example.com", "events": ["booking.deadline", "fleet.failover"]})
+        if admin_key.get("member") != A or ann("DELETE", f"/v1/keys/{made['id']}")[0] != 200 or hook[0] != 200 or ann("POST", "/v1/members", {"email": "cat@example.com", "role": "member"})[1].get("error", {}).get("code") != "role":
+            failures.append(f"an admin cannot manage every key and the webhooks, or can manage members: {admin_key} {hook}")
+        reads = [bob("GET", "/v1/audit", headers=bob.bearer)[0], bob("PUT", "/v1/webhooks", {"email": "owner@example.com", "events": []}, headers=bob.bearer)[0], bob("GET", "/market/ledger", headers=bob.bearer)[0], ann("GET", "/market/ledger")[0]]
+        if reads != [403, 403, 403, 200] or bob("GET", "/account", headers=bob.bearer)[1].get("orders") != [] or owner("GET", "/account")[1].get("role") != "owner":
+            failures.append(f"a member reads the audit log or ledger, changes webhooks or sees payments: {reads}")
+        second = bob("POST", "/v1/keys", {"note": "bob ci"}, headers=bob.bearer)[1]
+        moment = market.stamp(m.now())
+        records = [{"request": "t1", "account": O, "fleet": "F3", "at": moment, "key": second["id"]}, {"request": "t2", "account": O, "fleet": "F3", "at": moment, "key": owner_id}, {"request": "t3", "account": O, "fleet": "F3", "at": moment, "key": "session", "member": A}]
+        hub(port, "/hub/requests", {"records": records})
+        by_member = {who: [r["request"] for r in owner("GET", f"/v1/requests?member={who}")[1]["data"]] for who in (O, A, B)}
+        if by_member != {O: ["t2"], A: ["t3"], B: ["t1"]} or [r["request"] for r in bob("GET", "/v1/requests", headers=bob.bearer)[1]["data"]] != ["t1"]:
+            failures.append(f"usage records are not kept per member, or a member sees others' usage: {by_member}")
+        status, took = hub(port, "/hub/audit", {"events": [{"id": "w1", "account": O, "member": B, "fleet": "F3", "type": "cache.wiped", "at": moment, "data": {"reason": "user"}}, {"id": "w2", "account": O, "type": "prompt.seen", "at": moment}]})
+        again = hub(port, "/hub/audit", {"events": [{"id": "w1", "account": O, "type": "cache.wiped", "at": moment}]})[1]
+        if status != 200 or (took["accepted"], [r["index"] for r in took["refused"]], again["duplicates"]) != (1, [1], 1) or hub(port, "/hub/audit", {"events": []}, "wrong")[0] != 401:
+            failures.append(f"the hub's audit events are not taken in once each, by type, with the upstream key: {took} {again}")
+        log = owner("GET", "/v1/audit?limit=100")[1]["data"]
+        kinds = [(e["type"], e["member"]) for e in log]
+        expected = [("member.invited", O), ("member.invited", O), ("member.joined", A), ("session.sign_in", A), ("member.joined", B), ("session.sign_in", B), ("key.created", B), ("key.created", A), ("webhook.set", A), ("key.revoked", A), ("key.created", B), ("cache.wiped", B)]
+        if sorted(k for k in kinds if k[0] != "booking.weeks") != sorted(expected) or [e["at"] for e in log] != sorted(e["at"] for e in log) or any("prompt" in json.dumps(e) for e in log):
+            failures.append(f"the audit log does not list sign-ins, member, key and webhook changes and the hub's events, each with the member who did it: {kinds}")
+        paged = owner("GET", "/v1/audit?limit=2")[1]
+        if len(paged["data"]) != 2 or not paged["has_more"] or owner("GET", f"/v1/audit?type=cache.wiped")[1]["data"][0]["id"] != "HBw1":
+            failures.append(f"the audit log does not page or filter: {paged}")
+        owner("POST", "/v1/members", {"email": "ann@example.com", "role": "member"})
+        demoted = raw_call(port, "GET", "/v1/state", headers={"X-Api-Key": admin_key["key"]})[0]
+        removed = owner("DELETE", f"/v1/members/{B}")
+        after = [raw_call(port, "POST", "/v1/messages", b"{}", {"X-Api-Key": second["key"]})[0], bob("GET", "/market/state", headers=bob.bearer)[1]["account"]]
+        rejoin = sign_in(port, mailbox, "bob@example.com")[1]
+        if demoted != 403 or removed != (200, {"id": B, "removed": True}) or after != [401, None] or rejoin != 404:
+            failures.append(f"a member moved to the member role keeps admin scopes, or a removed member keeps its keys, sessions or sign-in: {demoted} {removed} {after} {rejoin}")
+        late = owner("POST", "/v1/members", {"email": "cat@example.com", "role": "member"})[1]
+        gone = owner("POST", "/v1/members", {"email": "dan@example.com", "role": "member"})[1]
+        cancelled = owner("DELETE", f"/v1/members/{gone['id']}")[0]
+        NOW[0] += timedelta(days=8)
+        if sign_in(port, mailbox, "cat@example.com")[1] != 404 or sign_in(port, mailbox, "dan@example.com")[1] != 404 or cancelled != 200 or any(x["state"] == "invited" for x in owner("GET", "/v1/members")[1]["data"]):
+            failures.append(f"an invitation works after 7 days or after it was cancelled: {late} {gone}")
+        replay = sp.Book(app.cfg.path("ledger.jsonl"))
+        if {k: (v["role"], v["removed"]) for k, v in replay.members.items()} != {k: (v["role"], v["removed"]) for k, v in app.book.members.items()} or {k: v["state"] for k, v in replay.invites.items()} != {k: v["state"] for k, v in app.book.invites.items()}:
+            failures.append("a replayed ledger gives different members or invitations")
+        exported = {line["type"] for line in owner("GET", "/market/ledger")[1]["lines"]}
+        if not {"member_invite", "member", "member_role", "member_remove"} <= exported or X in json.dumps(owner("GET", "/v1/audit?limit=1000")[1]):
+            failures.append(f"the owner's ledger export lacks its members, or its audit log names another account: {exported}")
+        erase_flows(failures, app, m, port, mailbox, O, X, owner, ann, owner_key, records)
+    finally:
+        server.shutdown()
+        upstream.shutdown()
+        mailbox.shutdown()
+
+
+def erase_flows(failures, app, m, port, mailbox, O, X, owner, other, owner_key, records):
+    window = "/v1/requests?since=2027-01-01T00:00:00Z"
+    listed = owner("GET", window)[1]["data"]
+    refused_erase = [other("DELETE", "/v1/requests")[0], raw_call(port, "DELETE", "/v1/requests", headers={"X-Api-Key": owner_key})[0]]
+    status, erased = owner("DELETE", "/v1/requests")
+    gone = owner("GET", window)[1]["data"]
+    resent = hub(port, "/hub/requests", {"records": records})[1]
+    NOW[0] += timedelta(minutes=1)
+    fresh = hub(port, "/hub/requests", {"records": [{"request": "t4", "account": O, "fleet": "F3", "at": market.stamp(m.now())}]})[1]
+    if len(listed) != 3 or refused_erase != [403, 403] or status != 200 or erased.get("erased") != 3 or gone or (resent["accepted"], len(resent["refused"])) != (0, 3) or fresh["accepted"] != 1:
+        failures.append(f"the owner cannot delete the records of its requests at once, or deleted records come back when the hub sends them again (DPA 9.3): {listed} {refused_erase} {erased} {resent} {fresh}")
+    if sp.erase_records(app, ["sparkpipe_pay.py", "erase-records", "outsider@example.com", "written request of 20 January"]) != 0 or sp.erase_records(app, ["sparkpipe_pay.py", "erase-records", "nobody@example.com", "x"]) != 2:
+        failures.append("the operator cannot delete an account's request records on its written request")
+    lines = [line["data"] for line in ledger_lines(app) if line["type"] == "records_erased"]
+    app.mails.join()
+    mailed = [rcpt for rcpt, mail in mailbox.mail if mail["Subject"] == "SparkPipe deleted the records of your requests"]
+    asked = [mail.get_content() for rcpt, mail in mailbox.mail if rcpt == [app.cfg.notify] and mail["Subject"] == f"Erase the hub's request records of {O} within 30 days"]
+    logged = [e["type"] for e in owner("GET", "/v1/audit?type=records.erased")[1]["data"]]
+    if [(l["account"], l["records"], l["by"]) for l in lines] != [(O, 3, O), (X, 0, "operator")] or mailed != [["owner@example.com"], ["outsider@example.com"]] or logged != ["records.erased"] or not asked or f"--erase-records {O}" not in asked[0] or sp.Book(app.cfg.path("ledger.jsonl")).erased != app.book.erased:
+        failures.append(f"an erasure is not recorded in the ledger and the audit log and emailed to the owner, or does not replay: {lines} {mailed} {logged}")
+
+
 def view(state, active=None, target=None):
     return 200, {"state": state, "active": active, "target": target, "models": [{"id": name, "active": name == active} for name in ("glm-5.3", "kimi-k3")]}
 
@@ -1615,7 +1744,7 @@ def resident_flows(failures, work):
 
 def sandbox_flows(failures, work):
     site(work / "plain-root", serving=False)
-    cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
+    cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "sandbox"), "SPARKPIPE_PAY_SITE": str(work / "plain-root" / "site"), "SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"})
     NOW[0] = datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)
     server = sp.start(cfg, port=0)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1662,6 +1791,16 @@ def sandbox_flows(failures, work):
         after = user("GET", "/market/state")[1]["account"]
         if down[0] != 200 or middle.get("status") != "down" or Decimal(after["balance"]) - before != 1 or [l["hc"] for l in after["lots"] if l["source"] == "downtime"] != ["1.000000"] or public_status(port)[1]["F3"]["status"] != "up":
             failures.append(f"the sandbox does not take a held Fleet down and credit the booked hour under clause 4.4: {down} {middle} {after['lots']}")
+        invited = user("POST", "/v1/members", {"email": "mate@example.com", "role": "member"})
+        mate = tp.Client(port, origin="https://sparkpipe.ai")
+        joined = mate("POST", "/verify", {"email": "mate@example.com", "code": mate("POST", "/code", {"email": "mate@example.com"})[1]["code"]})
+        mate_key = mate("POST", "/market/keys", {"note": "mate"})[1].get("key", "")
+        booked = mate("POST", "/market/book-weeks", {"fleet": "F3", "weeks": 1})[1].get("reason")
+        if invited[0] != 200 or (joined[1].get("role"), joined[1].get("company")) != ("member", "Try Co") or booked != "role" or chat(port, mate_key, {})[1].get("sparkpipe") != {"fleet": "F3"}:
+            failures.append(f"in the sandbox, an invited member does not join with its email code, make its own key and send requests, without booking: {invited} {joined} {booked}")
+        wiped = user("DELETE", "/v1/requests")
+        if wiped != (200, {"erased": 0, "through": market.stamp(server.app.market.now())}) or mate("DELETE", "/v1/requests")[0] != 403:
+            failures.append("in the sandbox, the owner cannot delete the records of its requests, or a member can")
         held = user("GET", "/market/state")[1]["account"]
     finally:
         server.shutdown()
@@ -1693,6 +1832,7 @@ def main():
         uptime_flows(failures, work)
         resident_flows(failures, work)
         failover_flows(failures, work)
+        team_flows(failures, work)
         sandbox_flows(failures, work)
     finally:
         shutil.rmtree(work)
@@ -1700,7 +1840,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Hour Fleet hours open on hoursFrom, up to 7 days ahead and 24 a Week per account across every Hour Fleet, never allocated, and pinned only as the pair of the Fleet its holder holds, within those Weeks, at that Fleet's discount, while a quarter of the serving Fleets stays open for hours; an Hour costs less by the discount for the most Weeks held on one Fleet or the Weeks a waitlist lock books, and leaving the waitlist before a Fleet repays the waitlist part; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, up when every resident model answers or a swap is under way, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, and reset; and the ledger replays")
+    print("market: HC lots lapse 12 months after issue while HC spent on bookings does not; Hour Fleet hours open on hoursFrom, up to 7 days ahead and 24 a Week per account across every Hour Fleet, never allocated, and pinned only as the pair of the Fleet its holder holds, within those Weeks, at that Fleet's discount, while a quarter of the serving Fleets stays open for hours; an Hour costs less by the discount for the most Weeks held on one Fleet or the Weeks a waitlist lock books, and leaving the waitlist before a Fleet repays the waitlist part; free-Fleet Hours only to the end of the current Week and never on a pinned Fleet; Weeks from the next Monday 00:00 KST, priced with discounts at 4, 13, 26 and 52 Weeks counting the current Week, extended only contiguously and at most 52 Weeks ahead; nobody else books a pinned Fleet before its holder's Sunday 00:00 deadline; the Sunday round allocates free Fleets to the waitlist by largest lock then earliest join, booking as many Weeks as each lock pays for and unlocking the rest, and leaves a Fleet bookable by its holder or anyone when nobody is allocated; customers see only their own position; locked HC that lapses is unlocked and recorded as a refund due; the gateway passes every path of the Fleet API through to the hub only for a holder, with its own X-SparkPipe-Account, X-SparkPipe-Fleet, key, scopes and swap headers and no customer copies, by Bearer, X-Api-Key or Basic for git, with 32 MiB and chunked bodies, streams, the WebSocket of /v1/responses (closed when the hold ends) and the hub's answers unchanged, and refuses paths outside the API; keys with scopes, a fleet, allow_swap, an expiry, an IP allowlist, a default priority and rotation that keeps the old key for an hour; usage records from the hub kept a year, listed by GET /v1/requests without prompts and summed into stats; CLI bearer sessions that book, join the waitlist, sign out and end after 90 days; auto-extend on from the first booked or granted Week with one Week ahead, off with one call, keeping a Fleet for a holder who does nothing, across a year with an early warning on a short balance and a stop notice delivered like the others; booking.deadline 72, 48, 6 and 2 hours before the Sunday deadline; every event of §13 delivered signed, with retries and Slack text, and the default email notices; the pair-loss credit of 24 hours once per event with working_state.lost; each Fleet's hub probed through its own upstream, up when every resident model answers or a swap is under way, down from its last good probe until its next one, with the service's own gaps across a restart counted as down; every booked hour a period over 15 minutes touches credited once at the Fleet's Rate, as soon as it passes 15 minutes, daily and at its end, never with maintenance hours, with downtime.credited by email and our own email; the public status page with uptime and periods, without accounts; a held Fleet that is down, by its probes or a refused connection, served on the first free Fleet as that Fleet with X-SparkPipe-Failover-From, listed in its holder schedule, given up to a booking, and back on the held Fleet once it serves, with fleet.failover and the downtime credit kept; the holder feed lists Week and Hour holders without maintenance hours; maintenance credits booked hours; availability.txt; the public count of waitlist locks; an operator email for each lock created or increased that never fails the lock; the gateway refuses sparkpipe fields other than fleet; teams: members invited by email with the admin or member role who join with their own email code, keys that belong to a member, members who cannot book, pay or join the waitlist and reach only inference and Functions, admins who manage keys and webhooks but not members, usage records and an audit log per member with the hub's own events, role changes, removal that revokes keys and sessions, and invitations that lapse after 7 days or when cancelled; the records of an account's requests deleted on its owner's request or the operator's command, never taken in again for the time before (DPA 9.3); the sandbox clock, instant HC, simulated replies, a Fleet taken down and its credit, a team member, and reset; and the ledger replays")
     return 0
 
 
