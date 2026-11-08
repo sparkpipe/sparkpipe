@@ -13,7 +13,9 @@ token and is scored against the tokens the target committed. Arms:
                  starts at the reply's first token and each next one at the
                  last token the round committed (accepted drafts + 1), the
                  greedy drafts deciding on a greedy stream and the keyed ones
-                 on a sampled stream, so tokens per round is the decode's.
+                 on a sampled stream, so tokens per round is the decode's
+                 (pooled over rounds, and the mean of each request's, the
+                 per-request figure drafter vendors publish).
 The target head on norm(final) must reproduce the committed next token
 (check printed as final_head_agreement).
 """
@@ -165,6 +167,7 @@ class BlockDrafter:
         self.target_norm = target.load(names["norm"], device)
         self.inv, self.attention = yarn_frequencies(c, device)
         self.window = None
+        self.logits_of = (None, None)
 
     def context(self, taps, positions, chunk=4096):
         keys, values = [[] for _ in self.layers], [[] for _ in self.layers]
@@ -326,7 +329,9 @@ class BlockDrafter:
         return tokens.tolist(), (scores.tolist() if scores is not None else [])
 
     def slot_logits(self, y, slot, previous):
-        logits = (y[slot] @ self.head.t()).float()
+        if self.logits_of[0] is not y:
+            self.logits_of = (y, (y @ self.head.t()).float())
+        logits = self.logits_of[1][slot]
         if self.markov_w1 is not None:
             logits = logits + self.markov_w2.float() @ self.markov_w1[int(previous)].float()
         return logits
@@ -549,6 +554,7 @@ def main():
             step = len(anchors) / args.max_anchors
             anchors = [anchors[int(i * step)] for i in range(args.max_anchors)]
         lengths = []
+        coupled_lengths = []
         spread = None if args.replay else iter(anchors)
         anchor = first
         while True:
@@ -584,6 +590,7 @@ def main():
                         break
                     coupled += 1
                 coupled_accepted += coupled
+                coupled_lengths.append(coupled)
             if anchor_log:
                 anchor_log.write(json.dumps({"request": key[1], "position": start + anchor, "reply": anchor >= first, "accepted": accepted, "coupled_accepted": coupled,
                                              "drafts": drafts, "confidence": [round(c, 4) for c in confidence]}) + "\n")
@@ -593,12 +600,16 @@ def main():
         totals["accepted"] += sum(lengths)
         report["requests"].append({"request_id": key[1], "positions": len(records), "recorded_from": recorded_from, "context_from": start, "reply": len(records) - first, "anchors": len(lengths),
                                    "tokens_per_round": 1 + sum(lengths) / max(1, len(lengths)),
+                                   "coupled_tokens_per_round": 1 + sum(coupled_lengths) / max(1, len(coupled_lengths)) if rule is not None else None,
                                    "histogram": np.bincount(lengths, minlength=len(slots) + 1).tolist(), "final_head_agreement": agree / max(1, len(records) - own - 1),
                                    "reply_head_agreement": reply_hits / max(1, reply_count)})
         print(f"request {key[1]} positions {len(records)} recorded_from {recorded_from} context_from {start} reply {reply_count} anchors {len(lengths)}"
               f" tokens/round {1 + sum(lengths) / max(1, len(lengths)):.2f} head {agree / max(1, len(records) - own - 1):.4f} reply-head {reply_hits / max(1, reply_count):.4f}", flush=True)
     report["tokens_per_round"] = 1 + totals["accepted"] / max(1, totals["anchors"])
     report["coupled_tokens_per_round"] = 1 + coupled_accepted / max(1, totals["anchors"]) if rule is not None else None
+    scored = [entry for entry in report["requests"] if entry["anchors"]]
+    report["request_mean_tokens_per_round"] = sum(entry["tokens_per_round"] for entry in scored) / max(1, len(scored))
+    report["request_mean_coupled_tokens_per_round"] = sum(entry["coupled_tokens_per_round"] for entry in scored) / max(1, len(scored)) if rule is not None else None
     report["slot_conditional"] = [hits / tries if tries else None for hits, tries in zip(slot_hits, slot_tries)]
     report["final_head_agreement"] = head_agree / max(1, head_total)
     report["reply_head_agreement"] = reply_agree / max(1, reply_total)
@@ -606,7 +617,8 @@ def main():
         anchor_log.close()
     report["confidence_bins"] = {str(b): {"n": v[0], "accepted": v[1] / v[0] if v[0] else None} for b, v in sorted(calibration.items())}
     Path(args.out).write_text(json.dumps(report, indent=1))
-    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "coupled_tokens_per_round", "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
+    print(json.dumps({k: report[k] for k in ("arm", "tokens_per_round", "coupled_tokens_per_round", "request_mean_tokens_per_round", "request_mean_coupled_tokens_per_round",
+                                             "slot_conditional", "final_head_agreement", "reply_head_agreement")}))
 
 
 if __name__ == "__main__":

@@ -38,9 +38,11 @@ GUMBEL_DRAWS = 64
 
 def nucleus(logits, inverse_temperature, top_p, top_k=0):
     scaled = logits * inverse_temperature
-    if top_k > 0:
-        cut = torch.topk(scaled, min(top_k, scaled.shape[-1])).values[-1]
-        scaled = torch.where(scaled >= cut, scaled, torch.full_like(scaled, float("-inf")))
+    if 0 < top_k < scaled.shape[-1]:
+        values, order = torch.topk(scaled, top_k)
+        kept = torch.zeros_like(scaled)
+        kept[order] = nucleus(values, 1.0, top_p)
+        return kept
     probabilities = torch.softmax(scaled, -1)
     if top_p >= 1.0:
         return probabilities
@@ -182,6 +184,7 @@ def main():
                         previous = truth
                 kept[anchor] = rates
             return kept[anchor]
+        rounds = committed = 0
         for trial in range(args.replay):
             chance = random.Random(f"{args.replay_seed}:{key[1]}:{trial}")
             anchor = reply[0]
@@ -194,17 +197,24 @@ def main():
                         break
                     replayed["kept"][slot] += 1
                     accepted += 1
-                replayed["rounds"] += 1
-                replayed["committed"] += min(accepted + 1, len(records) - 1 - anchor)
+                rounds += 1
+                committed += min(accepted + 1, len(records) - 1 - anchor)
                 anchor += accepted + 1
-        report["requests"].append({"request": key[1], "positions": len(records), "reply": len(reply), "anchors": len(anchors), "replay_drafts": len(kept)})
+        replayed["rounds"] += rounds
+        replayed["committed"] += committed
+        request_report = {"request": key[1], "positions": len(records), "reply": len(reply), "anchors": len(anchors)}
+        if args.replay:
+            request_report.update(replay_drafts=len(kept), replay_rounds=rounds, replay_tokens_per_round=committed / max(1, rounds))
+        report["requests"].append(request_report)
         print(f"request {key[1]} positions {len(records)} reply {len(reply)} " + " ".join(f"{name}={chain.tokens / max(chain.anchors, 1):.2f}" for name, chain in arms.items()) +
-              (f" replay={replayed['committed'] / max(1, replayed['rounds']):.2f}" if args.replay else ""), flush=True)
+              (f" replay={committed / max(1, rounds):.2f}" if args.replay else ""), flush=True)
     for name, chain in arms.items():
         report[name] = chain.summary()
         print(name, json.dumps(report[name]), flush=True)
     if args.replay:
+        per_request = [r["replay_tokens_per_round"] for r in report["requests"] if r.get("replay_rounds")]
         report["rejection replay"] = {"tokens_per_round": round(replayed["committed"] / max(1, replayed["rounds"]), 3), "rounds": replayed["rounds"],
+                                      "request_mean_tokens_per_round": round(sum(per_request) / max(1, len(per_request)), 3),
                                       "slot_kept": [round(k / o, 3) if o else None for k, o in zip(replayed["kept"], replayed["offered"])]}
         print("rejection replay", json.dumps(report["rejection replay"]), flush=True)
     Path(args.out).write_text(json.dumps(report, indent=1))

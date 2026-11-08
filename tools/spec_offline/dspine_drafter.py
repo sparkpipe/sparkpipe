@@ -341,7 +341,7 @@ class DSpineDrafter:
 
     def slot_logits(self, y, slot, previous):
         stash = self.stash
-        candidates = self.candidates((y @ self.head.t()).float())
+        candidates = stash["candidates"] if "candidates" in stash else self.candidates((y @ self.head.t()).float())
         row = slice(slot + 1, slot + 2)
         sender_weight, value_weight, gate_bias, write, norm = self.exact
         codes = self.exact_codes(torch.tensor([[int(previous)]], device=self.device))

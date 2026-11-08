@@ -101,6 +101,7 @@ class SelectorBlockDrafter:
         self.target_norm = target.load(names["norm"], device)
         self.inv, self.attention = yarn_frequencies(c, device)
         self.finish = None
+        self.logits_of = (None, None)
 
     def context(self, taps, positions, chunk=4096):
         keys, values = [[] for _ in self.layers], [[] for _ in self.layers]
@@ -164,8 +165,10 @@ class SelectorBlockDrafter:
         return self.select(*self.lattice(y[1:], previous), sampling, position, sampled)
 
     def slot_logits(self, y, slot, previous):
+        if self.logits_of[0] is not y:
+            self.logits_of = (y, (y @ self.head.t()).float())
         row = y[slot + 1]
-        unary, candidates = torch.topk((row @ self.head.t()).float(), self.top_k)
+        unary, candidates = torch.topk(self.logits_of[1][slot + 1], self.top_k)
         gate = self.predecessors[int(previous)].float() * (row @ self.selector_hidden.t()).float()
         full = torch.full((self.head.shape[0],), float("-inf"), device=self.device)
         full[candidates] = unary + self.successors[candidates].float() @ gate
