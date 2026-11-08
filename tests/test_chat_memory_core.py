@@ -197,6 +197,16 @@ shown = crowded.count("\n[e")
 assert crowded.startswith("120 match(es)") and f"showing {shown}" in crowded and 0 < shown <= cm.SEARCH_LIMIT and len(crowded) <= cm.SEARCH_OUTPUT_CHARS + 40, (shown, len(crowded))
 grouped_hit = cm.search_text(exchanges, lines, grouped, "thirty-two", "phrase", 8000)
 assert "[g3: e1-e32] thirty-two in all" in grouped_hit, grouped_hit
+assert crowded.split("\n")[1].startswith("[e3 "), "the newest match comes first among equals"
+assert cm.find_spans("coffee often of", "of", "any") == [(7, 9), (13, 15)], "with all and any, a word matches at the start of a word"
+updated = ([[{"role": "user", "content": "I cut back to one cup of coffee."}, {"role": "assistant", "content": "Good."}]]
+           + [[{"role": "user", "content": f"Tell me about item {i} of the list."}, {"role": "assistant", "content": "Sure."}] for i in range(30)]
+           + [[{"role": "user", "content": "I raised my morning coffee limit to two cups."}, {"role": "assistant", "content": "Noted."}]])
+ranked = cm.search_text(updated, {}, [], "cups of coffee", "any", 8000).split("\n")
+assert ranked[1].startswith("[e32 part 1]") and ranked[2].startswith("[e1 part 1]"), "exchanges holding more of the query's rarer words come first"
+assert "replacing Tuesdays in e12" in cm.curator_instruction([], {}, [0], [], {}, 100, 48) and "keep the newest as current" in instruction, \
+    "a line that changes an earlier value states the new one as current and names the line it replaces; a group keeps only the newest as current"
+assert "a later line's value replaces an earlier one's" in cm.SYSTEM_NOTE and "To count, add up or combine" in cm.SYSTEM_NOTE, "the ledger note says a later value wins and sends counting questions to search first"
 
 page_text = "".join(f"Paragraph {i}: the cache gained {i * 3} percent after fix #{1000 + i}.\n" for i in range(400))
 spans = cm.section_spans(page_text)

@@ -376,12 +376,12 @@ async def run():
         tight = Model()
         tight.id = "tight-model"
         tight.context_tokens = 32768
-        tight.memory = dict(tight.memory, prompt_tokens=700)
+        tight.memory = dict(tight.memory, prompt_tokens=760)
         long_messages = conversation(40)
         long_messages[3] = dict(long_messages[3], content="a long reply " * 200)
         fitted = memory.session(tight, headers("t40", None, "y40", chat="chat-fit"), long_messages, [], {})
         fit_state = memory.store.load("user-1", "chat-fit")
-        assert memory.prompt_size(tight, fitted.layout, []) <= 700 and fitted.layout["lined"] == 38, fitted.layout["lined"]
+        assert memory.prompt_size(tight, fitted.layout, []) <= 760 and fitted.layout["lined"] == 38, fitted.layout["lined"]
         assert all(source == "fit" for source in fit_state["sources"].values()) and len(fit_state["lines"]) == 38
         assert fit_state["groups"] and all(g["source"] == "fit" for g in fit_state["groups"].values()) and len(fitted.layout["nodes"]) < 38
         assert fit_state["layouts"]["t40"]["groups"] == fitted.layout["groups"]

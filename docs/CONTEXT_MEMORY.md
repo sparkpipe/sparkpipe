@@ -51,6 +51,25 @@ What is built (`tools/serving/chat_memory.py`):
   the old budget (160 plus 80 per line) cut 340 of the 419 renders that also
   committed. A cut reply was rendered again, and a second cut fell back, so
   about one line in eight was only the first words of its exchange.
+- **Updated facts win.** A line keeps every name, number, count, date,
+  title, code and decision of its exchange, also those mentioned in passing.
+  When the exchange changes something an earlier line states, its line gives
+  the new value as current and names the line it replaces. A group line keeps
+  the newest value as current and an older one only as replaced, and a final
+  line written at a commit says when a later exchange replaced one of its
+  values. The ledger note says the lines run oldest first and that a later
+  value is the current one.
+- **Search.** With `match` all or any, a query word matches at the start of a
+  word, so "of" no longer matches inside "coffee". Exchanges holding more of
+  the query's rarer words come first: each word weighs
+  log(1 + exchanges / exchanges holding it). The newest come first among
+  equals. The ledger note sends a question that counts, adds up or combines
+  things from more than one exchange, or asks for a latest value, to
+  `search_history` first. In the LongMemEval_S bench, "cups of coffee" with
+  match any had listed nearly every exchange oldest first, so the exchange
+  that raised a coffee limit never showed and the answer took the older limit.
+  Another answer counted 9 rollercoaster rides of 10 from the ledger without
+  searching, though every ride had its line.
 
 ## Goal
 
