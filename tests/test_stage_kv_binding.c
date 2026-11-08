@@ -1556,8 +1556,9 @@ static void TestRecurrentChainedWaveContinues(void)
 		static atomic_uint states[TEST_LANES];
 		uint8_t bound_out = 0u;
 		uint64_t sequence_out = 0u,next_out = 0u,row_position = 5u;
+		atomic_store_explicit(&states[second.slot],1u,memory_order_release);
 		assert(SparkStageKvBindingContinuity(&BINDING,states,1u,1u,&second.slot,&second.sequence,&row_position,&bound_out,&sequence_out,&next_out) == SPARK_STATUS_OK);
-		assert(bound_out == 1u && sequence_out == 2u && next_out == 5u);
+		assert(bound_out == 1u && sequence_out == 2u && next_out == 6u);
 	}
 	assert(StepClaim(&second) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&second.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.from_buffer == 1u);
