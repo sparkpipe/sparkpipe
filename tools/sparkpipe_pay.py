@@ -106,6 +106,7 @@ TUNNEL_CHECK = 30
 GUARD_STEP = 1
 WEBHOOK_SECONDS = 20
 WEBHOOK_WORKERS = 4
+LISTEN_QUEUE = 1024
 CHUNK = re.compile(rb"[0-9A-Fa-f]{1,8}")
 WEBHOOK_SCHEMES = ("https",)
 WEBHOOKS_PER_ACCOUNT = 10
@@ -2880,6 +2881,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": note})
 
 
+class Server(http.server.ThreadingHTTPServer):
+    request_queue_size = LISTEN_QUEUE
+    daemon_threads = True
+
+
 def start(cfg, port=None):
     os.makedirs(cfg.data, exist_ok=True)
     app = App(cfg, Book(cfg.path("ledger.jsonl")))
@@ -2896,8 +2902,7 @@ def start(cfg, port=None):
     app.notices.prune(app.market.now())
     app.notifier.deliveries.prune(clock())
     app.notifier.sweep(app.market.now())
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port if port is None else port), Handler)
-    server.daemon_threads = True
+    server = Server(("127.0.0.1", cfg.port if port is None else port), Handler)
     server.app = app
     return server
 

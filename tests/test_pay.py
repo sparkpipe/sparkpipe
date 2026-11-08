@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import socketserver
 import sys
 import tempfile
@@ -380,6 +381,48 @@ def started(cfg):
 
 def mode(path):
     return os.stat(path).st_mode & 0o777
+
+
+def check_listen_queue(failures):
+    burst = 64
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-queue-"))
+    sockets, server, serving = [], None, False
+    try:
+        site_copy(work)
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
+        with contextlib.redirect_stderr(io.StringIO()):
+            server = sp.start(cfg, port=0)
+        for _ in range(burst):
+            sock = socket.socket()
+            sock.settimeout(2)
+            try:
+                sock.connect(server.server_address)
+            except OSError:
+                sock.close()
+                break
+            sockets.append(sock)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving = True
+        answered = 0
+        for sock in sockets:
+            try:
+                sock.sendall(b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                reply = b""
+                while chunk := sock.recv(4096):
+                    reply += chunk
+                answered += reply.split(b"\r\n", 1)[0].split(b" ")[1:2] == [b"200"]
+            except OSError:
+                pass
+        if len(sockets) < burst or answered < burst:
+            failures.append(f"a burst of {burst} connections that arrives while the service is busy is not queued and answered: {len(sockets)} queued, {answered} answered")
+    finally:
+        for sock in sockets:
+            sock.close()
+        if serving:
+            server.shutdown()
+        if server is not None:
+            server.server_close()
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def check_torn_files(failures):
@@ -1107,6 +1150,7 @@ def main():
     check_units(failures)
     check_gateway_units(failures)
     check_torn_files(failures)
+    check_listen_queue(failures)
     check_legacy(failures)
     check_service(failures)
     check_toss(failures)
@@ -1115,7 +1159,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
+    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 
