@@ -9,7 +9,7 @@
 #define LM_LATENT_SHARD_QUERIES 32u
 #define LM_LATENT_SHARD_ROW_PAD 16u
 #define LM_LATENT_SHARD_PLANS 4u
-#define LM_LATENT_SHARD_PLAN_WORDS (LM_LATENT_SHARD_QUERIES + 8u)
+#define LM_LATENT_SHARD_PLAN_WORDS (8u + 2u * LM_LATENT_SHARD_QUERIES)
 #define LM_LATENT_SHARD_PREFILL_THREADS ((LM_PREFILL_ATTN_WARPS + 2u) * 32u)
 
 typedef struct LmLatentShardSelection
@@ -47,11 +47,20 @@ static __host__ __device__ constexpr uint32_t LmLatentShardPrefillSharedBytes(vo
 		+ LM_LATENT_SHARD_PLANS * LM_LATENT_SHARD_PLAN_WORDS * 4u);
 }
 
+#define LM_LATENT_SHARD_DEVICES 64u
+
 static inline uint32_t LmLatentShardPrefillMultiprocessors(void)
 {
+	static uint32_t known[LM_LATENT_SHARD_DEVICES];
 	int device = 0, count = 0;
-	if (cudaGetDevice(&device) != cudaSuccess || cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || count < 1)
+	if (cudaGetDevice(&device) != cudaSuccess || device < 0)
 		return 1u;
+	if ((uint32_t)device < LM_LATENT_SHARD_DEVICES && known[device] != 0u)
+		return known[device];
+	if (cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || count < 1)
+		return 1u;
+	if ((uint32_t)device < LM_LATENT_SHARD_DEVICES)
+		known[device] = (uint32_t)count;
 	return (uint32_t)count;
 }
 
@@ -76,9 +85,9 @@ static __device__ __forceinline__ void LmLatentShardSlotPrefetch(const LmKvShard
 {
 }
 
-static __device__ __forceinline__ void LmLatentShardConsumerBarrier(void)
+static __device__ __forceinline__ void LmLatentShardGroupBarrier(uint32_t name)
 {
-	asm volatile("bar.sync 1, %0;\n" :: "n"(LM_PREFILL_ATTN_THREADS) : "memory");
+	asm volatile("bar.sync %0, %1;\n" :: "r"(name), "n"(LM_PREFILL_ATTN_THREADS / 2u) : "memory");
 }
 
 static __device__ __forceinline__ uint32_t LmLatentShardCompactWarp(
@@ -115,6 +124,47 @@ static __device__ __forceinline__ uint32_t LmLatentShardCompactWarp(
 	return count;
 }
 
+template<uint32_t THREADS>
+static __device__ __forceinline__ uint32_t LmLatentShardCompactBlock(
+	SparkKvShard shard,
+	const uint32_t *__restrict__ selected,
+	uint32_t selected_count,
+	uint32_t bound,
+	uint32_t *list,
+	uint32_t *tally)
+{
+	constexpr uint32_t WARPS = THREADS / 32u;
+	constexpr uint32_t ROUNDS = (LM_LATENT_SHARD_LIST_CAPACITY + THREADS - 1u) / THREADS;
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, below = (1u << lane) - 1u;
+	uint32_t value[ROUNDS], round, count = 0u, keep, mask, before, total, other;
+#pragma unroll
+	for (round = 0u; round < ROUNDS; round++)
+		value[round] = round * THREADS + threadIdx.x < selected_count ? selected[round * THREADS + threadIdx.x] : 0xffffffffu;
+#pragma unroll
+	for (round = 0u; round < ROUNDS; round++)
+	{
+		if (round * THREADS >= selected_count)
+			break;
+		keep = round * THREADS + threadIdx.x < selected_count && value[round] <= bound && SparkKvShardOwns(shard, value[round]) != 0u ? 1u : 0u;
+		mask = __ballot_sync(0xffffffffu, keep != 0u);
+		if (lane == 0u)
+			tally[(round & 1u) * WARPS + warp] = (uint32_t)__popc(mask);
+		__syncthreads();
+		before = 0u;
+		total = 0u;
+#pragma unroll
+		for (other = 0u; other < WARPS; other++)
+		{
+			before += other < warp ? tally[(round & 1u) * WARPS + other] : 0u;
+			total += tally[(round & 1u) * WARPS + other];
+		}
+		if (keep != 0u)
+			list[count + before + (uint32_t)__popc(mask & below)] = value[round];
+		count += total;
+	}
+	return count;
+}
+
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE, uint32_t ROWS>
 __global__ __launch_bounds__(LM_LATENT_SHARD_PREFILL_THREADS, 1)
 void LmLatentShardPrefillKernel(
@@ -141,7 +191,8 @@ void LmLatentShardPrefillKernel(
 	constexpr uint32_t TILE = LM_PREFILL_ATTN_TILE;
 	constexpr uint32_t K_STEPS = DIM / 16u;
 	constexpr uint32_t HALF_STEPS = K_STEPS / 2u;
-	constexpr uint32_t WARP_COLUMNS = LATENT / LM_PREFILL_ATTN_WARPS;
+	constexpr uint32_t GROUP_WARPS = LM_PREFILL_ATTN_WARPS / 2u;
+	constexpr uint32_t WARP_COLUMNS = LATENT / GROUP_WARPS;
 	constexpr uint32_t COLUMN_FRAGS = WARP_COLUMNS / 8u;
 	constexpr uint32_t TILE_CHUNKS = TILE * CHUNKS;
 	constexpr uint32_t BLOCK_HEADS = QUERIES / ROWS;
@@ -150,13 +201,13 @@ void LmLatentShardPrefillKernel(
 	constexpr uint32_t PLANNER = LM_PREFILL_ATTN_WARPS, ISSUER = LM_PREFILL_ATTN_WARPS + 1u;
 	constexpr uint32_t PLANS = LM_LATENT_SHARD_PLANS;
 	constexpr uint32_t PLAN_WORDS = LM_LATENT_SHARD_PLAN_WORDS;
-	constexpr uint32_t PLAN_HEAD = PLAN_WORDS - QUERIES;
+	constexpr uint32_t PLAN_HEAD = 8u, PLAN_LIST = PLAN_HEAD + QUERIES;
 	static_assert(ROWS >= 1u && QUERIES % ROWS == 0u && ROWS <= 32u, "a block holds whole heads of each of its rows, one row per producer lane");
 	static_assert(QUERIES == 32u && LM_PREFILL_ATTN_WARPS == 8u && TILE == 32u, "two 16-query tiles, a k-half and an 8-key pair per warp, one key per lane");
 	static_assert(QUERY_KEYS == 4u && QUERY_THREADS == 8u, "eight threads hold a query's keys k, k+8, k+16 and k+24");
-	static_assert(PLAN_HEAD == 8u, "a plan holds eight row words and one key count per query");
+	static_assert(PLAN_LIST + TILE == PLAN_WORDS, "a plan holds eight row words, one key count per query and the first tile's listed positions");
 	static_assert(DIM % 64u == 0u && K_STEPS % 2u == 0u, "the query-key width must split into two halves of 16-wide steps");
-	static_assert(LATENT % (LM_PREFILL_ATTN_WARPS * 16u) == 0u, "each warp owns whole 16-column value slices");
+	static_assert(LATENT % (GROUP_WARPS * 16u) == 0u, "each warp of a query group owns whole 16-column value slices");
 	static_assert(Geometry::kSlotBytes >= ROW_BYTES, "the slot holds the latent and its rope part");
 	static_assert(PITCH % 128u == 16u, "a padded row starts four banks after the row before it");
 	static_assert(LmLatentShardPrefillSharedBytes<DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
@@ -180,8 +231,9 @@ void LmLatentShardPrefillKernel(
 	const uint32_t group = blockIdx.y;
 	const uint32_t blocks = (rows + ROWS - 1u) / ROWS;
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
-	const uint32_t qk_tile = warp >> 2u, qk_half = (warp >> 1u) & 1u, qk_pair = warp & 1u;
-	uint32_t block, index, step, frag, q, head, query_row, m, shift, copy_index, used, ordinal;
+	const uint32_t qk_tile = warp >> 2u, qk_half = (warp >> 1u) & 1u, qk_pair = warp & 1u, column_warp = warp % GROUP_WARPS;
+	const uint32_t consumers = selection.padded_heads != 0u && selection.padded_heads <= 16u ? GROUP_WARPS : LM_PREFILL_ATTN_WARPS;
+	uint32_t block, index, step, frag, q, head, query_row, m, shift, copy_index, used, ordinal, first_compacted = 0u;
 	uint64_t base;
 
 	partials += (uint64_t)blockIdx.z * split_stride;
@@ -189,15 +241,28 @@ void LmLatentShardPrefillKernel(
 	{
 		LmMbarrierInit(&full[0], 1u);
 		LmMbarrierInit(&full[1], 1u);
-		LmMbarrierInit(&empty[0], LM_PREFILL_ATTN_WARPS);
-		LmMbarrierInit(&empty[1], LM_PREFILL_ATTN_WARPS);
+		LmMbarrierInit(&empty[0], consumers);
+		LmMbarrierInit(&empty[1], consumers);
 		for (index = 0u; index < PLANS; index++)
 		{
 			LmMbarrierInit(&planned[index], 1u);
-			LmMbarrierInit(&read[index], LM_PREFILL_ATTN_WARPS + 1u);
+			LmMbarrierInit(&read[index], consumers + 1u);
 		}
 		LmMbarrierInit(listed_free, 1u);
 		LmMbarrierInitFence();
+	}
+	if (ROWS == 1u && selection.selected_positions != 0 && selection.split_positions == 0 && blockIdx.x < blocks &&
+		LmKvViewIsConfigured(cache.pages) && sequence_of_row[blockIdx.x] < cache.pages.sequence_count)
+	{
+		const uint32_t first_position = row_position[blockIdx.x];
+		uint32_t first_dense = context_length[sequence_of_row[blockIdx.x]];
+		if (selection.empty_rows != 0u && first_position == 0xffffffffu)
+			first_dense = 0u;
+		else if (first_position < first_dense)
+			first_dense = first_position + 1u;
+		if (first_dense > selection.dense_limit)
+			first_compacted = LmLatentShardCompactBlock<LM_LATENT_SHARD_PREFILL_THREADS>(cache.shard, selection.selected_positions + (uint64_t)blockIdx.x * selection.selected_count,
+				selection.selected_count, first_position, list_shared, list_shared + selection.selected_count);
 	}
 	__syncthreads();
 	if (warp == PLANNER)
@@ -208,7 +273,7 @@ void LmLatentShardPrefillKernel(
 			const uint32_t record = ordinal % PLANS, row = block * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
 			const uint32_t mine = row + (lane < ROWS && row + lane <= last_row ? lane : 0u);
 			const uint32_t lane_sequence = sequence_of_row[mine], lane_position = row_position[mine];
-			uint32_t sequence, valid, listed, count, list_first = 0u, limit, window_begin, tiles, tile_low, span, tile_first, tile_end, lane_dense, lane_keys, own_keys;
+			uint32_t sequence, valid, listed, count, list_first = 0u, first_listed = 0u, limit, window_begin, tiles, tile_low, span, tile_first, tile_end, lane_dense, lane_keys, own_keys;
 			sequence = __shfl_sync(0xffffffffu, lane_sequence, 0u);
 			if (__ballot_sync(0xffffffffu, lane_sequence != sequence) != 0u)
 				sequence = cache.pages.sequence_count;
@@ -225,13 +290,14 @@ void LmLatentShardPrefillKernel(
 				const uint32_t *offsets = selection.split_offsets + (uint64_t)row * (cache.shard.degree + 1u) + cache.shard.rank;
 				list_first = offsets[0];
 				count = offsets[1] - list_first;
+				first_listed = lane < count ? selection.split_positions[(uint64_t)row * selection.selected_count + list_first + lane] : 0u;
 			}
 			else if (listed != 0u)
 			{
 				if (compactions > 0u)
 					LmMbarrierWait(listed_free, (compactions - 1u) & 1u);
-				count = LmLatentShardCompactWarp(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count, selection.selected_count,
-					__shfl_sync(0xffffffffu, lane_position, 0u), list_shared);
+				count = ordinal == 0u ? first_compacted : LmLatentShardCompactWarp(cache.shard, selection.selected_positions + (uint64_t)row * selection.selected_count,
+					selection.selected_count, __shfl_sync(0xffffffffu, lane_position, 0u), list_shared);
 				compactions++;
 			}
 			lane_keys = lane < ROWS && row + lane <= last_row ? SparkKvShardLocalKeys(cache.shard, lane_dense) : 0u;
@@ -263,6 +329,7 @@ void LmLatentShardPrefillKernel(
 			if (ordinal >= PLANS)
 				LmMbarrierWait(&read[record], ((ordinal / PLANS) - 1u) & 1u);
 			plans[record * PLAN_WORDS + PLAN_HEAD + lane] = own_keys;
+			plans[record * PLAN_WORDS + PLAN_LIST + lane] = first_listed;
 			if (lane == 0u)
 			{
 				plans[record * PLAN_WORDS] = tile_first;
@@ -282,7 +349,7 @@ void LmLatentShardPrefillKernel(
 	}
 	if (warp == ISSUER)
 	{
-		uint32_t row = 0u, sequence = 0u, listed = 0u, limit = 0u, window_begin = 0u, tile = 0u, tile_end = 0u, ahead = 0u, ahead_tile = 0xffffffffu;
+		uint32_t row = 0u, sequence = 0u, listed = 0u, limit = 0u, window_begin = 0u, tile = 0u, tile_end = 0u, ahead = 0u, ahead_tile = 0xffffffffu, zeroed[2] = { 0u, 0u };
 		const uint32_t *list = 0;
 		const uint8_t *slot = 0;
 		auto next = [&]() -> uint32_t
@@ -305,13 +372,22 @@ void LmLatentShardPrefillKernel(
 				sequence = plans[record * PLAN_WORDS + 7u];
 				row = block * ROWS;
 				list = listed == 0u ? 0 : selection.split_positions != 0 ? selection.split_positions + (uint64_t)row * selection.selected_count + plans[record * PLAN_WORDS + 6u] : list_shared;
-				ahead_tile = 0xffffffffu;
+				ahead_tile = listed != 0u && selection.split_positions != 0 ? first : 0xffffffffu;
+				ahead = plans[record * PLAN_WORDS + PLAN_LIST + lane];
 				__syncwarp();
 				if (lane == 0u)
 				{
 					LmMbarrierArrive(&read[record]);
 					if (listed != 0u && selection.split_positions == 0 && first >= tile_end)
 						LmMbarrierArrive(listed_free);
+				}
+				if (block + gridDim.x < blocks && (selection.padded_heads == 0u || lane < selection.padded_heads))
+				{
+					const uint32_t ahead_row = (block + gridDim.x) * ROWS, ahead_last = (ahead_row + ROWS < rows ? ahead_row + ROWS : rows) - 1u;
+					const uint32_t query_head = selection.padded_heads != 0u ? lane : group * BLOCK_HEADS + lane % BLOCK_HEADS;
+					const uint32_t query_at = ahead_row + lane / BLOCK_HEADS <= ahead_last ? ahead_row + lane / BLOCK_HEADS : ahead_last;
+					LmPrefetchL2(query_bf16 + (uint64_t)(query_head / heads_per_rank) * query_rank_stride + ((uint64_t)query_at * heads_per_rank + query_head % heads_per_rank) * DIM,
+						ROW_BYTES);
 				}
 				block += gridDim.x;
 				ordinal++;
@@ -362,18 +438,19 @@ void LmLatentShardPrefillKernel(
 			{
 				const uint32_t buffer = used & 1u, uses = used >> 1u;
 				const uint32_t present = __ballot_sync(0xffffffffu, slot != 0);
+				uint32_t clear = ~present & ~zeroed[buffer];
 				if (uses > 0u)
 					LmMbarrierWait(&empty[buffer], (uses - 1u) & 1u);
-				if (present != 0xffffffffu)
-					for (index = lane; index < TILE_CHUNKS; index += 32u)
-						if (((present >> (index / CHUNKS)) & 1u) == 0u)
-							*(uint4 *)(keys + (buffer * TILE + index / CHUNKS) * PITCH + (index % CHUNKS) * 16u) = make_uint4(0u, 0u, 0u, 0u);
+				zeroed[buffer] = ~present;
+				if (slot != 0)
+					LmTmaLoadBulk1d(keys + (buffer * TILE + lane) * PITCH, slot, &full[buffer], ROW_BYTES);
+				for (; clear != 0u; clear &= clear - 1u)
+					for (index = lane; index < CHUNKS; index += 32u)
+						*(uint4 *)(keys + (buffer * TILE + (uint32_t)(__ffs(clear) - 1)) * PITCH + index * 16u) = make_uint4(0u, 0u, 0u, 0u);
 				LmMbarrierInitFence();
 				__syncwarp();
 				if (lane == 0u)
 					LmMbarrierArriveExpect(&full[buffer], (uint32_t)__popc(present) * ROW_BYTES);
-				if (slot != 0)
-					LmTmaLoadBulk1d(keys + (buffer * TILE + lane) * PITCH, slot, &full[buffer], ROW_BYTES);
 				if (next() == 0u)
 					break;
 				slot = resolve();
@@ -381,8 +458,10 @@ void LmLatentShardPrefillKernel(
 		}
 		return;
 	}
+	if (warp >= consumers)
+		return;
 	uint32_t query_frag[HALF_STEPS][4];
-	float output[2][COLUMN_FRAGS][4];
+	float output[COLUMN_FRAGS][4];
 	auto fetch = [&](uint32_t which)
 	{
 		const uint32_t row = which * ROWS, last_row = (row + ROWS < rows ? row + ROWS : rows) - 1u;
@@ -429,16 +508,14 @@ void LmLatentShardPrefillKernel(
 				fetch(following);
 			continue;
 		}
-		if (threadIdx.x < QUERIES)
+		if (threadIdx.x % (32u * GROUP_WARPS) < 16u)
 		{
-			running_max[threadIdx.x] = -INFINITY;
-			running_sum[threadIdx.x] = 0.0f;
+			running_max[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = -INFINITY;
+			running_sum[qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS)] = 0.0f;
 		}
 #pragma unroll
-		for (m = 0u; m < 2u; m++)
-#pragma unroll
-			for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-				output[m][frag][0] = output[m][frag][1] = output[m][frag][2] = output[m][frag][3] = 0.0f;
+		for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+			output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
 		for (tile = tile_first; tile < tile_end; tile++, used++)
 		{
 			const uint32_t buffer = used & 1u;
@@ -466,7 +543,7 @@ void LmLatentShardPrefillKernel(
 			}
 			if (tile + 1u == tile_end && following < blocks)
 				fetch(following);
-			LmLatentShardConsumerBarrier();
+			LmLatentShardGroupBarrier(1u + qk_tile);
 			{
 				float value[QUERY_KEYS], weight[QUERY_KEYS], peak, previous_max, next_max, scale, total;
 #pragma unroll
@@ -501,45 +578,33 @@ void LmLatentShardPrefillKernel(
 					rescale[own] = scale;
 				}
 			}
-			LmLatentShardConsumerBarrier();
+			LmLatentShardGroupBarrier(1u + qk_tile);
 			{
-				uint32_t a_high[2][4], b[4], first[2], second[2];
+				const float low_scale = rescale[qk_tile * 16u + (lane >> 2u)], high_scale = rescale[qk_tile * 16u + (lane >> 2u) + 8u];
+				uint32_t a_high[4], b[4], first[2], second[2];
 #pragma unroll
-				for (m = 0u; m < 2u; m++)
+				for (frag = 0u; frag < COLUMN_FRAGS; frag++)
 				{
-					const float low_scale = rescale[m * 16u + (lane >> 2u)], high_scale = rescale[m * 16u + (lane >> 2u) + 8u];
-#pragma unroll
-					for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-					{
-						output[m][frag][0] *= low_scale;
-						output[m][frag][1] *= low_scale;
-						output[m][frag][2] *= high_scale;
-						output[m][frag][3] *= high_scale;
-					}
+					output[frag][0] *= low_scale;
+					output[frag][1] *= low_scale;
+					output[frag][2] *= high_scale;
+					output[frag][3] *= high_scale;
 				}
 #pragma unroll
 				for (step = 0u; step < TILE / 16u; step++)
 				{
-#pragma unroll
-					for (m = 0u; m < 2u; m++)
-					{
-						const uint32_t a_row = m * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
-						LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high[m]);
-					}
+					const uint32_t a_row = qk_tile * 16u + (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
+					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * LM_PREFILL_ATTN_WEIGHT_STRIDE + a_column), a_high);
 #pragma unroll
 					for (frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
 					{
 						const uint32_t b_row = step * 16u + (matrix & 1u) * 8u + within;
-						const uint32_t b_chunk = (warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
+						const uint32_t b_chunk = (column_warp * WARP_COLUMNS + frag * 8u) / 8u + (matrix >> 1u);
 						LmPrefillLoadX4Trans(tile_base + b_row * PITCH + b_chunk * 16u, b);
 						first[0] = b[0]; first[1] = b[1];
 						second[0] = b[2]; second[1] = b[3];
-#pragma unroll
-						for (m = 0u; m < 2u; m++)
-						{
-							LmMmaBf16(output[m][frag], a_high[m], first);
-							LmMmaBf16(output[m][frag + 1u], a_high[m], second);
-						}
+						LmMmaBf16(output[frag], a_high, first);
+						LmMmaBf16(output[frag + 1u], a_high, second);
 					}
 				}
 			}
@@ -550,35 +615,34 @@ void LmLatentShardPrefillKernel(
 		if (tile_first >= tile_end && following < blocks)
 			fetch(following);
 #pragma unroll
-		for (m = 0u; m < 2u; m++)
-#pragma unroll
-			for (index = 0u; index < 4u; index += 2u)
-			{
-				q = m * 16u + (lane >> 2u) + (index >> 1u) * 8u;
-				head = group * BLOCK_HEADS + q % BLOCK_HEADS;
-				query_row = row + q / BLOCK_HEADS;
-				if (query_row > last_row || (selection.padded_heads != 0u && q % BLOCK_HEADS >= selection.padded_heads))
-					continue;
-				for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
-				{
-					float *target = partials + ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
-						((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) + 2u + warp * WARP_COLUMNS + (lane & 3u) * 2u;
-#pragma unroll
-					for (frag = 0u; frag < COLUMN_FRAGS; frag++)
-						*(float2 *)(target + frag * 8u) = make_float2(output[m][frag][index], output[m][frag][index + 1u]);
-				}
-			}
-		if (threadIdx.x < QUERIES && row + threadIdx.x / BLOCK_HEADS <= last_row &&
-			(selection.padded_heads == 0u || threadIdx.x % BLOCK_HEADS < selection.padded_heads))
+		for (index = 0u; index < 4u; index += 2u)
 		{
-			head = group * BLOCK_HEADS + threadIdx.x % BLOCK_HEADS;
-			query_row = row + threadIdx.x / BLOCK_HEADS;
+			q = qk_tile * 16u + (lane >> 2u) + (index >> 1u) * 8u;
+			head = group * BLOCK_HEADS + q % BLOCK_HEADS;
+			query_row = row + q / BLOCK_HEADS;
+			if (query_row > last_row || (selection.padded_heads != 0u && q % BLOCK_HEADS >= selection.padded_heads))
+				continue;
+			for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
+			{
+				float *target = partials + ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
+					((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) + 2u + column_warp * WARP_COLUMNS + (lane & 3u) * 2u;
+#pragma unroll
+				for (frag = 0u; frag < COLUMN_FRAGS; frag++)
+					*(float2 *)(target + frag * 8u) = make_float2(output[frag][index], output[frag][index + 1u]);
+			}
+		}
+		q = qk_tile * 16u + threadIdx.x % (32u * GROUP_WARPS);
+		if (threadIdx.x % (32u * GROUP_WARPS) < 16u && row + q / BLOCK_HEADS <= last_row &&
+			(selection.padded_heads == 0u || q % BLOCK_HEADS < selection.padded_heads))
+		{
+			head = group * BLOCK_HEADS + q % BLOCK_HEADS;
+			query_row = row + q / BLOCK_HEADS;
 			for (copy_index = 0u; copy_index < selection.record_copies; copy_index++)
 			{
 				base = ((uint64_t)(head / selection.record_heads) * selection.record_copies + copy_index) * partial_rank_stride +
 					((uint64_t)query_row * selection.record_heads + head % selection.record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-				partials[base] = running_max[threadIdx.x];
-				partials[base + 1u] = running_sum[threadIdx.x];
+				partials[base] = running_max[q];
+				partials[base + 1u] = running_sum[q];
 			}
 		}
 	}

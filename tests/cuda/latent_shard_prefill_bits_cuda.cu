@@ -1053,6 +1053,8 @@ int main(void)
 	BitsSelected<1280u,128u,512u,0u>("512-wide",{8192u},{200u},16u,8u,4u,64u,512u,512u,8u,2u,0u,{5u});
 	BitsSelected<1280u,128u,512u,0u>("512-wide",{8192u},{200u},16u,8u,4u,64u,512u,512u,4u,1u,1u,{2u});
 	BitsSelected<1024u,64u,512u,0u>("512-wide",{12000u},{150u},16u,1u,4u,64u,2051u,2048u,4u,1u,0u,{0u,15u});
+	BitsSelected<1152u,64u,512u,64u>("576-wide",{65536u},{1u},16u,1u,6u,96u,2048u,2048u,6u,1u,0u,{0u,8u});
+	BitsSelected<1280u,128u,512u,0u>("512-wide",{8192u},{5u},16u,8u,4u,64u,512u,512u,8u,2u,0u,{3u});
 	BitsGather<1152u,64u,512u,64u>("576-wide",{4099u},{203u},0u,16u,1u,6u,0u,0u,0u,{0u,5u,15u},0u);
 	BitsGather<1152u,64u,512u,64u>("576-wide",{4099u,1500u},{203u,77u},0u,16u,1u,6u,0u,0u,0u,{3u},1u);
 	BitsGather<1152u,64u,512u,64u>("576-wide",{3000u},{100u},0u,16u,1u,6u,0u,96u,192u,{1u,14u},0u);
