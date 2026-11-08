@@ -134,6 +134,7 @@ typedef struct ApiState
 	uint64_t health_kv_capacity_max_tokens;
 	uint32_t health_failed_status;
 	uint32_t health_live_requests;
+	uint64_t last_activity_ms;
 	volatile uint32_t bringup_attempts;
 	const char *volatile bringup_phase;
 	uint64_t bringup_started_ms;
@@ -316,6 +317,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 	(void)ctx;
 	if (ev == 0)
 		return;
+	__atomic_store_n(&S.last_activity_ms,api_now_ms(),__ATOMIC_RELEASE);
 	pthread_mutex_lock(&S.queue_mutex);
 	for (r = S.queue_head; r != 0; r = r->next)
 	{
@@ -1871,10 +1873,11 @@ static void *api_connection(void *arg)
 		uint32_t eager = __atomic_load_n(&S.health_degraded_rank, __ATOMIC_ACQUIRE);
 		uint32_t degraded = connected < ranks || eager != UINT32_MAX || (failed != 0u && failed != (uint32_t)SPARK_STATUS_IO_ERROR) ? 1u : 0u;
 		(void)snprintf(b, sizeof(b),
-			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"kv_write_alert_rank\":%d,\"kv_capacity_tokens\":%llu,\"kv_capacity_max_tokens\":%llu}",
+			"{\"status\":\"%s\",\"served\":%llu,\"tokenizer\":%s,\"ranks\":%u,\"connected_ranks\":%u,\"missing_rank\":%d,\"degraded_rank\":%d,\"degraded_path\":\"%s\",\"engine_status\":\"%s\",\"live_requests\":%u,\"idle_ms\":%llu,\"kv_write_alert_rank\":%d,\"kv_capacity_tokens\":%llu,\"kv_capacity_max_tokens\":%llu}",
 			degraded != 0u ? "degraded" : "ok", (unsigned long long)S.served, HaveSidecar ? "true" : "false", ranks, connected,
 			missing != UINT32_MAX ? (int)missing : -1, eager != UINT32_MAX ? (int)eager : -1, eager != UINT32_MAX ? "eager" : "none",
 			SparkStatusToString((SparkStatus)failed), __atomic_load_n(&S.health_live_requests, __ATOMIC_ACQUIRE),
+			(unsigned long long)(api_now_ms() - __atomic_load_n(&S.last_activity_ms, __ATOMIC_ACQUIRE)),
 			write_alert != UINT32_MAX ? (int)write_alert : -1, (unsigned long long)__atomic_load_n(&S.health_kv_capacity_tokens, __ATOMIC_ACQUIRE),
 			(unsigned long long)__atomic_load_n(&S.health_kv_capacity_max_tokens, __ATOMIC_ACQUIRE));
 		send_response(fd, degraded != 0u ? 503 : 200, b);

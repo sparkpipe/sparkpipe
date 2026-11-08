@@ -30,7 +30,7 @@ def model(name, port, state):
             "api_start": "true", "api_stop": f"touch {state}/api-stopped-{name}", "health": f"http://127.0.0.1:{port}/{name}"}
 
 
-async def scenario():
+async def scenario(idle_ms=0):
     with tempfile.TemporaryDirectory() as state:
         pathlib.Path(state, "fake_ssh.py").write_text(FAKE_SSH)
         polls = []
@@ -42,7 +42,7 @@ async def scenario():
                 return web.json_response({"connected_ranks": 2 if target_up["ready"] else 0, "live_requests": 0})
             live = LIVE[len(polls)] if len(polls) < len(LIVE) else 0
             polls.append((time.monotonic(), live, pathlib.Path(state, "api-stopped-old").exists()))
-            return web.json_response({"connected_ranks": 2, "live_requests": live})
+            return web.json_response({"connected_ranks": 2, "live_requests": live, "idle_ms": idle_ms})
 
         app = web.Application()
         app.router.add_get("/{name}", health)
@@ -84,7 +84,10 @@ def main():
     quiet_polls = polls[last_busy + 1:]
     assert quiet_polls[-1][0] - quiet_polls[0][0] >= 2.0, f"the old engine was quiet for only {quiet_polls[-1][0] - quiet_polls[0][0]:.1f} s before the stop: {polls}"
     assert not any(stopped_then for _, _, stopped_then in polls), "the old engine was stopped while the drain was still polling it"
-    print("PASS test_model_swap_drain_quiet: the switch waited through a one-poll idle gap and stopped the old engine only after a full quiet window")
+    state, error, idle_polls, _, stopped = asyncio.run(scenario(60000))
+    assert state == "idle" and error is None and stopped, (state, error)
+    assert len(idle_polls) <= LIVE.index(0) + 3, f"an API idle for a minute still waited out a quiet window: {idle_polls}"
+    print("PASS test_model_swap_drain_quiet: the switch waited through a one-poll idle gap and stopped the old engine only after a full quiet window, unless the API had already been idle that long")
 
 
 main()
