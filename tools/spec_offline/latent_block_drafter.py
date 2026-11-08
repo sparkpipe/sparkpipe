@@ -14,34 +14,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from block_drafter import SafeTensors, keyed_gumbel, rms  # noqa: E402
+from drafter_contract import DrafterContractError, refuse_unsupported  # noqa: E402,F401
 
 LATENT_ATTENTION_CHUNK = 32768
-
-
-class DrafterContractError(ValueError):
-    pass
-
-
-def refuse_unsupported(config):
-    dflash = config.get("dflash_config") or {}
-    checks = (
-        (config.get("architectures") == ["DFlash2DraftModel"], "architectures must be [DFlash2DraftModel]"),
-        (str(dflash.get("attention_mode", "")).lower() == "mla", "attention_mode must be mla"),
-        (dflash.get("aux_hidden_stream", config.get("aux_hidden_stream")) in (None, "prefix"), "aux_hidden_stream must be the prefix stream"),
-        (not config.get("fc_norm", False), "fc_norm must be false"),
-        (not config.get("mla_use_output_gate", False), "mla_use_output_gate must be false"),
-        (float(dflash.get("input_embedding_scale", config.get("input_embedding_scale", 1.0))) == 1.0, "input_embedding_scale must be 1"),
-        (float(dflash.get("output_multiplier", 1.0)) == 1.0, "output_multiplier must be 1"),
-        (not dflash.get("final_logit_softcapping"), "final_logit_softcapping is unsupported"),
-        (not config.get("is_causal", False), "the block must be non-causal"),
-        (len(config.get("layer_types", [])) == config.get("num_hidden_layers"), "layer_types must name every layer"),
-        (set(config.get("layer_types", [])) <= {"sliding_attention", "full_attention"}, "layer_types must be sliding_attention or full_attention"),
-        (config["hidden_size"] % int(dflash.get("conv_group_size", 1)) == 0, "conv_group_size must divide hidden_size"),
-        (1 <= int(dflash.get("conv_kernel_size", 0)) <= int(dflash.get("block_size", 0)), "conv_kernel_size must be within the block"),
-    )
-    failed = [message for ok, message in checks if not ok]
-    if failed:
-        raise DrafterContractError("latent block drafter refuses this checkpoint: " + "; ".join(failed))
 
 
 def yarn_mscale(scale, weight):

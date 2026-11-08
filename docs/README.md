@@ -99,6 +99,8 @@ current authority.
   (fleet hub, model APIs, draft farm, drafter store).
 - [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
   drafters per model, and the PR sequence.
+- [`NIGHTLY_DRAFTER.md`](NIGHTLY_DRAFTER.md): feasibility and design of the
+  nightly repo-trained drafter, the first autopilot function.
 
 ## Operations and development
 
