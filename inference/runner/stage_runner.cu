@@ -524,11 +524,16 @@ static void StageRunnerSubmissionInit(SparkTpDeviceCollectiveSubmission *submiss
 	submission->completion_function = deferred != 0u ? 0 : StageRunnerEmbedCompletion;
 }
 
+static StageRunnerLane *StageRunnerBandLane(SparkStageRunnerState *state);
+
 static SparkStatus StageRunnerVerifyCollectives(SparkStageRunnerState *state, cudaStream_t stream)
 {
+	StageRunnerLane *band = StageRunnerBandLane(state);
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveVerifyDeferred(&state->device_collective, stream);
+	if ( status == SPARK_STATUS_OK && band != 0 )
+		status = SparkTpDeviceCollectiveVerifyDeferred(&band->collective, band->stream);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "sparkpipe_stage_runner: deferred collective rounds failed status=%d\n", (int)status);
 	return status;
@@ -1445,17 +1450,23 @@ static SparkStatus StageRunnerCheckResident(SparkStageRunnerState *state)
 static SparkStatus StageRunnerChainBegin(SparkStageRunnerState *state, uint64_t request_id)
 {
 	const uint64_t key = request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK;
+	StageRunnerLane *band = StageRunnerBandLane(state);
 	SparkStatus status = StageRunnerVerifyCollectives(state, state->stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
+	if ( status == SPARK_STATUS_OK && band != 0 )
+		status = SparkTpDeviceCollectiveChainKey(&band->collective, key);
 	return status;
 }
 
 static SparkStatus StageRunnerChainEnd(SparkStageRunnerState *state, cudaStream_t stream)
 {
+	StageRunnerLane *band = StageRunnerBandLane(state);
 	SparkStatus status = StageRunnerVerifyCollectives(state, stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveEndChain(&state->device_collective, stream);
+	if ( status == SPARK_STATUS_OK && band != 0 )
+		status = SparkTpDeviceCollectiveEndChain(&band->collective, band->stream);
 	return status;
 }
 
@@ -1874,6 +1885,12 @@ static void StageRunnerDestroyLanes(SparkStageRunnerState *state)
 	pthread_cond_destroy(&lanes->wake);
 	pthread_mutex_destroy(&lanes->lock);
 	memset(lanes, 0, sizeof(*lanes));
+}
+
+static StageRunnerLane *StageRunnerBandLane(SparkStageRunnerState *state)
+{
+	StageRunnerLane *lane = &state->lanes.lane[SPARK_STAGE_RUNNER_LANES - 1u];
+	return state->lanes.created != 0u && lane->collective_created != 0 ? lane : 0;
 }
 
 static SparkStatus StageRunnerLaneCollective(SparkStageRunnerState *state, StageRunnerLane *lane)
