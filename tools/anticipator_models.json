@@ -1,0 +1,53 @@
+{
+  "format": "sparkpipe-anticipator-models-1",
+  "models": {
+    "kimi-k3": {
+      "prefill_tokens_per_s": 460,
+      "resume_tokens": 16384,
+      "cache_bytes_per_token_node": 1900,
+      "cache_bytes_node": 500000000000,
+      "window_tokens": 1048576,
+      "sources": {
+        "prefill_tokens_per_s": "PERFORMANCE_STATUS.md, Prefill: 137.7K in 299 s (460 tok/s)",
+        "resume_tokens": "docs/FLEET_API.md 5.2 and docs/CHAT_MEMORY.md: K3 resumes on 16,384-token checkpoints",
+        "cache_bytes_per_token_node": "docs/FLEET_API.md 5.3: about 1.9 KB per token per node",
+        "cache_bytes_node": "docs/FLEET_API.md 5.3: 500 GB per node",
+        "tiktoken_pattern": "tokenization_kimi.py in the publisher's checkpoint; with its tiktoken.model"
+      },
+      "tiktoken_pattern": [
+        "[\\p{Han}]+",
+        "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+        "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+        "\\p{N}{1,3}",
+        " ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*",
+        "\\s*[\\r\\n]+",
+        "\\s+(?!\\S)",
+        "\\s+"
+      ]
+    },
+    "glm-5.3": {
+      "prefill_tokens_per_s": 895,
+      "resume_tokens": 64,
+      "cache_bytes_per_token_node": null,
+      "cache_bytes_node": 500000000000,
+      "window_tokens": 786432,
+      "sources": {
+        "prefill_tokens_per_s": "PERFORMANCE_STATUS.md, Prefill: 108,328 tokens in 121.0 s",
+        "resume_tokens": "docs/FLEET_API.md 5.2: models that resume anywhere use any 64-token block",
+        "cache_bytes_per_token_node": "not measured"
+      }
+    },
+    "glm-5.3-flash": {
+      "prefill_tokens_per_s": 1353,
+      "resume_tokens": 4096,
+      "cache_bytes_per_token_node": null,
+      "cache_bytes_node": 500000000000,
+      "window_tokens": 131072,
+      "sources": {
+        "prefill_tokens_per_s": "PERFORMANCE_STATUS.md, Prefill: 108,324 tokens in 79.8-80.4 s (1,353 tok/s)",
+        "resume_tokens": "docs/FLEET_API.md 5.2: 4,096 for GLM 5.3 Flash",
+        "cache_bytes_per_token_node": "not measured"
+      }
+    }
+  }
+}

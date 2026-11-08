@@ -439,7 +439,7 @@ static void check_short_range_reads(void)
 		free(idle);
 	}
 	read_limit = 0u;
-	SparkWeightdDirectDestroy(arena.direct);
+	SparkWeightdDirectDestroy(arena.direct[0]);
 	free(arena.staging);
 	assert(close(fd) == 0 && unlink(path) == 0);
 }

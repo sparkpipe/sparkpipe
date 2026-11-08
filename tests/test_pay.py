@@ -357,7 +357,7 @@ LEGACY = [
 
 def run_main(cfg, args, capture=True):
     saved = dict(os.environ)
-    os.environ.update({"SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
+    os.environ.update({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
                        "SPARKPIPE_PAY_SMTP": cfg.smtp, "TOSS_API": cfg.toss_api, "TOSS_CLIENT_KEY": cfg.toss_client, "TOSS_SECRET_KEY": cfg.toss_secret})
     try:
         if not capture:
@@ -393,7 +393,7 @@ def check_torn_files(failures):
         notices.write_text(whole() + '{"notice": "NTB", "acc' + whole(notice="NTC", once="third") + whole(notice="NTD", once="fourth") + '{"notice": "NTG", "once": "to')
         deliveries.write_text(f'{{"notice": "NTA", "target": "WH1", "attempts": 1, "outcome": "delivered", "at": "{today}T00:00:00Z"}}\n{{"notice": "NT')
         usage.write_text('{"request": "r1", "account": "ACX", "fleet": "F1", "at": "2027-01-05T09:00:00Z"}\nnot json\n{"request": "r2", "acc')
-        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(data), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(data), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
         logged = io.StringIO()
         with contextlib.redirect_stderr(logged):
             try:
@@ -442,7 +442,7 @@ def check_legacy(failures):
         site_copy(work)
         (work / "data").mkdir()
         (work / "data" / "ledger.jsonl").write_text(chain(LEGACY))
-        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
                          "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"})
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -474,7 +474,7 @@ def check_service(failures):
     try:
         site_copy(work)
         cfg = sp.Config({
-            "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
+            "SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
             "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
             "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
@@ -689,7 +689,7 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
 
 def toss_env(work, fake, mailbox, keys, name="data", sandbox=False):
     env = {
-        "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
+        "SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
         "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
         "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "TOSS_API": f"http://127.0.0.1:{fake.server_address[1]}",
     }
@@ -967,7 +967,7 @@ SHOWN_BANK = {"beneficiary": "Test Beneficiary Co", "bank": "Test Foreign Exchan
 
 
 def swift_env(work, mailbox, name, bank=True):
-    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
+    env = {"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
            "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"), "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"}
     return dict(env, **(BANK if bank else {}))
 
