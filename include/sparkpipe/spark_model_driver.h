@@ -289,6 +289,7 @@ typedef struct SparkModelDriverKvStoreCounters
 } SparkModelDriverKvStoreCounters;
 
 #define SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH 0x00000001u
+#define SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL 0x00000002u
 
 typedef struct SparkModelDriverRuntimeSnapshot
 {

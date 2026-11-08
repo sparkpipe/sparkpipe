@@ -248,6 +248,31 @@ static void TestRejectedCompletionFailsRouteWithItsStatus(uint32_t completion_st
 	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
 }
 
+static uint32_t TestSnapshotFlags;
+
+static SparkStatus TestFlaggedSnapshot(void *adapter_state,SparkModelServingAdapterSnapshot *snapshot)
+{
+	(void)adapter_state;
+	memset(snapshot,0,sizeof(*snapshot));
+	snapshot->degraded_flags = TestSnapshotFlags;
+	return(SPARK_STATUS_OK);
+}
+
+static void TestLaneFatalAdapterStopsTheRank(uint32_t flags,SparkStatus expected)
+{
+	TestCompletionFixture fixture;
+	TestCompletionInitialize(&fixture,SPARK_STATUS_NO_LANE);
+	TestSnapshotFlags = flags;
+	fixture.runtime.adapter_state = &fixture;
+	fixture.runtime.adapter_library.adapter_interface.snapshot = TestFlaggedSnapshot;
+	SparkModelResidentdCompletion(&fixture.runtime,&fixture.completion);
+	assert(fixture.route.state == SPARK_MODEL_RESIDENTD_ROUTE_FAILED);
+	assert(SparkModelResidentdFinalizeFailedRoute(&fixture.runtime,&fixture.route) == expected);
+	assert(fixture.route.active == 0u && fixture.runtime.client.output_count == 1u);
+	assert(atomic_load(&fixture.runtime.failed_status) == (uint32_t)expected);
+	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
+}
+
 static void TestStrayCompletionLeavesRoute(void)
 {
 	TestCompletionFixture fixture;
@@ -326,6 +351,8 @@ int main(void)
 {
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_NO_LANE,0u,SPARK_STATUS_INVALID_ARGUMENT);
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_OK,1u,SPARK_STATUS_SCHEMA_ERROR);
+	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH,SPARK_STATUS_OK);
+	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL,SPARK_STATUS_INTERNAL_ERROR);
 	TestStrayCompletionLeavesRoute();
 	TestPersistentSlotRequiresRelease();
 	TestStuckRoutesRepeatWithFifoPosition();

@@ -392,6 +392,10 @@ int main(void)
 		dispatch.row_count = 1u;
 		runner.private_state = state;
 		Expect(SparkStageRunnerCheck(&runner) == SPARK_STATUS_OK, "a lane with no failed streamed prefill checks clean");
+		{
+			SparkStageRunnerStats stats;
+			Expect(SparkStageRunnerGetStats(&runner, &stats) == SPARK_STATUS_OK && stats.lane_fatal == 0u, "a clean lane's stats do not report it fatal");
+		}
 		model_interface.streamed_prefill = FakeStreamedFails;
 		state->deferred_active = 1u;
 		state->deferred_first = 0u;
@@ -401,6 +405,11 @@ int main(void)
 		Expect(state->deferred_active == 0u, "the failed streamed prefill gives up its deferred tokens");
 		Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_INTERNAL_ERROR, "the next submit is refused at once instead of queuing behind unfinished rounds");
 		Expect(SparkStageRunnerCheck(&runner) == SPARK_STATUS_INTERNAL_ERROR, "the lane check reports the failed streamed prefill");
+		Expect(SparkStageRunnerResetSlots(&runner, &slot, 1u) == SPARK_STATUS_INTERNAL_ERROR, "a reset is refused, so the rank exits instead of serving behind unfinished rounds");
+		{
+			SparkStageRunnerStats stats;
+			Expect(SparkStageRunnerGetStats(&runner, &stats) == SPARK_STATUS_OK && stats.lane_fatal == 1u, "the runner stats report the lane fatal");
+		}
 		state->streamed_failure = SPARK_STATUS_OK;
 		model_interface.streamed_prefill = 0;
 		runner.private_state = 0;

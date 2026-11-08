@@ -2683,6 +2683,12 @@ SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t 
 	if ( runner == 0 || runner->private_state == 0 || (count != 0u && slots == 0) )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->streamed_failure != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: reset refused: a streamed prefill failed status=%d and its collective rounds may still be queued on this lane's stream; a reset cannot clear them, so the lane exits and must restart\n",
+			(int)state->streamed_failure);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( count != 0u && state->model_interface->reset_slot == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for ( uint32_t i = 0u; i < count; ++i )
@@ -2704,6 +2710,8 @@ SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner, SparkStageR
 	if ( runner == 0 || stats_out == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	*stats_out = runner->stats;
+	stats_out->lane_fatal = runner->private_state != 0 &&
+		((const SparkStageRunnerState *)runner->private_state)->streamed_failure != SPARK_STATUS_OK ? 1u : 0u;
 	return SPARK_STATUS_OK;
 }
 

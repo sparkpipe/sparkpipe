@@ -520,6 +520,28 @@ static int32_t TestK3TapStream(void)
 	return(failures);
 }
 
+static int32_t TestK3ResetAfterStreamedFailure(void)
+{
+	SparkStageServingState state;
+	SparkModelServingAdapterSnapshot snapshot;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.kv.resident_sequence_capacity = 4u;
+	failures += TestK3Check(StageServingReset(&state, 9u) != SPARK_STATUS_INTERNAL_ERROR,
+		"a lane whose streamed prefills all held is not refused a reset for one");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) == 0u,
+		"a healthy lane's snapshot does not report it lane-fatal");
+	state.streamed_failed = 1u;
+	failures += TestK3Check(StageServingReset(&state, 9u) == SPARK_STATUS_INTERNAL_ERROR,
+		"after a streamed prefill left published blocks without KV, a reset is refused, so the rank exits instead of serving them");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) != 0u,
+		"its snapshot reports the lane fatal, which residentd reads after the failed route to exit");
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Descriptor();
@@ -527,6 +549,7 @@ int main(int argc, char **argv)
 	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
 	failures += TestK3VerifyPublishRefused();
+	failures += TestK3ResetAfterStreamedFailure();
 	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )
