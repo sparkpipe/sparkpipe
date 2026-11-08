@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #ifndef SPARK_DSV41_FLASH_STAGE_TP_DEGREE
-#define SPARK_DSV41_FLASH_STAGE_TP_DEGREE 16u
+#error "SPARK_DSV41_FLASH_STAGE_TP_DEGREE must name the tensor-parallel degree this build serves: 16u for the TP16 stage, 4u for TP4 x PP4"
 #endif
 #define SPARK_DSV41_FLASH_STAGE_PP_STAGES (16u / SPARK_DSV41_FLASH_STAGE_TP_DEGREE)
 #define SPARK_DSV41_FLASH_STAGE_FULL_ROW_LAYERS 20u
