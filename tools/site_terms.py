@@ -143,14 +143,14 @@ PAGES = [
         "title": "SparkPipe Customer Agreement", "other": "agreement-ko.html",
         "desc": "Draft SparkPipe Customer Agreement for hour-credits, hours on Hour Fleets, weeks on a pinned fleet and the waitlist, published for review.",
         "lead": "This Agreement is accepted online while signed in to the account, and we record the hashes of its exact texts. The Korean text prevails (clause 12.3).",
-        "version": "Version of 7 November 2026", "notice": "booking",
+        "version": "Version of 8 November 2026", "notice": "booking",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 고객 계약", "other": "agreement.html",
         "desc": "SparkPipe 시간 크레딧, 시간 플릿의 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
         "lead": "본 계약은 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
-        "version": "2026년 11월 7일 판", "notice": "booking",
+        "version": "2026년 11월 8일 판", "notice": "booking",
     },
     {
         "src": "dpa-en.md", "out": "dpa.html", "lang": "en", "tag": "terms",
