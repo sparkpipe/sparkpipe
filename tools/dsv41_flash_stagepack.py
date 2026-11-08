@@ -4,8 +4,10 @@
 subcommands:
   headers WARM_DIR INDEX_JSON OUT_JSON
       read all safetensors shard headers, cross-check against the index weight_map
-  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA
-      validate the checkpoint against the kind map, write pack skeletons + plan.json
+  plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA [STAGES STAGE]
+      validate the checkpoint against the kind map, write pack skeletons + plan.json;
+      with STAGES > 1 the packs hold pipeline stage STAGE's layers only (the full-row layers
+      before the candidate source split evenly, the last stage runs on to the head)
   copy HEADERS_JSON PLAN_JSON OUT_DIR WARM_DIR LO HI
       copy payload contributed by source shards [LO,HI] into every rank pack
 Exit 0 = step complete; nonzero = the failure is named on stderr.
@@ -21,6 +23,7 @@ import sys
 SHARD_COUNT = 48
 SHARD_NAMING = "model-%05d-of-%05d.safetensors"
 LAYER_COUNT = 40
+FULL_ROW_LAYERS = 20
 HIDDEN = 5120
 VOCAB = 129280
 ROUTED_EXPERTS = 384
@@ -454,8 +457,15 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
     return pieces
 
 
+def stage_layers(stages: int, stage: int) -> tuple[int, int]:
+    if stages <= 0 or FULL_ROW_LAYERS % stages or not 0 <= stage < stages:
+        fail(f"{stages} pipeline stages do not split the {FULL_ROW_LAYERS} full-row layers evenly, or stage {stage} is outside them")
+    first = stage * (FULL_ROW_LAYERS // stages)
+    return first, (LAYER_COUNT - first if stage + 1 == stages else FULL_ROW_LAYERS // stages)
+
+
 def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
-             contract_hex: str, config_hex: str, recipe_hex: str):
+             contract_hex: str, config_hex: str, recipe_hex: str, stages: int = 1, stage: int = 0):
     if tp <= 0 or ROUTED_EXPERTS % tp or VOCAB % tp or 64 % tp or 4096 % tp or 32 % tp or EXPERT_WIDTH % tp or HIDDEN % tp:
         fail(f"tp {tp} does not divide the sharded dimensions")
     document, flat = load_flat(headers_json)
@@ -487,8 +497,9 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             check_shape(spec[0], flat, spec[2], spec[3])
             if spec[1]:
                 check_shape(spec[1], flat, "F8_E8M0", spec[4])
+    first_layer, layer_count = stage_layers(stages, stage)
     order = [(kind, GLOBAL_LAYER) for kind in range(KIND_COUNT) if is_global(kind)]
-    for layer in range(LAYER_COUNT):
+    for layer in range(first_layer, first_layer + layer_count):
         for kind in range(K_ATTN_NORM, KIND_COUNT):
             if kind_in_layer(kind, layer):
                 order.append((kind, layer))
@@ -527,7 +538,7 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             spine_bytes += total
     header = bytearray(HEADER_BYTES)
     struct.pack_into("<20I2Q", header, 0, MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0,
-                     len(entries), 1, 0, 0, LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB,
+                     len(entries), stages, stage, first_layer, layer_count, LAYER_COUNT, HIDDEN, VOCAB,
                      ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, 0, 0,
                      directory_offset, file_bytes)
     rev = revision.encode()
@@ -557,7 +568,8 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
         finally:
             os.close(fd)
     pieces = build_pieces(flat, tp, entries, order)
-    plan = {"tp": tp, "expert_codec": "mxfp4", "revision": revision,
+    plan = {"tp": tp, "stages": stages, "stage": stage, "first_layer": first_layer, "layer_count": layer_count,
+            "expert_codec": "mxfp4", "revision": revision,
             "contract_sha256": contract_hex, "config_sha256": config_hex,
             "recipe_sha256": recipe_hex, "directory_offset": directory_offset,
             "file_bytes": file_bytes, "tensor_count": len(entries),
@@ -581,7 +593,8 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
                    "dspark_sidecar_tensors": len(sidecar),
                    "vision_aligner_tensors": len(scope),
                    "accounting": accounting}, handle, indent=1)
-    print(f"plan ok: {len(entries)} entries/rank x {tp} ranks, file_bytes {file_bytes}, "
+    print(f"plan ok: stage {stage} of {stages} (layers {first_layer}-{first_layer + layer_count - 1}), "
+          f"{len(entries)} entries/rank x {tp} ranks, file_bytes {file_bytes}, "
           f"spine {spine_bytes}, expert {expert_bytes}, pieces {len(pieces)}; "
           f"engram excluded {sum(m['end'] - m['begin'] for m in engram.values())} B, "
           f"sidecar {len(sidecar)}, vision {len(scope)}")
@@ -655,8 +668,9 @@ def main(argv: list) -> int:
     try:
         if argv[1] == "headers" and len(argv) == 5:
             cmd_headers(argv[2], argv[3], argv[4])
-        elif argv[1] == "plan" and len(argv) == 9:
-            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8])
+        elif argv[1] == "plan" and len(argv) in (9, 11):
+            cmd_plan(argv[2], argv[3], int(argv[4]), argv[5], argv[6], argv[7], argv[8],
+                     *(int(value) for value in argv[9:11]))
         elif argv[1] == "copy" and len(argv) == 8:
             cmd_copy(argv[2], argv[3], argv[4], argv[5], int(argv[6]), int(argv[7]))
         else:

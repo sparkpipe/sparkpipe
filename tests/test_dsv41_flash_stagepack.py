@@ -24,7 +24,7 @@ import dsv41_flash_pack_verify as ver
 TINY = {"LAYER_COUNT": 4, "HIDDEN": 128, "VOCAB": 512, "ROUTED_EXPERTS": 8,
         "EXPERT_WIDTH": 32, "SHARD_COUNT": 2,
         "KV_SOURCE_LAYERS": (1,), "GATE_LAYERS": (1,),
-        "INDEX_SOURCE_LAYERS": (1, 2), "SWA_ONLY_LAYERS": (0, 3)}
+        "INDEX_SOURCE_LAYERS": (1, 2), "SWA_ONLY_LAYERS": (0, 3), "FULL_ROW_LAYERS": 2}
 TP = 4
 
 
@@ -155,11 +155,32 @@ def main() -> int:
                 handle.write(original)
         ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
                        str(out / "plan.json"), 1, conv.SHARD_COUNT)
+        layered = sum(1 for entry in plan["entries"] if not conv.is_global(entry["kind"]))
+        staged_layered = 0
+        for stage, (first, count) in enumerate(((0, 1), (1, 3))):
+            stage_out = root / f"stage{stage}"
+            conv.cmd_plan(str(root / "headers.json"), str(stage_out), TP, "selftest-revision",
+                          "aa" * 32, "bb" * 32, "cc" * 32, 2, stage)
+            staged = json.loads((stage_out / "plan.json").read_text())
+            assert (staged["stages"], staged["stage"], staged["first_layer"], staged["layer_count"]) == (2, stage, first, count), staged["first_layer"]
+            layers = {entry["layer"] for entry in staged["entries"] if not conv.is_global(entry["kind"])}
+            assert layers == set(range(first, first + count)), layers
+            assert sum(1 for entry in staged["entries"] if conv.is_global(entry["kind"])) == 3
+            staged_layered += sum(1 for entry in staged["entries"] if not conv.is_global(entry["kind"]))
+            conv.cmd_copy(str(root / "headers.json"), str(stage_out / "plan.json"), str(stage_out),
+                          str(warm), 1, conv.SHARD_COUNT)
+            ver.cmd_verify(str(root / "headers.json"), str(stage_out), str(warm),
+                           str(stage_out / "plan.json"), 1, conv.SHARD_COUNT)
+            with open(stage_out / "rank1.spstage", "rb") as handle:
+                fields = struct.unpack_from("<12I", handle.read(48))
+            assert fields[7:12] == (2, stage, first, count, conv.LAYER_COUNT), fields
+        assert staged_layered == layered, (staged_layered, layered)
         spine = plan["spine_bytes"]
         expert = plan["expert_bytes"]
         print(f"dsv41 stagepack selftest PASS: {plan['tensor_count']} entries, "
               f"tp{TP}, spine {spine} B, expert {expert} B, corruption localized in "
-              f"spine+expert, engram 12 excluded")
+              f"spine+expert, engram 12 excluded; two pipeline stages pack layers 0 and 1-3 with the global tensors, "
+              f"verify, and name their stage and layer range")
         return 0
     finally:
         shutil.rmtree(root, ignore_errors=True)

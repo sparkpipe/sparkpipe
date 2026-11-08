@@ -14,6 +14,8 @@ Partition is the reference ParallelEngramEmbedding layout: rows_per_rank =
 ceil(entries / 16), rank r owns rows [r*part, min(entries, (r+1)*part)),
 owner(id) = id // part.
 
+  [--ranks N] prefixes any subcommand to shard over N tensor-parallel ranks (default 16; a TP4 x PP4
+  prefill stage uses 4)
   selftest                     fabricate a tiny checkpoint in a temp dir, cut + verify round-trip
   cut WARM_DIR OUT_DIR [SPEC]  cut shards + .experts + engram_receipt.json; SPEC = "all" (default),
                                a rank ("3"), a range ("2-5"), or comma mix ("0,7-9"); each rank is
@@ -78,11 +80,13 @@ def fail(message: str):
     raise ShardFailure(message)
 
 
-def rows_per_rank(entries: int, ranks: int = RANKS) -> int:
+def rows_per_rank(entries: int, ranks: int = 0) -> int:
+    ranks = ranks or RANKS
     return (entries + ranks - 1) // ranks
 
 
-def rank_rows(entries: int, rank: int, ranks: int = RANKS) -> int:
+def rank_rows(entries: int, rank: int, ranks: int = 0) -> int:
+    ranks = ranks or RANKS
     part = rows_per_rank(entries, ranks)
     return max(0, min(part, entries - rank * part))
 
@@ -706,6 +710,12 @@ def cmd_selftest() -> int:
 
 
 def main(argv: list[str]) -> int:
+    global RANKS
+    if len(argv) >= 2 and argv[0] == "--ranks":
+        if not argv[1].isdigit() or int(argv[1]) not in (4, 8, 16):
+            fail(f"--ranks {argv[1]}: the engram rows shard over the stage's tensor-parallel ranks, 4, 8 or 16")
+        RANKS = int(argv[1])
+        argv = argv[2:]
     if len(argv) == 1 and argv[0] == "selftest":
         return cmd_selftest()
     if len(argv) in (3, 4) and argv[0] == "cut":

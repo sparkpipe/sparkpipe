@@ -26,6 +26,7 @@ import sys
 SHARD_NAMING = "model-%05d-of-%05d.safetensors"
 SHARD_COUNT = 48
 LAYER_COUNT = 40
+FULL_ROW_LAYERS = 20
 HIDDEN = 5120
 VOCAB = 129280
 ROUTED_EXPERTS = 384
@@ -276,9 +277,19 @@ def source_ref(kind: int, layer: int, plane: int):
     fail(f"unknown kind {kind}")
 
 
-def derive_layout(tp: int):
+def stage_range(stages: int, stage: int) -> tuple[int, int]:
+    if stages <= 0 or FULL_ROW_LAYERS % stages or not 0 <= stage < stages:
+        fail(f"stage {stage} of {stages} is not an even split of the {FULL_ROW_LAYERS} full-row layers")
+    share = FULL_ROW_LAYERS // stages
+    if stage + 1 < stages:
+        return stage * share, share
+    return stage * share, LAYER_COUNT - stage * share
+
+
+def derive_layout(tp: int, first: int = 0, count: int = 0):
+    count = count or LAYER_COUNT
     order = [(K_EMBEDDING, GLOBAL_LAYER), (K_FINAL_NORM, GLOBAL_LAYER), (K_LM_HEAD, GLOBAL_LAYER)]
-    for layer in range(LAYER_COUNT):
+    for layer in range(first, first + count):
         for kind in range(K_ATTN_NORM, KIND_COUNT):
             if in_layer(kind, layer):
                 order.append((kind, layer))
@@ -374,8 +385,10 @@ def verify_header(fd: int, rank: int, tp: int, plan: dict, entries: list,
     if len(raw) != HEADER_BYTES:
         fail(f"rank{rank}: short header")
     fields = struct.unpack_from("<20I2Q", raw, 0)
-    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0,
-               LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
+    stages, stage = plan.get("stages", 1), plan.get("stage", 0)
+    first, count = stage_range(stages, stage)
+    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), stages, stage, first,
+               count, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
     if fields[:20] != literal:
         fail(f"rank{rank}: header fields {fields[:20]} != literals {literal}")
     if fields[20] != directory_offset or fields[21] != file_bytes:
@@ -418,7 +431,10 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
             meta["shape"] = normalize(meta["shape"])
             meta["name"] = name
             flat[name] = meta
-    order, entries, file_bytes = derive_layout(tp)
+    first, count = stage_range(plan.get("stages", 1), plan.get("stage", 0))
+    if (plan.get("first_layer", first), plan.get("layer_count", count)) != (first, count):
+        fail(f"plan names layers {plan.get('first_layer')}+{plan.get('layer_count')}, the stage rule gives {first}+{count}")
+    order, entries, file_bytes = derive_layout(tp, first, count)
     if len(entries) != plan["tensor_count"] or file_bytes != plan["file_bytes"]:
         fail(f"derived layout {len(entries)}/{file_bytes} != plan "
              f"{plan['tensor_count']}/{plan['file_bytes']}")
@@ -442,7 +458,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
         if bits.get(entry["layer"], 0) & (1 << entry["kind"]):
             fail(f"duplicate kind {entry['kind']} layer {entry['layer']}")
         bits[entry["layer"]] = bits.get(entry["layer"], 0) | (1 << entry["kind"])
-    for layer in range(LAYER_COUNT):
+    for layer in range(first, first + count):
         if bits.get(layer, 0) != layer_kind_bits(layer):
             fail(f"layer {layer} kind bits {bits.get(layer, 0):x} != literal "
                  f"{layer_kind_bits(layer):x}")
