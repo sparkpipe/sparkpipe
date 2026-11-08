@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 import re
 import resource
@@ -2300,12 +2301,14 @@ class Frontend:
             scope = self.scope_of(key, request.headers)
             body = await self.read_body(request)
             model, _, _ = await self.resolve_model(body.get("model"), key, scope)
-            messages, batch = body.get("messages"), body.get("batch", 8)
-            if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
-                raise RequestError(400, "invalid_request", "send the conversation to import as messages, and batch as a positive whole number of exchanges")
+            messages, batch, timeout = body.get("messages"), body.get("batch", 8), body.get("timeout_seconds", MEMORY_IMPORT_SECONDS)
+            if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1 \
+                    or not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+                raise RequestError(400, "invalid_request", "send the conversation to import as messages, batch as a positive whole number of exchanges, "
+                                                           "and timeout_seconds, if given, as a positive number of seconds")
             result = await self.memory.call("import", {"model": memory_model(model), "headers": dict(request.headers), "messages": normalize_messages(messages),
                                                        "tools": body.get("tools") or [], "kwargs": template_settings(model, body), "batch": batch},
-                                            MEMORY_IMPORT_SECONDS)
+                                            float(timeout))
         except RequestError as error:
             return error_response(error)
         return web.json_response(result)
