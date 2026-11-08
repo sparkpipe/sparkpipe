@@ -3664,8 +3664,7 @@ static uint32_t SparkKvLaneChains(const SparkKvLaneTransactions *transactions,co
 		lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u || (lane->block_identity_count != 0u && lane->block_identities == 0) )
 		return(0u);
 	tail = count != 0u ? &SparkKvLaneQueue(transactions,slot)[count - 1u] : &transactions->lanes[slot];
-	return(tail->request.program_id == request->program_id && tail->request.request_id == request->request_id && tail->request.sequence_id == request->sequence_id &&
-		tail->request.request_generation == request->request_generation && tail->lane.sequence_id == lane->sequence_id &&
+	return(tail->request.program_id == request->program_id && tail->lane.sequence_id == lane->sequence_id && tail->lane.request_generation == lane->request_generation &&
 		tail->lane.context_token_count > tail->lane.sequence_position && lane->sequence_position == tail->lane.context_token_count &&
 		lane->context_token_count > lane->sequence_position && (tail->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) == 0u &&
 		(lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE)) == 0u &&

@@ -1664,6 +1664,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	else if ( status == SPARK_STATUS_OK && verify != 0u )
 		StageServingVerifyHost(state, marks, keep_ns, rows);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, row_slots, active);
+	if ( status == SPARK_STATUS_BUSY || finished == SPARK_STATUS_BUSY )
+	{
+		fprintf(stderr, "%s adapter: submission %llu returned BUSY after it claimed its KV transaction; the claim is spent, so the route fails instead of retrying\n",
+			state->model->module_tag, (unsigned long long)submission->submission_id);
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( finished != SPARK_STATUS_OK )

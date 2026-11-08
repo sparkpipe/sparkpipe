@@ -1877,6 +1877,7 @@ static SparkModelDriverFrame SparkTestKvTransactionFrame(const SparkModelDriverA
 	SparkModelDriverFrame frame = {0};
 	frame.program_id = request->program_id;
 	frame.request_id = request->request_id;
+	frame.sequence_id = request->sequence_id;
 	frame.active_slot_count = request->active_slot_count;
 	frame.new_token_count = request->new_token_count;
 	frame.cache_lane_count = request->cache_lane_count;
@@ -1892,6 +1893,8 @@ static SparkModelDriverAdmissionRequest SparkTestKvChainRequest(const SparkTestK
 {
 	SparkModelDriverAdmissionRequest request = fixture->request;
 	request.submission_id = submission;
+	request.request_id = submission;
+	request.sequence_id = submission;
 	request.transaction_id = 100u + submission;
 	request.active_slot_count = 1u;
 	request.new_token_count = lane->context_token_count - (uint32_t)lane->sequence_position;
@@ -1947,6 +1950,13 @@ static int32_t SparkTestKvTransactionsPipelinedChain(void)
 		return(-304);
 	if ( SparkTestKvChainStep(&fixture,&c,3u,prepare) == SPARK_STATUS_OK || queued_count[0] != 1u )
 		return(-305);
+	SparkTestKvPageLane(&d,8u,0u,SPARK_TEST_BLOCK_TOKENS + 1u,SPARK_TEST_BLOCK_TOKENS + 2u);
+	if ( SparkTestKvChainStep(&fixture,&d,3u,prepare) == SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-319);
+	SparkTestKvPageLane(&d,7u,0u,SPARK_TEST_BLOCK_TOKENS + 1u,SPARK_TEST_BLOCK_TOKENS + 2u);
+	d.request_generation = 2u;
+	if ( SparkTestKvChainStep(&fixture,&d,3u,prepare) == SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-320);
 	if ( SparkTestKvChainStep(&fixture,&a,1u,commit) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&b,2u,commit) != SPARK_STATUS_OK ||
 		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_COMMITTED || queued[0].phase != SPARK_KV_LANE_TRANSACTION_COMMITTED )
 		return(-306);

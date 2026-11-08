@@ -2302,7 +2302,10 @@ static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const Sp
 		return SPARK_STATUS_OK;
 	if ( state->model_interface->sideband == 0 || current->sideband_output_bytes < (uint64_t)rows * state->geometry.sideband_bytes_per_row )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	return state->model_interface->sideband(state->model, 1u, state->hidden, current->sideband_output, (uint64_t)rows * state->geometry.sideband_bytes_per_row, rows, stream);
+	exchange_status = state->model_interface->sideband(state->model, 1u, state->hidden, current->sideband_output, (uint64_t)rows * state->geometry.sideband_bytes_per_row, rows, stream);
+	if ( exchange_status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+		state->copy_failed = 1u;
+	return exchange_status;
 }
 
 #define STAGE_RUNNER_CHAIN_LANES 16u
