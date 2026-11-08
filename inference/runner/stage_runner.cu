@@ -2444,7 +2444,7 @@ static void StageRunnerModelStep(const SparkStageRunnerState *state, const Spark
 	in->multiprocessors = state->multiprocessors;
 	in->last_rows_only = state->head_last_rows;
 	in->every_row_hidden = runner->owns_final_head == 0u || state->tap_final_entry != UINT32_MAX ? 1u : 0u;
-	in->token_ids = state->token_ids_device;
+	in->token_ids = dispatch->token_ids != 0 ? state->token_ids_device : 0;
 	in->host_positions = dispatch->host_positions;
 	in->host_sequence_of_row = dispatch->host_sequence_of_row;
 	in->host_state_target = dispatch->host_state_target;
@@ -2565,13 +2565,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	state->rows = rows;
 	state->head_last_rows = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u ? 1u : 0u;
 	state->logical_sequence_count = dispatch->active_sequence_count;
-	if ( runner->owns_embedding != 0u )
-	{
-		if ( cudaMemcpyAsync(state->token_ids_device, dispatch->token_ids, (uint64_t)rows * sizeof(*state->token_ids_device),
-			cudaMemcpyDefault, stream) != cudaSuccess || cudaStreamSynchronize(stream) != cudaSuccess )
-			return SPARK_STATUS_IO_ERROR;
-	}
-	else
+	if ( dispatch->token_ids != 0 &&
+		(cudaMemcpyAsync(state->token_ids_device, dispatch->token_ids, (uint64_t)rows * sizeof(*state->token_ids_device),
+			cudaMemcpyDefault, stream) != cudaSuccess || cudaStreamSynchronize(stream) != cudaSuccess) )
+		return SPARK_STATUS_IO_ERROR;
+	if ( runner->owns_embedding == 0u )
 	{
 		exchange_status = StageRunnerStageInput(state, dispatch, rows, stream);
 		if ( exchange_status != SPARK_STATUS_OK )
