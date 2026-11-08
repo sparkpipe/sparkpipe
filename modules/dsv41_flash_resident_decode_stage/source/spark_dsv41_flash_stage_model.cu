@@ -779,8 +779,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 			D41Partials<D41Ratio1Kv>(state, index, step, bound, length, query_rank_stride, record_heads, record_copies, stream);
 	else if ( status == SPARK_STATUS_OK )
 	{
-		D41InitRecordsKernel<<<D41Blocks((uint64_t)rows * record_heads * D41_TP), D41_THREADS, 0, stream>>>(
-			local != 0u ? state->records_received : state->records_send, destination_stride, rows, record_heads, D41_TP);
+		D41InitRecords(local != 0u ? state->records_received : state->records_send, destination_stride, rows, record_heads, D41_TP, stream);
 		status = D41Launched();
 	}
 	if ( status != SPARK_STATUS_OK )
