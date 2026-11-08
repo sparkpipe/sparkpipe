@@ -374,7 +374,7 @@ void LmLatentShardPrefillKernel(
 				list = listed == 0u ? 0 : selection.split_positions != 0 ? selection.split_positions + (uint64_t)row * selection.selected_count + plans[record * PLAN_WORDS + 6u] : list_shared;
 				ahead_tile = listed != 0u && selection.split_positions != 0 ? first : 0xffffffffu;
 				ahead = plans[record * PLAN_WORDS + PLAN_LIST + lane];
-				__syncwarp();
+				LmSharedReadsDone();
 				if (lane == 0u)
 				{
 					LmMbarrierArrive(&read[record]);
@@ -420,7 +420,7 @@ void LmLatentShardPrefillKernel(
 			}
 			else if (listed != 0u && selection.split_positions == 0)
 			{
-				__syncwarp();
+				LmSharedReadsDone();
 				if (lane == 0u)
 					LmMbarrierArrive(listed_free);
 			}
@@ -497,7 +497,7 @@ void LmLatentShardPrefillKernel(
 		window_begin = plans[record * PLAN_WORDS + 2u];
 		valid = plans[record * PLAN_WORDS + 3u];
 		own_count = plans[record * PLAN_WORDS + PLAN_HEAD + own];
-		__syncwarp();
+		LmSharedReadsDone();
 		if (lane == 0u)
 			LmMbarrierArrive(&read[record]);
 		if (valid == 0u)
@@ -608,7 +608,7 @@ void LmLatentShardPrefillKernel(
 					}
 				}
 			}
-			__syncwarp();
+			LmSharedReadsDone();
 			if (lane == 0u)
 				LmMbarrierArrive(&empty[buffer]);
 		}
