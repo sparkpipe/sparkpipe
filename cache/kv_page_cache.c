@@ -3617,6 +3617,175 @@ static SparkStatus SparkKvLaneTransactionsRequire(SparkKvLaneTransactions *trans
 	return(SPARK_STATUS_OK);
 }
 
+static SparkKvLaneTransaction *SparkKvLaneQueue(const SparkKvLaneTransactions *transactions,uint32_t slot)
+{
+	return(transactions->queued != 0 && transactions->queued_count != 0 ? &transactions->queued[(uint64_t)slot * SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH] : 0);
+}
+
+static uint32_t SparkKvLaneQueuedCount(const SparkKvLaneTransactions *transactions,uint32_t slot)
+{
+	return(SparkKvLaneQueue(transactions,slot) != 0 ? transactions->queued_count[slot] : 0u);
+}
+
+static void SparkKvLaneOwnIdentities(SparkKvLaneTransaction *owner)
+{
+	owner->lane.block_identities = owner->lane.block_identity_count != 0u ? owner->block_identities : 0;
+}
+
+static void SparkKvLaneStore(SparkKvLaneTransaction *owner,const SparkModelDriverAdmissionRequest *request,const SparkModelDriverCacheLane *lane)
+{
+	struct timespec prepared_ts;
+	owner->request = *request;
+	owner->request.cache_lanes = 0;
+	owner->lane = *lane;
+	if ( lane->block_identity_count != 0u )
+		memcpy(owner->block_identities,lane->block_identities,(size_t)lane->block_identity_count * sizeof(*lane->block_identities));
+	SparkKvLaneOwnIdentities(owner);
+	owner->phase = SPARK_KV_LANE_TRANSACTION_PREPARED;
+	owner->prepared_since_ns = clock_gettime(CLOCK_MONOTONIC,&prepared_ts) == 0 ?
+		(uint64_t)prepared_ts.tv_sec * UINT64_C(1000000000) + (uint64_t)prepared_ts.tv_nsec : 0u;
+}
+
+static uint32_t SparkKvLaneFindQueued(const SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request,const SparkModelDriverCacheLane *lane)
+{
+	const SparkKvLaneTransaction *queue = SparkKvLaneQueue(transactions,lane->resident_sequence_slot);
+	uint32_t index;
+	for (index=0u; index<SparkKvLaneQueuedCount(transactions,lane->resident_sequence_slot); index++)
+		if ( SparkKvLaneTransactionMatches(&queue[index],request,lane) != 0u )
+			return(index);
+	return(UINT32_MAX);
+}
+
+static uint32_t SparkKvLaneChains(const SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request,const SparkModelDriverCacheLane *lane)
+{
+	const uint32_t slot = lane->resident_sequence_slot,count = SparkKvLaneQueuedCount(transactions,slot);
+	const SparkKvLaneTransaction *tail;
+	if ( SparkKvLaneQueue(transactions,slot) == 0 || transactions->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY || count >= SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH ||
+		lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u || (lane->block_identity_count != 0u && lane->block_identities == 0) )
+		return(0u);
+	tail = count != 0u ? &SparkKvLaneQueue(transactions,slot)[count - 1u] : &transactions->lanes[slot];
+	return(tail->request.program_id == request->program_id && tail->request.request_id == request->request_id && tail->request.sequence_id == request->sequence_id &&
+		tail->request.request_generation == request->request_generation && tail->lane.sequence_id == lane->sequence_id &&
+		tail->lane.context_token_count > tail->lane.sequence_position && lane->sequence_position == tail->lane.context_token_count &&
+		lane->context_token_count > lane->sequence_position && (tail->lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) == 0u &&
+		(lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE)) == 0u &&
+		(request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_VERIFY) == 0u ? 1u : 0u);
+}
+
+static SparkStatus SparkKvLaneTransactionsPrepareChained(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t index,slot,found = 0u,chained = 0u;
+	for (index=0u; index<request->cache_lane_count; index++)
+	{
+		found += SparkKvLaneFindQueued(transactions,request,&request->cache_lanes[index]) != UINT32_MAX ? 1u : 0u;
+		chained += SparkKvLaneChains(transactions,request,&request->cache_lanes[index]);
+	}
+	if ( found == request->cache_lane_count )
+		return(SPARK_STATUS_OK);
+	if ( found != 0u || chained != request->cache_lane_count )
+		return(SPARK_STATUS_NOT_FOUND);
+	for (index=0u; index<request->cache_lane_count; index++)
+	{
+		slot = request->cache_lanes[index].resident_sequence_slot;
+		SparkKvLaneStore(&SparkKvLaneQueue(transactions,slot)[transactions->queued_count[slot]],request,&request->cache_lanes[index]);
+		SparkKvLaneQueue(transactions,slot)[transactions->queued_count[slot]].page_count = 0u;
+		SparkKvLaneQueue(transactions,slot)[transactions->queued_count[slot]].mutation_flags = 0u;
+		transactions->queued_count[slot]++;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvLaneTransactionsAdmitQueued(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t index,slot,position,found = 0u;
+	for (index=0u; index<request->cache_lane_count; index++)
+	{
+		position = SparkKvLaneFindQueued(transactions,request,&request->cache_lanes[index]);
+		found += position != UINT32_MAX ? 1u : 0u;
+		if ( position != UINT32_MAX && request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT &&
+			SparkKvLaneQueue(transactions,request->cache_lanes[index].resident_sequence_slot)[position].phase != SPARK_KV_LANE_TRANSACTION_PREPARED )
+			SPARK_FAIL(SPARK_STATUS_BUSY);
+	}
+	if ( found == 0u )
+		return(SPARK_STATUS_NOT_FOUND);
+	if ( found != request->cache_lane_count )
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	for (index=0u; index<request->cache_lane_count; index++)
+	{
+		slot = request->cache_lanes[index].resident_sequence_slot;
+		position = SparkKvLaneFindQueued(transactions,request,&request->cache_lanes[index]);
+		if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT )
+			SparkKvLaneQueue(transactions,slot)[position].phase = SPARK_KV_LANE_TRANSACTION_COMMITTED;
+		else
+			transactions->queued_count[slot] = position;
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkKvLaneTransactionsBeginQueued(SparkKvLaneTransactions *transactions,const SparkModelDriverFrame *frame)
+{
+	SparkKvLaneTransaction *owner,*queue;
+	uint32_t index,slot,move;
+	uint64_t offset;
+	SparkStatus status = SPARK_STATUS_OK,rollback;
+	for (index=0u; index<frame->cache_lane_count; index++)
+	{
+		slot = frame->cache_lanes[index].resident_sequence_slot;
+		queue = SparkKvLaneQueue(transactions,slot);
+		if ( slot >= transactions->cache->sequence_capacity || transactions->lanes[slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ||
+			SparkKvLaneQueuedCount(transactions,slot) == 0u || queue[0].phase != SPARK_KV_LANE_TRANSACTION_COMMITTED ||
+			queue[0].request.submission_id != frame->driver_dispatch_cookie1 || queue[0].lane.sequence_position != frame->cache_lanes[index].sequence_position )
+			SPARK_FAIL(SPARK_STATUS_BUSY);
+	}
+	for (index=0u; index<frame->cache_lane_count; index++)
+	{
+		slot = frame->cache_lanes[index].resident_sequence_slot;
+		queue = SparkKvLaneQueue(transactions,slot);
+		owner = &transactions->lanes[slot];
+		*owner = queue[0];
+		SparkKvLaneOwnIdentities(owner);
+		offset = (uint64_t)slot * transactions->page_capacity;
+		status = SparkKvPageCacheBeginPinnedLaneTransaction(transactions->cache,&owner->lane,transactions->logical_pages + offset,transactions->physical_pages + offset,
+			transactions->page_capacity,&owner->page_count,&owner->mutation_flags);
+		if ( status != SPARK_STATUS_OK )
+		{
+			owner->phase = SPARK_KV_LANE_TRANSACTION_EMPTY;
+			break;
+		}
+		for (move=1u; move<transactions->queued_count[slot]; move++)
+		{
+			queue[move - 1u] = queue[move];
+			SparkKvLaneOwnIdentities(&queue[move - 1u]);
+		}
+		transactions->queued_count[slot]--;
+	}
+	if ( status == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	while ( index != 0u )
+	{
+		index--;
+		slot = frame->cache_lanes[index].resident_sequence_slot;
+		rollback = SparkKvLaneTransactionAbort(transactions,&transactions->lanes[slot]);
+		if ( rollback != SPARK_STATUS_OK )
+			status = rollback;
+	}
+	for (index=0u; index<frame->cache_lane_count; index++)
+		transactions->queued_count[frame->cache_lanes[index].resident_sequence_slot] = 0u;
+	SPARK_RETURN(status);
+}
+
+uint32_t SparkKvLaneTransactionsQueued(const SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
+{
+	uint32_t index;
+	if ( transactions == 0 || request == 0 || request->cache_lane_count == 0u || transactions->cache == 0 )
+		return(0u);
+	for (index=0u; index<request->cache_lane_count; index++)
+		if ( request->cache_lanes[index].resident_sequence_slot >= transactions->cache->sequence_capacity ||
+			SparkKvLaneFindQueued(transactions,request,&request->cache_lanes[index]) == UINT32_MAX )
+			return(0u);
+	return(1u);
+}
+
 static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *transactions,const SparkModelDriverAdmissionRequest *request)
 {
 	SparkKvLaneTransaction *owner;
@@ -3627,7 +3796,12 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 	for (index=0u; index<request->cache_lane_count; index++)
 		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ? 1u : 0u;
 	if ( owned != 0u )
+	{
+		status = SparkKvLaneTransactionsPrepareChained(transactions,request);
+		if ( status != SPARK_STATUS_NOT_FOUND )
+			SPARK_RETURN(status);
 		return(SparkKvLaneTransactionsRequire(transactions,request,SPARK_KV_LANE_TRANSACTION_PREPARED));
+	}
 	for (index=0u; transactions->cache->shared_index != 0 && index<request->cache_lane_count; index++)
 	{
 		lane = &request->cache_lanes[index];
@@ -3659,21 +3833,7 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 		status = SparkKvPageCacheBeginPinnedLaneTransaction(transactions->cache,lane,transactions->logical_pages + offset,transactions->physical_pages + offset,transactions->page_capacity,&owner->page_count,&owner->mutation_flags);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		owner->request = *request;
-		owner->request.cache_lanes = 0;
-		owner->lane = *lane;
-		if ( lane->block_identity_count != 0u )
-			memcpy(owner->block_identities,lane->block_identities,(size_t)lane->block_identity_count * sizeof(*lane->block_identities));
-		owner->lane.block_identities = lane->block_identity_count != 0u ? owner->block_identities : 0;
-		owner->phase = SPARK_KV_LANE_TRANSACTION_PREPARED;
-		{
-			struct timespec prepared_ts;
-			owner->prepared_since_ns =
-			    clock_gettime(CLOCK_MONOTONIC,&prepared_ts) == 0 ?
-			    (uint64_t)prepared_ts.tv_sec *
-			        UINT64_C(1000000000) +
-			        (uint64_t)prepared_ts.tv_nsec : 0u;
-		}
+		SparkKvLaneStore(owner,request,lane);
 	}
 	if ( index == request->cache_lane_count )
 		return(SPARK_STATUS_OK);
@@ -3728,7 +3888,8 @@ static SparkStatus SparkKvLaneTransactionsRelease(SparkKvLaneTransactions *trans
 	for (index=0u; index<request->cache_lane_count; index++)
 	{
 		lane = &request->cache_lanes[index];
-		if ( transactions->lanes[lane->resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
+		if ( transactions->lanes[lane->resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ||
+			SparkKvLaneQueuedCount(transactions,lane->resident_sequence_slot) != 0u )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 		if ( transactions->cache->sequences[lane->resident_sequence_slot].sequence_id != lane->sequence_id &&
 			transactions->cache->sequences[lane->resident_sequence_slot].sequence_id != 0u )
@@ -3763,6 +3924,12 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 		return(request->admission_flags == 0u ? SparkKvLaneTransactionsRelease(transactions,request) : SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE )
 		return(SparkKvLaneTransactionsPrepare(transactions,request));
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT || request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT )
+	{
+		status = SparkKvLaneTransactionsAdmitQueued(transactions,request);
+		if ( status != SPARK_STATUS_NOT_FOUND )
+			SPARK_RETURN(status);
+	}
 	phase = request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT ? SPARK_KV_LANE_TRANSACTION_PREPARED : SPARK_KV_LANE_TRANSACTION_COMMITTED;
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT )
 	{
@@ -3786,6 +3953,8 @@ SparkStatus SparkKvLaneTransactionsAdmit(SparkKvLaneTransactions *transactions,c
 			status = SparkKvLaneTransactionAbort(transactions,owner);
 			if ( result == SPARK_STATUS_OK )
 				result = status;
+			if ( SparkKvLaneQueue(transactions,request->cache_lanes[index].resident_sequence_slot) != 0 )
+				transactions->queued_count[request->cache_lanes[index].resident_sequence_slot] = 0u;
 		}
 		else if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT )
 			owner->phase = SPARK_KV_LANE_TRANSACTION_COMMITTED;
@@ -3803,6 +3972,12 @@ SparkStatus SparkKvLaneTransactionsClaim(SparkKvLaneTransactions *transactions,c
 	slot = frame->cache_lanes[0].resident_sequence_slot;
 	if ( slot >= transactions->cache->sequence_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( transactions->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && SparkKvLaneQueuedCount(transactions,slot) != 0u )
+	{
+		status = SparkKvLaneTransactionsBeginQueued(transactions,frame);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
 	request = transactions->lanes[slot].request;
 	request.submission_id = frame->driver_dispatch_cookie1;
 	request.control_generation = frame->driver_dispatch_generation;
@@ -4005,6 +4180,8 @@ SparkStatus SparkKvLaneTransactionsReset(SparkKvLaneTransactions *transactions)
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	if ( cache->snapshot != 0 && cache->snapshot->in_flight != 0u )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
+	for (slot=0u; transactions->queued_count != 0 && slot<cache->sequence_capacity; slot++)
+		transactions->queued_count[slot] = 0u;
 	for (slot=0u; slot<cache->sequence_capacity; slot++)
 	{
 		if ( transactions->lanes[slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )

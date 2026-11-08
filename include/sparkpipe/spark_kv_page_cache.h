@@ -397,6 +397,7 @@ SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 #define SPARK_KV_LANE_TRANSACTION_PREPARED 1u
 #define SPARK_KV_LANE_TRANSACTION_COMMITTED 2u
 #define SPARK_KV_LANE_TRANSACTION_EXECUTING 3u
+#define SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH 3u
 
 typedef struct SparkKvLaneTransaction
 {
@@ -415,6 +416,8 @@ typedef struct SparkKvLaneTransactions
 {
 	SparkKvPageCache *cache;
 	SparkKvLaneTransaction *lanes;
+	SparkKvLaneTransaction *queued;
+	uint32_t *queued_count;
 	uint32_t *logical_pages;
 	uint32_t *physical_pages;
 	uint32_t page_capacity;
@@ -429,6 +432,9 @@ static inline uint32_t SparkKvLaneTransactionPrefixRestorePending(const SparkKvL
 
 SparkStatus SparkKvLaneTransactionsAdmit(
 	SparkKvLaneTransactions *transactions,
+	const SparkModelDriverAdmissionRequest *request);
+uint32_t SparkKvLaneTransactionsQueued(
+	const SparkKvLaneTransactions *transactions,
 	const SparkModelDriverAdmissionRequest *request);
 SparkStatus SparkKvLaneTransactionsClaim(
 	SparkKvLaneTransactions *transactions,

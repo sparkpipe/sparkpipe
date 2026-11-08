@@ -1888,6 +1888,112 @@ static SparkModelDriverFrame SparkTestKvTransactionFrame(const SparkModelDriverA
 	return(frame);
 }
 
+static SparkModelDriverAdmissionRequest SparkTestKvChainRequest(const SparkTestKvTransactions *fixture,SparkModelDriverCacheLane *lane,uint64_t submission,uint32_t flags)
+{
+	SparkModelDriverAdmissionRequest request = fixture->request;
+	request.submission_id = submission;
+	request.transaction_id = 100u + submission;
+	request.active_slot_count = 1u;
+	request.new_token_count = lane->context_token_count - (uint32_t)lane->sequence_position;
+	request.cache_lane_count = 1u;
+	request.cache_lanes = lane;
+	request.sequence_position = lane->sequence_position;
+	request.step_generation = submission;
+	request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	request.admission_flags = flags;
+	return(request);
+}
+
+static SparkStatus SparkTestKvChainStep(SparkTestKvTransactions *fixture,SparkModelDriverCacheLane *lane,uint64_t submission,uint32_t flags)
+{
+	SparkModelDriverAdmissionRequest request = SparkTestKvChainRequest(fixture,lane,submission,flags);
+	return(SparkKvLaneTransactionsAdmit(&fixture->transactions,&request));
+}
+
+static SparkStatus SparkTestKvChainClaim(SparkTestKvTransactions *fixture,SparkModelDriverCacheLane *lane,uint64_t submission)
+{
+	SparkModelDriverAdmissionRequest request = SparkTestKvChainRequest(fixture,lane,submission,0u);
+	SparkModelDriverFrame frame = SparkTestKvTransactionFrame(&request);
+	frame.sequence_position = lane->sequence_position;
+	frame.flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+	return(SparkKvLaneTransactionsClaim(&fixture->transactions,&frame));
+}
+
+static int32_t SparkTestKvTransactionsPipelinedChain(void)
+{
+	static SparkTestKvTransactions fixture;
+	static SparkKvLaneTransaction queued[4u * SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH];
+	uint32_t queued_count[4] = {0};
+	SparkModelDriverCacheLane a,b,c,d,e,release;
+	SparkModelDriverAdmissionRequest request;
+	const uint32_t prepare = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,commit = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT,abort_flag = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	SparkTestKvTransactionsInitialize(&fixture,1u);
+	memset(queued,0,sizeof(queued));
+	fixture.transactions.queued = queued;
+	fixture.transactions.queued_count = queued_count;
+	SparkTestKvPageLane(&a,7u,0u,0u,SPARK_TEST_BLOCK_TOKENS);
+	SparkTestKvPagePublish(&a,SPARK_TEST_BLOCK_TOKENS,71u);
+	SparkTestKvPageLane(&b,7u,0u,SPARK_TEST_BLOCK_TOKENS,SPARK_TEST_BLOCK_TOKENS + 1u);
+	SparkTestKvPageLane(&c,7u,0u,SPARK_TEST_BLOCK_TOKENS + 5u,SPARK_TEST_BLOCK_TOKENS + 6u);
+	if ( SparkTestKvChainStep(&fixture,&a,1u,prepare) != SPARK_STATUS_OK || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_PREPARED )
+		return(-301);
+	if ( SparkTestKvChainStep(&fixture,&b,2u,prepare) != SPARK_STATUS_OK || queued_count[0] != 1u || queued[0].request.submission_id != 2u ||
+		fixture.owners[0].request.submission_id != 1u || fixture.pages.cache.sequences[0].next_token_position != 0u )
+		return(-302);
+	request = SparkTestKvChainRequest(&fixture,&b,2u,abort_flag);
+	if ( SparkKvLaneTransactionsQueued(&fixture.transactions,&request) != 1u )
+		return(-303);
+	if ( SparkTestKvChainStep(&fixture,&b,2u,prepare) != SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-304);
+	if ( SparkTestKvChainStep(&fixture,&c,3u,prepare) == SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-305);
+	if ( SparkTestKvChainStep(&fixture,&a,1u,commit) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&b,2u,commit) != SPARK_STATUS_OK ||
+		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_COMMITTED || queued[0].phase != SPARK_KV_LANE_TRANSACTION_COMMITTED )
+		return(-306);
+	if ( SparkTestKvChainClaim(&fixture,&b,2u) == SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-307);
+	if ( SparkTestKvChainClaim(&fixture,&a,1u) != SPARK_STATUS_OK || SparkTestKvChainClaim(&fixture,&b,2u) == SPARK_STATUS_OK )
+		return(-308);
+	if ( SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u},1u,SPARK_STATUS_OK,0u) != SPARK_STATUS_OK ||
+		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY || fixture.pages.cache.sequences[0].next_token_position != SPARK_TEST_BLOCK_TOKENS )
+		return(-309);
+	if ( SparkTestKvChainClaim(&fixture,&b,2u) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].request.submission_id != 2u ||
+		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EXECUTING )
+		return(-310);
+	if ( SparkKvLaneTransactionsFinish(&fixture.transactions,(uint32_t[]){0u},1u,SPARK_STATUS_OK,0u) != SPARK_STATUS_OK ||
+		fixture.pages.cache.sequences[0].next_token_position != SPARK_TEST_BLOCK_TOKENS + 1u )
+		return(-311);
+	SparkTestKvPageLane(&c,7u,0u,SPARK_TEST_BLOCK_TOKENS + 1u,2u * SPARK_TEST_BLOCK_TOKENS);
+	SparkTestKvPagePublish(&c,2u * SPARK_TEST_BLOCK_TOKENS,72u);
+	SparkTestKvPageLane(&d,7u,0u,2u * SPARK_TEST_BLOCK_TOKENS,2u * SPARK_TEST_BLOCK_TOKENS + 1u);
+	SparkTestKvPageLane(&e,7u,0u,2u * SPARK_TEST_BLOCK_TOKENS + 1u,2u * SPARK_TEST_BLOCK_TOKENS + 2u);
+	if ( SparkTestKvChainStep(&fixture,&c,3u,prepare) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&d,4u,prepare) != SPARK_STATUS_OK ||
+		SparkTestKvChainStep(&fixture,&e,5u,prepare) != SPARK_STATUS_OK || queued_count[0] != 2u )
+		return(-312);
+	if ( SparkTestKvChainStep(&fixture,&d,4u,abort_flag) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].request.submission_id != 3u ||
+		fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_PREPARED )
+		return(-313);
+	SparkTestKvPageLane(&release,7u,0u,0u,0u);
+	release.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	if ( SparkTestKvChainStep(&fixture,&d,4u,prepare) != SPARK_STATUS_OK || queued_count[0] != 1u )
+		return(-314);
+	request = SparkTestKvChainRequest(&fixture,&release,6u,0u);
+	request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE;
+	if ( SparkKvLaneTransactionsAdmit(&fixture.transactions,&request) != SPARK_STATUS_BUSY )
+		return(-315);
+	if ( SparkTestKvChainStep(&fixture,&c,3u,abort_flag) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
+		return(-316);
+	if ( SparkTestKvChainStep(&fixture,&c,3u,prepare) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&d,4u,prepare) != SPARK_STATUS_OK || queued_count[0] != 1u ||
+		SparkKvLaneTransactionsReset(&fixture.transactions) != SPARK_STATUS_OK || queued_count[0] != 0u || fixture.owners[0].phase != SPARK_KV_LANE_TRANSACTION_EMPTY )
+		return(-317);
+	fixture.transactions.queued = 0;
+	fixture.transactions.queued_count = 0;
+	if ( SparkTestKvChainStep(&fixture,&a,1u,prepare) != SPARK_STATUS_OK || SparkTestKvChainStep(&fixture,&b,2u,prepare) == SPARK_STATUS_OK ||
+		SparkKvLaneTransactionsReset(&fixture.transactions) != SPARK_STATUS_OK )
+		return(-318);
+	return(0);
+}
+
 static int32_t SparkTestKvTransactionsRollbackBatch(void)
 {
 	SparkTestKvTransactions fixture;
@@ -3451,6 +3557,8 @@ int main(void)
 		status = SparkTestKvPagePinnedTransaction();
 	if ( status == 0 )
 		status = SparkTestKvTransactionsRollbackBatch();
+	if ( status == 0 )
+		status = SparkTestKvTransactionsPipelinedChain();
 	if ( status == 0 )
 		status = SparkTestKvTransactionsRejectStaleAndInFlight();
 	if ( status == 0 )

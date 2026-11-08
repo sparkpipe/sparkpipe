@@ -233,6 +233,8 @@ struct SparkStageKvBinding
 	SparkKvPageStore page_store;
 	SparkKvLaneTransactions transactions;
 	SparkKvLaneTransaction *lanes;
+	SparkKvLaneTransaction *queued_lanes;
+	uint32_t *queued_counts;
 	uint32_t *logical_pages;
 	uint32_t *physical_pages;
 	SparkKvCacheBlock *blocks;

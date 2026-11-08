@@ -115,13 +115,15 @@ static SparkStatus SparkStageKvBindingAllocateHost(SparkStageKvBinding *binding,
 	binding->hash_bucket_heads = (uint32_t *)calloc(binding->logical_page_count,sizeof(uint32_t));
 	binding->entry_indices_by_logical_page = (uint32_t *)calloc(binding->logical_page_count,sizeof(uint32_t));
 	binding->lanes = (SparkKvLaneTransaction *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lanes));
+	binding->queued_lanes = (SparkKvLaneTransaction *)calloc((uint64_t)binding->resident_sequence_capacity * SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH,sizeof(*binding->queued_lanes));
+	binding->queued_counts = (uint32_t *)calloc(binding->resident_sequence_capacity,sizeof(*binding->queued_counts));
 	binding->logical_pages = (uint32_t *)calloc((size_t)lane_entries,sizeof(uint32_t));
 	binding->page_table_shadow = (uint32_t *)malloc((size_t)lane_entries * sizeof(uint32_t));
 	binding->lane_bound = (atomic_uchar *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_bound));
 	binding->lane_sequence_ids = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_sequence_ids));
 	binding->lane_next_positions = (atomic_ullong *)calloc(binding->resident_sequence_capacity,sizeof(*binding->lane_next_positions));
 	if ( binding->blocks == 0 || binding->resident_slot_logical_block_indices == 0 || binding->entries == 0 || binding->sequences == 0 || binding->hash_bucket_heads == 0 || binding->entry_indices_by_logical_page == 0 ||
-		binding->lanes == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 )
+		binding->lanes == 0 || binding->queued_lanes == 0 || binding->queued_counts == 0 || binding->logical_pages == 0 || binding->page_table_shadow == 0 || binding->lane_bound == 0 || binding->lane_sequence_ids == 0 || binding->lane_next_positions == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaHostAlloc((void **)&binding->physical_pages,(size_t)lane_entries * sizeof(uint32_t),cudaHostAllocPortable) != cudaSuccess )
 	{
@@ -1531,6 +1533,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 		SPARK_RETURN(status);
 	binding->transactions.cache = &binding->page_cache;
 	binding->transactions.lanes = binding->lanes;
+	binding->transactions.queued = binding->queued_lanes;
+	binding->transactions.queued_count = binding->queued_counts;
 	binding->transactions.logical_pages = binding->logical_pages;
 	binding->transactions.physical_pages = binding->physical_pages;
 	binding->transactions.page_capacity = binding->pages_per_sequence;
@@ -1717,6 +1721,8 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->hash_bucket_heads);
 	free(binding->entry_indices_by_logical_page);
 	free(binding->lanes);
+	free(binding->queued_lanes);
+	free(binding->queued_counts);
 	free(binding->logical_pages);
 	free(binding->page_table_shadow);
 	free(binding->lane_bound);
@@ -1742,7 +1748,7 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
 {
 	SparkStatus status;
-	uint32_t lane;
+	uint32_t lane,queued;
 	uint64_t held;
 	if ( binding == 0 || request == 0 || decision == 0 || binding->mutex_initialized == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1755,9 +1761,10 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 		SPARK_STATUS_VALIDATION_FAILED : SparkStageKvBindingRestoreGate(binding,request);
 	if ( status == SPARK_STATUS_OK && (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_CACHE_RELEASE) != 0u && binding->recurrent.lane_bytes != 0u )
 		SparkStageKvCommitStaged(binding,request,&held);
+	queued = request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT && SparkKvLaneTransactionsQueued(&binding->transactions,request) != 0u ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvLaneTransactionsAdmit(&binding->transactions,request);
-	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
+	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u && queued == 0u )
 		status = SparkStageKvBindingRecurrentAdmit(binding,request,&held);
 	if ( status == SPARK_STATUS_OK )
 		binding->control_generation = request->control_generation;
