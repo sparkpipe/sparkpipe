@@ -657,6 +657,8 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 `PUT /v1/webhooks {"url", "events", "secret"}` delivers signed JSON (HMAC-SHA256 in `X-SparkPipe-Signature`), Slack-compatible on request. The same events can go by email to chosen members.
 
+Deliveries run in parallel and are retried when a receiver fails, so they can arrive out of order or more than once. A JSON delivery carries its notice's `id` and `created` time, and `X-SparkPipe-Delivery` repeats the `id`: order notices by `created` and drop repeats by `id`.
+
 | Event | When |
 | --- | --- |
 | `booking.deadline` | 72 h, 48 h, 6 h and 2 h before 00:00 on the Sunday of the last booked week, while the next week is not booked; early when auto-extend cannot book (§16), and when it stops |
