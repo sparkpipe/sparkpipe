@@ -59,7 +59,8 @@
 #define GLM_CANDIDATE_BYTES 8u
 #define GLM_SCATTER_ROWS 256u
 #define GLM_SPLIT_PARTITIONS 16u
-#define GLM_PREFILL_BLOCK_ROWS 4u
+#define GLM_PREFILL_HEADS 4u
+#define GLM_PREFILL_BLOCK_ROWS LM_PREFILL_ATTN_BLOCK_ROWS(GLM_PREFILL_HEADS)
 #define GLM_PREFILL_SPANS 8u
 #define GLM_PREFILL_TABLE_BLOCKS(rows) (((rows) + GLM_PREFILL_BLOCK_ROWS - 1u) / GLM_PREFILL_BLOCK_ROWS + GLM_PREFILL_SPANS)
 #define GLM_PLAN_ARRAYS 3u
@@ -1489,7 +1490,7 @@ struct GlmModel
 		state->selection_rows = LmTopkExactGatherSelectionRows(state->max_rows, state->max_positions, state->tp_degree);
 		state->topk_entries = LmTopkExactScratchEntries(state->selection_rows, state->max_positions, S::kSelected);
 		state->union_entries = state->max_positions > S::kSelected ?
-			(uint64_t)GLM_PREFILL_TABLE_BLOCKS(state->max_rows) * GLM_PREFILL_BLOCK_ROWS * S::kSelected : 0u;
+			LmPrefillSparseUnionEntries(GLM_PREFILL_TABLE_BLOCKS(state->max_rows), GLM_PREFILL_HEADS, S::kSelected) : 0u;
 		ScatterSizes(state, state->scatter_rows, &state->query_units_max, &state->indexing_units_max, &state->partial_units_max, &candidate_offset);
 		state->latent_max = GatherLayout(state, state->max_positions);
 		if ( state->latent_max.chunks == 0u )
@@ -1536,7 +1537,7 @@ struct GlmModel
 		state->shard.degree = state->tp_degree;
 		state->shard.rank = state->tp_rank;
 		state->shard.grain = 1u;
-		if ( state->heads != GLM_PREFILL_BLOCK_ROWS || SparkKvShardValid(state->shard, GLM_PAGE_SLOTS) == 0u )
+		if ( state->heads != GLM_PREFILL_HEADS || SparkKvShardValid(state->shard, GLM_PAGE_SLOTS) == 0u )
 		{
 			fprintf(stderr, "%s: TP%u gives %u heads per rank; the packed prefill tables and the context split need 4\n", G::Tag(), state->tp_degree, state->heads);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2253,7 +2254,7 @@ struct GlmModel
 		{
 			LmKvView cache;
 			View(state, &cache, state->kv_pool);
-			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_BLOCK_ROWS>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
+			if ( LmPrefillBlockTableLaunch<GLM_PREFILL_HEADS>(cache, slots, rows, state->block_table, GLM_PREFILL_TABLE_BLOCKS(rows), 0, GLM_PREFILL_SPANS,
 					stream) != cudaSuccess )
 				return Fail("prefill block table", 0u, LM_LAUNCH_ERR_LAUNCH);
 		}
