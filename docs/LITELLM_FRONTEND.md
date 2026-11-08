@@ -123,7 +123,7 @@ The engine orders queued work by class, then priority, then deadline. The
 chat layer sends priority 2 (`SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE`) for
 interactive requests, 1 for background requests and a request to
 `<model>-bulk` (every model has that second name at both LiteLLM doors
-and in `/v1/models`) and 0 for the memory curator; `model_api` gives a
+and in `/v1/models`) and 0 for memory's background work; `model_api` gives a
 request that names no priority 2. Below 2 is background: the engine keeps
 `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES` (2) resident
 sequences free for interactive requests, dispatches nothing that carries
@@ -1075,7 +1075,7 @@ recreating the container and the chat layer. Deployed 2026-10-14 with backups
 stamped 20261014T232328Z (Open WebUI database and secrets) and the chat-layer
 backups of the same night under `/srv/workspace/sparkpipe/backups`.
 
-Stage B (curator continuation, pre-warm, regroups, fit) went live on
+A second memory release went live on
 2026-10-15 at 00:15Z by copying `chat_frontend.py` and `chat_memory.py` into
 `~/sparkpipe-chat` and restarting `sparkpipe-chat` while K3 was idle; the
 previous files are `/srv/workspace/sparkpipe/backups/*.prev-20261015T001524Z`.

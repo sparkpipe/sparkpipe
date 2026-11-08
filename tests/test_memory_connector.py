@@ -60,7 +60,7 @@ class FakeProgram:
             return web.json_response({"error": {"code": "unauthorized", "message": "the token is wrong"}}, status=401)
         self.host_url = (await request.json())["host_url"]
         self.greeted = True
-        return web.json_response({"protocol": self.protocol, "methods": ["prepare"]})
+        return web.json_response({"protocol": self.protocol, "name": "fake-memory", "version": "9.9.9", "methods": ["prepare"]})
 
     async def host(self, method, body, timeout=10.0):
         async with self.client.post(f"{self.host_url}/v1/{method}", json=body, headers={"Authorization": "Bearer " + TOKEN},
@@ -133,6 +133,8 @@ async def run(directory, check):
         connector.retry_at = 0.0
         answer = await connector.call("prepare", {"model": {"id": "m"}})
         check(connector.ready and answer == {"tokens": 3}, f"after the retry window the connector says hello, and the program reaches the host's count: {answer}")
+        check('"event": "memory_available", "url": "http://127.0.0.1:%d", "name": "fake-memory", "version": "9.9.9"' % port in logged.getvalue(),
+              f"memory_available names the program and its version: {logged.getvalue()[-300:]}")
 
         base, authorized = f"http://127.0.0.1:{host_port}/v1/", {"Authorization": "Bearer " + TOKEN}
         async with aiohttp.ClientSession() as raw:
@@ -221,7 +223,7 @@ def main():
         print("FAIL test_memory_connector:", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS test_memory_connector: unavailable memory is logged and fails fast until the retry time, hello reaches a program that comes up, host services need the token and "
+    print("PASS test_memory_connector: unavailable memory is logged and fails fast until the retry time, hello reaches a program that comes up and the log names its version, host services need the token and "
           "keep their own status, program errors keep theirs, a timeout marks memory unavailable, an abandoned host call stops, notices keep their order, session calls "
           "carry their handle, a restarted program is greeted again, another protocol or token counts as unavailable, and the chat layer serves raw while memory is down")
 

@@ -99,7 +99,7 @@ class Connector:
             self.down(f"{error.code}: {error.message}")
             return False
         if not self.ready:
-            log("memory_available", url=self.url)
+            log("memory_available", url=self.url, name=answer.get("name"), version=answer.get("version"))
         self.ready = True
         return True
 

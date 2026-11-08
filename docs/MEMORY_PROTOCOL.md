@@ -28,11 +28,11 @@ A failure inside one `prepare` is logged as `memory_skipped`, and that request i
 - Each side serves with handler cancellation: when a caller gives up on a request, the work behind it stops, the engine stream included.
 
 ## Hello
-`POST /v1/hello` with `{"protocol": 1, "host_url", "host_methods"}` answers `{"protocol": 1, "methods": [...]}`:
+`POST /v1/hello` with `{"protocol": 1, "host_url", "host_methods"}` answers `{"protocol": 1, "name", "version", "methods": [...]}`. The connector logs the program's name and version with `memory_available`, so the log shows which program and version served:
 - the program refuses another protocol with 409 `protocol_mismatch`;
 - until it has had a hello, the program answers every other method with 409 `hello_first`. The connector then says hello and retries the call once, so a restarted program is picked up at once.
 
-`GET /health` on the program answers `{"ok": true, "protocol": 1}` without a token.
+`GET /health` on the program answers `{"ok": true, "protocol": 1, "name", "version"}` without a token.
 
 ## Methods, protocol 1
 A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or null}`. The program keeps any per-model settings in its own config.
