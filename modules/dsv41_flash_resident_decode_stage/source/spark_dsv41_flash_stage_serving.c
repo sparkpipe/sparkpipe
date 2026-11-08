@@ -152,7 +152,11 @@ static const SparkStageServingModel Dsv41FlashStageServing =
 {
 	.descriptor = &Dsv41FlashServingDescriptor,
 	.runner_model = SparkDsv41FlashStageModel,
+#if SPARK_DSV41_FLASH_STAGE_TP_DEGREE == 16u
 	.module_tag = "dsv41_flash_stage",
+#else
+	.module_tag = "dsv41_flash_pp_stage",
+#endif
 	.tp_degree = SPARK_DSV41_FLASH_STAGE_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = Dsv41FlashServingKvLayout,

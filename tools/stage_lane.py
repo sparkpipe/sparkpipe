@@ -83,6 +83,18 @@ DSV41_FLASH = {
     "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
+DSV41_FLASH_PP = {
+    **DSV41_FLASH,
+    "swap_id": "deepseek-v4.1-flash-pp",
+    "api_port": 8482,
+    "kv_label": "dsv41_flash_pp_stage",
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp4pp4/stage{stage}/rank{tp_rank}.spstage",
+    "adapter": "libdsv41_flash_tp4pp4_serving_adapter.so",
+    "tp": 4,
+    "pipeline_transport": "host-staged",
+    "kv_page_bytes": (3 * 128 + 256) * 1280 // 4,
+}
+
 QWEN38_MAX = {
     **QWEN38_27B,
     "swap_id": "qwen3.8-max",
@@ -411,6 +423,7 @@ K31_PRO = {
 }
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "dsv41_flash_pp": DSV41_FLASH_PP,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
@@ -453,12 +466,30 @@ def text_prompt_prefix(directory: Path) -> list[int]:
         raise SystemExit(f"raw text prompt prefix of {directory}: {error}")
 
 
-def session_table() -> list[list[int]]:
-    return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
+def session_table(size: int = WORLD) -> list[list[int]]:
+    return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(size)] for a in range(size)]
+
+
+def tp_of(model: dict) -> int:
+    tp = model.get("tp", WORLD)
+    if tp <= 0 or WORLD % tp:
+        raise SystemExit(f"{model['swap_id']}: tensor-parallel degree {tp} does not divide the {WORLD} ranks into pipeline stages")
+    return tp
+
+
+def stage_group(model: dict, rank: int) -> list[int]:
+    tp = tp_of(model)
+    first = rank // tp * tp
+    return list(range(first, first + tp))
+
+
+def mesh_ranks(model: dict, rank: int) -> str:
+    return ",".join(str(member) for member in stage_group(model, rank))
 
 
 def rank_pack_path(model: dict, rank: int) -> str:
-    return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank)
+    tp = tp_of(model)
+    return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank, stage=rank // tp, tp_rank=rank % tp)
 
 
 def rank_weight_files(model: dict, rank: int) -> list[str]:
@@ -481,8 +512,8 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
         "stage_pack_path": rank_pack_path(model, rank),
-        "tp_degree": WORLD,
-        "tp_rank": rank,
+        "tp_degree": tp_of(model),
+        "tp_rank": rank % tp_of(model),
         "world_size": WORLD,
         "max_sequences": args.sequences,
         "max_rows": args.rows,
@@ -502,8 +533,8 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
             "listen_port": 64000 + 16 * lane + 15,
             "connect_timeout_milli": 300000,
             "operation_timeout_milli": 30000,
-            "peer_hosts": HOSTS,
-            "session_ports": session_table(),
+            "peer_hosts": [HOSTS[member] for member in stage_group(model, rank)],
+            "session_ports": session_table(tp_of(model)),
             "wait_mode": "hardware",
         },
     }
@@ -532,8 +563,8 @@ def deployment(model: dict, lane: int, args) -> dict:
         "coordinator_rank_index": 0,
         "adapter": {"shared_object_path": "lib/" + model["adapter"]},
         "driver": {"shared_object_path": "lib/" + model["adapter"], "program_name": model["program"]},
-        "transport": {"shared_object_path": "lib/hidden_transport.so", "mode": "host-rdma",
-                      "control_port_base": 64000 + 16 * lane},
+        "transport": {"shared_object_path": "lib/hidden_pipeline.so" if model.get("pipeline_transport") else "lib/hidden_transport.so",
+                      "mode": model.get("pipeline_transport", "host-rdma"), "control_port_base": 64000 + 16 * lane},
         "weightd": {"socket_path": args.weightd_socket},
         "runtime_limits": {
             "max_inflight_submissions": min(args.sequences, 16),
