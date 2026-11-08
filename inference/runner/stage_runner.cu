@@ -59,6 +59,10 @@ typedef struct StageRunnerLane
 	uint32_t finished;
 	uint32_t sum_flags;
 	SparkStatus status;
+	SparkTpDeviceCollective collective;
+	int collective_created;
+	uint64_t ordinal;
+	uint16_t *sum_share;
 } StageRunnerLane;
 
 typedef struct StageRunnerLanes
@@ -235,6 +239,7 @@ typedef struct SparkStageRunnerState
 	SparkStageRunnerModelGeometry geometry;
 	SparkStageRunnerServices services;
 	SparkTpDeviceCollective device_collective;
+	SparkTpDeviceCollectiveConfig device_config;
 	int device_collective_created;
 	uint32_t device_collective_deferred;
 	uint16_t *sum_share;
@@ -547,19 +552,19 @@ static SparkStatus StageRunnerTakeFailure(SparkStageRunnerState *state)
 	return status;
 }
 
-static uint32_t StageRunnerSumOperation(SparkStageRunnerState *state, uint32_t flags, uint32_t operation, uint32_t stage,
+static uint32_t StageRunnerSumOperation(const SparkTpDeviceCollective *collective, uint32_t flags, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements)
 {
 	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL &&
 		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
-		SparkTpDeviceCollectiveSupportsPairAllReduce(&state->device_collective, rows, row_elements) != 0u ?
+		SparkTpDeviceCollectiveSupportsPairAllReduce(collective, rows, row_elements) != 0u ?
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 : operation;
 }
 
 static void StageRunnerCountSum(SparkStageRunnerState *state, uint32_t operation)
 {
-	state->wave_pair_sums += operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 ? 1u : 0u;
-	state->wave_plain_sums += operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ? 1u : 0u;
+	__atomic_fetch_add(&state->wave_pair_sums, operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 ? 1u : 0u, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&state->wave_plain_sums, operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 ? 1u : 0u, __ATOMIC_RELAXED);
 }
 
 static void StageRunnerSumReport(SparkStageRunnerState *state, uint32_t flags, uint32_t rows)
@@ -590,7 +595,7 @@ static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, cudaStrea
 	uint32_t operation;
 	if ( state->device_collective_created == 0 )
 		return state->tp_degree > 1u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_OK;
-	operation = StageRunnerSumOperation(state, state->sum_flags, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
+	operation = StageRunnerSumOperation(&state->device_collective, state->sum_flags, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16,
 		SPARK_STAGE_RUNNER_ROUND_ALL, rows, 0u);
 	StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, stream,
 		rows, device_values, (void *)device_values, state->tp_next_ordinal++);
@@ -600,51 +605,58 @@ static SparkStatus StageRunnerReduceBf16(SparkStageRunnerState *state, cudaStrea
 	return status;
 }
 
-static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, uint32_t flags, uint32_t operation, uint32_t stage, uint32_t rows,
-	uint32_t row_elements)
+static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, const uint16_t *sum_share, uint32_t flags, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements)
 {
 	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
-	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL && state->sum_share != 0 && state->device_collective_deferred != 0u &&
+	return operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && stage == SPARK_STAGE_RUNNER_ROUND_ALL && sum_share != 0 && state->device_collective_deferred != 0u &&
 		(flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY)) == SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL &&
 		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements ? 1u : 0u;
 }
 
-static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
-	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+static SparkStatus StageRunnerCollectiveRound(SparkStageRunnerState *state, SparkTpDeviceCollective *collective, uint64_t *ordinal, uint16_t *sum_share,
+	uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage, uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkStatus status;
-	if ( state->device_collective_created == 0 )
+	operation = StageRunnerSumOperation(collective, flags, operation, stage, rows, row_elements);
+	if ( StageRunnerSplitSum(state, sum_share, flags, operation, stage, rows, row_elements) != 0u )
 	{
-		state->tp_collective_failed = 1u;
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	}
-	operation = StageRunnerSumOperation(state, flags, operation, stage, rows, row_elements);
-	if ( StageRunnerSplitSum(state, flags, operation, stage, rows, row_elements) != 0u )
-	{
-		status = StageRunnerMeshRound(state, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, stage, rows, row_elements,
-			local, state->sum_share);
+		status = StageRunnerCollectiveRound(state, collective, ordinal, sum_share, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16,
+			stage, rows, row_elements, local, sum_share);
 		if ( status == SPARK_STATUS_OK )
-			status = StageRunnerMeshRound(state, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, stage, rows / state->tp_degree, row_elements,
-				state->sum_share, full);
+			status = StageRunnerCollectiveRound(state, collective, ordinal, sum_share, flags, stream_void, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, stage,
+				rows / state->tp_degree, row_elements, sum_share, full);
 		return status;
 	}
 	if ( stage == SPARK_STAGE_RUNNER_ROUND_FINISH )
-		status = SparkTpDeviceCollectiveFinish(&state->device_collective);
+		status = SparkTpDeviceCollectiveFinish(collective);
 	else
 	{
 		StageRunnerSubmissionInit(&submission, state->device_collective_deferred, state, (cudaStream_t)stream_void,
-			rows, local, full, state->tp_next_ordinal++);
+			rows, local, full, (*ordinal)++);
 		submission.row_elements = row_elements;
 		status = stage == SPARK_STAGE_RUNNER_ROUND_BEGIN
-			? SparkTpDeviceCollectiveBegin(&state->device_collective, &submission, operation)
-			: SparkTpDeviceCollectiveEnqueue(&state->device_collective, &submission, operation);
+			? SparkTpDeviceCollectiveBegin(collective, &submission, operation)
+			: SparkTpDeviceCollectiveEnqueue(collective, &submission, operation);
 	}
 	if ( status != SPARK_STATUS_OK )
 		state->tp_collective_failed = 1u;
 	else if ( stage != SPARK_STAGE_RUNNER_ROUND_FINISH )
 		StageRunnerCountSum(state, operation);
 	return status;
+}
+
+static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	if ( state->device_collective_created == 0 )
+	{
+		state->tp_collective_failed = 1u;
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	return StageRunnerCollectiveRound(state, &state->device_collective, &state->tp_next_ordinal, state->sum_share, flags, stream_void, operation, stage,
+		rows, row_elements, local, full);
 }
 
 static SparkStatus StageRunnerMarkedRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
@@ -940,6 +952,7 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	status = SparkTpDeviceCollectiveCreate(&device_config, &state->device_collective);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	state->device_config = device_config;
 	state->device_collective_created = 1;
 	state->device_collective_deferred = device_config.wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
 	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
@@ -1669,7 +1682,7 @@ static SparkStatus StageRunnerLaneFollow(StageRunnerLanes *lanes, StageRunnerLan
 
 static uint32_t StageRunnerLaneTurn(const StageRunnerLane *lane, const StageRunnerLane *other)
 {
-	if ( lane->holding != 0u )
+	if ( lane->holding != 0u || other->collective_created != 0 )
 		return 1u;
 	if ( other->holding != 0u )
 		return 0u;
@@ -1712,6 +1725,35 @@ static void StageRunnerLaneRowState(void *context, uint32_t layer, uint32_t phas
 	pthread_mutex_unlock(&lanes->lock);
 }
 
+static SparkStatus StageRunnerLaneOwnRound(StageRunnerLane *lane, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	SparkStageRunnerState *state = lane->state;
+	StageRunnerLanes *lanes = &state->lanes;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( (cudaStream_t)stream_void != lane->stream || (stage == SPARK_STAGE_RUNNER_ROUND_FINISH) != (lane->holding != 0u) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: lane %u refused a stage %u round (holding %u) on its stream %s\n", lane->index, stage,
+			lane->holding, (cudaStream_t)stream_void == lane->stream ? "yes" : "no");
+		status = SPARK_STATUS_UNSUPPORTED;
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerCollectiveRound(state, &lane->collective, &lane->ordinal, lane->sum_share, lane->sum_flags, stream_void, operation, stage,
+			rows, row_elements, local, full);
+	pthread_mutex_lock(&lanes->lock);
+	lane->holding = status == SPARK_STATUS_OK && stage == SPARK_STAGE_RUNNER_ROUND_BEGIN ? 1u : 0u;
+	if ( lane->holding == 0u )
+	{
+		lane->rounds++;
+		lane->group_rounds++;
+	}
+	if ( status != SPARK_STATUS_OK )
+		lanes->failed = 1u;
+	pthread_cond_broadcast(&lanes->wake);
+	pthread_mutex_unlock(&lanes->lock);
+	return status;
+}
+
 static SparkStatus StageRunnerLaneRound(void *context, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
@@ -1720,6 +1762,8 @@ static SparkStatus StageRunnerLaneRound(void *context, void *stream_void, uint32
 	StageRunnerLanes *lanes = &state->lanes;
 	StageRunnerLane *other = &lanes->lane[lane->index ^ 1u];
 	SparkStatus status = SPARK_STATUS_OK;
+	if ( lane->collective_created != 0 )
+		return StageRunnerLaneOwnRound(lane, stream_void, operation, stage, rows, row_elements, local, full);
 	if ( (cudaStream_t)stream_void != lane->stream || (stage == SPARK_STAGE_RUNNER_ROUND_FINISH) != (lane->holding != 0u) )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: lane %u refused a stage %u round (holding %u) on its stream %s\n", lane->index, stage,
@@ -1818,6 +1862,10 @@ static void StageRunnerDestroyLanes(SparkStageRunnerState *state)
 				(void)cudaEventDestroy(lane->epoch_event[event]);
 		cudaFree(lane->row_begin);
 		cudaFree(lane->context_length);
+		if ( lane->collective_created != 0 )
+			SparkTpDeviceCollectiveDestroy(&lane->collective);
+		if ( lane->sum_share != 0 )
+			(void)cudaFree(lane->sum_share);
 	}
 	if ( lanes->fork != 0 )
 		(void)cudaEventDestroy(lanes->fork);
@@ -1826,6 +1874,35 @@ static void StageRunnerDestroyLanes(SparkStageRunnerState *state)
 	pthread_cond_destroy(&lanes->wake);
 	pthread_mutex_destroy(&lanes->lock);
 	memset(lanes, 0, sizeof(*lanes));
+}
+
+static SparkStatus StageRunnerLaneCollective(SparkStageRunnerState *state, StageRunnerLane *lane)
+{
+	SparkTpDeviceCollectiveConfig config = state->device_config;
+	SparkStatus status;
+	if ( config.mesh_lane_client == 0 )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: lane %u needs the lane's weightd client to borrow the lane's second mesh band\n", lane->index);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	config.mesh_band_index = 1u;
+	status = SparkTpDeviceCollectiveCreate(&config, &lane->collective);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: lane %u cannot open its own mesh band (status %d); two-lane prefill runs each lane's collectives on its own band\n",
+			lane->index, (int)status);
+		return status;
+	}
+	lane->collective_created = 1;
+	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
+		status = SparkTpDeviceCollectivePrepareReceiveBf16(&lane->collective, (void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr, 0u, 0u, 0u, 0u);
+	if ( status == SPARK_STATUS_OK && state->sum_share != 0 && cudaMalloc((void **)&lane->sum_share, (size_t)state->sum_share_elements * sizeof(uint16_t)) != cudaSuccess )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "sparkpipe_stage_runner: lane %u band setup failed status=%d\n", lane->index, (int)status);
+	else
+		fprintf(stderr, "STAGE-LANE-BAND rank=%u lane=%u band=1 split_sum=%s\n", state->tp_rank, lane->index, lane->sum_share != 0 ? "yes" : "no");
+	return status;
 }
 
 static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
@@ -1870,6 +1947,12 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 		for ( uint32_t event = 0u; event < STAGE_RUNNER_LANE_EPOCH_EVENTS; ++event )
 			if ( cudaEventCreateWithFlags(&lane->epoch_event[event], cudaEventDisableTiming) != cudaSuccess )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( index != 0u )
+		{
+			SparkStatus status = StageRunnerLaneCollective(state, lane);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+		}
 	}
 	if ( pthread_create(&lanes->worker, 0, StageRunnerLaneWorker, lanes) != 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);

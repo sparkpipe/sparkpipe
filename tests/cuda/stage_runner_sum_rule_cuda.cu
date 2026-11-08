@@ -11,6 +11,7 @@ typedef struct FakeRound
 	uint32_t operation;
 	uint32_t stage;
 	uint32_t rows;
+	const SparkTpDeviceCollective *collective;
 } FakeRound;
 
 typedef struct FakeModel
@@ -26,10 +27,12 @@ static pthread_mutex_t fake_lock = PTHREAD_MUTEX_INITIALIZER;
 static FakeRound fake_rounds[FAKE_ROUNDS];
 static uint32_t fake_count;
 static uint32_t fake_paired = 1u;
+static uint32_t fake_created, fake_created_band;
+static struct SparkWeightdClient *fake_created_owner;
 static FakeModel fake_lanes[SPARK_STAGE_RUNNER_LANES];
 static int failures;
 
-static void FakeRecord(uint32_t operation, uint32_t stage, uint32_t rows)
+static void FakeRecord(const SparkTpDeviceCollective *collective, uint32_t operation, uint32_t stage, uint32_t rows)
 {
 	pthread_mutex_lock(&fake_lock);
 	if ( fake_count < FAKE_ROUNDS )
@@ -37,6 +40,7 @@ static void FakeRecord(uint32_t operation, uint32_t stage, uint32_t rows)
 		fake_rounds[fake_count].operation = operation;
 		fake_rounds[fake_count].stage = stage;
 		fake_rounds[fake_count].rows = rows;
+		fake_rounds[fake_count].collective = collective;
 	}
 	fake_count++;
 	pthread_mutex_unlock(&fake_lock);
@@ -51,8 +55,11 @@ void SparkTpDeviceCollectiveRegisterLaunchers(const SparkTpMeshLaunchers *launch
 
 SparkStatus SparkTpDeviceCollectiveCreate(const SparkTpDeviceCollectiveConfig *config, SparkTpDeviceCollective *collective_out)
 {
-	(void)config; (void)collective_out;
-	return SPARK_STATUS_UNSUPPORTED;
+	(void)collective_out;
+	fake_created_band = config->mesh_band_index;
+	fake_created_owner = config->mesh_lane_client;
+	fake_created++;
+	return SPARK_STATUS_OK;
 }
 
 void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
@@ -70,23 +77,20 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(SparkTpDeviceCollective *c
 SparkStatus SparkTpDeviceCollectiveEnqueue(SparkTpDeviceCollective *collective, const SparkTpDeviceCollectiveSubmission *submission,
 	uint32_t operation_kind)
 {
-	(void)collective;
-	FakeRecord(operation_kind, SPARK_STAGE_RUNNER_ROUND_ALL, submission->active_sequence_count);
+	FakeRecord(collective, operation_kind, SPARK_STAGE_RUNNER_ROUND_ALL, submission->active_sequence_count);
 	return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveBegin(SparkTpDeviceCollective *collective, const SparkTpDeviceCollectiveSubmission *submission,
 	uint32_t operation_kind)
 {
-	(void)collective;
-	FakeRecord(operation_kind, SPARK_STAGE_RUNNER_ROUND_BEGIN, submission->active_sequence_count);
+	FakeRecord(collective, operation_kind, SPARK_STAGE_RUNNER_ROUND_BEGIN, submission->active_sequence_count);
 	return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveFinish(SparkTpDeviceCollective *collective)
 {
-	(void)collective;
-	FakeRecord(UINT32_MAX, SPARK_STAGE_RUNNER_ROUND_FINISH, 0u);
+	FakeRecord(collective, UINT32_MAX, SPARK_STAGE_RUNNER_ROUND_FINISH, 0u);
 	return SPARK_STATUS_OK;
 }
 
@@ -326,11 +330,21 @@ int main(void)
 		ExpectRounds(expected, 1u, "a round issued after the prefill step ended keeps the plain all-reduce");
 	}
 	model_interface.lane = FakeLane;
+	Expect(StageRunnerCreateLanes(state) != SPARK_STATUS_OK && fake_created == 0u, "two lanes refuse to start without the lane's weightd client for the second band");
+	StageRunnerDestroyLanes(state);
+	state->device_config.mesh_lane_client = (struct SparkWeightdClient *)&fake_created;
 	Expect(StageRunnerCreateLanes(state) == SPARK_STATUS_OK && state->lanes.created != 0u, "two lanes start");
+	Expect(fake_created == 1u && fake_created_band == 1u && fake_created_owner == (struct SparkWeightdClient *)&fake_created &&
+		state->lanes.lane[0].collective_created == 0 && state->lanes.lane[1].collective_created != 0,
+		"the second lane opens its own collective on the lane's second mesh band, borrowed from the lane's client");
 	{
 		const uint32_t lanes_pair[2] = {pair, pair}, lanes_plain[2] = {plain, plain};
 		Expect(StageRunnerStepBody(state, &runner, &in, prefill, state->stream) == SPARK_STATUS_OK, "a two-lane prefill step runs");
 		Expect(fake_count == 2u && fake_rounds[0].rows + fake_rounds[1].rows == 2048u, "each lane sums its own half of the wave");
+		Expect(fake_count == 2u && fake_rounds[0].collective != fake_rounds[1].collective &&
+			(fake_rounds[0].collective == &state->device_collective || fake_rounds[1].collective == &state->device_collective) &&
+			(fake_rounds[0].collective == &state->lanes.lane[1].collective || fake_rounds[1].collective == &state->lanes.lane[1].collective),
+			"the first lane sums on the runner's band and the second on its own band");
 		ExpectRounds(lanes_pair, 2u, "both lanes of a prefill wave sum pair-first");
 		Expect(StageRunnerStepBody(state, &runner, &in, prefill | verify, state->stream) == SPARK_STATUS_OK, "a two-lane verify step runs");
 		ExpectRounds(lanes_plain, 2u, "both lanes of a prefill dispatch that verifies keep the plain all-reduce");
@@ -387,6 +401,6 @@ int main(void)
 		printf("FAIL stage_runner_sum_rule_cuda: %d failures\n", failures);
 		return 1;
 	}
-	printf("PASS stage_runner_sum_rule_cuda: prefill waves sum pair-first; prefill-verify, decode, verify, small and unpaired waves keep the plain all-reduce; each lane follows its own dispatch\n");
+	printf("PASS stage_runner_sum_rule_cuda: prefill waves sum pair-first; prefill-verify, decode, verify, small and unpaired waves keep the plain all-reduce; each lane follows its own dispatch; the second lane runs its collectives on its own mesh band\n");
 	return 0;
 }
