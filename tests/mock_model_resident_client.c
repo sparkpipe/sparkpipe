@@ -1085,9 +1085,13 @@ static uint32_t MockResidentClientDriveKind(uint32_t kind)
 			continue;
 		for (pass=0u; pass<MOCK_INFLIGHT_CAPACITY; pass++)
 		{
-			uint64_t id = MockResidentClientPendingEvent(c->stage_index,kind,0u);
+			uint64_t id = MockResidentClientPendingEvent(c->stage_index,kind,0u),next;
+			uint32_t ordinal;
 			if ( id == 0u )
 				break;
+			for (ordinal=1u; kind != MOCK_EVENT_DECISION && (next=MockResidentClientPendingEvent(c->stage_index,kind,ordinal)) != 0u; ordinal++)
+				if ( next < id )
+					id = next;
 			drove += MockResidentClientDeliverEvent(c->stage_index,id,kind,MockResidentClientScriptedResult(c,id,kind),1u);
 		}
 	}

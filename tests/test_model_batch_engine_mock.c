@@ -380,13 +380,33 @@ static void TestScenarioRankDiesMidDecode(const SparkModelResidentDeployment *de
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static uint32_t TestLoggedLane(uint64_t request_id,uint32_t any_position,uint64_t position,SparkModelServingLane *lane)
+{
+	SparkModelServingLane logged;
+	uint32_t index,found = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&logged) != 0u; index++)
+		if ( logged.request_id == request_id && (any_position != 0u || logged.sequence_position == position) )
+		{
+			*lane = logged;
+			found = 1u;
+			if ( any_position != 0u )
+				break;
+		}
+	if ( found == 0u && MockResidentClientLastLane(0u,&logged) != 0u && logged.request_id == request_id &&
+		(any_position != 0u || logged.sequence_position == position) )
+	{
+		*lane = logged;
+		found = 1u;
+	}
+	return(found);
+}
+
 static uint32_t TestWaitLane(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t position,SparkModelServingLane *lane)
 {
 	for (uint32_t step = 0u; step < 2000u; step++)
 	{
 		(void)SparkModelBatchEngineProgress(engine,8u);
-		if ( MockResidentClientLastLane(0u,lane) != 0u &&
-		     lane->request_id == request_id && lane->sequence_position == position )
+		if ( TestLoggedLane(request_id,0u,position,lane) != 0u )
 			return(1u);
 		(void)MockResidentClientDriveAll();
 		usleep(1000);
@@ -633,7 +653,7 @@ static uint32_t TestWaitFirstRequestLane(SparkModelBatchEngine *engine,uint64_t 
 	for (uint32_t step=0u; step<2000u; step++)
 	{
 		(void)SparkModelBatchEngineProgress(engine,8u);
-		if ( MockResidentClientLastLane(0u,lane) != 0u && lane->request_id == request_id )
+		if ( TestLoggedLane(request_id,1u,0u,lane) != 0u )
 			return(1u);
 		(void)MockResidentClientDriveAll();
 		usleep(1000);
@@ -2907,6 +2927,123 @@ static uint32_t TestLaneInputsFollowScript(uint64_t request_id,const uint32_t *s
 	return(checked);
 }
 
+static uint32_t TestLoggedPrefillPositions(uint64_t request_id,uint64_t *positions,uint32_t capacity)
+{
+	SparkModelServingLane logged;
+	uint32_t index,count = 0u;
+	for (index=0u; MockResidentClientLaneLog(index,&logged) != 0u; index++)
+		if ( logged.request_id == request_id && MockResidentClientLaneWorkKind(index) == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && count < capacity )
+			positions[count++] = logged.sequence_position;
+	return(count);
+}
+
+static uint32_t TestPendingRange(uint32_t rank,uint32_t kind,uint64_t *oldest,uint64_t *newest)
+{
+	uint64_t id;
+	uint32_t ordinal;
+	*oldest = 0u;
+	*newest = 0u;
+	for (ordinal=0u; (id=MockResidentClientPendingEvent(rank,kind,ordinal)) != 0u; ordinal++)
+	{
+		if ( *oldest == 0u || id < *oldest )
+			*oldest = id;
+		if ( id > *newest )
+			*newest = id;
+	}
+	return(ordinal);
+}
+
+static SparkModelBatchEngine *TestStartPipelinedPrefill(const SparkModelResidentDeployment *deployment,TestBatchState *state,const char *runtime_root,uint32_t *script,uint32_t drive_results)
+{
+	SparkModelBatchEngine *engine;
+	uint32_t index;
+	for (index=0u; index<64u; index++)
+		script[index] = 3000u + index * 3u;
+	MockResidentClientReset();
+	memset(state,0,sizeof(*state));
+	engine = TestConnectRows(deployment,state,runtime_root,8u);
+	if ( engine == 0 )
+		return(0);
+	MockResidentClientSetScript(script,64u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,950u,4u,script,40u);
+	for (index=0u; index<20u; index++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		if ( drive_results != 0u )
+		{
+			(void)MockResidentClientDriveResults();
+			(void)MockResidentClientDriveDecisions();
+		}
+	}
+	return(engine);
+}
+
+static void TestScenarioPipelinedPrefillWaves(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	uint64_t positions[16];
+	uint32_t script[64],count;
+	engine = TestStartPipelinedPrefill(deployment,&state,runtime_root,script,1u);
+	if ( engine == 0 )
+		return;
+	count = TestLoggedPrefillPositions(1u,positions,16u);
+	CHECK(count == TEST_RANKS && positions[0] == 0u && positions[1] == 8u && positions[2] == 16u,
+		"pipelined prefill: a three-stage pipeline keeps three consecutive waves of one prompt in flight before any completes");
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	count = TestLoggedPrefillPositions(1u,positions,16u);
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && TestScriptedOutputMatches(&state,1u,script,40u,4u) != 0u,
+		"pipelined prefill: the request emits exactly the model stream after its overlapped waves");
+	CHECK(count == 5u && positions[3] == 24u && positions[4] == 32u,"pipelined prefill: each prompt position is dispatched once");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPipelinedPrefillOrder(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	SparkModelBatchEngineView view;
+	uint64_t oldest,newest;
+	uint32_t script[64],rank,delivered = 0u;
+	engine = TestStartPipelinedPrefill(deployment,&state,runtime_root,script,1u);
+	if ( engine == 0 )
+		return;
+	for (rank=0u; rank<TEST_RANKS; rank++)
+		if ( TestPendingRange(rank,MOCK_EVENT_COMPLETION,&oldest,&newest) == TEST_RANKS )
+			delivered += MockResidentClientDeliverEvent(rank,newest,MOCK_EVENT_COMPLETION,SPARK_STATUS_OK,1u);
+	CHECK(delivered == TEST_RANKS,"pipelined order: every rank completes the newest wave first");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_SCHEMA_ERROR,
+		"pipelined order: a wave that completes before an earlier wave of its prompt fails the engine instead of committing the wrong token");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioPipelinedPrefillRejected(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t reject_newest)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	uint64_t oldest,newest,positions[16];
+	uint32_t script[64],count,index,repeats = 0u;
+	const uint64_t rejected_position = reject_newest != 0u ? 16u : 0u;
+	const char *label = reject_newest != 0u ? "pipelined newest rejected" : "pipelined oldest rejected";
+	engine = TestStartPipelinedPrefill(deployment,&state,runtime_root,script,0u);
+	if ( engine == 0 )
+		return;
+	CHECK(TestPendingRange(0u,MOCK_EVENT_RESULT,&oldest,&newest) == TEST_RANKS &&
+		MockResidentClientDeliverEvent(0u,reject_newest != 0u ? newest : oldest,MOCK_EVENT_RESULT,SPARK_STATUS_BUSY,1u) != 0u,label);
+	TestDriveUntilTerminal(engine,&state,1u,1600u);
+	count = TestLoggedPrefillPositions(1u,positions,16u);
+	for (index=0u; index<count; index++)
+		repeats += positions[index] == rejected_position ? 1u : 0u;
+	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && TestScriptedOutputMatches(&state,1u,script,40u,4u) != 0u,
+		reject_newest != 0u ? "pipelined newest rejected: the earlier waves complete, the rejected wave is retried, and the stream is exact" :
+			"pipelined oldest rejected: the later waves that ran without its KV are discarded, the prompt restarts, and the stream is exact");
+	CHECK(repeats == 2u,reject_newest != 0u ? "pipelined newest rejected: only the rejected wave is dispatched again" :
+		"pipelined oldest rejected: the prompt start is dispatched again");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestRunScript(const SparkModelResidentDeployment *deployment,const char *runtime_root,const uint32_t *script,uint32_t script_count,uint32_t prompt_count,uint32_t budget,TestBatchState *state,SparkModelBatchEngineView *view,uint32_t *verify_submissions,uint32_t *verify_rows)
 {
 	SparkModelBatchEngine *engine;
@@ -3776,6 +3913,10 @@ int main(void)
 	TestScenarioPrefixIndexRemovesStaleTemporaries(&deployment,runtime_root);
 	TestScenarioStatusReport(&deployment,runtime_root);
 	TestScenarioPartialPrefixAppend(&deployment,runtime_root);
+	TestScenarioPipelinedPrefillWaves(&deployment,runtime_root);
+	TestScenarioPipelinedPrefillOrder(&deployment,runtime_root);
+	TestScenarioPipelinedPrefillRejected(&deployment,runtime_root,1u);
+	TestScenarioPipelinedPrefillRejected(&deployment,runtime_root,0u);
 	TestScenarioChainPublishesFinalCheckpoint(&deployment,runtime_root);
 	TestScenarioChainPublishesAtBlockBoundary(&deployment,runtime_root);
 	TestScenarioSingleTokenEosPublishesTail(&deployment,runtime_root);
