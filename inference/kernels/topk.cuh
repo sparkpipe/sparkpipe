@@ -46,6 +46,51 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 
 #define LM_TOPK_SMALL_LIMIT 1024u
 
+#define LM_TOPK_SELECT_ROUNDS 16u
+
+template<uint32_t THREADS, uint32_t K>
+static __device__ __forceinline__ void LmTopkSelectRounds(uint32_t *keys, uint32_t *slots, uint32_t width)
+{
+	static_assert(THREADS % 32u == 0u && K <= LM_TOPK_SELECT_ROUNDS, "round selection takes whole warps and a short top-k");
+	constexpr uint32_t kPerThread = (LM_TOPK_SMALL_LIMIT + THREADS - 1u) / THREADS;
+	constexpr uint32_t kWarps = THREADS / 32u;
+	__shared__ unsigned long long lm_topk_best[2][kWarps];
+	unsigned long long mine[kPerThread];
+	uint32_t round,item;
+	for (item = 0u; item < kPerThread; ++item)
+	{
+		const uint32_t index = threadIdx.x + item * THREADS;
+		mine[item] = index < width ? ((unsigned long long)keys[index] << 32u) | (unsigned long long)(0xffffffffu - index) : 0ull;
+	}
+	__syncthreads();
+	for (round = 0u; round < K; ++round)
+	{
+		unsigned long long best = 0ull,other;
+		uint32_t step,warp;
+		for (item = 0u; item < kPerThread; ++item)
+			best = mine[item] > best ? mine[item] : best;
+		for (step = 16u; step > 0u; step >>= 1u)
+		{
+			other = __shfl_xor_sync(0xffffffffu, best, step);
+			best = other > best ? other : best;
+		}
+		if ( (threadIdx.x & 31u) == 0u )
+			lm_topk_best[round & 1u][threadIdx.x >> 5u] = best;
+		__syncthreads();
+		best = 0ull;
+		for (warp = 0u; warp < kWarps; ++warp)
+			best = lm_topk_best[round & 1u][warp] > best ? lm_topk_best[round & 1u][warp] : best;
+		for (item = 0u; item < kPerThread; ++item)
+			mine[item] = mine[item] == best ? 0ull : mine[item];
+		if ( threadIdx.x == 0u )
+		{
+			keys[round] = (uint32_t)(best >> 32u);
+			slots[round] = 0xffffffffu - (uint32_t)best;
+		}
+	}
+	__syncthreads();
+}
+
 #define LM_TOPK_MAX_GROUPS 16u
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, uint32_t SCORE_TRANSFORM = LM_TOPK_SCORE_IDENTITY>
@@ -99,29 +144,34 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 				keys[index] = 0u;
 		__syncthreads();
 	}
-	for (size = 2u; size <= width; size <<= 1u)
-		for (stride = size >> 1u; stride > 0u; stride >>= 1u)
-		{
-			for (index = threadIdx.x; index < width; index += THREADS)
+	if constexpr ( K <= LM_TOPK_SELECT_ROUNDS && THREADS % 32u == 0u )
+		LmTopkSelectRounds<THREADS,K>(keys, slots, width);
+	else
+	{
+		for (size = 2u; size <= width; size <<= 1u)
+			for (stride = size >> 1u; stride > 0u; stride >>= 1u)
 			{
-				uint32_t partner = index ^ stride;
-				if ( partner > index )
+				for (index = threadIdx.x; index < width; index += THREADS)
 				{
-					bool descending = ((index & size) == 0u);
-					bool after = keys[index] < keys[partner] || (keys[index] == keys[partner] && slots[index] > slots[partner]);
-					bool swap = descending ? after : !after;
-					if ( swap )
+					uint32_t partner = index ^ stride;
+					if ( partner > index )
 					{
-						uint32_t tk = keys[index],ts = slots[index];
-						keys[index] = keys[partner];
-						slots[index] = slots[partner];
-						keys[partner] = tk;
-						slots[partner] = ts;
+						bool descending = ((index & size) == 0u);
+						bool after = keys[index] < keys[partner] || (keys[index] == keys[partner] && slots[index] > slots[partner]);
+						bool swap = descending ? after : !after;
+						if ( swap )
+						{
+							uint32_t tk = keys[index],ts = slots[index];
+							keys[index] = keys[partner];
+							slots[index] = slots[partner];
+							keys[partner] = tk;
+							slots[partner] = ts;
+						}
 					}
 				}
+				__syncthreads();
 			}
-			__syncthreads();
-		}
+	}
 	if ( threadIdx.x == 0u )
 		LmTopkRouteFault(fault, keys[K - 1u]);
 	for (index = threadIdx.x; index < K; index += THREADS)
@@ -131,7 +181,24 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 			out_values[((uint64_t)blockIdx.x * K) + index] =
 				LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16, base + slots[index]);
 	}
-	if ( RENORMALISE && out_values != 0 )
+	if constexpr ( RENORMALISE && K <= 32u && THREADS >= 32u && THREADS % 32u == 0u )
+	{
+		if ( out_values != 0 && threadIdx.x < 32u )
+		{
+			const float value = threadIdx.x < K ? out_values[((uint64_t)blockIdx.x * K) + threadIdx.x] : 0.0f;
+			float tree = 0.0f + value,total;
+			uint32_t step;
+			for (step = 16u; step > 0u; step >>= 1u)
+			{
+				const float other = __shfl_down_sync(0xffffffffu, tree, step);
+				tree = threadIdx.x < step ? tree + other : tree;
+			}
+			total = __shfl_sync(0xffffffffu, tree, 0) + 1e-20f;
+			if ( threadIdx.x < K )
+				out_values[((uint64_t)blockIdx.x * K) + threadIdx.x] = (value / total) * mixture_scale;
+		}
+	}
+	else if ( RENORMALISE && out_values != 0 )
 	{
 		__shared__ float reduction[LM_TOPK_SMALL_LIMIT];
 		float mine = 0.0f,total;
