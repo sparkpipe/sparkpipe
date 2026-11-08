@@ -9,10 +9,6 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/topk.cuh"
 
-#define PROBE_EXPERTS 256u
-#define PROBE_GROUPS 8u
-#define PROBE_TOP_GROUPS 4u
-#define PROBE_K 8u
 #define PROBE_ROWS 64u
 
 static int probe_failures;
@@ -25,6 +21,7 @@ static void ProbeCheck(int condition, const char *what)
 	probe_failures++;
 }
 
+template<uint32_t PROBE_EXPERTS, uint32_t PROBE_GROUPS, uint32_t PROBE_TOP_GROUPS, uint32_t PROBE_K>
 static std::vector<uint32_t> ProbeReference(const float *logits)
 {
 	const uint32_t per_group = PROBE_EXPERTS / PROBE_GROUPS;
@@ -48,7 +45,8 @@ static std::vector<uint32_t> ProbeReference(const float *logits)
 	return chosen;
 }
 
-int main(void)
+template<uint32_t PROBE_EXPERTS, uint32_t PROBE_GROUPS, uint32_t PROBE_TOP_GROUPS, uint32_t PROBE_K>
+static void ProbeCase(void)
 {
 	std::vector<float> logits((size_t)PROBE_ROWS * PROBE_EXPERTS);
 	uint32_t state = 20261027u, tied_rows = 0u;
@@ -80,7 +78,7 @@ int main(void)
 	for ( uint32_t row = 0u; row < PROBE_ROWS; row++ )
 	{
 		const float *line = logits.data() + (size_t)row * PROBE_EXPERTS;
-		const std::vector<uint32_t> want = ProbeReference(line);
+		const std::vector<uint32_t> want = ProbeReference<PROBE_EXPERTS,PROBE_GROUPS,PROBE_TOP_GROUPS,PROBE_K>(line);
 		double total = 0.0;
 		char what[160];
 		bool tie = false;
@@ -89,21 +87,29 @@ int main(void)
 		for ( uint32_t k = PROBE_K; k < PROBE_EXPERTS && !tie; k++ )
 			tie = line[want[PROBE_K - 1u]] == line[k] && k > want[PROBE_K - 1u];
 		tied_rows += tie ? 1u : 0u;
-		snprintf(what, sizeof(what), "row %u selects the reference experts in order (score descending, lower index first on ties)", row);
+		snprintf(what, sizeof(what), "%u experts, %u groups, top %u: row %u selects the reference experts in order (score descending, lower index first on ties)", PROBE_EXPERTS, PROBE_GROUPS, PROBE_K, row);
 		ProbeCheck(std::equal(want.begin(), want.end(), got.begin() + (size_t)row * PROBE_K), what);
 		for ( uint32_t k = 0u; k < PROBE_K; k++ )
 			total += values[(size_t)row * PROBE_K + k];
-		snprintf(what, sizeof(what), "row %u renormalised weights sum to one", row);
+		snprintf(what, sizeof(what), "%u experts, top %u: row %u renormalised weights sum to one", PROBE_EXPERTS, PROBE_K, row);
 		ProbeCheck(fabs(total - 1.0) < 1e-5, what);
 	}
 	ProbeCheck(tied_rows >= PROBE_ROWS / 4u, "the inputs carry ties at the selection boundary");
 	cudaFree(d_logits); cudaFree(d_values); cudaFree(d_indices);
+	printf("case %u experts, %u groups (top %u), top %u: %u rows with ties at the boundary\n", PROBE_EXPERTS, PROBE_GROUPS, PROBE_TOP_GROUPS, PROBE_K, tied_rows);
+}
+
+int main(void)
+{
+	ProbeCase<256u,8u,4u,8u>();
+	ProbeCase<384u,1u,1u,8u>();
+	ProbeCase<256u,1u,1u,22u>();
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL topk small cuda (%d)\n", probe_failures);
 		return 1;
 	}
-	printf("PASS topk small cuda: %u rows of %u grouped experts select the reference top %u in order, %u rows with ties resolved to the lower expert index\n",
-		PROBE_ROWS, PROBE_EXPERTS, PROBE_K, tied_rows);
+	printf("PASS topk small cuda: grouped 256/8 top 8, ungrouped 384 top 8 (round selection) and 256 top 22 (sort) each select the reference experts in order on %u rows, ties to the lower expert index\n",
+		PROBE_ROWS);
 	return 0;
 }
