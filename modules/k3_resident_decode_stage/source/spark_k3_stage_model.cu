@@ -335,8 +335,11 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 			K3ModelFail(state);
 			return;
 		}
-		K3RunnerRound(state, stream, count, b->index_send, b->index_received,
-			b->index_keep * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)), SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+		const uint32_t width = b->index_keep * (uint32_t)(sizeof(uint2) / sizeof(uint16_t));
+		const uint32_t split = width > K3_HIDDEN ? 2u : 1u;
+		static_assert(K3_INDEX_TOPK * (sizeof(uint2) / sizeof(uint16_t)) / 2u <= K3_HIDDEN, "half an index candidate row fits one collective row");
+		K3RunnerRound(state, stream, count * split, b->index_send, b->index_received,
+			width / split, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
 		return;
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_MHA_PARTIALS )
@@ -1130,10 +1133,11 @@ static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStr
 	return K3StreamedRun(state->streamed, request, services, state->execution_stream);
 }
 
-static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step)
+static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
+	cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
 	uint32_t row, context = 0u;
-	if ( step->graph_key != 0u || step->host_positions == 0 )
+	if ( step->host_positions == 0 || cudaStreamIsCapturing(stream, &capture) != cudaSuccess || capture != cudaStreamCaptureStatusNone )
 		return state->position_capacity;
 	for ( row = 0u; row < step->rows; row++ )
 		if ( step->host_positions[row] + 1u > context )
@@ -1182,7 +1186,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
-		step->rows * K3_TOP_K, K3StepContext(state, step), step->multiprocessors, stream);
+		step->rows * K3_TOP_K, K3StepContext(state, step, stream), step->multiprocessors, stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_CAPACITY )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( status != SPARK_K3_DISPATCH_OK )
