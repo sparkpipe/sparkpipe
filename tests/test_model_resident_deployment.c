@@ -235,7 +235,7 @@ static void TestDraftServer(void)
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"a-target-model-name-of-thirty-two\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":0.35}",
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":0,\"wait_ms\":30,\"min_confidence\":0.35}",
-		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":9,\"wait_ms\":30,\"min_confidence\":0.35}",
+		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":17,\"wait_ms\":30,\"min_confidence\":0.35}",
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":0,\"min_confidence\":0.35}",
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":1001,\"min_confidence\":0.35}",
 		"{\"host\":\"127.0.0.1\",\"port\":7702,\"target_model\":\"kimi-k3\",\"depth\":7,\"wait_ms\":30,\"min_confidence\":1.0}",

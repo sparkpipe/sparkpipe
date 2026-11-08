@@ -100,7 +100,9 @@
    "node_stop": "$HOME/stage-lanes/qwen38_27b/lane9/root/lane.sh stop",
    "api_start": "systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-27b-api || systemd-run --user --unit=kv-qwen38-27b-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_27b-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_27b-kv-api/runtime --port 8461 >> /srv/workspace/sparkpipe/logs/qwen38_27b-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-qwen38-27b-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-27b-api 2>/dev/null; true",
-   "health": "http://127.0.0.1:8461/health"
+   "health": "http://127.0.0.1:8461/health",
+   "hub_start": "cd /srv/workspace/sparkpipe/draftd-q27-dspine && env DRAFTD_UNIT=sparkpipe-draftd-q27 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-q27.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b-dspine-b16-ac90f1df842e DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b/head-e3ccfb68dc41.safetensors DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7731 DRAFTD_DRAFT_PORT=7732 DRAFTD_WINDOW=8176 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_TARGET_EMBED=model.language_model.embed_tokens.weight DRAFTD_TARGET_HEAD=lm_head.weight DRAFTD_TARGET_NORM=model.language_model.norm.weight bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-q27-dspine",
+   "hub_stop": "cd /srv/workspace/sparkpipe/draftd-q27-dspine && env DRAFTD_UNIT=sparkpipe-draftd-q27 bash hub_draftd.sh stop"
   },
   {
    "id": "deepseek-v4.1-flash",

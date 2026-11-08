@@ -1922,6 +1922,7 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 	a->step.gather_context = in->gather_context != 0u ? lanes->host_stage[4] : 0u;
 	b->step = *in;
 	b->step.rows = second;
+	b->step.dispatch_row_offset = in->dispatch_row_offset + first;
 	b->step.hidden_bf16 = in->hidden_bf16 + offset;
 	b->step.positions = in->positions + first;
 	b->step.sequence_of_row = in->sequence_of_row + first;
@@ -2759,9 +2760,9 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 	if ( runner == 0 || runner->private_state == 0 || entries == 0 || entry_count == 0u || entry_count > SPARK_STAGE_RUNNER_TAP_MAX_ENTRIES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->tap_plan.entry_count != 0u || state->model_interface->lane != 0 )
+	if ( state->tap_plan.entry_count != 0u )
 	{
-		fprintf(stderr, "sparkpipe_stage_runner: taps refused: %s\n", state->tap_plan.entry_count != 0u ? "a tap plan is already set" : "the model runs lanes");
+		fprintf(stderr, "sparkpipe_stage_runner: taps refused: a tap plan is already set\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	for ( index = 0u; index < entry_count; ++index )

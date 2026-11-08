@@ -656,6 +656,22 @@ void LmCopyRowsStridedKernel(const uint16_t *__restrict__ source_bf16, uint16_t 
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmAddRowsStridedKernel(const uint16_t *__restrict__ source_bf16, const uint16_t *__restrict__ addend_bf16, uint16_t *__restrict__ destination_bf16,
+	uint32_t rows, uint32_t dimension, uint64_t destination_stride)
+{
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint64_t source;
+	if ( element >= dimension )
+		return;
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		source = ((uint64_t)row * dimension) + element;
+		destination_bf16[((uint64_t)row * destination_stride) + element] = LmFloatToBf16(LmBf16ToFloat(source_bf16[source]) + LmBf16ToFloat(addend_bf16[source]));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmStreamMeanRowsKernel(const uint16_t *__restrict__ streams_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t streams,
 	uint32_t dimension, uint64_t destination_stride)
 {

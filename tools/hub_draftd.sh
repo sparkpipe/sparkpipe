@@ -11,6 +11,9 @@ DRAFT_PORT=${DRAFTD_DRAFT_PORT:-7702}
 CONTEXT_BYTES=${DRAFTD_CONTEXT_BYTES:-8589934592}
 WINDOW=${DRAFTD_WINDOW:-4096}
 RECORD_DIR=${DRAFTD_RECORD_DIR:-}
+TARGET_EMBED=${DRAFTD_TARGET_EMBED:-}
+TARGET_HEAD=${DRAFTD_TARGET_HEAD:-}
+TARGET_NORM=${DRAFTD_TARGET_NORM:-}
 listening() { ss -ltn | grep -c "$TAP_HOST:$TAP_PORT \|127.0.0.1:$DRAFT_PORT " || true; }
 case "${1:-}" in
 start)
@@ -21,6 +24,11 @@ start)
 		case "$path" in */../*|*/..) echo "hub_draftd: $path climbs out of its directory" >&2; exit 1;; esac
 	done
 	test -f "$SOURCE/block_draftd.py" -a -f "$SOURCE/spec_offline/block_drafter.py" || { echo "hub_draftd: $SOURCE lacks block_draftd.py or spec_offline/" >&2; exit 1; }
+	NAMES=""
+	if [ -n "$TARGET_EMBED$TARGET_HEAD$TARGET_NORM" ]; then
+		test -n "$TARGET_EMBED" -a -n "$TARGET_HEAD" -a -n "$TARGET_NORM" -a -n "$SHARD" || { echo "hub_draftd: DRAFTD_TARGET_EMBED, DRAFTD_TARGET_HEAD and DRAFTD_TARGET_NORM name tensors of DRAFTD_TARGET_SHARD; set all three and the shard, or none" >&2; exit 1; }
+		NAMES="--embed '$TARGET_EMBED' --head '$TARGET_HEAD' --norm '$TARGET_NORM'"
+	fi
 	if systemctl --user is-active -q "$UNIT"; then echo "hub_draftd: $UNIT is already active" >&2; exit 1; fi
 	if [ "$(listening)" != 0 ]; then echo "hub_draftd: port $TAP_PORT or $DRAFT_PORT is already in use" >&2; exit 1; fi
 	RECORD=""
@@ -32,7 +40,7 @@ start)
 	mkdir -p "$(dirname "$LOG")"
 	systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 	systemd-run --user --unit="$UNIT" -p Restart="$RESTART" -p RestartSec=10 --working-directory="$SOURCE" bash -c \
-		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' ${SHARD:+--target-shard '$SHARD'} --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window $WINDOW --context-bytes $CONTEXT_BYTES $RECORD >> '$LOG' 2>&1"
+		"exec nice -n 5 python3 block_draftd.py --drafter '$DRAFTER' ${SHARD:+--target-shard '$SHARD'} $NAMES --tap-host $TAP_HOST --tap-port $TAP_PORT --draft-port $DRAFT_PORT --window $WINDOW --context-bytes $CONTEXT_BYTES $RECORD >> '$LOG' 2>&1"
 	for _ in $(seq 1 180); do [ "$(listening)" = 2 ] && break; sleep 2; done
 	if [ "$(listening)" != 2 ]; then echo "hub_draftd: $UNIT did not open both ports; see $LOG" >&2; tail -5 "$LOG" >&2; exit 1; fi
 	grep -a 'DRAFTD-READY' "$LOG" | tail -1
