@@ -32,6 +32,7 @@ class FakeModel:
         self.context_tokens = 4096
         self.max_output_tokens = 1024
         self.reasoning_effort = {}
+        self.reasoning = None
         self.gate = SimpleNamespace(state=lambda: {"waiting": 1 if name == "inside" else 0})
         self.sequences = chat_frontend.SequenceGate(8)
 
@@ -120,7 +121,7 @@ async def run(tmp):
                 check(response.status == 404 and body["error"]["message"].endswith("served: ['open']"), "a public key cannot reach an internal model, and the served list it gets names only the public ones")
             planned = []
 
-            def plan(model, body, headers, scope=None, member=None, pack_request=None):
+            async def plan(model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
                 planned.append(headers)
                 raise chat_frontend.RequestError(400, "planned", "stop after planning")
             frontend.plan = plan
@@ -146,7 +147,7 @@ async def run(tmp):
             release = asyncio.Event()
             answered = []
 
-            def plan_ok(model, body, headers, scope=None, member=None, pack_request=None):
+            async def plan_ok(model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
                 return {"trace": {}, "engine_body": {"prompt_token_ids": list(range(128))}, "prompt_tokens": 128}
 
             async def answer_wait(request, model, body, plan, started):
@@ -187,17 +188,19 @@ async def run(tmp):
                   f"every admitted request completes and the gate returns to idle: {results} {gate.state()}")
             check(await send(with_key) == (200, None), "the key is admitted again once its requests finish")
 
-            class FailingCommands:
-                async def run(self, model, identity, messages, name, argument, memory_off):
+            class FailingMemory:
+                async def call(self, method, request=None, timeout=None):
                     raise chat_frontend.RequestError(503, "engine_unavailable", "the engine is switching")
-            frontend.commands = FailingCommands()
-            frontend.plan = lambda model, body, headers, scope=None, member=None, pack_request=None: {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+
+            async def commanded(model, body, headers, scope=None, member=None, pack_request=None, memory_identity=None):
+                return {"trace": {}, "command": ("compact", "50%"), "identity": None, "messages": [], "memory_off": True}
+            frontend.memory, frontend.plan = FailingMemory(), commanded
             async with session.post(base + "/v1/chat/completions", json={"model": "open", "messages": [{"role": "user", "content": "/compact 50%"}]}) as response:
                 text = await response.text()
                 failed = json.loads(text) if response.content_type == "application/json" else {"error": {"code": text[:60]}}
                 check(response.status == 503 and response.content_type == "application/json" and failed["error"]["code"] == "engine_unavailable",
                       f"a command that hits an engine error answers with the OpenAI error body, not a text 500: {response.status} {failed}")
-            frontend.commands, frontend.plan = None, plan_ok
+            frontend.memory, frontend.plan = None, plan_ok
 
             prompt = list(range(256))
             engine_usage = {"prompt_tokens": 256, "completion_tokens": 4, "prompt_tokens_details": {"cached_tokens": 192}}

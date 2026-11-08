@@ -1166,24 +1166,10 @@
   "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
  "site_dir": "site",
- "chat_memory": {
-  "store": "/srv/workspace/sparkpipe/chat-memory",
-  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret",
-  "open_webui_chat_list": "/srv/workspace/sparkpipe/open-webui-chats.json",
-  "budgets": {
-   "open_budget": 1500,
-   "line_tokens": 48,
-   "group_size": 16,
-   "working_tokens": 24576,
-   "working_context_share": 0.1875,
-   "ledger_tokens": 12288,
-   "ledger_context_share": 0.1,
-   "part_small_tokens": 1024,
-   "part_cap_tokens": 12288,
-   "keep_tokens": 4096,
-   "target_tolerance": 0.25,
-   "target_minimum_tokens": 16384
-  }
+ "memory": {
+  "url": "http://127.0.0.1:8435",
+  "host_listen": "127.0.0.1:8436",
+  "token_file": "memory.token"
  },
  "replay": {
   "directory": "/srv/workspace/sparkpipe/replay",

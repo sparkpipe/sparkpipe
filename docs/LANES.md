@@ -174,5 +174,5 @@ Edit the record, run `tests/test_lane_records.py`, merge, then push and
 restart the lane through the swap controller. A raised `context_tokens`
 ships only after the lane's gate: the engine reports the new limit, short
 outputs match the previous build, a needle near the new maximum is found,
-and chat memory qualifies (docs/CHAT_MEMORY.md). After any hold that touches
+and chat memory qualifies (the memory program's own qualification). After any hold that touches
 a production lane, `audit` must report no findings.

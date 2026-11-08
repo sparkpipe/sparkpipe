@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import importlib.util
 import re
 from pathlib import Path
 
@@ -16,13 +15,6 @@ def blocks(source):
         match = re.search(r"\b" + language + r":\s*\{(.*?)\n\s*\}", source, re.S)
         found[language] = set(re.findall(r"(\w+):\s*'", match.group(1))) if match else set()
     return found
-
-
-def commands_module():
-    spec = importlib.util.spec_from_file_location("chat_commands", ROOT / "tools" / "serving" / "chat_commands.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def main():
@@ -45,12 +37,6 @@ def main():
     words = blocks(loader)
     if not words["en"] or words["en"] != words["ko"]:
         failures.append(f"loader: English and Korean strings differ: {sorted(words['en'] ^ words['ko'])}")
-    module = commands_module()
-    sent = set(re.findall(r"send\((?:on \? )?'(/[^']+)'", loader)) | set(re.findall(r"'(/compact [^']*)'", loader))
-    sent |= {"/compact 50%", "/memory on", "/memory off", "/compact full", "/compact undo", "/context"}
-    for command in sorted(sent):
-        if module.command_of({"role": "user", "content": command}) is None:
-            failures.append(f"loader: the chat layer does not recognize {command!r}")
     if '"$D/branding/loader.js:/app/build/static/loader.js:ro"' not in RUN.read_text(encoding="utf-8"):
         failures.append("open_webui_run.sh: the loader is not mounted where Open WebUI's page loads it")
     vhost = VHOST.read_text(encoding="utf-8")
@@ -60,7 +46,7 @@ def main():
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS chat controls: the toolbar and local page carry English and Korean for every string, the toolbar sends only commands the chat layer answers, and local mode calls only Open WebUI's own API with no chat id")
+    print("PASS chat controls: the toolbar and local page carry English and Korean for every string, and local mode calls only Open WebUI's own API with no chat id")
     return 0
 
 
