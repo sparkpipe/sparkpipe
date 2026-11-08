@@ -1552,6 +1552,13 @@ static void TestRecurrentChainedWaveContinues(void)
 	assert(StepAdmit(&second,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK);
 	assert(StepFinish(&first,SPARK_STATUS_OK,&first_finished) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && first_finished.status == SPARK_STATUS_OK);
+	{
+		static atomic_uint states[TEST_LANES];
+		uint8_t bound_out = 0u;
+		uint64_t sequence_out = 0u,next_out = 0u,row_position = 5u;
+		assert(SparkStageKvBindingContinuity(&BINDING,states,1u,1u,&second.slot,&second.sequence,&row_position,&bound_out,&sequence_out,&next_out) == SPARK_STATUS_OK);
+		assert(bound_out == 1u && sequence_out == 2u && next_out == 5u);
+	}
 	assert(StepClaim(&second) == SPARK_STATUS_OK);
 	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&second.slot,1u,stream) == SPARK_STATUS_OK && RECURRENT.from_buffer == 1u);
 	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
@@ -1561,7 +1568,7 @@ static void TestRecurrentChainedWaveContinues(void)
 	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
 	assert(counters.restores == 1u);
 	Close();
-	printf("A11b chained wave: a resumed prompt's next wave, prepared while the first runs, schedules no restore and continues the state the first wave left: ok\n");
+	printf("A11b chained wave: a resumed prompt's next wave, prepared while the first runs, schedules no restore, passes the submit's continuity check once the first finishes, and continues the state the first wave left: ok\n");
 }
 
 static void TestRecurrentStateSurvivesRestart(void)

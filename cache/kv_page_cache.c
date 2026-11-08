@@ -3660,7 +3660,7 @@ static uint32_t SparkKvLaneChains(const SparkKvLaneTransactions *transactions,co
 {
 	const uint32_t slot = lane->resident_sequence_slot,count = SparkKvLaneQueuedCount(transactions,slot);
 	const SparkKvLaneTransaction *tail;
-	if ( SparkKvLaneQueue(transactions,slot) == 0 || transactions->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY || count >= SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH ||
+	if ( SparkKvLaneQueue(transactions,slot) == 0 || (transactions->lanes[slot].phase == SPARK_KV_LANE_TRANSACTION_EMPTY && count == 0u) || count >= SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH ||
 		lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u || (lane->block_identity_count != 0u && lane->block_identities == 0) )
 		return(0u);
 	tail = count != 0u ? &SparkKvLaneQueue(transactions,slot)[count - 1u] : &transactions->lanes[slot];
@@ -3814,7 +3814,8 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 	uint64_t offset;
 	SparkStatus status,rollback;
 	for (index=0u; index<request->cache_lane_count; index++)
-		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ? 1u : 0u;
+		owned += transactions->lanes[request->cache_lanes[index].resident_sequence_slot].phase != SPARK_KV_LANE_TRANSACTION_EMPTY ||
+			SparkKvLaneQueuedCount(transactions,request->cache_lanes[index].resident_sequence_slot) != 0u ? 1u : 0u;
 	if ( owned != 0u )
 	{
 		status = SparkKvLaneTransactionsPrepareChained(transactions,request);
