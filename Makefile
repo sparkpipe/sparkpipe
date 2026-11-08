@@ -304,6 +304,7 @@ TEST_NAMES := \
     test_kv_cache \
     test_kv_state_retention \
     test_kv_snapshot \
+    test_huge_pages \
     test_kv_page_layout \
 	test_k3_kv_cache \
 	test_k3_llm_defines \
@@ -1195,6 +1196,9 @@ build/test_kv_cache: tests/test_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRAR
 
 build/test_kv_state_retention: tests/test_kv_state_retention.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+
+build/test_huge_pages: tests/test_huge_pages.c include/sparkpipe/spark_huge_pages.h | build
+	$(CC) $(CFLAGS) -Iinclude $< $(LDFLAGS) -o $@
 
 build/test_kv_snapshot: tests/test_kv_snapshot.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
