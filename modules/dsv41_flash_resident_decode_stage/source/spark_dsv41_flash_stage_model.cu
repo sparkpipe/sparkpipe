@@ -550,6 +550,8 @@ static uint32_t D41StageSourceCache(uint32_t stage, uint32_t *sources)
 
 #define D41_FORWARD_ROW_BYTES ((D41_HEAD_DIM + D41_INDEX_DIM) * (uint32_t)sizeof(uint16_t) + (uint32_t)sizeof(uint32_t))
 #define D41_STREAM_ROW_BYTES (D41K_HC * D41_HIDDEN * (uint32_t)sizeof(uint16_t))
+static_assert(D41_STREAM_ROW_BYTES + D41_FORWARD_ROW_BYTES == SPARK_DSV41_FLASH_STAGE_SIDEBAND_ROW_BYTES,
+	"the adapter declares the sideband the stages exchange: four streams and one forwarded cache entry a row");
 
 static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
