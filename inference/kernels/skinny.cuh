@@ -255,7 +255,47 @@ struct LmSkinnySplitScale<LmNvfp4>
 };
 
 template<class Format>
+static __host__ __device__ __forceinline__ constexpr uint32_t LmSkinnyScaleBytes(void)
+{
+	return(LmSkinnyFormat<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 ? (uint32_t)sizeof(float) : 1u);
+}
+
+template<class Format>
+static __device__ __forceinline__ float LmSkinnyScaleGlobal(const LmScaleTensor *scale, uint32_t group)
+{
+	if constexpr ( LmSkinnyFormat<Format>::kScaleEncoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL )
+		return(((const float *)scale->global_data)[group]);
+	else
+		return(1.0f);
+}
+
+template<class Format>
+static __device__ __forceinline__ float LmSkinnyScaleEntry(const uint8_t *entry, float global)
+{
+	constexpr uint32_t encoding = LmSkinnyFormat<Format>::kScaleEncoding;
+	if constexpr ( encoding == LM_SCALE_ENCODING_F32 )
+		return(*(const float *)entry);
+	else if constexpr ( encoding == LM_SCALE_ENCODING_UE8M0 )
+		return(LmUe8m0ToFloat(*entry));
+	else
+	{
+		static_assert(encoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL, "a scaled skinny format reads f32, ue8m0 or ue4m3 scales");
+		return(LmUe4m3ToFloat(*entry) * global);
+	}
+}
+
+template<class Format>
 static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
+{
+	if constexpr ( Format::kScaleGroup == 0u )
+		return(1.0f);
+	else
+		return(LmSkinnyScaleEntry<Format>((const uint8_t *)scale->data + (((uint64_t)group * scale->group_stride_entries) + ((uint64_t)neuron * scale->row_group_stride_entries) + (k / Format::kScaleGroup)) * LmSkinnyScaleBytes<Format>(),
+			LmSkinnyScaleGlobal<Format>(scale,group)));
+}
+
+template<class Format>
+static __device__ __forceinline__ float LmSkinnyScaleByEncoding(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
 {
 	float value;
 	if constexpr ( Format::kScaleGroup == 0u )
@@ -265,6 +305,15 @@ static __device__ __forceinline__ float LmSkinnyScale(const LmScaleTensor *scale
 		value = LmScaleTensorLoadByIndex(scale,((uint64_t)group * scale->group_stride_entries) + ((uint64_t)neuron * scale->row_group_stride_entries) + (k / Format::kScaleGroup));
 		return(scale->encoding == LM_SCALE_ENCODING_UE4M3_F32_GLOBAL ? value * ((const float *)scale->global_data)[group] : value);
 	}
+}
+
+template<class Format, uint32_t ROWS>
+static __device__ __forceinline__ float LmSkinnyRowsScale(const LmScaleTensor *scale, uint32_t group, uint32_t neuron, uint32_t k)
+{
+	if constexpr ( ROWS == 1u )
+		return(LmSkinnyScaleByEncoding<Format>(scale,group,neuron,k));
+	else
+		return(LmSkinnyScale<Format>(scale,group,neuron,k));
 }
 
 template<class Format>
@@ -319,10 +368,10 @@ static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArgument
 			#pragma unroll
 			for ( n = 0u; n < NPG; n++ )
 			{
-				scale = base + u * LANES < chunks ? LmSkinnyScale<Format>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements) : 1.0f;
+				scale = base + u * LANES < chunks ? LmSkinnyRowsScale<Format,ROWS>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements) : 1.0f;
 				if constexpr ( LmSkinnySplitScale<Format>::kSplit )
 				{
-					float high = base + u * LANES < chunks ? LmSkinnyScale<Format>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements + Format::kScaleGroup) : 1.0f;
+					float high = base + u * LANES < chunks ? LmSkinnyRowsScale<Format,ROWS>(&args.scale,group,neuron + n < args.output_dimension ? neuron + n : neuron,(base + u * LANES) * elements + Format::kScaleGroup) : 1.0f;
 					float2 part;
 					#pragma unroll
 					for ( r = 0u; r < ROWS; r++ )
