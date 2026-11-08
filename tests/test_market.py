@@ -881,6 +881,9 @@ def pair_flows(failures, work):
             failures.append("an Hour Fleet offers a first Week to a new customer")
         NOW[0] = kst(2027, 1, 12, 9)
         states = {f["id"]: f["status"] for f in m.public()["fleets"]}
+        board = {f["id"]: f for f in m.public()["fleets"]}
+        if board["F1B"]["pinned"] != [[slot(kst(2027, 1, 11)), slot(kst(2027, 2, 8))]] or board["F4B"]["pinned"] != [] or board["F1A"]["booked"] != board["F1A"]["pinned"]:
+            failures.append(f"the public state does not show pinned Weeks apart from booked hours: {board['F1B']}")
         if (states["F1B"], states["F3B"], states["F4B"]) != ("pinned", "hour-fleet", "hour-fleet") or refused(lambda: m.book_hours(O, {"fleet": "F1B", "start": slot(kst(2027, 1, 12, 12)), "hours": 1})) != (409, "pinned") \
                 or refused(lambda: m.book_hours(O, {"fleet": "F4B", "start": slot(kst(2027, 1, 12, 12)), "hours": 2})):
             failures.append(f"a pinned pair still takes Hours, or an open Hour Fleet does not: {states}")
