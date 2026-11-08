@@ -114,7 +114,7 @@ static_assert(D41_RANK_GROUPS == 0u ? 2u * D41_LOCAL_HEADS == D41_GROUP_HEADS &&
 #define D41_VERIFY_ROWS SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS
 #define D41_PAIR_CACHES 3u
 #define D41_SELECTION_CHUNK 64u
-#define D41_INDEX_PACK 264u
+#define D41_INDEX_PACK D41K_INDEX_PACK(D41_LOCAL_INDEX_HEADS, D41_INDEX_DIM)
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
 #define D41_SKINNY_EXPERT_ROWS 16u
@@ -143,6 +143,8 @@ static_assert(D41_ENGRAM_KV_LOCAL % D41_ENGRAM_KV_SPLIT == 0u && D41_ENGRAM_KV_P
 #define D41_QUERY_JOINED (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK <= D41_HIDDEN ? 1u : 0u)
 #define D41_QUERY_SPLIT ((D41_LOCAL_HEADS * D41_HEAD_DIM + D41_HIDDEN - 1u) / D41_HIDDEN)
 #define D41_QUERY_PART (D41_LOCAL_HEADS * D41_HEAD_DIM / D41_QUERY_SPLIT)
+static_assert(D41_INDEX_PACK >= D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM + D41_LOCAL_INDEX_HEADS,
+	"a rank's index query pack holds all its index heads' queries and their weights");
 static_assert(D41_INDEX_PACK % 8u == 0u && D41_INDEX_PACK <= D41_HIDDEN && (D41_LOCAL_HEADS * D41_HEAD_DIM) % D41_QUERY_SPLIT == 0u &&
 	D41_QUERY_PART <= D41_HIDDEN && D41_QUERY_PART % 8u == 0u,
 	"the local query heads gather as whole collective rows with 16-byte copies, with the index query pack in the same row or its own gather");

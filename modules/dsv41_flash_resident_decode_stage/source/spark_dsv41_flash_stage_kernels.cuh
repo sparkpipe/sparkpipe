@@ -21,6 +21,7 @@
 #define D41K_LATENT 512u
 #define D41K_RECORD (D41K_LATENT + 2u)
 #define D41K_NO_ROW 0xffffffffu
+#define D41K_INDEX_PACK(heads, dimension) (((heads) * ((dimension) + 1u) + 7u) / 8u * 8u)
 #define D41K_FOLD_KEYS 8u
 #define D41K_HC_MIX_ROWS 4u
 #define D41K_HC_MIX_ROWS_FROM 32u
