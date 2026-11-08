@@ -54,6 +54,7 @@ class Frontend:
         self.ready = True
         self.replies = []
         self.calls = []
+        self.budgets = []
         self.cuts = []
         self.continued = []
         self.block = None
@@ -80,6 +81,7 @@ class Frontend:
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         assert kind in ("curator", "curator_render", "stem", "prewarm") and set(trace) == {"chat", "user_message"}, (kind, trace)
+        self.budgets.append((kind, max_tokens))
         if self.block is not None and (self.block_kinds is None or kind in self.block_kinds):
             await self.block.wait()
         if kind in self.fail_kinds:
@@ -237,6 +239,16 @@ async def run():
         assert fourth.layout["working"] == [2] and state["commits"][-1] == key3, "when the curator commits too little, the oldest open exchange is committed"
         record = [json.loads(line) for line in memory.store.path("user-1", "chat-1").read_text().splitlines() if '"commit"' in line][-1]
         assert record["key"] == key3 and record["source"] == "fill"
+        renders = len(frontend.calls)
+        fifth = await turn(memory, frontend, working, 5, "u5w", "a4w", "a5w",
+                           '{"lines": {"e5": "The user asked question 5; the assistant gave answer 5."}, "open": [], "commit": {"e4": "The user asked qu')
+        key4 = cm.exchange_key(conversation(5)[7:9])
+        assert state["pending"]["a5w"]["line"].startswith("The user asked question 5") and state["pending"]["a5w"]["source"] == "curator", state["pending"]["a5w"]
+        assert len(frontend.calls) == renders + 1 and fifth.layout["working"] == [3], "a reply cut short in its commits keeps its lines and is not rendered again"
+        assert state["commits"][-1] == key4 and [json.loads(line) for line in memory.store.path("user-1", "chat-1").read_text().splitlines() if '"commit"' in line][-1]["source"] == "fill", \
+            "the commit the cut reply did not finish is filled oldest first"
+        assert [tokens for kind, tokens in frontend.budgets if kind.startswith("curator")][-1] == memory.curator_tokens + 80 + 60, \
+            "a render that also commits has room for its line and for the commit it is expected to make"
         refused_final = cm.parse_commits('{"commit": {"e1": "The user asked a question."}}', {"sizes": {0: 5}}, conversation(2)[1:2] and [conversation(2)[1:3]], {key1: "The user asked question 1 about Ostrel-7."})
         assert refused_final == {0: None}, "a final line that drops a name or number of the earlier line falls back to the earlier line"
 

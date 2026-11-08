@@ -153,6 +153,9 @@ async def run():
         frontend.reply = "not json"
         reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
         check("nothing changed" in reply and memory.store.load(*identity)["compaction"]["summary"].startswith("Everything"), "a bad answer changes nothing")
+        frontend.reply = '{"keep": ["e2"], "summary": "Cut short (e1'
+        reply = await commands.run(model, identity, long_chat + [{"role": "user", "content": "/compact 50%"}], "compact", "50%", False)
+        check("nothing changed" in reply and memory.store.load(*identity)["compaction"]["summary"].startswith("Everything"), "an answer cut inside its summary changes nothing")
         await commands.run(model, identity, [], "compact", "undo", False)
         check(commands.compacted(identity, long_chat + [{"role": "user", "content": "q"}]) == long_chat + [{"role": "user", "content": "q"}], "undo restores the full chat")
         check(await commands.run(model, None, [], "context", "", False) == "Commands need a signed-in Open WebUI chat: this request carries no chat identity.", "no identity")

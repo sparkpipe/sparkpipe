@@ -112,6 +112,12 @@ assert opened == ["e2"], opened
 lines, opened, complete = cm.parse_curator('{"lines": {"e4": "only one"}}', missing, 5, sizes, 1000)
 assert not complete and lines == {3: "only one"}
 assert cm.parse_curator("no json here", missing, 5, sizes, 1000) == (None, [], False)
+cut = '{"lines": {"e4": "The user asked A.", "e5": "The user asked B."}, "open": ["e1"], "commit": {"e2": "=", "e3": "The user as'
+assert cm.reply_fields(cut) == {"lines": {"e4": "The user asked A.", "e5": "The user asked B."}, "open": ["e1"]}, "a reply cut short keeps every field it finished"
+assert cm.parse_curator(cut, missing, 5, sizes, 1000) == ({3: "The user asked A.", 4: "The user asked B."}, ["e1"], True)
+assert cm.parse_curator('{"lines": {"e4": "The user asked A.", "e5": "The us', missing, 5, sizes, 1000) == (None, [], False), "a reply cut inside its lines keeps none"
+assert cm.reply_fields('{"lines": {"e4": "it said \\"open\\": [9] here"}, "open": ["e1"], "commit": {"e2": "Th') == {"lines": {"e4": 'it said "open": [9] here'}, "open": ["e1"]}, "a field name quoted inside a line is not a field"
+assert cm.commit_fill({"sizes": {0: 30, 1: 50, 2: 40}, "needed": 70}, {}) == [0, 1] and cm.commit_fill({"sizes": {0: 30, 1: 50, 2: 40}, "needed": 70}, {1: None}) == [0]
 assert cm.fallback_line([{"role": "user", "content": "What is 2+2? Please"}, {"role": "assistant", "content": "It is 4. Nothing else."}]) == "(auto) The user said: What is 2+2? Please; the assistant answered: It is 4."
 
 with tempfile.TemporaryDirectory() as tmp:

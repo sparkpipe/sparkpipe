@@ -40,6 +40,17 @@ What is built (`tools/serving/chat_memory.py`):
   when it arrives, and opens every batch as that identity under the batch's
   own turn ids: a long history takes as long as its batches do, past the life
   of the token it was sent with.
+- **Curator replies.** One curator reply writes the lines asked for, then the
+  open list, the groups, the kept sections and the commits. Its output budget
+  is 160 tokens, plus 80 per line asked and per group, 10 per listed tool
+  part, and 60 per exchange the commit is expected to take: the oldest open
+  exchanges that free what it needs, the same ones a fill would commit. A
+  reply cut short keeps every field it finished. Its lines stand, and a
+  commit it did not finish is filled oldest first, as when the curator
+  commits too little. In the LongMemEval_S bench's imports on Qwen 3.8 27B,
+  the old budget (160 plus 80 per line) cut 340 of the 419 renders that also
+  committed. A cut reply was rendered again, and a second cut fell back, so
+  about one line in eight was only the first words of its exchange.
 
 ## Goal
 

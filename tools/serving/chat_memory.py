@@ -581,13 +581,45 @@ def keeps_facts(earlier, final):
     return all(fact in final for fact in LINE_FACTS.findall(earlier or ""))
 
 
-def parse_commits(text, plan, exchanges, lines):
+REPLY_FIELD = re.compile(r'"(lines|open|groups|keep|commit)"\s*:\s*')
+
+
+def reply_fields(text):
+    start = text.find("{")
+    if start < 0:
+        return None
+    decoder = json.JSONDecoder()
     try:
-        start, end = text.index("{"), text.rindex("}")
-        data = json.loads(text[start:end + 1])
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    raw = data.get("commit") if isinstance(data, dict) else None
+        data = decoder.raw_decode(text, start)[0]
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    fields, end = {}, start
+    for match in REPLY_FIELD.finditer(text, start):
+        if match.start() < end:
+            continue
+        try:
+            value, end = decoder.raw_decode(text, match.end())
+        except json.JSONDecodeError:
+            continue
+        fields.setdefault(match.group(1), value)
+    return fields or None
+
+
+def commit_fill(plan, chosen):
+    freed, filled = sum(plan["sizes"][index] for index in chosen), []
+    for index in sorted(plan["sizes"]):
+        if freed >= plan["needed"]:
+            break
+        if index not in chosen:
+            filled.append(index)
+            freed += plan["sizes"][index]
+    return filled
+
+
+def parse_commits(text, plan, exchanges, lines):
+    data = reply_fields(text)
+    raw = data.get("commit") if data else None
     if not isinstance(raw, dict):
         return {}
     chosen = {}
@@ -640,12 +672,8 @@ def keep_instruction(large, small, keep_tokens, when="from the next turn on"):
 
 
 def parse_keep(text, large, keep_tokens, size):
-    try:
-        start, end = text.index("{"), text.rindex("}")
-        data = json.loads(text[start:end + 1])
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    raw = data.get("keep") if isinstance(data, dict) else None
+    data = reply_fields(text)
+    raw = data.get("keep") if data else None
     if not isinstance(raw, dict):
         return {}
     kept, spent = {}, 0
@@ -673,12 +701,8 @@ def clean_line(line):
 
 
 def parse_groups(text, wanted):
-    try:
-        start, end = text.index("{"), text.rindex("}")
-        data = json.loads(text[start:end + 1])
-    except (ValueError, json.JSONDecodeError):
-        return {}
-    raw = data.get("groups") if isinstance(data, dict) else None
+    data = reply_fields(text)
+    raw = data.get("groups") if data else None
     if not isinstance(raw, dict):
         return {}
     return {gid: clean_line(raw.get(gid)) for gid in wanted if clean_line(raw.get(gid))}
@@ -686,12 +710,8 @@ def parse_groups(text, wanted):
 
 def parse_curator(text, missing, exchange_count, node_tokens, open_budget):
     lines, opened = {}, []
-    try:
-        start, end = text.index("{"), text.rindex("}")
-        data = json.loads(text[start:end + 1])
-    except (ValueError, json.JSONDecodeError):
-        return None, [], False
-    if not isinstance(data, dict):
+    data = reply_fields(text)
+    if data is None:
         return None, [], False
     raw_lines = data.get("lines")
     if isinstance(raw_lines, dict):
@@ -1483,7 +1503,9 @@ class Memory:
         else:
             messages = job["messages"] + [{"role": "assistant", "content": job["content"]}, {"role": "user", "content": instruction}]
             ids, reasoning_open = self.frontend.memory_curator_ids(model, messages, session.tools, session.kwargs, profile.curator_suffix, CURATOR_REPLY)
-        text = replied(CURATOR_REPLY, await self.frontend.memory_complete(model, ids, self.curator_tokens + 80 * len(indices), reasoning_open,
+        reply_tokens = (self.curator_tokens + 80 * (len(indices) + len(planned)) + 10 * len(large)
+                        + 60 * (len(commit_fill(commit_plan, {})) if commit_plan else 0))
+        text = replied(CURATOR_REPLY, await self.frontend.memory_complete(model, ids, reply_tokens, reasoning_open,
                                                                            "curator" if continued is not None else "curator_render", session.trace()))
         lines, opened, complete = parse_curator(text, indices, len(everything), sizes, profile.open_budget)
         if lines is None:
@@ -1518,17 +1540,11 @@ class Memory:
 
     def apply_commits(self, session, plan, chosen):
         state = self.store.load(session.user, session.chat)
-        freed = sum(plan["sizes"][index] for index in chosen)
-        for index in sorted(plan["sizes"]):
-            if freed >= plan["needed"]:
-                break
-            if index in chosen:
-                continue
+        for index in commit_fill(plan, chosen):
             key = exchange_key(session.exchanges[index])
             if key not in state["lines"]:
                 self.store.append(session.user, session.chat, {"type": "line", "key": key, "line": fallback_line(session.exchanges[index]), "source": "fallback"})
             chosen[index] = None
-            freed += plan["sizes"][index]
         for index in sorted(chosen):
             self.store.append(session.user, session.chat, {"type": "commit", "key": exchange_key(session.exchanges[index]), "line": chosen[index],
                                                            "source": "curator" if index in plan.get("asked", ()) else "fill"})

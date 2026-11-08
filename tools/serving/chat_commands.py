@@ -80,15 +80,8 @@ def strip(messages):
     return kept
 
 
-def parse_choice(text, ids):
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return None
-    try:
-        value = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(value, dict) or not isinstance(value.get("keep"), list) or not isinstance(value.get("summary"), str):
+def parse_choice(value, ids):
+    if not value or not isinstance(value.get("keep"), list) or not isinstance(value.get("summary"), str):
         return None
     return [item for item in value["keep"] if item in ids], value["summary"].strip()
 
@@ -270,7 +263,7 @@ class Commands:
             return (f"{model.id}가 아직 로드 중이거나 다른 모델로 바뀌는 중이라 압축하지 않았습니다. 모델이 답하면 다시 시도하세요." if ko else
                     f"{model.id} is loading or the fleet is switching models, so nothing was compacted; try again once it answers.")
         text = await self.frontend.memory_complete(model, prompt_ids, answer_tokens, reasoning_open, "compact", {"chat": identity[1][:12], "user_message": "compact"})
-        choice = parse_choice(text, ids)
+        choice = parse_choice(self.module.reply_fields(text), ids)
         if choice is None:
             return ("모델의 압축 응답이 요청한 JSON이 아니어서 아무것도 바뀌지 않았습니다. 다시 시도하세요." if ko else
                     "The model's compaction answer was not the JSON it was asked for; nothing changed. Try again.")
