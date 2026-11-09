@@ -396,6 +396,7 @@ PYTHON_TESTS := \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
 	tests/test_metal_stage_run_inputs.py \
+	tests/test_qwen38_pack_geometry.py \
 	tests/test_metal_gate_summary.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_arm.py \

@@ -359,6 +359,7 @@ def finish(packs, revision, contract_sha256, codec):
 
 
 def main():
+    global TP, NAME
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -368,7 +369,6 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--name", default=NAME, help="the pack's model name and file prefix, such as qwen38_27b or qwen35_4b")
     args = parser.parse_args()
-    global TP, NAME
     TP, NAME = args.tp_degree, args.name
     configure(json.loads((args.checkpoint / "config.json").read_text()))
     revision = json.loads((args.checkpoint / "DOWNLOAD-RECEIPT.json").read_text()).get("revision", "unknown")
