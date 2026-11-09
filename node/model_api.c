@@ -330,15 +330,8 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 			r->accepted_ns = ev->monotonic_ns;
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
 		{
-			uint32_t stop_index;
-			int is_request_stop = 0;
-			for ( stop_index = 0u; stop_index < r->stop_token_count; ++stop_index )
-				if ( r->stop_tokens[stop_index] == ev->token_id )
-				{
-					is_request_stop = 1;
-					break;
-				}
-			if (is_request_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
+			const int is_stop = (ev->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u;
+			if (is_stop == 0 && r->tokens_json_len + API_TOKEN_TEXT_BYTES < r->tokens_json_capacity &&
 				r->output_token_count < r->max_tokens)
 			{
 				r->tokens_json_len += (uint32_t)snprintf(
@@ -980,7 +973,7 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	{
 		uint32_t v;
 		if (e < 0 || SparkJsonGetUInt32(doc, e, &v) != SPARK_STATUS_OK ||
-			v > 260000)
+			v > Sidecar.tokenizer.maximum_token_id)
 		{
 			free(tokens);
 			return 0;
@@ -1645,10 +1638,13 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 			free(stops);
 		}
 	}
-	if (chat_request != 0u && request_stop_count == 0u && ChatStopTokenCount != 0u)
+	for (uint32_t marker = 0u; chat_request != 0u && marker < ChatStopTokenCount; ++marker)
 	{
-		memcpy(request_stops, ChatStopTokens, ChatStopTokenCount * sizeof(uint32_t));
-		request_stop_count = ChatStopTokenCount;
+		uint32_t present = 0u;
+		for (uint32_t index = 0u; index < request_stop_count; ++index)
+			present |= request_stops[index] == ChatStopTokens[marker] ? 1u : 0u;
+		if (present == 0u && request_stop_count < API_MAX_STOP_TOKENS)
+			request_stops[request_stop_count++] = ChatStopTokens[marker];
 	}
 	mt = SparkJsonFindObjectMember(&doc, root, "max_tokens");
 	if (mt >= 0)
