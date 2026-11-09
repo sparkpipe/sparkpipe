@@ -76,6 +76,7 @@ typedef struct SparkSpeculationFrameChoice
 uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled);
 uint32_t SparkSpeculationFrameModelClass(uint32_t sampled);
 uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class);
+float SparkSpeculationFrameReach(float previous, float path, float observed, float predicted, float prior);
 uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index);
 uint32_t SparkSpeculationFrameRowBucket(uint32_t rows);
 uint32_t SparkSpeculationFrameRowBucketLimit(uint32_t bucket);
