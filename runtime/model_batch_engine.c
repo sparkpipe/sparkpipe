@@ -110,6 +110,8 @@ typedef struct SparkModelBatchRequestState
 	SparkSha256Context cache_published_digest_context;
 	uint32_t draft_count;
 	uint32_t drafts_disabled;
+	uint32_t cache_point_count;
+	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 	uint32_t model_draft_rows;
 	uint32_t draft_class;
 	uint32_t draft_match;
@@ -2212,6 +2214,12 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->stop_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT || (request->stop_token_count != 0u && request->stop_token_ids == 0) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->cache_point_count > SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (uint32_t point=0u; point<request->cache_point_count; point++)
+		if ( request->cache_points[point] == 0u || request->cache_points[point] >= request->prompt_token_count ||
+			(point != 0u && request->cache_points[point] <= request->cache_points[point - 1u]) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkSamplingTopPValid(request->top_p) == 0u || request->top_k > SPARK_SAMPLING_MAX_TOP_K || request->logprobs > SPARK_SAMPLING_MAX_LOGPROBS ||
 		(request->temperature == 0.0f && (request->top_p != 1.0f || request->top_k != 0u)) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -2261,6 +2269,13 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
+	state->cache_point_count = 0u;
+	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u; point++)
+	{
+		uint32_t aligned = request->cache_points[point] / engine->cache_block_token_count * engine->cache_block_token_count;
+		if ( aligned != 0u && (state->cache_point_count == 0u || aligned > state->cache_points[state->cache_point_count - 1u]) )
+			state->cache_points[state->cache_point_count++] = aligned;
+	}
 	state->stop_token_count = request->stop_token_count;
 	if ( request->stop_token_count != 0u )
 		memcpy(state->stop_token_ids,request->stop_token_ids,(size_t)request->stop_token_count * sizeof(uint32_t));
@@ -2422,6 +2437,22 @@ static uint32_t SparkModelBatchPromptCheckpoint(
 	return(request->prompt_token_count - 1u);
 }
 
+static uint32_t SparkModelBatchNextCachePoint(const SparkModelBatchRequestState *request,uint32_t after)
+{
+	for (uint32_t point=0u; point<request->cache_point_count; point++)
+		if ( request->cache_points[point] > after )
+			return(request->cache_points[point]);
+	return(0u);
+}
+
+static uint32_t SparkModelBatchIsCachePoint(const SparkModelBatchRequestState *request,uint32_t token_count)
+{
+	for (uint32_t point=0u; point<request->cache_point_count; point++)
+		if ( request->cache_points[point] == token_count )
+			return(1u);
+	return(0u);
+}
+
 static uint32_t SparkModelBatchPublishKeepsState(
 	const SparkModelBatchEngine *engine,
 	const SparkModelBatchRequestState *request,
@@ -2432,7 +2463,7 @@ static uint32_t SparkModelBatchPublishKeepsState(
 	if ( checkpoint == 0u || publish_token_count % checkpoint == 0u )
 		return(1u);
 	return(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
-		publish_token_count == SparkModelBatchPromptCheckpoint(engine,request) ? 1u : 0u);
+		(publish_token_count == SparkModelBatchPromptCheckpoint(engine,request) || SparkModelBatchIsCachePoint(request,publish_token_count) != 0u) ? 1u : 0u);
 }
 
 static uint32_t SparkModelBatchDeferring(const SparkModelBatchRequestState *request)
@@ -2457,8 +2488,11 @@ static uint32_t SparkModelBatchPrefillSpan(
 	{
 		uint32_t computed = request->computed_prompt_token_count,checkpoint = engine->adapter_descriptor->cache_checkpoint_token_count;
 		uint32_t prompt_checkpoint = SparkModelBatchPromptCheckpoint(engine,request),next = (computed / checkpoint + 1u) * checkpoint;
+		uint32_t declared = SparkModelBatchNextCachePoint(request,computed);
 		if ( prompt_checkpoint > computed && prompt_checkpoint < computed + span )
 			span = prompt_checkpoint - computed;
+		if ( declared != 0u && declared < computed + span )
+			span = declared - computed;
 		if ( next < computed + span )
 			span = next - computed;
 	}
@@ -2994,6 +3028,9 @@ static uint32_t SparkModelBatchStateTarget(
 	prompt = SparkModelBatchPromptCheckpoint(engine,request);
 	if ( prompt >= context_token_count && prompt < target )
 		target = prompt;
+	next = context_token_count != 0u ? SparkModelBatchNextCachePoint(request,context_token_count - 1u) : SparkModelBatchNextCachePoint(request,0u);
+	if ( next != 0u && next < target )
+		target = next;
 	return(target);
 }
 

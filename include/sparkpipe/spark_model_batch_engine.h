@@ -13,6 +13,7 @@ extern "C" {
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
+#define SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS 4u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
 #define SPARK_MODEL_BATCH_PRIORITY_BACKGROUND 0u
@@ -109,6 +110,8 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t drafts_disabled;
 	uint32_t stop_token_count;
 	const uint32_t *stop_token_ids;
+	uint32_t cache_point_count;
+	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
