@@ -2217,8 +2217,7 @@ static SparkStatus SparkModelBatchValidateSubmit(
 	if ( request->cache_point_count > SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (uint32_t point=0u; point<request->cache_point_count; point++)
-		if ( request->cache_points[point] == 0u || request->cache_points[point] >= request->prompt_token_count ||
-			(point != 0u && request->cache_points[point] <= request->cache_points[point - 1u]) )
+		if ( request->cache_points[point] == 0u || (point != 0u && request->cache_points[point] <= request->cache_points[point - 1u]) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkSamplingTopPValid(request->top_p) == 0u || request->top_k > SPARK_SAMPLING_MAX_TOP_K || request->logprobs > SPARK_SAMPLING_MAX_LOGPROBS ||
 		(request->temperature == 0.0f && (request->top_p != 1.0f || request->top_k != 0u)) )
@@ -2270,7 +2269,8 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
 	state->cache_point_count = 0u;
-	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u; point++)
+	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
+		request->cache_points[point] < request->prompt_token_count; point++)
 	{
 		uint32_t aligned = request->cache_points[point] / engine->cache_block_token_count * engine->cache_block_token_count;
 		if ( aligned != 0u && (state->cache_point_count == 0u || aligned > state->cache_points[state->cache_point_count - 1u]) )

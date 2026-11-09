@@ -2591,7 +2591,7 @@ static SparkStatus TestSubmitWithCachePoints(SparkModelBatchEngine *engine,uint6
 
 static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
-	static const uint32_t point[1] = {10u},beyond[1] = {18u},backwards[2] = {9u,5u};
+	static const uint32_t points[2] = {10u,18u},backwards[2] = {9u,5u};
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelServingLane lane = {0};
@@ -2605,10 +2605,9 @@ static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *d
 		return;
 	MockResidentClientSetAutoTokens(1u);
 	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
-	CHECK(TestSubmitWithCachePoints(engine,1u,790u,first,18u,beyond,1u) == SPARK_STATUS_INVALID_ARGUMENT &&
-		TestSubmitWithCachePoints(engine,2u,791u,first,18u,backwards,2u) == SPARK_STATUS_INVALID_ARGUMENT,
-		"declared cache point: a point at or past the prompt end, or points out of order, are refused");
-	CHECK(TestSubmitWithCachePoints(engine,3u,792u,first,18u,point,1u) == SPARK_STATUS_OK,"declared cache point: a prompt may name where its shared prefix ends");
+	CHECK(TestSubmitWithCachePoints(engine,2u,791u,first,18u,backwards,2u) == SPARK_STATUS_INVALID_ARGUMENT,"declared cache point: points out of order are refused");
+	CHECK(TestSubmitWithCachePoints(engine,3u,792u,first,18u,points,2u) == SPARK_STATUS_OK,
+		"declared cache point: a prompt may name where its shared prefix ends, and a point at its end is ignored, since that state is kept anyway");
 	TestDriveUntilTerminal(engine,&state,3u,800u);
 	count = TestPrefillPublishes(3u,18u,ends,stateful,8u);
 	for (index=0u; index<count; index++)
