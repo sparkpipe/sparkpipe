@@ -238,6 +238,13 @@ def main():
         (job / "result.json").write_text(json.dumps({"id": "job", "stats": {}}))
         scored = tmp / "tb21.json"
         tool.harbor_score(arguments("harbor-score", "--job", str(job), "--harness", "claude-code", "--model", "kimi-k3", "--label", "k3tb", "--output", str(scored)))
+        second = tmp / "jobs" / "k3-tb21-b"
+        (second / "d__1").mkdir(parents=True)
+        (second / "d__1" / "result.json").write_text(json.dumps({"task_name": "d", "trial_name": "d__1", "verifier_result": {"rewards": {"reward": 1.0}}}))
+        merged = tmp / "tb21-merged.json"
+        tool.harbor_score(arguments("harbor-score", "--job", str(job), "--job", str(second), "--harness", "claude-code", "--model", "kimi-k3", "--label", "k3tb",
+                                    "--output", str(merged)))
+        check(json.loads(merged.read_text())["planned"] == 4 and json.loads(merged.read_text())["resolved"] == 2.5, "harbor-score did not merge two jobs")
         result = json.loads(scored.read_text())
         check(result["planned"] == 3 and result["trials"] == 4 and result["resolved"] == 1.5 and result["pass_rate"] == 0.5,
               f"the Harbor score does not average attempts per task: {result}")
@@ -256,6 +263,9 @@ def main():
         tool.agent_config(arguments("agent-config", "--harness", "codex", "--endpoint", "http://127.0.0.1:18433", "--model", "glm-5.3",
                                     "--context", "786432", "--output", str(native)))
         check(native.read_text() == tool.codex_config("http://127.0.0.1:18433", "glm-5.3", 786432, 32768), "the Harbor Codex config differs from the runner's")
+        internal = tool.claude_settings("http://127.0.0.1:18433", "glm-5.3", 786432, key_helper=False, door="internal")
+        check("ANTHROPIC_CUSTOM_HEADERS" not in internal["env"] and "X-SparkPipe-Public" not in tool.codex_config("http://x", "m", 1000, 10, "internal"),
+              "the internal door still sends the public header")
     for failure in check.failures:
         print(f"FAIL test_agent_task_eval: {failure}")
     if check.failures:

@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 HARNESSES = ("claude-code", "codex")
+DOORS = ("public", "internal")
 PACKAGES = {"claude-code": "@anthropic-ai/claude-code-{platform}", "codex": "@openai/codex"}
 CODEX_PLATFORM_TAGS = {"linux-arm64": "linux-arm64", "linux-x64": "linux-x64"}
 AGENTS_MOUNT = "/opt/sparkpipe-agents"
@@ -96,12 +97,14 @@ def container_name(label, instance_id):
     return NAME_CHARACTERS.sub("-", f"ate-{label}-{instance_id}")[:120]
 
 
-def claude_settings(endpoint, model, context, key_helper=True):
+def claude_settings(endpoint, model, context, key_helper=True, door="public"):
     settings = {"env": {
         "ANTHROPIC_BASE_URL": endpoint, "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": model, "CLAUDE_CODE_SUBAGENT_MODEL": model,
         "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(context), "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1", "ANTHROPIC_CUSTOM_HEADERS": f"{PUBLIC_HEADER}: 1",
+        "CLAUDE_CODE_ATTRIBUTION_HEADER": "0", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
         "DISABLE_AUTOUPDATER": "1", "IS_SANDBOX": "1"}}
+    if door == "public":
+        settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] = f"{PUBLIC_HEADER}: 1"
     if key_helper:
         settings["apiKeyHelper"] = READ_KEY
     return settings
@@ -117,11 +120,13 @@ def toml_value(value):
     return json.dumps(value)
 
 
-def codex_config(endpoint, model, context, output_tokens):
+def codex_config(endpoint, model, context, output_tokens, door="public"):
     root = [("model", model), ("model_provider", "sparkpipe"), ("model_context_window", context),
             ("model_auto_compact_token_limit", context - output_tokens), ("approval_policy", "never"), ("sandbox_mode", "danger-full-access")]
     provider = [("name", "SparkPipe"), ("base_url", endpoint + "/v1"), ("env_key", "SPARKPIPE_API_KEY"), ("wire_api", "responses"),
-                ("stream_idle_timeout_ms", 600000), ("model_catalog_url", endpoint + "/v1/codex/models"), ("http_headers", {PUBLIC_HEADER: "1"})]
+                ("stream_idle_timeout_ms", 600000), ("model_catalog_url", endpoint + "/v1/codex/models")]
+    if door == "public":
+        provider.append(("http_headers", {PUBLIC_HEADER: "1"}))
     lines = [f"{key} = {toml_value(value)}" for key, value in root]
     lines += ["", "[model_providers.sparkpipe]"] + [f"{key} = {toml_value(value)}" for key, value in provider]
     return "\n".join(lines) + "\n"
@@ -211,9 +216,9 @@ def run_task(task, arguments, docker, output, lock, deadline):
         record["base_commit_ok"] = head == task.get("base_commit")
         docker.write(name, TASK_FILE, PROMPT.format(problem=task["problem_statement"], workdir=WORKDIR))
         if arguments.harness == "claude-code":
-            docker.write(name, "/root/.claude/settings.json", json.dumps(claude_settings(arguments.endpoint, arguments.model, arguments.context), indent=1))
+            docker.write(name, "/root/.claude/settings.json", json.dumps(claude_settings(arguments.endpoint, arguments.model, arguments.context, door=arguments.door), indent=1))
         else:
-            docker.write(name, "/root/.codex/config.toml", codex_config(arguments.endpoint, arguments.model, arguments.context, arguments.output_tokens))
+            docker.write(name, "/root/.codex/config.toml", codex_config(arguments.endpoint, arguments.model, arguments.context, arguments.output_tokens, arguments.door))
         agent_started = time.monotonic()
         with open(log_path, "wb") as log, open(output / "logs" / f"{task['instance_id']}.stderr", "wb") as errors:
             done = subprocess.run([docker.executable, "exec", "-w", WORKDIR, "-e", "HOME=/root", name, "sh", "-c",
@@ -266,7 +271,7 @@ def run(arguments):
                                     "dataset": document.get("dataset"), "dataset_sha256": document.get("dataset_sha256"), "seed": document.get("seed"),
                                     "tasks": [task["instance_id"] for task in document["tasks"] if not wanted or task["instance_id"] in wanted], "agent_sha256": hashlib.sha256(agent.read_bytes()).hexdigest(),
                                     "agent_version": (Path(arguments.agents) / "VERSIONS").read_text() if (Path(arguments.agents) / "VERSIONS").exists() else None,
-                                    "context": arguments.context, "timeout_s": arguments.timeout, "max_turns": arguments.max_turns,
+                                    "context": arguments.context, "timeout_s": arguments.timeout, "max_turns": arguments.max_turns, "door": arguments.door,
                                     "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                     "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=1) + "\n")
     docker, lock = Docker(arguments.docker), threading.Lock()
@@ -319,7 +324,7 @@ def trial_results(job):
 
 
 def harbor_score(arguments):
-    trials = trial_results(arguments.job)
+    trials = [trial for job in arguments.job for trial in trial_results(job)]
     if not trials:
         raise SystemExit(f"agent_task_eval: {arguments.job} holds no Harbor trial results")
     tasks = {}
@@ -339,16 +344,16 @@ def harbor_score(arguments):
               "trials": len(trials), "resolved": round(sum(passes.values()), 2), "pass_rate": round(sum(passes.values()) / len(tasks), 4),
               "empty_patches": 0, "evaluation_errors": sum(exceptions.values()), "infrastructure_failures": 0, "agent_timeouts": exceptions.get("AgentTimeoutError", 0),
               "exceptions": exceptions, "tokens": tokens, "agent_seconds_median": None, "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0),
-              "job": str(arguments.job)}
+              "jobs": [str(job) for job in arguments.job]}
     Path(arguments.output).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({key: value for key, value in result.items() if key != "passed_tasks"}))
 
 
 def agent_config(arguments):
     if arguments.harness == "claude-code":
-        text = json.dumps(claude_settings(arguments.endpoint, arguments.model, arguments.context, key_helper=False), indent=1) + "\n"
+        text = json.dumps(claude_settings(arguments.endpoint, arguments.model, arguments.context, key_helper=False, door=arguments.door), indent=1) + "\n"
     else:
-        text = codex_config(arguments.endpoint, arguments.model, arguments.context, arguments.output_tokens)
+        text = codex_config(arguments.endpoint, arguments.model, arguments.context, arguments.output_tokens, arguments.door)
     Path(arguments.output).write_text(text)
     print(arguments.output)
 
@@ -425,6 +430,7 @@ def build_parser():
     runner.add_argument("--agents", required=True)
     runner.add_argument("--context", type=int, required=True)
     runner.add_argument("--output-tokens", type=int, default=32768)
+    runner.add_argument("--door", choices=DOORS, default="public")
     runner.add_argument("--timeout", type=int, default=3600)
     runner.add_argument("--max-turns", type=int, default=0)
     runner.add_argument("--parallel", type=int, default=1)
@@ -441,7 +447,7 @@ def build_parser():
     scorer.add_argument("--run", required=True)
     scorer.add_argument("--report", required=True)
     harbor = commands.add_parser("harbor-score")
-    harbor.add_argument("--job", required=True)
+    harbor.add_argument("--job", required=True, action="append")
     harbor.add_argument("--harness", required=True, choices=HARNESSES)
     harbor.add_argument("--model", required=True)
     harbor.add_argument("--benchmark", default="terminal-bench/terminal-bench-2-1")
@@ -453,6 +459,7 @@ def build_parser():
     configure.add_argument("--model", required=True)
     configure.add_argument("--context", type=int, required=True)
     configure.add_argument("--output-tokens", type=int, default=32768)
+    configure.add_argument("--door", choices=DOORS, default="public")
     configure.add_argument("--output", required=True)
     reporter = commands.add_parser("report")
     reporter.add_argument("runs", nargs="+")
