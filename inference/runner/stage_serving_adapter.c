@@ -95,7 +95,8 @@ typedef struct SparkStageServingState
 	uint32_t row_slots[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint64_t row_sequence_ids[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint64_t row_positions[SPARK_STAGE_SERVING_MAX_ROWS];
-	uint32_t completion_tokens[SPARK_STAGE_SERVING_MAX_ROWS];
+	SparkMemoryBuffer completion_host;
+	uint32_t *completion_tokens;
 	uint32_t distribution_rows[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint32_t distribution_positions[SPARK_STAGE_SERVING_MAX_ROWS];
 	uint32_t distribution_lanes[SPARK_STAGE_SERVING_MAX_ROWS];
@@ -1035,28 +1036,30 @@ static SparkStatus StageServingAllocate(SparkStageServingState *state)
 	const uint64_t rows = state->max_rows, lanes = state->runner_config.max_active_sequence_count;
 	struct { SparkMemoryBuffer *buffer; uint32_t space; uint64_t bytes; } plan[] =
 	{
-		{ &state->positions_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * 4u },
-		{ &state->context_host, SPARK_MEMORY_SPACE_HOST_COHERENT, lanes * 4u },
-		{ &state->state_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * 4u },
+		{ &state->positions_host, SPARK_MEMORY_SPACE_HOST_PINNED, rows * 4u },
+		{ &state->context_host, SPARK_MEMORY_SPACE_HOST_PINNED, lanes * 4u },
+		{ &state->state_host, SPARK_MEMORY_SPACE_HOST_PINNED, rows * 4u },
 		{ &state->positions_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * 4u },
 		{ &state->context_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, lanes * 4u },
 		{ &state->state_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * 4u },
-		{ &state->runs_host, SPARK_MEMORY_SPACE_HOST_COHERENT, (rows + 1u) * sizeof(uint32_t) },
+		{ &state->runs_host, SPARK_MEMORY_SPACE_HOST_PINNED, (rows + 1u) * sizeof(uint32_t) },
 		{ &state->runs_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, (rows + 1u) * sizeof(uint32_t) },
-		{ &state->seqslot_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->seqslot_host, SPARK_MEMORY_SPACE_HOST_PINNED, rows * sizeof(uint32_t) },
 		{ &state->target_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
 		{ &state->seqslot_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
-		{ &state->order_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->order_host, SPARK_MEMORY_SPACE_HOST_PINNED, rows * sizeof(uint32_t) },
 		{ &state->order_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_tokens, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 	};
 	SparkStatus status = SPARK_STATUS_OK;
 	for ( uint32_t index = 0u; status == SPARK_STATUS_OK && index < sizeof(plan) / sizeof(plan[0]); ++index )
+		{ &state->completion_host, SPARK_MEMORY_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
 		status = SparkMemoryBufferAllocate(plan[index].buffer, plan[index].space, plan[index].bytes);
 	return status;
 }
 
+	state->completion_tokens = (uint32_t *)state->completion_host.pointer;
 static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfiguration *configuration, void **adapter_state)
 {
 	const SparkStageServingModel *model = StageServingBoundModel;
@@ -1497,13 +1500,11 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_state_target = (const uint32_t *)state->target_host.pointer;
 }
 
-static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
+static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps, void *stream)
 {
-	SparkMemoryBuffer tokens = SPARK_MEMORY_BUFFER_VIEW(state->completion_tokens,
-		SPARK_MEMORY_SPACE_HOST_COHERENT, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]));
 	if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( SparkMemoryBufferCopy(&tokens, &state->output_tokens, (uint64_t)rows * steps * sizeof(state->completion_tokens[0]), 0) != SPARK_STATUS_OK )
+	if ( SparkMemoryBufferCopy(&state->completion_host, &state->output_tokens, (uint64_t)rows * steps * sizeof(uint32_t), stream) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -1676,11 +1677,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
+		status = StageServingReadTokens(state, rows, steps, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = StageServingNowNs();
-	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
-		status = StageServingReadTokens(state, rows, steps);
 	if ( status == SPARK_STATUS_OK && verify != 0u )
 	{
 		const uint64_t keep_started = StageServingNowNs();
