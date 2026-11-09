@@ -1501,11 +1501,12 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_state_target = (const uint32_t *)state->target_host.pointer;
 }
 
-static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps, void *stream)
+static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
 {
 	if ( (uint64_t)rows * steps > SPARK_STAGE_SERVING_MAX_ROWS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( SparkMemoryBufferCopy(&state->completion_host, &state->output_tokens, (uint64_t)rows * steps * sizeof(uint32_t), stream) != SPARK_STATUS_OK )
+	if ( SparkMemoryBufferCopy(&state->completion_host, &state->output_tokens, (uint64_t)rows * steps * sizeof(uint32_t),
+		state->runner_config.execution_stream) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -1676,7 +1677,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
-		status = StageServingReadTokens(state, rows, steps, stream);
+		status = StageServingReadTokens(state, rows, steps);
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
