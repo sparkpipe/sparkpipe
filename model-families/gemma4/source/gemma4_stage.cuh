@@ -1146,7 +1146,8 @@ struct GemmaModel
 			StepLayer,
 			0,
 			StepEnd,
-			(uint32_t)sizeof(Frame)
+			(uint32_t)sizeof(Frame),
+			0u
 		};
 		return &interface_table;
 	}

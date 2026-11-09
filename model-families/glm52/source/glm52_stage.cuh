@@ -2505,7 +2505,8 @@ struct GlmModel
 			StepLayer,
 			StepWaveEnd,
 			StepEnd,
-			(uint32_t)sizeof(Frame)
+			(uint32_t)sizeof(Frame),
+			GLM_LANE_ROWS
 		};
 		return &interface_table;
 	}

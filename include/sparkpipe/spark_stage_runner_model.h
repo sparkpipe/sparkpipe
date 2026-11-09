@@ -161,6 +161,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*wave_end)(void *model, void *frame, void *queue);
 	SparkStatus (*end)(void *model, void *frame, SparkStatus status, void *queue);
 	uint32_t frame_bytes;
+	uint32_t chunk_rows;
 };
 
 #ifdef __cplusplus

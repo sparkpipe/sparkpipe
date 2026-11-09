@@ -1813,7 +1813,8 @@ struct QwenHybridModel
 			StepLayer,
 			0,
 			StepEnd,
-			(uint32_t)sizeof(Frame)
+			(uint32_t)sizeof(Frame),
+			QH_MOE_LANE_ROWS
 		};
 		return &interface_table;
 	}

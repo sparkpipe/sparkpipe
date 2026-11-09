@@ -1137,7 +1137,8 @@ struct Glm5NextStage
 			StepLayer,
 			0,
 			StepEnd,
-			(uint32_t)sizeof(Frame)
+			(uint32_t)sizeof(Frame),
+			G5N_LANE_ROWS
 		};
 		return &table;
 	}

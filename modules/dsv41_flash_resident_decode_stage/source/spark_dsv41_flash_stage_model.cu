@@ -2259,7 +2259,8 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41StepLayer,
 	0,
 	D41StepEnd,
-	(uint32_t)sizeof(D41Cuda::Frame)
+	(uint32_t)sizeof(D41Cuda::Frame),
+	0u
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

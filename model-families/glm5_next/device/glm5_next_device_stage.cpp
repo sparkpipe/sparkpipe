@@ -488,6 +488,7 @@ struct Glm5NextDevice
 			0,
 			0,
 			0,
+			0u,
 			0u
 		};
 		return &interface_table;

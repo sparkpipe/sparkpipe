@@ -1881,10 +1881,11 @@ static SparkStatus StageRunnerLanesRun(SparkStageRunnerState *state, StageRunner
 static uint32_t StageRunnerLanesSplit(const SparkStageRunnerState *state, const SparkStageRunnerStep *in)
 {
 	const uint32_t first = in->rows / 2u / STAGE_RUNNER_LANE_ALIGN * STAGE_RUNNER_LANE_ALIGN;
+	const uint32_t floor = state->model_interface->chunk_rows > STAGE_RUNNER_LANE_MIN_ROWS ? state->model_interface->chunk_rows : STAGE_RUNNER_LANE_MIN_ROWS;
 	uint32_t index;
 	if ( state->lanes.created == 0u || in->sequences != 1u || in->last_rows_only == 0u || in->host_positions == 0 ||
 		in->host_sequence_of_row == 0 || (state->resident == 0u && state->geometry.experts != 0u) ||
-		first < STAGE_RUNNER_LANE_MIN_ROWS || in->rows - first < STAGE_RUNNER_LANE_MIN_ROWS ||
+		first < floor || in->rows - first < floor ||
 		in->host_sequence_of_row[0] >= state->lanes.context_entries )
 		return 0u;
 	for ( index = 1u; index < in->rows; ++index )

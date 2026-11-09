@@ -348,8 +348,10 @@ Landed in the pull request that carries this page:
   composition the Metal device runner still calls. K3 stays on `step` until
   its dispatch engine is split the same way. The two prefill lanes are now
   two frames the runner interleaves layer by layer on one thread; the lane
-  worker thread, its mutex and its turn protocol are gone. The runner does
-  not yet choose the row split itself; that is the second half.
+  worker thread, its mutex and its turn protocol are gone. A model declares
+  its minimum rows per frame (`chunk_rows`) and the runner's split honours it
+  before any lane is set up; the MoE families' own guards remain until the
+  runner splits every wave.
 - Step 7 in part: the `tp_collective` parser and template, the transaction
   ledger, the external KV provider client, the NVMe tier and topology switch,
   graph relocation, memlink and its tools, the NCCL enum and parser branch,

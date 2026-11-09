@@ -1381,6 +1381,7 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	0,
 	0,
 	0,
+	0u,
 	0u
 };
 
