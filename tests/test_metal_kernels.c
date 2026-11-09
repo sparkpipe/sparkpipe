@@ -2094,6 +2094,7 @@ static void TestNgram(uint32_t mapped)
 	params.head_dimension = DIM;
 	params.commit = 1u;
 	params.table_rows = (uint64_t)COLUMNS * PRIME;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&state);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = SEQUENCES;
@@ -3169,6 +3170,7 @@ static void TestCausalConv(void)
 	params.sequences = 1u;
 	params.kernel_taps = 4u;
 	params.commit = 1u;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -3236,6 +3238,7 @@ static void TestCausalConvDilated(void)
 	params.kernel_taps = TAPS;
 	params.dilation = DILATION;
 	params.commit = 1u;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -3450,7 +3453,7 @@ static void TestGatedDeltaTree(void)
 	uint16_t *g = (uint16_t *)Shared(&gates,(uint64_t)(COMMITTED + TREE_ROWS) * GATES * 2u,"delta tree gates");
 	float *al = (float *)Shared(&alog,VH * 4u,"delta tree a_log");
 	float *db = (float *)Shared(&bias,VH * 4u,"delta tree dt_bias");
-	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)TREE_ROWS * WIDTH * 2u,"delta tree out");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)(COMMITTED + TREE_ROWS) * WIDTH * 2u,"delta tree out");
 	uint32_t *ld = (uint32_t *)Shared(&loads,TREE_ROWS * 4u,"delta tree loads");
 	uint32_t *sv = (uint32_t *)Shared(&saves,TREE_ROWS * 4u,"delta tree saves");
 	uint16_t *cm = (uint16_t *)Shared(&chain_mix,(uint64_t)TREE_PATH_ROWS * MIX * 2u,"delta chain mix");
@@ -3500,7 +3503,7 @@ static void TestGatedDeltaTree(void)
 	params.rows = COMMITTED;
 	rb[0] = 0u;
 	rb[1] = COMMITTED;
-	if ( !Run(SparkOpsGatedDelta(&ops,queue,Whole(&state),&sequences,Whole(&mix),Whole(&gates),Whole(&alog),Whole(&bias),Whole(&scratch),Whole(&chain_out),&params),
+	if ( !Run(SparkOpsGatedDelta(&ops,queue,Whole(&state),&sequences,Whole(&mix),Whole(&gates),Whole(&alog),Whole(&bias),Whole(&scratch),Whole(&out),&params),
 		"gated_delta tree prefix") )
 		return;
 	for ( pass = 0u; pass < 2u; pass++ )
@@ -3597,6 +3600,7 @@ static void TestGatedDelta(void)
 	params.output_stride = VH * D;
 	params.commit = 1u;
 	params.epsilon = 1e-6f;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -3906,6 +3910,7 @@ static void TestDeltaPrenorm(void)
 	slot[0] = 1u;
 	rb[0] = 0u;
 	rb[1] = ROWS;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -3980,6 +3985,7 @@ static void TestCausalConvF32(void)
 	params.kernel_taps = 4u;
 	params.commit = 1u;
 	params.weight_f32 = 1u;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -4064,6 +4070,7 @@ static void TestChannelDelta(void)
 	params.commit = 1u;
 	params.epsilon = 1e-6f;
 	params.minimum_log_decay = -5.0f;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&index);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = 1u;
@@ -5394,6 +5401,7 @@ static void TestKvCompress(uint32_t ratio)
 	params.ratio = ratio;
 	params.state_stride = 2u * WIDTH;
 	params.commit = 1u;
+	memset(&sequences,0,sizeof(sequences));
 	sequences.state_index = Whole(&slots);
 	sequences.row_begin = Whole(&begin);
 	sequences.sequences = SEQUENCES;
@@ -5533,6 +5541,8 @@ static void TestAttentionExtra(uint32_t heads)
 		pv[row] = positions_init[row];
 		xv[row] = (positions_init[row] + 1u) / 2u - 1u;
 	}
+	memset(&paged,0,sizeof(paged));
+	memset(&extra,0,sizeof(extra));
 	paged.pool = SparkTensorSlice(Whole(&pool),0u,layer * 2u);
 	paged.page_table = Whole(&table);
 	paged.sequence_of_row = Whole(&store_sequence);
