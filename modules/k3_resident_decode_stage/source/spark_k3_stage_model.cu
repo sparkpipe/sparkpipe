@@ -1375,7 +1375,13 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 #endif
 	0,
 	0,
-	K3ModelStreamedPrefill
+	K3ModelStreamedPrefill,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0u
 };
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)

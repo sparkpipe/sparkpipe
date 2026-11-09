@@ -48,7 +48,7 @@ struct D41Schedule
 	using State = typename B::State;
 	using Frame = typename B::Frame;
 
-	static SparkStatus Layer(State *state, Frame &frame, uint32_t index)
+	static SparkStatus Body(State *state, Frame &frame, uint32_t index)
 	{
 		const int32_t engram = D41EngramIndex(index);
 		SparkStatus status = SPARK_STATUS_OK;
@@ -85,19 +85,33 @@ struct D41Schedule
 		return B::Finish(state, frame, index);
 	}
 
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
+	{
+		return B::Begin(state, step, queue, frame);
+	}
+
+	static SparkStatus Layer(State *state, Frame &frame, uint32_t index)
+	{
+		SparkStatus status = B::LayerRows(state, frame, index);
+		if ( status == SPARK_STATUS_OK && B::HasRows(frame) )
+			status = Body(state, frame, index);
+		B::LayerEnd(state, frame, index, status);
+		return status;
+	}
+
+	static SparkStatus End(State *state, Frame &frame, SparkStatus status)
+	{
+		return B::End(state, frame, status);
+	}
+
 	static SparkStatus Step(State *state, const SparkStageRunnerStep *step, void *queue)
 	{
 		Frame frame;
-		SparkStatus status = B::Begin(state, step, queue, &frame);
+		SparkStatus status = Begin(state, step, queue, &frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		for ( uint32_t index = 0u; index < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; ++index )
-		{
-			status = B::LayerRows(state, frame, index);
-			if ( status == SPARK_STATUS_OK && B::HasRows(frame) )
-				status = Layer(state, frame, index);
-			B::LayerEnd(state, frame, index, status);
-		}
-		return B::End(state, frame, status);
+			status = Layer(state, frame, index);
+		return End(state, frame, status);
 	}
 };

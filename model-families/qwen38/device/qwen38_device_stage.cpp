@@ -735,7 +735,13 @@ struct QwenDevice
 			0,
 			BindDevice,
 			0,
-			0
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0u
 		};
 		return &interface_table;
 	}

@@ -49,6 +49,7 @@ typedef struct StageRunnerLane
 	cudaEvent_t epoch_event[STAGE_RUNNER_LANE_EPOCH_EVENTS];
 	SparkStageRunnerServices services;
 	void *model;
+	void *frame;
 	SparkStageRunnerStep step;
 	uint32_t *row_begin;
 	uint32_t *context_length;
@@ -232,6 +233,7 @@ typedef struct SparkStageRunnerState
 	const SparkStageRunnerModelInterface *model_interface;
 	uint64_t memory_mark_available;
 	void *model;
+	void *step_frame;
 	SparkStageRunnerModelGeometry geometry;
 	SparkStageRunnerServices services;
 	SparkTpDeviceCollective device_collective;
@@ -1188,6 +1190,14 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK && (state->geometry.hidden == 0u || state->geometry.vocab == 0u ||
 		state->geometry.total_layers == 0u || state->geometry.hidden % 8u != 0u) )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if ( status == SPARK_STATUS_OK && model->layer != 0 )
+	{
+		if ( model->begin == 0 || model->end == 0 || model->frame_bytes == 0u || (model->wave == 0) != (model->wave_end == 0) ||
+			state->geometry.layer_count == 0u )
+			status = SPARK_STATUS_INVALID_ARGUMENT;
+		else if ( (state->step_frame = calloc(1u, model->frame_bytes)) == 0 )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerStrayLoad(state, configuration->stray_working_set_path);
 	if ( status == SPARK_STATUS_OK )
@@ -1768,9 +1778,37 @@ static SparkStatus StageRunnerLaneRound(void *context, void *stream_void, uint32
 	return status;
 }
 
+static SparkStatus StageRunnerModelRun(SparkStageRunnerState *state, void *model, void *frame, const SparkStageRunnerStep *in, cudaStream_t stream)
+{
+	const SparkStageRunnerModelInterface *table = state->model_interface;
+	const uint32_t layers = state->geometry.layer_count;
+	uint32_t more = 1u, layer;
+	SparkStatus status;
+	if ( table->layer == 0 )
+		return table->step(model, in, stream);
+	status = table->begin(model, in, frame, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	do
+	{
+		if ( table->wave != 0 )
+		{
+			status = table->wave(model, frame, stream, &more);
+			if ( status != SPARK_STATUS_OK || more == 0u )
+				break;
+		}
+		for ( layer = 0u; layer < layers && status == SPARK_STATUS_OK; ++layer )
+			status = table->layer(model, frame, layer, stream);
+		if ( status == SPARK_STATUS_OK && table->wave_end != 0 )
+			status = table->wave_end(model, frame, stream);
+	}
+	while ( status == SPARK_STATUS_OK && table->wave != 0 );
+	return table->end(model, frame, status, stream);
+}
+
 static void StageRunnerLaneRun(StageRunnerLanes *lanes, StageRunnerLane *lane)
 {
-	SparkStatus status = lane->state->model_interface->step(lane->model, &lane->step, lane->stream);
+	SparkStatus status = StageRunnerModelRun(lane->state, lane->model, lane->frame, &lane->step, lane->stream);
 	pthread_mutex_lock(&lanes->lock);
 	if ( status == SPARK_STATUS_OK && cudaEventRecord(lane->ready, lane->stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
@@ -1834,6 +1872,8 @@ static void StageRunnerDestroyLanes(SparkStageRunnerState *state)
 				(void)cudaEventDestroy(lane->epoch_event[event]);
 		cudaFree(lane->row_begin);
 		cudaFree(lane->context_length);
+		free(lane->frame);
+		lane->frame = 0;
 	}
 	if ( lanes->fork != 0 )
 		(void)cudaEventDestroy(lanes->fork);
@@ -1877,6 +1917,8 @@ static SparkStatus StageRunnerCreateLanes(SparkStageRunnerState *state)
 		lane->services.expert_weights_ahead = StageRunnerLaneExpertWeightsAhead;
 		lane->services.layer_done = StageRunnerLaneLayerDone;
 		lane->services.row_state = StageRunnerLaneRowState;
+		if ( state->model_interface->layer != 0 && (lane->frame = calloc(1u, state->model_interface->frame_bytes)) == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( cudaStreamCreateWithPriority(&lane->stream, cudaStreamNonBlocking, index != 0u ? least : greatest + 1 < least ? greatest + 1 : greatest) != cudaSuccess ||
 			cudaEventCreateWithFlags(&lane->ready, cudaEventDisableTiming) != cudaSuccess ||
 			cudaEventCreateWithFlags(&lane->landed, cudaEventDisableTiming) != cudaSuccess ||
@@ -1952,7 +1994,7 @@ static SparkStatus StageRunnerLanesStep(SparkStageRunnerState *state, const Spar
 	if ( status == SPARK_STATUS_UNSUPPORTED )
 	{
 		lanes->whole++;
-		return state->model_interface->step(state->model, in, stream);
+		return StageRunnerModelRun(state, state->model, state->step_frame, in, stream);
 	}
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -2036,7 +2078,7 @@ static SparkStatus StageRunnerStepRun(SparkStageRunnerState *state, const SparkS
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	first = StageRunnerLanesSplit(state, in);
-	status = first != 0u ? StageRunnerLanesStep(state, in, first, flags, stream) : state->model_interface->step(state->model, in, stream);
+	status = first != 0u ? StageRunnerLanesStep(state, in, first, flags, stream) : StageRunnerModelRun(state, state->model, state->step_frame, in, stream);
 	if ( status != SPARK_STATUS_OK )
 		{ fprintf(stderr, "sparkpipe_stage_runner: %s step failed status=%d\n", state->model_interface->tag, (int)status); return status; }
 	if ( state->tap_slab_device != 0 && state->tap_final_entry != UINT32_MAX )
@@ -3017,6 +3059,7 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	StageRunnerTapFree(state);
 	SparkStageRunnerStrayReport(state);
 	free(state->deferred_tokens);
+	free(state->step_frame);
 	free(state->stray_head_bits);
 	free(state->stray_seen_bits);
 	state->stray_head_bits = 0;

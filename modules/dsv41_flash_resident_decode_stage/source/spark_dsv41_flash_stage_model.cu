@@ -1327,6 +1327,23 @@ static SparkStatus D41Step(void *model, const SparkStageRunnerStep *step, void *
 	return D41Schedule<D41Cuda>::Step((D41ModelState *)model, step, stream);
 }
 
+static SparkStatus D41StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
+{
+	return D41Schedule<D41Cuda>::Begin((D41ModelState *)model, step, queue, (D41Cuda::Frame *)frame);
+}
+
+static SparkStatus D41StepLayer(void *model, void *frame, uint32_t index, void *queue)
+{
+	(void)queue;
+	return D41Schedule<D41Cuda>::Layer((D41ModelState *)model, *(D41Cuda::Frame *)frame, index);
+}
+
+static SparkStatus D41StepEnd(void *model, void *frame, SparkStatus status, void *queue)
+{
+	(void)queue;
+	return D41Schedule<D41Cuda>::End((D41ModelState *)model, *(D41Cuda::Frame *)frame, status);
+}
+
 static SparkStatus D41KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_pointer)
 {
 	D41ModelState *state = (D41ModelState *)model;
@@ -2236,7 +2253,13 @@ static const SparkStageRunnerModelInterface spark_dsv41_flash_stage_model =
 	D41TapPlan,
 	0,
 	D41Check,
-	0
+	0,
+	D41StepBegin,
+	0,
+	D41StepLayer,
+	0,
+	D41StepEnd,
+	(uint32_t)sizeof(D41Cuda::Frame)
 };
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)

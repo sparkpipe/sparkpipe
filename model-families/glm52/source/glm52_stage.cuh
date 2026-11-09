@@ -2401,6 +2401,35 @@ struct GlmModel
 		return GlmSchedule<G, GlmModel>::Step((State *)model, step, stream);
 	}
 
+	static SparkStatus StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
+	{
+		return GlmSchedule<G, GlmModel>::Begin((State *)model, step, queue, (Frame *)frame);
+	}
+
+	static SparkStatus StepLayer(void *model, void *frame, uint32_t index, void *queue)
+	{
+		(void)queue;
+		return GlmSchedule<G, GlmModel>::Layer((State *)model, *(Frame *)frame, index);
+	}
+
+	static SparkStatus StepEnd(void *model, void *frame, SparkStatus status, void *queue)
+	{
+		(void)queue;
+		return GlmSchedule<G, GlmModel>::End((State *)model, *(Frame *)frame, status);
+	}
+
+	static SparkStatus StepWave(void *model, void *frame, void *queue, uint32_t *more)
+	{
+		(void)queue;
+		return GlmSchedule<G, GlmModel>::Wave((State *)model, *(Frame *)frame, more);
+	}
+
+	static SparkStatus StepWaveEnd(void *model, void *frame, void *queue)
+	{
+		(void)queue;
+		return GlmSchedule<G, GlmModel>::WaveEnd((State *)model, *(Frame *)frame);
+	}
+
 	static uint32_t FrameShape(const SparkStageRunnerStep *step)
 	{
 		return step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= LM_SKINNY_ROWS ? 1u : 0u;
@@ -2469,7 +2498,14 @@ struct GlmModel
 			0,
 			0,
 			0,
-			Check
+			Check,
+			0,
+			StepBegin,
+			StepWave,
+			StepLayer,
+			StepWaveEnd,
+			StepEnd,
+			(uint32_t)sizeof(Frame)
 		};
 		return &interface_table;
 	}

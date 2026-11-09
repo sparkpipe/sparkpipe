@@ -1044,6 +1044,23 @@ struct QwenHybridModel
 		return QwenHybridSchedule<G, QwenHybridModel>::Step((State *)model, step, stream);
 	}
 
+	static SparkStatus StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
+	{
+		return QwenHybridSchedule<G, QwenHybridModel>::Begin((State *)model, step, queue, (Frame *)frame);
+	}
+
+	static SparkStatus StepLayer(void *model, void *frame, uint32_t index, void *queue)
+	{
+		(void)queue;
+		return QwenHybridSchedule<G, QwenHybridModel>::Layer((State *)model, *(Frame *)frame, index);
+	}
+
+	static SparkStatus StepEnd(void *model, void *frame, SparkStatus status, void *queue)
+	{
+		(void)queue;
+		return QwenHybridSchedule<G, QwenHybridModel>::End((State *)model, *(Frame *)frame, status);
+	}
+
 	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
 	{
 		const uint64_t rows = state->max_rows, slots = lane == 0u ? state->slots : 0u, routes = rows * (G::kMoe ? G::kTopK : 0u);
@@ -1787,7 +1804,16 @@ struct QwenHybridModel
 			0,
 			Lane,
 			G::kVerifyRows != 0u ? KeepRows : 0,
-			TapPlan
+			TapPlan,
+			0,
+			0,
+			0,
+			StepBegin,
+			0,
+			StepLayer,
+			0,
+			StepEnd,
+			(uint32_t)sizeof(Frame)
 		};
 		return &interface_table;
 	}

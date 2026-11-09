@@ -789,6 +789,23 @@ struct Glm5NextStage
 		return Glm5NextSchedule<G, Glm5NextStage>::Step((Glm5NextModelState *)model, step, stream);
 	}
 
+	static SparkStatus StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
+	{
+		return Glm5NextSchedule<G, Glm5NextStage>::Begin((State *)model, step, queue, (Frame *)frame);
+	}
+
+	static SparkStatus StepLayer(void *model, void *frame, uint32_t index, void *queue)
+	{
+		(void)queue;
+		return Glm5NextSchedule<G, Glm5NextStage>::Layer((State *)model, *(Frame *)frame, index);
+	}
+
+	static SparkStatus StepEnd(void *model, void *frame, SparkStatus status, void *queue)
+	{
+		(void)queue;
+		return Glm5NextSchedule<G, Glm5NextStage>::End((State *)model, *(Frame *)frame, status);
+	}
+
 	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **model, SparkStageRunnerModelGeometry *geometry)
 	{
 		const SparkStageRunnerConfiguration *configuration = request->configuration;
@@ -1110,7 +1127,17 @@ struct Glm5NextStage
 			Report,
 			0,
 			Lane,
-			KeepRows
+			KeepRows,
+			0,
+			0,
+			0,
+			0,
+			StepBegin,
+			0,
+			StepLayer,
+			0,
+			StepEnd,
+			(uint32_t)sizeof(Frame)
 		};
 		return &table;
 	}

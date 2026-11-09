@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 5u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 6u
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -155,6 +155,12 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*bind_device)(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry);
 	SparkStatus (*check)(void *model);
 	SparkStatus (*streamed_prefill)(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services);
+	SparkStatus (*begin)(void *model, const SparkStageRunnerStep *step, void *frame, void *queue);
+	SparkStatus (*wave)(void *model, void *frame, void *queue, uint32_t *more);
+	SparkStatus (*layer)(void *model, void *frame, uint32_t index, void *queue);
+	SparkStatus (*wave_end)(void *model, void *frame, void *queue);
+	SparkStatus (*end)(void *model, void *frame, SparkStatus status, void *queue);
+	uint32_t frame_bytes;
 };
 
 #ifdef __cplusplus
