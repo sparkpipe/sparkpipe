@@ -58,6 +58,7 @@ static const SparkStageServingModel SolarOpen2StageServing =
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_rows = SPARK_SOLAR_OPEN2_TP16_MAX_ROWS,
 	.verify_rows = SPARK_SOLAR_OPEN2_TP16_VERIFY_ROWS,
+	.tree_slot_grain = SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS,
 	.cache_checkpoint_token_count = SPARK_SOLAR_OPEN2_TP16_CHECKPOINT_TOKENS,

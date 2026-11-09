@@ -343,6 +343,16 @@ static void TestStale(void)
 	assert(fabsf(SparkSpeculationFrameCost(&model,4u,256u) - 100e6f) < 1.0f);
 }
 
+static void TestReach(void)
+{
+	assert(fabsf(SparkSpeculationFrameReach(1.0f,0.5f,0.0f,0.0f,0.3f) - 0.5f) < 1e-6f);
+	assert(fabsf(SparkSpeculationFrameReach(1.0f,0.5f,6.0f,3.0f,0.3f) - 0.5f * 6.3f / 3.3f) < 1e-6f);
+	assert(fabsf(SparkSpeculationFrameReach(1.0f,0.5f,1.0f,3.0f,0.3f) - 0.5f * 1.3f / 3.3f) < 1e-6f);
+	assert(SparkSpeculationFrameReach(1.0f,0.9f,9.0f,3.0f,0.3f) == 1.0f);
+	assert(SparkSpeculationFrameReach(0.4f,0.5f,6.0f,3.0f,0.3f) == 0.4f);
+	assert(SparkSpeculationFrameReach(0.0f,0.5f,6.0f,3.0f,0.3f) == 0.0f);
+}
+
 int main(void)
 {
 	TestBuckets();
@@ -354,6 +364,7 @@ int main(void)
 	TestProbe();
 	TestBatch();
 	TestStale();
+	TestReach();
 	printf("speculation frame: hazards per match class, interpolated frame costs and the chain price decide every frame; a frame shared by several lanes prices drafts against the rows and tokens already in it, with the extra cost of separate sequences learned from batch steps; a cost not refreshed for %u frames yields to its fresh neighbours and is replaced when measured again: ok\n",SPARK_SPECULATION_FRAME_STALE_FRAMES);
 	return(0);
 }

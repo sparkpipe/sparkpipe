@@ -32,6 +32,12 @@ uint32_t SparkSpeculationFrameModelClass(uint32_t sampled)
 {
 	return(2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES + (sampled != 0u ? 1u : 0u));
 }
+float SparkSpeculationFrameReach(float previous, float path, float observed, float predicted, float prior)
+{
+	const float reach = path * (observed + prior) / (predicted + prior);
+	return(reach < previous ? reach : previous);
+}
+
 uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class)
 {
 	return(frame_class >= 2u * SPARK_SPECULATION_FRAME_MATCH_CLASSES && frame_class < SPARK_SPECULATION_FRAME_CLASSES ? 1u : 0u);
@@ -80,6 +86,28 @@ void SparkSpeculationHazardObserve(SparkSpeculationHazard *hazard, uint32_t draf
 	if ( accepted < drafts )
 		hazard->events[SparkSpeculationFrameDepthBucket(accepted + 1u)] += 1.0f;
 	hazard->frames++;
+}
+
+void SparkSpeculationHazardDecay(SparkSpeculationHazard *hazard, float decay)
+{
+	uint32_t bucket;
+	if ( hazard == 0 )
+		return;
+	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
+	{
+		hazard->risk[bucket] *= decay;
+		hazard->events[bucket] *= decay;
+	}
+	hazard->frames++;
+}
+
+void SparkSpeculationHazardObserveNode(SparkSpeculationHazard *hazard, uint32_t depth, uint32_t rejected)
+{
+	if ( hazard == 0 || depth == 0u )
+		return;
+	hazard->risk[SparkSpeculationFrameDepthBucket(depth)] += 1.0f;
+	if ( rejected != 0u )
+		hazard->events[SparkSpeculationFrameDepthBucket(depth)] += 1.0f;
 }
 
 static void SparkSpeculationHazardTable(const SparkSpeculationHazard *engine, const SparkSpeculationHazard *request, float *table)

@@ -11,13 +11,18 @@
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
-#define RUNNER_TABLE_ARRAYS 11u
+#define RUNNER_TABLE_ARRAYS 19u
+#define RUNNER_TABLE_SLOTS 11u
+#define RUNNER_TABLE_PATH_ROWS 17u
+#define RUNNER_TABLE_PATH_BEGIN 18u
 #define RUNNER_GROUP_STEP 1u
 #define RUNNER_GROUP_KEEP 2u
 #define RUNNER_GROUP_RESET 3u
 #define RUNNER_GROUP_QUIT 4u
+#define RUNNER_GROUP_KEEP_PATH 5u
 
 typedef struct RunnerGroup RunnerGroup;
 
@@ -34,6 +39,14 @@ typedef struct RunnerTables
 	uint32_t *targets;
 	uint32_t *kept;
 	uint32_t *embed_rows;
+	uint32_t *slots;
+	uint32_t *fork_positions;
+	uint32_t *slot_offsets;
+	uint32_t *parent_rows;
+	uint32_t *state_loads;
+	uint32_t *state_saves;
+	uint32_t *path_rows;
+	uint32_t *path_begin;
 	uint64_t offsets[RUNNER_TABLE_ARRAYS];
 } RunnerTables;
 
@@ -64,6 +77,7 @@ struct SparkDeviceStageRunner
 	uint8_t *seen;
 	SparkStageRunnerStep verify_step;
 	uint32_t verify_pending;
+	SparkSpeculationTreeLayout tree_layout;
 	uint32_t device_open;
 	SparkDeviceStageRunnerInfo info;
 	uint32_t tp_degree;
@@ -91,6 +105,8 @@ struct RunnerGroup
 	SparkStatus status;
 	const SparkDeviceStageRunnerBatch *batch;
 	const uint32_t *kept;
+	const uint32_t *path_rows;
+	const uint32_t *path_begin;
 	uint32_t sequences;
 	uint32_t sequence;
 	SparkDeviceStageRunnerResult results[SPARK_DEVICE_COLLECTIVE_MAX_RANKS];
@@ -253,10 +269,14 @@ static SparkStatus RunnerTablesCreate(SparkDeviceStageRunner *runner, uint64_t *
 {
 	const uint64_t counts[RUNNER_TABLE_ARRAYS] = { runner->config.max_rows, runner->config.max_rows, runner->config.max_rows,
 		runner->config.max_rows, (uint64_t)runner->config.sequences + 1u, runner->config.sequences, runner->config.sequences,
-		runner->config.head_rows, runner->config.head_rows, runner->config.sequences, runner->config.max_rows };
+		runner->config.head_rows, runner->config.head_rows, runner->config.sequences, runner->config.max_rows, runner->config.max_rows,
+		runner->config.max_rows, runner->config.max_rows, runner->config.max_rows, runner->config.max_rows, runner->config.max_rows,
+		runner->config.max_rows, (uint64_t)runner->config.sequences + 1u };
 	uint32_t **arrays[RUNNER_TABLE_ARRAYS] = { &runner->table.token_ids, &runner->table.positions, &runner->table.sequence_of_row,
 		&runner->table.row_indices, &runner->table.row_begin, &runner->table.recurrent_index, &runner->table.context_length,
-		&runner->table.head_rows, &runner->table.targets, &runner->table.kept, &runner->table.embed_rows };
+		&runner->table.head_rows, &runner->table.targets, &runner->table.kept, &runner->table.embed_rows, &runner->table.slots,
+		&runner->table.fork_positions, &runner->table.slot_offsets, &runner->table.parent_rows, &runner->table.state_loads,
+		&runner->table.state_saves, &runner->table.path_rows, &runner->table.path_begin };
 	uint64_t cursor = 0u;
 	uint32_t index;
 	SparkStatus status;
@@ -428,6 +448,7 @@ static SparkStatus RunnerOpenRank(SparkDeviceStageRunner **out, const SparkDevic
 		runner->info.streamed_bytes_per_token = runner->info.streamed_bytes_per_chunk - stage->routed_bytes + stage->routed_bytes_per_token;
 	}
 	runner->info.device_state_bytes = total;
+	runner->info.tree_verify = runner->geometry.tree_verify != 0u && runner->config.model->keep_rows != 0 ? 1u : 0u;
 	snprintf(runner->info.device,sizeof(runner->info.device),"%s",SparkDeviceGetProperties()->name);
 	snprintf(runner->info.target,sizeof(runner->info.target),"%s",SparkDeviceGetProperties()->target);
 	*out = runner;
@@ -440,6 +461,8 @@ static SparkStatus RunnerGroupRun(RunnerGroup *group, uint32_t rank, uint32_t co
 		return(SparkDeviceStageRunnerStep(group->ranks[rank],group->batch,&group->results[rank]));
 	if ( command == RUNNER_GROUP_KEEP )
 		return(SparkDeviceStageRunnerKeepRows(group->ranks[rank],group->kept,group->sequences));
+	if ( command == RUNNER_GROUP_KEEP_PATH )
+		return(SparkDeviceStageRunnerKeepPath(group->ranks[rank],group->path_rows,group->path_begin,group->sequences));
 	if ( command == RUNNER_GROUP_RESET )
 		return(SparkDeviceStageRunnerResetSequence(group->ranks[rank],group->sequence));
 	return(SPARK_STATUS_OK);
@@ -633,16 +656,45 @@ uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner,
 	return(total);
 }
 
+static SparkStatus RunnerValidateTree(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch)
+{
+	const uint32_t slot = batch->sequence_of_row[0];
+	uint32_t row;
+	if ( batch->verify == 0u || runner->geometry.tree_verify == 0u || runner->config.model->keep_rows == 0 )
+		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"a tree frame is a verify step on a model that verifies trees and keeps a path"));
+	if ( slot >= runner->config.sequences || batch->rows > SPARK_SPECULATION_TREE_FRAME_MAX_ROWS )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame names one sequence and at most 256 rows"));
+	for ( row = 0u; row < batch->rows; row++ )
+		if ( batch->sequence_of_row[row] != slot || batch->token_ids[row] >= runner->geometry.vocab )
+			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame's rows belong to one sequence and name tokens in the vocabulary"));
+	if ( SparkSpeculationTreeLayoutBuild(batch->parent_rows,batch->token_ids,batch->rows,runner->next_position[slot],1u,&runner->tree_layout) != SPARK_STATUS_OK )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame lists its trunk, then whole branches off it, siblings with distinct tokens"));
+	for ( row = 0u; row < batch->rows; row++ )
+		if ( batch->positions[row] != runner->tree_layout.anchor_position + runner->tree_layout.row[row].depth )
+			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree row's position is the anchor's plus its depth"));
+	if ( runner->tree_layout.context > runner->config.max_context )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame's slots must lie inside the sequence's context"));
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus RunnerValidate(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, uint32_t *sequences)
 {
 	uint32_t row, count = 0u;
+	SparkStatus status;
 	if ( batch->rows == 0u || batch->rows > runner->config.max_rows || batch->head_rows == 0u || batch->head_rows > runner->config.head_rows ||
 		batch->token_ids == 0 || batch->positions == 0 || batch->sequence_of_row == 0 || batch->head_row_index == 0 )
 		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a step needs rows within the runner's capacity and head rows within its head capacity"));
 	if ( batch->verify != 0u && runner->geometry.recurrent_bytes != 0u && runner->config.model->keep_rows == 0 )
 		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"a verify step needs a model that keeps verified rows of its recurrent state"));
+	if ( batch->parent_rows != 0 )
+	{
+		status = RunnerValidateTree(runner,batch);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		count = 1u;
+	}
 	memset(runner->seen,0,runner->config.sequences);
-	for ( row = 0u; row < batch->rows; row++ )
+	for ( row = 0u; batch->parent_rows == 0 && row < batch->rows; row++ )
 	{
 		const uint32_t slot = batch->sequence_of_row[row];
 		const uint32_t first = row == 0u || batch->sequence_of_row[row - 1u] != slot;
@@ -689,6 +741,23 @@ static void RunnerWriteTables(SparkDeviceStageRunner *runner, const SparkDeviceS
 	memcpy(t->head_rows,batch->head_row_index,(size_t)batch->head_rows * sizeof(*t->head_rows));
 	for ( row = 0u; row < batch->head_rows; row++ )
 		t->targets[row] = batch->targets != 0 ? batch->targets[row] : 0xffffffffu;
+	if ( batch->parent_rows != 0 )
+	{
+		const SparkSpeculationTreeLayout *layout = &runner->tree_layout;
+		for ( row = 0u; row < batch->rows; row++ )
+		{
+			t->slots[row] = layout->row[row].slot;
+			t->fork_positions[row] = layout->row[row].fork_position;
+			t->slot_offsets[row] = layout->row[row].slot_offset;
+			t->parent_rows[row] = batch->parent_rows[row];
+			t->state_loads[row] = row != 0u && layout->row[row].branch != layout->row[batch->parent_rows[row]].branch ? layout->row[row].branch : 0u;
+			t->state_saves[row] = 0u;
+		}
+		for ( row = 1u; row < batch->rows; row++ )
+			if ( t->state_loads[row] != 0u )
+				t->state_saves[batch->parent_rows[row]] |= 1u << (t->state_loads[row] - 1u);
+		t->context_length[batch->sequence_of_row[0]] = layout->context;
+	}
 }
 
 static const uint32_t *RunnerDeviceTable(const SparkDeviceStageRunner *runner, uint32_t index)
@@ -801,6 +870,18 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	step.host_sequence_of_row = runner->table.sequence_of_row;
 	step.route_override = batch->route_override;
 	step.route_override_width = batch->route_override != 0 ? batch->route_override_width : 0u;
+	if ( batch->parent_rows != 0 )
+	{
+		step.tree = 1u;
+		step.slots = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS);
+		step.fork_positions = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS + 1u);
+		step.slot_offsets = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS + 2u);
+		step.parent_rows = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS + 3u);
+		step.state_loads = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS + 4u);
+		step.state_saves = RunnerDeviceTable(runner,RUNNER_TABLE_SLOTS + 5u);
+		step.host_slots = runner->table.slots;
+		step.host_parent_rows = runner->table.parent_rows;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = runner->config.model->step(runner->model,&step,runner->queue);
 	if ( status == SPARK_STATUS_OK )
@@ -840,8 +921,8 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 		runner->group->sequences = sequences;
 		return(RunnerGroupDispatch(runner->group,RUNNER_GROUP_KEEP));
 	}
-	if ( runner->verify_pending == 0u || kept == 0 || sequences != runner->verify_step.sequences )
-		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"keep_rows follows a verify step and names a count for each of its sequences"));
+	if ( runner->verify_pending == 0u || kept == 0 || sequences != runner->verify_step.sequences || runner->verify_step.tree != 0u )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"keep_rows follows a chain verify step and names a count for each of its sequences"));
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		if ( kept[sequence] > t->row_begin[sequence + 1u] - t->row_begin[sequence] )
 			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
@@ -861,6 +942,50 @@ SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const
 	}
 	for ( sequence = 0u; sequence < sequences; sequence++ )
 		runner->next_position[t->recurrent_index[sequence]] = t->positions[t->row_begin[sequence]] + kept[sequence];
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceStageRunnerKeepPath(SparkDeviceStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, uint32_t sequences)
+{
+	RunnerTables *t = &runner->table;
+	SparkStageRunnerStep keep_step;
+	uint32_t sequence, index, error = 0u;
+	SparkStatus status;
+	if ( runner->group != 0 )
+	{
+		runner->group->path_rows = path_rows;
+		runner->group->path_begin = path_begin;
+		runner->group->sequences = sequences;
+		return(RunnerGroupDispatch(runner->group,RUNNER_GROUP_KEEP_PATH));
+	}
+	if ( runner->verify_pending == 0u || runner->verify_step.tree == 0u || path_rows == 0 || path_begin == 0 || sequences != runner->verify_step.sequences ||
+		runner->config.model->keep_rows == 0 || path_begin[0] != 0u || path_begin[sequences] > runner->verify_step.rows )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"keep_path follows a tree verify step and names each sequence's root path"));
+	for ( sequence = 0u; sequence < sequences; sequence++ )
+	{
+		if ( path_begin[sequence + 1u] <= path_begin[sequence] )
+			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a kept path holds at least the anchor"));
+		for ( index = path_begin[sequence]; index < path_begin[sequence + 1u]; index++ )
+			if ( path_rows[index] >= runner->verify_step.rows || (index == path_begin[sequence] ? path_rows[index] != t->row_begin[sequence] :
+				t->parent_rows[path_rows[index]] != path_rows[index - 1u]) )
+				return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a kept path runs from the sequence's anchor along parent rows"));
+		t->kept[sequence] = path_begin[sequence + 1u] - path_begin[sequence];
+	}
+	memcpy(t->path_rows,path_rows,(size_t)path_begin[sequences] * sizeof(*t->path_rows));
+	memcpy(t->path_begin,path_begin,((size_t)sequences + 1u) * sizeof(*t->path_begin));
+	runner->verify_pending = 0u;
+	keep_step = runner->verify_step;
+	keep_step.sequence_row_indices = RunnerDeviceTable(runner,RUNNER_TABLE_PATH_ROWS);
+	keep_step.sequence_row_begin = RunnerDeviceTable(runner,RUNNER_TABLE_PATH_BEGIN);
+	status = runner->config.model->keep_rows(runner->model,&keep_step,RunnerDeviceTable(runner,9u),runner->queue);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
+	if ( status == SPARK_STATUS_OK && SparkDeviceOpsTakeError(runner->ops,&error) != SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status != SPARK_STATUS_OK )
+		return(RunnerFail(status,"keep_path failed"));
+	for ( sequence = 0u; sequence < sequences; sequence++ )
+		runner->next_position[t->recurrent_index[sequence]] = t->positions[t->row_begin[sequence]] + t->kept[sequence];
 	return(SPARK_STATUS_OK);
 }
 

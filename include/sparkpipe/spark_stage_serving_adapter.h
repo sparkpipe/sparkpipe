@@ -33,6 +33,7 @@ typedef struct SparkStageServingModel
 	uint32_t expert_weight_codec;
 	uint32_t max_rows;
 	uint32_t verify_rows;
+	uint32_t tree_slot_grain;
 	uint32_t speculative_tokens;
 	uint32_t cache_block_token_count;
 	uint32_t cache_checkpoint_token_count;

@@ -9,7 +9,7 @@
 #include "sparkpipe/spark_qwen38_family.h"
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
 
-#define QD_SLICES 48u
+#define QD_SLICES 49u
 #define QD_PLE_WINDOW_POOL 2u
 #define QD_PLE_HISTORY_POOL 3u
 #define QD_DENSE_INDEX_POSITIONS(G) ((G::kIndexBudget / G::kIndexRatio + 1u) * G::kIndexRatio - 1u)
@@ -188,6 +188,7 @@ struct QwenDevice
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
 			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep },
+			{ L::kPle ? 0u : SparkDeviceGatedDeltaSnapshotBytes(delta), &state->delta.snapshots },
 			{ state->fp8 != 0u ? Max(Max(2u * (uint64_t)state->ffn, MixWidth(state)), Max(GatedWidth(state), state->ffn)) * hidden * 2u : 0u,
 				&state->stage.dequant },
 			{ residual, &state->residual },
@@ -264,7 +265,9 @@ struct QwenDevice
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		SparkDeviceAttentionRopePrepare(&state->attention_shape, &state->rope);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		status = SparkDeviceStageGeometry(&state->stage, geometry);
+		geometry->tree_verify = status == SPARK_STATUS_OK && !L::kPle ? 1u : 0u;
+		return status;
 	}
 
 	static void HyperName(char *name, size_t bytes, uint32_t index, const char *prefix, const char *part)
@@ -437,6 +440,8 @@ struct QwenDevice
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "route overrides are not built for these experts");
 		if ( status == SPARK_STATUS_OK && L::kPle && frame->t.token_ids.bytes == 0u )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the n-gram embedding needs the step's token ids");
+		if ( status == SPARK_STATUS_OK && L::kPle && frame->t.tree != 0u )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "the n-gram embedding hashes chains of rows; tree frames are refused");
 		if constexpr ( L::kIndexer )
 			for ( uint32_t row = 0u; row < frame->t.rows && status == SPARK_STATUS_OK; row++ )
 				if ( frame->t.host_positions[row] >= QD_DENSE_INDEX_POSITIONS(G) )
@@ -707,6 +712,8 @@ struct QwenDevice
 		if constexpr ( L::kPle )
 			if ( status == SPARK_STATUS_OK && keep.rows != 0u )
 				status = KeepPle(state, (SparkDeviceQueue *)queue, &frame, &keep);
+		if ( status == SPARK_STATUS_OK && step->tree != 0u )
+			status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
 		return status;
 	}
 

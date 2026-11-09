@@ -76,11 +76,14 @@ typedef struct SparkSpeculationFrameChoice
 uint32_t SparkSpeculationFrameClass(uint32_t match_length, uint32_t sampled);
 uint32_t SparkSpeculationFrameModelClass(uint32_t sampled);
 uint32_t SparkSpeculationFrameClassIsModel(uint32_t frame_class);
+float SparkSpeculationFrameReach(float previous, float path, float observed, float predicted, float prior);
 uint32_t SparkSpeculationFrameDepthBucket(uint32_t draft_index);
 uint32_t SparkSpeculationFrameRowBucket(uint32_t rows);
 uint32_t SparkSpeculationFrameRowBucketLimit(uint32_t bucket);
 uint32_t SparkSpeculationFrameContextBucket(uint32_t context);
 void SparkSpeculationHazardObserve(SparkSpeculationHazard *hazard, uint32_t drafts, uint32_t accepted, float decay);
+void SparkSpeculationHazardDecay(SparkSpeculationHazard *hazard, float decay);
+void SparkSpeculationHazardObserveNode(SparkSpeculationHazard *hazard, uint32_t depth, uint32_t rejected);
 float SparkSpeculationHazardAt(const SparkSpeculationHazard *engine, const SparkSpeculationHazard *request, uint32_t bucket);
 float SparkSpeculationFrameExpected(const SparkSpeculationHazard *engine, const SparkSpeculationHazard *request, uint32_t drafts);
 void SparkSpeculationFrameObserveFrame(SparkSpeculationFrameModel *model, uint32_t rows, uint32_t context, uint64_t ns);

@@ -99,6 +99,9 @@ current authority.
   (fleet hub, model APIs, draft farm, drafter store).
 - [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
   drafters per model, and the PR sequence.
+- [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
+  frames over the production path: node table, slot and position split,
+  ancestor attention, path-form `keep_rows`, composition, phases and gates.
 
 ## Operations and development
 

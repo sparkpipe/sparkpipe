@@ -136,6 +136,28 @@ uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 	return(test_recurrent_bytes == 0u ? 1u : 0u);
 }
 
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
+{
+	(void)runner;
+	(void)path_rows;
+	(void)path_begin;
+	(void)kept;
+	(void)sequences;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
 {
 	(void)runner;

@@ -127,6 +127,12 @@ typedef struct SparkDeviceStepTensors
 	SparkTensor row_identity;
 	SparkTensor route_override;
 	uint32_t route_override_width;
+	uint32_t tree;
+	SparkTensor slots;
+	SparkTensor fork_positions;
+	SparkTensor slot_offsets;
+	const uint32_t *host_slots;
+	const uint32_t *host_parent_rows;
 } SparkDeviceStepTensors;
 
 typedef struct SparkDeviceKeepTensors
@@ -135,6 +141,9 @@ typedef struct SparkDeviceKeepTensors
 	SparkOpsSequences sequences;
 	uint32_t rows;
 	uint32_t frame_rows;
+	uint32_t moves;
+	SparkTensor move_sources;
+	SparkTensor move_destinations;
 } SparkDeviceKeepTensors;
 
 SparkStatus SparkDeviceStageRefuse(const SparkDeviceStage *stage, SparkStatus status, const char *what);
@@ -159,6 +168,8 @@ SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window,
 uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context);
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
+SparkStatus SparkDeviceStageKeepRelocate(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkStageRunnerStep *step,
+	const SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
 void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k);

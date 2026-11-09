@@ -11,7 +11,8 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 6u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 7u
+#define SPARK_STAGE_RUNNER_NO_ROW 0xffffffffu
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
@@ -64,6 +65,15 @@ typedef struct SparkStageRunnerStep
 	uint32_t route_override_width;
 	uint32_t *route_fault;
 	uint32_t dispatch_row_offset;
+	uint32_t tree;
+	const uint32_t *slots;
+	const uint32_t *fork_positions;
+	const uint32_t *slot_offsets;
+	const uint32_t *parent_rows;
+	const uint32_t *state_loads;
+	const uint32_t *state_saves;
+	const uint32_t *host_slots;
+	const uint32_t *host_parent_rows;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -94,6 +104,7 @@ typedef struct SparkStageRunnerModelGeometry
 	uint64_t kv_second_layer_page_bytes;
 	SparkKvShard kv_shard;
 	uint64_t recurrent_bytes;
+	uint32_t tree_verify;
 	uint32_t experts;
 	uint32_t top_k;
 	uint32_t lease_tensor_base;

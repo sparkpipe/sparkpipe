@@ -44,6 +44,7 @@ typedef struct SparkDeviceGatedDeltaScratch
 	SparkTensor core;
 	SparkTensor gated;
 	SparkTensor keep;
+	SparkTensor snapshots;
 } SparkDeviceGatedDeltaScratch;
 
 typedef struct SparkDeviceChannelDeltaShape
@@ -320,6 +321,7 @@ uint32_t SparkDeviceGatedDeltaGates(const SparkDeviceGatedDeltaShape *shape);
 uint64_t SparkDeviceGatedDeltaStateBytes(const SparkDeviceGatedDeltaShape *shape);
 uint64_t SparkDeviceGatedDeltaWindowBytes(const SparkDeviceGatedDeltaShape *shape);
 uint64_t SparkDeviceGatedDeltaKeepBytes(const SparkDeviceGatedDeltaShape *shape, uint32_t rows, uint32_t layers);
+uint64_t SparkDeviceGatedDeltaSnapshotBytes(const SparkDeviceGatedDeltaShape *shape);
 SparkStatus SparkDeviceGatedDeltaBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceGatedDeltaShape *shape, SparkDeviceGatedDeltaWeights *bound);
 SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceGatedDeltaShape *shape,

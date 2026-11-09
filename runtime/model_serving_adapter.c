@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_serving_adapter.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
@@ -95,6 +96,11 @@ static SparkStatus SparkDescriptorCheckSpeculationPairing(
 		 descriptor->max_verify_row_count > descriptor->max_input_row_count) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u && descriptor->max_verify_row_count != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u) != (descriptor->tree_slot_grain != 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -506,6 +512,29 @@ static SparkStatus SparkModelServingAdapterValidateSampling(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelServingAdapterValidateTreeRows(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission)
+{
+	SparkSpeculationTreeLayout layout;
+	uint32_t row;
+	if ( submission->active_sequence_count != 1u || submission->row_count == 0u || submission->row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ||
+		submission->tokens_per_sequence != submission->row_count || submission->row_parent_rows == 0 || submission->row_slots == 0 ||
+		submission->lanes[0].sequence_position > UINT32_MAX / 2u || submission->token_ids[0] != submission->lanes[0].input_token_id )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (row=0u; row<submission->row_count; row++)
+		if ( submission->row_lane_indices[row] != 0u || submission->token_ids[row] == SPARK_MODEL_SERVING_NO_TOKEN )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkSpeculationTreeLayoutBuild(submission->row_parent_rows,submission->token_ids,submission->row_count,(uint32_t)submission->lanes[0].sequence_position,
+			descriptor->tree_slot_grain,&layout) != SPARK_STATUS_OK ||
+		SparkSpeculationTreeLayoutMatches(&layout,submission->row_positions,submission->row_slots,submission->row_count) != SPARK_STATUS_OK ||
+		submission->lanes[0].context_token_count != layout.context )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkModelServingVerifyPublishLane(submission) != UINT32_MAX )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 	const SparkModelServingSubmission *submission)
 {
@@ -537,11 +566,35 @@ static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelServingAdapterValidateVerifyFlags(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission,
+	uint32_t *verify_out,
+	uint32_t *tree_out)
+{
+	const uint32_t verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
+	const uint32_t tree = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? 1u : 0u;
+	*verify_out = verify;
+	*tree_out = tree;
+	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
+		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( verify != 0u && submission->row_count > descriptor->max_verify_row_count )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( (tree != 0u && verify == 0u) || (tree != 0u) != (submission->row_parent_rows != 0) || (tree != 0u) != (submission->row_slots != 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( tree != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
 {
-	uint32_t verify;
+	uint32_t verify,tree;
 	SparkStatus status;
 	uint32_t total_output_tokens;
 	status = SparkModelServingAdapterValidateDescriptor(descriptor);
@@ -556,14 +609,9 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
-	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
-		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( verify != 0u && submission->row_count > descriptor->max_verify_row_count )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	status = SparkModelServingAdapterValidateVerifyFlags(descriptor,submission,&verify,&tree);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateSampling(descriptor,submission);
@@ -605,7 +653,7 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( verify != 0u )
 	{
-		status = SparkModelServingAdapterValidateVerifyRows(submission);
+		status = tree != 0u ? SparkModelServingAdapterValidateTreeRows(descriptor,submission) : SparkModelServingAdapterValidateVerifyRows(submission);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}

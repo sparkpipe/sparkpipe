@@ -755,7 +755,8 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	size_t bytes;
 	SparkStatus status;
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
-	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,&submit_bytes);
+	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,
+		runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )

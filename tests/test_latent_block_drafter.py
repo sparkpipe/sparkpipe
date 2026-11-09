@@ -142,15 +142,16 @@ def reference_block(w, drafter, anchor, position, taps_rows, context_positions, 
     return reference_rms(residual, w["norm.weight"])
 
 
-def reference_walk(w, y, anchor):
+def reference_walk(w, y, anchor, runner_up=False):
     logits = y[1:] @ w["head"].T
     hidden = y[1:] @ w["candidate_selector.hidden_projection.weight"].T
     previous_token, tokens = anchor, []
     for step in range(BLOCK - 1):
         candidates = torch.topk(logits[step], TOP_K).indices.tolist()
         edges = [float(logits[step, c]) + float((w["candidate_selector.predecessor_codebook"][previous_token] * hidden[step] * w["candidate_selector.successor_codebook"][c]).sum()) for c in candidates]
-        previous_token = candidates[max(range(TOP_K), key=lambda k: edges[k])]
-        tokens.append(previous_token)
+        order = sorted(range(TOP_K), key=lambda k: -edges[k])
+        previous_token = candidates[order[0]]
+        tokens.append(candidates[order[1]] if runner_up else previous_token)
     return tokens
 
 
@@ -226,6 +227,10 @@ class LatentBlockDrafterTest(unittest.TestCase):
         tokens, scores = self.drafter.sequential(y, None, 17, range(1, BLOCK))
         self.assertEqual(tokens, reference_walk(self.weights, y.double(), 17))
         self.assertTrue(all(0.0 < score <= 1.0 for score in scores))
+        alternates, alternate_scores = self.drafter.sequential_alternates(y, 17, range(1, BLOCK))
+        self.assertEqual(alternates, reference_walk(self.weights, y.double(), 17, runner_up=True))
+        self.assertTrue(all(a != t for a, t in zip(alternates, tokens)))
+        self.assertTrue(all(0.0 < alternate <= score for alternate, score in zip(alternate_scores, scores)))
 
     def test_coupled_choice_is_the_keyed_sample_of_the_lattice_row(self):
         from block_drafter import keyed_gumbel
@@ -333,10 +338,13 @@ class LatentDraftGraphTest(unittest.TestCase):
                 if sampling is not None:
                     seed = sampling[0] - (1 << 64) if sampling[0] >= (1 << 63) else sampling[0]
                     rule = (torch.tensor(seed, device="cuda"), torch.tensor(sampling[1], device="cuda"), torch.tensor(sampling[2], device="cuda"), torch.tensor(sampling[3], device="cuda"))
-                eager_tokens, eager_scores = drafter.propose(eager_y, int(tokens[last]), rule, torch.tensor(last, device="cuda"), torch.tensor(rule is not None, device="cuda"))
-                graph_tokens, graph_scores = graph.draft(int(tokens[last]), last, rows, BLOCK - 1, sampling)
+                eager_tokens, eager_scores, eager_alternates, eager_alternate_scores = drafter.propose(eager_y, int(tokens[last]), rule, torch.tensor(last, device="cuda"),
+                                                                                                     torch.tensor(rule is not None, device="cuda"))
+                graph_tokens, graph_scores, graph_alternates, graph_alternate_scores = graph.draft(int(tokens[last]), last, rows, BLOCK - 1, sampling)
                 self.assertEqual(graph_tokens, eager_tokens.tolist(), f"position {last} sampling {sampling}")
-                for a, b in zip(graph_scores, eager_scores.tolist()):
+                self.assertEqual(graph_alternates, eager_alternates.tolist(), f"position {last} sampling {sampling}")
+                self.assertTrue(all(a != t for a, t in zip(graph_alternates, graph_tokens)))
+                for a, b in zip(graph_scores + graph_alternate_scores, eager_scores.tolist() + eager_alternate_scores.tolist()):
                     self.assertAlmostEqual(a, b, places=4)
 
 
