@@ -525,7 +525,7 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 	});
 	dispatch_apply((size_t)REF_VALUE_HEADS * REF_DIM,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t item)
 	{
-		const uint32_t head = (uint32_t)(item / REF_DIM), column = (uint32_t)(item % REF_DIM), key_head = head / 3u;
+		const uint32_t head = (uint32_t)(item / REF_DIM), column = (uint32_t)(item % REF_DIM), key_head = head / (REF_VALUE_HEADS / REF_KEY_HEADS);
 		float cell[REF_DIM], products[REF_DIM];
 		for ( uint32_t i = 0u; i < REF_DIM; i++ )
 			cell[i] = s[((uint64_t)head * REF_DIM + i) * REF_DIM + column];
