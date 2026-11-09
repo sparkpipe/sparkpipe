@@ -44,6 +44,7 @@ SparkStatus SparkJsonLoadFile(const char *path, SparkJsonDocument *document);
 int32_t SparkJsonGetRootToken(const SparkJsonDocument *document);
 int32_t SparkJsonFindObjectMember(const SparkJsonDocument *document, int32_t object_token_index, const char *member_name);
 SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count);
+SparkStatus SparkJsonValidateObjectMembersKnown(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count, int32_t *unknown_key_token_out);
 uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_t array_token_index);
 int32_t SparkJsonGetArrayElement(const SparkJsonDocument *document, int32_t array_token_index, uint32_t element_index);
 int32_t SparkJsonGetArrayElementFirst(const SparkJsonDocument *document, int32_t array_token_index);

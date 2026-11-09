@@ -99,7 +99,7 @@ Environment=SPARK_TP_WAIT_MODE=hardware
 | --- | --- |
 | `G5_GRAPH_PATH=1` | No longer read. GLM Flash takes `graph_path` from its stage config (`tools/glm5_next_gen_deployment.py`). |
 | `G5_PIN_EXPERTS=1` | No longer read. GLM Flash takes `pin_experts` from its stage config. Graphs require full pinning since `78c2c21`. |
-| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The device collective takes `wait_mode` from the stage config's `tp_collective` (default `spin`). |
+| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The device collective takes `wait_mode` from the stage config's `device_collective`; the member is required (`hardware` or `spin`) and a config without it is refused at configure. |
 | `G5_API_DISABLED=1` | No longer read. Since #1261 the agent has no `ensure_api` and never starts an API; the model APIs run on the hub (section 6). The line is inert and can leave the drop-in. |
 | `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:529`, `:550`). |
 

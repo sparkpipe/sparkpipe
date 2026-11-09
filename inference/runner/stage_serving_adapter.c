@@ -173,6 +173,21 @@ static SparkStatus StageServingRunnerWeights(SparkStageServingState *state)
 static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object, const char *name, char **out)
 {
 	int32_t token = SparkJsonFindObjectMember(doc, object, name);
+static SparkStatus StageServingKnownMembers(const SparkStageServingState *state, SparkJsonDocument *doc, int32_t object, const char *where,
+	const char *const *names, uint32_t count)
+{
+	int32_t unknown = -1;
+	char *key = 0;
+	if ( SparkJsonValidateObjectMembersKnown(doc, object, names, count, &unknown) == SPARK_STATUS_OK )
+		return SPARK_STATUS_OK;
+	if ( unknown >= 0 )
+		(void)SparkJsonCopyString(doc, unknown, &key);
+	fprintf(stderr, "%s adapter: %s has the unknown member \"%s\"; a stage config carries only the members this adapter reads\n",
+		state->model->module_tag, where, key != 0 ? key : "?");
+	free(key);
+	return SPARK_STATUS_SCHEMA_ERROR;
+}
+
 	if ( token < 0 )
 		return SPARK_STATUS_OK;
 	return SparkJsonCopyString(doc, token, out) == SPARK_STATUS_OK ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
@@ -183,8 +198,11 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
 	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
 		StageServingCopyMember(doc, object, "partner_pack", &state->streamed_partner_pack) != SPARK_STATUS_OK ||
+	static const char *const members[] = { "partner_pack", "fabric_device", "pair_device", "node_rows", "gid_index", "pair_gid_index",
+		"traffic_class", "dense_buffers", "expert_slots" };
 		StageServingCopyMember(doc, object, "fabric_device", &state->streamed_fabric_device) != SPARK_STATUS_OK ||
 		StageServingCopyMember(doc, object, "pair_device", &state->streamed_pair_device) != SPARK_STATUS_OK )
+		StageServingKnownMembers(state, doc, object, "streamed_prefill", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK ||
 		return SPARK_STATUS_SCHEMA_ERROR;
 	streamed->node_rows = StageServingJsonU32(doc, object, "node_rows", 0u);
 	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
@@ -231,7 +249,9 @@ static SparkStatus StageServingLoadSessionPorts(SparkStageServingState *state, S
 
 static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev)
 {
-	const SparkModelServingAdapterDescriptor *descriptor = state->model->descriptor;
+	static const char *const members[] = { "backend", "backend_module_path", "local_host", "collective_identifier", "listen_port",
+		"connect_timeout_milli", "operation_timeout_milli", "peer_hosts", "session_ports", "wait_mode" };
+	const SparkModelServingAdapterDescriptor *descriptor = &StageServingDescriptor;
 	int32_t token, hosts;
 	uint32_t peer_count, index;
 	uint64_t identifier = 0u;
@@ -239,6 +259,11 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	memset(&state->device_config, 0, sizeof(state->device_config));
 	memset(&state->device_topology, 0, sizeof(state->device_topology));
 	state->device_topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
+	if ( !SparkJsonTokenIsType(doc, dev, SPARK_JSON_TOKEN_OBJECT) )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	status = StageServingKnownMembers(state, doc, dev, "device_collective", members, sizeof(members) / sizeof(members[0]));
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	state->device_topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	state->device_config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	token = SparkJsonFindObjectMember(doc, dev, "backend");
@@ -274,9 +299,17 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	state->device_topology.rank_count = peer_count;
 	state->device_topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 	token = SparkJsonFindObjectMember(doc, dev, "wait_mode");
-	if ( token >= 0 && SparkJsonStringEquals(doc, token, "hardware") )
+	if ( token < 0 )
+	{
+		fprintf(stderr, "%s adapter: device_collective.wait_mode is required and names \"hardware\" or \"spin\"; a rank never picks a wait regime by default\n",
+			state->model->module_tag);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	if ( SparkJsonStringEquals(doc, token, "hardware") )
 		state->device_topology.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
-	else if ( token >= 0 && !SparkJsonStringEquals(doc, token, "spin") )
+	else if ( !SparkJsonStringEquals(doc, token, "spin") )
+	{
+		fprintf(stderr, "%s adapter: device_collective.wait_mode names \"hardware\" or \"spin\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	status = StageServingLoadSessionPorts(state, doc, dev, peer_count);
 	if ( status != SPARK_STATUS_OK )
@@ -301,9 +334,13 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 	int32_t token = SparkJsonFindObjectMember(doc, taps, "entries");
 	const int32_t file = SparkJsonFindObjectMember(doc, taps, "file"), stream = SparkJsonFindObjectMember(doc, taps, "stream");
 	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK || (file >= 0) == (stream >= 0) ||
+	static const char *const members[] = { "entries", "file", "stream", "rank", "window", "file_max_bytes" };
 		(file >= 0 && (StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0)) ||
 		(stream >= 0 && (StageServingCopyMember(doc, taps, "stream", &state->tap_stream) != SPARK_STATUS_OK || state->tap_stream == 0)) )
 	{
+	if ( !SparkJsonTokenIsType(doc, taps, SPARK_JSON_TOKEN_OBJECT) ||
+		StageServingKnownMembers(state, doc, taps, "taps", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
 		free(entries);
 		fprintf(stderr, "%s adapter: taps need \"entries\" and exactly one of \"file\" and \"stream\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
@@ -655,14 +692,23 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 static SparkStatus StageServingParse(SparkStageServingState *state, const SparkModelServingAdapterConfiguration *configuration,
 	SparkJsonDocument *doc, int32_t root)
 {
-	const SparkModelServingAdapterDescriptor *descriptor = state->model->descriptor;
+	static const char *const members[] = { "stage_pack_path", "stray_working_set_path", "state_budget_bytes", "state_memory_bytes", "hidden",
+		"tp_degree", "tp_rank", "world_size", "max_sequences", "max_rows", "max_shared_rows", "resident_capacity", "kv_pages", "taps",
+		"streamed_prefill", "device_collective" };
+	const SparkModelServingAdapterDescriptor *descriptor = &StageServingDescriptor;
 	SparkStageRunnerConfiguration *config = &state->runner_config;
-	uint32_t world_size;
+	uint32_t world_size, tp_rank = 0u;
 	int32_t token;
 	token = SparkJsonFindObjectMember(doc, root, "stage_pack_path");
 	if ( token < 0 || SparkJsonCopyString(doc, token, &state->pack_path) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	if ( StageServingCopyMember(doc, root, "stray_working_set_path", &state->stray_working_set_path) != SPARK_STATUS_OK )
+	SparkStatus status;
+	if ( !SparkJsonTokenIsType(doc, root, SPARK_JSON_TOKEN_OBJECT) )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	status = StageServingKnownMembers(state, doc, root, "the stage config", members, sizeof(members) / sizeof(members[0]));
+	if ( status != SPARK_STATUS_OK )
+		return status;
 		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "state_budget_bytes");
 	if ( token < 0 || SparkJsonGetUInt64(doc, token, &config->state_budget_bytes) != SPARK_STATUS_OK ||
@@ -691,6 +737,13 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 		configuration->runtime_limits.max_active_sequence_count);
 	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
 	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
+	token = SparkJsonFindObjectMember(doc, root, "tp_rank");
+	if ( token < 0 || SparkJsonGetUInt32(doc, token, &tp_rank) != SPARK_STATUS_OK || tp_rank != config->tp_rank )
+	{
+		fprintf(stderr, "%s adapter: tp_rank must name %u, the rank this config is loaded on (deployment rank %u at tp_degree %u)\n",
+			state->model->module_tag, config->tp_rank, configuration->stage_index, config->tp_degree);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
 	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
 		configuration->runtime_limits.resident_sequence_capacity);
 	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);

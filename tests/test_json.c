@@ -73,12 +73,27 @@ int main(void)
     assert(SparkJsonParseText(DuplicateJson, strlen(DuplicateJson), &document) == SPARK_STATUS_OK);
     root_token = SparkJsonGetRootToken(&document);
     assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
+    assert(SparkJsonValidateObjectMembersKnown(&document, root_token, ShortMembers, 2u, 0) == SPARK_STATUS_SCHEMA_ERROR);
     SparkJsonDocumentDestroy(&document);
 
     SparkJsonDocumentReset(&document);
     assert(SparkJsonParseText(UnknownJson, strlen(UnknownJson), &document) == SPARK_STATUS_OK);
     root_token = SparkJsonGetRootToken(&document);
     assert(SparkJsonValidateObjectMembersExact(&document, root_token, ShortMembers, 2u) == SPARK_STATUS_SCHEMA_ERROR);
+    SparkJsonDocumentDestroy(&document);
+
+    SparkJsonDocumentReset(&document);
+    assert(SparkJsonParseText(UnknownJson, strlen(UnknownJson), &document) == SPARK_STATUS_OK);
+    root_token = SparkJsonGetRootToken(&document);
+    {
+        static const char *const KnownMembers[] = {"name", "values", "stale"};
+        int32_t unknown_token = -1;
+        assert(SparkJsonValidateObjectMembersKnown(&document, root_token, KnownMembers, 3u, &unknown_token) == SPARK_STATUS_OK);
+        assert(unknown_token < 0);
+        assert(SparkJsonValidateObjectMembersKnown(&document, root_token, ExactMembers, 3u, &unknown_token) == SPARK_STATUS_SCHEMA_ERROR);
+        assert(unknown_token >= 0 && SparkJsonStringEquals(&document, unknown_token, "stale"));
+        assert(SparkJsonValidateObjectMembersKnown(&document, root_token, ShortMembers, 2u, 0) == SPARK_STATUS_SCHEMA_ERROR);
+    }
     SparkJsonDocumentDestroy(&document);
 
     assert(SparkSha256Bytes("abc", 3u, sha256) == SPARK_STATUS_OK);
