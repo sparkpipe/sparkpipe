@@ -1,4 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
+#if defined(__APPLE__)
+#define _DARWIN_C_SOURCE 1
+#endif
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -788,7 +791,7 @@ static void SnapTestReleaseSavesAndPrepareRestores(const char *directory)
 	source.copy_calls = 0u;
 	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK);
 	CHECK(SparkKvPageCacheSavePending(&source.cache) == 1u && source.copy_calls == 0u && source.snapshot.save_count == 0u && source.cache.live_sequence_count == 0u);
-	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_CAPACITY_EXCEEDED && SnapEntryCount(&source) == 3u);
+	CHECK(SnapEntryCount(&source) == 3u && source.cache.lru_head == SPARK_KV_PAGE_CACHE_NO_INDEX);
 	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvPageCacheSavePending(&source.cache) == 0u && source.copy_calls != 0u);
 	CHECK(source.snapshot.save_count == 1u && source.snapshot.save_page_count == 4u);
 	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 4u);
@@ -984,6 +987,92 @@ static void SnapTestEvictionPrefersLowPriority(const char *directory)
 	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapEntryCount(&source) == 0u && source.snapshot.evicted_unsaved_count == 1u);
 	SnapFixtureClose(&source);
 	SparkKvSnapshotStoreClose(&store);
+}
+
+static void SnapTestPendingSaveYieldsToEviction(const char *directory)
+{
+	static SnapFixture source;
+	SparkKvSnapshotStore store;
+	SparkKvLaneTransaction owners[4];
+	SparkKvLaneTransactions transactions;
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverAdmissionRequest request;
+	SparkKvPageCacheSaveWork work;
+	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
+	uint32_t logical[16],physical[16];
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x6bu) == 0);
+	SnapPrefill(&source,pages,states);
+	SnapTransactionsInit(&transactions,owners,&source.cache,logical,physical);
+	SnapLane(&lane,1u,0u,9u,9u);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	SnapReleaseRequest(&request,&lane,1u,1u);
+	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK && SparkKvPageCacheSavePending(&source.cache) == 1u);
+	CHECK(SnapEntryCount(&source) == 3u && source.cache.lru_head == SPARK_KV_PAGE_CACHE_NO_INDEX);
+	CHECK(SparkKvPageCacheSaveTake(&source.cache,&work) == SPARK_STATUS_OK && source.snapshot.in_flight == 1u);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_CAPACITY_EXCEEDED && SnapEntryCount(&source) == 3u && SparkKvPageCacheSavePending(&source.cache) == 1u);
+	CHECK(source.snapshot.save_cancelled_count == 0u);
+	CHECK(SparkKvPageCacheSaveFinish(&source.cache,&work,SparkKvPageCacheSaveCopy(&source.cache,&work)) == SPARK_STATUS_OK);
+	CHECK(source.snapshot.in_flight == 0u && SparkKvPageCacheSavePending(&source.cache) == 1u);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapEntryCount(&source) == 2u && SnapIdentityValid(&source,30u) == 0u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 0u && source.snapshot.save_cancelled_count == 1u && source.snapshot.evicted_unsaved_count == 1u);
+	CHECK(SnapEvictAll(&source) == 2u && SnapEntryCount(&source) == 0u && SnapAllocatedPages(&source) == 0u);
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a queued save holds its chain only while its write is in flight; eviction for live work cancels the coldest other save and takes its chain\n");
+}
+
+static void SnapTestBusyVictimIsPassedOver(const char *directory)
+{
+	static SnapFixture source;
+	SparkKvSnapshotStore store;
+	uint8_t state[SNAP_STATE_BYTES];
+	uint32_t busy_page;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x6cu) == 0);
+	SnapPublishOne(&source,2u,1u,90u,0x3cu);
+	SnapPublishOne(&source,3u,2u,91u,0x4du);
+	CHECK(SparkKvPageCacheReleaseLane(&source.cache,1u,2u) == SPARK_STATUS_OK && SparkKvPageCacheReleaseLane(&source.cache,2u,3u) == SPARK_STATUS_OK);
+	source.snapshot.pending_capacity = 0u;
+	CHECK(source.cache.lru_head != SPARK_KV_PAGE_CACHE_NO_INDEX);
+	busy_page = source.entries[source.cache.lru_head].logical_page_index;
+	CHECK(SparkKvPageStoreReadback(&source.stores[1],busy_page,source.blocks[busy_page].generation,(uintptr_t)state,SNAP_STATE_BYTES) == SPARK_STATUS_BUSY);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapEntryCount(&source) == 1u);
+	CHECK(SnapIdentityValid(&source,90u) != 0u && SnapIdentityValid(&source,91u) == 0u);
+	CHECK(SnapReadState(&source.stores[1],busy_page,source.blocks[busy_page].generation,state) == SPARK_STATUS_OK);
+	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapEntryCount(&source) == 0u);
+	source.snapshot.pending_capacity = 4u;
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: eviction passes over an entry whose stored state is mid-transfer and takes the next coldest one\n");
+}
+
+static void SnapTestSpanEvictsBeforeParking(const char *directory)
+{
+	static SnapFixture source;
+	SparkKvSnapshotStore store;
+	SparkModelDriverCacheLane lane;
+	uint32_t index,page,entries;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x6du) == 0);
+	source.snapshot.pending_capacity = 0u;
+	for (index=0u; index<SNAP_PAGES; index++)
+	{
+		SnapPublishOne(&source,10u + index,index % 4u,(uint8_t)(100u + index),(uint8_t)(0x11u + index));
+		CHECK(SparkKvPageCacheReleaseLane(&source.cache,index % 4u,10u + index) == SPARK_STATUS_OK);
+	}
+	CHECK(SnapEntryCount(&source) == SNAP_PAGES && SnapAllocatedPages(&source) == SNAP_PAGES && source.arena.resident_block_count == SNAP_PAGES);
+	SnapLane(&lane,50u,0u,0u,2u * SNAP_BLOCK_TOKENS);
+	CHECK(SparkKvPageCacheBeginLane(&source.cache,&lane,&page) == SPARK_STATUS_OK);
+	CHECK(source.stores[0].write_count == 0u && SparkKvPageStoreWaitForTransfers(&source.stores[0]) == SPARK_STATUS_OK && source.stores[0].write_count == 0u);
+	entries = SnapEntryCount(&source);
+	CHECK(entries == SNAP_PAGES - 2u && SnapIdentityValid(&source,100u) == 0u && SnapIdentityValid(&source,101u) == 0u && SnapIdentityValid(&source,102u) != 0u);
+	CHECK(source.cache.sequences[0].mutable_page_count == 2u && source.arena.resident_block_count == SNAP_PAGES);
+	CHECK(SparkKvPageCacheReleaseLane(&source.cache,0u,50u) == SPARK_STATUS_OK && SnapAllocatedPages(&source) == entries);
+	source.snapshot.pending_capacity = 4u;
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a span on a full pool evicts the coldest cached entries for its pages instead of spilling them to backing first\n");
 }
 
 static void SnapTestQueueFullSkips(const char *directory)
@@ -1710,6 +1799,12 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestEvictionPrefersLowPriority(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestPendingSaveYieldsToEviction(directory);
+	SnapTestBusyVictimIsPassedOver(directory);
+	SnapTestSpanEvictsBeforeParking(directory);
 	SnapRemoveAll(directory);
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
