@@ -6109,12 +6109,20 @@ int main(int argc, char **argv)
 	TestHcCombKernels(3u,0u);
 	TestHcCombKernels(9u,0u);
 	TestCausalConv();
-	TestCausalConvTree();
+	{
+		const uint64_t rng_saved = rng_state;
+		TestCausalConvTree();
+		rng_state = rng_saved;
+	}
 	TestCausalConvF32();
 	TestDeltaPrenorm();
 	TestCausalConvDilated();
 	TestGatedDelta();
-	TestGatedDeltaTree();
+	{
+		const uint64_t rng_saved = rng_state;
+		TestGatedDeltaTree();
+		rng_state = rng_saved;
+	}
 	TestChannelDelta();
 	TestAttention(1u,1u,0u);
 	TestAttention(1000u,1u,0u);
@@ -6152,8 +6160,12 @@ int main(int argc, char **argv)
 		att = qwen;
 	}
 	TestAttentionPages();
-	TestAttentionTree();
-	TestKvMove();
+	{
+		const uint64_t rng_saved = rng_state;
+		TestAttentionTree();
+		TestKvMove();
+		rng_state = rng_saved;
+	}
 	TestGeluMul(2u);
 	TestGatedMulRouted(24u,SPARK_GATED_GELU_TANH);
 	TestGatedMulRouted(24u,SPARK_GATED_SILU);
