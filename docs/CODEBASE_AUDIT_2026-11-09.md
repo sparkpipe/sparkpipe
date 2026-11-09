@@ -371,6 +371,42 @@ certified head, the one-phase `SUBMIT` kind, the unused transport modes, the
 range kernels, and the five stale deployment generators that still emit the
 `tp_collective` schema.
 
+Carried in from the open pull requests on 2026-11-10, each as its own
+commit on this branch: the all-reduce switch to reduce-scatter plus
+all-gather from 10,240 elements at 16 ranks on dual rail (#1863); a failed
+streamed prefill makes the lane fatal, so the runner refuses every later
+submit and reset and residentd exits the rank for a restart (#1874); every
+slow path logs once per shape, a decode graph that cannot be captured or a
+decode step before the experts are resident aborts the rank, and `kv_pages`
+is required in an adapter configuration (#1841, the owner's rule: a
+fallback turns a bug into a number). The draft planner's calibration fix
+(#1873) went to the tree-verification branch (#1902), whose draft server
+already keeps contexts per engine session and request (#1765's fix).
+
+Closed as superseded or dropped, with what they measured kept here so the
+next performance pass starts from it:
+
+- Two-lane prefill (#1889): on the 11-08 GLM 5.3 Full 16K launch profile,
+  22-31% of the span is collectives with no compute and compute overlaps a
+  collective only 18% of the time, about 1.3x on prefill from overlap
+  alone. The fix it proposed, the second lane's rounds on its own mesh
+  band borrowed through the lane's weightd client, belongs in step 3's
+  runner now that both lanes run on one host thread: the runner opens the
+  band, not the lane thread the PR was written against.
+- Drafter taps from the GLM and Gemma 4 stages (#1639): with the runner
+  walking the layers, a tap is an export after layer `k` in the runner's
+  loop, one hook for every family, not a change per stage.
+- K3 fill lane (#1853): a second lane configuration for prefill filled
+  245,760 tokens in 165 s plus a 76 s reload against 494 s on waves. The
+  number stands as the target for the streamed prefill in the decode lane;
+  the second configuration does not.
+- Concurrent agent sessions speculating (#1765): the engine side (one draft
+  connection per lane, drafts sent before the frame is planned) is to be
+  redone on the tree-frame engine if agent-turn measurements call for it.
+- A per-request GPU clock mode (#1676), the asynchronous bulk collectives
+  experiment (#1705) and the PP4 x TP4 DeepSeek prefill (#1896, the owner
+  dropped the topology on 2026-11-09) are closed without carry-over.
+
 ## Not covered, and numbers to measure
 
 Not read in depth: the weightd daemon and mesh internals beyond the round
