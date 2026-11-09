@@ -424,7 +424,12 @@ struct VfRig
 	{
 		LmKvAccessError error, zero;
 		memset(&zero, 0, sizeof(zero));
-		return cudaMemcpy(&error, state->kv_error, sizeof(error), cudaMemcpyDeviceToHost) == cudaSuccess && memcmp(&error, &zero, sizeof(error)) == 0 ? 1u : 0u;
+		if ( cudaMemcpy(&error, state->kv_error, sizeof(error), cudaMemcpyDeviceToHost) != cudaSuccess )
+			return 0u;
+		if ( memcmp(&error, &zero, sizeof(error)) != 0 )
+			printf("kv access error: code %u access %u row %u sequence %u position %u page %u\n", error.error_code, error.access_kind, error.row, error.sequence,
+				error.position, error.page);
+		return memcmp(&error, &zero, sizeof(error)) == 0 ? 1u : 0u;
 	}
 
 	void Close(void)

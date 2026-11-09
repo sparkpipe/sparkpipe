@@ -356,7 +356,7 @@ static void ProbeTiled(uint32_t heads,uint32_t sequences,uint32_t rows_per_seque
 	ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,tiled_device,stride,rows,0,
 		block_tokens != 0u ? mask_device : 0,mask_words,block_tokens != 0u ? block_tokens : 1u,window) == cudaSuccess,"tiled launch",label);
 	LmGqaShardPartialKernel<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),group * 32u>>>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,
-		scalar_device,stride,rows,block_tokens != 0u ? mask_device : 0,mask_words,block_tokens != 0u ? block_tokens : 1u,window);
+		scalar_device,stride,rows,block_tokens != 0u ? mask_device : 0,mask_words,block_tokens != 0u ? block_tokens : 1u,window,(const uint32_t *)0,(const uint32_t *)0);
 	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(tiled.data(),tiled_device,tiled.size() * sizeof(float),cudaMemcpyDeviceToHost));
 	PROBE_CUDA(cudaMemcpy(scalar.data(),scalar_device,scalar.size() * sizeof(float),cudaMemcpyDeviceToHost));
@@ -399,7 +399,7 @@ static void ProbeTiled(uint32_t heads,uint32_t sequences,uint32_t rows_per_seque
 		PROBE_CUDA(cudaEventRecord(start));
 		for (index=0u; index<repeats; index++)
 			LmGqaShardPartialKernel<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),group * 32u>>>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,
-				scalar_device,stride,rows,0,0u,1u,0u);
+				scalar_device,stride,rows,0,0u,1u,0u,(const uint32_t *)0,(const uint32_t *)0);
 		PROBE_CUDA(cudaEventRecord(stop));
 		PROBE_CUDA(cudaEventSynchronize(stop));
 		PROBE_CUDA(cudaEventElapsedTime(&scalar_ms,start,stop));

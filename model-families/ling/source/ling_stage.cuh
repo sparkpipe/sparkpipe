@@ -524,6 +524,8 @@ struct LingModel
 	{
 		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		if ( step->tree != 0u && (!S::kGqa || G::kVerifyRows == 0u || step->commit != 0u || step->sequences != 1u) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		frame->step = step;
 		frame->stream = (cudaStream_t)stream;
 		return SPARK_STATUS_OK;
