@@ -19,14 +19,14 @@
     ? "예약하는 주와 현재 주를 포함하여 " + D.map(function (d, i) { return d.weeks + "주" + (i === D.length - 1 ? "" : " 이상") + " 보유 시 새로 예약하는 각 주 " + pct(d.off) + " 할인"; }).join(", ")
     : D.map(function (d, i) { return pct(d.off) + " off each new week when you hold " + d.weeks + (i === D.length - 1 ? "" : " or more") + " weeks"; }).join(", ") + ", counting the current week and the weeks you are booking";
   var values = {
-    start: { demo: day(P.demoFrom), weeks: day(P.weeksFrom) },
+    start: { hours: day(P.hoursFrom), weeks: day(P.weeksFrom) },
     week: { hc: String(B.weekHC), usd: usd(B.weekHC * bulk.usd), krw: krw(B.weekHC * bulk.krw), effective: usd(B.weekHC * bulk.usd / 168) },
     off: { max: pct(D[D.length - 1].off), list: list, table: table },
     hc: { "small-usd": usd(small.usd), "small-krw": krw(small.krw), "bulk-usd": usd(bulk.usd), "bulk-krw": krw(bulk.krw), "bulk-from": String(bulk.from), months: String(P.hc.validityMonths) },
     hour: { hc: String(B.hourHC), day: String(B.hourHC * 8) },
     team: { min: usd(B.weekHC * bulk.usd / 5), max: usd(B.weekHC * bulk.usd / 3) },
-    demo: { days: String(B.demoDaysAhead), hours: String(B.demoHoursPerWeek) },
-    fleets: { pin: String(P.fleets.filter(function (f) { return !f.demo; }).length), demo: String(P.fleets.filter(function (f) { return f.demo; }).length) }
+    hourfleet: { days: String(B.hourFleetDaysAhead), hours: String(B.hourFleetHoursPerWeek), free: String(Math.ceil(B.openHourShare * P.fleets.length)), share: pct(B.openHourShare) },
+    fleets: { all: String(P.fleets.length), pin: String(P.fleets.filter(function (f) { return !f.hourFleet; }).length), hour: String(P.fleets.filter(function (f) { return f.hourFleet; }).length) }
   };
   Object.keys(values).forEach(function (key) {
     document.querySelectorAll("[data-" + key + "]").forEach(function (el) {

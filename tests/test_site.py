@@ -17,6 +17,7 @@ CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.pn
 SSL_CONF = ROOT / "deployment" / "vps" / "sparkpipe-ai-ssl.conf"
 TOSS_SDK = "https://js.tosspayments.com/v2/standard"
 PAYMENT_PAGES = ("account.html", "buy.html")
+CACHED = (".svg", ".png", ".ico")
 
 
 class Page(HTMLParser):
@@ -190,6 +191,14 @@ def check_payment_pages(pages, failures):
         failures.append(f"{SSL_CONF.name}: the Toss Payments hosts are allowed beyond the payment pages")
 
 
+def check_fresh(failures):
+    conf = SSL_CONF.read_text(encoding="utf-8")
+    fresh = [re.compile(pattern) for pattern, body in re.findall(r'<FilesMatch "(.*?)">(.*?)</FilesMatch>', conf, re.S) if 'Header set Cache-Control "no-cache"' in body]
+    stale = sorted(str(path.relative_to(SITE)) for path in SITE.rglob("*") if path.is_file() and path.suffix not in CACHED and not any(p.search(path.name) for p in fresh))
+    if stale:
+        failures.append(f"{SSL_CONF.name}: a browser may keep these after a deploy and run a page against old published settings: {stale}")
+
+
 def check_models(failures):
     text = (SITE / "pricing.js").read_text()
     listed = [(m["name"], m["id"]) for m in json.loads(text[text.index("{"):text.rindex("}") + 1])["models"]]
@@ -208,6 +217,7 @@ def main():
     check_brand(failures)
     check_models(failures)
     check_payment_pages(pages, failures)
+    check_fresh(failures)
     for name, page in pages.items():
         check_links(name, page, pages, SITE, failures, CHAT_APP_PAGES.get(name, frozenset()))
         check_tables(name, page, failures)
@@ -216,7 +226,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts beyond the Toss Payments SDK on the payment pages and their Content-Security-Policy, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts beyond the Toss Payments SDK on the payment pages and their Content-Security-Policy, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect, every page, script, style and contract text is revalidated on each load")
     print(f"hyor.io: {company} pages with the language switch and redirect, no scripts; the logo files match tools/brand_logo.py")
     return 0
 

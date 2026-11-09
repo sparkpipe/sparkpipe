@@ -244,6 +244,8 @@ typedef struct SparkWeightdMesh
     struct ibv_mr *pair_seq_mr;
     struct ibv_cq *pair_cq;
     uint32_t pair_peer;
+    uint32_t second_rail;
+    uint32_t rail_peers;
     uint32_t pair_sgid_index;
     uint16_t pair_lid;
     uint8_t pair_gid[16];
@@ -288,9 +290,16 @@ static const SparkWeightdMeshTransfer *SparkWeightdMeshCellFailure(uint32_t inde
     return second->failed != 0u ? second : 0;
 }
 
+static uint32_t weightd_mesh_second_rail = 0u;
+
+void SparkWeightdMeshUseSecondRail(void)
+{
+    weightd_mesh_second_rail = 1u;
+}
+
 static uint32_t SparkWeightdMeshIsPairPeer(uint32_t peer)
 {
-    return weightd_mesh.pair_protection_domain != 0 && peer == weightd_mesh.pair_peer ? 1u : 0u;
+    return weightd_mesh.pair_protection_domain != 0 && peer < SPARK_WEIGHTD_MESH_PEERS && ((weightd_mesh.rail_peers >> peer) & 1u) != 0u ? 1u : 0u;
 }
 
 static struct ibv_mr *SparkWeightdMeshPeerMr(uint32_t peer,struct ibv_mr *switch_mr,struct ibv_mr *pair_mr)
@@ -862,7 +871,8 @@ static void SparkWeightdMeshAdvertiseLane(uint32_t lane)
     uint32_t index;
     requests = (SparkWeightdMeshWaitRequest *)((uint8_t *)weightd_mesh.recv_buffer + SPARK_WEIGHTD_MESH_WAIT_OFFSET);
     for (index=2u * lane * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index<2u * (lane + 1u) * SPARK_WEIGHTD_MESH_RANKS_PER_BAND; index++)
-        __atomic_store_n(&requests[index].capabilities,(uint64_t)SPARK_WEIGHTD_MESH_CAPABILITIES,__ATOMIC_RELEASE);
+        __atomic_store_n(&requests[index].capabilities,(uint64_t)SPARK_WEIGHTD_MESH_CAPABILITIES |
+            (weightd_mesh.pair_protection_domain != 0 && weightd_mesh.second_rail == 0u ? (uint64_t)SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK : UINT64_C(0)),__ATOMIC_RELEASE);
 }
 
 static uint32_t SparkWeightdMeshDoorbellShippable(uint32_t index);
@@ -1272,7 +1282,7 @@ static uint32_t SparkWeightdMeshRecordUsable(uint32_t peer,const SparkWeightdMes
     const char *reason = 0;
     char text[40];
     if ( pair != 0u && record->pair_rkey == 0u )
-        reason = "partner record has no pair link";
+        reason = "peer record has no key on the second link";
     else if ( SparkWeightdMeshGidAddress(gid) == 0u )
         reason = "gid is not an IPv4 RoCE address";
     if ( reason == 0 )
@@ -1617,7 +1627,7 @@ static SparkStatus SparkWeightdMeshOpenPair(const char *pair_interface_name,uint
 {
     uint32_t partner = weightd_mesh.local_rank ^ 1u;
     SparkStatus status;
-    if ((weightd_mesh.rank_mask & (1u << partner)) == 0u || pair_sgid_index > 255u)
+    if (pair_sgid_index > 255u || (weightd_mesh.second_rail == 0u && (weightd_mesh.rank_mask & (1u << partner)) == 0u))
     {
         fprintf(stderr,"weightd-mesh: pair %s needs partner rank %u in the mesh\n",pair_interface_name,partner);
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1646,7 +1656,17 @@ static SparkStatus SparkWeightdMeshOpenPair(const char *pair_interface_name,uint
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
     weightd_mesh.pair_peer = partner < weightd_mesh.local_rank ? partner : partner - 1u;
-    printf("weightd-mesh: pair link %s sgid=%u partner=%u peer=%u\n",pair_interface_name,pair_sgid_index,partner,weightd_mesh.pair_peer);
+    if (weightd_mesh.second_rail != 0u)
+    {
+        weightd_mesh.rail_peers = SparkWeightdMeshSecondRailPeers(weightd_mesh.local_rank,weightd_mesh.rank_mask);
+        printf("weightd-mesh: second rail %s sgid=%u peers=0x%x of %d\n",pair_interface_name,pair_sgid_index,weightd_mesh.rail_peers,
+            __builtin_popcount(weightd_mesh.rank_mask) - 1);
+    }
+    else
+    {
+        weightd_mesh.rail_peers = 1u << weightd_mesh.pair_peer;
+        printf("weightd-mesh: pair link %s sgid=%u partner=%u peer=%u\n",pair_interface_name,pair_sgid_index,partner,weightd_mesh.pair_peer);
+    }
     fflush(stdout);
     return SPARK_STATUS_OK;
 }
@@ -1678,6 +1698,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     weightd_mesh.sgid_index = sgid_index;
     weightd_mesh.traffic_class = traffic_class;
     weightd_mesh.pair_peer = SPARK_WEIGHTD_MESH_PEERS;
+    weightd_mesh.second_rail = weightd_mesh_second_rail;
     weightd_mesh.boot_ns = SparkWeightdMeshRealtimeNs();
     weightd_mesh_boot_phase_ns = weightd_mesh.boot_ns;
     SparkWeightdMeshPhase("init-begin");
@@ -1922,7 +1943,7 @@ SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
     result->local_rank = weightd_mesh.local_rank;
     result->rank_mask = weightd_mesh.rank_mask;
     result->boot_ns = weightd_mesh.boot_ns;
-    if ( weightd_mesh.pair_protection_domain != 0 )
+    if ( weightd_mesh.pair_protection_domain != 0 && weightd_mesh.second_rail == 0u )
         result->pair_rank = weightd_mesh.local_rank ^ 1u;
     result->now_mono_ns = SparkWeightdMeshMonotonicNs();
     result->peers[weightd_mesh.local_rank].state = SPARK_WEIGHTD_MESH_PEER_SELF;

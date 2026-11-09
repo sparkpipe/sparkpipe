@@ -26,7 +26,7 @@ h1 { max-width: 15ch; }
 <div class="strip">
   <div class="wrap">
     <span>Fleets in <b>Korea</b></span>
-    <span>Demo hours from <b data-start="demo">1 December 2026</b></span>
+    <span>Hours from <b data-start="hours">1 December 2026</b></span>
     <span>Weeks from <b data-start="weeks">4 January 2027</b></span>
     <span>Kimi K3 · GLM 5.3 · 19 open models · <b>and yours</b></span>
   </div>
@@ -39,6 +39,7 @@ h1 { max-width: 15ch; }
       <a href="#fleet">Your fleet</a>
       <a href="#functions">Functions</a>
       <a href="#prices">Prices</a>
+      <a href="availability.html">Availability</a>
       <a href="#setup">Setup</a>
       <a href="market.html">Your account</a>
     </nav>
@@ -130,9 +131,9 @@ h1 { max-width: 15ch; }
       <div><p class="label">Working state that stays</p><p>8 TB of cache on the fleet, 1 TB per node mirrored to its pair partner. Requests reuse the longest cached prefix automatically, with no slots to manage. It is deleted when another customer's booking of the fleet starts, or 24 hours after your last hour. No copies off the fleet, no backups. Treat it as working space, not an archive: if a failure ever takes both copies, we credit 24 hours of the fleet while the cache rebuilds.</p></div>
       <div><p class="label">Your storage</p><p><span data-storage>4 TB</span> on every fleet for your repository, datasets, adapters and models, 500 GB per node mirrored like the cache. Pull models, datasets and repositories straight onto it from Hugging Face, S3 or any HTTPS URL: start a terabyte download from your laptop on a plane, and the fleet does the rest. Export it and restore it to any fleet you hold, and back up daily anything you want to keep.</p></div>
       <div><p class="label">Your team</p><p>Share a fleet with a team of three to five. Each member signs in with their own email and keys, the owner handles bookings and payments, an audit log shows who did what, and when several members' agents are waiting, the fleet is shared fairly between them. At <span data-week="usd">$2,160</span> a week, that is <span data-team="min">$432</span> to <span data-team="max">$720</span> an engineer.</p></div>
-      <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does.</p></div>
+      <div><p class="label">Your tools</p><p>Claude Code, Codex and OpenCode, the agents senior engineers use most, each set up with one command and tested on every release. Any other tool that speaks the Anthropic or OpenAI APIs works too, and the <span class="mono">sparkpipe</span> CLI does everything your account does. Your agent also gets tools that run on your fleet, next to your code: language servers for exact definitions, references and compile errors; search over the code, its history and your dependencies' source at the versions you pin; builds and tests in the sandbox with warm caches, running only the tests a change touches; a headless browser for checking web apps; and fan-out reading of many files at once, which spends none of the main model's time.</p></div>
       <div><p class="label">19 open models</p><p>Kimi K3, GLM 5.3, DeepSeek V4.1 Flash and Korea's K-EXAONE 2.0, A.X K2, Solar Open 2 and Motif 3, among others, each under its publisher's license. Several stay loaded at once when they fit in the fleet's memory, and loading another takes 20 to 80 seconds. The <a href="fleets.html">Fleet List</a> has every model's measured speeds.</p></div>
-      <div><p class="label">Only yours</p><p>Nobody else's requests, cache or code run on a fleet you hold. When it changes hands, its working state is deleted and the fleet is restored to our own image before the next customer starts, and the engine's source is public, so you can read what runs on it. Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts, and our <a href="dpa.html">data processing agreement</a> covers the rest. You contract with a Korean company under Korean law. The <a href="security.html">security page</a> has the details.</p></div>
+      <div><p class="label">Only yours</p><p>Nobody else's requests, cache or code run on a fleet you hold. When it changes hands, its working state is deleted and the fleet is restored to our own image before the next customer starts, and the engine's source is public, so you can read what runs on it, apart from the separately licensed <a href="security.html#source">modules we list</a>. Requests and data are processed only on machines we operate in Korea, and never sent to another AI service. Korea holds an <a href="https://commission.europa.eu/law/law-topic/data-protection/international-dimension-data-protection/adequacy-decisions_en">EU adequacy decision</a> and a UK one, so personal data from Europe can come to your fleet without separate transfer contracts, and our <a href="dpa.html">data processing agreement</a> covers the rest. You contract with a Korean company under Korean law. The <a href="security.html">security page</a> has the details.</p></div>
     </div>
   </div>
 </section>
@@ -206,12 +207,12 @@ h1 { max-width: 15ch; }
     <h2>A demo day, then a fleet of your own.</h2>
     <ol class="steps">
       <li><h3>Open an account</h3><p>Your company's legal name or your own, a work email confirmed with a 6-digit code, and the Customer Agreement. No password. Then buy HC in any quantity.</p></li>
-      <li><h3>Book a demo day</h3><p>The whole demo fleet by the hour, up to <span data-demo="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Book a working day of it, <span data-hour="day">8</span> HC, point your own tools at it, and work on your own codebase as you would on a fleet of your own.</p></li>
-      <li><h3>Pin a fleet</h3><p>Book a first week on an available fleet, from the next Monday. When every fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC.</p></li>
-      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours. The more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>.</p></li>
+      <li><h3>Book a demo day</h3><p>A whole Hour Fleet by the hour, up to <span data-hourfleet="days">7</span> days ahead, <span data-hour="hc">1</span> HC an hour. Book a working day of it, <span data-hour="day">8</span> HC, point your own tools at it, and work on your own codebase as you would on a fleet of your own.</p></li>
+      <li><h3>Pin an A fleet</h3><p>Each pair's A half is rented by the week. Book a first week on a free one, from the next Monday. When every A fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC: every Sunday, freed fleets go to the biggest lock.</p></li>
+      <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours, and you may pin its B half too, for a 32-Spark, 4 TB pair. The more weeks you hold ahead, the bigger the discount on every week and every hour you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
-    <p class="prose">Need more than one fleet for a while? Any fleet nobody holds can be booked by the hour with the same HC, up to the end of the current week, and your requests go to it like to your own. The waitlist goes biggest lock first, then earliest. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts.</p>
-    <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch.</p>
+    <p class="prose">Need more than one fleet for a while? The B half of each pair is an Hour Fleet: anyone can book it by the hour, up to <span data-hourfleet="days">7</span> days ahead, at their discount, and at least a quarter of the fleets always stay open for hours. Any A fleet nobody holds can be booked by the hour too, up to the end of the current week. Your requests go to it like to your own. The waitlist goes biggest lock first, then earliest, and while you wait your hours cost less by the discount for the weeks your lock would book, repaid from your lock if you leave before it gives you a fleet. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts. <b>Every renter competes on the same board:</b> <a href="availability.html">see who holds what now, and how fleets are won, kept and lost</a>.</p>
+    <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch, in four pairs.</p>
   </div>
 </section>
 
@@ -222,16 +223,18 @@ h1 { max-width: 15ch; }
   </div>
   <div class="sec-body">
     <h2>Seven days for the price of six.</h2>
-    <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on demo hours and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
+    <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on hours of an Hour Fleet and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
     <div class="table-wrap"><table class="cmp">
       <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
       <tbody>
-        <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩26,000</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩19,500</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
-        <tr><th scope="row">Demo hour</th><td><span data-hour="hc">1</span> HC for the whole demo fleet for an hour; a working day of them is <span data-hour="day">8</span> HC</td></tr>
-        <tr><th scope="row">Idle fleets</th><td>Any fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
+        <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩27,200</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩20,400</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
+        <tr><th scope="row">Hour</th><td><span data-hour="hc">1</span> HC for a whole Hour Fleet for an hour, less your discount; a working day of them is <span data-hour="day">8</span> HC</td></tr>
+        <tr><th scope="row">Idle fleets</th><td>Any other fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, less your discount, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
         <tr><th scope="row">Week</th><td><span data-week="hc">144</span> HC for seven days on a fleet pinned to you: <span data-week="usd">$2,160</span> at the <span data-hc="bulk-usd">$15</span> HC price, about <span data-week="effective">$12.86</span> an hour</td></tr>
+        <tr><th scope="row">A pair</th><td>Fleets come in pairs on a shared 32-port 100 Gb/s switch. Hold a pair's A fleet and you can pin its B fleet too, for the weeks you hold the A fleet, at the same price and your fleet's discount: one cluster of 32 Sparks with 4 TB of memory. At least a quarter of the serving fleets, <span data-hourfleet="free">2</span> of <span data-fleets="all">8</span> at launch, always stay open for hours</td></tr>
         <tr><th scope="row">A team</th><td>One week shared by three to five engineers: <span data-team="min">$432</span> to <span data-team="max">$720</span> each, with their own keys and a fair share of the fleet</td></tr>
         <tr><th scope="row">Weeks ahead</th><td data-off="table">5% off each new week when you hold 4 or more weeks, 10% from 13, 15% from 26 and 20% at 52, counting the current week and the weeks you are booking</td></tr>
+        <tr><th scope="row">Your discount on hours</th><td>Every hour costs less by the discount for the most weeks you hold on one fleet, or, while you are on the waitlist, for the weeks your lock would book, repaid from your lock if you leave before it gives you a fleet: up to <span data-off="max">20%</span></td></tr>
         <tr><th scope="row">How far ahead</th><td>Up to <span data-ahead>52</span> weeks</td></tr>
         <tr><th scope="row">Downtime</th><td>A booked hour with more than 15 minutes of downtime comes back as HC, automatically, from our own records. Maintenance takes up to 3 hours a fleet a week and is credited the same way</td></tr>
         <tr><th scope="row">Payment</th><td>In won by card (Korean or overseas), bank transfer, virtual account or Korean easy pay through Toss Payments; in USDC or USDT through CoinPayments; or in US dollars by bank transfer (SWIFT) from your own account outside Korea. Korean businesses get a card slip or an electronic tax invoice</td></tr>
@@ -290,7 +293,7 @@ curl $OPENAI_BASE_URL/chat/completions \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
   -d '{"model": "kimi-k3", "messages": [{"role": "user", "content": "Hello"}]}'</pre>
     </div>
-    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F3"}</span>. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span> and <span class="mono">setup opencode</span> write these settings for you, with the SparkPipe plugin that adds the fleet's code search, test runs on its sandbox, status and morning report to the agent. Each new release of the three is tested against the fleet before we recommend it. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
+    <p class="caption">Holding more than one fleet? Name one with <span class="mono">"sparkpipe": {"fleet": "F1A"}</span>. <span class="mono">sparkpipe setup claude-code</span>, <span class="mono">setup codex</span> and <span class="mono">setup opencode</span> write these settings for you, with the SparkPipe plugin that adds the fleet's tools (language servers, code, history and dependency search, warm test runs, the browser and fan-out reading), its status and the morning report to the agent. Each new release of the three is tested against the fleet before we recommend it. The <span class="mono">sparkpipe</span> CLI also books, uploads, starts Functions and fetches the morning report from your terminal.</p>
   </div>
 </section>
 
@@ -362,8 +365,8 @@ curl $OPENAI_BASE_URL/chat/completions \
     <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="compare.html">Cost check</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js"></script>
-<script src="prices.js?v=2"></script>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
 <script>
 (function () {
   var reduce = false;

@@ -171,7 +171,7 @@ static __host__ __device__ constexpr uint32_t LmGqaShardTiledValuePart(void)
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
 static __host__ __device__ constexpr bool LmGqaShardTiledFits(void)
 {
-	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 256u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
+	return(HEAD_DIM % 64u == 0u && VALUE_DIM % 64u == 0u && HEAD_DIM <= 512u && VALUE_DIM % LmGqaShardTiledValuePart<VALUE_DIM>() == 0u);
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
@@ -202,7 +202,9 @@ void LmGqaShardTiledKernel(
 	constexpr uint32_t KEY_BYTES = HEAD_DIM * 2u, VALUE_BYTES = PART * 2u;
 	constexpr uint32_t KEY_CHUNKS = HEAD_DIM / 8u, VALUE_CHUNKS = PART / 8u;
 	constexpr uint32_t K_STEPS = HEAD_DIM / 16u, KEY_FRAGS = TILE / 8u, P_STEPS = TILE / 16u, VALUE_FRAGS = PART / 8u;
-	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds its 16 queries, a score tile and the accumulators of one value part in registers");
+	constexpr bool QUERY_RESIDENT = K_STEPS <= 16u;
+	constexpr uint32_t QUERY_STEPS = QUERY_RESIDENT ? K_STEPS : 1u;
+	static_assert(LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>(), "a warp holds a score tile and the accumulators of one value part in registers, and its 16 queries when they are at most 256 wide");
 	static_assert(Geometry::kSlotBytes == KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u,
 		"a slot is [K: kv heads x head_dim][V: kv heads x value_dim] bf16 and nothing else");
 	static_assert(LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM>() <= LM_PREFILL_ATTN_SHARED_LIMIT, "the key and value tiles exceed the shared memory an SM has");
@@ -220,7 +222,7 @@ void LmGqaShardTiledKernel(
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys), value_base = (uint32_t)__cvta_generic_to_shared(values);
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,degree), slot_count = LmGqaShardHeadSlots(heads,VALUE_DIM,degree);
 	const uint32_t record = width + 2u * slot_count;
-	uint32_t query[K_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
+	uint32_t query[QUERY_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
 	float output[VALUE_FRAGS][4], running_max[2] = { -INFINITY, -INFINITY }, running_sum[2] = { 0.0f, 0.0f };
 	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	bool valid[2], member[2];
@@ -235,15 +237,19 @@ void LmGqaShardTiledKernel(
 		head[side] = kv_head * group + (valid[side] ? vector[side] % group : 0u);
 		limit[side] = count[side] = begin[side] = 0u;
 	}
-	#pragma unroll
-	for (step = 0u; step < K_STEPS; ++step)
+	auto query_fragment = [&](uint32_t at, uint32_t *fragment)
+	{
 		#pragma unroll
-		for (index = 0u; index < 4u; ++index)
-		{
-			side = index % 2u;
-			query[step][index] = valid[side] ? *(const uint32_t *)(query_bf16 + ((uint64_t)row[side] * heads + head[side]) * HEAD_DIM +
-				step * 16u + 2u * (lane & 3u) + 8u * (index / 2u)) : 0u;
-		}
+		for (uint32_t item = 0u; item < 4u; ++item)
+			fragment[item] = valid[item % 2u] ? *(const uint32_t *)(query_bf16 + ((uint64_t)row[item % 2u] * heads + head[item % 2u]) * HEAD_DIM +
+				at * 16u + 2u * (lane & 3u) + 8u * (item / 2u)) : 0u;
+	};
+	if constexpr ( QUERY_RESIDENT )
+	{
+		#pragma unroll
+		for (step = 0u; step < K_STEPS; ++step)
+			query_fragment(step,query[step]);
+	}
 	#pragma unroll
 	for (frag = 0u; frag < VALUE_FRAGS; ++frag)
 		output[frag][0] = output[frag][1] = output[frag][2] = output[frag][3] = 0.0f;
@@ -356,6 +362,10 @@ void LmGqaShardTiledKernel(
 				score[frag][0] = score[frag][1] = score[frag][2] = score[frag][3] = 0.0f;
 			#pragma unroll
 			for (step = 0u; step < K_STEPS; ++step)
+			{
+				uint32_t *fragment = query[QUERY_RESIDENT ? step : 0u];
+				if constexpr ( !QUERY_RESIDENT )
+					query_fragment(step,fragment);
 				#pragma unroll
 				for (frag = 0u; frag < KEY_FRAGS; frag += 2u)
 				{
@@ -363,9 +373,10 @@ void LmGqaShardTiledKernel(
 					LmPrefillLoadX4(tile_keys + b_row * KEY_BYTES + LmPrefillSwizzle(b_row,b_chunk) * 16u,b);
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(score[frag],query[step],first);
-					LmMmaBf16(score[frag + 1u],query[step],second);
+					LmMmaBf16(score[frag],fragment,first);
+					LmMmaBf16(score[frag + 1u],fragment,second);
 				}
+			}
 			peak[0] = peak[1] = -INFINITY;
 			whole = __all_sync(0xffffffffu,block_mask == 0 && member[0] && member[1] && begin[0] <= tile * TILE && begin[1] <= tile * TILE &&
 				tile * TILE + TILE <= count[0] && tile * TILE + TILE <= count[1]);

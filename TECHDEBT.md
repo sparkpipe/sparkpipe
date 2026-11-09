@@ -10,16 +10,52 @@ purpose", with the date, what is missing, its consequence and the fleet proof
 that closes it; no other way of not implementing a required feature is
 accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
-## Dual-fabric topology contract
+## Separately licensed modules
 
-- Replace the legacy ring/single-switch/dual-switch topology modes with one
-  schema that represents the CRS804 rail plus eight pairwise direct links.
-- Generate supported four-, eight-, and sixteen-Spark profiles from the same
-  schema, requiring complete direct pairs at every size.
-- Generate pinned interface, address, direct-partner, and communicator tables
-  for all sixteen ranks from that schema.
-- Remove obsolete topology examples and release switches after all consumers
-  use the combined-fabric contract.
+- The site (security page, section 8) and Customer Agreement clause 7.8
+  describe separately licensed modules, listed on the website, that run only
+  on our machines and send nothing elsewhere. The chat layer reaches only one,
+  memory, through a memory-specific connector
+  (`tools/serving/memory_connector.py`,
+  [MEMORY_PROTOCOL.md](docs/MEMORY_PROTOCOL.md)). Generalize it into a module
+  host: modules declared by kind in the chat layer's config, a hello that
+  reports each module's name, version, kind and hooks, each hook routed to the
+  module that declared it, a fallback per kind when none is reachable, and a
+  log of the module name and version that served each request. Memory becomes
+  the first kind.
+- Until the hub runs the memory program (rollout approved 2026-11-08, gated on
+  9 of 20 tuning questions), production chat memory runs from the release
+  before #1886.
+
+## Dual-rail topology contract
+
+- The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
+  `cisco0` on port 0, [FLEET_FABRIC.md](docs/FLEET_FABRIC.md)); there are no
+  direct pair links. Replace the legacy ring/single-switch/dual-switch topology
+  modes with one schema for two all-to-all rails, and generate the four-,
+  eight-, and sixteen-Spark profiles and the pinned interface, address and
+  communicator tables from it.
+- weightd uses rail 2 only for the `rank ^ 1` partner (`--mesh-pair-interface`,
+  `MESH_LINK_MAP` in the agent, still labelled 200 Gb/s). Every other peer goes
+  over rail 1, so rail 2 sits idle for 14 of 15 peers. Spread every peer's
+  traffic over both rails.
+- Mesh collectives write to all fifteen peers at once. That fifteen-to-one
+  incast holds rail 2 all-to-all at 88 of 98 Gb/s a node and gives small
+  messages a 0.65-1.3 ms p99 behind PFC pauses. Permutation-scheduled steps
+  (rotation or pairwise halving and doubling) measured 98 Gb/s a node and a
+  30 us p99. Schedule bulk collectives as permutations, and send
+  latency-critical small messages in the rail 2 fast class (traffic class 202).
+  The CRS804 has no second lossless class.
+- The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
+  which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
+  node; release main's agent, which has that default, and drop the override.
+- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
+  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
+  run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
+  another switch port to find out which end is at fault.
+- `tools/dsv41_flash_gen_deployment.py` still names `10.10.200.4-7` as its
+  rail 0, which no longer exists.
 
 ## Mesh collectives
 
@@ -210,7 +246,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `stage_lane.sh` and `fleet_serve.sh` keep one rank log per run
   through `tools/lane_run_log.sh`. Each run writes `logs/residentd-<run
   id>.log` and refuses to overwrite it; the helper moves an older launcher's
-  `residentd.log` aside, and `archive` collects and removes the logs.
+  `residentd.log` aside (or removes the link an older version made), `status`
+  reads the newest run log, and `archive` collects and removes the logs.
   `fleet_node_agent.sh` moves a non-empty `residentd.log` aside with a
   timestamp before each start. Proof: a fleet run whose rank logs name the
   path of every chain and survive a second run on the same lane.
@@ -369,8 +406,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   keys (192 wide) would cost 640. At 250K positions MLA attention is about
   2.0 s of a 3.6 s wave.
 - DSV4.1's landing path attends 4 heads per block on tensor cores, padded to
-  32 query slots, so 7 of every 8 slots repeat work: 1.3x the scalar kernel
-  where 64 heads get 7.5-9.4x (docs/KERNEL_PLAYBOOK.md, Latent shard
+  32 query slots, so 7 of every 8 slots repeat work: 1.5x the scalar kernel
+  where 64 heads get 8-11x (docs/KERNEL_PLAYBOOK.md, Latent shard
   attention). A kernel that unions a block's rows' selected keys, the way GLM
   5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
   paths must move together because they agree bit for bit.
@@ -873,9 +910,32 @@ Related common-code debt:
 - Priority and deadline reach admission, prefill and decode scheduling (the
   batch engine selects by priority, then earliest `deadline_ms`, and a prefill
   or decode submission carries its latest lane deadline to residentd as
-  remaining time), and KV eviction ranks by request priority. Still open:
+  remaining time), and KV eviction ranks by request priority. Priority 2 and
+  above is interactive and runs first; background work yields to it (README
+  "Interactive first"). Still open:
   speculation, gang scheduling and KV snapshot I/O ignore both; the binding's
   restore worker and saver run in queue order (`runtime/stage_kv_binding.c`).
+- Interactive first (#1794): what is left after the priority classes, the
+  two kept sequences, background yielding, `DELETE /v1/requests/{id}` and the
+  10 ms disconnect poll.
+  - Fleet-only: the one-step bound on Fleet 1 with a warm-up, a batch job and
+    a Function running; a disconnect and a DELETE freeing the sequence under
+    load, during a prefill; two members flooding requests (C8).
+  - A cancel during an interactive streamed prefill waits for the whole
+    streamed span (minutes at 1M tokens), because the ranks cannot stop a
+    streamed submission. Cancelling inside a wave needs a rank-side abort.
+  - A client learns a request's id only from `X-SparkPipe-Request`, which a
+    stream sends when it opens and a non-streamed reply sends at the end. A
+    request still waiting for a sequence, or a non-streamed one, can be
+    cancelled by DELETE only by a caller that has its id from elsewhere;
+    `GET /v1/requests` lists finished requests only.
+  - Interactive arrivals beyond the two kept sequences wait for a running
+    request to finish: a running background request is never preempted.
+  - The gateway's per-account request limit (`LIMITS["gateway"]`, 6,000
+    requests per 10 minutes in `tools/sparkpipe_pay.py`) answers 429 `busy`
+    at once, which contradicts the Fleet API's rule that a holder's only
+    refusal for load is 429 after 60 s; 64 agents turning every 6 s pass it.
+    Exempting a holder's inference requests is a decision for the owner.
 - Dense projections above sixteen rows (`LM_SKINNY_ROWS_WIDE`,
   `inference/kernels/skinny.cuh`) leave the skinny kernel for tensor-core GEMM
   with a different accumulation order. The tensor-core latent attention for
@@ -1209,6 +1269,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Serving API
 
+- Client setup (#1788), before launch:
+  - The SparkPipe plugin for Claude Code, which setup installs, is not built. The site describes it.
+    - `sparkpipe setup claude-code` writes the settings, the stream idle timeout and the MCP entry.
+    - It has no plugin to install, and the MCP server it registers (`/mcp`, #1805) is not served yet.
+  - The client release check is not scheduled. `tools/client_release_check.py` runs a scripted 3-turn session per tool and writes JSON. Nothing runs it daily against staging or shows its result on the status page.
+  - Not yet run on the fleet: a 50-turn Claude Code task with `run` and `search_code` (H1); Codex and OpenCode sessions (H2, H4).
+  - OpenCode's title and summary requests run at interactive priority, because OpenCode sends no request class.
+
 - `text/tokenizer.c` knows split regexes only by exact string: the GLM
   digit-run pattern, the Qwen letter-and-mark pattern, the DeepSeek
   digit/ideograph sequence (V4.1 Flash, Hy4), the letter-class patterns (MiMo,
@@ -1279,15 +1347,76 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   evicts its oldest files.
 - A public API key that asks for a public model that is not loaded starts
   the swap, as any caller does. One key that alternates two models keeps the
-  fleet swapping and pushes the owner's model out after each reply. Each key
-  runs at most four requests at once, but nothing limits how often a key may
+  fleet swapping and pushes the owner's model out after each reply. No key
+  has a concurrency cap, and nothing limits how often a key may
   start a swap. Which public requests may swap the fleet is an owner
   decision (serve only the loaded model to keys, or a lower activation
   priority and a per-key swap rate).
+- Repositories and context packs (#1800) are code and host tests only
+  (`tests/test_context_packs.py`). `deployment/hub/chat_frontend.json` has
+  no `repositories` section yet, so the hub serves no `/v1/repos`, `/git/`
+  or `/v1/packs`. Close it by adding the section with a directory on the
+  hub's local NVMe under `/srv/workspace`. Then run Gate D: the Customer Zero
+  task list with and without a 300K-token pack on K3, with turns, tokens read
+  through tools, wall time and decode speed in `PERFORMANCE_STATUS.md`. On
+  the same run, measure that a refresh after a one-file push prefills only
+  from the 16,384-token checkpoint before that file (`resume_tokens` 16384
+  in K3's model entry).
+- Pack warm-ups are one-token completions, as chat memory's are, until E5's
+  `commit_only` lands; `Frontend.warm_prefix` is the seam it replaces.
+- Templates render tool declarations ahead of the messages, so a pack's
+  stored prefix is shared only by requests with the same tool set. Warm-ups
+  cover the last four tool sets seen on the pack, and the first session with
+  a new tool set prefills the pack once. Putting the pack ahead of the tool
+  block needs a per-template slot; that is the rest of C9's template mapping.
+  A template that refuses a second system turn answers such a pack request
+  with 400 `invalid_messages`.
+- `POST /v1/tokenize` ignores the pack of a `<model>+<pack>` name;
+  `count_tokens` includes it.
+- Still to build for #1800:
+  - the tree-sitter and semantic indexes (P3);
+  - pack trees and resume-boundary padding (P10);
+  - `+auto` (P12);
+  - session evidence (C12);
+  - the `pack.warm` notice as a webhook, which today is only a log line;
+  - `/` in pack names at the gateway;
+  - repository quotas (#1798).
+- Repositories and packs expire through the chat layer's working-state
+  sweep, like the replay store. `tools/working_state_scan.py` is on the
+  unmerged #1692. When it lands, add the repository areas to the scan as a
+  storage place (`.last-use` per area), and follow its separate
+  `storage_wiped` rule for `repos/`.
+- `cache_creation_input_tokens` is 0 on Messages: `sparkpipe_model_api`
+  reports the prompt length and the matched prefix, not the prompt tokens
+  the engine commits (`cache_published_token_count` in
+  `runtime/model_batch_engine.c`, which on a recurrent model is reusable
+  only at its checkpoints). Close it by carrying the committed, reusable
+  count in the batch engine's event and the engine's usage, proven by a
+  turn whose next turn's cached count equals what the first reported as
+  created.
+- Claude Code 2.1.308's stream watchdog counts a `ping` for only 30
+  heartbeats in a row, then aborts 300 s later, so a cold prefill longer
+  than about 10 minutes fails unless `sparkpipe setup claude-code` sets
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS` (§3.3 of `docs/FLEET_API.md`). Prove it
+  on Fleet 1 with a 10-minute prefill from a real Claude Code, streamed and
+  not, and Codex's with `stream_idle_timeout_ms` 600000.
+- The Messages and Responses WebSocket and HTTP paths are tested against
+  recorded client shapes and a scripted engine only. Fleet-only: a 150K
+  turn after a 2-hour pause, 100 recorded `count_tokens` against the
+  engine, and WebSocket against HTTP turn times on Fleet 1 from the
+  `turn_ms` records.
+- The WebSocket reads one `response.create` at a time, so a second one
+  waits for the turn before it, and a client that hangs up mid-prefill is
+  noticed at the next 10-second keep-alive. `generate: false` keeps the
+  input on the connection but does not prefill it into the engine.
+- `GET /v1/responses/{id}/input_items` and `POST /v1/responses/{id}/cancel`
+  are not served; nothing runs in the background to cancel.
 
 ## Fleet-hours
 
 Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
+
+- **Measure gateway_capacity on the VPS and set it.** The gateway now refuses to start without `SPARKPIPE_GATEWAY_CAPACITY`, and neither `/etc/sparkpipe-pay/env` nor the sandbox's env has it yet. Measure it with `tools/gateway_capacity_check.py` against the sandbox on the VPS (`docs/PAYMENTS.md`, before the systemctl commands) and set both files before this release is deployed, or the live gateway stops at its next restart. Until it is measured, holders' share of the gateway (`docs/FLEET_API.md` §17) is only as good as the number written there.
 
 - **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
 - **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
@@ -1303,7 +1432,7 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
   - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
   - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
   - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
-  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Mistral Large 3, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
+  - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
 - **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## SparkPipe Chat
@@ -1367,6 +1496,46 @@ and the multidev docs on 2026-09-28. Line numbers are in
   assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
   lane while production GLM runs on lane 6. Replace both with the lane
   allocator of lane B04 (TD287/TD288).
+- Awaiting fleet proof (lane `lanes/direct-pack-paths`): lanes name their
+  weight files directly (docs/LANES.md, Weight files). `stage_lane.sh` and
+  `k3_lane.sh` setup no longer link packs, refuse a missing or linked weight
+  file and delete every link under the lane root; `lane_run_log.sh` no longer
+  links `residentd.log`; the swap entries' warm commands read the pack from
+  `config/adapter.json`; `tools/lane_pack_files.py` lists every lane's files;
+  `lane_config.py audit` reports each link. Fleet step before the gate:
+  DeepSeek V4.1 Flash's pack directory
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs` does not yet hold what
+  the engine opens beside the pack. The hub's source copy of
+  `rank<r>.spstage.experts` is a 61,440-group slice manifest (2,949,136
+  bytes; the node copies were placed from it), while the engine attaches the
+  pack whole and refuses anything but a zero-range manifest; the engram shard
+  (`engram/engram.rank<r>.spengram`), its digest and `engram_tables.bin` sit in
+  `~/sparkdata/dsv41flash-1017.mxfp4.tp16`. Until the directory is
+  completed, setup refuses that lane and names the first missing file. Proof:
+  setup of every lane, `release_compare` EXACT on every model against the
+  linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
+  and an audit with no `LINK` line.
+- Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
+  weight file or a configuration (`tests/test_no_weight_links.py` holds the
+  tree to it; the only link sites left are the CUDA toolkit alias in
+  `tools/install_cuda13_compile_only_debian13.sh`, the systemd mask in
+  `tools/devcycle/ds4_spark_brickproof.py` and the source checkout of the
+  archived release replay `tools/replay_shared_serving_release.py`, whose
+  archived `stage-assets.sh` reads it). Deployments name each rank's own
+  `config/stage_<RR>.json`; `fleet_node_agent.sh`, `fleet_serve.sh` and
+  `lag_t1_launch.sh` refuse a rank whose node names anything else or a
+  linked file, and delete an older `config/stage.json` link before a
+  start; `fleet_serve.sh` now sees a refused start (the check and the run
+  log guard ran in the background before). The family job template, the
+  GLM cold-launch A/B, `inference_smoke.py` and the K3 run family name the
+  real pack and copy one digest; the A/B `root-check` refuses any link
+  under an arm root and a pack named any other way. The dead DSV4 dev cycle
+  (`tools/devcycle.sh`, `bbench.sh`), the GLM 5.2 `r3flash_exact_cell.sh`
+  and the one-off `glm5_next_pack_swap.sh` are gone. Fleet step before the
+  new agent ships: every agent-managed or `fleet_serve` root's
+  `model_resident.json` must name `config/stage_<RR>.json` per rank (the
+  agent holds the root in `blocked-config` otherwise); the A/B window
+  scripts must render absolute pack paths and copy `packs/<pack>.sha256`.
 - The Ceph canary (`tools/hub/ceph_canary.py`) only records problems on the
   hub. They reach a person only while a session runs its `watch` command
   from the workstation. Nothing sends mail or a push on its own, and the

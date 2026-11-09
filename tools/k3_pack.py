@@ -527,6 +527,12 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
     nope = config["qk_nope_head_dim"]
     v_head = config["v_head_dim"]
     heads = config["num_attention_heads"]
+    dsa = config.get("dsa_config")
+    if dsa is not None:
+        if dsa.get("index_topk_freq") != 1 or dsa.get("index_rope_dim") != 0 or dsa.get("index_k_norm_type") != "layernorm":
+            raise PackFailure(f"dsa_config {dsa}: only the per-layer NoPE layer-normed indexer (index_topk_freq 1, index_rope_dim 0, "
+                              f"index_k_norm_type layernorm) is packed")
+        index_heads, index_dim = dsa["index_num_heads"], dsa["index_head_dim"]
     kda_heads = config["linear_attn_config"]["num_heads"] \
         if "linear_attn_config" in config else config["num_attention_heads"]
     kda_head = config["linear_attn_config"]["head_dim"] \
@@ -653,6 +659,13 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
                      KIND_BF16, [heads * v_head, hidden],
                      {"shard_class": "output_dim_heads"})
             bf(p + "mla_out_weight", a + "o_proj.weight", (hidden, heads * v_head))
+            if dsa is not None:
+                i = a + "indexer."
+                bf(p + "mla_index_query_weight", i + "wq_b.weight", (index_heads * index_dim, q_lora))
+                bf(p + "mla_index_key_weight", i + "wk.weight", (index_dim, hidden))
+                bf(p + "mla_index_head_weight", i + "weights_proj.weight", (index_heads, hidden))
+                bf(p + "mla_index_norm_weight", i + "k_norm.weight", (index_dim,))
+                bf(p + "mla_index_norm_bias", i + "k_norm.bias", (index_dim,))
         bf(p + "mlp_norm_weight", sp + "post_attention_layernorm.weight", (hidden,))
         g = reader.bf16(sp + "mlp_res_norm.weight", (hidden,))
         w = reader.bf16(sp + "mlp_res_proj.weight", (1, hidden))
@@ -745,7 +758,10 @@ def pack_model(model_dir, out_path, first_layer=0, layer_count=None,
             "group": GROUP, "vocab": config["vocab_size"],
             "kda_heads": kda_heads, "kda_head": kda_head, "heads": heads,
             "kv_lora": kv_lora, "rope": rope, "v_head": v_head,
-            "nope": nope, "shared": shared, "q_lora": q_lora}
+            "nope": nope, "shared": shared, "q_lora": q_lora,
+            "index_topk": dsa["index_topk"] if dsa is not None else 0,
+            "index_heads": index_heads if dsa is not None else 0,
+            "index_dim": index_dim if dsa is not None else 0}
     fmt = {"version": VERSION, "alignment": ALIGN,
            "mxfp4_interleave": {"tile_k": TILE_K, "group": GROUP,
                                 "stored_bits": 4,

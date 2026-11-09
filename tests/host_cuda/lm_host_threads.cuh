@@ -68,6 +68,7 @@ typedef struct LmHostThreads
 	float shuffle[LM_HOST_THREADS_MAX];
 	unsigned shuffle_word[LM_HOST_THREADS_MAX];
 	unsigned ballot[LM_HOST_THREADS_MAX];
+	unsigned match[LM_HOST_THREADS_MAX];
 }
 LmHostThreads;
 
@@ -119,6 +120,21 @@ static inline unsigned LmHostThreadsBallot(unsigned, int predicate)
 
 #undef __ballot_sync
 #define __ballot_sync LmHostThreadsBallot
+
+static inline unsigned LmHostThreadsMatchAny(unsigned active, unsigned value)
+{
+	unsigned thread = threadIdx.x,warp = thread / 32u,lane,mask = 0u;
+	lm_host_threads.match[thread] = value;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	for (lane = 0u; lane < 32u && (thread & ~31u) + lane < blockDim.x; lane++)
+		if ( lm_host_threads.match[(thread & ~31u) + lane] == value )
+			mask |= 1u << lane;
+	pthread_barrier_wait(&lm_host_threads.warp_barrier[warp]);
+	return(mask & active);
+}
+
+#undef __match_any_sync
+#define __match_any_sync LmHostThreadsMatchAny
 
 template<class Body> struct LmHostThreadsTask
 {

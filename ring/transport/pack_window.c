@@ -5,13 +5,13 @@
 
 uint64_t SparkPackWindowRegionBytes(uint32_t ranks, uint32_t dense_buffers, uint64_t dense_capacity, uint32_t expert_slots, uint64_t expert_capacity)
 {
-	return (uint64_t)dense_buffers * ranks * dense_capacity + ((uint64_t)expert_slots + 1u) * expert_capacity;
+	return (uint64_t)dense_buffers * ranks * dense_capacity + ((uint64_t)expert_slots + 2u * SPARK_PACK_WINDOW_STAGES) * expert_capacity;
 }
 
 SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWindowConfig *config)
 {
 	uint64_t cursor = 0u;
-	uint32_t buffer,slot;
+	uint32_t buffer,slot,stage;
 	if ( window == 0 || config == 0 || config->stream == 0 || config->region == 0 || config->ranks < 2u || config->rank >= config->ranks ||
 		config->dense_buffers == 0u || config->dense_buffers > SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS ||
 		(config->expert_slots == 0u ? config->expert_capacity != 0u : config->expert_slots < 2u || config->expert_slots > SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS ||
@@ -31,10 +31,24 @@ SparkStatus SparkPackWindowInitialize(SparkPackWindow *window, const SparkPackWi
 		window->expert_slot[slot] = cursor;
 		cursor += config->expert_capacity;
 	}
-	window->own_staging = cursor;
-	cursor += config->expert_capacity / 2u;
-	window->partner_staging = cursor;
+	for (stage=0u; stage<SPARK_PACK_WINDOW_STAGES; stage++)
+	{
+		window->stage_own[stage] = cursor;
+		cursor += config->expert_capacity;
+		window->stage_partner[stage] = cursor;
+		cursor += config->expert_capacity;
+	}
+	window->own_staging = window->stage_own[0];
+	window->partner_staging = window->stage_partner[0];
 	return SPARK_STATUS_OK;
+}
+
+void SparkPackWindowUseStage(SparkPackWindow *window, const SparkPackWindowLayer *layer, uint32_t stage)
+{
+	window->own_staging = window->stage_own[stage];
+	window->partner_staging = window->stage_partner[stage];
+	window->staged_layer_offset = layer->experts.offset;
+	window->staged = 1u;
 }
 
 uint64_t SparkPackWindowDenseBytes(const SparkPackWindowLayer *layer)
@@ -87,7 +101,7 @@ SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWi
 		status = window->config.read_own(window->config.own_context,layer->experts.offset,half,window->config.region + window->own_staging);
 		if ( status == SPARK_STATUS_OK )
 			status = window->config.read_partner(window->config.partner_context,layer->experts.offset + half,half,
-				window->config.region + window->partner_staging);
+				window->config.region + window->partner_staging + half);
 		if ( status != SPARK_STATUS_OK )
 		{
 			window->staged = 0u;
@@ -97,17 +111,16 @@ SparkStatus SparkPackWindowExpertStep(SparkPackWindow *window, const SparkPackWi
 		window->staged_layer_offset = layer->experts.offset;
 	}
 	slot = window->expert_slot[slot_index];
-	status = SparkWeightStreamRotate(window->config.stream,step,window->own_staging,window->partner_staging - half,layer->experts.bytes,slot,tag,&arrived);
+	status = SparkWeightStreamRotate(window->config.stream,step,window->own_staging,window->partner_staging,layer->experts.bytes,slot,window->partner_staging,tag,&arrived);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	window->last_rotation = arrived;
 	*source = arrived.source;
 	if ( arrived.source == window->config.rank )
 	{
 		*block = 0;
 		return SPARK_STATUS_OK;
 	}
-	if ( arrived.half_offset[1] != slot + half )
-		memcpy(window->config.region + slot + half,window->config.region + arrived.half_offset[1],half);
-	*block = window->config.region + slot;
+	*block = window->config.region + arrived.half_offset[0];
 	return SPARK_STATUS_OK;
 }

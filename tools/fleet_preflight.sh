@@ -11,6 +11,7 @@ PACK_TPL="${3:-packs/$NAME.rank%x.sp}"
 HOSTS=(spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7
        spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf)
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=6"
+. "$(cd "$(dirname "$0")" && pwd)/lane_weights.sh"
 HUBHOST="${REF%%:*}"
 HUBPATH="${REF#*:}"
 
@@ -30,8 +31,10 @@ for h in "${HOSTS[@]}"; do
         [ \"\$(md5sum \$rr/stages/stage_000/model_driver.so 2>/dev/null | cut -d' ' -f1)\" = '$DRV' ] || echo driver-stale
         [ \"\$(md5sum \$rr/bin/sparkpipe_model_residentd 2>/dev/null | cut -d' ' -f1)\" = '$BIN' ] || echo residentd-stale
         [ \"\$(md5sum \$rr/config/stage_$(printf %02d $i).json 2>/dev/null | cut -d' ' -f1)\" = '$CFG' ] || echo config-stale
-        [ \"\$(readlink \$rr/config/stage.json 2>/dev/null)\" = 'stage_$(printf %02d $i).json' ] || echo symlink-wrong
+        f=\$(cd \$rr && $(lane_config_path model_resident.json "$i") 2>/dev/null)
+        { [ -n \"\$f\" ] && [ ! -L \"\$rr/\$f\" ] && [ -f \"\$rr/\$f\" ]; } || echo config-not-direct
         [ -f \"\$rr/$PACK\" ] || echo pack-missing
+        [ ! -L \"\$rr/$PACK\" ] || echo pack-symlink
         [ \"\$(od -An -tx1 -N4 \$rr/$PACK 2>/dev/null | tr -d ' ')\" = '474c5833' ] || echo pack-badmagic
         l=\$(ss -tln 2>/dev/null | awk '{print \$4}' | grep -oE '[0-9]+\$' | sort -un | awk '\$1>=61440 && \$1<=62000' | wc -l)
         [ \"\$l\" = '0' ] || echo ports-busy:\$l

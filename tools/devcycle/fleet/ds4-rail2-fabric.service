@@ -1,0 +1,14 @@
+[Unit]
+Description=DS4 rail 2 fabric (port 0 via the link-B PCIe function)
+After=ds4-switched-fabric.service
+Wants=ds4-switched-fabric.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ds4-rail2-fabric-apply
+RemainAfterExit=yes
+TimeoutStartSec=60
+Restart=on-failure
+RestartSec=30

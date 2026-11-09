@@ -116,6 +116,9 @@ struct QwenHybridState
 	FILE *dump;
 	uint16_t *dump_rows;
 	uint32_t *dump_positions;
+	int16_t tap_output[G::kLayers];
+	uint16_t *tap_slab;
+	uint64_t tap_stride;
 	void *arena;
 	uint64_t arena_bytes;
 	void *lane_arena;
@@ -546,10 +549,10 @@ struct QwenHybridModel
 			state->gdn_qk / QH_KEY_DIM, QH_KEY_DIM, heads / (state->gdn_qk / QH_KEY_DIM), rows);
 		LM_LAUNCH((LmGdnGateKernel<QH_THREADS,QH_KEY_DIM>), dim3(rows,heads), QH_THREADS, 0, stream,
 			ba + heads, ba, layer->gdn_a_log, layer->gdn_dt_bias, state->retention, state->write_gate, heads, rows, 2u * heads);
-		LM_LAUNCH((LmDeltaRuleColumnKernel<QH_THREADS,QH_KEY_DIM,QH_VALUE_DIM,float>), dim3(sequences,heads,QH_VALUE_DIM / LM_WARP_LANES),
-			LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index, step->sequence_row_begin,
-			kept, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
-			heads, 1u, sequences, commit, step->sequence_row_indices);
+		if ( LmDeltaRuleLaunch<QH_THREADS,QH_KEY_DIM,QH_VALUE_DIM,float>(rows, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index,
+				step->sequence_row_begin, kept, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
+				heads, 1u, sequences, commit, step->sequence_row_indices, stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return Launched();
 	}
 
@@ -981,6 +984,13 @@ struct QwenHybridModel
 			else
 				rows = frame.step->hidden_bf16;
 			status = DumpLayer(state, index, frame.step, rows, state->partial, frame.stream);
+		}
+		if ( status == SPARK_STATUS_OK && state->tap_slab != 0 && state->tap_output[index] >= 0 )
+		{
+			LM_LAUNCH((LmAddRowsStridedKernel<QH_THREADS>), dim3(Blocks(G::kHidden), frame.step->rows), QH_THREADS, 0, frame.stream,
+				frame.step->hidden_bf16, state->partial, state->tap_slab + (uint64_t)frame.step->dispatch_row_offset * state->tap_stride +
+				(uint64_t)state->tap_output[index] * G::kHidden, frame.step->rows, G::kHidden, state->tap_stride);
+			status = Launched();
 		}
 		if ( status == SPARK_STATUS_OK && state->services->layer_done != 0 )
 			state->services->layer_done(state->services->context, index);
@@ -1695,6 +1705,34 @@ struct QwenHybridModel
 			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows, state->expert_first);
 	}
 
+	static SparkStatus TapPlan(void *model, const SparkStageRunnerTapPlan *plan)
+	{
+		State *state = (State *)model;
+		int16_t outputs[G::kLayers];
+		if ( state == 0 || plan == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if constexpr ( S::kHyper )
+		{
+			fprintf(stderr, "%s: taps refused: a layer output here is several hyper-connection streams, not one residual row\n", G::Tag());
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		}
+		for ( uint32_t layer = 0u; layer < G::kLayers; ++layer )
+			outputs[layer] = -1;
+		for ( uint32_t index = 0u; index < plan->entry_count; ++index )
+		{
+			if ( plan->entries[index].form == SPARK_STAGE_RUNNER_TAP_FORM_FINAL )
+				continue;
+			if ( plan->entries[index].form != SPARK_STAGE_RUNNER_TAP_FORM_OUTPUT || plan->entries[index].layer >= G::kLayers )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+			outputs[plan->entries[index].layer] = (int16_t)index;
+		}
+		memcpy(state->tap_output, outputs, sizeof(outputs));
+		state->tap_slab = plan->capture != 0u ? plan->slab : 0;
+		state->tap_stride = plan->row_stride_elements;
+		fprintf(stderr, "%s: taps entries=%u capture=%u; a layer output is its residual after the feed-forward add\n", G::Tag(), plan->entry_count, plan->capture);
+		return SPARK_STATUS_OK;
+	}
+
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		State *state = (State *)model;
@@ -1748,7 +1786,8 @@ struct QwenHybridModel
 			Report,
 			0,
 			Lane,
-			G::kVerifyRows != 0u ? KeepRows : 0
+			G::kVerifyRows != 0u ? KeepRows : 0,
+			TapPlan
 		};
 		return &interface_table;
 	}

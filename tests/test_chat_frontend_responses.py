@@ -141,8 +141,9 @@ async def run(tmp, check):
         status, _, text = await harness.post("/v1/responses", request([user("slow")]))
         engine.delay = 0.0
         events = fixture.sse_events(text)
-        check(status == 200 and [name for name, _ in events][:2] == ["response.created", "response.in_progress"] and events[2:4] == [("comment", None), ("comment", None)] and
-              events[-1][0] == "response.completed", f"a long prefill sends SSE comment lines until the first token: {[name for name, _ in events]}")
+        check(status == 200 and [name for name, _ in events][:4] == ["response.created", "response.in_progress", "response.in_progress", "response.in_progress"] and
+              [data["sequence_number"] for _, data in events] == list(range(len(events))) and events[-1][0] == "response.completed",
+              f"a long prefill repeats response.in_progress, an event Codex counts against its idle timeout, until the first token: {[name for name, _ in events]}")
 
         engine.reply(ANSWER)
         await harness.post("/v1/responses", request([user("later")], stream=False), **{"X-SparkPipe-Priority": "background"})
@@ -164,6 +165,12 @@ async def run(tmp, check):
         check([message["role"] for message in translated] == ["user", "assistant", "tool"] and translated[1]["tool_calls"][0]["id"] == "call_x1" and
               set(translated[1][chat_frontend.chat_shapes.HANDLES]) == {"rs_x1", "msg_x1", "rs_x2", "fc_x1", "call_x1"},
               f"every item of the turn is kept, with its handles: {translated}")
+    async with fixture.Harness(tmp) as harness:
+        for subagent, wanted in (("compact", chat_frontend.BULK_PRIORITY), ("review", chat_frontend.INTERACTIVE_PRIORITY), (None, chat_frontend.INTERACTIVE_PRIORITY)):
+            harness.engine.reply(ANSWER)
+            status, _, text = await harness.post("/v1/responses", request([user("Summarize the session.")], stream=False), **({"x-openai-subagent": subagent} if subagent else {}))
+            check(status == 200 and harness.engine.requests[-1]["priority"] == wanted and json.loads(text)["sparkpipe"]["session"] == "session-7",
+                  f"a Codex request with x-openai-subagent {subagent} runs at priority {wanted} and keeps its prompt_cache_key session: {harness.engine.requests[-1]['priority']}")
 
 
 def main():
@@ -177,7 +184,7 @@ def main():
                  "ends with response.completed carrying usage and the sparkpipe object; a function call round trip, with or without the reasoning item, and a "
                  "previous_response_id chain replay the generated tokens so the next prompt matches the cache to the end of the previous reply; store false keeps "
                  "replay but no response; instructions and developer messages render as system turns in place; custom tools round trip; unknown fields and tools "
-                 "are ignored; 409 model_not_loaded and gpt-* aliases; comment lines keep a long prefill open; a turn of reasoning, message, reasoning and "
+                 "are ignored; 409 model_not_loaded and gpt-* aliases; repeated response.in_progress events keep a long prefill open; a turn of reasoning, message, reasoning and "
                  "function call keeps every item as one assistant turn")
 
 

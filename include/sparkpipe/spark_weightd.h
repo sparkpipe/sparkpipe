@@ -108,6 +108,15 @@ extern "C" {
     (SPARK_WEIGHTD_MESH_SLOT_ROWS * SPARK_WEIGHTD_MESH_ROW_BYTES_MAX + SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES)
 #define SPARK_WEIGHTD_MESH_RANKS_PER_BAND 16u
 #define SPARK_WEIGHTD_MESH_RANKS SPARK_WEIGHTD_MESH_RANKS_PER_BAND
+
+static inline uint32_t SparkWeightdMeshSecondRailPeers(uint32_t local_rank, uint32_t rank_mask)
+{
+    uint32_t peers = 0u, rank;
+    for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS; rank++)
+        if (rank != local_rank && (rank_mask & (1u << rank)) != 0u && ((rank + local_rank) & 1u) != 0u)
+            peers |= 1u << (rank < local_rank ? rank : rank - 1u);
+    return peers;
+}
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 2u
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
@@ -178,6 +187,7 @@ typedef struct SparkWeightdMeshWaitRequest
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_ROUTES 8u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PEER_HALVES 16u
 #define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_FIRST 32u
+#define SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK 64u
 #define SPARK_WEIGHTD_MESH_CAPABILITIES \
     (SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES | SPARK_WEIGHTD_MESH_CAPABILITY_PEER_ROUTES | \
      SPARK_WEIGHTD_MESH_CAPABILITY_HALF_SLOTS | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_ROUTES | \

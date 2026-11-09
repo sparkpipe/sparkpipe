@@ -39,9 +39,25 @@ model_list:
   model_info:
     max_input_tokens: 1048576
     max_output_tokens: 131072
+- model_name: kimi-k3.1-pro
+  litellm_params:
+    model: hosted_vllm/kimi-k3.1-pro
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 131072
 - model_name: kimi-k3-bulk
   litellm_params:
     model: hosted_vllm/kimi-k3-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 1048576
+    max_output_tokens: 131072
+- model_name: kimi-k3.1-pro-bulk
+  litellm_params:
+    model: hosted_vllm/kimi-k3.1-pro-bulk
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:

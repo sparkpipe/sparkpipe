@@ -16,7 +16,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph  # noqa: E402
+from block_drafter import open_drafter  # noqa: E402
+from latent_block_drafter import LatentContext, LatentDraftGraph  # noqa: E402
 
 
 def fill(context, positions, generator):
@@ -60,7 +61,7 @@ def main():
     parser.add_argument("--out")
     args = parser.parse_args()
     torch.set_num_threads(1)
-    drafter = LatentBlockDrafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
+    drafter = open_drafter(args.drafter, args.target_shard, {"embed": args.embed, "head": args.head, "norm": args.norm}, "cuda")
     graph = LatentDraftGraph(drafter)
     generator = torch.Generator(device="cuda").manual_seed(5)
     results = []

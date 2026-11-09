@@ -1,4 +1,4 @@
-"""Run the grouped small top-k on an sm_121 device against a host reference, ties included."""
+"""Run the small top-k (grouped and ungrouped round selection, and the sort for long top-k) on an sm_121 device against a host reference, ties included."""
 import sys
 
 import gpu_test_runner
