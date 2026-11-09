@@ -141,12 +141,32 @@ Neither rate is a benchmark score.
    - 95.3% of the 16.7M prompt tokens were served from cache;
    - chat-layer queue: median 103 ms, p90 191 ms, largest 1.08 s;
    - decode: median 45.6 tok/s, p10 25.7 tok/s.
-4. **Two bulk-priority requests waited about 250 s in the engine.**
-   - Both were in extract-elf's session, at the priority the chat layer
-     gives Claude Code's background request class.
-   - Their prompts were 838 and 319 tokens. Their first token came after
-     253 s and 249 s, with 5-6 ms of chat-layer queue.
-   - Whether the agent waited on them is not established.
+4. **The agent waited about 297 s on bulk-priority WebFetch summaries in
+   extract-elf, which then hit its 900 s limit.**
+   - Claude Code's WebFetch summarizes each fetched page with a second
+     model request marked `auxiliary`. The chat layer runs `auxiliary` at
+     bulk priority (`docs/FLEET_API.md`). The tool result, and so the
+     agent's next turn, waits for that summary.
+   - **First wait:** at 09:51:18 and 09:51:23 UTC the agent called WebFetch
+     twice.
+     - The two summaries had 838- and 319-token prompts. Their first token
+       came after 253 s and 249 s, with 5-6 ms of chat-layer queue, so the
+       wait was inside the engine.
+     - The tool results arrived 257 s and 258 s after the calls.
+   - **Second wait:** a WebFetch at 09:58:01 waited 40 s. Its summary's
+     first token took 30.5 s on a 6.5K-token prompt.
+   - **The chat-layer records agree.** They are in completion order. After
+     the turn that made the two calls, the session finished no request
+     until both summaries had. Its next turn's prompt (44,987 tokens) is
+     that turn's prompt plus its output and the two results.
+   - The run's other ten bulk requests waited at most 1.0 s for their first
+     token. Three came earlier in extract-elf, and seven in crack-7z-hash,
+     mteb-leaderboard and train-fasttext.
+   - The other two timeouts lost nothing this way. train-fasttext's two
+     bulk requests waited at most 1.0 s, and regex-chess made none.
+   - Whether extract-elf would have passed without the 297 s is not known.
+   - The timestamps come from the trial's own Claude Code session file in
+     `agent/sessions/`.
 5. **Pace.** 21 tasks took 3 h 1 min at six at a time on this test bed. All
    89 need about 13 hours here, or a faster Docker host.
 
@@ -169,8 +189,12 @@ Neither rate is a benchmark score.
   - the console output in `harbor-console.txt`.
 - **Agent logs:** each trial's `agent/` directory holds the Claude Code
   stream, the trajectory, the session files and the setup log.
-  - They come to 42 MB, so they stay in this workstation's run directory,
-    `~/sparkpipe-agent-e2e/fleet-20261109/jobs/`.
+  - They come to 42 MB, so they are not committed. They are kept in two
+    places:
+    - the hub, at `/srv/workspace/sparkpipe/agent-tasks/fleet-20261109/`,
+      checked there with `sha256sum -c` on 2026-11-09;
+    - this workstation's run directory,
+      `~/sparkpipe-agent-e2e/fleet-20261109/jobs/`.
   - `terminal-bench-2-1/agent-logs.SHA256SUMS` lists their 122 files,
     relative to `jobs/`.
 - **Score:** `terminal-bench-2-1/dsv41-cc-tb21.score.json`, from:
