@@ -617,6 +617,7 @@ PYTHON_TESTS := \
 	tests/test_layer_norm_cuda.py \
 	tests/test_hidden_transport_host_rdma_load.py \
 	tests/test_skinny_dependent_cuda.py \
+	tests/test_skinny_frame_rows_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_attn_prefill_cuda.py \
 	tests/test_attn_prefill_sparse_cuda.py \
