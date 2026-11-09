@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 24u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 25u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -124,6 +124,10 @@ typedef struct SparkModelResidentIpcSubmit
 	uint32_t cache_block_identity_count;
 	uint32_t cache_block_identities_offset;
 	uint32_t model_extension_offset;
+	uint32_t tree_row_count;
+	uint32_t row_parent_rows_offset;
+	uint32_t row_slots_offset;
+	uint32_t reserved;
 } SparkModelResidentIpcSubmit;
 
 typedef struct SparkModelResidentIpcSubmitResult
@@ -330,6 +334,7 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t row_count,
 	uint32_t cache_block_identity_count,
 	uint32_t model_extension_bytes,
+	uint32_t tree_row_count,
 	uint32_t *message_bytes_out);
 SparkStatus SparkModelResidentIpcEncodeSubmission(
 	const SparkModelServingSubmission *submission,

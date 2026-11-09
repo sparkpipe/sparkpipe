@@ -82,6 +82,28 @@ void SparkSpeculationHazardObserve(SparkSpeculationHazard *hazard, uint32_t draf
 	hazard->frames++;
 }
 
+void SparkSpeculationHazardDecay(SparkSpeculationHazard *hazard, float decay)
+{
+	uint32_t bucket;
+	if ( hazard == 0 )
+		return;
+	for (bucket=0u; bucket<SPARK_SPECULATION_FRAME_DEPTH_BUCKETS; bucket++)
+	{
+		hazard->risk[bucket] *= decay;
+		hazard->events[bucket] *= decay;
+	}
+	hazard->frames++;
+}
+
+void SparkSpeculationHazardObserveNode(SparkSpeculationHazard *hazard, uint32_t depth, uint32_t rejected)
+{
+	if ( hazard == 0 || depth == 0u )
+		return;
+	hazard->risk[SparkSpeculationFrameDepthBucket(depth)] += 1.0f;
+	if ( rejected != 0u )
+		hazard->events[SparkSpeculationFrameDepthBucket(depth)] += 1.0f;
+}
+
 static void SparkSpeculationHazardTable(const SparkSpeculationHazard *engine, const SparkSpeculationHazard *request, float *table)
 {
 	float previous = SPARK_SPECULATION_FRAME_HAZARD_PRIOR,engine_hazard;

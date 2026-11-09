@@ -201,6 +201,36 @@ Validation rejects any capability bit outside `SPARK_MODEL_SERVING_ADAPTER_KNOWN
 - Bits `0x1`, `0x2`, `0x4`, `0x20`, `0x40`, `0x80` and `0x100` are retired. They stay reserved and are rejected.
 - Never reassign a retired bit or accept it as a compatibility alias.
 
+### Tree verify frames
+
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY` (`0x200000`) says the
+adapter verifies a tree of drafts in one frame. It requires
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY` and a nonzero
+`tree_slot_grain` in the descriptor: the KV ownership granularity the frame's
+branch slots must respect (1 on an unsharded cache, the shard grain times the
+degree on a position-sharded one). Without the bit `tree_slot_grain` is 0.
+
+A tree frame is a verify submission with `SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE`:
+
+- one active lane, at most `SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT`
+  (256) rows, `tokens_per_sequence == row_count`;
+- `row_parent_rows[row]` names each node's parent row in the submission
+  (`UINT32_MAX` for the anchor, row 0) and `row_slots[row]` its storage slot;
+  both are null on every other submission;
+- `row_positions[row]` is the node's semantic position, the anchor's plus its
+  depth, so siblings share a position; `SparkSpeculationTreeLayoutBuild`
+  (`include/sparkpipe/spark_speculation_tree_frame.h`) derives the slots and
+  the lane context from the parents, the tokens and the grain, and the
+  validator refuses a frame whose positions, slots or
+  `context_token_count` differ from that layout;
+- branches fork only from the trunk (the chain of first children), siblings
+  carry distinct tokens, and a node's parent is an earlier row.
+
+The completion holds the accepted root path's outputs, the bonus token, then
+`SPARK_MODEL_SERVING_NO_TOKEN`, so `SparkModelServingCompletionKeptRows` and
+the lease rule are unchanged. A tree frame on an adapter without the bit is
+`SPARK_STATUS_UNSUPPORTED`.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats

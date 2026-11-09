@@ -362,6 +362,7 @@ TEST_NAMES := \
     test_speculation_relay_link \
     test_speculation_depth \
     test_speculation_frame \
+    test_speculation_tree_frame \
     test_topk_exact_plan \
     test_driver_compiler \
     test_orchestrator \
@@ -2103,6 +2104,9 @@ build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_
 
 build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
+
+build/test_speculation_tree_frame: tests/test_speculation_tree_frame.c include/sparkpipe/spark_speculation_tree_frame.h include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tree_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
 
 build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@

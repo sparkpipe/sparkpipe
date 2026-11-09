@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 
 #define TEST_MODEL_SERVING_HOLD_CAPACITY 64u
 #define TEST_MODEL_SERVING_TRANSPORT_CAPABILITIES \
@@ -37,7 +38,8 @@
 #define TEST_MODEL_SERVING_CAPABILITIES \
 	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 6u
 #define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 16u
 #elif defined(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY)
@@ -45,7 +47,8 @@
 #define TEST_MODEL_SERVING_CAPABILITIES \
 	(TEST_MODEL_SERVING_DEFAULT_CAPABILITIES | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 255u
 #define TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT 64u
 #elif defined(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS)
@@ -143,7 +146,8 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.minimum_efficient_submission_row_count = 16u,
 	.cache_block_token_count = TEST_MODEL_SERVING_CACHE_BLOCK_TOKEN_COUNT,
 	.cache_checkpoint_token_count = TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT,
-	.max_verify_row_count = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ? 256u : 0u
+	.max_verify_row_count = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ? 256u : 0u,
+	.tree_slot_grain = (TEST_MODEL_SERVING_CAPABILITIES & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u ? 1u : 0u
 };
 
 static SparkStatus TestModelServingValidateConfiguration(
@@ -301,6 +305,18 @@ static void TestModelServingBuildCompletion(
 	completion->tokens_per_sequence = submission->tokens_per_sequence;
 	completion->token_count = submission->active_sequence_count *
 		submission->tokens_per_sequence;
+	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u && submission->row_count <= SPARK_SPECULATION_TREE_FRAME_MAX_ROWS )
+	{
+		uint32_t row,outputs[SPARK_SPECULATION_TREE_FRAME_MAX_ROWS],path[SPARK_SPECULATION_TREE_FRAME_MAX_ROWS],length;
+		for (token_index=0u; token_index<completion->token_count; token_index++)
+			completion->token_ids[token_index] = SPARK_MODEL_SERVING_NO_TOKEN;
+		for (row=0u; row<submission->row_count; row++)
+			outputs[row] = 4200u + row;
+		length = SparkSpeculationTreeResolvePath(submission->row_parent_rows,submission->token_ids,outputs,submission->row_count,path);
+		for (row=0u; row<length && row<submission->tokens_per_sequence; row++)
+			completion->token_ids[row] = outputs[path[row]];
+		return;
+	}
 	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
 		uint32_t row,output,rows_seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT],kept[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];

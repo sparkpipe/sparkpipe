@@ -2822,6 +2822,7 @@ static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeploymen
 static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 
@@ -2855,6 +2856,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioBatchVerify(&deployment,runtime_root);
 		TestScenarioModelDrafts(&deployment,runtime_root);
 		TestScenarioModelDraftsYieldToPrefill(&deployment,runtime_root);
+		TestScenarioTreeVerify(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
 		SparkModelResidentDeploymentReset(&deployment);
@@ -2979,6 +2981,7 @@ static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deploym
 #define TEST_DRAFT_UNAVAILABLE 3u
 #define TEST_DRAFT_CLOSE 4u
 #define TEST_DRAFT_FIRST 5u
+#define TEST_DRAFT_TREE 6u
 
 typedef struct TestDraftServer
 {
@@ -3026,7 +3029,7 @@ static void TestDraftPut32(uint8_t **cursor,uint32_t value)
 static void TestDraftServe(TestDraftServer *server,int fd)
 {
 	static uint8_t committed[4u * 4096u];
-	uint8_t header[120],reply[28u + 9u * 20u + 48u],*cursor;
+	uint8_t header[120],reply[28u + 17u * 20u + 48u],*cursor;
 	for (;;)
 	{
 		uint64_t sequence,generation,position;
@@ -3060,7 +3063,7 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		if ( server->mode == TEST_DRAFT_UNAVAILABLE )
 			status = 4u;
 		else
-			nodes = 1u + depth;
+			nodes = 1u + depth + (server->mode == TEST_DRAFT_TREE ? depth : 0u);
 		TestDraftPut32(&cursor,status);
 		TestDraftPut32(&cursor,nodes);
 		memcpy(cursor,&sequence,8u);
@@ -3069,13 +3072,17 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		cursor += 8u;
 		for (index=0u; index<nodes; index++)
 		{
-			const uint64_t at = position + index;
-			const uint32_t wrong = server->mode == TEST_DRAFT_WRONG || (server->mode == TEST_DRAFT_FIRST && index >= 2u) ? 1u : 0u;
+			const uint32_t alternate = index > depth ? 1u : 0u;
+			const uint32_t level = alternate != 0u ? index - depth : index;
+			const uint64_t at = position + level;
+			const uint32_t trunk_wrong = server->mode == TEST_DRAFT_TREE && (position % 2u) != 0u ? 1u : 0u;
+			const uint32_t wrong = server->mode == TEST_DRAFT_WRONG || (server->mode == TEST_DRAFT_FIRST && index >= 2u) ||
+				(server->mode == TEST_DRAFT_TREE && index != 0u && alternate == trunk_wrong) ? 1u : 0u;
 			const uint32_t token = index == 0u ? anchor : at < server->script_count ? server->script[at] + wrong : 7u;
-			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f : 0.9f;
+			const float score = index == 0u ? 1.0f : server->mode == TEST_DRAFT_LOW ? 0.1f : alternate != 0u ? 0.8f : 0.9f;
 			TestDraftPut32(&cursor,token);
-			TestDraftPut32(&cursor,index == 0u ? UINT32_MAX : index - 1u);
-			TestDraftPut32(&cursor,index);
+			TestDraftPut32(&cursor,index == 0u ? UINT32_MAX : alternate != 0u && level == 1u ? 0u : index - 1u);
+			TestDraftPut32(&cursor,level);
 			TestDraftPut32(&cursor,2u);
 			memcpy(cursor,&score,4u);
 			cursor += 4u;
@@ -3356,6 +3363,75 @@ static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeploy
 		"model drafts yield: every request completes and the drafted stream stays exact");
 }
 
+
+static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows,tree_frames,branches;
+	SparkModelBatchEngineView view;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<20u; index++)
+		script[index] = 1000u + index * 3u;
+	for (index=20u; index<32u; index++)
+		script[index] = script[index - 20u];
+	for (index=32u; index<40u; index++)
+		script[index] = 7000u + index;
+	for (index=40u; index<44u; index++)
+		script[index] = 2000u + index;
+	for (index=44u; index<256u; index++)
+		script[index] = script[(index - 44u) % 20u];
+	TestRunScript(deployment,runtime_root,script,256u,44u,80u,&state,&view,&submissions,&rows);
+	MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"tree verify: an output that follows the older of two matching passages emits exactly the greedy stream");
+	CHECK(tree_frames != 0u && branches != 0u && view.speculative_tree_frame_count == tree_frames,"tree verify: lookup alternates that diverge from the trunk are verified as branches of one frame");
+	CHECK(view.speculative_tree_branch_accepted_count != 0u,"tree verify: a frame whose trunk is wrong accepts the branch that is right");
+	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"tree verify: every decode lane's input token is a committed model token");
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	{
+		SparkModelResidentDeployment drafted = *deployment;
+		static char host[] = "127.0.0.1";
+		SparkModelBatchEngine *engine;
+		uint32_t emitted,prefix = 1u;
+		CHECK(TestDraftStart(&server,TEST_DRAFT_TREE,script,256u) != 0u,"tree verify: a stub draft server with alternates listens");
+		drafted.draft_server.host = host;
+		drafted.draft_server.port = server.port;
+		strcpy(drafted.draft_server.target_model,"test-target");
+		drafted.draft_server.depth = 4u;
+		drafted.draft_server.wait_ms = 50u;
+		drafted.draft_server.min_confidence = 0.05f;
+		MockResidentClientReset();
+		memset(&state,0,sizeof(state));
+		engine = TestConnectFlags(&drafted,&state,runtime_root,32u,8u,0u);
+		if ( engine != 0 )
+		{
+			MockResidentClientSetScript(script,256u);
+			MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+			MockResidentClientSetVerifyCorrupt(1u);
+			TestSubmitPrompt(engine,1u,900u,80u,script,44u);
+			TestDriveUntilTerminal(engine,&state,1u,2000u);
+			MockResidentClientSetVerifyCorrupt(0u);
+			MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+			emitted = state.token_events[1] < 128u ? state.token_events[1] : 128u;
+			for (index=0u; index<emitted; index++)
+				if ( state.token_ids[1][index] != script[44u + index] )
+					prefix = 0u;
+			CHECK(tree_frames == 1u && state.completed_events[1] == 0u && state.error_events[1] == 1u && emitted < 80u && prefix != 0u,
+				"tree verify: a completion whose kept tokens are not a root path of the tree fails the request before any wrong token is emitted");
+			SparkModelBatchEngineDestroy(engine);
+		}
+		TestDraftStop(&server);
+	}
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	TestRunModelDrafts(deployment,runtime_root,TEST_DRAFT_TREE,script,80u,&state,&view,&submissions,&rows,&server);
+	MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"tree verify: model drafts with alternates emit exactly the greedy stream");
+	CHECK(tree_frames != 0u && branches != 0u && server.bad_requests == 0u,"tree verify: a draft reply carrying alternates is verified as a tree frame");
+	CHECK(view.speculative_tree_branch_accepted_count != 0u && view.speculative_accepted_token_count >= 40u,
+		"tree verify: when the drafter's first choice is wrong the frame accepts its alternate");
+	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"tree verify: a rejected sibling never becomes a lane's input");
+}
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	uint32_t script[256],index,submissions,rows;
@@ -3426,6 +3502,11 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"batch verify: engine view");
 	MockResidentClientTakeVerifyStats(&submissions,&rows);
 	shared = MockResidentClientTakeVerifyShared();
+	{
+		uint32_t tree_frames,branches;
+		MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
+		CHECK(tree_frames == 0u,"batch verify: frames shared by two lanes stay chains");
+	}
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"batch verify: both requests complete");
 	CHECK(TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: both requests emit exactly the model's greedy stream");
 	CHECK(shared != 0u && rows > 2u * submissions,"batch verify: two decoding requests share verify frames, each with drafts");

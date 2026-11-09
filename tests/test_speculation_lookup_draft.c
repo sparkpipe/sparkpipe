@@ -256,12 +256,47 @@ static void TestIndexTailMatchesLinearScan(uint32_t alphabet,uint32_t seed)
 	Require(found > 50u,"the tail sequence repeats often enough to test matches");
 }
 
+static void TestIndexRanked(void)
+{
+	uint32_t heads[64],chain[64],history[64],index_count,place;
+	SparkSpeculationLookupIndex index;
+	SparkSpeculationLookupMatch best,ranked[4];
+	const uint32_t passage[6] = { 7u, 8u, 9u, 10u, 11u, 12u };
+	for (place=0u; place<6u; place++)
+	{
+		history[place] = passage[place];
+		history[8u + place] = passage[place];
+		history[16u + place] = passage[place];
+	}
+	history[6] = 100u;
+	history[7] = 101u;
+	history[12] = 40u;
+	history[14] = 102u;
+	history[15] = 103u;
+	history[20] = 41u;
+	history[22] = 7u;
+	history[23] = 8u;
+	history[24] = 9u;
+	Require(SparkSpeculationLookupIndexBind(&index,heads,64u,chain,64u,3u) == SPARK_STATUS_OK,"ranked: index binds");
+	Require(SparkSpeculationLookupIndexAppend(&index,history,25u) == SPARK_STATUS_OK,"ranked: history appends");
+	Require(SparkSpeculationLookupIndexFind(&index,history,8u,64u,&best) == SPARK_STATUS_OK,"ranked: a best match exists");
+	Require(SparkSpeculationLookupIndexFindRanked(&index,history,8u,64u,ranked,4u,&index_count) == SPARK_STATUS_OK && index_count == 3u,"ranked: every earlier occurrence is returned");
+	Require(ranked[0].match_length == best.match_length && ranked[0].source_end == best.source_end,"ranked: the first entry is the single best match");
+	Require(ranked[0].source_end == 18u && ranked[1].source_end == 10u && ranked[2].source_end == 2u,"ranked: the most recent occurrence ranks first on a tie and older ones follow");
+	Require(history[ranked[0].source_end + 1u] == 10u && history[ranked[1].source_end + 1u] == 10u && history[ranked[0].source_end + 2u] == 41u && history[ranked[1].source_end + 2u] == 40u,
+		"ranked: the two most recent continuations diverge at the second token");
+	Require(SparkSpeculationLookupIndexFindRanked(&index,history,8u,64u,ranked,1u,&index_count) == SPARK_STATUS_OK && index_count == 1u && ranked[0].source_end == 18u,
+		"ranked: a capacity of one keeps the best match");
+	Require(SparkSpeculationLookupIndexFindRanked(&index,history,8u,64u,ranked,0u,&index_count) == SPARK_STATUS_INVALID_ARGUMENT,"ranked: zero capacity is refused");
+}
+
 int main(void)
 {
 	uint32_t prompt[TEST_PROMPT],expected[TEST_GENERATE],index,depth,accepted,rounds;
 	TestBounds();
 	TestMatches();
 	TestIndexBounds();
+	TestIndexRanked();
 	TestIndexMatchesLinearScan(64u,4u,1u);
 	TestIndexMatchesLinearScan(1u,3u,7u);
 	TestIndexMatchesLinearScan(16u,6u,11u);

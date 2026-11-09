@@ -69,6 +69,7 @@ void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows);
 uint32_t MockResidentClientVerifyFrame(uint32_t index,uint32_t *position,uint32_t *rows);
 uint32_t MockResidentClientTakeVerifyMaxStride(void);
 uint32_t MockResidentClientTakeVerifyShared(void);
+void MockResidentClientTakeVerifyTrees(uint32_t *frames,uint32_t *max_branches);
 void MockResidentClientTakePrefillShared(uint32_t *submissions,uint32_t *max_rows);
 void MockResidentClientSetVerifyCorrupt(uint32_t corrupt);
 void MockResidentClientSetRowCost(uint32_t ns);

@@ -51,6 +51,8 @@ SparkStatus SparkSpeculationLookupIndexAppend(SparkSpeculationLookupIndex *index
 SparkStatus SparkSpeculationLookupIndexFind(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out);
 SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupIndex *index,const uint32_t *history,const uint32_t *tail,uint32_t tail_length,
 	uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out);
+SparkStatus SparkSpeculationLookupIndexFindRanked(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,
+	SparkSpeculationLookupMatch *matches_out,uint32_t match_capacity,uint32_t *match_count_out);
 
 #ifdef __cplusplus
 }
