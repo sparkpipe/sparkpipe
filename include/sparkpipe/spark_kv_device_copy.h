@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_status.h"
 
@@ -17,7 +18,7 @@ typedef struct SparkKvDeviceCopyRegion
 {
 	uint32_t layout;
 	uint32_t layer_count;
-	uintptr_t device_base;
+	SparkDeviceRange base;
 	uint64_t layer_page_bytes;
 	uint64_t layer_stride_bytes;
 } SparkKvDeviceCopyRegion;
@@ -25,7 +26,7 @@ typedef struct SparkKvDeviceCopyRegion
 typedef struct SparkKvDeviceCopyConfiguration
 {
 	const char *module_tag;
-	void *stream;
+	SparkDeviceQueue *queue;
 	SparkKvCacheArena *arena;
 	uint32_t physical_page_count;
 	uint32_t region_count;
@@ -36,7 +37,7 @@ typedef struct SparkKvDeviceCopyConfiguration
 
 typedef struct SparkKvDeviceCopyPending
 {
-	void *event;
+	SparkDeviceEvent *event;
 	uint32_t source_logical_page;
 	uint32_t destination_logical_page;
 	uint32_t free_destination;
@@ -46,8 +47,8 @@ typedef struct SparkKvDeviceCopyPending
 typedef struct SparkKvDeviceCopier
 {
 	const char *module_tag;
-	void *stream;
-	void *fence_event;
+	SparkDeviceQueue *queue;
+	SparkDeviceEvent *fence_event;
 	SparkKvCacheArena *arena;
 	uint32_t physical_page_count;
 	uint32_t region_count;
@@ -69,7 +70,7 @@ SparkStatus SparkKvDeviceCopierCopyPage(void *context, uint32_t source_logical_p
 SparkStatus SparkKvDeviceCopierRetire(void *context, uint32_t require_all);
 uint32_t SparkKvDeviceCopierDestinationPins(void *context, uint32_t logical_page);
 SparkStatus SparkKvDeviceCopierDeferFree(void *context, uint32_t logical_page);
-SparkStatus SparkKvDeviceCopierFence(SparkKvDeviceCopier *copier, void *stream);
+SparkStatus SparkKvDeviceCopierFence(SparkKvDeviceCopier *copier, SparkDeviceQueue *queue);
 SparkStatus SparkKvDeviceCopierDrain(SparkKvDeviceCopier *copier);
 void SparkKvDeviceCopierDestroy(SparkKvDeviceCopier *copier);
 

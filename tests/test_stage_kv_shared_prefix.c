@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 
 #include <assert.h>
 #include <ftw.h>
@@ -87,6 +88,7 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->logical_page_count = TEST_LOGICAL;
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
+	configuration->pool_source = SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD;
 	configuration->backing_directory = engine->backing;
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;
@@ -337,6 +339,7 @@ static void TestTooSmallWindowRefusesTheBinding(void)
 
 int main(void)
 {
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
 	TestKvServerSharedWindowBytes = (uint64_t)TEST_WINDOW_PAGES * TEST_PAGE_BYTES;
 	TestKvServerStart((uint64_t)TEST_RESERVE_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvshareda");

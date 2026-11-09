@@ -2,6 +2,7 @@
 
 
 #include "inference/kernels/gemm.cuh"
+#include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/rows_tile.cuh"
@@ -27,26 +28,6 @@ static __device__ __forceinline__ void LmHeadRowsReduce(float (*best_score)[LM_R
 		}
 		__syncthreads();
 	}
-}
-
-#define LM_SPLITMIX64_INCREMENT 0x9e3779b97f4a7c15ull
-#define LM_SPLITMIX64_MULTIPLIER_A 0xbf58476d1ce4e5b9ull
-#define LM_SPLITMIX64_MULTIPLIER_B 0x94d049bb133111ebull
-#define LM_GUMBEL_UNIFORM_BITS 24u
-
-static __host__ __device__ __forceinline__ uint64_t LmSplitMix64(uint64_t value)
-{
-	value += LM_SPLITMIX64_INCREMENT;
-	value = (value ^ (value >> 30u)) * LM_SPLITMIX64_MULTIPLIER_A;
-	value = (value ^ (value >> 27u)) * LM_SPLITMIX64_MULTIPLIER_B;
-	return(value ^ (value >> 31u));
-}
-
-static __host__ __device__ __forceinline__ float LmGumbelNoise(uint64_t seed, uint32_t position, uint32_t token)
-{
-	const uint64_t bits = LmSplitMix64(seed ^ LmSplitMix64(((uint64_t)position << 32u) | token));
-	const float uniform = ((float)(uint32_t)(bits >> (64u - LM_GUMBEL_UNIFORM_BITS)) + 0.5f) / (float)(1u << LM_GUMBEL_UNIFORM_BITS);
-	return(-logf(-logf(uniform)));
 }
 
 typedef struct LmHeadSampling
@@ -75,7 +56,7 @@ struct LmHeadSampler
 		if ( row >= sampling.rows )
 			return(logit);
 		inverse_temperature = sampling.rules[row].inverse_temperature;
-		return(inverse_temperature == 0.0f ? logit : fmaf(logit,inverse_temperature,LmGumbelNoise(sampling.rules[row].seed,sampling.positions[row],sampling.token_offset + token)));
+		return(inverse_temperature == 0.0f ? logit : fmaf(logit,inverse_temperature,SparkMathGumbelNoise(sampling.rules[row].seed,sampling.positions[row],sampling.token_offset + token)));
 	}
 };
 

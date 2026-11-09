@@ -1,0 +1,13 @@
+{
+  "stage_pack_path": "/Users/m5u0/models/packs/qwen38_27b_tp1_bf16/qwen38_27b.tp1.rank00.pack",
+  "tp_degree": 1,
+  "tp_rank": 0,
+  "world_size": 1,
+  "max_sequences": 4,
+  "max_rows": 1024,
+  "resident_capacity": 4,
+  "kv_pages": 256,
+  "state_budget_bytes": 4294967296,
+  "state_memory_bytes": 4294967296,
+  "hidden": 5120
+}

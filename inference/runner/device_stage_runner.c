@@ -59,6 +59,11 @@ struct SparkDeviceStageRunner
 	SparkDeviceBuffer argmax;
 	SparkDeviceBuffer kv_pool;
 	SparkDeviceBuffer page_table;
+	SparkDeviceBuffer sample_rows;
+	SparkDeviceBuffer sample_tokens;
+	SparkDeviceBuffer sample_logits;
+	SparkDeviceBuffer sample_logprobs;
+	uint32_t head_rows_written;
 	uint32_t pages_per_sequence;
 	uint32_t *next_position;
 	uint8_t *seen;
@@ -196,27 +201,30 @@ static SparkStatus RunnerExpertWeightsAhead(void *context, uint32_t layer, uint3
 	return(SPARK_STATUS_UNSUPPORTED);
 }
 
-static SparkStatus RunnerVerifyPack(SparkDeviceStageRunner *runner)
+static SparkStatus RunnerPackRecord(SparkDeviceStageRunner *runner)
 {
 	char expected[128], hex[SPARK_SHA256_HEX_BYTES], path[4096];
 	FILE *file;
 	SparkStatus status;
 	snprintf(path,sizeof(path),"%s.sha256",runner->config.pack_path);
 	file = fopen(path,"r");
-	if ( file == 0 || fscanf(file,"%64s",expected) != 1 )
+	if ( file == 0 || fscanf(file,"%64s",expected) != 1 || strlen(expected) != SPARK_SHA256_HEX_BYTES - 1u )
 	{
 		if ( file != 0 )
 			fclose(file);
 		return(RunnerFail(SPARK_STATUS_NOT_FOUND,"the pack has no readable .sha256 record"));
 	}
 	fclose(file);
-	status = SparkSha256File(runner->config.pack_path,hex);
-	if ( status != SPARK_STATUS_OK )
-		return(RunnerFail(status,"cannot hash the pack"));
-	if ( strcmp(hex,expected) != 0 )
-		return(RunnerFail(SPARK_STATUS_HASH_MISMATCH,"the pack bytes do not match its .sha256 record"));
-	memcpy(runner->info.pack_sha256,hex,sizeof(runner->info.pack_sha256));
-	return(SparkSha256HexToDigest(hex,runner->device_weights.pack_sha256));
+	if ( runner->config.verify_pack != 0u )
+	{
+		status = SparkSha256File(runner->config.pack_path,hex);
+		if ( status != SPARK_STATUS_OK )
+			return(RunnerFail(status,"cannot hash the pack"));
+		if ( strcmp(hex,expected) != 0 )
+			return(RunnerFail(SPARK_STATUS_HASH_MISMATCH,"the pack bytes do not match its .sha256 record"));
+	}
+	memcpy(runner->info.pack_sha256,expected,sizeof(runner->info.pack_sha256));
+	return(SparkSha256HexToDigest(expected,runner->device_weights.pack_sha256));
 }
 
 static SparkStatus RunnerMapPack(SparkDeviceStageRunner *runner)
@@ -226,9 +234,9 @@ static SparkStatus RunnerMapPack(SparkDeviceStageRunner *runner)
 	runner->pack_fd = open(runner->config.pack_path,O_RDONLY);
 	if ( runner->pack_fd < 0 || fstat(runner->pack_fd,&stat_buffer) != 0 || stat_buffer.st_size <= 0 )
 		return(RunnerFail(SPARK_STATUS_IO_ERROR,"cannot open the rank pack"));
-	if ( runner->config.verify_pack != 0u )
+	if ( runner->config.verify_pack != 0u || runner->config.external_kv != 0u )
 	{
-		status = RunnerVerifyPack(runner);
+		status = RunnerPackRecord(runner);
 		if ( status != SPARK_STATUS_OK )
 			return(status);
 	}
@@ -328,6 +336,15 @@ static SparkStatus RunnerBuffers(SparkDeviceStageRunner *runner, uint64_t *total
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerAllocate(&runner->argmax,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * sizeof(uint32_t),"runner argmax",total);
 	if ( status == SPARK_STATUS_OK )
+		status = RunnerAllocate(&runner->sample_rows,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * sizeof(SparkSampleRow),"runner sampled rows",total);
+	if ( status == SPARK_STATUS_OK )
+		status = RunnerAllocate(&runner->sample_tokens,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * sizeof(uint32_t),"runner sampled tokens",total);
+	if ( status == SPARK_STATUS_OK )
+		status = RunnerAllocate(&runner->sample_logits,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * sizeof(float),"runner sampled logits",total);
+	if ( status == SPARK_STATUS_OK )
+		status = RunnerAllocate(&runner->sample_logprobs,SPARK_DEVICE_SPACE_SHARED_COHERENT,head * SPARK_SAMPLE_MAX_LOGPROBS * sizeof(SparkSampleLogprob),
+			"runner sampled logprobs",total);
+	if ( status == SPARK_STATUS_OK && runner->config.external_kv == 0u )
 		status = RunnerKvCreate(runner,total);
 	return(status);
 }
@@ -391,6 +408,8 @@ static SparkStatus RunnerOpenRank(SparkDeviceStageRunner **out, const SparkDevic
 	{
 		status = SparkDeviceInitialize(0);
 		runner->device_open = status == SPARK_STATUS_OK ? 1u : 0u;
+		if ( status == SPARK_STATUS_DUPLICATE && config->external_kv != 0u )
+			status = SPARK_STATUS_OK;
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceQueueCreate(&runner->queue,"device stage runner");
@@ -654,6 +673,8 @@ static SparkStatus RunnerValidate(SparkDeviceStageRunner *runner, const SparkDev
 				return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"each sequence's rows must be contiguous in a step"));
 			runner->seen[slot] = 1u;
 			count++;
+			if ( runner->config.external_kv != 0u )
+				runner->next_position[slot] = batch->positions[row];
 		}
 		if ( batch->positions[row] != (first != 0u ? runner->next_position[slot] : batch->positions[row - 1u] + 1u) )
 			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"rows must continue each sequence at its next position, in order"));
@@ -819,6 +840,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	}
 	runner->verify_pending = batch->verify;
 	runner->verify_step = step;
+	runner->head_rows_written = batch->head_rows;
 	for ( row = 0u; batch->verify == 0u && row < batch->rows; row++ )
 		runner->next_position[batch->sequence_of_row[row]] = batch->positions[row] + 1u;
 	result->argmax = (const uint32_t *)runner->argmax.host;
@@ -882,6 +904,63 @@ SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, 
 	return(status == SPARK_STATUS_OK ? SPARK_STATUS_OK : RunnerFail(status,"the model could not reset the sequence"));
 }
 
+SparkStatus SparkDeviceStageRunnerSample(SparkDeviceStageRunner *runner, uint32_t rows, const SparkSampleRow *rules, SparkDeviceStageRunnerSamples *samples)
+{
+	SparkSampleParams params;
+	uint32_t row;
+	SparkStatus status;
+	if ( runner->group != 0 || rows == 0u || rows > runner->config.head_rows || rules == 0 || samples == 0 )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"sampling names head rows of a single-rank runner"));
+	for ( row = 0u; row < rows; row++ )
+		if ( rules[row].head_row >= runner->head_rows_written )
+			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a sampled row names a head row the last step did not compute"));
+	memcpy(runner->sample_rows.host,rules,(size_t)rows * sizeof(*rules));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.vocabulary = runner->config.output_vocabulary;
+	params.logit_stride = runner->geometry.vocab;
+	params.logit_rows = runner->head_rows_written;
+	status = SparkOpsSampleRows(runner->ops,runner->queue,SparkTensorAt(&runner->logits,0u,(uint64_t)runner->head_rows_written * runner->geometry.vocab * 4u),
+		SparkTensorAt(&runner->sample_rows,0u,(uint64_t)rows * sizeof(SparkSampleRow)),SparkTensorAt(&runner->sample_tokens,0u,(uint64_t)rows * 4u),
+		SparkTensorAt(&runner->sample_logits,0u,(uint64_t)rows * 4u),
+		SparkTensorAt(&runner->sample_logprobs,0u,(uint64_t)rows * SPARK_SAMPLE_MAX_LOGPROBS * sizeof(SparkSampleLogprob)),&params);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceQueueWait(runner->queue,SPARK_DEVICE_WAIT_FOREVER);
+	if ( status != SPARK_STATUS_OK )
+		return(RunnerFail(status,"sampling failed"));
+	samples->tokens = (const uint32_t *)runner->sample_tokens.host;
+	samples->logits = (const float *)runner->sample_logits.host;
+	samples->logprobs = (const SparkSampleLogprob *)runner->sample_logprobs.host;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceStageRunnerAttachKv(SparkDeviceStageRunner *runner, const SparkStageRunnerKv *kv)
+{
+	SparkStatus status;
+	if ( runner->group != 0 || runner->config.external_kv == 0u || kv == 0 )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a KV binding attaches its pool to a single-rank runner opened for an external KV"));
+	status = runner->config.model->attach_kv(runner->model,kv);
+	return(status == SPARK_STATUS_OK ? SPARK_STATUS_OK : RunnerFail(status,"the model refused the binding's KV pool"));
+}
+
+SparkStatus SparkDeviceStageRunnerRecurrentCopy(SparkDeviceStageRunner *runner, uint32_t to_buffer, uint32_t sequence, SparkDeviceAddress buffer,
+	uint64_t bytes)
+{
+	if ( runner->group != 0 || runner->config.model->recurrent_copy == 0 || sequence >= runner->config.sequences )
+		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a recurrent copy names a sequence of a single-rank runner whose model copies state"));
+	return(runner->config.model->recurrent_copy(runner->model,to_buffer,sequence,(void *)(uintptr_t)buffer,bytes,runner->queue));
+}
+
+SparkDeviceQueue *SparkDeviceStageRunnerQueue(const SparkDeviceStageRunner *runner)
+{
+	return(runner->group != 0 ? runner->group->ranks[0]->queue : runner->queue);
+}
+
+const SparkStageRunnerModelGeometry *SparkDeviceStageRunnerGeometry(const SparkDeviceStageRunner *runner)
+{
+	return(&runner->geometry);
+}
+
 SparkStatus SparkDeviceStageRunnerInfoGet(const SparkDeviceStageRunner *runner, SparkDeviceStageRunnerInfo *info)
 {
 	*info = runner->info;
@@ -896,7 +975,8 @@ void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner)
 void SparkDeviceStageRunnerClose(SparkDeviceStageRunner *runner)
 {
 	SparkDeviceBuffer *buffers[] = { &runner->tables, &runner->hidden, &runner->head_hidden, &runner->head_normed, &runner->logits, &runner->logprob,
-		&runner->argmax, &runner->kv_pool, &runner->page_table, &runner->lanes, &runner->logits_local, &runner->logits_gathered };
+		&runner->argmax, &runner->kv_pool, &runner->page_table, &runner->lanes, &runner->logits_local, &runner->logits_gathered,
+		&runner->sample_rows, &runner->sample_tokens, &runner->sample_logits, &runner->sample_logprobs };
 	uint32_t index;
 	if ( runner == 0 )
 		return;

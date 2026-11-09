@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_sampling.h"
@@ -18,7 +19,8 @@ extern "C" {
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
 #define SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000001u
-#define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
+#define SPARK_STAGE_RUNNER_FLAG_OWN_PACK 0x00000002u
+#define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL | SPARK_STAGE_RUNNER_FLAG_OWN_PACK)
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL 0x00000001u
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY 0x00000002u
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER 0x00000004u
@@ -203,10 +205,12 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);
 uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner);
-SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);
 void *SparkStageRunnerModel(const SparkStageRunner *runner);
+SparkDeviceQueue *SparkStageRunnerQueue(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerImplementationFlags(void);
 
 #ifdef __cplusplus
 }

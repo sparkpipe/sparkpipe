@@ -362,7 +362,7 @@ echo "building the VMM verify consumer against $CUDA_HOME"
 cc -std=c11 -Wall -Wextra -O2 -g -pthread -D_GNU_SOURCE \
     -I"$ROOT" -I"$ROOT/include" -I"$ROOT/src" -I"$CUDA_HOME/include" \
     "$WORK/vmm_verify.c" \
-    "$ROOT/runtime/spark_weightd.c" "$ROOT/runtime/spark_weightd_attach.c" \
+    "$ROOT/runtime/spark_weightd.c" "$ROOT/runtime/spark_weightd_memory.c" "$ROOT/runtime/spark_weightd_attach.c" \
     "$ROOT/src/spark_sha256.c" "$ROOT/src/spark_status.c" \
     -L"$CUDA_HOME/lib64" -lcudart -lcuda -lpthread -o "$WORK/vmm_verify" || exit 1
 "$WORK/vmm_verify" || exit 1

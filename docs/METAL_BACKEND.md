@@ -218,6 +218,86 @@ The model interface is used with these meanings on a device backend:
 - `round` is the collective of a tensor-parallel rank (below). A TP1 runner
   never sees one: `SparkDeviceStageAllReduce` returns at once on one rank.
 
+## Serving through the common stack
+
+A Studio serves through the same processes and code as the fleet: the model
+API and batch engine, the resident daemon, the stage serving adapter
+(`inference/runner/stage_serving_adapter.c`) and the KV binding
+(`runtime/stage_kv_binding.c`) with the prefix cache, page cache and snapshot
+tiers. Nothing in that path is written twice. What differs per backend lies
+below the stage-runner API (`include/sparkpipe/spark_stage_runner.h`) and the
+device API:
+
+- **The runner.** The stage-runner API has two implementations, chosen at
+  link time per target: the CUDA runner (`inference/runner/stage_runner.cu`)
+  and the device runner, which implements it over `SparkDeviceStageRunner`.
+  A dispatch runs as one or more runner steps: prefill and decode rows,
+  decode chains (each step's sampled token feeds the next) and verify frames
+  (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
+  runner's queue (`SparkStageRunnerQueue`) through the device API instead of
+  on a CUDA stream; the CUDA runner adopts its execution stream as that queue
+  (`SparkDeviceQueueAdopt`).
+- **Memory.** The KV binding allocates its page table, staging pages and
+  recurrent-state buffers with the device API and copies with it. Before it
+  loads its configuration, the adapter reads the flags the linked runner
+  always sets (`SparkStageRunnerImplementationFlags`). The CUDA runner sets
+  none: the adapter takes weightd's attach environment, and the KV pool is
+  weightd's, adopted into the device API (`SparkDeviceAdopt`), with the
+  shared prefix window, the seal a restarted engine reattaches, and the
+  thread that grows and shrinks the pool. The device runner sets
+  `SPARK_STAGE_RUNNER_FLAG_OWN_PACK`: the adapter reads no weightd
+  environment, refuses `streamed_prefill` and `device_collective`, and the
+  KV pool is one `DEVICE_PRIVATE` buffer at the full physical page count
+  (`SPARK_STAGE_KV_POOL_SOURCE_DEVICE`), with no shared window, no reattach
+  and no resizing; a prefix outlives a restart through the snapshot store.
+  Either way the KV layout takes its pack identity from
+  `SparkStageRunnerPackIdentity`. The runner reads the binding's pool and
+  page table through `attach_kv`, so pages are shared between sequences with
+  copy-on-write, and a resumed sequence's recurrent state is restored into
+  its slot before its first row.
+- **Sampling.** Distribution rows are sampled on the device by
+  `spark_sample_rows`, the CUDA sampler's algorithm (`inference/kernels/sample.cuh`)
+  with its formulas from `inference/kernels/kernel_math.cuh`: the 64-bit key
+  order, top-k and top-p by radix select, the fixed-point mass and Gumbel-max
+  with the hashed noise. Metal has no 64-bit atomic add, so a mass is added
+  as two 32-bit words with an exact carry, and no double, so the top-p target
+  reproduces CUDA's double product (rounded to 53 bits, then truncated) in
+  integers. A seed and position pick the same token on both backends except
+  where the two GPUs' `exp` or `log` round a mass or the noise differently.
+
+A request therefore resumes from the longest prefix the cache holds, on a
+Studio as on the fleet, and computes only the rest.
+
+**Build.** `make build/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib`
+links the 27B glue (`QWEN38_27B_DEVICE_STAGE`), the stage serving adapter,
+the device serving runner (`inference/runner/device_serving_runner.c`), the
+KV binding, its copier, the claims and the cache with the device runner and
+the Qwen 3.8 device stage, against the Metal device library only. The
+serving path's calls into weightd's KV pool and lane client and into the
+CUDA mesh are CUDA-host services; a host that runs no weightd links
+`runtime/spark_weightd_absent.c` and
+`ring/transport/tp_device_collective_absent.c`, which answer each call
+`SPARK_STATUS_UNSUPPORTED`, as the host device backend refuses what it
+cannot do. The adapter never reaches them there: a runner that maps its own
+pack takes the device pool and refuses `device_collective`. A deployment
+root holds the adapter in `lib/` and the device library with
+`sparkpipe_kernels.metallib` in `lib/runtime_libs/`; the deployment names
+no weightd and no chat template, since the chat layer renders prompts and
+sends token ids. Off a Mac the target prints SKIP, and the CUDA compile gate
+(`tools/cuda13_sm121a_compile_gate.sh`) leaves every `*_METAL_SERVING_ADAPTER`
+out of the adapters it builds for sm_121a.
+
+**Proven** on one M5 Ultra
+([receipt](../qualification/metal/qwen38_27b/serving-c671eccab/RECEIPT.json),
+`tools/serving_greedy_check.py`): through `sparkpipe_model_api` and
+`sparkpipe_model_residentd`, greedy tokens equal `metal_stage_run`'s token
+for token when both split the prefill alike (one of four prompts sits on a
+0.019-nat tie that a different split decides). A continuation from a cached
+prefix equals the uninterrupted run (I27), prompts resume from the snapshot
+store after both processes restart, a seed repeats its draw, and concurrent
+requests equal the same requests alone. One sequence decodes 18.1 tokens a
+second.
+
 ## Tensor parallel ranks
 
 A runner opened with `tp_degree` N > 1 is one rank of N. It reads its own

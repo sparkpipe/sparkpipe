@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "inference/kernels/metal/kernel_params.h"
 #include "inference/runner/device_collective.h"
 #include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_sha256.h"
@@ -32,6 +33,7 @@ typedef struct SparkDeviceStageRunnerConfig
 	uint32_t tp_rank;
 	const SparkDeviceCollective *collective;
 	uint64_t weight_segment_bytes;
+	uint32_t external_kv;
 } SparkDeviceStageRunnerConfig;
 
 typedef struct SparkDeviceStageRunnerBatch
@@ -57,6 +59,13 @@ typedef struct SparkDeviceStageRunnerResult
 	uint64_t step_ns;
 } SparkDeviceStageRunnerResult;
 
+typedef struct SparkDeviceStageRunnerSamples
+{
+	const uint32_t *tokens;
+	const float *logits;
+	const SparkSampleLogprob *logprobs;
+} SparkDeviceStageRunnerSamples;
+
 typedef struct SparkDeviceStageRunnerInfo
 {
 	uint32_t hidden;
@@ -77,6 +86,12 @@ uint64_t SparkDeviceStageRunnerDecodeBytes(const SparkDeviceStageRunner *runner,
 SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const SparkDeviceStageRunnerBatch *batch, SparkDeviceStageRunnerResult *result);
 SparkStatus SparkDeviceStageRunnerKeepRows(SparkDeviceStageRunner *runner, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkDeviceStageRunnerResetSequence(SparkDeviceStageRunner *runner, uint32_t sequence);
+SparkStatus SparkDeviceStageRunnerSample(SparkDeviceStageRunner *runner, uint32_t rows, const SparkSampleRow *rules, SparkDeviceStageRunnerSamples *samples);
+SparkStatus SparkDeviceStageRunnerAttachKv(SparkDeviceStageRunner *runner, const SparkStageRunnerKv *kv);
+SparkStatus SparkDeviceStageRunnerRecurrentCopy(SparkDeviceStageRunner *runner, uint32_t to_buffer, uint32_t sequence, SparkDeviceAddress buffer,
+	uint64_t bytes);
+SparkDeviceQueue *SparkDeviceStageRunnerQueue(const SparkDeviceStageRunner *runner);
+const SparkStageRunnerModelGeometry *SparkDeviceStageRunnerGeometry(const SparkDeviceStageRunner *runner);
 SparkStatus SparkDeviceStageRunnerInfoGet(const SparkDeviceStageRunner *runner, SparkDeviceStageRunnerInfo *info);
 void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner);
 void SparkDeviceStageRunnerClose(SparkDeviceStageRunner *runner);

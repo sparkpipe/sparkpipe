@@ -133,6 +133,31 @@ static void TestSpaces(void)
 	CHECK(device.handle == 0u && device.device == 0u,"free clears the buffer");
 }
 
+static void TestAdopt(void)
+{
+	SparkDeviceBuffer held, adopted;
+	SparkDeviceQueue *queue = 0;
+	const uint32_t adopts = strcmp(SparkDeviceGetProperties()->backend,"cuda") == 0;
+	CHECK(SparkDeviceAllocate(&held,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4096u,"adopt held") == SPARK_STATUS_OK,"allocate the held buffer");
+	CHECK(SparkDeviceAdopt(&adopted,held.device,0,0u,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"adopt empty") == SPARK_STATUS_INVALID_ARGUMENT,
+		"adopting zero bytes is refused");
+	CHECK(SparkDeviceAdopt(&adopted,0u,0,64u,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"adopt nowhere") == SPARK_STATUS_INVALID_ARGUMENT,
+		"adopting device memory without a device address is refused");
+	CHECK(SparkDeviceAdopt(&adopted,held.device,0,64u,SPARK_DEVICE_SPACE_HOST_PAGEABLE,"adopt pageable") == SPARK_STATUS_INVALID_ARGUMENT,
+		"adopted memory is device-visible");
+	CHECK(SparkDeviceAdopt(&adopted,held.device + 64u,0,64u,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"adopt overlap") == SPARK_STATUS_INVALID_ARGUMENT,
+		"a range inside a buffer the device holds is never adopted");
+	CHECK(SparkDeviceQueueAdopt(&queue,0,"adopt no queue") == SPARK_STATUS_INVALID_ARGUMENT,"adopting a queue needs the backend's own queue");
+	if ( adopts == 0u )
+	{
+		CHECK(SparkDeviceAdopt(&adopted,held.device + (1ull << 30),0,64u,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"adopt foreign") ==
+			SPARK_STATUS_UNSUPPORTED && adopted.handle == 0u,"a backend that holds only its own memory refuses to adopt any");
+		CHECK(SparkDeviceQueueAdopt(&queue,&held,"adopt foreign") == SPARK_STATUS_UNSUPPORTED && queue == 0,
+			"a backend that owns all its queues refuses to adopt one");
+	}
+	CHECK(SparkDeviceFree(&held) == SPARK_STATUS_OK,"free the held buffer");
+}
+
 static void TestCopies(SparkDeviceQueue *queue)
 {
 	enum { BYTES = 70001 };
@@ -653,6 +678,7 @@ int main(void)
 		memcpy(backend,properties->backend,sizeof(backend));
 	CHECK(SparkDeviceQueueCreate(&queue,"contract") == SPARK_STATUS_OK,"create a queue");
 	TestSpaces();
+	TestAdopt();
 	TestCopies(queue);
 	TestFreshUpload(queue);
 	TestOrdering();

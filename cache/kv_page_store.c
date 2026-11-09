@@ -158,6 +158,23 @@ static SparkStatus SparkKvPageStoreReserve(
 	SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
+#if !defined(__linux__) || !defined(O_TMPFILE)
+static int SparkKvPageStoreUnnamedFile(const char *directory,const char *stem)
+{
+	char path[1024];
+	int descriptor;
+	if ( snprintf(path,sizeof(path),"%s/%s-XXXXXX",directory,stem) >= (int)sizeof(path) )
+	{
+		errno = ENAMETOOLONG;
+		return(-1);
+	}
+	descriptor = mkstemp(path);
+	if ( descriptor >= 0 )
+		(void)unlink(path);
+	return(descriptor);
+}
+#endif
+
 static SparkStatus SparkKvPageStoreOpenMemory(
 	SparkKvPageStore *store,
 	const SparkKvPageStoreConfiguration *configuration)
@@ -165,10 +182,7 @@ static SparkStatus SparkKvPageStoreOpenMemory(
 #if defined(__linux__)
 	store->file_descriptor = memfd_create(configuration->backing_path,MFD_CLOEXEC);
 #else
-	char path[] = "/tmp/sparkpipe-kv-memory-XXXXXX";
-	store->file_descriptor = mkstemp(path);
-	if ( store->file_descriptor >= 0 )
-		(void)unlink(path);
+	store->file_descriptor = SparkKvPageStoreUnnamedFile("/tmp","sparkpipe-kv-memory");
 #endif
 	if ( store->file_descriptor < 0 )
 	{
@@ -208,7 +222,10 @@ static SparkStatus SparkKvPageStoreOpen(
 #ifdef O_TMPFILE
 		flags |= O_TMPFILE;
 #else
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		store->file_descriptor = SparkKvPageStoreUnnamedFile(configuration->backing_path,"sparkpipe-kv-backing");
+		if ( store->file_descriptor < 0 )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		return(SparkKvPageStoreReserve(store,configuration->backing_path));
 #endif
 	}
 	store->file_descriptor = open(configuration->backing_path,flags,0600);

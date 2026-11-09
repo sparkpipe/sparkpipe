@@ -312,6 +312,11 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
+{
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,"a Metal address belongs to a buffer; allocate, register or map it"));
+}
+
 SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *host)
 {
 	MetalAllocation *metal = (MetalAllocation *)calloc(1u,sizeof(*metal));
@@ -573,6 +578,12 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	}
 	queue->backend = metal;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
+{
+	(void)native;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_adopt",queue->owner,0,"the Metal backend runs only the queues it created"));
 }
 
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)

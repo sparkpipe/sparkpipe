@@ -127,7 +127,7 @@ make_variable()
 adapters=()
 while IFS= read -r variable; do
 	adapters+=("$(make_variable "${variable}")")
-done < <(sed -n 's/^\([A-Z0-9_]*_SERVING_ADAPTER\)[[:space:]]*:=.*/\1/p' "${repository_root}/Makefile")
+done < <(sed -n 's/^\([A-Z0-9_]*_SERVING_ADAPTER\)[[:space:]]*:=.*/\1/p' "${repository_root}/Makefile" | grep -v '_METAL_SERVING_ADAPTER$')
 if [[ "${#adapters[@]}" -eq 0 ]]; then
 	echo "the Makefile names no serving adapters" >&2
 	exit 5
