@@ -13,7 +13,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 786432
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: glm-5.3-flash
   litellm_params:

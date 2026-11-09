@@ -1603,7 +1603,7 @@ static void SparkTestKvMemoryMargin(void)
     char expected[192];
     char *text;
 
-    assert(SPARK_WEIGHTD_KV_EARLYOOM_PERCENT == 2u && SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES == 4ull << 30);
+    assert(SPARK_WEIGHTD_KV_EARLYOOM_PERCENT == 2u && SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES == 5ull << 29);
     SparkTestWriteMeminfo(meminfo,total,margin + 3u * chunk);
     spark_test_meminfo_path = meminfo;
     SparkTestPackRequest(pack_path,71u,chunk,"kv-margin",&small);

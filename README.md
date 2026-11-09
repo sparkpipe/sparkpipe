@@ -640,7 +640,7 @@ model's cached prefixes come back from the KV snapshot store.
 
 | Served name | Model | Family | Context | Speculation |
 | --- | --- | --- | ---: | :---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 768K | yes |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | yes |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
 | `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
 | `kimi-k3.1-pro` | Kimi K3.1 Pro | `k3` | 1M | yes |

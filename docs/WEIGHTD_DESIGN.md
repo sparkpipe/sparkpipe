@@ -1725,17 +1725,27 @@ one budget, `device_bytes_max`, under these rules
   unified memory between the CPU and the GPU, so every KV chunk lowers
   `MemAvailable`. A grow stops where `MemAvailable` would fall below the
   margin, `SPARK_WEIGHTD_KV_EARLYOOM_PERCENT` (2) percent of `MemTotal` plus
-  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (4 GiB), both compile-time
+  `SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES` (2.5 GiB), both compile-time
   constants. The 2 % is the fleet's earlyoom line (`earlyoom -m 2`, set by the
   owner on all 16 nodes on 2026-11-02; [`docs/NODE_BASELINE.md`](NODE_BASELINE.md)
   records it from PR #1719): earlyoom sends SIGTERM below 2 % and SIGKILL
   below 1 %, so KV growth must
-  never reach it. The 4 GiB is headroom for what grows after a KV grant
+  never reach it. The 2.5 GiB is headroom for what grows after a KV grant
   without asking weightd: the KV snapshot writer's staging, page cache
-  writeback and API request bursts. It is chosen, not measured; the fleet
-  gate records the minimum `MemAvailable` under full KV. weightd reads
+  writeback, the Ceph OSD daemon on the nodes that host one, and request
+  bursts. It is measured. On 2026-11-04 GLM 5.3 Full (BF16 weights, 98 GB
+  a rank, 786,432 positions) served a 774,432-token prompt, then a
+  399,225-token prompt that parked pages on NVMe, under 8-stream bursts,
+  while every node sampled `MemAvailable` at 10 Hz for 75 minutes
+  (`memsample.py` in the gate kit). The lowest reading on any node was
+  1.35 GiB below the margin weightd grants to (sparka, whose OSD held
+  0.9 GB against spark7's 0.2 GB); the largest dip below a node's own
+  steady level was 1.1 GiB, and dirty plus writeback pages peaked at
+  0.2 GiB. 2.5 GiB is that 1.35 GiB plus 1.15 GiB of slack. A lane's
+  maximum-context gate repeats the sampling and passes only while every
+  node stays at least 1 GiB above the earlyoom line. weightd reads
   `MemTotal` from `/proc/meminfo` at start (`weightd kv memory
-  margin_bytes=` in its log; 6,864,027,484 bytes on a 119.6 GiB Spark) and
+  margin_bytes=` in its log; 5,253,414,748 bytes on a 119.6 GiB Spark) and
   `MemAvailable` at every grow. When the file gives neither, every grow is
   refused. Tests point `SparkWeightdServerConfig.meminfo_path` at a
   fabricated file; the daemon itself always reads `/proc/meminfo`.
