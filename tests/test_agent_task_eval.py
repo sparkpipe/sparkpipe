@@ -234,6 +234,7 @@ def main():
             (job / name).mkdir(parents=True)
             (job / name / "result.json").write_text(json.dumps({"task_name": task, "trial_name": name, "verifier_result": {"rewards": {"reward": reward}},
                                                                  "exception_info": {"exception_type": exception} if exception else None,
+                                                                 "agent_execution": {"started_at": "2026-11-09T09:00:00Z", "finished_at": "2026-11-09T09:10:00Z"},
                                                                  "agent_result": {"n_input_tokens": 100, "n_cache_tokens": 80, "n_output_tokens": 10}}))
         (job / "result.json").write_text(json.dumps({"id": "job", "stats": {}}))
         scored = tmp / "tb21.json"
@@ -250,10 +251,40 @@ def main():
               f"the Harbor score does not average attempts per task: {result}")
         check([attempt["reward"] for attempt in result["tasks"]["a"]] == [1.0, 0.0] and result["tasks"]["b"][0]["exception"] == "AgentTimeoutError",
               f"the Harbor score lacks each task's attempts: {result['tasks']}")
-        check(result["agent_timeouts"] == 1 and result["tokens"]["n_cache_tokens"] == 320 and result["passed_tasks"] == ["a", "c"],
+        check(result["agent_timeouts"] == 1 and result["infrastructure_failures"] == 0 and result["agent_seconds_median"] == 600 and result["tokens"]["n_cache_tokens"] == 320
+              and result["passed_tasks"] == ["a", "c"],
               f"the Harbor score lost timeouts, tokens or passed tasks: {result}")
         table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(scored)], capture_output=True, text=True).stdout
         check("| kimi-k3 | claude-code | 1.5 / 3 | 50% |" in table, f"the Harbor report row is wrong:\n{table}")
+        fleet = tmp / "jobs" / "fleet"
+        trials = (("e__1", "terminal-bench/e", 1.0, None, "", ("2026-11-09T09:00:00.1Z", "2026-11-09T09:05:00.9Z")),
+                  ("f__1", "terminal-bench/f", 0.0, "UnknownApiError", 'x {"is_error":true,"result":"API Error: 400 m does not take images","type":"result"}',
+                   ("2026-11-09T09:00:00Z", "2026-11-09T09:01:40Z")),
+                  ("g__1", "terminal-bench/g", None, "AgentSetupTimeoutError", "setup", (None, None)))
+        for name, task, reward, exception, message, (started, finished) in trials:
+            (fleet / name).mkdir(parents=True)
+            (fleet / name / "result.json").write_text(json.dumps({"task_name": task, "trial_name": name, "verifier_result": {"rewards": {"reward": reward}} if reward is not None else None,
+                                                                   "exception_info": {"exception_type": exception, "exception_message": message} if exception else None,
+                                                                   "agent_execution": {"started_at": started, "finished_at": finished} if started else None}))
+        listing = tmp / "task-order.txt"
+        listing.write_text("e f g h\n")
+        partial = tmp / "fleet.json"
+        tool.harbor_score(arguments("harbor-score", "--job", str(fleet), "--harness", "claude-code", "--model", "m", "--label", "fleet", "--output", str(partial),
+                                    "--task-list", str(listing)))
+        result = json.loads(partial.read_text())
+        check(result["planned"] == 3 and result["dataset_tasks"] == 4 and result["complete"] is False and result["pass_rate"] == 0.3333,
+              f"a partial Harbor run is not marked partial: {result}")
+        check(result["agent_ran_tasks"] == 2 and result["pass_rate_agent_ran"] == 0.5 and result["agent_not_started"] == 1 and result["infrastructure_failures"] == 1,
+              f"the Harbor score does not separate trials whose agent never started: {result}")
+        check(result["api_errors"] == {"API Error: 400 m does not take images": 1} and result["tasks"]["terminal-bench/f"][0]["agent_seconds"] == 100,
+              f"the Harbor score lost the API error or the agent time: {result}")
+        check(result["agent_seconds_median"] == 300, f"the Harbor median agent time is wrong: {result}")
+        table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(partial)], capture_output=True, text=True).stdout
+        check("| m | claude-code | 1 / 3 (partial: 3 of 4 tasks) | 33% |" in table, f"the partial report row is wrong:\n{table}")
+        listing.write_text("e f\n")
+        refused = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "harbor-score", "--job", str(fleet), "--harness", "claude-code", "--model", "m",
+                                  "--label", "fleet", "--output", str(partial), "--task-list", str(listing)], capture_output=True, text=True)
+        check(refused.returncode != 0 and "missing from" in refused.stderr, f"a task outside the task list was not refused: {refused.stderr}")
         native = tmp / "settings.json"
         tool.agent_config(arguments("agent-config", "--harness", "claude-code", "--endpoint", "http://127.0.0.1:18433", "--model", "glm-5.3",
                                     "--context", "786432", "--output", str(native)))
@@ -276,7 +307,8 @@ def main():
           "Linux binaries; each task runs Claude Code or Codex in its own container with the key and agents mounted read-only, never in an "
           "argument or a container file, configured for the public door; transcripts, patches and SWE-bench predictions are saved, timeouts and "
           "failed starts recorded, every container removed, no task starts after --stop-after, --instance limits the run and its planned set, a rerun resumes, the score reads the SWE-bench report, and Harbor "
-          "Terminal-Bench jobs score as the mean pass rate per task")
+          "Terminal-Bench jobs score as the mean pass rate per task, a run short of its task list is marked partial, and trials whose agent never "
+          "started and API errors are counted apart")
 
 
 if __name__ == "__main__":

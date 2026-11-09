@@ -228,6 +228,20 @@ benchmark, then score the job.
   network access, so check this before comparing.
 - **Scoring:** `harbor-score` averages each task's attempts, so `-k 3` gives
   pass@1 over 3, as DeepSeek reports.
+  - Pass `--task-list` with the run's whole task list. A run that did not
+    reach every task is then marked partial, and `report` prints it as
+    partial with its task count.
+  - The score counts apart the trials whose agent never started, and each
+    API error message.
+- **Agent setup under Rosetta:** Harbor installs the agent with apt and npm
+  in every amd64 task container, which took up to 353 s on the Mac against
+  Harbor's 360 s limit. On an emulated host pass
+  `--agent-setup-timeout-multiplier 3`. It raises only the install limit,
+  never the agent's task time.
+- **Images:** an agent that reads an image file sends the image in a tool
+  result. The chat layer refuses that with 400 `image_not_supported` for a
+  model without image input, and Claude Code ends the task there. Count
+  these trials from the score's `api_errors`.
 
 ## Receipts and the ledger
 
@@ -236,10 +250,11 @@ benchmark, then score the job.
   - `predictions.jsonl` and `patches/`;
   - the SWE-bench report, or the Harbor job's `result.json` files;
   - `score.json`.
-- **Transcripts** (`logs/`): commit them gzipped when a run's logs come to
-  about 20 MB or less. Otherwise keep them under
-  `/srv/workspace/sparkpipe/agent-tasks/<label>/` and commit their
-  `SHA256SUMS`.
+- **Transcripts** (`logs/`, or a Harbor trial's `agent/`): commit them as
+  plain files when a run's logs come to about 20 MB or less. Otherwise keep
+  them under `/srv/workspace/sparkpipe/agent-tasks/<label>/` and commit
+  their `SHA256SUMS`. Never commit a tarball: the source package refuses
+  `.tar.gz`.
 - **RUN.md:** add one naming:
   - the hub release (its root `MANIFEST` sha256) and the model's pack;
   - the agents' `VERSIONS`;

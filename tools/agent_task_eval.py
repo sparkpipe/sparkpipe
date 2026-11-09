@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import calendar
 import concurrent.futures
 import hashlib
 import inspect
@@ -323,30 +324,56 @@ def trial_results(job):
     return trials
 
 
+API_ERROR = re.compile(r'"result":"(API Error: [^"]{0,200})"')
+
+
+def harbor_seconds(timing):
+    if not timing.get("started_at") or not timing.get("finished_at"):
+        return None
+    started, finished = (calendar.timegm(time.strptime(timing[key][:19], "%Y-%m-%dT%H:%M:%S")) for key in ("started_at", "finished_at"))
+    return round(finished - started)
+
+
 def harbor_score(arguments):
     trials = [trial for job in arguments.job for trial in trial_results(job)]
     if not trials:
         raise SystemExit(f"agent_task_eval: {arguments.job} holds no Harbor trial results")
+    listed = Path(arguments.task_list).read_text().split() if arguments.task_list else None
     tasks = {}
     for trial in trials:
         rewards = (trial.get("verifier_result") or {}).get("rewards") or {}
         reward = rewards.get("reward")
-        failed = trial.get("exception_info") is not None
+        failure = trial.get("exception_info") or {}
         timing = trial.get("agent_execution") or {}
-        tasks.setdefault(trial["task_name"], []).append({"trial": trial["trial_name"], "reward": reward,
-                                                         "exception": (trial.get("exception_info") or {}).get("exception_type") if failed else None,
-                                                         "agent_started": timing.get("started_at"), "agent_finished": timing.get("finished_at")})
+        found = API_ERROR.search(failure.get("exception_message") or "")
+        tasks.setdefault(trial["task_name"], []).append({"trial": trial["trial_name"], "reward": reward, "exception": failure.get("exception_type"),
+                                                         "api_error": found.group(1) if found else None, "agent_ran": bool(timing.get("started_at")),
+                                                         "agent_started": timing.get("started_at"), "agent_finished": timing.get("finished_at"),
+                                                         "agent_seconds": harbor_seconds(timing)})
+    if listed is not None:
+        unknown = sorted(name for name in tasks if name.split("/")[-1] not in listed and name not in listed)
+        if unknown:
+            raise SystemExit(f"agent_task_eval: the jobs ran tasks missing from {arguments.task_list}: {unknown}")
     passes = {name: sum((attempt["reward"] or 0) >= 1 for attempt in attempts) / len(attempts) for name, attempts in tasks.items()}
-    exceptions = {}
-    for attempts in tasks.values():
-        for attempt in attempts:
-            if attempt["exception"]:
-                exceptions[attempt["exception"]] = exceptions.get(attempt["exception"], 0) + 1
+    attempts = [attempt for runs in tasks.values() for attempt in runs]
+    exceptions, api_errors = {}, {}
+    for attempt in attempts:
+        if attempt["exception"]:
+            exceptions[attempt["exception"]] = exceptions.get(attempt["exception"], 0) + 1
+        if attempt["api_error"]:
+            api_errors[attempt["api_error"]] = api_errors.get(attempt["api_error"], 0) + 1
+    ran = {name: runs for name, runs in tasks.items() if any(attempt["agent_ran"] for attempt in runs)}
+    seconds = sorted(attempt["agent_seconds"] for attempt in attempts if attempt["agent_seconds"] is not None)
     tokens = {key: sum(int((trial.get("agent_result") or {}).get(key) or 0) for trial in trials) for key in ("n_input_tokens", "n_cache_tokens", "n_output_tokens")}
     result = {"label": arguments.label, "harness": arguments.harness, "model": arguments.model, "benchmark": arguments.benchmark, "planned": len(tasks),
+              "dataset_tasks": len(listed) if listed is not None else len(tasks), "complete": listed is None or len(tasks) == len(listed),
               "trials": len(trials), "resolved": round(sum(passes.values()), 2), "pass_rate": round(sum(passes.values()) / len(tasks), 4),
-              "empty_patches": 0, "evaluation_errors": sum(exceptions.values()), "infrastructure_failures": 0, "agent_timeouts": exceptions.get("AgentTimeoutError", 0),
-              "exceptions": exceptions, "tokens": tokens, "agent_seconds_median": None, "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0), "tasks": {name: tasks[name] for name in sorted(tasks)},
+              "agent_ran_tasks": len(ran), "pass_rate_agent_ran": round(sum(passes[name] for name in ran) / len(ran), 4) if ran else None,
+              "agent_not_started": sum(not attempt["agent_ran"] for attempt in attempts),
+              "empty_patches": 0, "evaluation_errors": sum(exceptions.values()), "infrastructure_failures": sum(bool(attempt["exception"]) and not attempt["agent_ran"] for attempt in attempts),
+              "agent_timeouts": exceptions.get("AgentTimeoutError", 0), "exceptions": exceptions, "api_errors": api_errors, "tokens": tokens,
+              "agent_seconds_median": seconds[len(seconds) // 2] if seconds else None,
+              "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0), "tasks": {name: tasks[name] for name in sorted(tasks)},
               "jobs": [str(job) for job in arguments.job]}
     Path(arguments.output).write_text(json.dumps(result, indent=1) + "\n")
     print(json.dumps({key: value for key, value in result.items() if key not in ("passed_tasks", "tasks")}))
@@ -368,7 +395,8 @@ def report(arguments):
         path = Path(path)
         result = json.loads((path / "score.json" if path.is_dir() else path).read_text())
         median = "–" if result["agent_seconds_median"] is None else f"{result['agent_seconds_median']} s"
-        rows.append(f"| {result['model']} | {result['harness']} | {result['resolved']:g} / {result['planned']} | {result['pass_rate']:.0%} | "
+        partial = "" if result.get("complete", True) else f" (partial: {result['planned']} of {result['dataset_tasks']} tasks)"
+        rows.append(f"| {result['model']} | {result['harness']} | {result['resolved']:g} / {result['planned']}{partial} | {result['pass_rate']:.0%} | "
                     f"{result['empty_patches']} | {result['agent_timeouts']} | {result['evaluation_errors']} | {median} |")
     print("\n".join(rows))
 
@@ -456,6 +484,7 @@ def build_parser():
     harbor.add_argument("--benchmark", default="terminal-bench/terminal-bench-2-1")
     harbor.add_argument("--label", required=True)
     harbor.add_argument("--output", required=True)
+    harbor.add_argument("--task-list")
     configure = commands.add_parser("agent-config")
     configure.add_argument("--harness", required=True, choices=HARNESSES)
     configure.add_argument("--endpoint", required=True)
