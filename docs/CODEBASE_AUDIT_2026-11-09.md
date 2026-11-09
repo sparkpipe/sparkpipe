@@ -371,6 +371,16 @@ certified head, the one-phase `SUBMIT` kind, the unused transport modes, the
 range kernels, and the five stale deployment generators that still emit the
 `tp_collective` schema.
 
+Merged on 2026-11-10: the tree verification of #1902 (trunk plus single-level
+branches in a verify frame, on Metal for Qwen3.8-27B and on CUDA for Solar
+Open 2; `docs/TREE_VERIFICATION_DESIGN.md`), with the module's tree slot
+grain as a fact and the `TREE_VERIFY` capability derived from it. Folded in
+as their own commits: GLM 5.3 Flash's index round gathers each rank's top
+pools (#1837); verify frames of 2-16 rows read each dense weight once
+(#1891); the shared spine loads through the direct reader (#1871); the KV
+headroom is the measured 2.5 GiB and GLM 5.3 Full BF16 serves 1M positions
+(#1753, confirmed by the first 1M run).
+
 Carried in from the open pull requests on 2026-11-10, each as its own
 commit on this branch: the all-reduce switch to reduce-scatter plus
 all-gather from 10,240 elements at 16 ranks on dual rail (#1863); a failed
@@ -406,6 +416,12 @@ next performance pass starts from it:
 - A per-request GPU clock mode (#1676), the asynchronous bulk collectives
   experiment (#1705) and the PP4 x TP4 DeepSeek prefill (#1896, the owner
   dropped the topology on 2026-11-09) are closed without carry-over.
+
+Two items for the next performance pass, from the closed pull requests and
+the November perf audit: the second lane's collectives on their own mesh band,
+and a roofline meter in the runner (bytes moved and rounds per step against
+the measured bandwidth and round cost, logged per rank) so that attainment
+is a number the rank reports, not an estimate.
 
 ## Not covered, and numbers to measure
 
