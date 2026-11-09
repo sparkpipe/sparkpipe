@@ -6,6 +6,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 EXEMPT_PREFIXES = ("tests/",)
 EXEMPT_SUFFIXES = (".md",)
+RECORD_PREFIX = "qualification/"
+RECORD_SUFFIXES = (".log",)
+EXEMPT_CASES = (
+    ("qualification/agent-tasks/run/trial.log", True),
+    ("qualification/agent-tasks/run/driver.sh", False),
+    ("qualification/agent-tasks/run/tool.py", False),
+    ("tools/serve.log", False),
+    ("docs/GUIDE.md", True),
+)
 ALLOWED = (
     "tools/install_cuda13_compile_only_debian13.sh",
 )
@@ -51,7 +60,8 @@ def listed_files():
 
 
 def exempt(relative):
-    return relative.startswith(EXEMPT_PREFIXES) or relative.endswith(EXEMPT_SUFFIXES)
+    return (relative.startswith(EXEMPT_PREFIXES) or relative.endswith(EXEMPT_SUFFIXES)
+            or (relative.startswith(RECORD_PREFIX) and relative.endswith(RECORD_SUFFIXES)))
 
 
 def main():
@@ -63,6 +73,10 @@ def main():
     for clean in CLEAN:
         if LINK_CALL.search(clean) is not None:
             print(f"  FAIL the link pattern sees a link in {clean!r}")
+            failures += 1
+    for relative, wanted in EXEMPT_CASES:
+        if exempt(relative) != wanted:
+            print(f"  FAIL {relative} is {'exempt' if not wanted else 'checked'}; a recorded log under qualification/ is exempt, and code is checked")
             failures += 1
     entries, error = listed_files()
     if error is not None:
