@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import math
 import os
 import sys
@@ -541,6 +542,15 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     }
 
 
+def kv_lane_queue_depth() -> int:
+    header = (ROOT / "include/sparkpipe/spark_kv_page_cache.h").read_text()
+    return int(re.search(r"#define SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH (\d+)u", header).group(1))
+
+
+def inflight_submissions(model: dict, sequences: int) -> int:
+    return min(max(sequences, min(WORLD // tp_of(model), kv_lane_queue_depth())), 16)
+
+
 def deployment(model: dict, lane: int, args) -> dict:
     nodes = []
     for rank, host in enumerate(HOSTS):
@@ -568,7 +578,7 @@ def deployment(model: dict, lane: int, args) -> dict:
                       "mode": model.get("pipeline_transport", "host-rdma"), "control_port_base": 64000 + 16 * lane},
         "weightd": {"socket_path": args.weightd_socket},
         "runtime_limits": {
-            "max_inflight_submissions": min(args.sequences, 16),
+            "max_inflight_submissions": inflight_submissions(model, args.sequences),
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),

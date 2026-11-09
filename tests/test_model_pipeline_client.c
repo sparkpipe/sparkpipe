@@ -257,6 +257,7 @@ static void TestModelBatchSchedulerPolicy(void)
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,16u,16u) == 1u);
 	assert(SparkModelBatchSchedulerPipelineDepth(0u,3u,0u) == 3u);
+	assert(SparkModelBatchSchedulerPrefillWaves(2u,3u) == 2u && SparkModelBatchSchedulerPrefillWaves(4u,3u) == 3u && SparkModelBatchSchedulerPrefillWaves(1u,3u) == 1u);
 	memset(inflight,0,sizeof(inflight));
 	inflight[SPARK_MODEL_SERVING_WORK_KIND_PREFILL] = 3u;
 	assert(SparkModelBatchSchedulerDecodeWaveOpen(inflight,1u) == 1u);

@@ -432,6 +432,13 @@ uint32_t SparkModelBatchSchedulerPipelineDepth(uint32_t capability_flags,uint32_
 	return(stage_count);
 }
 
+uint32_t SparkModelBatchSchedulerPrefillWaves(uint32_t pipeline_depth,uint32_t queue_depth)
+{
+	if ( pipeline_depth == 0u || queue_depth == 0u )
+		return(1u);
+	return(pipeline_depth < queue_depth ? pipeline_depth : queue_depth);
+}
+
 uint32_t SparkModelBatchSchedulerDecodeWaveOpen(const uint32_t inflight_by_kind[5],uint32_t pipeline_depth)
 {
 	return(inflight_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] < pipeline_depth ? 1u : 0u);
@@ -773,7 +780,7 @@ static uint32_t SparkModelBatchPrefillDispatchable(
 	if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
 		return(1u);
 	return(request->state == SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT && engine->pipeline_depth > 1u &&
-		request->prefill_inflight_chunks < engine->pipeline_depth && request->prefill_poisoned == 0u && request->prefill_held == 0u && request->cancel_pending == 0u &&
+		request->prefill_inflight_chunks < SparkModelBatchSchedulerPrefillWaves(engine->pipeline_depth,SPARK_KV_LANE_TRANSACTION_QUEUE_DEPTH) && request->prefill_poisoned == 0u && request->prefill_held == 0u && request->cancel_pending == 0u &&
 		request->dispatched_prompt_token_count < request->prompt_token_count && request->defer_end <= request->computed_prompt_token_count ? 1u : 0u);
 }
 

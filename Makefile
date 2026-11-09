@@ -735,6 +735,7 @@ PYTHON_TESTS := \
 	tests/test_model_swap_failures.py \
 	tests/test_model_swap_hub_services.py \
 	tests/test_stage_lane_kv_labels.py \
+	tests/test_stage_lane_pipeline_inflight.py \
 	tests/test_stage_lane_stop.py \
 	tests/test_stage_lane_setup.py \
 	tests/test_stage_lane_dense_setup.py \

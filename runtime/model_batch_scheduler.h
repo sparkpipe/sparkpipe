@@ -35,3 +35,4 @@ uint32_t SparkModelBatchSchedulerChooseWorkKind(
 	uint32_t bypass_count_by_kind[5]);
 uint32_t SparkModelBatchSchedulerPipelineDepth(uint32_t capability_flags,uint32_t stage_count,uint32_t parallel_group_size);
 uint32_t SparkModelBatchSchedulerDecodeWaveOpen(const uint32_t inflight_by_kind[5],uint32_t pipeline_depth);
+uint32_t SparkModelBatchSchedulerPrefillWaves(uint32_t pipeline_depth,uint32_t queue_depth);
