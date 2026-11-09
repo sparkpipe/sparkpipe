@@ -1818,8 +1818,7 @@ struct GlmModel
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
 			state->lane_arena == 0 || state->lane_host_staging == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->last_rows_only == 0u || step->host_positions == 0 || step->host_sequence_of_row == 0 || step->rows < GLM_LANE_ROWS ||
-			step->rows > state->max_rows )
+		if ( step->last_rows_only == 0u || step->host_positions == 0 || step->host_sequence_of_row == 0 || step->rows > state->max_rows )
 			return SPARK_STATUS_UNSUPPORTED;
 		regime.positions = step->host_positions;
 		regime.max_positions = state->max_positions;

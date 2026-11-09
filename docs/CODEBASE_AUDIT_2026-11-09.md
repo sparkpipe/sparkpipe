@@ -350,8 +350,8 @@ Landed in the pull request that carries this page:
   two frames the runner interleaves layer by layer on one thread; the lane
   worker thread, its mutex and its turn protocol are gone. A model declares
   its minimum rows per frame (`chunk_rows`) and the runner's split honours it
-  before any lane is set up; the MoE families' own guards remain until the
-  runner splits every wave.
+  before any lane is set up, and the MoE families' own row guards are gone;
+  the runner chunks a wave only as the two-lane split of one sequence so far.
 - Step 7 in part: the `tp_collective` parser and template, the transaction
   ledger, the external KV provider client, the NVMe tier and topology switch,
   graph relocation, memlink and its tools, the NCCL enum and parser branch,

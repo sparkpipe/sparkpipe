@@ -971,7 +971,7 @@ struct Glm5NextStage
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 ||
 			state->lane_scratch == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->rows > state->max_rows || step->rows < G5N_LANE_ROWS )
+		if ( step->rows > state->max_rows )
 			return SPARK_STATUS_UNSUPPORTED;
 		LaneFold(state);
 		copy = state->lane_states[lane];

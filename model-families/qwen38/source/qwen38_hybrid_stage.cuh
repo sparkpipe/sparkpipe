@@ -1597,8 +1597,6 @@ struct QwenHybridModel
 		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->dump != 0 || state->lane_states[lane] == 0 ||
 			state->lane_arena == 0 )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		if ( step->rows < (G::kMoe ? QH_MOE_LANE_ROWS : 1u) )
-			return SPARK_STATUS_UNSUPPORTED;
 		copy = state->lane_states[lane];
 		memcpy(copy, state, sizeof(*copy));
 		copy->services = services;
@@ -1814,7 +1812,7 @@ struct QwenHybridModel
 			0,
 			StepEnd,
 			(uint32_t)sizeof(Frame),
-			QH_MOE_LANE_ROWS
+			G::kMoe ? QH_MOE_LANE_ROWS : 0u
 		};
 		return &interface_table;
 	}
