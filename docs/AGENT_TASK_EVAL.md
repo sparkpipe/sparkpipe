@@ -94,8 +94,18 @@ and grade with the same wrapper, as in the next section.
 
 ## The key
 
-Create a dedicated key on the hub into a mode-600 file. Copy it to the
-Docker host through stdin, never as an argument. Revoke it when the runs end.
+Without a key, use `--door internal` on `run` and `agent-config`. The
+agents then send no `X-SparkPipe-Public` header, and the chat layer takes
+their requests as internal: own scope, no key check and no 60 s busy wait.
+The agents still need a key-shaped token to start. Give `run` a mode-600
+file holding a placeholder such as `sk-sp-internal-door-carries-no-key`, and
+put the same placeholder in Harbor's env file. The first fleet run of
+2026-11-09 used the internal door, because no key was to be made on the
+production pay service.
+
+With the public door, the customer's path, create a dedicated key on the
+hub into a mode-600 file. Copy it to the Docker host through stdin, never as
+an argument. Revoke it when the runs end.
 
 ```sh
 ssh spec@100.123.97.61 'umask 077; mkdir -p ~/.sparkpipe-bench; cd ~/sparkpipe-chat && python3 api_keys.py --file api_keys.json create --days 14 --note "agent task benchmarks" > ~/.sparkpipe-bench/key'
