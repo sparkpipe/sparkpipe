@@ -3087,9 +3087,8 @@ static void SparkModelBatchBuildPrefillRows(
 			maximum = engine->scratch_prefill_counts[lane];
 	}
 	row = 0u;
-	for (wave=0u; wave<maximum; wave++)
-		for (lane=0u; lane<lane_count; lane++)
-			if ( engine->scratch_prefill_counts[lane] > wave )
+	for (lane=0u; lane<lane_count; lane++)
+		for (wave=0u; wave<engine->scratch_prefill_counts[lane]; wave++)
 		{
 			SparkModelBatchRequestState *request;
 			uint32_t *tokens;
