@@ -22,6 +22,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
 #define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
 #define SPARK_MODEL_BATCH_CHAIN_BUDGET_NS 1000000000.0f
+#define SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS 2u
 #define SPARK_MODEL_BATCH_REQUEST_FREE 0u
 #define SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL 1u
 #define SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT 2u
@@ -3469,7 +3470,7 @@ static void SparkModelBatchBuildDecodeRows(
 	engine->building_verify_frame = stride > 1u ? 1u : 0u;
 	if ( stride == 1u && (engine->adapter_descriptor->capability_flags &
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN) != 0u &&
-		SparkModelBatchNeedsSingleStep(engine,lane_count) == 0u && SparkModelBatchPrefillWaiting(engine) == 0u )
+		SparkModelBatchNeedsSingleStep(engine,lane_count) == 0u )
 	{
 		chain_tokens = engine->adapter_descriptor->max_output_token_count /
 			lane_count;
@@ -3512,6 +3513,8 @@ static void SparkModelBatchBuildDecodeRows(
 		SparkSpeculationFrameTokenCost(&engine->frame_model,context)) : 0.0f;
 	if ( step_ns > 0.0f && (float)chain_tokens * step_ns > SPARK_MODEL_BATCH_CHAIN_BUDGET_NS )
 		chain_tokens = step_ns >= SPARK_MODEL_BATCH_CHAIN_BUDGET_NS ? 1u : (uint32_t)(SPARK_MODEL_BATCH_CHAIN_BUDGET_NS / step_ns);
+	if ( chain_tokens > SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS && SparkModelBatchPrefillWaiting(engine) != 0u )
+		chain_tokens = SPARK_MODEL_BATCH_PREFILL_WAIT_CHAIN_STEPS;
 	row = 0u;
 	for (wave=0u; wave<stride; wave++)
 		for (lane=0u; lane<lane_count; lane++)

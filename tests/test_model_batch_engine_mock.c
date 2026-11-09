@@ -1385,7 +1385,7 @@ static void TestScenarioSamplingValidation(const SparkModelResidentDeployment *d
 	SparkModelBatchEngineDestroy(engine);
 }
 
-static void TestScenarioChainYieldsToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+static void TestScenarioChainBoundWhilePrefillWaits(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
@@ -1400,13 +1400,14 @@ static void TestScenarioChainYieldsToPrefill(const SparkModelResidentDeployment 
 	for (steps=0u; steps<200u && state.token_events[1] < 2u; steps++)
 		TestDrive(engine,1u);
 	chained = MockResidentClientTakeMaxTokensPerSequence();
-	TestSubmitPrompt(engine,2u,951u,2u,other,2u);
+	TestSubmitPrompt(engine,2u,951u,24u,other,2u);
 	(void)SparkModelBatchEngineProgress(engine,8u);
 	yielded = MockResidentClientTakeMaxTokensPerSequence();
 	TestDriveUntilTerminal(engine,&state,2u,800u);
-	CHECK(chained > 1u,"chain yield: a lone decoding request chains several tokens per step");
-	CHECK(yielded == 1u,"chain yield: a decode wave built while an admissible prefill waits runs one step so the prefill is not held behind a chain");
-	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"chain yield: both requests complete");
+	printf("chain bound: lone chain %u steps, chain built while a prefill waits %u steps\n",chained,yielded);
+	CHECK(chained > 1u,"chain bound: a lone decoding request chains several tokens per step");
+	CHECK(yielded >= 1u && yielded <= 2u,"chain bound: a decode wave built while an admissible prefill waits runs at most two steps, the draft planner's twice-a-step bound");
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"chain bound: both requests complete");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3797,7 +3798,7 @@ int main(void)
 	TestScenarioLogprobs(&deployment,runtime_root);
 	TestScenarioTruncatedChains(&deployment,runtime_root);
 	TestScenarioAdapterContextLimit(&deployment,runtime_root);
-	TestScenarioChainYieldsToPrefill(&deployment,runtime_root);
+	TestScenarioChainBoundWhilePrefillWaits(&deployment,runtime_root);
 	TestScenarioMeasurements(&deployment,runtime_root);
 	TestScenarioStalePrefixRecomputes(&deployment,runtime_root);
 	TestScenarioStalePrefixTerminates(&deployment,runtime_root);
