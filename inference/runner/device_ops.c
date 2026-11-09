@@ -739,6 +739,8 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 		return(status);
 	if ( params->tree != sequences->tree || (params->tree != 0u && (params->commit != 0u || sequences->parent_rows.range.buffer == 0)) )
 		return(OpsRefuse("causal_conv","a tree step carries its parent rows and never commits"));
+	if ( params->tree != 0u && input.range.buffer == output.range.buffer && input.range.offset == output.range.offset )
+		return(OpsRefuse("causal_conv","a tree step reads its ancestors' inputs, so its input cannot be its output"));
 	bindings[0] = OpsBind(window,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);

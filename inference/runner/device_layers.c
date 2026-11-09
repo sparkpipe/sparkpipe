@@ -139,8 +139,8 @@ SparkStatus SparkDeviceGatedDelta(SparkDeviceStage *stage, SparkDeviceQueue *que
 		status = SparkOpsGather(stage->ops,queue,scratch->gates,tensors->row_identity,GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,1u),rows,gates,
 			rows);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkOpsCausalConv(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_WINDOW_POOL,recurrent_layer),&sequences,scratch->mix,weights->conv,
-			scratch->mix,&conv);
+		status = SparkOpsCausalConv(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_WINDOW_POOL,recurrent_layer),&sequences,
+			sequences.tree != 0u ? GatedDeltaKeepSlab(stage,shape,scratch,recurrent_layer,0u) : scratch->mix,weights->conv,scratch->mix,&conv);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsGatedDelta(stage->ops,queue,SparkDeviceStageRecurrent(stage,SPARK_DEVICE_GATED_DELTA_STATE_POOL,recurrent_layer),&sequences,scratch->mix,scratch->gates,
 			weights->log_scale,weights->bias,scratch->delta,scratch->core,&delta);
