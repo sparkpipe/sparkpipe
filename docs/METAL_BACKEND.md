@@ -405,6 +405,14 @@ it writes no `head`, and `--name qwen35_4b` names the pack.
 `tools/qwen38_27b_reference.c` reads the same geometry, checks the same fixed
 dimensions, and takes a tied head from the embedding.
 
+The small checkpoints store the gated-delta `A_log` and the gated norm weight
+in F32, where the 27B's are BF16. The publisher's `Qwen3_5RMSNormGated`
+multiplies its weight with the BF16-rounded normed values, and
+`modeling_qwen3_5.py` keeps no module in FP32. So the publisher's `bfloat16`
+load rounds the weight to BF16, and the packer (`bf16_rounded`) and the
+reference round it to nearest even the same way. `A_log`'s F32 values are all
+BF16 values, so it is exact either way.
+
 Their tokenizers have the 27B's 248,044-token base vocabulary but not its
 seven audio and TTS tokens (ids 248,070 to 248,076), so `metal_stage_run`
 gives them an output vocabulary of 248,070 against the 27B's 248,077. Text

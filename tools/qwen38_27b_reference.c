@@ -299,7 +299,7 @@ static const uint8_t *RefTensor(RefCheckpoint *checkpoint, const char *name, con
 	return(RefTensorAs(checkpoint,name,dtype,elements,2u));
 }
 
-static uint32_t RefTensorIsFp8(RefCheckpoint *checkpoint, const char *name)
+static uint32_t RefTensorIsKind(RefCheckpoint *checkpoint, const char *name, const char *dtype)
 {
 	const int32_t map = SparkJsonFindObjectMember(&checkpoint->index,SparkJsonGetRootToken(&checkpoint->index),"weight_map");
 	const int32_t entry = map >= 0 ? SparkJsonFindObjectMember(&checkpoint->index,map,name) : -1;
@@ -312,7 +312,18 @@ static uint32_t RefTensorIsFp8(RefCheckpoint *checkpoint, const char *name)
 	free(shard_name);
 	meta = SparkJsonFindObjectMember(&shard->header,SparkJsonGetRootToken(&shard->header),name);
 	kind = meta >= 0 ? SparkJsonFindObjectMember(&shard->header,meta,"dtype") : -1;
-	return(kind >= 0 && SparkJsonStringEquals(&shard->header,kind,"F8_E4M3") ? 1u : 0u);
+	return(kind >= 0 && SparkJsonStringEquals(&shard->header,kind,dtype) ? 1u : 0u);
+}
+
+static float Bf16Nearest(float value)
+{
+	uint32_t bits;
+	memcpy(&bits,&value,sizeof(bits));
+	if ( (bits & 0x7fffffffu) > 0x7f800000u )
+		return(value);
+	bits = (bits + 0x7fffu + ((bits >> 16) & 1u)) & 0xffff0000u;
+	memcpy(&value,&bits,sizeof(value));
+	return(value);
 }
 
 static float E4m3(uint8_t code)
@@ -324,7 +335,8 @@ static float E4m3(uint8_t code)
 
 static float *RefLoad(RefCheckpoint *checkpoint, const char *name, uint64_t elements, float add)
 {
-	const uint16_t *raw = (const uint16_t *)RefTensor(checkpoint,name,"BF16",elements);
+	const uint32_t wide = RefTensorIsKind(checkpoint,name,"F32");
+	const uint8_t *raw = RefTensorAs(checkpoint,name,wide != 0u ? "F32" : "BF16",elements,wide != 0u ? 4u : 2u);
 	float *out = (float *)malloc((size_t)elements * sizeof(float));
 	if ( out == 0 )
 		Die("out of memory loading",name);
@@ -332,7 +344,7 @@ static float *RefLoad(RefCheckpoint *checkpoint, const char *name, uint64_t elem
 	{
 		const uint64_t first = (uint64_t)block * 65536u, last = first + 65536u < elements ? first + 65536u : elements;
 		for ( uint64_t index = first; index < last; index++ )
-			out[index] = Bf16(raw[index]) + add;
+			out[index] = (wide != 0u ? Bf16Nearest(((const float *)(const void *)raw)[index]) : Bf16(((const uint16_t *)(const void *)raw)[index])) + add;
 	});
 	return(out);
 }
@@ -352,7 +364,7 @@ static float *RefLayerLinear(RefCheckpoint *checkpoint, uint32_t layer, const ch
 	float *out;
 	const uint32_t scale_columns = (columns + REF_FP8_BLOCK - 1u) / REF_FP8_BLOCK;
 	snprintf(key,sizeof(key),REF_PREFIX "layers.%u.%s.weight",layer,name);
-	if ( RefTensorIsFp8(checkpoint,key) == 0u )
+	if ( RefTensorIsKind(checkpoint,key,"F8_E4M3") == 0u )
 		return(RefLoad(checkpoint,key,(uint64_t)rows * columns,0.0f));
 	snprintf(scale_key,sizeof(scale_key),"%s_scale_inv",key);
 	raw = RefTensorAs(checkpoint,key,"F8_E4M3",(uint64_t)rows * columns,1u);

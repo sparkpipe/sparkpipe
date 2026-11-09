@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""The Qwen hybrid packer takes its geometry from the checkpoint's config.json: Qwen3.8-27B keeps its separate head, Qwen3.5-4B and 2B tie the head to the embedding, and a checkpoint whose fixed dimensions or layer pattern differ from the stages' is refused before any tensor is read."""
+"""The Qwen hybrid packer takes its geometry from the checkpoint's config.json: Qwen3.8-27B keeps its separate head, Qwen3.5-4B and 2B tie the head to the embedding, and a checkpoint whose fixed dimensions or layer pattern differ from the stages' is refused before any tensor is read. An F32 checkpoint tensor the stage reads as BF16 is rounded to nearest even, ties to the even neighbour, as the publisher's bfloat16 load rounds it."""
 import copy
 import importlib.util
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("qwen38_pack", ROOT / "tools" / "qwen38_27b_tp16_pack.py")
@@ -52,8 +54,25 @@ try:
     failures.append("a geometry that does not split into the ranks is refused")
 except pack.PackFailure:
     pass
+
+
+class Source:
+    def __init__(self, dtype, values):
+        self.dtype, self.values = dtype, values
+
+    def array(self, name):
+        return self.dtype, self.values
+
+
+tie_down, tie_up = 1.0 + 2.0 ** -8, 1.0 + 3.0 * 2.0 ** -8
+values = np.array([1.0, -2.5, tie_down, tie_up, 1.0 + 2.0 ** -8 + 2.0 ** -20], dtype=np.float32)
+rounded = pack.bf16_rounded(Source("F32", values), "norm", (5,))
+check(((rounded.astype(np.uint32) << 16).view(np.float32) == np.array([1.0, -2.5, 1.0, 1.015625, 1.0078125], dtype=np.float32)).all(),
+      f"F32 values round to the nearest BF16, ties to even: {(rounded.astype(np.uint32) << 16).view(np.float32)}")
+raw = np.array([0x3F80, 0xC020], dtype=np.uint16)
+check(pack.bf16_rounded(Source("BF16", raw), "norm", (2,)) is raw, "a BF16 tensor passes through untouched")
 for failure in failures:
     print("FAIL test_qwen38_pack_geometry:", failure)
 if failures:
     raise SystemExit(1)
-print("PASS test_qwen38_pack_geometry: the packer reads the 27B, 4B and 2B geometries and their heads from config.json and refuses other fixed dimensions")
+print("PASS test_qwen38_pack_geometry: the packer reads the 27B, 4B and 2B geometries and their heads from config.json, refuses other fixed dimensions, and rounds F32 sources to BF16 to nearest even")

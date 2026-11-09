@@ -5,7 +5,10 @@ The geometry comes from the checkpoint's config.json, checked against the
 dimensions the device and CUDA stages are built for (GDN key and value heads
 of 128, convolution of 4, attention heads of 256 with 64 rotary dimensions).
 A checkpoint with tied embeddings (the Qwen 3.5 small models) writes no head
-entry: the stage reads the embedding rows as the head.
+entry: the stage reads the embedding rows as the head. The small checkpoints
+store the gated GDN norm weight and A_log in F32; the publisher's model runs in
+bfloat16 and keeps no module in FP32, so the norm weight is rounded to BF16 to
+nearest even as its load does (A_log's F32 values are all BF16 values).
 
 One pass over the checkpoint writes every rank: each tensor is read once and
 its rank slices go to the rank pack writers. --tp-degree 16 writes the
@@ -214,6 +217,19 @@ def bf16(checkpoint, name, shape=None):
     return array
 
 
+def bf16_rounded(checkpoint, name, shape):
+    dtype, array = checkpoint.array(name)
+    if tuple(array.shape) != tuple(shape):
+        raise PackFailure(f"{name}: shape {tuple(array.shape)} != {tuple(shape)}")
+    if dtype == "BF16":
+        return array
+    if dtype != "F32":
+        raise PackFailure(f"{name}: expected BF16 or F32, found {dtype}")
+    bits = np.asarray(array, dtype=np.float32).view(np.uint32)
+    rounded = ((bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))) >> 16).astype(np.uint16)
+    return np.where((bits & np.uint32(0x7FFFFFFF)) > np.uint32(0x7F800000), (bits >> 16).astype(np.uint16) | np.uint16(0x40), rounded)
+
+
 def f32_vector(checkpoint, name, shape):
     dtype, array = checkpoint.array(name)
     if tuple(array.shape) != tuple(shape):
@@ -269,7 +285,7 @@ def pack_gdn(checkpoint, packs, layer, codec):
     conv = bf16(checkpoint, p + "conv1d.weight", (2 * GDN_QK + GDN_V, 1, CONV)).reshape(2 * GDN_QK + GDN_V, CONV)
     a_log = f32_vector(checkpoint, p + "A_log", (GDN_VALUE_HEADS,))
     dt_bias = f32_vector(checkpoint, p + "dt_bias", (GDN_VALUE_HEADS,))
-    norm = bf16(checkpoint, p + "norm.weight", (GDN_VALUE_DIM,))
+    norm = bf16_rounded(checkpoint, p + "norm.weight", (GDN_VALUE_DIM,))
     if qkv.shape != (2 * GDN_QK + GDN_V, HIDDEN) or z.shape != (GDN_V, HIDDEN) or out.shape != (HIDDEN, GDN_V):
         raise PackFailure(f"layer {layer}: GDN projection shapes {qkv.shape} {z.shape} {out.shape}")
     heads = GDN_VALUE_HEADS // TP
