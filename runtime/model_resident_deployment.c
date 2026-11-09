@@ -469,7 +469,7 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentString(document,object,"sha256",&deployment->tokenizer_asset_sha256);
 	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
-			!!SparkSha256HexIsValid(deployment->tokenizer_asset_sha256)) )
+			!SparkSha256HexIsValid(deployment->tokenizer_asset_sha256)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	deployment->tokenizer_text_prompt_prefix_count = 0u;
 	if ( status == SPARK_STATUS_OK && prefix >= 0 )
