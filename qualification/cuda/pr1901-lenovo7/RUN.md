@@ -21,6 +21,8 @@ Both builds exited 0: main in 121 s, this PR in 108 s.
 1. **SASS of every kernel in the 20 adapters:** `python3 sass_diff.py main-fded9e032-src pr1901-ce30c377b-src <adapters>`. The script hashes each kernel's full `cuobjdump -sass` text, instruction encodings included.
 
    `sass-summary.txt`: 4,564 kernels, 4,544 byte-identical. The 20 that differ are one kernel, `LmSampleRowsKernel<1024>`, once per adapter, because the sampler formulas moved into `inference/kernels/kernel_math.cuh`. Every head, attention, expert and KV kernel is identical.
+
+   `sass-adapters.tsv` lists the sha256 of each adapter's whole `cuobjdump -sass` dump on both builds. Every adapter's hash differs, because each carries the changed sampler kernel; the per-kernel comparison in `sass-summary.txt` shows that kernel is the only difference.
 2. **The changed paths, on both builds:** `changed-paths.tsv` has each test's last line, and whether its whole output is the same on both builds.
 
    | test | covers | result |
@@ -34,7 +36,7 @@ Both builds exited 0: main in 121 s, this PR in 108 s.
    | `test_head_certified_cuda` | the output head | passes, identical |
 3. **Every `tests/*_cuda.py`:** `cuda-sweep.sh` runs each test on both builds back to back, 90 s per run, starting no test after 22:08.
 
-   `cuda-sweep.tsv`: 55 tests, 110 runs from 21:27:48 to 21:51:37, every exit status 0. 41 outputs are byte-identical across the builds. The other 14 differ only in timings: every result field (error bounds, peaks, bit-equality checks) is equal.
+   `cuda-sweep-pr1901.tsv`: 55 tests, 110 runs from 21:27:48 to 21:51:37, every exit status 0. 41 outputs are byte-identical across the builds. The other 14 differ only in timings: every result field (error bounds, peaks, bit-equality checks) is equal.
 
 ## Why no serving test ran on one GB10
 
