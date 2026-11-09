@@ -332,7 +332,10 @@ def harbor_score(arguments):
         rewards = (trial.get("verifier_result") or {}).get("rewards") or {}
         reward = rewards.get("reward")
         failed = trial.get("exception_info") is not None
-        tasks.setdefault(trial["task_name"], []).append({"reward": reward, "exception": (trial.get("exception_info") or {}).get("exception_type") if failed else None})
+        timing = trial.get("agent_execution") or {}
+        tasks.setdefault(trial["task_name"], []).append({"trial": trial["trial_name"], "reward": reward,
+                                                         "exception": (trial.get("exception_info") or {}).get("exception_type") if failed else None,
+                                                         "agent_started": timing.get("started_at"), "agent_finished": timing.get("finished_at")})
     passes = {name: sum((attempt["reward"] or 0) >= 1 for attempt in attempts) / len(attempts) for name, attempts in tasks.items()}
     exceptions = {}
     for attempts in tasks.values():
@@ -343,10 +346,10 @@ def harbor_score(arguments):
     result = {"label": arguments.label, "harness": arguments.harness, "model": arguments.model, "benchmark": arguments.benchmark, "planned": len(tasks),
               "trials": len(trials), "resolved": round(sum(passes.values()), 2), "pass_rate": round(sum(passes.values()) / len(tasks), 4),
               "empty_patches": 0, "evaluation_errors": sum(exceptions.values()), "infrastructure_failures": 0, "agent_timeouts": exceptions.get("AgentTimeoutError", 0),
-              "exceptions": exceptions, "tokens": tokens, "agent_seconds_median": None, "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0),
+              "exceptions": exceptions, "tokens": tokens, "agent_seconds_median": None, "passed_tasks": sorted(name for name, rate in passes.items() if rate > 0), "tasks": {name: tasks[name] for name in sorted(tasks)},
               "jobs": [str(job) for job in arguments.job]}
     Path(arguments.output).write_text(json.dumps(result, indent=1) + "\n")
-    print(json.dumps({key: value for key, value in result.items() if key != "passed_tasks"}))
+    print(json.dumps({key: value for key, value in result.items() if key not in ("passed_tasks", "tasks")}))
 
 
 def agent_config(arguments):

@@ -248,6 +248,8 @@ def main():
         result = json.loads(scored.read_text())
         check(result["planned"] == 3 and result["trials"] == 4 and result["resolved"] == 1.5 and result["pass_rate"] == 0.5,
               f"the Harbor score does not average attempts per task: {result}")
+        check([attempt["reward"] for attempt in result["tasks"]["a"]] == [1.0, 0.0] and result["tasks"]["b"][0]["exception"] == "AgentTimeoutError",
+              f"the Harbor score lacks each task's attempts: {result['tasks']}")
         check(result["agent_timeouts"] == 1 and result["tokens"]["n_cache_tokens"] == 320 and result["passed_tasks"] == ["a", "c"],
               f"the Harbor score lost timeouts, tokens or passed tasks: {result}")
         table = subprocess.run([sys.executable, str(ROOT / "tools" / "agent_task_eval.py"), "report", str(scored)], capture_output=True, text=True).stdout
