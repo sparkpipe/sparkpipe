@@ -169,6 +169,7 @@ typedef struct SparkStageRunnerStats
 	uint64_t completed_count;
 	uint64_t failed_count;
 	uint64_t collective_count;
+	uint32_t lane_fatal;
 } SparkStageRunnerStats;
 
 typedef struct SparkStageRunner

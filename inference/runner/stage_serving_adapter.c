@@ -1803,6 +1803,8 @@ static SparkStatus StageServingSnapshot(void *adapter_state,
 	snapshot->kv_token_capacity = (uint64_t)state->kv.logical_page_count * block;
 	snapshot->max_sequence_positions = state->runner_config.kv_pages_per_sequence * block;
 	SparkStageKvBindingKvStoreCounters(&state->kv, &snapshot->kv_store);
+	if ( stats.lane_fatal != 0u || state->streamed_failed != 0u )
+		snapshot->degraded_flags |= SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL;
 	return SPARK_STATUS_OK;
 }
 
@@ -1813,6 +1815,12 @@ static SparkStatus StageServingReset(void *adapter_state, uint64_t control_gener
 	SparkStatus status;
 	if ( state == 0 || state->kv.resident_sequence_capacity > SPARK_STAGE_SERVING_MAX_LANES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( state->streamed_failed != 0u )
+	{
+		fprintf(stderr, "%s reset refused: a streamed prefill failed and left published blocks without KV; a reset cannot clear them, so the lane exits and must restart with its KV wiped\n",
+			state->model->module_tag);
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	if ( SparkStageKvBindingResetIsNew(&state->kv, control_generation) == 0u )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	count = state->kv.resident_sequence_capacity;

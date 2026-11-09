@@ -2961,6 +2961,20 @@ static SparkStatus SparkModelResidentdCloseFailedRouteLocked(SparkModelResidentd
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelResidentdCheckLaneFatal(SparkModelResidentdRuntime *runtime)
+{
+	SparkModelServingAdapterSnapshot snapshot;
+	memset(&snapshot,0,sizeof(snapshot));
+	if ( runtime->adapter_state == 0 || runtime->adapter_library.adapter_interface.snapshot == 0 ||
+		runtime->adapter_library.adapter_interface.snapshot(runtime->adapter_state,&snapshot) != SPARK_STATUS_OK ||
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) == 0u )
+		return(SPARK_STATUS_OK);
+	fprintf(stderr,"model_residentd lane_fatal rank=%u stage=%u: the adapter reports that this lane cannot serve again, so the rank exits for a restart instead of refusing every request\n",
+		runtime->rank_plan.rank_index,runtime->rank_plan.stage_index);
+	atomic_store(&runtime->failed_status,SPARK_STATUS_INTERNAL_ERROR);
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+}
+
 static SparkStatus SparkModelResidentdFinalizeFailedRoute(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route)
 {
 	SparkStatus status;
@@ -2990,6 +3004,8 @@ static SparkStatus SparkModelResidentdFinalizeFailedRoute(SparkModelResidentdRun
 	}
 	status = SparkModelResidentdCloseFailedRouteLocked(runtime,route,status);
 	pthread_mutex_unlock(&runtime->mutex);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentdCheckLaneFatal(runtime);
 	SPARK_RETURN(status);
 }
 
