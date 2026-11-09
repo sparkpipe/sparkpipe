@@ -383,36 +383,71 @@ SparkStatus SparkDeviceAllocate(SparkDeviceBuffer *buffer, SparkDeviceSpace spac
 	return(status);
 }
 
-SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t bytes, uint32_t access, const char *owner)
+static SparkStatus DeviceAttach(SparkDeviceBuffer *buffer, SparkDeviceAllocation *allocation, const char *operation, const char *owner,
+	SparkStatus (*attach)(SparkDeviceAllocation *allocation, void *host), void *host)
 {
-	SparkDeviceAllocation *allocation = 0;
 	SparkStatus status;
-	if ( buffer == 0 || host == 0 || bytes == 0u ||
-		(access & (SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE)) == 0u )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"register",owner,0,"needs host memory, a size and device access"));
 	memset(buffer,0,sizeof(*buffer));
-	pthread_mutex_lock(&device_mutex);
-	status = DeviceReady("register",owner);
-	if ( status != SPARK_STATUS_OK )
-	{
-		pthread_mutex_unlock(&device_mutex);
-		return(status);
-	}
-	allocation = DeviceNewAllocation(SPARK_DEVICE_SPACE_HOST_PINNED,bytes,
-		access | SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE,owner);
 	if ( allocation == 0 )
-	{
-		pthread_mutex_unlock(&device_mutex);
-		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"register",owner,0,"out of host memory for the allocation record"));
-	}
-	allocation->registered = 1u;
-	status = SparkDeviceBackendRegister(allocation,host);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,operation,owner,0,"out of host memory for the allocation record"));
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady(operation,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = attach(allocation,host);
 	if ( status != SPARK_STATUS_OK )
 		free(allocation);
 	else
-		status = DeviceAdmit(buffer,allocation,"register");
+		status = DeviceAdmit(buffer,allocation,operation);
 	pthread_mutex_unlock(&device_mutex);
 	return(status);
+}
+
+static uint32_t DeviceOverlaps(SparkDeviceAddress device, uint64_t bytes)
+{
+	const uint32_t position = DeviceIndexFind(device);
+	const SparkDeviceAllocation *before = position != 0u ? device_slots[device_index[position - 1u]].allocation : 0;
+	const SparkDeviceAllocation *after = position < device_index_count ? device_slots[device_index[position]].allocation : 0;
+	return((before != 0 && before->device + before->bytes > device) || (after != 0 && after->device < device + bytes) ? 1u : 0u);
+}
+
+static SparkStatus DeviceAdoptAttach(SparkDeviceAllocation *allocation, void *host)
+{
+	(void)host;
+	if ( allocation->device != 0u && DeviceOverlaps(allocation->device,allocation->bytes) != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"adopt",allocation->owner,0,"the range overlaps a buffer the device already holds"));
+	return(SparkDeviceBackendAdopt(allocation));
+}
+
+SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t bytes, uint32_t access, const char *owner)
+{
+	SparkDeviceAllocation *allocation;
+	if ( buffer == 0 || host == 0 || bytes == 0u ||
+		(access & (SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE)) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"register",owner,0,"needs host memory, a size and device access"));
+	allocation = DeviceNewAllocation(SPARK_DEVICE_SPACE_HOST_PINNED,bytes,
+		access | SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE,owner);
+	if ( allocation != 0 )
+		allocation->registered = 1u;
+	return(DeviceAttach(buffer,allocation,"register",owner,SparkDeviceBackendRegister,host));
+}
+
+SparkStatus SparkDeviceAdopt(SparkDeviceBuffer *buffer, SparkDeviceAddress device, void *host, uint64_t bytes, SparkDeviceSpace space,
+	const char *owner)
+{
+	SparkDeviceAllocation *allocation;
+	const uint32_t access = DeviceSpaceAccess(space);
+	if ( buffer == 0 || bytes == 0u || space < SPARK_DEVICE_SPACE_DEVICE_PRIVATE || space > SPARK_DEVICE_SPACE_HOST_PINNED ||
+		((access & SPARK_DEVICE_ACCESS_DEVICE_READ) != 0u && device == 0u) || ((access & SPARK_DEVICE_ACCESS_HOST_READ) != 0u && host == 0) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"adopt",owner,0,
+			"needs a size, a device, coherent or pinned space, and the addresses that space reaches"));
+	allocation = DeviceNewAllocation(space,bytes,access,owner);
+	if ( allocation != 0 )
+	{
+		allocation->device = device;
+		allocation->host = host;
+		allocation->registered = 2u;
+	}
+	return(DeviceAttach(buffer,allocation,"adopt",owner,DeviceAdoptAttach,host));
 }
 
 SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, const char *owner)
@@ -662,7 +697,7 @@ SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destinatio
 	return(status);
 }
 
-static SparkStatus DeviceCreateQueueLocked(SparkDeviceQueue **out, const char *owner)
+static SparkStatus DeviceCreateQueueLocked(SparkDeviceQueue **out, const char *owner, void *native)
 {
 	SparkDeviceQueue *queue = (SparkDeviceQueue *)calloc(1u,sizeof(*queue));
 	SparkStatus status;
@@ -670,7 +705,7 @@ static SparkStatus DeviceCreateQueueLocked(SparkDeviceQueue **out, const char *o
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_create",owner,0,"out of host memory for the queue"));
 	queue->id = device_next_queue_id++;
 	DeviceCopyText(queue->owner,sizeof(queue->owner),owner);
-	status = SparkDeviceBackendQueueCreate(queue);
+	status = native != 0 ? SparkDeviceBackendQueueAdopt(queue,native) : SparkDeviceBackendQueueCreate(queue);
 	if ( status != SPARK_STATUS_OK )
 	{
 		free(queue);
@@ -702,7 +737,7 @@ SparkStatus SparkDeviceCopySync(SparkDeviceRange destination, SparkDeviceRange s
 	SparkDeviceQueue *queue;
 	pthread_mutex_lock(&device_mutex);
 	if ( device_initialized != 0u && device_sync_queue == 0 )
-		status = DeviceCreateQueueLocked(&device_sync_queue,"synchronous copy");
+		status = DeviceCreateQueueLocked(&device_sync_queue,"synchronous copy",0);
 	queue = device_sync_queue;
 	pthread_mutex_unlock(&device_mutex);
 	if ( status != SPARK_STATUS_OK )
@@ -713,7 +748,7 @@ SparkStatus SparkDeviceCopySync(SparkDeviceRange destination, SparkDeviceRange s
 	return(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER));
 }
 
-SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner)
+static SparkStatus DeviceQueueOpen(SparkDeviceQueue **queue, const char *owner, void *native)
 {
 	SparkStatus status;
 	if ( queue == 0 )
@@ -722,9 +757,21 @@ SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner)
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("queue_create",owner);
 	if ( status == SPARK_STATUS_OK )
-		status = DeviceCreateQueueLocked(queue,owner);
+		status = DeviceCreateQueueLocked(queue,owner,native);
 	pthread_mutex_unlock(&device_mutex);
 	return(status);
+}
+
+SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner)
+{
+	return(DeviceQueueOpen(queue,owner,0));
+}
+
+SparkStatus SparkDeviceQueueAdopt(SparkDeviceQueue **queue, void *native, const char *owner)
+{
+	if ( native == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"needs the backend's own queue to adopt"));
+	return(DeviceQueueOpen(queue,owner,native));
 }
 
 SparkStatus SparkDeviceQueueWait(SparkDeviceQueue *queue, uint64_t timeout_ns)
