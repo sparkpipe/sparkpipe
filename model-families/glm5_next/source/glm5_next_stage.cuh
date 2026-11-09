@@ -304,6 +304,8 @@ static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *act
 	status = Glm5NextSkinny(b, weight, activation, output, (float *)0, rows, input_dimension, output_dimension, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE || b->row_invariant != 0u )
 		return status;
+	if ( rows <= LM_SKINNY_ROWS_WIDE )
+		LmSlowPath("glm5 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
@@ -724,6 +726,8 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	}
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 	{
+		if ( rows <= LM_SKINNY_ROWS_WIDE )
+			LmSlowPath("glm5 kda: the skinny pair refused a small wave", rows, G5N_HIDDEN, fused);
 		status = Glm5NextLinear(b, b->normed_bf16, w->kda_qkv_beta, b->fused_qkvb_bf16, rows, G5N_HIDDEN, fused, sms, stream);
 		if ( status == LM_LAUNCH_OK )
 			status = Glm5NextLinear(b, b->normed_bf16, w->kda_decay_gate_down, b->fused_decay_gate_bf16, rows, G5N_HIDDEN, 2u * G5N_KDA_LOW_RANK, sms, stream);
@@ -819,6 +823,8 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 		status = Glm5NextSkinnyMulti(b, targets, 4u, b->normed_bf16, rows, G5N_HIDDEN, stream);
 	}
 	projected = status == LM_LAUNCH_OK ? 1u : 0u;
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u && rows <= LM_SKINNY_ROWS_WIDE )
+		LmSlowPath("glm5 mla: the skinny group refused a small wave", rows, G5N_HIDDEN, G5N_QA);
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = Glm5NextLinear(b, b->normed_bf16, w->q_a, b->q_compressed_bf16, rows, G5N_HIDDEN, G5N_QA, sms, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -961,6 +967,8 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	gemm.source_row_count = rows;
 	gemm.output_bf16 = b->gate_up_bf16;
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+		LmSlowPath("glm5 experts: the skinny kernels refused w1", packed_rows, G5N_HIDDEN, b->expert_w1_rows);
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = LmGemmWeightOnlyIndirectLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, b->expert_w1_weight,
 			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -985,6 +993,8 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	gemm.group_row_offset = b->group_row_offset;
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->expert_out_bf16;
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+		LmSlowPath("glm5 experts: the skinny kernels refused w2", packed_rows, b->expert_intermediate, G5N_HIDDEN);
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = LmGemmWeightOnlyLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->intermediate_bf16, b->expert_w2_weight,
 			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, b->expert_intermediate, G5N_HIDDEN, sms, true, stream);

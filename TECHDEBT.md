@@ -1236,14 +1236,6 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `tools/qualification_bundle.py`: merged commit, release generation, package
   and driver hashes, all-rank identities, token stream, accuracy, performance,
   route counters and drained queue state. No release has one yet.
-- The stage runner runs a row count eagerly when its graph capture fails
-  (`STAGE-GRAPH-CAPTURE-FAILED` in `inference/runner/stage_runner.cu`) but its
-  snapshot never sets `SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH`, so `/health`
-  (`node/model_api.c`: 503 with `degraded_rank` and `"degraded_path":"eager"`)
-  never names the rank and `tools/compsec17.py` gives a verdict on a degraded
-  run. Set the flag in the runner snapshot, then force a graph capture failure
-  on a Spark and see the rank named in `/health` and the qualification bundle
-  refused.
 - Rank loss is reported but not fleet-proven: `/health` answers 503
   `degraded` with `connected_ranks` and `missing_rank` while a rank is gone or
   a failure is latched, a held request retries only within the engine's

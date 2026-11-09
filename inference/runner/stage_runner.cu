@@ -332,7 +332,6 @@ typedef struct SparkStageRunnerState
 	float *distribution_gathered;
 	cudaGraphExec_t graph_exec[STAGE_RUNNER_GRAPH_SLOTS];
 	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_SLOTS];
-	uint8_t graph_refused[STAGE_RUNNER_GRAPH_SLOTS];
 	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_SLOTS];
 	uint64_t capture_ns;
 	SparkStageRunnerTapPlan tap_plan;
@@ -2060,7 +2059,7 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 	return (state->resident != 0u || state->geometry.experts == 0u) && state->device_collective_created != 0 &&
 		state->device_collective_deferred != 0u && runner->owns_embedding != 0u &&
 		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
-		rows <= STAGE_RUNNER_GRAPH_ROWS && state->graph_refused[StageRunnerGraphSlot(key, rows, StageRunnerStepSampled(state))] == 0u ? 1u : 0u;
+		rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
 }
 
 static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
@@ -2096,7 +2095,6 @@ static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 		if ( state->graph_exec[index] != 0 )
 			(void)cudaGraphExecDestroy(state->graph_exec[index]);
 		state->graph_exec[index] = 0;
-		state->graph_refused[index] = 0u;
 	}
 }
 
@@ -2133,7 +2131,6 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 {
 	const uint64_t started = StageRunnerNowNs();
 	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state));
-	const uint32_t copy_failed = state->copy_failed, tp_collective_failed = state->tp_collective_failed;
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
@@ -2163,18 +2160,11 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		(void)cudaGraphDestroy(graph);
 	if ( status == SPARK_STATUS_OK && error == cudaSuccess && exec != 0 )
 		StageRunnerMemoryMark(state, "graph", rows);
-	if ( status != SPARK_STATUS_OK || error != cudaSuccess || exec == 0 )
+	if ( status != SPARK_STATUS_OK || error != cudaSuccess || exec == 0 || prefetch->dropped != 0u )
 	{
-		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED key=%u rows=%u status=%d cuda=%s: this row count runs eager\n",
-			in->graph_key, rows, (int)status, cudaGetErrorString(error));
-		if ( exec != 0 )
-			(void)cudaGraphExecDestroy(exec);
-		(void)cudaGetLastError();
-		state->graph_refused[slot] = 1u;
-		state->copy_failed = copy_failed;
-		state->tp_collective_failed = tp_collective_failed;
-		state->capture_ns += StageRunnerNowNs() - started;
-		return;
+		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED key=%u rows=%u status=%d cuda=%s prefetch_dropped=%u: fatal, a decode row count has no complete graph\n",
+			in->graph_key, rows, (int)status, cudaGetErrorString(error), prefetch != 0 ? prefetch->dropped : 0u);
+		abort();
 	}
 	state->graph_exec[slot] = exec;
 	StageRunnerGraphIdentity(in, &state->graph_input[slot]);
@@ -2304,6 +2294,12 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 			StageRunnerGraphCapture(state, runner, in, stream);
 		if ( state->graph_exec[slot] != 0 )
 			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
+	}
+	if ( in->graph_key != 0u && state->resident == 0u && state->geometry.experts != 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: fatal: decode step key=%u rows=%u before every expert group is resident; it would run eager at about 6x the cost, so warm the pack before serving\n",
+			in->graph_key, rows);
+		abort();
 	}
 	if ( in->graph_key > 1u )
 	{

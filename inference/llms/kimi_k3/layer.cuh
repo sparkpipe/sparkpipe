@@ -295,6 +295,7 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		int32_t status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,0u,stream);
 		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
 			return(status);
+		LmSlowPath("k3 projection: the skinny kernel refused a small wave",rows,input_dimension,output_dimension);
 	}
 	if constexpr ( LmStreamWeight<Format>::kSupported )
 		if ( accumulate == 0 )
@@ -302,6 +303,7 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 			int32_t status = LmStreamGemmDense<Format>(weight,LmScaleTensorNone(),source,destination,(float *)0,rows,input_dimension,output_dimension,0u,0u,multiprocessors,stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return(status);
+			LmSlowPath("k3 projection: the stream GEMM refused",rows,input_dimension,output_dimension);
 		}
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
