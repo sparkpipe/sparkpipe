@@ -34,8 +34,6 @@ SPARKPIPE_RUNTIME_SOURCES := \
     runtime/stagepack_format.c \
     runtime/named_pack.c \
     runtime/spark_expert_working_set.c \
-    runtime/runtime_completion.c \
-    runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \
 	runtime/model_resident_deployment.c \
@@ -52,7 +50,6 @@ SPARKPIPE_RUNTIME_SOURCES := \
 SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
-    ring/transport/memlink.c \
     ring/transport/tp_device_collective.c
 
 SPARKPIPE_CACHE_SOURCES := \
@@ -61,10 +58,7 @@ SPARKPIPE_CACHE_SOURCES := \
     cache/kv_page_store.c \
     cache/kv_snapshot.c \
     cache/kv_model_table.c \
-    cache/prefix_cache.c \
-    cache/store/kv_store.c \
-    cache/store/stage_kv_client.c \
-    cache/nvme_tier.c
+    cache/prefix_cache.c
 
 SPARKPIPE_MODEL_COMMON_SOURCES := \
     $(SPARKPIPE_WEIGHTD_SOURCES) \
@@ -75,9 +69,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     runtime/stage_module_common.c \
     runtime/stage_kv_binding.c \
     runtime/kv_device_copy.c \
-    runtime/serving_adapter_template.c \
-    runtime/memory_buffer.c \
-    runtime/work_transaction.c
+    runtime/memory_buffer.c
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c

@@ -510,16 +510,6 @@ def main() -> int:
         "resident does not enforce active and persistent KV slot ownership",
     )
 
-    template_spine = (
-        ROOT / "runtime/serving_adapter_template.c"
-    ).read_text(encoding="utf-8")
-    require(
-        "create_request.kv_logical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_logical_page_capacity"
-        in template_spine
-        and "create_request.kv_physical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_physical_page_capacity"
-        in template_spine,
-        "the serving template does not pass neutral KV page budgets to the driver",
-    )
     deployment_header = (
         ROOT / "include/sparkpipe/spark_model_resident_deployment.h"
     ).read_text(encoding="utf-8")

@@ -78,7 +78,6 @@ VARIABLE_REFERENCE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
 PENDING = {
     "include/sparkpipe/family/glm/spark_glm_head_maxloc.cuh": {"placement": 1},
     "include/sparkpipe/family/module/spark_module_combine.h": {"handle": 4, "token": 8},
-    "include/sparkpipe/spark_graph_reloc.h": {"handle": 1},
     "include/sparkpipe/spark_hidden_transport.h": {"handle": 3},
     "include/sparkpipe/spark_kv_device_copy.h": {"handle": 5},
     "include/sparkpipe/spark_kv_shard.h": {"token": 3},
@@ -115,7 +114,6 @@ PENDING = {
     "runtime/kv_device_copy.c": {"handle": 1, "header": 1, "token": 50},
     "runtime/launch.h": {"device-include": 1, "token": 23},
     "runtime/memory_buffer.c": {"handle": 2, "header": 1, "token": 23},
-    "runtime/spark_graph_reloc_cuda.c": {"handle": 1, "header": 2, "token": 88},
     "runtime/spark_weightd.c": {"header": 2, "token": 172},
     "runtime/spark_weightd_attach.c": {"header": 2, "token": 29},
     "runtime/spark_weightd_kv_pool.c": {"header": 2, "token": 44},

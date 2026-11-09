@@ -130,11 +130,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`ApplyTopology` copies the degree and wait mode, `ProbeMemoryMode`,
   `CreditBindingRouteCount`, `DumpOperations`); the `device_collective`
   stage-config members that feed them (`StageServingLoadDeviceCollective`,
-  `inference/runner/stage_serving_adapter.c`); and the `tp_collective` parser,
-  which no production code calls
-  (`SparkServingAdapterTemplateLoadTpCollective`,
-  `runtime/serving_adapter_template.c`). Remove them together with a fleet
-  stage-config migration. The collective never reads the relay and TP4 combine
+  `inference/runner/stage_serving_adapter.c`). Remove them together with a
+  fleet stage-config migration; the dead `tp_collective` parser is gone. The collective never reads the relay and TP4 combine
   callback fields, though the stage runner still sets the TP4 one
   (`StageRunnerCombineTp4Bf16`, `inference/runner/stage_runner.cu`).
 - Left out on purpose (2026-10-02): the TP all-reduce does not use the
@@ -194,14 +191,10 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Production status). Qualify GPU cancellation, drain and event-driven mesh
   activity on that path too, so that rearming a wait cannot cancel unrelated
   work on the rank.
-- NCCL leftovers after `b31761e`, which deleted the NCCL backend:
-  `SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL`
-  (`include/sparkpipe/spark_tp_device_collective.h`), the `nccl` parsers in
-  `inference/runner/stage_serving_adapter.c` and
-  `runtime/serving_adapter_template.c`, the `nccl` branch of
-  `tools/dsv41_flash_gen_deployment.py`, `tools/qwen38_tp4_nccl_bench.c`, and
-  the tests that feed them `nccl` configs (`tests/test_serving_tp_config.c`,
-  `tests/test_tp_allreduce_fuzz.c`).
+- NCCL leftovers after `b31761e`, which deleted the NCCL backend: the `nccl`
+  branch of `tools/dsv41_flash_gen_deployment.py`, `tools/qwen38_tp4_nccl_bench.c`,
+  and the `nccl` configs in `tests/test_tp_allreduce_fuzz.c`. The enum value
+  and the stage-config parser branch are gone.
 - Awaiting fleet proof (lane `mesh/contracts`): attach now fails with
   `MESH-CAPABILITY-MISSING` when the local weightd lacks a route the regimes
   use, and the routes are fixed at attach, so no later read of the wait cell
@@ -478,15 +471,10 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   uncompressed spine. An unfused decode adds a write and read of each layer's
   BF16 weights per step, which can cost more than the bytes saved on
   memory-bound decode. If the gate fails, try decoding inside the GEMV.
-- Relocatable expert graphs are built but not wired.
-  `runtime/spark_graph_reloc.c` and `runtime/spark_graph_reloc_cuda.c`
-  register regions, walk a captured graph, validate two captures against each
-  other and patch an instantiated graph's pointer arguments in place
-  ([`docs/RELOCATABLE_GRAPHS.md`](docs/RELOCATABLE_GRAPHS.md)), but no driver
-  calls them. The common runner (`StageRunnerGraphCapture` in
+- No runner graph relocates. The common runner (`StageRunnerGraphCapture` in
   `inference/runner/stage_runner.cu`) captures its graphs again in every
   engine, nothing stores a captured graph for reuse, and the captured pointers
-  must never move.
+  must never move; the unwired relocation code was deleted.
 - Working-set graphs. Because no runner graph relocates, the common runner
   captures decode graphs only after weightd reports every expert group present
   in a fixed pool (`StageRunnerCheckResident`, `STAGE-RESIDENT`,
@@ -664,11 +652,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
   reads the spill copy. Still left: the spill store is an `O_TMPFILE` file, so
   pages of running sequences cannot be reused after a restart.
-  `cache/nvme_tier.c` remains only for the unwired topology switch
-  (`scheduler/topology_switch.c`). The external provider client
-  (`cache/store/kv_store.c`, `cache/store/stage_kv_client.c`) is still built
-  into the common library although no driver calls it. Close it by making the
-  spill store write the snapshot format and deleting the provider client,
+  The NVMe tier, the topology switch and the external provider client are
+  deleted. Close the rest by making the spill store write the snapshot format,
   proven on the fleet by a spill, a residentd restart and a restore that hits
   through the snapshot store alone.
 - Oversubscription is fleet-unproven. The engine admits lanes up to the

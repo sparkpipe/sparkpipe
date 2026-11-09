@@ -270,9 +270,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	state->device_topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	state->device_config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	token = SparkJsonFindObjectMember(doc, dev, "backend");
-	if ( token >= 0 && SparkJsonStringEquals(doc, token, "nccl") )
-		state->device_config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
-	else if ( token >= 0 && SparkJsonStringEquals(doc, token, "hidden_transport") )
+	if ( token >= 0 && SparkJsonStringEquals(doc, token, "hidden_transport") )
 		state->device_config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	else
 		return SPARK_STATUS_SCHEMA_ERROR;
