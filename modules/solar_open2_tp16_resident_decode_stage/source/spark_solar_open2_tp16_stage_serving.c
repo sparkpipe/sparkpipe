@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
-#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef SOLAR_OPEN2_CONTRACT_SHA256
@@ -13,9 +12,7 @@
 #define SPARK_SOLAR_OPEN2_TP16_MODEL_ID "upstage/Solar-Open2-250B"
 #define SPARK_SOLAR_OPEN2_TP16_PROGRAM "solar_open2"
 #define SPARK_SOLAR_OPEN2_TP16_MAX_ROWS 2048u
-#define SPARK_SOLAR_OPEN2_TP16_CHAIN_TOKENS 16u
 #define SPARK_SOLAR_OPEN2_TP16_CHECKPOINT_TOKENS 16384u
-#define Q SPARK_SOLAR_OPEN2_TP16_STAGE_LAYERS
 
 static void SolarOpen2ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -45,55 +42,25 @@ static uint32_t SolarOpen2ServingCollectiveSequences(uint32_t rows, uint32_t tp_
 	return (uint32_t)(gathered > rows ? gathered : rows) + 1u;
 }
 
-static const SparkModelServingAdapterDescriptor SolarOpen2ServingDescriptor =
-{
-	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_SOLAR_OPEN2_TP16_ADAPTER_ID,
-		SPARK_SOLAR_OPEN2_TP16_MODEL_ID,
-		SPARK_SOLAR_OPEN2_TP16_ADAPTER_ID,
-		SPARK_SOLAR_OPEN2_TP16_PROGRAM,
-		SOLAR_OPEN2_CONTRACT_SHA256),
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE,
-	.layer_count = SPARK_SOLAR_OPEN2_TP16_STAGE_LAYERS,
-	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = SPARK_SOLAR_OPEN2_TP16_STAGE_HIDDEN,
-	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = 16u,
-	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = SPARK_SOLAR_OPEN2_TP16_MAX_ROWS,
-	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_SOLAR_OPEN2_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
-	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
-	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS,
-	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = SPARK_SOLAR_OPEN2_TP16_CHECKPOINT_TOKENS,
-	.max_verify_row_count = SPARK_SOLAR_OPEN2_TP16_VERIFY_ROWS,
-};
-
-#undef Q
-
 static const SparkStageServingModel SolarOpen2StageServing =
 {
-	.descriptor = &SolarOpen2ServingDescriptor,
-	.runner_model = SparkSolarOpen2StageModel,
+	.adapter_id = SPARK_SOLAR_OPEN2_TP16_ADAPTER_ID,
+	.model_id = SPARK_SOLAR_OPEN2_TP16_MODEL_ID,
+	.model_revision = SPARK_SOLAR_OPEN2_TP16_ADAPTER_ID,
+	.program = SPARK_SOLAR_OPEN2_TP16_PROGRAM,
+	.contract_sha256 = SOLAR_OPEN2_CONTRACT_SHA256,
 	.module_tag = "solar_open2_stage",
+	.runner_model = SparkSolarOpen2StageModel,
 	.tp_degree = SPARK_SOLAR_OPEN2_TP16_STAGE_TP_DEGREE,
-	.program_id = 1u,
+	.layer_count = SPARK_SOLAR_OPEN2_TP16_STAGE_LAYERS,
+	.hidden = SPARK_SOLAR_OPEN2_TP16_STAGE_HIDDEN,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.max_rows = SPARK_SOLAR_OPEN2_TP16_MAX_ROWS,
+	.verify_rows = SPARK_SOLAR_OPEN2_TP16_VERIFY_ROWS,
+	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
+	.cache_block_token_count = SPARK_SOLAR_OPEN2_TP16_STAGE_PAGE_SLOTS,
+	.cache_checkpoint_token_count = SPARK_SOLAR_OPEN2_TP16_CHECKPOINT_TOKENS,
 	.kv_layout = SolarOpen2ServingKvLayout,
 	.collective_sequences = SolarOpen2ServingCollectiveSequences,
 };

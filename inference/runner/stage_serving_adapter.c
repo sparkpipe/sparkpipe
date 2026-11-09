@@ -40,6 +40,7 @@
 #define STAGE_SERVING_TAP_SEND_TIMEOUT_MS 200
 #define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
 #define STAGE_SERVING_VERIFY_BUCKETS 4u
+#define STAGE_SERVING_PROGRAM_ID 1u
 
 typedef struct SparkStageServingState
 {
@@ -122,6 +123,7 @@ typedef struct SparkStageServingState
 } SparkStageServingState;
 
 static const SparkStageServingModel *StageServingBoundModel;
+static SparkModelServingAdapterDescriptor StageServingDescriptor;
 
 static uint32_t StageServingJsonU32(SparkJsonDocument *doc, int32_t root, const char *name, uint32_t fallback)
 {
@@ -171,9 +173,6 @@ static SparkStatus StageServingRunnerWeights(SparkStageServingState *state)
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object, const char *name, char **out)
-{
-	int32_t token = SparkJsonFindObjectMember(doc, object, name);
 static SparkStatus StageServingKnownMembers(const SparkStageServingState *state, SparkJsonDocument *doc, int32_t object, const char *where,
 	const char *const *names, uint32_t count)
 {
@@ -189,6 +188,9 @@ static SparkStatus StageServingKnownMembers(const SparkStageServingState *state,
 	return SPARK_STATUS_SCHEMA_ERROR;
 }
 
+static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object, const char *name, char **out)
+{
+	int32_t token = SparkJsonFindObjectMember(doc, object, name);
 	if ( token < 0 )
 		return SPARK_STATUS_OK;
 	return SparkJsonCopyString(doc, token, out) == SPARK_STATUS_OK ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
@@ -196,14 +198,14 @@ static SparkStatus StageServingKnownMembers(const SparkStageServingState *state,
 
 static SparkStatus StageServingParseStreamed(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
 {
-	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
-	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
-		StageServingCopyMember(doc, object, "partner_pack", &state->streamed_partner_pack) != SPARK_STATUS_OK ||
 	static const char *const members[] = { "partner_pack", "fabric_device", "pair_device", "node_rows", "gid_index", "pair_gid_index",
 		"traffic_class", "dense_buffers", "expert_slots" };
+	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
+	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
+		StageServingKnownMembers(state, doc, object, "streamed_prefill", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK ||
+		StageServingCopyMember(doc, object, "partner_pack", &state->streamed_partner_pack) != SPARK_STATUS_OK ||
 		StageServingCopyMember(doc, object, "fabric_device", &state->streamed_fabric_device) != SPARK_STATUS_OK ||
 		StageServingCopyMember(doc, object, "pair_device", &state->streamed_pair_device) != SPARK_STATUS_OK )
-		StageServingKnownMembers(state, doc, object, "streamed_prefill", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK ||
 		return SPARK_STATUS_SCHEMA_ERROR;
 	streamed->node_rows = StageServingJsonU32(doc, object, "node_rows", 0u);
 	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
@@ -257,14 +259,14 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	uint32_t peer_count, index;
 	uint64_t identifier = 0u;
 	SparkStatus status;
-	memset(&state->device_config, 0, sizeof(state->device_config));
-	memset(&state->device_topology, 0, sizeof(state->device_topology));
-	state->device_topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	if ( !SparkJsonTokenIsType(doc, dev, SPARK_JSON_TOKEN_OBJECT) )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	status = StageServingKnownMembers(state, doc, dev, "device_collective", members, sizeof(members) / sizeof(members[0]));
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	memset(&state->device_config, 0, sizeof(state->device_config));
+	memset(&state->device_topology, 0, sizeof(state->device_topology));
+	state->device_topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
 	state->device_topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
 	state->device_config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
 	token = SparkJsonFindObjectMember(doc, dev, "backend");
@@ -312,6 +314,7 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 	{
 		fprintf(stderr, "%s adapter: device_collective.wait_mode names \"hardware\" or \"spin\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
+	}
 	status = StageServingLoadSessionPorts(state, doc, dev, peer_count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -331,17 +334,17 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJsonDocument *doc, int32_t taps)
 {
 	static const char tap_final[] = "final";
+	static const char *const members[] = { "entries", "file", "stream", "rank", "window", "file_max_bytes" };
 	char *entries = 0, *cursor, *end;
 	int32_t token = SparkJsonFindObjectMember(doc, taps, "entries");
 	const int32_t file = SparkJsonFindObjectMember(doc, taps, "file"), stream = SparkJsonFindObjectMember(doc, taps, "stream");
-	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK || (file >= 0) == (stream >= 0) ||
-	static const char *const members[] = { "entries", "file", "stream", "rank", "window", "file_max_bytes" };
-		(file >= 0 && (StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0)) ||
-		(stream >= 0 && (StageServingCopyMember(doc, taps, "stream", &state->tap_stream) != SPARK_STATUS_OK || state->tap_stream == 0)) )
-	{
 	if ( !SparkJsonTokenIsType(doc, taps, SPARK_JSON_TOKEN_OBJECT) ||
 		StageServingKnownMembers(state, doc, taps, "taps", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
+	if ( token < 0 || SparkJsonCopyString(doc, token, &entries) != SPARK_STATUS_OK || (file >= 0) == (stream >= 0) ||
+		(file >= 0 && (StageServingCopyMember(doc, taps, "file", &state->tap_file) != SPARK_STATUS_OK || state->tap_file == 0)) ||
+		(stream >= 0 && (StageServingCopyMember(doc, taps, "stream", &state->tap_stream) != SPARK_STATUS_OK || state->tap_stream == 0)) )
+	{
 		free(entries);
 		fprintf(stderr, "%s adapter: taps need \"entries\" and exactly one of \"file\" and \"stream\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
@@ -700,16 +703,16 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	SparkStageRunnerConfiguration *config = &state->runner_config;
 	uint32_t world_size, tp_rank = 0u;
 	int32_t token;
-	token = SparkJsonFindObjectMember(doc, root, "stage_pack_path");
-	if ( token < 0 || SparkJsonCopyString(doc, token, &state->pack_path) != SPARK_STATUS_OK )
-		return SPARK_STATUS_SCHEMA_ERROR;
-	if ( StageServingCopyMember(doc, root, "stray_working_set_path", &state->stray_working_set_path) != SPARK_STATUS_OK )
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(doc, root, SPARK_JSON_TOKEN_OBJECT) )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	status = StageServingKnownMembers(state, doc, root, "the stage config", members, sizeof(members) / sizeof(members[0]));
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	token = SparkJsonFindObjectMember(doc, root, "stage_pack_path");
+	if ( token < 0 || SparkJsonCopyString(doc, token, &state->pack_path) != SPARK_STATUS_OK )
+		return SPARK_STATUS_SCHEMA_ERROR;
+	if ( StageServingCopyMember(doc, root, "stray_working_set_path", &state->stray_working_set_path) != SPARK_STATUS_OK )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	token = SparkJsonFindObjectMember(doc, root, "state_budget_bytes");
 	if ( token < 0 || SparkJsonGetUInt64(doc, token, &config->state_budget_bytes) != SPARK_STATUS_OK ||
@@ -734,10 +737,6 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 	config->stage_index = configuration->stage_index / config->tp_degree;
 	config->stage_count = world_size / config->tp_degree;
 	config->tp_rank = configuration->stage_index % config->tp_degree;
-	config->max_active_sequence_count = StageServingJsonU32(doc, root, "max_sequences",
-		configuration->runtime_limits.max_active_sequence_count);
-	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
-	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
 	token = SparkJsonFindObjectMember(doc, root, "tp_rank");
 	if ( token < 0 || SparkJsonGetUInt32(doc, token, &tp_rank) != SPARK_STATUS_OK || tp_rank != config->tp_rank )
 	{
@@ -745,6 +744,10 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 			state->model->module_tag, config->tp_rank, configuration->stage_index, config->tp_degree);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
+	config->max_active_sequence_count = StageServingJsonU32(doc, root, "max_sequences",
+		configuration->runtime_limits.max_active_sequence_count);
+	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
+	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
 	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
 		configuration->runtime_limits.resident_sequence_capacity);
 	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 2u);
@@ -821,7 +824,7 @@ static SparkStatus StageServingLoadConfiguration(SparkStageServingState *state,
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	config->rank_pack_path = state->pack_path;
-	config->linear_weight_codec = state->model->descriptor->linear_weight_codec;
+	config->linear_weight_codec = StageServingDescriptor.linear_weight_codec;
 	config->stray_working_set_path = state->stray_working_set_path;
 	config->execution_stream = configuration->execution_stream;
 	config->multiprocessors = SPARK_STAGE_SERVING_MULTIPROCESSORS;
@@ -877,7 +880,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
 	const SparkStageServingModel *model = state->model;
-	const SparkModelServingAdapterDescriptor *descriptor = model->descriptor;
+	const SparkModelServingAdapterDescriptor *descriptor = &StageServingDescriptor;
 	SparkStageKvConfiguration kv;
 	SparkStageRunnerKv attach;
 	SparkStatus status;
@@ -952,7 +955,7 @@ static SparkServingCacheAdmission StageServingCacheContext(SparkStageServingStat
 {
 	SparkServingCacheAdmission cache;
 	memset(&cache, 0, sizeof(cache));
-	cache.program_id = state->model->program_id;
+	cache.program_id = STAGE_SERVING_PROGRAM_ID;
 	cache.lane_capacity = SPARK_STAGE_SERVING_MAX_LANES;
 	cache.lanes = lanes;
 	cache.driver = &StageServingDriver;
@@ -989,11 +992,11 @@ static void StageServingPublishCompletion(void *context, const SparkModelDriverC
 	state->publish_completed = 1u;
 }
 
-static void StageServingBuildFrame(const SparkStageServingState *state, const SparkModelServingSubmission *submission,
+static void StageServingBuildFrame(const SparkModelServingSubmission *submission,
 	SparkModelDriverCacheLane *lanes, uint32_t lane_count, void *stream, SparkModelDriverFrame *frame)
 {
 	memset(frame, 0, sizeof(*frame));
-	frame->program_id = state->model->program_id;
+	frame->program_id = STAGE_SERVING_PROGRAM_ID;
 	frame->request_id = submission->request_id;
 	frame->sequence_id = submission->sequence_id;
 	frame->sequence_position = submission->sequence_position;
@@ -1022,11 +1025,11 @@ static SparkStatus StageServingAdmitFrame(SparkStageServingState *state,
 	if ( status == SPARK_STATUS_OK && lane_count != submission->active_sequence_count )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	if ( status == SPARK_STATUS_OK )
-		status = SparkAdmissionRequestFromSubmission(state->model->program_id, submission,
+		status = SparkAdmissionRequestFromSubmission(STAGE_SERVING_PROGRAM_ID, submission,
 			state->cache_lanes, 0u, &request);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	StageServingBuildFrame(state, submission, state->cache_lanes, lane_count,
+	StageServingBuildFrame(submission, state->cache_lanes, lane_count,
 		state->runner_config.execution_stream, frame);
 	return SparkAdmissionEvaluateAndApply(&StageServingDriver, state, &request, frame, &decision);
 }
@@ -1051,15 +1054,15 @@ static SparkStatus StageServingAllocate(SparkStageServingState *state)
 		{ &state->order_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_tokens, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->completion_host, SPARK_MEMORY_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
 	};
 	SparkStatus status = SPARK_STATUS_OK;
 	for ( uint32_t index = 0u; status == SPARK_STATUS_OK && index < sizeof(plan) / sizeof(plan[0]); ++index )
-		{ &state->completion_host, SPARK_MEMORY_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
 		status = SparkMemoryBufferAllocate(plan[index].buffer, plan[index].space, plan[index].bytes);
+	state->completion_tokens = (uint32_t *)state->completion_host.pointer;
 	return status;
 }
 
-	state->completion_tokens = (uint32_t *)state->completion_host.pointer;
 static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfiguration *configuration, void **adapter_state)
 {
 	const SparkStageServingModel *model = StageServingBoundModel;
@@ -1078,23 +1081,23 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	if ( status != SPARK_STATUS_OK )
 		{ StageServingDestroy(state); return status; }
 	state->max_rows = state->runner_config.max_input_row_count;
-	if ( state->max_rows == 0u || state->max_rows > model->descriptor->max_input_row_count ||
+	if ( state->max_rows == 0u || state->max_rows > StageServingDescriptor.max_input_row_count ||
 		state->runner_config.max_active_sequence_count == 0u ||
-		state->runner_config.max_active_sequence_count > model->descriptor->max_active_sequence_count )
+		state->runner_config.max_active_sequence_count > StageServingDescriptor.max_active_sequence_count )
 		{ StageServingDestroy(state); SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
 	state->max_shared_rows = state->runner_config.max_shared_row_count;
 	if ( state->max_shared_rows == 0u || state->max_shared_rows > state->max_rows ||
 		state->max_shared_rows < state->runner_config.max_active_sequence_count ||
-		state->max_shared_rows < (model->descriptor->max_verify_row_count < state->max_rows ? model->descriptor->max_verify_row_count : state->max_rows) )
+		state->max_shared_rows < (StageServingDescriptor.max_verify_row_count < state->max_rows ? StageServingDescriptor.max_verify_row_count : state->max_rows) )
 	{
 		fprintf(stderr, "%s adapter: max_shared_rows %u must cover the sequences (%u) and verify rows (%u) and stay within max_rows %u\n",
 			model->module_tag, state->max_shared_rows, state->runner_config.max_active_sequence_count,
-			model->descriptor->max_verify_row_count, state->max_rows);
+			StageServingDescriptor.max_verify_row_count, state->max_rows);
 		StageServingDestroy(state);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	state->runner_config.head_row_capacity = state->runner_config.max_active_sequence_count > model->descriptor->max_verify_row_count ?
-		state->runner_config.max_active_sequence_count : model->descriptor->max_verify_row_count;
+	state->runner_config.head_row_capacity = state->runner_config.max_active_sequence_count > StageServingDescriptor.max_verify_row_count ?
+		state->runner_config.max_active_sequence_count : StageServingDescriptor.max_verify_row_count;
 	if ( state->runner_config.head_row_capacity > state->max_rows )
 		state->runner_config.head_row_capacity = state->max_rows;
 	state->runner_config.output_vocabulary = configuration->runtime_limits.output_vocabulary;
@@ -1368,7 +1371,7 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 	uint32_t rows, uint32_t active, uint32_t *steps_out)
 {
 	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
-	const uint32_t block = state->model->descriptor->cache_block_token_count;
+	const uint32_t block = StageServingDescriptor.cache_block_token_count;
 	uint32_t steps = submission->tokens_per_sequence > 1u ? submission->tokens_per_sequence : 1u, index;
 	if ( (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u )
 	{
@@ -1674,11 +1677,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	}
 	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, stream);
+	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
+		status = StageServingReadTokens(state, rows, steps, stream);
 	marks[3] = StageServingNowNs();
 	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
-		status = StageServingReadTokens(state, rows, steps, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = StageServingNowNs();
@@ -1789,7 +1792,7 @@ static SparkStatus StageServingSnapshot(void *adapter_state,
 	uint32_t block;
 	if ( state == 0 || snapshot == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	block = state->model->descriptor->cache_block_token_count;
+	block = StageServingDescriptor.cache_block_token_count;
 	memset(snapshot, 0, sizeof(*snapshot));
 	snapshot->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	snapshot->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES;
@@ -1854,13 +1857,61 @@ static SparkModelServingAdapterInterface StageServingInterface =
 
 static uint32_t StageServingModelValid(const SparkStageServingModel *model)
 {
-	const SparkModelServingAdapterDescriptor *descriptor = model != 0 ? model->descriptor : 0;
-	return descriptor != 0 && model->runner_model != 0 && model->module_tag != 0 && model->kv_layout != 0 &&
-		model->collective_sequences != 0 && model->tp_degree != 0u &&
-		descriptor->cache_block_token_count != 0u && descriptor->artifact_sha256 != 0 &&
-		descriptor->max_input_row_count != 0u && descriptor->max_input_row_count <= SPARK_STAGE_SERVING_MAX_ROWS &&
-		descriptor->max_active_sequence_count != 0u &&
-		descriptor->max_active_sequence_count <= SPARK_STAGE_SERVING_MAX_LANES;
+	return model != 0 && model->adapter_id != 0 && model->model_id != 0 && model->model_revision != 0 && model->program != 0 &&
+		model->contract_sha256 != 0 && model->module_tag != 0 && model->runner_model != 0 && model->kv_layout != 0 &&
+		model->collective_sequences != 0 && model->tp_degree != 0u && model->tp_degree <= SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT &&
+		model->layer_count != 0u && model->hidden != 0u && model->cache_block_token_count != 0u &&
+		model->max_rows != 0u && model->max_rows <= SPARK_STAGE_SERVING_MAX_ROWS && model->verify_rows <= model->max_rows &&
+		model->speculative_tokens < SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE;
+}
+
+static void StageServingDescribe(const SparkStageServingModel *model, SparkModelServingAdapterDescriptor *descriptor)
+{
+	uint32_t stage;
+	memset(descriptor, 0, sizeof(*descriptor));
+	descriptor->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	descriptor->descriptor_bytes = SPARK_MODEL_SERVING_ADAPTER_DESCRIPTOR_BYTES;
+	descriptor->adapter_id = model->adapter_id;
+	descriptor->model_id = model->model_id;
+	descriptor->model_revision = model->model_revision;
+	descriptor->driver_program_name = model->program;
+	descriptor->artifact_sha256 = model->contract_sha256;
+	descriptor->capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
+		(model->speculative_tokens != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION : 0u) |
+		(model->verify_rows != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY : 0u);
+	descriptor->stage_count = model->tp_degree;
+	descriptor->layer_count = model->layer_count;
+	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;
+	descriptor->boundary_element_count = model->hidden;
+	descriptor->boundary_element_bytes = 2u;
+	descriptor->linear_weight_codec = model->linear_weight_codec;
+	descriptor->expert_weight_codec = model->expert_weight_codec;
+	descriptor->kv_cache_codec = SPARK_WEIGHT_CODEC_BF16;
+	descriptor->max_inflight_submission_count = 16u;
+	descriptor->max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES;
+	descriptor->max_input_row_count = model->max_rows;
+	descriptor->max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES;
+	descriptor->max_output_token_count = SPARK_STAGE_SERVING_MAX_LANES * SPARK_STAGE_SERVING_CHAIN_TOKENS;
+	descriptor->max_speculative_token_count = model->speculative_tokens;
+	for ( stage = 0u; stage < model->tp_degree; ++stage )
+		descriptor->stage_layer_counts[stage] = model->layer_count;
+	descriptor->minimum_efficient_submission_row_count = 1u;
+	descriptor->cache_block_token_count = model->cache_block_token_count;
+	descriptor->parallel_group_size = 0u;
+	descriptor->cache_checkpoint_token_count = model->cache_checkpoint_token_count;
+	descriptor->max_verify_row_count = model->verify_rows;
+}
+
+const SparkModelServingAdapterDescriptor *SparkStageServingDescriptor(void)
+{
+	return StageServingBoundModel != 0 ? &StageServingDescriptor : 0;
 }
 
 const SparkModelServingAdapterInterface *SparkStageServingAdapterInterface(const SparkStageServingModel *model)
@@ -1868,6 +1919,7 @@ const SparkModelServingAdapterInterface *SparkStageServingAdapterInterface(const
 	if ( StageServingModelValid(model) == 0u || (StageServingBoundModel != 0 && StageServingBoundModel != model) )
 		return 0;
 	StageServingBoundModel = model;
-	StageServingInterface.descriptor = model->descriptor;
+	StageServingDescribe(model, &StageServingDescriptor);
+	StageServingInterface.descriptor = &StageServingDescriptor;
 	return &StageServingInterface;
 }

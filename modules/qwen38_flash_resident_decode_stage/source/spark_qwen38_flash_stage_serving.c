@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
-#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef QWEN38_FLASH_CONTRACT_SHA256
@@ -20,9 +19,7 @@
 #define SPARK_QWEN38_FLASH_TP16_MAX_ROWS 2048u
 #define SPARK_QWEN38_FLASH_TP16_LAYERS SPARK_QWEN38_FLASH_STAGE_LAYERS
 #define SPARK_QWEN38_FLASH_TP16_KV_LAYERS SPARK_QWEN38_FLASH_STAGE_KV_LAYERS
-#define SPARK_QWEN38_FLASH_TP16_CHAIN_TOKENS 16u
 #define SPARK_QWEN38_FLASH_TP16_CHECKPOINT_TOKENS 16384u
-#define Q SPARK_QWEN38_FLASH_TP16_LAYERS
 
 static void Qwen38FlashServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -58,55 +55,25 @@ static uint32_t Qwen38FlashServingCollectiveSequences(uint32_t rows, uint32_t tp
 	return (uint32_t)(gathered > rows ? gathered : rows) + 1u;
 }
 
-static const SparkModelServingAdapterDescriptor Qwen38FlashServingDescriptor =
-{
-	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_QWEN38_FLASH_TP16_ADAPTER_ID,
-		SPARK_QWEN38_FLASH_TP16_MODEL_ID,
-		SPARK_QWEN38_FLASH_TP16_ADAPTER_ID,
-		"qwen38_flash",
-		QWEN38_FLASH_CONTRACT_SHA256),
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = SPARK_QWEN38_FLASH_STAGE_TP_DEGREE,
-	.layer_count = SPARK_QWEN38_FLASH_TP16_LAYERS,
-	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = SPARK_QWEN38_FLASH_STAGE_HIDDEN,
-	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = QWEN38_FLASH_EXPERT_CODEC,
-	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = 16u,
-	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = SPARK_QWEN38_FLASH_TP16_MAX_ROWS,
-	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_QWEN38_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
-	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
-	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = SPARK_QWEN38_FLASH_STAGE_PAGE_SLOTS,
-	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = SPARK_QWEN38_FLASH_TP16_CHECKPOINT_TOKENS,
-	.max_verify_row_count = SPARK_QWEN38_FLASH_STAGE_VERIFY_ROWS,
-};
-
-#undef Q
-
 static const SparkStageServingModel Qwen38FlashStageServing =
 {
-	.descriptor = &Qwen38FlashServingDescriptor,
-	.runner_model = SparkQwen38FlashStageModel,
+	.adapter_id = SPARK_QWEN38_FLASH_TP16_ADAPTER_ID,
+	.model_id = SPARK_QWEN38_FLASH_TP16_MODEL_ID,
+	.model_revision = SPARK_QWEN38_FLASH_TP16_ADAPTER_ID,
+	.program = "qwen38_flash",
+	.contract_sha256 = QWEN38_FLASH_CONTRACT_SHA256,
 	.module_tag = QWEN38_FLASH_MODULE_TAG,
+	.runner_model = SparkQwen38FlashStageModel,
 	.tp_degree = SPARK_QWEN38_FLASH_STAGE_TP_DEGREE,
-	.program_id = 1u,
+	.layer_count = SPARK_QWEN38_FLASH_TP16_LAYERS,
+	.hidden = SPARK_QWEN38_FLASH_STAGE_HIDDEN,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.expert_weight_codec = QWEN38_FLASH_EXPERT_CODEC,
+	.max_rows = SPARK_QWEN38_FLASH_TP16_MAX_ROWS,
+	.verify_rows = SPARK_QWEN38_FLASH_STAGE_VERIFY_ROWS,
+	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
+	.cache_block_token_count = SPARK_QWEN38_FLASH_STAGE_PAGE_SLOTS,
+	.cache_checkpoint_token_count = SPARK_QWEN38_FLASH_TP16_CHECKPOINT_TOKENS,
 	.kv_layout = Qwen38FlashServingKvLayout,
 	.collective_sequences = Qwen38FlashServingCollectiveSequences,
 };

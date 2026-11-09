@@ -10,13 +10,13 @@ if [ -n "${K3_RECORD:-}" ]; then
   K3_TOPOLOGY=tp16
 fi
 : "${K3_LANE:?K3_LANE is the weightd mesh lane (1..15, never 0)}"
-: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_serving_adapter.so (TP4xPP4) or libk3_tp16_serving_adapter.so (TP16), libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
+: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 [ -z "${K3_EXPERT_POOL_BYTES:-}" ] || { echo "k3_lane: K3_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and K3_EXPERT_POOL_CAP_BYTES (the record's expert_pool_cap_bytes) is the optional explicit cap" >&2; exit 2; }
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
 : "${K3_STATE_BUDGET_BYTES:?K3_STATE_BUDGET_BYTES is the per-rank KDA state + windows + MLA KV + scratch budget the runner enforces}"
-K3_TOPOLOGY="${K3_TOPOLOGY:-tp4pp4}"
-case "$K3_TOPOLOGY" in tp4pp4|tp16) ;; *) echo "k3_lane: K3_TOPOLOGY $K3_TOPOLOGY is not tp4pp4 or tp16" >&2; exit 2 ;; esac
+K3_TOPOLOGY="${K3_TOPOLOGY:-tp16}"
+case "$K3_TOPOLOGY" in tp16) ;; *) echo "k3_lane: K3_TOPOLOGY $K3_TOPOLOGY is not tp16; the TP4xPP4 adapter is gone until the pipeline runtime exists" >&2; exit 2 ;; esac
 [ "$K3_LANE" -ge 1 ] && [ "$K3_LANE" -le 15 ] || { echo "k3_lane: lane $K3_LANE outside 1..15" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LANE_TOOL=k3_lane
@@ -27,25 +27,15 @@ CHECKOUT="$(cd "$HERE/.." && pwd)"
 HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
-ADAPTER_FILE=libk3_serving_adapter.so
-[ "$K3_TOPOLOGY" = tp16 ] && ADAPTER_FILE=libk3_tp16_serving_adapter.so
+ADAPTER_FILE=libk3_tp16_serving_adapter.so
 PACK_DIR=sparkdata/k3.mxfp4.$K3_TOPOLOGY/packs
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/k3-lanes/lane$K3_LANE/root"; }
 pack_of() {
-  if [ "$K3_TOPOLOGY" = tp16 ]; then
-    printf '/home/%s/%s/k3.stage0.rank%02d.pack\n' "$(host_of "$1")" "$PACK_DIR" "$1"
-  else
-    echo "/home/$(host_of "$1")/$PACK_DIR/k3.stage$(($1 / 4)).rank0$(($1 % 4)).pack"
-  fi
+  printf '/home/%s/%s/k3.stage0.rank%02d.pack\n' "$(host_of "$1")" "$PACK_DIR" "$1"
 }
 mesh_ranks_of() {
-  local stage=$(($1 / 4))
-  if [ "$K3_TOPOLOGY" = tp16 ]; then
-    echo 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
-  else
-    echo $((stage * 4)),$((stage * 4 + 1)),$((stage * 4 + 2)),$((stage * 4 + 3))
-  fi
+  echo 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
 }
 PIDS=()
 

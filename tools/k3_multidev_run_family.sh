@@ -147,12 +147,12 @@ else
   export PATH
   make -C "$CHECKOUT" -j1 \
     build/sparkpipe_model_residentd \
-    build/libk3_serving_adapter.so \
+    build/libk3_tp16_serving_adapter.so \
     build/libhidden_transport_spark_host_rdma_verbs.so \
     build/weightd_warm
   install -m 0755 "$CHECKOUT/build/sparkpipe_model_residentd" "$ROOT/bin/"
   install -m 0755 "$CHECKOUT/build/weightd_warm" "$ROOT/bin/"
-  install -m 0644 "$CHECKOUT/build/libk3_serving_adapter.so" "$ROOT/lib/"
+  install -m 0644 "$CHECKOUT/build/libk3_tp16_serving_adapter.so" "$ROOT/lib/"
   install -m 0644 \
     "$CHECKOUT/build/libhidden_transport_spark_host_rdma_verbs.so" \
     "$ROOT/lib/hidden_transport.so"
