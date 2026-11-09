@@ -504,7 +504,7 @@ void LmExpandedGatherPrefillKernel(
 			LmExpandedNamedBarrier(6u, 256u);
 		scores(0u, part);
 		LmExpandedNamedArrive(group == 0u ? 6u : 5u, 256u);
-		__syncwarp();
+		LmSharedReadsDone();
 		if (lane == 0u)
 			LmMbarrierArrive(&key_empty[0]);
 		trade(0u, part);
@@ -595,7 +595,7 @@ void LmExpandedGatherPrefillKernel(
 				LmMmaBf16(output[frag + 1u], weight_high, second);
 			}
 		}
-		__syncwarp();
+		LmSharedReadsDone();
 		if (lane == 0u)
 		{
 			LmMbarrierArrive(&value_empty[used % LM_EXPANDED_PREFILL_RING]);

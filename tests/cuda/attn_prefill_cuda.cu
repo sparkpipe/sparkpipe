@@ -70,6 +70,14 @@ static T *ProbeDevice(const std::vector<T> &host)
 	return device;
 }
 
+static double ProbeRoundBf16(double value)
+{
+	float narrow = (float)value;
+	uint32_t bits;
+	memcpy(&bits,&narrow,4u);
+	return ProbeFloat((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+}
+
 static double ProbeUlp(double value)
 {
 	int exponent;
@@ -85,7 +93,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 	const float scale = 1.0f / sqrtf((float)PROBE_WIDTH);
 	const uint32_t half = rows / 2u;
 	std::vector<uint32_t> table(pages),contexts(sequence_count,context),row_position(rows),sequences(rows,sequence),token_sequence((uint64_t)context * sequence_count),token_position((uint64_t)context * sequence_count);
-	std::vector<uint16_t> prefill(query_count * PROBE_LATENT),split(query_count * PROBE_LATENT),part((uint64_t)half * PROBE_HEADS * PROBE_LATENT);
+	std::vector<uint16_t> prefill(query_count * PROBE_LATENT),split(query_count * PROBE_LATENT),part((uint64_t)half * PROBE_HEADS * PROBE_LATENT),sixteen(query_count * PROBE_LATENT);
 	uint32_t *table_device,*contexts_device,*positions_device,*sequences_device,*token_sequence_device,*token_position_device;
 	uint16_t *values_device,*latent_device,*rope_device,*out_device;
 	uint8_t *cache_device;
@@ -142,6 +150,15 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 	PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
 	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(prefill.data(),out_device,prefill.size() * 2u,cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemset(out_device,0xff,query_count * PROBE_LATENT * 2u));
+	PROBE_CUDA((LmLatentAttentionPrefillLaunch<ProbeKv,PROBE_LATENT,PROBE_ROPE,16u>(latent_device,rope_device,view,sequences_device,positions_device,PROBE_HEADS,scale,out_device,rows,0,0u,0)));
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(sixteen.data(),out_device,sixteen.size() * 2u,cudaMemcpyDeviceToHost));
+	if ( memcmp(sixteen.data(),prefill.data(),prefill.size() * 2u) != 0 )
+	{
+		printf("FAIL %s: blocks of 16 queries give different bits than blocks of 32, though both see the same 32-key tiles\n",label);
+		probe_failures++;
+	}
 	PROBE_CUDA((LmLatentRopeHeadsSplitLaunch<ProbeKv,256u,PROBE_LATENT,PROBE_ROPE,true>(latent_device,rope_device,view,sequences_device,contexts_device,0,0u,PROBE_HEADS,scale,out_device,positions_device,rows,context,PROBE_THRESHOLD,split_device,partial_blocks,multiprocessors,0)));
 	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(split.data(),out_device,split.size() * 2u,cudaMemcpyDeviceToHost));
@@ -176,8 +193,8 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 		{
 			uint64_t q = (uint64_t)row * PROBE_HEADS + head;
 			uint32_t keys = row_position[row] + 1u;
-			std::vector<double> scores(keys),result(PROBE_LATENT,0.0);
-			double top = -1.0e300,total = 0.0;
+			std::vector<double> scores(keys),result(PROBE_LATENT,0.0),flash(PROBE_LATENT,0.0);
+			double top = -1.0e300,total = 0.0,running = -1.0e300,flash_total = 0.0;
 			for (key=0u; key<keys; key++)
 			{
 				uint64_t k_base = ((uint64_t)sequence * context + key) * PROBE_WIDTH;
@@ -196,10 +213,29 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 				for (element=0u; element<PROBE_LATENT; element++)
 					result[element] += weight * ProbeFloat(ProbeValue(((uint64_t)sequence * context + key) * PROBE_WIDTH + element));
 			}
+			for (uint32_t first=0u; first<keys; first+=LM_PREFILL_ATTN_TILE)
+			{
+				const uint32_t last = first + LM_PREFILL_ATTN_TILE < keys ? first + LM_PREFILL_ATTN_TILE : keys;
+				double peak = running;
+				for (key=first; key<last; key++)
+					peak = scores[key] > peak ? scores[key] : peak;
+				flash_total *= exp(running - peak);
+				for (element=0u; element<PROBE_LATENT; element++)
+					flash[element] *= exp(running - peak);
+				running = peak;
+				for (key=first; key<last; key++)
+				{
+					double weight = exp(scores[key] - running);
+					flash_total += weight;
+					weight = ProbeRoundBf16(weight);
+					for (element=0u; element<PROBE_LATENT; element++)
+						flash[element] += weight * ProbeFloat(ProbeValue(((uint64_t)sequence * context + key) * PROBE_WIDTH + element));
+				}
+			}
 			for (element=0u; element<PROBE_LATENT; element++)
 			{
 				double reference = result[element] / total;
-				double prefill_error = fabs(reference - ProbeFloat(prefill[q * PROBE_LATENT + element]));
+				double prefill_error = fabs(flash[element] / flash_total - ProbeFloat(prefill[q * PROBE_LATENT + element]));
 				double split_error = fabs(reference - ProbeFloat(split[q * PROBE_LATENT + element]));
 				worst_prefill = prefill_error > worst_prefill ? prefill_error : worst_prefill;
 				worst_split = split_error > worst_split ? split_error : worst_split;
@@ -209,7 +245,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 	}
 	if ( !(worst_prefill <= worst_split * 1.5 + 1.0e-6) || !(worst_prefill < 2.0e-3) )
 	{
-		printf("FAIL %s: prefill attention error %.2e exceeds the split kernel's %.2e\n",label,worst_prefill,worst_split);
+		printf("FAIL %s: prefill attention error %.2e from the flash form exceeds the split kernel's %.2e from exact attention\n",label,worst_prefill,worst_split);
 		probe_failures++;
 	}
 	{
@@ -289,7 +325,7 @@ static void ProbeCase(uint32_t rows,uint32_t prefix,uint32_t sequence,uint32_t t
 		cudaEventDestroy(begin);
 		cudaEventDestroy(end);
 	}
-	printf("%s %s: worst |out-f64| prefill %.2e (%.2f bf16 ulp) split %.2e, |prefill-split| %.2e%s",failed == probe_failures ? "PASS" : "FAIL",label,worst_prefill,worst_ulps,worst_split,between,half != 0u ? ", rows equal in a shifted shorter wave" : "");
+	printf("%s %s: worst |out-f64| prefill %.2e (%.2f bf16 ulp) split %.2e, |prefill-split| %.2e, 16 and 32 queries a block equal%s",failed == probe_failures ? "PASS" : "FAIL",label,worst_prefill,worst_ulps,worst_split,between,half != 0u ? ", rows equal in a shifted shorter wave" : "");
 	if ( timing != 0u )
 		printf(", us prefill %.1f split %.1f (%.1fx)",elapsed[0] * 1000.0f,elapsed[1] * 1000.0f,elapsed[1] / elapsed[0]);
 	printf("\n");
@@ -309,6 +345,6 @@ int main(int argc,char **argv)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches the f64 reference at least as closely as the split decode kernel, and a row's bits do not depend on the wave it runs in or on whether keys are read through pages or a per-position remap\n");
+	printf("PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches the f64 flash form (each 32-key tile's weights rounded to BF16 against the running maximum, the sum in full precision) at least as closely as the split decode kernel matches exact attention, and a row's bits do not depend on the wave it runs in, on whether a block holds 16 or 32 queries, or on whether keys are read through pages or a per-position remap\n");
 	return 0;
 }

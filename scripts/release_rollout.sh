@@ -2,6 +2,7 @@
 set -u
 KIT=$(cd "$(dirname "$0")" && pwd)
 . "$KIT/rollover_lib.sh"
+. "$KIT/../tools/lane_run_log.sh"
 RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
 RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
 activate() {
@@ -33,7 +34,7 @@ RD=$HUB_WORK/$R
 BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:?OLD_WD is the 16-hex weightd every node runs before this release}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
-MODELS="qwen3.8-max glm-5.3 kimi-k3 glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
+MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
 python3 -c "import json,sys; sys.exit(sorted(sys.argv[2].split()) != sorted(json.load(open(sys.argv[1]))['lanes']))" "$KIT/../deployment/lanes.json" "$MODELS" || { echo "MODELS differ from the records in deployment/lanes.json: refusing to run" >&2; exit 1; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
@@ -155,13 +156,15 @@ case "$step" in
     n=$(residentds); [ "$n" = 0 ] || { echo "residentds running: $n"; exit 1; }
     for id in $MODELS; do
       stamp "lane records $id"
+      released=$(fan "cd \$HOME/$(field $id lane)/root && \$HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack \"\$(cut -c1-64 packs/pack.sha256)\" > /dev/null 2>&1; echo reclaim=\$?" | awk '{print $2}' | sort | uniq -c | one_variant "$id release of the pack its lane names")
+      echo "$released" | grep -q ' 16 reclaim=0$' || { echo "$released"; echo "RECORDS-FAILED $id: weightd did not free the cold arena of the pack this lane names, which no lane names once its record changes the pack"; exit 1; }
       python3 "$KIT/../tools/lane_config.py" push "$id" || { echo "RECORDS-FAILED $id"; exit 1; }
     done
     scp -q "$KIT/../deployment/hub/model_swap.json" rtx5090:sparkpipe-swap/model_swap.json.release-$SHA && hub "cd ~/sparkpipe-swap && mv model_swap.json.release-$SHA model_swap.json && echo controller config $SHA" && controller_restart || { echo "RECORDS-FAILED controller config"; exit 1; } ;;
   qualify)
     for id in ${ONLY:-$MODELS}; do
       stamp "qualify $id"
-      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' \$HOME/$(field $id lane)/root/residentd.log | tail -2" | head -8; continue; fi
+      if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' $(lane_latest_log "\$HOME/$(field $id lane)/root") | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
       hub "cd $RD/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --models-endpoint http://127.0.0.1:8433 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
@@ -170,7 +173,8 @@ case "$step" in
         [ -n "$eff" ] && hub "cd $RD/tree && timeout 7200 python3 tools/compsec17_openai.py --endpoint http://127.0.0.1:4000 --model $id $eff --out $RD/$id/compsec17 > $RD/$id/compsec.log 2>&1; grep -o 'RESULT: [0-9]*/[0-9]*' $RD/$id/compsec.log"
       fi
       hub "cd $RD/$id && python3 ~/evalkit/tools/api_serving_perf.py --endpoint http://127.0.0.1:$(field $id port) --cases o256,ttft6000 --repeats 1 --label $R --output perf.jsonl > /dev/null 2>&1; tail -2 perf.jsonl | python3 -c \"import json,sys; [print('$id', d.get('case'), 'decode', d.get('median_decode_tok_s'), 'prefill', d.get('prefill_tok_s')) for d in map(json.loads, sys.stdin)]\""
-      fan "grep -a -c -i -E 'error|fail|fault|abort' \$HOME/$(field $id lane)/root/residentd.log" | awk '{s+=$2} END {print "rank log error lines:", s}'
+      hub "python3 $RD/tree/tools/release_long_fill.py http://127.0.0.1:$(field $id port) $id --best ~/release-best-fill.json" || echo "LONG-FILL-FAILED $id"
+      fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
   rollback)

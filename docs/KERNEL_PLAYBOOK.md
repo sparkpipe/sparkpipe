@@ -89,8 +89,6 @@ Rules for whoever implements the contract:
   - `SparkLmValidateLinearContract` again, for NVFP4 when `input_dimension`
     is not a multiple of 16.
   - The native FP8 linear, when `input_dimension` is not a multiple of 128.
-  - `SparkLmHostLaunchBatchedLinearMloop`, when `input_dimension` is not a
-    multiple of `SPARK_LM_TILE_K`.
 
   State the alignment in the contract.
 - **Row stride has no default.** `LmFusedResidualRmsNormKernel` takes an
@@ -332,15 +330,57 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 - `LmLatentShardPartialKernel` is the scalar kernel: one block per row and
   up to four heads, with every key re-read by each block.
 - `LmLatentShardPrefillKernel` runs the same records on tensor cores: one
-  row and 32 heads per block, 32-key tiles through a cp.async double buffer,
-  QK and PV on `mma.sync`, the probabilities split into high and low bf16
-  halves so PV keeps fp32 precision.
+  row and 32 heads per block row, 32-key tiles through a two-buffer ring,
+  QK and PV on `mma.sync`, one BF16 copy of each tile's weights against
+  the running maximum (the publishers' flash form, Latent prefill below).
+  - A block is 8 consumer warps and two producer warps, one block an SM,
+    persistent over a grid stride of row blocks. The planner warp reads
+    each row's sequence, positions and selection and fills a 4-row plan
+    ring: tile range, key window, one key count per query and the first
+    tile's split-list positions. It compacts in-kernel lists with warp
+    ballots; a block's first row is compacted by the whole block. The
+    issuer warp resolves slots one tile ahead, prefetches the next tile's
+    page-table line into L1, loads each key row with one `cp.async.bulk`
+    into an unswizzled row at a 16-byte padded pitch, zeroes null rows not
+    already zero, and prefetches the next row's queries into L2. Full and
+    empty mbarriers pace the two-buffer ring.
+  - The consumers are two query groups of 4 warps (16 queries each) with
+    their own named barriers. QK splits a group's tile into 2 k-halves x 2
+    key pairs, the softmax gives each query 8 threads (keys k, k+8, k+16,
+    k+24, summed in the 32-lane butterfly's pairing), and P·V gives each
+    warp 128 value columns. A padded head group of at most 16 heads runs
+    one query group. Queries for the next row load into registers after a
+    row's last QK.
+  - lenovo8 (GB10), against the one-row-per-block kernel this replaced
+    (1,440 DSV4.1 calls of 410 µs in a 16K fleet prefill), ms a launch:
+
+    | Wave | Before | Now |
+    |---|---|---|
+    | DSV4.1 landed keys, 2,048 rows, 4 heads, top 512 split, per source | 0.365 | 0.141 |
+    | K3 dense, 2,048 rows, 96 heads, 8K / 64K / 256K | 5.93 / 39.6 / 173 | 4.00 / 28.1 / 138 |
+    | K3 gather, 2,048 rows, 6 heads, 64K, per source | 2.38 | 1.63 |
+    | Ling 3, 2,048 rows, 32 heads, 16K dense | 3.53 | 2.45 |
+    | K3 top 2,048 compacted, 2,048 rows, 8K / 64K / 256K | 4.07 / 3.89 / 5.03 | 3.41 / 3.93 / 4.06 |
+    | DSV4.1 64 heads, top 512 compacted, 2,048 rows | 1.90 | 2.01 |
+    | K3 decode, 1 / 4 / 16 rows at 64K | 0.039 / 0.098 / 0.319 | 0.033 / 0.076 / 0.228 |
+    | K3 top 2,048 decode, 1 / 4 / 16 rows at 64K | 0.027 / 0.027 / 0.029 | 0.022 / 0.021 / 0.023 |
+    | DSV4.1 64 heads pair records, 1 / 16 rows at 64K | 0.0164 / 0.0205 | 0.0171 / 0.0209 |
+
+    The dense and gather waves are bound by the two-buffer ring: with no
+    QK, softmax or P·V the producers alone take 90% of the time, and a
+    third 37 KB buffer does not fit. The compacted 96- and 64-head waves
+    are bound by DRAM: they write 404 and 269 MB of FP32 records a launch
+    (GB10 writes 198 GB/s) and read 226 and 134 MB of queries. A single
+    compacted DSV4.1 row pays about 0.7 µs more than before for the
+    planner and issuer hand-offs before its first tile. Records are main's
+    bits in every case (`tests/cuda/latent_shard_prefill_bits_cuda.cu`
+    keeps the old kernel).
   - Rows past the dense limit read their selected positions, either from
     a list compacted in shared memory or from the caller's split lists
     (`LmLatentShardSplitLaunch`). The two orders are the same, so both
     give the same records.
-  - Each block holds one row, so a row's record does not depend on the other
-    rows: decode, verify frames and prefill waves agree bit for bit.
+  - A row's record does not depend on the other rows of its block's
+    stride: decode, verify frames and prefill waves agree bit for bit.
   - Pair-grouped records (`record_heads`, `record_copies`) are written as
     the scalar kernel writes them, and a row at position `0xffffffff` has no
     keys.
@@ -350,8 +390,9 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   the scalar kernel. GLM 5.3 Flash, GLM 5.3 Full's scatter waves, A.X K2,
   Ling 3's MLA layers, Hy4 and both DSV4.1 attention paths call them.
 - A head count that is a multiple of 32 fills each block. A head count below
-  32 that divides 32 (`padded_heads`) runs one row per block with its heads
-  repeated across the 32 query slots, and only the first copy writes records.
+  32 that divides 32 (`padded_heads`) runs one row per block row with its
+  heads repeated across the query slots, and only the first copy writes
+  records.
   MMA rows are independent, so each head computes exactly what it would in a
   full block. DSV4.1's landing path (4 heads per rank) therefore still equals
   its records path (64 heads) bit for bit (`tests/test_dsv41_flash_landing.cu`).
@@ -359,17 +400,97 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
 
   | Shape | Scalar | Tensor cores |
   |---|---|---|
-  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.4 ms | 5.48 ms |
-  | Same, width 576 | 39.4 ms | 5.27 ms |
-  | 4,096 rows, 16K dense keys, width 576 | 99.3 ms | 9.73 ms |
-  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.040 / 0.056 / 0.171 ms | 0.030 / 0.030 / 0.029 ms |
-  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.0 ms | 13.7 ms |
+  | 4,096 rows, 16K context, 2,112 selected of each row, width 512 | 51.7 ms | 5.19 ms |
+  | Same, width 576 | 40.2 ms | 5.00 ms |
+  | 4,096 rows, 16K dense keys, width 576 | 99.0 ms | 8.73 ms |
+  | Decode rows: 1 / 4 / 16 at 131K, 2,112 selected | 0.038 / 0.056 / 0.173 ms | 0.028 / 0.027 / 0.027 ms |
+  | 4,096 rows, 16K context, 2,112 selected, 4 heads (padded) | 18.2 ms | 11.8 ms |
 
-  The normalized outputs differ from the scalar kernel's by at most 1/8192 of
-  each head's peak (`tests/cuda/latent_shard_sparse_cuda.cu`). With one bf16
-  copy of the probabilities the gap was 0.3%, and on the fleet one of six
-  greedy chat prompts per model changed its tokens against the scalar kernel
-  (GLM 5.3 Flash, GLM 5.3 Full, DSV4.1); the low half costs 6%.
+  The records are the flash form. On one rank every record lies closer to an
+  f64 model of it (each 32-key tile's weights against the running maximum
+  rounded to BF16 once, the sum unrounded) than to exact attention: 5e-5 to
+  1.8e-4 of each head's peak from the model, 1.6e-3 to 1.7e-3 from exact.
+  Against the FP32 scalar kernel the normalized outputs differ by up to 0.3%
+  of each head's peak, which is that rounding
+  (`tests/cuda/latent_shard_sparse_cuda.cu`). A low BF16 half (540dfd170)
+  once matched the scalar kernel and the fleet's earlier greedy tokens; the
+  publishers' kernels multiply one BF16 copy, the gates judge against their
+  references, and without the half the kernel is 5 to 15% faster on the
+  shapes above (the width-512 case is within run-to-run noise).
+
+**Latent prefill (`attn_prefill.cuh`, `attn_shard_prefill.cuh`)**
+
+- `LmLatentAttentionPrefillKernel` (GLM 5.3 Full and A.X K2, dense and
+  DSA-sparse) and `LmLatentShardPrefillKernel` (GLM 5.3 Flash, GLM 5.3
+  Full's scatter waves, A.X K2, Ling 3, Hy4, DSV4.1) take the
+  same form as the GQA tiled kernel and the publishers' own kernels
+  (FlashAttention-2, DeepSeek's `sparse_attn`): each 32-key tile's weights
+  `exp(s - m)` against the running maximum are rounded to BF16 once for the
+  P·V MMA, and the running sum adds the FP32 weights.
+- The latent prefill used to split each weight into BF16 high and low parts
+  and run two P·V MMAs per fragment. One part is 8 to 12% faster on GB10
+  (4 heads, 512 + 64 wide): 2,048 rows after 30,720 cached positions take
+  21.5 ms against 23.9 ms, 4,096 rows after 61,440 take 84 to 87 ms
+  against 91 to 97 ms (three runs each, `tests/cuda/attn_prefill_cuda.cu
+  --time` with longer cases). The kernel is not bound by its MMAs alone, so
+  the gain is less than the third of its MMAs that the low part was.
+- A block of `LmLatentAttentionPrefillKernel` holds `LM_PREFILL_ATTN_QUERIES`
+  = 16 queries: 4 rows of 4 heads, all reading one latent key per position.
+  The count is a template parameter; 32 (8 rows) builds and passes the same
+  tests. 16 stays the default because it is bit-equal to the earlier kernel;
+  32 changes tile boundaries over the block's union and waits for the fleet's
+  measured 8-row union sizes.
+  - The 16 queries of each MMA row tile are staged through the second key
+    buffer into registers, 72 per thread (a k-half of 288 columns), as in
+    `LmLatentShardPrefillKernel`. Two 32-key tiles still double-buffer in
+    85,888 bytes of shared memory. 32 queries held in shared memory next to
+    two key tiles would not fit.
+  - A block loads each union key once for 8 rows instead of 4, which halves
+    the key bytes per query when the rows' selections overlap.
+  - Key slots resolve without stalling the block. Each tile loads the union
+    positions three tiles ahead and prefetches the page-table entries two
+    tiles ahead into L1. It resolves the slots two tiles ahead after its P·V.
+    The old kernel looked the slot up at the top of every tile: two
+    dependent global loads with branches, between barriers.
+  - The softmax gives each query 8 threads (16 at 16 queries). A thread holds
+    keys `k, k+8, k+16, k+24` and adds them in the order of the old 32-lane
+    butterfly, so the running sums keep their bits.
+- `LmPrefillSparseUnionKernel` marks each 131,072-position window of
+  selected positions in a shared bitmap. It counts bits per word to give
+  each position its union index, and ORs each row's bit into that index's
+  membership byte. The union comes out ascending, as from the merge it
+  replaced. That merge binary-searched every other row's list in global
+  memory for every entry and took 0.87 ms of a 3.9 ms call. The bitmap takes
+  0.06 to 0.3 ms.
+- Bits: dense outputs are equal at 16 and 32 queries and equal to the
+  16-query kernel before this change. So are sparse outputs at 16 queries,
+  on every bench pattern at 64K and 300K context. At 32 queries a block's
+  union covers 8 rows, so its 32-key tiles and their BF16 weights differ
+  wherever two 4-row halves select different keys. Outputs then move by up
+  to one BF16 step of the head's largest output
+  (`tests/cuda/attn_prefill_sparse_cuda.cu`).
+- lenovo8 (GB10), 2,048 rows of 4 heads after 65,536 cached positions
+  (78 MB of keys), top 2,048 per row, times in ms including the union
+  kernel. Rows share a selection in groups of 4 (the old bench) or 8:
+
+  | Selections | Before (16 queries) | 16 queries (default) | 32 queries |
+  |---|---|---|---|
+  | Same set in groups of 4 / 8 | 3.97 / 3.48 | 2.80 / 1.96 | 1.99 / 1.53 |
+  | 75% shared in groups of 4 / 8 | 5.35 / 5.17 | 3.31 / 3.15 | 2.93 / 2.42 |
+  | 50% shared in groups of 4 / 8 | 6.33 / 6.36 | 3.56 / 3.58 | 4.01 / 3.66 |
+  | Disjoint | 8.60 | 4.45 | 6.01 |
+  | Most recent 2,048 | 2.66 | 1.27 | 0.99 |
+
+  - Same set, 8-row groups: the 32-query attention takes 1.39 ms. A bare
+    `cp.async` gather of the same random 1,152-byte rows takes 1.43 ms
+    (420 GB/s). So the attention runs at the gather rate of this cache;
+    L2-resident gathers reach 1.6 to 1.8 TB/s.
+  - With the 4 or 8 rows' selections mostly disjoint, 32 queries do twice
+    the MMA work per key that 16 do, for little saving in bytes.
+  - After 300,000 cached positions (348 MB), 32 queries are faster in every
+    case. Same set: 2.42 against 2.60 at 16 queries (groups of 8) and 4.04
+    against 4.57 (groups of 4), from 3.86 and 5.38 before. Disjoint: 7.85
+    against 11.2, from 13.1 before.
 
 **Projections (`project.cuh`)**
 
@@ -464,10 +585,10 @@ that disagrees on it fails to build. The consumers are:
 
   Otherwise they choose `FLAT_8`.
 - **Mloop.**
-  - `SparkLmExpertTileMloopKernel` (dense BF16) gives one CTA
-    `SPARK_LM_MLOOP_GROUP` (8) m-tiles of one n-tile. Each k-stage weight
-    strip is staged once for all of them.
-  - `SparkLmExpertTileAllMloopKernel` is the grouped-expert version.
+  - `SparkLmExpertTileAllMloopKernel` (grouped experts) gives one CTA
+    eight m-tiles (`M_GROUP`) of one n-tile. Each k-stage weight strip is
+    staged once for all of them. Its dense BF16 sibling had no callers left
+    and was removed with #927.
   - **Why (4187f90^).** At B=256 the plain grid launched about 122K mostly
     empty CTAs, at about 1.25 µs each. That was the measured collapse to
     233 GB/s.

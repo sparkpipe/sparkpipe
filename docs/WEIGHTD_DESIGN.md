@@ -30,6 +30,14 @@ On every Spark the fleet agent (`tools/fleet_node_agent.sh`, systemd user unit
 --mesh-rank R --mesh-rank-mask 0xffff --mesh-interface … --mesh-sgid-index …`,
 plus `--mesh-pair-interface … --mesh-pair-sgid-index …` on ranks that
 `MESH_LINK_MAP` lists (see [HARDWARE_TOPOLOGY.md](HARDWARE_TOPOLOGY.md)).
+By default the second port is a second switched rail; an empty
+`SPARK_MESH_SECOND_RAIL` in the agent's environment selects a cable to the
+partner instead. The agent then passes
+the pair flags on every rank, plus `--mesh-second-rail`. Each link uses the
+second rail when the two ranks' parities differ, so both ends choose the same
+rail, and 8 of a node's 15 peers (its partner among them) send over the second
+port. In this mode weightd advertises no pair rank, so collectives take their
+flat routes and spread over both ports.
 It passes no `--device-bytes-max`, so the budget is
 `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (110 GiB) unless the unit environment
 sets `SPARK_WEIGHTD_DEVICE_BYTES_MAX`. It passes no `--mesh-dir`, so records live

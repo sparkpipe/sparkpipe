@@ -69,11 +69,8 @@ def main():
             digests[rank] = f"{rank:02x}" * 32
             (pack.parent / f"{pack.name}.sha256").write_text(f"{digests[rank]}  {pack.name}\n")
             (pack.parent / f"{pack.name}.experts").write_bytes(b"\0" * 64)
-            for target in model.get("extra_packs", {}).values():
-                extra = fake / "home" / host / target.format(rank=rank)
-                extra.parent.mkdir(parents=True, exist_ok=True)
-                extra.write_bytes(b"x")
-                (extra.parent / f"{extra.name}.sha256").write_text("e" * 64 + "\n")
+            for name in model.get("pack_siblings", ()):
+                (pack.parent / name).write_bytes(b"x")
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", FAKE_ROOT=str(fake), STAGE_MODEL=MODEL, STAGE_LANE=str(LANE),
                            STAGE_FIRMWARE=str(firmware), STAGE_WEIGHTD_SOCKET="/tmp/spark_weightd.sock", STAGE_MEMORY_MAX="1G")
         result = subprocess.run(["bash", str(ROOT / "tools" / "stage_lane.sh"), "setup"], env=environment, capture_output=True, text=True, timeout=600)
@@ -110,7 +107,7 @@ def main():
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS stage_lane dense setup: a dense lane's packs/ holds its pack link, the zero-range manifest and exactly one digest, packs/pack.sha256, "
+    print("PASS stage_lane dense setup: a dense lane's packs/ holds exactly one digest, packs/pack.sha256, "
           "which is the pack's own; lane.sh start keeps that digest and launches with the configured pack's spine budget")
     return 0
 

@@ -194,6 +194,11 @@ static inline uint64_t SparkTpMeshAllToAllPeerChunks(uint64_t per_peer_elements,
     return slice == 0u || per_peer_elements == 0u ? 0u : (per_peer_elements - 1u) / slice + 1u;
 }
 
+static inline uint32_t SparkTpMeshAllToAllPipelined(uint64_t per_peer_elements,uint64_t half_payload_bytes)
+{
+    return SparkTpMeshPipelineChunks(per_peer_elements,half_payload_bytes) >= 3u ? 1u : 0u;
+}
+
 #if defined(__CUDACC__)
 __host__ __device__
 #endif

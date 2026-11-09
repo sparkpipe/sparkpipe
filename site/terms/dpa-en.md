@@ -42,7 +42,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 5. Sub-processors
 
-5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data.
+5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines (Customer Agreement clause 7.8) is not a sub-processor: its licensor receives no Customer personal data.
 
 | Sub-processor | Task | Location |
 | --- | --- | --- |
@@ -76,7 +76,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet and make no backup.
 
-9.3. Apart from working state, we keep the operational record of each request that our privacy policy describes, for 1 year. It holds no prompt text, but it holds the token numbers of the reply, from which the reply's text can be rebuilt. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.
+9.3. Apart from working state, we keep an operational record of each request for 1 year: the model, token counts, timings and identifiers of the request, the session and the key. It holds no prompt or reply text and no token numbers. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.
 
 ## 10. Demonstrating compliance and audits
 
