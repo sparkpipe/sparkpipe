@@ -405,6 +405,12 @@ it writes no `head`, and `--name qwen35_4b` names the pack.
 `tools/qwen38_27b_reference.c` reads the same geometry, checks the same fixed
 dimensions, and takes a tied head from the embedding.
 
+Their tokenizers have the 27B's 248,044-token base vocabulary but not its
+seven audio and TTS tokens (ids 248,070 to 248,076), so `metal_stage_run`
+gives them an output vocabulary of 248,070 against the 27B's 248,077. Text
+tokenizes the same, so `tools/metal_gates.sh qwen3.5-4b` and `qwen3.5-2b` run
+on the 27B's gate prompts.
+
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
