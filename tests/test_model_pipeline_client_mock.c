@@ -334,6 +334,74 @@ static void TestFailedStepDropsLeases(SparkModelPipelineClient *pipeline, const 
 	TestFireAllRanksDecision(52u,SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT);
 }
 
+static void TestLeaseLanes(SparkModelPipelineClient *pipeline, const TestCallbackState *cb, uint64_t submission_id, uint64_t position, uint64_t step_generation)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t completions;
+	TestLeaseSubmission(&submission,lanes,submission_id,position,step_generation);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK,"refused continuation: the leasing step is accepted");
+	TestFireAllRanksResult(submission_id,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(submission_id,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	completions = cb->completion_count;
+	TestLeaseCompletion(&submission,SPARK_STATUS_OK);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,"refused continuation: the leasing step completes");
+}
+
+static void TestRefusedContinuationIsContained(SparkModelPipelineClient *pipeline, const TestCallbackState *cb)
+{
+	SparkModelServingSubmission submission,other;
+	SparkModelServingLane lanes[2],other_lanes[2];
+	SparkModelPipelineClientView view;
+	uint32_t prepares,continues,completions,results,rank,active;
+	TestLeaseLanes(pipeline,cb,60u,10u,6100u);
+	TestBuildSubmission(&other,other_lanes,61u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&other) == SPARK_STATUS_OK,"refused continuation: an unrelated step is in flight");
+	TestFireAllRanksResult(61u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(61u,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	CHECK(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK && view.active_transaction_count != 0u,"refused continuation: the unrelated step is held");
+	active = view.active_transaction_count;
+	TestLeaseSubmission(&submission,lanes,62u,11u,6101u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u,"refused continuation: the step continues on the lease");
+	results = cb->result_count;
+	completions = cb->completion_count;
+	TestFireAllRanksResult(62u,SPARK_STATUS_CAPACITY_EXCEEDED);
+	(void)SparkModelPipelineClientProgress(pipeline,8u);
+	CHECK(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_OK &&
+		view.connected_rank_count == TEST_RANKS && view.active_transaction_count == active,
+		"refused continuation: every rank refusing a continued step leaves the pipeline and the other step in flight up");
+	CHECK(cb->result_count == results + 1u && cb->last_submission_id == 62u && cb->last_result_status == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"refused continuation: the refusal is the step's result");
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"refused continuation: the refused step completes once with the ranks' status");
+	completions = cb->completion_count;
+	TestFireAllRanksCompletion(61u,SPARK_STATUS_OK,cb);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,
+		"refused continuation: the other step still completes");
+	TestLeaseSubmission(&submission,lanes,63u,11u,6102u);
+	prepares = MockResidentClientCalls(0u,MOCK_CALL_PREPARE);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues && MockResidentClientCalls(0u,MOCK_CALL_PREPARE) == prepares + 1u,
+		"refused continuation: the retry prepares, since the refusal dropped the lanes' leases");
+	TestFireAllRanksResult(63u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(63u,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	completions = cb->completion_count;
+	TestLeaseCompletion(&submission,SPARK_STATUS_OK);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,"refused continuation: the retried step completes and leases again");
+	TestLeaseSubmission(&submission,lanes,64u,12u,6103u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u,"split continuation: the step continues on the lease");
+	MockResidentClientFireResult(0u,64u,SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (rank=1u; rank<TEST_RANKS; rank++)
+		MockResidentClientFireResult(rank,64u,SPARK_STATUS_OK);
+	CHECK(SparkModelPipelineClientGetView(pipeline,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_CAPACITY_EXCEEDED,
+		"split continuation: ranks that accepted a step another rank refused fail the pipeline");
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -496,6 +564,7 @@ int main(void)
 		"complete new session publishes one fingerprint");
 
 	TestFailedStepDropsLeases(pipeline,&cb);
+	TestRefusedContinuationIsContained(pipeline,&cb);
 	SparkModelPipelineClientDestroy(pipeline);
 	MockResidentClientReset();
 

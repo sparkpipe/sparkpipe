@@ -400,7 +400,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 		return(SPARK_STATUS_OK);
 	if ( transaction->continued != 0u )
 	{
-		if ( transaction->status != SPARK_STATUS_OK )
+		if ( transaction->status != SPARK_STATUS_OK && transaction->prepared_mask != 0u )
 		{
 			SparkModelPipelineClientSetFailure(pipeline,
 				(SparkStatus)transaction->status,
@@ -408,6 +408,8 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 			return((SparkStatus)transaction->status);
 		}
 		SparkModelPipelineClientReportResult(pipeline,transaction);
+		if ( transaction->status != SPARK_STATUS_OK )
+			transaction->completion_mask = pipeline->all_rank_mask;
 		SparkModelPipelineClientReportCompletion(pipeline,transaction);
 		return(SPARK_STATUS_OK);
 	}
@@ -534,9 +536,6 @@ static void SparkModelPipelineClientRankResult(
 			context != 0 ? context->stage_index : 999u,
 			(unsigned long long)submission_id,(unsigned)status);
 		SparkModelPipelineClientRecordFailure(transaction,status);
-		if ( transaction->continued != 0u )
-			SparkModelPipelineClientSetFailure(context->pipeline,status,
-				context->stage_index);
 	}
 	(void)SparkModelPipelineClientResolveAdmission(context->pipeline,transaction);
 }
