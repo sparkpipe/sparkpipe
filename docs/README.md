@@ -136,6 +136,9 @@ current authority.
 ## Changing status
 
 - [`../TECHDEBT.md`](../TECHDEBT.md): unfinished implementation work only.
+- [`CODEBASE_AUDIT_2026-11-09.md`](CODEBASE_AUDIT_2026-11-09.md): production
+  codebase audit (DRY, footguns, performance architecture), the target
+  architecture, the order of work and what has landed.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
   milestone's exit criterion. It now includes M10 (speculation at B1-B64)
   and M11 (drivers in parallel).
