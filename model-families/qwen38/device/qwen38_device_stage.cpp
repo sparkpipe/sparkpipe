@@ -5,6 +5,7 @@
 
 #include "inference/runner/device_layers.h"
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
+#include "sparkpipe/spark_qwen35_small_geometry.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_qwen38_family.h"
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
@@ -130,6 +131,7 @@ struct QwenDevice
 		shape->epsilon = QH_EPSILON;
 		shape->projection = P::kProjection;
 		shape->prenormed_head = L::kHyper ? 1u : 0u;
+		shape->tied_head = G::kTiedHead ? 1u : 0u;
 		memset(delta, 0, sizeof(*delta));
 		delta->key_heads = G::kGdnKeyHeads;
 		delta->value_heads = G::kGdnValueHeads;
@@ -765,4 +767,30 @@ struct Qwen38FlashDevice
 const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void)
 {
 	return QwenDevice<Qwen38FlashDevice>::Interface();
+}
+
+struct Qwen35_4bDevice
+{
+	using Geometry = Qwen35_4bGeometry;
+	static constexpr const char *kTag = "sparkpipe_qwen35_4b_device";
+	static constexpr const char *kName = "qwen3.5-4b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+const SparkStageRunnerModelInterface *SparkQwen35_4bDeviceStageModel(void)
+{
+	return QwenDevice<Qwen35_4bDevice>::Interface();
+}
+
+struct Qwen35_2bDevice
+{
+	using Geometry = Qwen35_2bGeometry;
+	static constexpr const char *kTag = "sparkpipe_qwen35_2b_device";
+	static constexpr const char *kName = "qwen3.5-2b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+const SparkStageRunnerModelInterface *SparkQwen35_2bDeviceStageModel(void)
+{
+	return QwenDevice<Qwen35_2bDevice>::Interface();
 }

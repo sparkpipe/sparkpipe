@@ -1500,6 +1500,7 @@ DEVICE_RUNNER_INCLUDE_FLAGS := -Imodel-families/common/include
 DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
+	model-families/qwen38/include/sparkpipe/spark_qwen35_small_geometry.h \
 	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
 	modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h
 QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include \

@@ -26,6 +26,7 @@ struct QwenHybridDefaults
 	static constexpr uint32_t kIndexBudget = 0u;
 	static constexpr uint32_t kIndexRatio = 1u;
 	static constexpr uint32_t kVerifyRows = 0u;
+	static constexpr bool kTiedHead = false;
 };
 
 template<class G>

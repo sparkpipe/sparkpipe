@@ -387,6 +387,24 @@ Between 3 and 16 rows the FP8 projection loops the GEMV in passes of eight
 rows, which beats BF16 up to B4 but trails its tensor-operation row tiles at
 B16 (TECHDEBT).
 
+The same backend places Qwen3.5-4B and Qwen3.5-2B, the same
+`Qwen3_5ForConditionalGeneration` hybrid at smaller sizes
+(`model-families/qwen38/include/sparkpipe/spark_qwen35_small_geometry.h`):
+- 32 and 24 layers of 2,560 and 2,048;
+- 32 and 16 gated-delta value heads over the same 16 key heads;
+- 16 and 8 attention heads over 4 and 2 KV heads;
+- SwiGLU FFNs of 9,216 and 6,144;
+- the head tied to the embedding table (the stage shape's `tied_head`, as for
+  Gemma).
+
+`tools/qwen38_27b_tp16_pack.py` reads the geometry from the checkpoint's
+`config.json`. It refuses a checkpoint whose fixed dimensions differ from the
+stages' (gated-delta heads of 128, a convolution of 4, attention heads of 256
+with 64 rotary dimensions at base 10^7, epsilon 10^-6). For a tied checkpoint
+it writes no `head`, and `--name qwen35_4b` names the pack.
+`tools/qwen38_27b_reference.c` reads the same geometry, checks the same fixed
+dimensions, and takes a tied head from the embedding.
+
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
