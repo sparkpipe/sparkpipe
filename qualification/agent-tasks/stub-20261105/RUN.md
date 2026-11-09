@@ -75,6 +75,16 @@ All four match the script. Each SWE-bench run directory holds:
 
 Each Terminal-Bench directory is Harbor's job directory: the trial
 `result.json`, the agent's logs and the verifier's output.
+
+Two of `stub-cx-tb21`'s Harbor logs are kept on the hub, not in the
+repository: its `job.log` and `fix-git__mFJ7mJz/trial.log`.
+- **Where:** `/srv/workspace/sparkpipe/agent-tasks/stub-20261105/terminal-bench-2-1/stub-cx-tb21/`.
+- **Check:** `stub-cx-tb21/hub-logs.SHA256SUMS` lists both files. It was
+  checked there with `sha256sum -c` on 2026-11-09.
+- **Why:** the logs record the Codex installer's own `ln -sf` inside its
+  task container. The repository's no-symlinks check
+  (`tests/test_no_symlinks.py`) rejects any file that creates a link, and
+  it makes no exception for evidence while an archive exists.
 `stub-requests.jsonl` is the stub's log of every request. Each entry records
 the path, the step, the action taken, whether `X-SparkPipe-Public: 1` was
 sent, and the first 12 hex digits of the presented key's SHA-256.
