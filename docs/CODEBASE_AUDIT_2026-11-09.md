@@ -346,8 +346,10 @@ Landed in the pull request that carries this page:
   the model interface, and the common runner drives the layer loop for the
   whole step and for each prefill lane; a model's `Step` remains only as the
   composition the Metal device runner still calls. K3 stays on `step` until
-  its dispatch engine is split the same way. The runner does not yet chunk
-  rows or interleave two frames; that is the second half.
+  its dispatch engine is split the same way. The two prefill lanes are now
+  two frames the runner interleaves layer by layer on one thread; the lane
+  worker thread, its mutex and its turn protocol are gone. The runner does
+  not yet choose the row split itself; that is the second half.
 - Step 7 in part: the `tp_collective` parser and template, the transaction
   ledger, the external KV provider client, the NVMe tier and topology switch,
   graph relocation, memlink and its tools, the NCCL enum and parser branch,
@@ -355,9 +357,8 @@ Landed in the pull request that carries this page:
 
 Still open, in the order above: the wave-boundary IPC and chain key
 (2, the collective half), `FinishAsync` for publish frames, the two-phase
-commit and validation inflation (2.5, 2.8, 2.9); row chunking and two-frame
-interleaving in the runner loop and K3's conversion (3), the shared CUDA
-stage-model plumbing (4); the
+commit and validation inflation (2.5, 2.8, 2.9); runner-chosen row chunks for every
+wave and K3's conversion (3), the shared CUDA stage-model plumbing (4); the
 collective plan from the schedule (4); streamed prefill as a backend (5);
 placement as deployment data (6); and the rest of the deletions (8): the dead
 exports of `runtime/stage_module_common.c`, `spark_lm_kernels.cuh` beyond the
