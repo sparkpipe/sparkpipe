@@ -244,9 +244,10 @@ class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
 and above is interactive, which is what a request gets when it names
 nothing; below is background. The chat layer maps `x-sparkpipe-priority:
 interactive|background` (a header, or the same key in the request's
-`metadata`), Claude Code's compaction and auxiliary calls, a background
-key, `<model>-bulk` and chat-memory jobs onto these priorities. Greedy output
-does not depend on the class.
+`metadata`), a background key, `<model>-bulk` and chat-memory jobs onto
+these priorities. A harness's own marks, such as Claude Code's compaction
+and auxiliary calls, never lower a request's priority. Greedy output does
+not depend on the class.
 
 - While background work runs, `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES`
   (2) resident sequences stay free for interactive requests: background
