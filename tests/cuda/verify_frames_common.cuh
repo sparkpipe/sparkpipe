@@ -32,6 +32,14 @@ static __host__ __device__ float Uniform(uint32_t seed, uint32_t index)
 	return (float)(Mix(seed * 0x9e3779b9u + index) >> 8u) / 8388608.0f - 1.0f;
 }
 
+static __host__ __device__ float VfFloat(uint16_t value)
+{
+	uint32_t bits = (uint32_t)value << 16u;
+	float result;
+	memcpy(&result, &bits, sizeof(result));
+	return result;
+}
+
 static __host__ __device__ uint16_t Bf16(float value)
 {
 	uint32_t bits;

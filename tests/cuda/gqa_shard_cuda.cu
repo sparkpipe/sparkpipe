@@ -414,6 +414,147 @@ static void ProbeTiled(uint32_t heads,uint32_t sequences,uint32_t rows_per_seque
 	cudaFree(tiled_device); cudaFree(scalar_device); cudaFree(error_device);
 }
 
+template<uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
+static void ProbeTree(uint32_t heads,uint32_t committed,uint32_t degree,uint32_t rank,uint32_t grain,uint32_t window)
+{
+	typedef ProbeGqaKv<KV_HEADS,HEAD_DIM,VALUE_DIM> Geometry;
+	enum { TREE_ROWS = 7u, TREE_PATHS = 3u, TREE_PATH_ROWS = 4u };
+	static const uint32_t depth[TREE_ROWS] = {0u,1u,2u,3u,2u,3u,1u},branch[TREE_ROWS] = {0u,0u,0u,0u,1u,1u,2u},fork_depth[TREE_ROWS] = {0u,0u,0u,0u,2u,2u,1u};
+	static const uint32_t path_rows[TREE_PATHS][TREE_PATH_ROWS] = {{0u,1u,2u,3u},{0u,1u,4u,5u},{0u,6u,0u,0u}},path_length[TREE_PATHS] = {4u,4u,2u};
+	const uint32_t span = grain * degree,stride = (4u + span - 1u) / span * span,group = heads / KV_HEADS,slot_elements = KV_HEADS * (HEAD_DIM + VALUE_DIM);
+	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,degree),slot_count = LmGqaShardHeadSlots(heads,VALUE_DIM,degree),record = width + 2u * slot_count;
+	const uint32_t context = committed + 2u + 2u * stride,pages = (context + PROBE_PAGE - 1u) / PROBE_PAGE,tokens = committed + TREE_ROWS;
+	const uint64_t send_stride = (uint64_t)TREE_ROWS * record;
+	const float scale = 1.0f / sqrtf((float)HEAD_DIM);
+	SparkKvShard shard = {degree,rank,grain};
+	std::vector<uint32_t> table(pages),contexts(1u,context),positions(TREE_ROWS),sequences(TREE_ROWS,0u),slots(TREE_ROWS),forks(TREE_ROWS),offsets(TREE_ROWS);
+	std::vector<uint32_t> token_sequence(tokens,0u),token_position(tokens);
+	std::vector<float> scalar_tree((uint64_t)degree * send_stride),tiled_tree(scalar_tree.size()),scalar_chain(scalar_tree.size()),tiled_chain(scalar_tree.size());
+	uint32_t *table_device,*contexts_device,*positions_device,*sequences_device,*slots_device,*forks_device,*offsets_device,*token_sequence_device,*token_position_device;
+	uint32_t *chain_positions_device,*chain_contexts_device;
+	uint16_t *values_device,*query_device,*chain_values_device,*chain_query_device;
+	uint8_t *pool;
+	float *scalar_device,*tiled_device;
+	LmKvAccessError *error_device,error_host;
+	LmKvShardView local;
+	uint32_t row,path,index,destination;
+	double worst = 0.0,worst_max = 0.0;
+	char label[200];
+
+	snprintf(label,sizeof(label),"tree heads%u kv%u dim%u/%u committed%u degree%u rank%u grain%u window%u stride%u",heads,KV_HEADS,HEAD_DIM,VALUE_DIM,committed,degree,rank,grain,window,stride);
+	for (index=0u; index<pages; index++)
+		table[index] = index;
+	for (index=0u; index<committed; index++)
+		token_position[index] = index;
+	for (row=0u; row<TREE_ROWS; row++)
+	{
+		positions[row] = committed + depth[row];
+		slots[row] = committed + depth[row] + branch[row] * stride;
+		forks[row] = branch[row] == 0u ? committed + depth[row] + 1u : committed + fork_depth[row];
+		offsets[row] = branch[row] * stride;
+		token_position[committed + row] = slots[row];
+	}
+	table_device = ProbeDevice(table);
+	contexts_device = ProbeDevice(contexts);
+	positions_device = ProbeDevice(positions);
+	sequences_device = ProbeDevice(sequences);
+	slots_device = ProbeDevice(slots);
+	forks_device = ProbeDevice(forks);
+	offsets_device = ProbeDevice(offsets);
+	token_sequence_device = ProbeDevice(token_sequence);
+	token_position_device = ProbeDevice(token_position);
+	PROBE_CUDA(cudaMalloc((void **)&values_device,(uint64_t)tokens * slot_elements * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&chain_values_device,(uint64_t)TREE_PATH_ROWS * slot_elements * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&query_device,(uint64_t)TREE_ROWS * heads * HEAD_DIM * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&chain_query_device,(uint64_t)TREE_PATH_ROWS * heads * HEAD_DIM * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&chain_positions_device,TREE_PATH_ROWS * sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&chain_contexts_device,sizeof(uint32_t)));
+	PROBE_CUDA(cudaMalloc((void **)&pool,SparkKvShardPoolBytes(shard,PROBE_PAGE,Geometry::kSlotBytes,pages)));
+	PROBE_CUDA(cudaMalloc((void **)&scalar_device,scalar_tree.size() * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&tiled_device,tiled_tree.size() * sizeof(float)));
+	PROBE_CUDA(cudaMalloc((void **)&error_device,sizeof(LmKvAccessError)));
+	PROBE_CUDA(cudaMemset(pool,0,SparkKvShardPoolBytes(shard,PROBE_PAGE,Geometry::kSlotBytes,pages)));
+	LmKvAccessErrorReset(&error_host);
+	PROBE_CUDA(cudaMemcpy(error_device,&error_host,sizeof(error_host),cudaMemcpyHostToDevice));
+	ProbeFillKernel<<<1024,256>>>(values_device,(uint64_t)tokens * slot_elements,(uint64_t)committed << 40u);
+	ProbeFillKernel<<<256,256>>>(query_device,(uint64_t)TREE_ROWS * heads * HEAD_DIM,(1ull << 62u) + committed);
+	ProbeCheck(LmKvShardViewInitialize<Geometry>(&local,pool,table_device,pages,1u,pages,error_device,shard) == 0,"tree shard view",label);
+	LmKvShardStoreKernel<Geometry,256u><<<tokens,256>>>(local,values_device,token_sequence_device,token_position_device,tokens,slot_elements);
+	PROBE_CUDA(cudaGetLastError());
+	PROBE_CUDA(cudaMemset(scalar_device,0,scalar_tree.size() * sizeof(float)));
+	PROBE_CUDA(cudaMemset(tiled_device,0,tiled_tree.size() * sizeof(float)));
+	LmGqaShardPartialKernel<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(TREE_ROWS,KV_HEADS),group * 32u>>>(local,query_device,heads,sequences_device,contexts_device,
+		positions_device,scale,scalar_device,send_stride,TREE_ROWS,0,0u,1u,window,forks_device,offsets_device);
+	ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,query_device,heads,sequences_device,contexts_device,positions_device,scale,tiled_device,
+		send_stride,TREE_ROWS,0,0,0u,1u,window,forks_device,offsets_device) == cudaSuccess,"tree launch",label);
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(scalar_tree.data(),scalar_device,scalar_tree.size() * sizeof(float),cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemcpy(tiled_tree.data(),tiled_device,tiled_tree.size() * sizeof(float),cudaMemcpyDeviceToHost));
+	for (path=0u; path<TREE_PATHS; path++)
+	{
+		const uint32_t length = path_length[path],chain_context = committed + length;
+		std::vector<uint32_t> chain_positions(TREE_PATH_ROWS,0u);
+		for (index=0u; index<length; index++)
+		{
+			row = path_rows[path][index];
+			chain_positions[index] = committed + index;
+			PROBE_CUDA(cudaMemcpy(chain_values_device + (uint64_t)index * slot_elements,values_device + (uint64_t)(committed + row) * slot_elements,(uint64_t)slot_elements * 2u,cudaMemcpyDeviceToDevice));
+			PROBE_CUDA(cudaMemcpy(chain_query_device + (uint64_t)index * heads * HEAD_DIM,query_device + (uint64_t)row * heads * HEAD_DIM,(uint64_t)heads * HEAD_DIM * 2u,cudaMemcpyDeviceToDevice));
+		}
+		PROBE_CUDA(cudaMemcpy(chain_positions_device,chain_positions.data(),TREE_PATH_ROWS * sizeof(uint32_t),cudaMemcpyHostToDevice));
+		PROBE_CUDA(cudaMemcpy(chain_contexts_device,&chain_context,sizeof(uint32_t),cudaMemcpyHostToDevice));
+		LmKvShardStoreKernel<Geometry,256u><<<length,256>>>(local,chain_values_device,sequences_device,chain_positions_device,length,slot_elements);
+		PROBE_CUDA(cudaMemset(scalar_device,0,scalar_tree.size() * sizeof(float)));
+		PROBE_CUDA(cudaMemset(tiled_device,0,tiled_tree.size() * sizeof(float)));
+		LmGqaShardPartialKernel<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(length,KV_HEADS),group * 32u>>>(local,chain_query_device,heads,sequences_device,chain_contexts_device,
+			chain_positions_device,scale,scalar_device,send_stride,length,0,0u,1u,window,(const uint32_t *)0,(const uint32_t *)0);
+		ProbeCheck(LmGqaShardPartialLaunch<Geometry,LmKvShardView,KV_HEADS,HEAD_DIM,VALUE_DIM>(local,chain_query_device,heads,sequences_device,chain_contexts_device,chain_positions_device,scale,
+			tiled_device,send_stride,length,0,0,0u,1u,window) == cudaSuccess,"chain launch",label);
+		PROBE_CUDA(cudaDeviceSynchronize());
+		PROBE_CUDA(cudaMemcpy(scalar_chain.data(),scalar_device,scalar_chain.size() * sizeof(float),cudaMemcpyDeviceToHost));
+		PROBE_CUDA(cudaMemcpy(tiled_chain.data(),tiled_device,tiled_chain.size() * sizeof(float),cudaMemcpyDeviceToHost));
+		for (index=0u; index<length; index++)
+		{
+			row = path_rows[path][index];
+			for (destination=0u; destination<degree; destination++)
+			{
+				const float *tree_record = scalar_tree.data() + (uint64_t)destination * send_stride + (uint64_t)row * record;
+				const float *chain_record = scalar_chain.data() + (uint64_t)destination * send_stride + (uint64_t)index * record;
+				ProbeCheck(memcmp(tree_record,chain_record,(uint64_t)record * sizeof(float)) == 0,"a tree row's scalar partials equal its root path verified as a chain bit for bit",label);
+				if ( path == 0u )
+					ProbeCheck(memcmp(tiled_tree.data() + (uint64_t)destination * send_stride + (uint64_t)row * record,tiled_chain.data() + (uint64_t)destination * send_stride + (uint64_t)index * record,
+						(uint64_t)record * sizeof(float)) == 0,"a trunk row's tiled partials equal the chain frame bit for bit",label);
+			}
+		}
+	}
+	for (destination=0u; destination<degree; destination++)
+		for (row=0u; row<TREE_ROWS; row++)
+		{
+			const float *a = tiled_tree.data() + (uint64_t)destination * send_stride + (uint64_t)row * record,*b = scalar_tree.data() + (uint64_t)destination * send_stride + (uint64_t)row * record;
+			for (index=0u; index<width; index++)
+			{
+				const uint32_t head = (destination * width + index) / VALUE_DIM,slot = head - (destination * width) / VALUE_DIM;
+				const float a_max = a[width + 2u * slot],b_max = b[width + 2u * slot];
+				if ( a_max == -INFINITY || b_max == -INFINITY )
+				{
+					ProbeCheck(a_max == b_max && a[width + 2u * slot + 1u] == 0.0f && a[index] == 0.0f,"a tree row with no visible key on this rank is empty in both kernels",label);
+					continue;
+				}
+				const double a_value = a[index] / a[width + 2u * slot + 1u],b_value = b[index] / b[width + 2u * slot + 1u];
+				worst = fabs(a_value - b_value) > worst ? fabs(a_value - b_value) : worst;
+				worst_max = fabs((double)a_max - b_max) > worst_max ? fabs((double)a_max - b_max) : worst_max;
+			}
+		}
+	ProbeCheck(worst < ldexp(1.0,-9) && worst_max < 1.0e-4,"tiled tree partials agree with the scalar tree kernel within the bf16 rounding of the attention weights",label);
+	PROBE_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
+	ProbeCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error",label);
+	printf("%s %s: worst |tiled-scalar| normalized %.2e, max %.2e\n",probe_failures == 0 ? "PASS" : "FAIL",label,worst,worst_max);
+	cudaFree(table_device); cudaFree(contexts_device); cudaFree(positions_device); cudaFree(sequences_device); cudaFree(slots_device); cudaFree(forks_device);
+	cudaFree(offsets_device); cudaFree(token_sequence_device); cudaFree(token_position_device); cudaFree(chain_positions_device); cudaFree(chain_contexts_device);
+	cudaFree(values_device); cudaFree(chain_values_device); cudaFree(query_device); cudaFree(chain_query_device); cudaFree(pool); cudaFree(scalar_device);
+	cudaFree(tiled_device); cudaFree(error_device);
+}
+
 int main(void)
 {
 	ProbeCase<4u,256u,256u>(24u,1u,1u,1024u,16u,1u);
@@ -450,11 +591,17 @@ int main(void)
 	ProbeTiled<4u,256u,256u>(24u,1u,2048u,65536u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<8u,128u,128u>(64u,1u,2048u,131072u,16u,0u,1u,0u,0u,true);
 	ProbeTiled<8u,128u,128u>(64u,1u,1u,131072u,16u,0u,1u,0u,0u,true);
+	ProbeTree<8u,128u,128u>(64u,300u,1u,0u,1u,0u);
+	ProbeTree<8u,128u,128u>(64u,300u,16u,3u,1u,0u);
+	ProbeTree<8u,128u,128u>(64u,1000u,16u,0u,1u,128u);
+	ProbeTree<4u,256u,256u>(24u,517u,16u,7u,1u,0u);
+	ProbeTree<4u,256u,256u>(24u,517u,4u,2u,4u,2u);
+	ProbeTree<2u,128u,128u>(16u,70u,8u,5u,1u,0u);
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads (tiled, with the query read per k-step), 192/128 key/value heads, per-head sink logits in the merge denominator; the tiled kernel (bf16 attention weights in P.V, as the reference computes them) agrees with the f32 scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks\n");
+	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads (tiled, with the query read per k-step), 192/128 key/value heads, per-head sink logits in the merge denominator; the tiled kernel (bf16 attention weights in P.V, as the reference computes them) agrees with the f32 scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks; tree frames read each row's committed keys and its own branch slots, a tree row's scalar partials equal its root path verified as a chain bit for bit, trunk rows keep their tiled bits and tiled branch rows agree with the scalar kernel within 2^-9\n");
 	return 0;
 }

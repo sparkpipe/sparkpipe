@@ -280,6 +280,9 @@ typedef struct SparkStageRunnerState
 	uint64_t *head_maxloc;
 	uint32_t head_last_rows;
 	uint32_t *verify_kept;
+	uint32_t *verify_path_rows;
+	uint32_t *verify_path_begin;
+	uint32_t verify_path_capacity;
 	uint32_t *route_fault_host;
 	uint32_t *route_fault;
 	uint32_t verify_kept_capacity;
@@ -1293,9 +1296,12 @@ static SparkStatus StageRunnerAllocateDistribution(SparkStageRunnerState *state,
 	state->distribution_capacity = (uint32_t)rows;
 	if ( state->model_interface->keep_rows != 0 )
 	{
-		if ( cudaMalloc(&state->verify_kept, (uint64_t)configuration->max_active_sequence_count * sizeof(uint32_t)) != cudaSuccess )
+		if ( cudaMalloc(&state->verify_kept, (uint64_t)configuration->max_active_sequence_count * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc(&state->verify_path_rows, (uint64_t)configuration->max_input_row_count * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc(&state->verify_path_begin, ((uint64_t)configuration->max_active_sequence_count + 1u) * sizeof(uint32_t)) != cudaSuccess )
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		state->verify_kept_capacity = configuration->max_active_sequence_count;
+		state->verify_path_capacity = configuration->max_input_row_count;
 	}
 	return SPARK_STATUS_OK;
 }
@@ -2033,6 +2039,8 @@ static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageR
 	memcpy(identity, in, sizeof(*identity));
 	identity->host_positions = 0;
 	identity->host_sequence_of_row = 0;
+	identity->host_slots = 0;
+	identity->host_parent_rows = 0;
 	if ( in->graph_key == 2u )
 	{
 		identity->gather_context = 0u;
@@ -2446,6 +2454,15 @@ static void StageRunnerModelStep(const SparkStageRunnerState *state, const Spark
 	in->host_positions = dispatch->host_positions;
 	in->host_sequence_of_row = dispatch->host_sequence_of_row;
 	in->host_state_target = dispatch->host_state_target;
+	in->tree = dispatch->tree;
+	in->slots = dispatch->tree != 0u ? dispatch->slots : dispatch->positions;
+	in->fork_positions = dispatch->fork_positions;
+	in->slot_offsets = dispatch->slot_offsets;
+	in->parent_rows = dispatch->parent_rows;
+	in->state_loads = dispatch->state_loads;
+	in->state_saves = dispatch->state_saves;
+	in->host_slots = dispatch->tree != 0u ? dispatch->host_slots : dispatch->host_positions;
+	in->host_parent_rows = dispatch->host_parent_rows;
 	in->graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, in) : 1u;
 }
 
@@ -2530,6 +2547,15 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		fprintf(stderr, "sparkpipe_stage_runner: verify refused: steps=%u flags=0x%x head=%u recurrent_bytes=%llu keep_rows=%u\n",
 			steps, dispatch->flags, runner->owns_final_head, (unsigned long long)state->geometry.recurrent_bytes,
 			state->model_interface->keep_rows != 0 ? 1u : 0u);
+		return SPARK_STATUS_UNSUPPORTED;
+	}
+	if ( dispatch->tree != 0u &&
+		((dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) == 0u || dispatch->active_sequence_count != 1u || SparkStageRunnerTreeVerifyCapable(runner) == 0u ||
+		 dispatch->slots == 0 || dispatch->fork_positions == 0 || dispatch->slot_offsets == 0 || dispatch->parent_rows == 0 ||
+		 dispatch->state_loads == 0 || dispatch->state_saves == 0 || dispatch->host_slots == 0 || dispatch->host_parent_rows == 0) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: tree verify refused: flags=0x%x lanes=%u tree_verify=%u\n",
+			dispatch->flags, dispatch->active_sequence_count, state->geometry.tree_verify);
 		return SPARK_STATUS_UNSUPPORTED;
 	}
 	if ( state->geometry.kv_layer_count != 0u && state->kv_attached == 0u )
@@ -2878,6 +2904,55 @@ uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 	return state->geometry.recurrent_bytes == 0u || state->model_interface->keep_rows != 0 ? 1u : 0u;
 }
 
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
+{
+	const SparkStageRunnerState *state;
+	if ( runner == 0 || runner->private_state == 0 || SparkStageRunnerVerifyCapable(runner) == 0u )
+		return 0u;
+	state = (const SparkStageRunnerState *)runner->private_state;
+	return state->geometry.tree_verify != 0u && state->model_interface->keep_rows != 0 && state->verify_path_rows != 0 ? 1u : 0u;
+}
+
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
+{
+	const SparkStageRunnerState *state;
+	if ( SparkStageRunnerTreeVerifyCapable(runner) == 0u )
+		return 0u;
+	state = (const SparkStageRunnerState *)runner->private_state;
+	return state->geometry.kv_shard.grain * state->geometry.kv_shard.degree;
+}
+
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
+{
+	SparkStageRunnerState *state;
+	SparkStageRunnerStep keep_step;
+	uint32_t sequence, index;
+	if ( runner == 0 || runner->private_state == 0 || path_rows == 0 || path_begin == 0 || kept == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->verify_pending == 0u || sequences != state->verify_step.sequences || state->model_interface->keep_rows == 0 || state->verify_path_rows == 0 ||
+		sequences > state->verify_kept_capacity || path_begin[sequences] > state->verify_path_capacity || path_begin[sequences] > state->verify_step.rows )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for ( sequence = 0u; sequence < sequences; sequence++ )
+	{
+		if ( path_begin[sequence + 1u] < path_begin[sequence] || kept[sequence] != path_begin[sequence + 1u] - path_begin[sequence] || kept[sequence] == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( index = path_begin[sequence]; index < path_begin[sequence + 1u]; index++ )
+			if ( path_rows[index] >= state->verify_step.rows ||
+				(index > path_begin[sequence] && state->verify_step.host_parent_rows != 0 && state->verify_step.host_parent_rows[path_rows[index]] != path_rows[index - 1u]) )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	state->verify_pending = 0u;
+	if ( cudaMemcpyAsync(state->verify_kept, kept, (uint64_t)sequences * sizeof(uint32_t), cudaMemcpyHostToDevice, state->stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->verify_path_rows, path_rows, (uint64_t)path_begin[sequences] * sizeof(uint32_t), cudaMemcpyHostToDevice, state->stream) != cudaSuccess ||
+		cudaMemcpyAsync(state->verify_path_begin, path_begin, ((uint64_t)sequences + 1u) * sizeof(uint32_t), cudaMemcpyHostToDevice, state->stream) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	keep_step = state->verify_step;
+	keep_step.sequence_row_indices = state->verify_path_rows;
+	keep_step.sequence_row_begin = state->verify_path_begin;
+	return state->model_interface->keep_rows(state->model, &keep_step, state->verify_kept, state->stream);
+}
+
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
 {
 	SparkStageRunnerState *state;
@@ -3010,6 +3085,8 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	cudaFree(state->distribution_logits);
 	cudaFree(state->distribution_gathered);
 	cudaFree(state->verify_kept);
+	cudaFree(state->verify_path_rows);
+	cudaFree(state->verify_path_begin);
 	cudaFreeHost(state->route_fault_host);
 	delete[] state->output_token_host;
 	delete[] state->output_score_host;

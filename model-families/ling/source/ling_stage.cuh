@@ -123,6 +123,7 @@ struct LingState
 	uint16_t *replay_qkv;
 	float *replay_retention;
 	float *replay_write_gate;
+	float *kda_snapshots;
 	uint16_t *mla_q;
 	uint16_t *mla_latent_query;
 	uint16_t *mla_query;
@@ -301,8 +302,9 @@ struct LingModel
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0, state->qkv, layer->kda_conv,
-			state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices, rows, stream);
+		LmCausalConvLaunch<G::kConv,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0,
+			step->tree != 0u ? ReplayQkv(state, layer) : state->qkv, layer->kda_conv, state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices,
+			rows, stream, step->tree != 0u ? step->parent_rows : (const uint32_t *)0);
 		LingSplitRowsKernel<<<dim3(Blocks(S::kKdaChannels), rows), LG_THREADS, 0, stream>>>(state->qkv, state->query, state->key, state->value,
 			S::kKdaWidth);
 		LM_LAUNCH((LmBoundedDecayKernel<LG_THREADS,G::kKdaDim>), dim3(rows,S::kKdaRankHeads), LG_THREADS, 0, stream,
@@ -318,7 +320,8 @@ struct LingModel
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( LmDeltaRuleLaunch<LG_THREADS,G::kKdaDim,G::kKdaDim,float>(step->rows, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index,
 				step->sequence_row_begin, (const uint32_t *)0, state->query, state->key, state->value, state->retention, state->write_gate, state->kda_mixed,
-				S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices, stream) != cudaSuccess )
+				S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices, stream, step->tree != 0u ? step->state_loads : (const uint32_t *)0,
+				step->tree != 0u ? step->state_saves : (const uint32_t *)0, step->tree != 0u ? state->kda_snapshots : (float *)0) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
@@ -340,6 +343,8 @@ struct LingModel
 		SparkStatus status;
 		if ( state->kv_attached == 0u || partial_stride > state->partial_stride )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree != 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		if ( Linear(layer->mla_q, state->normed, state->mla_q, rows, G::kHidden, S::kMlaRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK ||
 			Linear(layer->mla_kv_a, state->normed, state->mla_kv, rows, G::kHidden, S::kSlot, step, stream) != LM_LAUNCH_OK ||
 			Linear(layer->mla_gate, state->normed, state->mla_gate, rows, G::kHidden, S::kMlaRankHeads, step, stream) != LM_LAUNCH_OK )
@@ -410,12 +415,13 @@ struct LingModel
 			S::kSlot);
 		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->gqa_slot, step->sequence_of_row,
-			step->positions, rows, S::kSlot);
+			step->tree != 0u ? step->slots : step->positions, rows, S::kSlot);
 		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( Launched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kGqaKvHeads,G::kGqaHeadDim,G::kGqaHeadDim>(*view, state->gqa_query, G::kGqaHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kGqaHeadDim), state->attn_send, partial_stride, rows,
-				stream) != cudaSuccess )
+				stream, (const uint32_t *)0, 0u, 1u, 0u, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+				step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
 			state->attn_received);
@@ -594,6 +600,21 @@ struct LingModel
 				kept, state->query, state->key, state->value, ReplayRetention(state, layer), ReplayWriteGate(state, layer), state->kda_mixed,
 				S::kKdaRankHeads, 1u, sequences, 1u, step->sequence_row_indices);
 		}
+		if ( step->tree != 0u )
+		{
+			if ( !S::kGqa || sequences != 1u || step->slots == 0 || step->sequence_row_indices == 0 )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+			for ( uint32_t index = 0u; index < G::kLayers; ++index )
+			{
+				const LingLayer *layer = &state->layers[index];
+				if ( index % G::kPeriod != G::kPhase )
+					continue;
+				RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+				LM_LAUNCH((LmKvShardPathMoveKernel<typename S::Kv,LG_THREADS>), G::kVerifyRows, LG_THREADS, 0, stream, state->kv_views[layer->kv_index],
+					step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kSlot);
+				RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+			}
+		}
 		return Launched();
 	}
 
@@ -621,6 +642,7 @@ struct LingModel
 			{ (void **)&state->replay_qkv, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaChannels * sizeof(uint16_t) },
 			{ (void **)&state->replay_retention, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaWidth * sizeof(float) },
 			{ (void **)&state->replay_write_gate, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaRankHeads * sizeof(float) },
+			{ (void **)&state->kda_snapshots, verify_rows != 0u && S::kGqa ? LmDeltaRuleSnapshotBytes(S::kKdaRankHeads, G::kKdaDim, G::kKdaDim) : 0u },
 			{ (void **)&state->mla_q, rows * S::kMlaRankHeads * S::kQkDim * sizeof(uint16_t) },
 			{ (void **)&state->mla_latent_query, rows * S::kMlaRankHeads * G::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->mla_query, rows * S::kMlaRankHeads * S::kSlot * sizeof(uint16_t) },
@@ -771,6 +793,7 @@ struct LingModel
 		geometry->kv_shard.rank = state->tp_rank;
 		geometry->kv_shard.grain = 1u;
 		geometry->recurrent_bytes = RecurrentBytes(state);
+		geometry->tree_verify = S::kGqa && G::kVerifyRows != 0u ? 1u : 0u;
 		geometry->head_norm_f32 = 1u;
 		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
 			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||

@@ -32,6 +32,8 @@ SparkStatus SparkSpeculationTreeLayoutBuild(const uint32_t *parent_rows,const ui
 		layout->row[row].depth = layout->row[parent].depth + 1u;
 		if ( first_child[parent] == SPARK_SPECULATION_TREE_FRAME_NO_ROW )
 		{
+			if ( parent != row - 1u )
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			first_child[parent] = row;
 			layout->row[row].branch = layout->row[parent].branch;
 			layout->row[row].fork_position = layout->row[parent].fork_position;

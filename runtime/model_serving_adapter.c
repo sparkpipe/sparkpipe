@@ -566,6 +566,30 @@ static SparkStatus SparkModelServingAdapterValidateVerifyRows(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelServingAdapterValidateVerifyFlags(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission,
+	uint32_t *verify_out,
+	uint32_t *tree_out)
+{
+	const uint32_t verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
+	const uint32_t tree = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? 1u : 0u;
+	*verify_out = verify;
+	*tree_out = tree;
+	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
+		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( verify != 0u && submission->row_count > descriptor->max_verify_row_count )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( (tree != 0u && verify == 0u) || (tree != 0u) != (submission->row_parent_rows != 0) || (tree != 0u) != (submission->row_slots != 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( tree != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelServingAdapterValidateSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
@@ -585,19 +609,9 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	verify = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
-	if ( verify != 0u && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( verify != 0u && ((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) == 0u ||
-		submission->tokens_per_sequence > descriptor->max_speculative_token_count + 1u) )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( verify != 0u && submission->row_count > descriptor->max_verify_row_count )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	tree = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? 1u : 0u;
-	if ( (tree != 0u && verify == 0u) || (tree != 0u) != (submission->row_parent_rows != 0) || (tree != 0u) != (submission->row_slots != 0) )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( tree != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) == 0u )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	status = SparkModelServingAdapterValidateVerifyFlags(descriptor,submission,&verify,&tree);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( submission->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || (submission->model_extension_bytes != 0u) != (submission->model_extension != 0) || (submission->model_extension_bytes != 0u) != (submission->model_extension_kind != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterValidateSampling(descriptor,submission);

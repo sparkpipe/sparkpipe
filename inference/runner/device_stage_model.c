@@ -254,9 +254,14 @@ uint64_t SparkDeviceStagePlan(const SparkDeviceBuffer *buffer, const SparkDevice
 	return(cursor);
 }
 
+static uint64_t StageMoveTableOffset(const SparkDeviceStage *stage, uint32_t table)
+{
+	return(((uint64_t)(2u + table) * stage->verify_rows + stage->slots + 1u) * sizeof(uint32_t));
+}
+
 static uint64_t StageUnitScaleOffset(const SparkDeviceStage *stage)
 {
-	return(((uint64_t)2u * stage->verify_rows + stage->slots + 1u) * sizeof(uint32_t));
+	return(StageMoveTableOffset(stage,2u));
 }
 
 SparkTensor SparkDeviceStageUnitScale(const SparkDeviceStage *stage)
@@ -368,14 +373,35 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"each step sequence must own one contiguous run of rows"));
 	if ( step->commit == 0u && step->rows > stage->verify_rows )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a verify step holds more rows than the stage keeps for its replay"));
+	if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0 ||
+		step->parent_rows == 0 || step->state_loads == 0 || step->state_saves == 0 || step->host_slots == 0 || step->host_parent_rows == 0) )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a tree step verifies one sequence and carries its slot, fork, parent and state tables"));
 	stage->step_exact = step->commit == 0u ? 1u : 0u;
+	memset(tensors,0,sizeof(*tensors));
 	tensors->row_identity = SparkTensorAt(&stage->keep_tables,0u,(uint64_t)stage->verify_rows * sizeof(uint32_t));
 	tensors->rows = step->rows;
 	tensors->host_positions = step->host_positions;
 	tensors->host_sequence_of_row = step->host_sequence_of_row;
+	tensors->tree = step->tree != 0u ? 1u : 0u;
+	tensors->host_slots = step->tree != 0u ? step->host_slots : step->host_positions;
+	tensors->host_parent_rows = step->tree != 0u ? step->host_parent_rows : 0;
 	status = StageResolve(stage,step->hidden_bf16,(uint64_t)step->rows * stage->shape->hidden * 2u,&tensors->hidden);
 	if ( status == SPARK_STATUS_OK )
 		status = StageResolve(stage,step->positions,(uint64_t)step->rows * 4u,&tensors->positions);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->slots,(uint64_t)step->rows * 4u,&tensors->slots);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->fork_positions,(uint64_t)step->rows * 4u,&tensors->fork_positions);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->slot_offsets,(uint64_t)step->rows * 4u,&tensors->slot_offsets);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->parent_rows,(uint64_t)step->rows * 4u,&tensors->sequences.parent_rows);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->state_loads,(uint64_t)step->rows * 4u,&tensors->sequences.state_loads);
+	if ( status == SPARK_STATUS_OK && step->tree != 0u )
+		status = StageResolve(stage,step->state_saves,(uint64_t)step->rows * 4u,&tensors->sequences.state_saves);
+	if ( status == SPARK_STATUS_OK && step->tree == 0u )
+		tensors->slots = tensors->positions;
 	if ( status == SPARK_STATUS_OK )
 		status = StageResolve(stage,step->sequence_of_row,(uint64_t)step->rows * 4u,&tensors->sequence_of_row);
 	memset(&tensors->token_ids,0,sizeof(tensors->token_ids));
@@ -387,6 +413,7 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 		status = StageResolve(stage,step->sequence_row_begin,((uint64_t)step->sequences + 1u) * 4u,&tensors->sequences.row_begin);
 	tensors->sequences.sequences = step->sequences;
 	tensors->sequences.commit = step->commit;
+	tensors->sequences.tree = tensors->tree;
 	tensors->route_override_width = 0u;
 	if ( status == SPARK_STATUS_OK && step->route_override != 0 )
 	{
@@ -399,34 +426,87 @@ SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStage
 	return(status);
 }
 
+static SparkStatus StageHostTable(const SparkDeviceStage *stage, const uint32_t *address, uint64_t count, const uint32_t **host)
+{
+	SparkDeviceRange range;
+	SparkStatus status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)address,count * sizeof(uint32_t),&range);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceHostOf(range,count * sizeof(uint32_t),(void **)host);
+	return(status == SPARK_STATUS_OK ? SPARK_STATUS_OK : SparkDeviceStageRefuse(stage,status,"keep_rows needs host-visible kept counts and row tables"));
+}
+
+static SparkStatus StageKeepPath(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *host_kept, const uint32_t *host_begin,
+	uint32_t *ids, uint32_t *begin, SparkDeviceKeepTensors *keep)
+{
+	uint32_t *sources = (uint32_t *)((uint8_t *)stage->keep_tables.host + StageMoveTableOffset(stage,0u));
+	uint32_t *destinations = (uint32_t *)((uint8_t *)stage->keep_tables.host + StageMoveTableOffset(stage,1u));
+	const uint32_t *path = 0;
+	uint32_t sequence, index, count = 0u, moves = 0u;
+	SparkStatus status;
+	if ( step->sequences != 1u || step->host_slots == 0 || step->host_parent_rows == 0 || host_begin[1] > step->rows )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a tree keep names one sequence's root path"));
+	status = StageHostTable(stage,step->sequence_row_indices,host_begin[1],&path);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for ( sequence = 0u; sequence < step->sequences; sequence++ )
+	{
+		if ( host_kept[sequence] != host_begin[sequence + 1u] - host_begin[sequence] || host_kept[sequence] == 0u )
+			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a tree keep's path lengths must match its kept counts"));
+		begin[sequence] = count;
+		for ( index = host_begin[sequence]; index < host_begin[sequence + 1u]; index++ )
+		{
+			const uint32_t row = path[index];
+			if ( row >= step->rows || (index == host_begin[sequence] ? step->host_parent_rows[row] != SPARK_STAGE_RUNNER_NO_ROW :
+				step->host_parent_rows[row] != path[index - 1u]) )
+				return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a tree keep's path must run from the anchor along parent rows"));
+			if ( step->host_slots[row] != step->host_slots[path[host_begin[sequence]]] + (index - host_begin[sequence]) )
+			{
+				sources[moves] = step->host_slots[row];
+				destinations[moves] = step->host_slots[path[host_begin[sequence]]] + (index - host_begin[sequence]);
+				moves++;
+			}
+			ids[count++] = row;
+		}
+	}
+	begin[step->sequences] = count;
+	keep->rows = count;
+	keep->moves = moves;
+	keep->move_sources = SparkTensorAt(&stage->keep_tables,StageMoveTableOffset(stage,0u),(uint64_t)stage->verify_rows * sizeof(uint32_t));
+	keep->move_destinations = SparkTensorAt(&stage->keep_tables,StageMoveTableOffset(stage,1u),(uint64_t)stage->verify_rows * sizeof(uint32_t));
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep)
 {
 	uint32_t *table = (uint32_t *)stage->keep_tables.host, *ids = table + stage->verify_rows, *begin = ids + stage->verify_rows;
 	const uint32_t *host_kept = 0, *host_begin = 0;
-	SparkDeviceRange range;
 	uint32_t sequence, row, count = 0u;
 	SparkStatus status;
 	if ( step->commit != 0u || step->rows > stage->verify_rows || step->sequences > stage->slots )
 		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"keep_rows follows a verify step within the stage's verify rows"));
-	status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)kept,(uint64_t)step->sequences * sizeof(uint32_t),&range);
+	memset(keep,0,sizeof(*keep));
+	status = StageHostTable(stage,kept,step->sequences,&host_kept);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceHostOf(range,(uint64_t)step->sequences * sizeof(uint32_t),(void **)&host_kept);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)step->sequence_row_begin,((uint64_t)step->sequences + 1u) * sizeof(uint32_t),&range);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDeviceHostOf(range,((uint64_t)step->sequences + 1u) * sizeof(uint32_t),(void **)&host_begin);
+		status = StageHostTable(stage,step->sequence_row_begin,(uint64_t)step->sequences + 1u,&host_begin);
 	if ( status != SPARK_STATUS_OK )
-		return(SparkDeviceStageRefuse(stage,status,"keep_rows needs host-visible kept counts and row tables"));
-	for ( sequence = 0u; sequence < step->sequences; sequence++ )
+		return(status);
+	if ( step->tree != 0u )
+		status = StageKeepPath(stage,step,host_kept,host_begin,ids,begin,keep);
+	else
 	{
-		if ( host_kept[sequence] > host_begin[sequence + 1u] - host_begin[sequence] )
-			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
-		begin[sequence] = count;
-		for ( row = 0u; row < host_kept[sequence]; row++ )
-			ids[count++] = host_begin[sequence] + row;
+		for ( sequence = 0u; sequence < step->sequences; sequence++ )
+		{
+			if ( host_kept[sequence] > host_begin[sequence + 1u] - host_begin[sequence] )
+				return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"a sequence keeps more rows than its verify step held"));
+			begin[sequence] = count;
+			for ( row = 0u; row < host_kept[sequence]; row++ )
+				ids[count++] = host_begin[sequence] + row;
+		}
+		begin[step->sequences] = count;
+		keep->rows = count;
 	}
-	begin[step->sequences] = count;
-	keep->rows = count;
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	keep->frame_rows = step->rows;
 	keep->kept_rows = SparkTensorAt(&stage->keep_tables,(uint64_t)stage->verify_rows * sizeof(uint32_t),(uint64_t)stage->verify_rows * sizeof(uint32_t));
 	keep->sequences.row_begin = SparkTensorAt(&stage->keep_tables,(uint64_t)2u * stage->verify_rows * sizeof(uint32_t),
@@ -436,9 +516,43 @@ SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStage
 	return(StageResolve(stage,step->recurrent_index,(uint64_t)step->sequences * sizeof(uint32_t),&keep->sequences.state_index));
 }
 
+SparkStatus SparkDeviceStageKeepRelocate(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkStageRunnerStep *step, const SparkDeviceKeepTensors *keep)
+{
+	const uint32_t slot_halfwords = stage->shape->kv_heads * 2u * stage->shape->kv_head_dimension;
+	SparkDeviceStepTensors tensors;
+	SparkOpsPaged paged;
+	SparkKvParams move;
+	uint32_t layer;
+	SparkStatus status;
+	if ( keep->moves == 0u )
+		return(SPARK_STATUS_OK);
+	if ( slot_halfwords % 2u != 0u || keep->moves > stage->verify_rows )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_INVALID_ARGUMENT,"the KV slot width must split in two for a tree relocation"));
+	memset(&tensors,0,sizeof(tensors));
+	status = StageResolve(stage,step->sequence_of_row,(uint64_t)step->rows * 4u,&tensors.sequence_of_row);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&move,0,sizeof(move));
+	move.rows = keep->moves;
+	move.kv_heads = 1u;
+	move.head_dimension = slot_halfwords / 2u;
+	move.value_dimension = slot_halfwords / 2u;
+	move.page_slots = SPARK_DEVICE_RUNNER_PAGE_SLOTS;
+	move.pages_per_sequence = stage->pages_per_sequence;
+	move.pool_pages = stage->pool_pages;
+	for ( layer = 0u; layer < stage->shape->kv_layers && status == SPARK_STATUS_OK; layer++ )
+	{
+		paged = SparkDeviceStagePaged(stage,&tensors,layer);
+		paged.kv_heads = 1u;
+		status = SparkOpsKvMove(stage->ops,queue,&paged,keep->move_sources,keep->move_destinations,&move);
+	}
+	return(status);
+}
+
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer)
 {
 	SparkOpsPaged paged;
+	memset(&paged,0,sizeof(paged));
 	paged.pool = SparkTensorSlice(stage->kv_pool,(uint64_t)kv_layer * stage->kv_layer_stride,stage->kv_layer_stride);
 	paged.page_table = stage->page_table;
 	paged.sequence_of_row = tensors->sequence_of_row;
@@ -447,6 +561,10 @@ SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDe
 	paged.pages_per_sequence = stage->pages_per_sequence;
 	paged.pool_pages = stage->pool_pages;
 	paged.kv_heads = stage->shape->kv_heads;
+	paged.tree = tensors->tree;
+	paged.slots = tensors->tree != 0u ? tensors->slots : tensors->positions;
+	paged.fork_positions = tensors->fork_positions;
+	paged.slot_offsets = tensors->slot_offsets;
 	return(paged);
 }
 

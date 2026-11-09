@@ -59,25 +59,36 @@ A tree frame is one verify submission for one lane. It extends the chain
 frame of `SPECULATION_LONG_FRAMES.md` as follows.
 
 - **Node table.** Row 0 is the anchor: the last committed token at position
-  p. Every other row is a node with `parent_row` < row, `depth` =
-  parent's depth + 1, a token id and a source bit. Rows are in depth order,
-  so a node's parent is always an earlier row. `SparkSpeculationTreeNode`
-  (`include/sparkpipe/spark_speculation_tree.h`) already has this shape:
-  `parent_row`, `depth`, `candidate_index`, `child_row_base`, `child_count`,
-  all 8-bit, so a plan holds up to 255 rows; `SparkSpeculationTreePlan`
-  caps at 64. The engine builds a plan in request state next to
-  `draft_tokens`.
+  p. Every other row is a node with `parent_row` < row, a token id and a
+  source bit; its depth is its parent's plus one. The submission carries
+  `row_parent_rows` and `row_slots` beside the tokens and positions
+  (`SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE`, at most 256 rows), and
+  `SparkSpeculationTreeLayoutBuild`
+  (`include/sparkpipe/spark_speculation_tree_frame.h`) derives everything
+  else from the parents and the tokens. The engine builds the table in
+  request state next to `draft_tokens`.
+- **Trunk and branches.** The trunk is the chain of first children, the
+  path the engine would have verified as a chain. Every other child of a
+  trunk node starts a branch, and a branch never forks again: a tree is a
+  trunk with single-level branches, at most eight. Siblings carry distinct
+  tokens. The rows list the trunk first and then each branch's rows
+  consecutively, so a recurrent state replayed row by row is the parent's
+  state exactly when a row does not start a branch.
 - **Semantic position.** A node's position is p + depth. Rotary embedding,
   the sampling noise key, the attention window and the stop and budget
   rules all use it. Siblings share a position.
-- **Storage slot.** A node's KV is written at slot p + row, unique per row,
-  so siblings never overwrite each other. Today position and slot are the
-  same number (`scratch_row_positions[row] = position + wave`, and the
-  kernels store at `position % page_slots`); the frame splits them into two
-  per-row arrays. A chain has slot = position, so chain frames are unchanged.
-- **Lane context.** The lane's context is p + rows, as the page allocation
-  for a 256-row chain frame already is. Attention does not use it as the key
-  range for tree rows (section 3).
+- **Storage slot.** A trunk node's KV is written at slot p + depth, as a
+  chain's is. A node of branch b is written at slot p + depth + b × stride,
+  where stride is max_depth + 1 rounded up to the adapter's
+  `tree_slot_grain`: on a position-sharded KV cache that grain is the shard
+  grain times the degree, so a branch slot has the same owner rank as the
+  semantic key it stands in for. Today position and slot are the same
+  number; the frame splits them into two per-row arrays. A chain has
+  slot = position, so chain frames are unchanged.
+- **Lane context.** The lane's context is the highest slot plus one, which
+  the layout reports; the validator refuses a frame whose
+  `context_token_count` differs from it. Attention does not use it as the
+  key range for tree rows (section 3).
 - **Limits.** The row budget is the frame cost model's, as for chains
   (`SparkSpeculationFrameChoose`), within `max_verify_row_count`,
   `SPARK_SPECULATION_TREE_MAX_PLAN_ROWS` and the completion's 1024 tokens.
@@ -105,18 +116,22 @@ Everything that treats a row as a row is unchanged: embedding, norms, dense
 and expert projections, routing, the head and its argmax all-reduce. Four
 things read history and change.
 
-**Full attention (GQA, MLA).** A node attends to the committed keys and to
-its ancestors only. The committed keys are slots 0 to p, or the window's
-tail of them (`SparkAttentionFirstKey` on the semantic position). The
-ancestors are a per-row list of slots, at most depth−1 entries. The CUDA
-decode row kernel already takes a per-row selected-position list
-(`LmGqaAttentionDecodeRow`'s `selected_positions` and `selected_count`),
-used for sparse selection; a tree row runs the committed range as today
-followed by its ancestor list as selected positions, with one online-softmax
-state across both. The Metal decode kernel reads `positions[row]` both as the
-store slot and as the key range (`attention.metal`, the key length is
-`positions[row] + 1`); it gets a `slots` buffer and an ancestor list the same
-way. Rotary embedding uses the semantic position in both.
+**Full attention (GQA).** A node attends to the committed keys and to its
+ancestors only, which the slot scheme turns into a per-row key mapping: a
+row at depth d reads semantic keys 0 to p + d (or the window's tail of
+them, `SparkAttentionFirstKey` on the semantic position), and key q lives
+at slot q when q < `fork_position[row]` and at slot q + `slot_offset[row]`
+otherwise. A trunk row's fork position is one past its own position, so
+its mapping is the identity. The CUDA sharded GQA kernels
+(`inference/kernels/gqa_shard.cuh`) take the two per-row arrays and walk
+the committed range and then the branch range through one online-softmax
+state; the tiled kernel sweeps the local key range up to the last branch
+slot and admits a key to a row when it lies in the row's committed range or
+in its branch range. The Metal decode kernel (`attention.metal`) maps each
+key the same way and stores at `slots[row]`. Rotary embedding uses the
+semantic position in both. The MLA and DSA attention paths (K3, DeepSeek
+V4.1 Flash, GLM, A.X K2, Ling 3.0) do not take the mapping yet and stay
+chain-only.
 
 **Sparse selection (DSA, the compressor and indexer of DeepSeek V4.1 Flash,
 GLM 5.3 Full and A.X K2).** The indexer scores a row against candidate
@@ -128,16 +143,22 @@ DSV4 scratch-KV work did row by row
 A pool whose last member is a rejected node is recomputed at commit, as the
 plan already states for chains.
 
-**Recurrent layers (KDA in K3 and Solar Open 2, gated delta in the Ling and
-Qwen3.8 stages).** A chain verify runs with `commit` off and saves each row's
-convolution input, decay and write gate; `keep_rows` then replays the kept
-rows into the state. For a tree, a node's recurrent read is its parent's
-state, not the previous row's: the per-sequence scan takes `parent_row`
-instead of row−1, and the causal convolution window of a node is its
-ancestors' inputs. Both kernels already iterate rows in order within a
-sequence, so the change is the index they read, not the arithmetic. After
-acceptance `keep_rows` receives the accepted path's row list rather than a
-prefix count, and the fold is the same gather and replay over those rows.
+**Recurrent layers (KDA in Solar Open 2, gated delta in Qwen3.8).** A chain
+verify runs with `commit` off and saves each row's convolution input, decay
+and write gate; `keep_rows` then replays the kept rows into the state. For a
+tree, the causal convolution builds a node's taps from its ancestors'
+inputs (`parent_rows`), falling back to the committed window beyond the
+anchor, and reads its inputs from the verify slab since the chain form
+runs in place. The delta rule scans rows in order as before; at a branch's
+first row it loads the state its parent left, which the parent's row saved
+into a per-branch snapshot (`state_loads`, `state_saves`, eight snapshots
+per layer), so the arithmetic of every row is the arithmetic of its own
+chain. After acceptance `keep_rows` receives the accepted path's rows in
+`sequence_row_indices` with `sequence_row_begin` delimiting them, rather
+than a prefix count, and the fold is the same gather and replay over those
+rows; it also moves the kept branch slots to the trunk positions p + k in
+every KV layer (`LmKvShardPathMoveKernel`, `spark_kv_move_paged`), so the
+lane continues as a chain.
 
 **Taps.** The VERIFY tap frame sends the kept rows' hidden states to draftd.
 It sends the accepted path's rows, in path order, under the same flags.
@@ -145,9 +166,14 @@ It sends the accepted path's rows, in path order, under the same flags.
 Row equality (G-ROWEQ) holds per history: a node row must equal the
 one-row decode of its own path, not of the trunk. The pin for a tree frame
 is therefore: every root path of the tree, verified alone as a chain frame,
-produces the same token at every row as the tree frame does. That pin runs
-on the mock adapter and on every family's gate corpus before a tree frame
-serves.
+produces the same token at every row as the tree frame does. Trunk rows
+are bitwise the chain's rows everywhere. Branch rows are bitwise their
+chain's rows on Metal and on the scalar CUDA kernel, whose key loops run in
+semantic order; the tiled CUDA kernel tiles the local slot range, so a
+branch row's keys fall into other tiles than its chain's and the attention
+sum differs by rounding order, as a row inside a different batch would.
+`tests/test_ling_verify_frames.cu` and `tests/cuda/gqa_shard_cuda.cu` pin
+both statements; the family gate corpora pin the tokens.
 
 ## 4. Acceptance and commit
 
@@ -212,29 +238,31 @@ survival is per depth bucket and class rather than per row index.
 
 ## 6. Capability and refusal
 
-A new adapter capability bit, `TREE_VERIFY`, next to `SPECULATIVE_VERIFY`,
-says that the model's verify frame honours per-row slots, ancestor lists and
-a path-form `keep_rows`. An adapter without it receives only chain frames,
-as today. The stage runner refuses a tree frame on a model that lacks it
-with the same named status it uses for unsupported verify, so a
+The adapter capability bit `TREE_VERIFY`, next to `SPECULATIVE_VERIFY`,
+says that the model's verify frame honours per-row slots, the key mapping
+and a path-form `keep_rows`; it comes with the descriptor's
+`tree_slot_grain`, which the stage serving adapter checks against the
+runner's KV shard at open. An adapter without the bit receives only chain
+frames, as today. The stage runner refuses a tree frame on a model whose
+geometry lacks `tree_verify` with `SPARK_STATUS_UNSUPPORTED`, so a
 misconfiguration fails loudly rather than verifying siblings against each
-other.
+other. `docs/INTERFACE_CONTRACTS.md` has the submission contract.
 
 ## 7. Per-family work
 
-| Family | Verify today | Tree work |
+| Family | Verify | Tree |
 | --- | --- | --- |
-| Kimi K3 | chain, lookup + DFlash2 | MLA decode: ancestor slots as selected keys. KDA: parent-indexed scan and conv window; path-form `keep_rows` over the existing replay buffers. |
-| DeepSeek V4.1 Flash | chain, lookup + DSpark | MLA and compressor/indexer per path over ancestor slots; the scratch-KV precedent already splits anchor from draft rows. |
-| GLM 5.3 Full, A.X K2 | chain, lookup only | DSA indexer per path; MLA as K3. A.X K2's DSpark drafter is a second model source once wired. |
-| K-EXAONE 2.0 | chain, lookup only | GQA with a 128-token window on semantic positions; no recurrent state. Its DSpark drafter likewise. |
-| Solar Open 2, Ling, Qwen3.8 stages | chain (Solar), none (others) | Generic device stage: GQA ancestor keys; gated-delta and KDA parent-indexed scan; `SparkDeviceGatedDeltaKeep` takes a row list. Families without verify need chain verify first. |
-| Metal (Qwen3.8-27B, Gemma, Ling) | chain in `tools/metal_stage_run.c` | `attention.metal`: separate `slots` from `positions`, ancestor list; `SparkDeviceStageRunnerKeepRows` by path. |
+| Solar Open 2 (CUDA, TP16) | chain | tree: sharded GQA key mapping, KDA parent taps and branch snapshots, path keep with slot relocation; `TREE_VERIFY`, `tree_slot_grain` 16. |
+| Qwen3.8-27B (Metal) | chain in `tools/metal_stage_run.c` | tree: `attention.metal` key mapping, conv parent taps, delta snapshots, `SparkDeviceStageRunnerKeepPath` with `spark_kv_move_paged`; `--tree-branches` in the tool. |
+| Ling 3.0 (CUDA) | chain | chain only: its latent attention has no key mapping; the stage refuses a tree step. |
+| Kimi K3, DeepSeek V4.1 Flash, GLM 5.3, A.X K2 | chain | chain only: MLA and DSA selection would need per-path key mapping. |
+| K-EXAONE 2.0, Gemma 4, MiMo (CUDA) | chain | the shared GQA kernels take the mapping; the stages lack `tree_verify`, the relocation and the capability until wired. |
+| Qwen3.8 Flash (Metal, n-gram embedding) | none | refused: the n-gram hash assumes the previous row is the predecessor. |
 
-The common GQA decode kernel and the generic device stage cover most
-families at once; K3 and the DSA families each need their own attention
-change. Shared code stays model-neutral: the node table, slot and position
-arrays, ancestor lists and the resolver carry no family names.
+The common GQA kernels and the generic device stage cover the GQA families
+at once; the MLA and DSA families each need their own attention change.
+Shared code stays model-neutral: the layout, slot and position arrays, the
+key mapping and the resolver carry no family names.
 
 ## 8. Phases and gates
 
@@ -245,30 +273,37 @@ failed gate.
   through lookup and the model drafter together and record, per position,
   whether each source's token equals the target's and whether the two agree.
   The output is the fraction of positions where exactly one source is right.
-  That fraction bounds the tree's gain over the better chain; if it is below
-  a few percent on the ledger corpora, stop here. Tooling exists in
-  `tools/spec_offline/` (acceptance against recorded taps).
-- **P1, engine and mock.** Node table in request state, composition from
-  lookup alternates and the model chain, slot and position arrays in the
-  submission, the host resolver, path-form completion checking and hazards
-  per source. The mock adapter verifies trees; gates are the mock engine
-  tests and the pin that a tree frame resolves identically to the same tree
-  resolved by `SparkSpeculationPolicyResolveVerifierTree`.
-- **P2, generic device stage and Metal.** Slot and position split, ancestor
-  keys in the GQA decode kernels, parent-indexed recurrent scan, path-form
-  `keep_rows`, the `TREE_VERIFY` capability. Gate: on Solar Open 2 and the
-  Metal Qwen3.8-27B tool, every root path of a tree frame matches its chain
-  frame token for token on the gate corpus, and a chain frame is bitwise
-  unchanged.
+  That fraction bounds the tree's gain over the better chain. The
+  implementation went ahead without it (2026-11-09); the frame cost model
+  only adds a branch whose expected tokens pay for its rows
+  (`SPARK_MODEL_BATCH_TREE_MIN_GAIN`), so a corpus where the sources
+  always agree keeps serving chains. The measurement remains worth taking
+  from the speculation receipts.
+- **P1, engine and mock.** Done: node table in request state, composition
+  from lookup alternates and the model chain, slot and position arrays in
+  the submission, the host resolver, path-form completion checking and
+  hazards per node. The mock adapter verifies trees;
+  `tests/test_model_batch_engine_mock.c` and
+  `tests/test_speculation_tree_frame.c` are the gates.
+- **P2, generic device stage and Metal.** Done for Solar Open 2 and the
+  Metal Qwen3.8-27B tool: slot and position split, the key mapping in the
+  GQA kernels, parent taps and branch snapshots in the recurrent kernels,
+  path-form `keep_rows` with slot relocation, the `TREE_VERIFY` capability.
+  Gates: `tests/test_ling_verify_frames.cu` and `tests/cuda/gqa_shard_cuda.cu`
+  on a Spark; the Metal kernel library compiles and
+  `metal_stage_run --mode spec` stays token-identical on M5U0, which this
+  change could not run.
 - **P3, K3.** MLA ancestor keys and the KDA tree scan. Gate: the same path
   pin on K3 at TP16, and B1 and B2 tokens per second on the speculation
   receipts' workloads against the chain, in one hold. Serve only if the tree
   wins on the ledger corpora; the frame cost model falls back to chains
   where it does not.
-- **P4, drafter alternates.** draftd returns the selector's alternates as a
-  DFT3 tree within the same wait budget; the lookup index returns its
-  second match. Gate: acceptance per source bit on the agreement-matrix
-  traces, and no increase in draft wait.
+- **P4, drafter alternates.** The lookup index returns ranked matches
+  (`SparkSpeculationLookupIndexFindRanked`) and the engine verifies their
+  diverging suffixes as branches; draftd's latent drafter returns the
+  selector's runner-up at every step and emits them as one-node branches
+  of the DFT3 tree within the same wait budget. Gate: acceptance per source
+  bit on the agreement-matrix traces, and no increase in draft wait.
 - **P5, sparse families.** DSV4.1 Flash, GLM 5.3 Full and A.X K2 with
   per-path selection; A.X K2 and K-EXAONE DSpark drafters as model sources
   once their chain verify serves.

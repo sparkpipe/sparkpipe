@@ -55,8 +55,10 @@ static void TestLayoutRefusals(void)
 	uint32_t nested[5] = { NONE, 0u, 0u, 2u, 2u };
 	uint32_t duplicate_tokens[5] = { 1u, 2u, 3u, 3u, 5u };
 	uint32_t forward[5] = { NONE, 2u, 1u, 2u, 3u };
+	uint32_t interleaved[5] = { NONE, 0u, 1u, 0u, 2u };
 	SparkSpeculationTreeLayout layout;
 	assert(SparkSpeculationTreeLayoutBuild(parents,tokens,5u,10u,1u,&layout) == SPARK_STATUS_OK);
+	assert(SparkSpeculationTreeLayoutBuild(interleaved,tokens,5u,10u,1u,&layout) != SPARK_STATUS_OK);
 	assert(SparkSpeculationTreeLayoutBuild(nested,tokens,5u,10u,1u,&layout) != SPARK_STATUS_OK);
 	assert(SparkSpeculationTreeLayoutBuild(parents,duplicate_tokens,5u,10u,1u,&layout) != SPARK_STATUS_OK);
 	assert(SparkSpeculationTreeLayoutBuild(forward,tokens,5u,10u,1u,&layout) != SPARK_STATUS_OK);

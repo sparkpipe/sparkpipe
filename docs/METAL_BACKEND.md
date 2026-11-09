@@ -522,6 +522,30 @@ overwritten when the sequence reaches them again.
   the 48 gated-delta layers. The attention layers keep nothing, since their
   KV rows are already in place.
 
+A tree frame (`docs/TREE_VERIFICATION_DESIGN.md`) is a verify step with
+`SparkDeviceStageRunnerBatch.parent_rows`: one sequence, rows at the
+anchor's position plus their depth, the trunk first and each branch's rows
+consecutively. The runner builds the layout
+(`SparkSpeculationTreeLayoutBuild`, grain 1) and writes six more shared
+tables: the storage slots, the fork positions and slot offsets that map a
+row's semantic keys to slots, the parents, and the delta-rule state loads
+and saves. `spark_kv_store_paged` stores at the slots;
+`spark_attention_decode` reads key q at slot q below the row's fork position
+and at q plus its offset above it, so a tree row attends exactly the keys
+of its own root path and is bitwise the row of that path verified as a
+chain; `spark_causal_conv_silu` builds a row's taps from its parent chain
+and the committed window; `spark_gated_delta_rule` loads a branch's first
+row from the snapshot its fork saved (eight snapshots in the stage's
+scratch). A model declares the mode with the geometry's `tree_verify`;
+Qwen3.8-27B does, the n-gram variant does not. After the step
+`SparkDeviceStageRunnerKeepPath(runner, path_rows, path_begin, sequences)`
+replays the accepted path through the recurrent layers and
+`SparkDeviceStageKeepRelocate` moves the kept branch slots to the trunk
+positions with `spark_kv_move_paged`, so the lane continues as a chain.
+`metal_stage_run --mode spec` composes trees from the lookup index's ranked
+matches (`--tree-branches`, default 2) and reports `tree_frames`,
+`branches` and `accepted_off_trunk` per prompt.
+
 Drafts come from the request's own context, as in the CUDA serving path:
 `metal_stage_run --mode spec` indexes the prompt and the generated
 tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,

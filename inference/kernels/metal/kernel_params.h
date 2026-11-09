@@ -194,7 +194,7 @@ typedef struct SparkConvParams
 	uint32_t commit;
 	uint32_t dilation;
 	uint32_t weight_f32;
-	uint32_t pad;
+	uint32_t tree;
 } SparkConvParams;
 
 typedef struct SparkDeltaParams
@@ -220,7 +220,11 @@ typedef struct SparkDeltaParams
 	float minimum_log_decay;
 	uint32_t beta_mode;
 	float prenorm_epsilon;
+	uint32_t tree;
+	uint32_t pad;
 } SparkDeltaParams;
+
+#define SPARK_DELTA_SNAPSHOT_MAX 8u
 
 #define SPARK_DELTA_BETA_SIGMOID 0u
 #define SPARK_DELTA_BETA_DOUBLED 1u
@@ -269,7 +273,8 @@ typedef struct SparkAttentionParams
 	uint32_t group;
 	uint32_t partition_base;
 	uint32_t extra_partitions;
-	uint32_t pad[3];
+	uint32_t tree;
+	uint32_t pad[2];
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

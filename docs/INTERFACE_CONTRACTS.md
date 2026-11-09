@@ -224,12 +224,28 @@ A tree frame is a verify submission with `SPARK_MODEL_SERVING_SUBMISSION_FLAG_TR
   validator refuses a frame whose positions, slots or
   `context_token_count` differ from that layout;
 - branches fork only from the trunk (the chain of first children), siblings
-  carry distinct tokens, and a node's parent is an earlier row.
+  carry distinct tokens, and a node's parent is an earlier row;
+- the trunk's rows come first and each branch's rows are consecutive: a row
+  that continues its parent's branch is the row right after its parent, so a
+  recurrent state replayed row by row is the parent's state exactly when the
+  row does not start a branch.
 
 The completion holds the accepted root path's outputs, the bonus token, then
 `SPARK_MODEL_SERVING_NO_TOKEN`, so `SparkModelServingCompletionKeptRows` and
 the lease rule are unchanged. A tree frame on an adapter without the bit is
 `SPARK_STATUS_UNSUPPORTED`.
+
+Inside a stage, `SparkStageRunnerStep.tree` marks the step and carries the
+device tables the layout derives (`slots`, `fork_positions`, `slot_offsets`,
+`parent_rows`, `state_loads`, `state_saves`) with host mirrors of the slots
+and parents; the geometry's `tree_verify` says the model honours them.
+After acceptance the runner calls the model's `keep_rows` with the kept
+path rather than a prefix count: `sequence_row_indices` lists the accepted
+rows in path order, `sequence_row_begin` delimits them per sequence and
+`kept` holds the path lengths (`SparkStageRunnerKeepPath`,
+`SparkDeviceStageRunnerKeepPath`). The model replays those rows into its
+recurrent state and moves each kept branch slot to the trunk position the
+path gives it, so the lane continues as a chain.
 
 ## include/sparkpipe/spark_stagepack_format.h
 

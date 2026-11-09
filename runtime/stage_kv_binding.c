@@ -1898,7 +1898,7 @@ static SparkStatus SparkStageKvBindingLoadContinuity(const SparkStageKvBinding *
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *lane_contexts,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	uint8_t *touched;
 	uint32_t lane,row,slot;
@@ -1919,6 +1919,20 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 		{
 			bound[lane] = 1u;
 			sequence_ids[lane] = row_sequence_ids[row];
+		}
+		else if ( lane_contexts != 0 && lane_contexts[lane] != 0u )
+		{
+			if ( row_positions[row] == 0u || bound[lane] == 0u || sequence_ids[lane] != row_sequence_ids[row] || lane_contexts[lane] >= binding->max_sequence_positions ||
+				(touched[lane] == 0u && row_positions[row] != next_positions[lane]) ||
+				(touched[lane] != 0u && (row_positions[row] <= next_positions[lane] || row_positions[row] >= lane_contexts[lane])) )
+			{
+				status = SPARK_STATUS_SCHEMA_ERROR;
+				break;
+			}
+			if ( touched[lane] == 0u )
+				next_positions[lane] = lane_contexts[lane];
+			touched[lane] = 1u;
+			continue;
 		}
 		else if ( row_positions[row] == 0u || bound[lane] == 0u || sequence_ids[lane] != row_sequence_ids[row] ||
 			(touched[lane] != 0u && next_positions[lane] != row_positions[row]) ||
@@ -1941,7 +1955,7 @@ uint64_t SparkStageKvBindingLaneSequence(const SparkStageKvBinding *binding,uint
 	return(atomic_load_explicit(&binding->lane_sequence_ids[slot],memory_order_acquire));
 }
 
-SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
+SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *lane_contexts,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions)
 {
 	SparkStatus status;
 	uint64_t held;
@@ -1952,7 +1966,7 @@ SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const ato
 		SPARK_RETURN(status);
 	status = SparkStageKvBindingLoadContinuity(binding,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,bound,sequence_ids,next_positions);
+		status = SparkStageKvBindingRowContinuity(binding,lane_states,row_count,active_count,row_resident_slots,row_sequence_ids,row_positions,lane_contexts,bound,sequence_ids,next_positions);
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_CONTINUITY,held);
 	SPARK_RETURN(status);
 }

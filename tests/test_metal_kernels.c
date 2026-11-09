@@ -3341,6 +3341,218 @@ static void DeltaStep(DeltaReference *ref, const uint16_t *mix, const uint16_t *
 	}
 }
 
+
+enum { TREE_ROWS = 7, TREE_PATHS = 3, TREE_PATH_ROWS = 4 };
+static const uint32_t tree_parents[TREE_ROWS] = { 0xffffffffu, 0u, 1u, 2u, 1u, 4u, 0u };
+static const uint32_t tree_depths[TREE_ROWS] = { 0u, 1u, 2u, 3u, 2u, 3u, 1u };
+static const uint32_t tree_paths[TREE_PATHS][TREE_PATH_ROWS] = { { 0u, 1u, 2u, 3u }, { 0u, 1u, 4u, 5u }, { 0u, 6u, 0u, 0u } };
+static const uint32_t tree_lengths[TREE_PATHS] = { 4u, 4u, 2u };
+static const uint32_t tree_loads[TREE_ROWS] = { 0u, 0u, 0u, 0u, 1u, 0u, 2u };
+static const uint32_t tree_saves[TREE_ROWS] = { 2u, 1u, 0u, 0u, 0u, 0u, 0u };
+
+static void ObserveTreeRows(Check *check, const uint16_t *tree, const uint16_t *chain, uint32_t stride, uint32_t width, uint32_t path, uint32_t control)
+{
+	uint32_t k, c;
+	for ( k = 0u; k < tree_lengths[path]; k++ )
+	{
+		const uint32_t row = tree_paths[path][k];
+		if ( control != 0u && tree_depths[row] == k && row == k )
+			continue;
+		for ( c = 0u; c < width; c++ )
+			Observe(check,Bf16(tree[(uint64_t)row * stride + c]),Bf16(chain[(uint64_t)k * stride + c]),0.0);
+	}
+}
+
+static void TestCausalConvTree(void)
+{
+	enum { CHANNELS = 1024, STRIDE = 1536, COMMITTED = 20, TAPS = 4 };
+	SparkDeviceBuffer window, index, begin, input, weight, output, parent, chain_input, chain_output;
+	uint16_t *in = (uint16_t *)Shared(&input,(uint64_t)(COMMITTED + TREE_ROWS) * STRIDE * 2u,"conv tree input");
+	uint16_t *w = (uint16_t *)Shared(&weight,CHANNELS * TAPS * 2u,"conv tree weight");
+	uint16_t *out = (uint16_t *)Shared(&output,(uint64_t)TREE_ROWS * STRIDE * 2u,"conv tree output");
+	uint16_t *cin = (uint16_t *)Shared(&chain_input,(uint64_t)TREE_PATH_ROWS * STRIDE * 2u,"conv chain input");
+	uint16_t *cout = (uint16_t *)Shared(&chain_output,(uint64_t)TREE_PATH_ROWS * STRIDE * 2u,"conv chain output");
+	uint16_t *trunk = (uint16_t *)malloc((size_t)TREE_PATH_ROWS * STRIDE * 2u);
+	uint32_t *slot = (uint32_t *)Shared(&index,4u,"conv tree slot");
+	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"conv tree begin");
+	uint32_t *par = (uint32_t *)Shared(&parent,TREE_ROWS * 4u,"conv tree parents");
+	SparkOpsSequences sequences;
+	SparkConvParams params;
+	Check clean, corrupted;
+	uint32_t pass, path, k;
+	(void)Shared(&window,(uint64_t)2u * CHANNELS * TAPS * 2u,"conv tree window");
+	FillBf16(in,(uint64_t)(COMMITTED + TREE_ROWS) * STRIDE,1.0);
+	FillBf16(w,CHANNELS * TAPS,0.5);
+	memcpy(par,tree_parents,sizeof(tree_parents));
+	memset(&params,0,sizeof(params));
+	params.channels = CHANNELS;
+	params.row_stride = STRIDE;
+	params.sequences = 1u;
+	params.kernel_taps = TAPS;
+	memset(&sequences,0,sizeof(sequences));
+	sequences.state_index = Whole(&index);
+	sequences.row_begin = Whole(&begin);
+	sequences.sequences = 1u;
+	sequences.parent_rows = Whole(&parent);
+	slot[0] = 1u;
+	memset(window.host,0,(size_t)2u * CHANNELS * TAPS * 2u);
+	params.commit = sequences.commit = 1u;
+	rb[0] = 0u;
+	rb[1] = COMMITTED;
+	if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&input),Whole(&weight),Whole(&input),&params),"causal_conv tree prefix") )
+		return;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		params.commit = sequences.commit = 0u;
+		params.tree = sequences.tree = 1u;
+		rb[0] = 0u;
+		rb[1] = TREE_ROWS;
+		if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,SparkTensorSlice(Whole(&input),(uint64_t)COMMITTED * STRIDE * 2u,(uint64_t)TREE_ROWS * STRIDE * 2u),
+			Whole(&weight),Whole(&output),&params),"causal_conv tree") )
+			return;
+		params.tree = sequences.tree = 0u;
+		for ( path = 0u; path < TREE_PATHS; path++ )
+		{
+			for ( k = 0u; k < tree_lengths[path]; k++ )
+				memcpy(cin + (uint64_t)k * STRIDE,in + (uint64_t)(COMMITTED + tree_paths[path][k]) * STRIDE,(size_t)STRIDE * 2u);
+			rb[1] = tree_lengths[path];
+			if ( !Run(SparkOpsCausalConv(&ops,queue,Whole(&window),&sequences,Whole(&chain_input),Whole(&weight),Whole(&chain_output),&params),"causal_conv tree path") )
+				return;
+			if ( path == 0u )
+				memcpy(trunk,cout,(size_t)TREE_PATH_ROWS * STRIDE * 2u);
+			ObserveTreeRows(check,out,pass == 0u ? cout : trunk,STRIDE,CHANNELS,path,pass);
+		}
+	}
+	Report("causal_conv_silu tree","1024 channels, 20 committed rows, a 7-row tree with two branches",&clean,&corrupted,
+		"a tree row equals the same row of its root path run as a chain, bit for bit; the control compares branch rows with trunk rows of equal depth");
+	free(trunk);
+	SparkDeviceFree(&window);
+	SparkDeviceFree(&index);
+	SparkDeviceFree(&begin);
+	SparkDeviceFree(&input);
+	SparkDeviceFree(&weight);
+	SparkDeviceFree(&output);
+	SparkDeviceFree(&parent);
+	SparkDeviceFree(&chain_input);
+	SparkDeviceFree(&chain_output);
+}
+
+static void TestGatedDeltaTree(void)
+{
+	enum { KH = 4, VH = 8, D = 128, MIX = 3072, GATES = 2 * VH, COMMITTED = 12, WIDTH = VH * D };
+	SparkDeviceBuffer state, index, begin, mix, gates, alog, bias, scratch, out, loads, saves, snapshots, chain_mix, chain_gates, chain_out;
+	float *s = (float *)Shared(&state,(uint64_t)2u * VH * D * D * 4u,"delta tree state");
+	uint32_t *slot = (uint32_t *)Shared(&index,4u,"delta tree slot");
+	uint32_t *rb = (uint32_t *)Shared(&begin,8u,"delta tree begin");
+	uint16_t *m = (uint16_t *)Shared(&mix,(uint64_t)(COMMITTED + TREE_ROWS) * MIX * 2u,"delta tree mix");
+	uint16_t *g = (uint16_t *)Shared(&gates,(uint64_t)(COMMITTED + TREE_ROWS) * GATES * 2u,"delta tree gates");
+	float *al = (float *)Shared(&alog,VH * 4u,"delta tree a_log");
+	float *db = (float *)Shared(&bias,VH * 4u,"delta tree dt_bias");
+	uint16_t *o = (uint16_t *)Shared(&out,(uint64_t)TREE_ROWS * WIDTH * 2u,"delta tree out");
+	uint32_t *ld = (uint32_t *)Shared(&loads,TREE_ROWS * 4u,"delta tree loads");
+	uint32_t *sv = (uint32_t *)Shared(&saves,TREE_ROWS * 4u,"delta tree saves");
+	uint16_t *cm = (uint16_t *)Shared(&chain_mix,(uint64_t)TREE_PATH_ROWS * MIX * 2u,"delta chain mix");
+	uint16_t *cg = (uint16_t *)Shared(&chain_gates,(uint64_t)TREE_PATH_ROWS * GATES * 2u,"delta chain gates");
+	uint16_t *co = (uint16_t *)Shared(&chain_out,(uint64_t)TREE_PATH_ROWS * WIDTH * 2u,"delta chain out");
+	uint16_t *trunk = (uint16_t *)malloc((size_t)TREE_PATH_ROWS * WIDTH * 2u);
+	SparkOpsSequences sequences;
+	SparkDeltaParams params;
+	Check clean, corrupted;
+	uint32_t pass, path, k, i;
+	(void)Shared(&scratch,SparkOpsDeltaScratchBytes(COMMITTED + TREE_ROWS,KH,VH,D),"delta tree scratch");
+	(void)Shared(&snapshots,(uint64_t)SPARK_DELTA_SNAPSHOT_MAX * VH * D * D * 4u,"delta tree snapshots");
+	FillBf16(m,(uint64_t)(COMMITTED + TREE_ROWS) * MIX,1.0);
+	FillBf16(g,(uint64_t)(COMMITTED + TREE_ROWS) * GATES,2.0);
+	for ( i = 0u; i < VH; i++ )
+	{
+		al[i] = (float)(Normal() * 0.5);
+		db[i] = (float)(Normal() * 0.5);
+	}
+	memcpy(ld,tree_loads,sizeof(tree_loads));
+	memcpy(sv,tree_saves,sizeof(tree_saves));
+	memset(&params,0,sizeof(params));
+	params.sequences = 1u;
+	params.key_heads = KH;
+	params.value_heads = VH;
+	params.key_dimension = D;
+	params.value_dimension = D;
+	params.mix_stride = MIX;
+	params.query_offset = 0u;
+	params.key_offset = KH * D;
+	params.value_offset = 2u * KH * D;
+	params.gate_stride = GATES;
+	params.beta_offset = 0u;
+	params.decay_offset = VH;
+	params.output_stride = WIDTH;
+	params.epsilon = 1e-6f;
+	memset(&sequences,0,sizeof(sequences));
+	sequences.state_index = Whole(&index);
+	sequences.row_begin = Whole(&begin);
+	sequences.sequences = 1u;
+	sequences.state_loads = Whole(&loads);
+	sequences.state_saves = Whole(&saves);
+	sequences.snapshots = Whole(&snapshots);
+	slot[0] = 1u;
+	memset(s,0,(size_t)2u * VH * D * D * 4u);
+	params.commit = sequences.commit = 1u;
+	params.rows = COMMITTED;
+	rb[0] = 0u;
+	rb[1] = COMMITTED;
+	if ( !Run(SparkOpsGatedDelta(&ops,queue,Whole(&state),&sequences,Whole(&mix),Whole(&gates),Whole(&alog),Whole(&bias),Whole(&scratch),Whole(&chain_out),&params),
+		"gated_delta tree prefix") )
+		return;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		params.commit = sequences.commit = 0u;
+		params.tree = sequences.tree = 1u;
+		params.rows = TREE_ROWS;
+		rb[1] = TREE_ROWS;
+		if ( !Run(SparkOpsGatedDelta(&ops,queue,Whole(&state),&sequences,SparkTensorSlice(Whole(&mix),(uint64_t)COMMITTED * MIX * 2u,(uint64_t)TREE_ROWS * MIX * 2u),
+			SparkTensorSlice(Whole(&gates),(uint64_t)COMMITTED * GATES * 2u,(uint64_t)TREE_ROWS * GATES * 2u),Whole(&alog),Whole(&bias),Whole(&scratch),Whole(&out),&params),
+			"gated_delta tree") )
+			return;
+		params.tree = sequences.tree = 0u;
+		for ( path = 0u; path < TREE_PATHS; path++ )
+		{
+			for ( k = 0u; k < tree_lengths[path]; k++ )
+			{
+				memcpy(cm + (uint64_t)k * MIX,m + (uint64_t)(COMMITTED + tree_paths[path][k]) * MIX,(size_t)MIX * 2u);
+				memcpy(cg + (uint64_t)k * GATES,g + (uint64_t)(COMMITTED + tree_paths[path][k]) * GATES,(size_t)GATES * 2u);
+			}
+			params.rows = tree_lengths[path];
+			rb[1] = tree_lengths[path];
+			if ( !Run(SparkOpsGatedDelta(&ops,queue,Whole(&state),&sequences,Whole(&chain_mix),Whole(&chain_gates),Whole(&alog),Whole(&bias),Whole(&scratch),Whole(&chain_out),
+				&params),"gated_delta tree path") )
+				return;
+			if ( path == 0u )
+				memcpy(trunk,co,(size_t)TREE_PATH_ROWS * WIDTH * 2u);
+			ObserveTreeRows(check,o,pass == 0u ? co : trunk,WIDTH,WIDTH,path,pass);
+		}
+	}
+	Report("gated_delta_rule tree","4 key / 8 value heads x 128, 12 committed rows, a 7-row tree with two branches",&clean,&corrupted,
+		"a tree row equals the same row of its root path run as a chain, bit for bit, through the branch snapshots; the control compares branch rows with trunk rows of equal depth");
+	free(trunk);
+	SparkDeviceFree(&state);
+	SparkDeviceFree(&index);
+	SparkDeviceFree(&begin);
+	SparkDeviceFree(&mix);
+	SparkDeviceFree(&gates);
+	SparkDeviceFree(&alog);
+	SparkDeviceFree(&bias);
+	SparkDeviceFree(&scratch);
+	SparkDeviceFree(&out);
+	SparkDeviceFree(&loads);
+	SparkDeviceFree(&saves);
+	SparkDeviceFree(&snapshots);
+	SparkDeviceFree(&chain_mix);
+	SparkDeviceFree(&chain_gates);
+	SparkDeviceFree(&chain_out);
+}
+
 static void TestGatedDelta(void)
 {
 	enum { KH = 16, VH = 48, D = 128, MIX = 16384, FIRST = 200, SECOND = 3, ROWS = FIRST + SECOND };
@@ -4231,6 +4443,216 @@ static void TestAttention(uint32_t context, uint32_t rows, uint32_t prefill)
 	SparkDeviceFree(&f.gate);
 	SparkDeviceFree(&f.partial);
 	SparkDeviceFree(&f.output);
+}
+
+
+static void AttentionStoreRow(AttentionFixture *f, uint32_t source_row, uint32_t destination, SparkDeviceBuffer *one_sequence, SparkDeviceBuffer *one_position)
+{
+	SparkKvParams store;
+	SparkOpsPaged single = f->paged;
+	((uint32_t *)one_sequence->host)[0] = 0u;
+	((uint32_t *)one_position->host)[0] = destination;
+	single.tree = 0u;
+	single.sequence_of_row = Whole(one_sequence);
+	single.positions = single.slots = Whole(one_position);
+	memset(&store,0,sizeof(store));
+	store.rows = 1u;
+	store.kv_heads = att.kv;
+	store.head_dimension = att.dim;
+	store.page_slots = ATT_SLOTS;
+	store.pages_per_sequence = f->pages;
+	store.key_stride = att.kv * att.dim;
+	store.value_stride = att.qkv;
+	store.value_offset = att.value_offset;
+	store.value_dimension = att.vdim;
+	store.pool_pages = f->pages;
+	Run(SparkOpsKvStore(&ops,queue,&single,SparkTensorSlice(Whole(&f->keys),(uint64_t)source_row * att.kv * att.dim * 2u,(uint64_t)att.kv * att.dim * 2u),
+		SparkTensorSlice(Whole(&f->values),(uint64_t)source_row * att.qkv * 2u,(uint64_t)att.qkv * 2u),&store),"kv_store tree row");
+}
+
+static void TestAttentionTree(void)
+{
+	enum { COMMITTED = 300, STRIDE_SLOTS = 4, CONTEXT = COMMITTED + 2 + 2 * STRIDE_SLOTS };
+	static const uint32_t branches[TREE_ROWS] = { 0u, 0u, 0u, 0u, 1u, 1u, 2u };
+	static const uint32_t fork_depths[TREE_ROWS] = { 0u, 0u, 0u, 0u, 2u, 2u, 1u };
+	AttentionFixture f;
+	SparkAttentionParams params;
+	SparkDeviceBuffer slots, forks, offsets, chain_query, chain_gate, chain_output, one_sequence, one_position;
+	uint16_t *query, *gate, *output, *cq, *cg, *co, *trunk;
+	uint32_t *sequence, *position, *slot_table, *fork_table, *offset_table, row, pass, path, k;
+	const uint32_t width = att.heads * AttVdim();
+	Check clean, corrupted;
+	att = (AttentionCase){ 24u, 4u, 256u, 14336u, 13312u, 0u, 1u, 1.0f / 16.0f, 0u, 0u, 0u };
+	memset(&f,0,sizeof(f));
+	AttentionFill(&f,CONTEXT,1u);
+	query = (uint16_t *)Shared(&f.query,(uint64_t)TREE_ROWS * att.heads * att.dim * 2u,"attention tree query");
+	gate = (uint16_t *)Shared(&f.gate,(uint64_t)TREE_ROWS * att.qkv * 2u,"attention tree gate");
+	output = (uint16_t *)Shared(&f.output,(uint64_t)TREE_ROWS * width * 2u,"attention tree output");
+	cq = (uint16_t *)Shared(&chain_query,(uint64_t)TREE_PATH_ROWS * att.heads * att.dim * 2u,"attention chain query");
+	cg = (uint16_t *)Shared(&chain_gate,(uint64_t)TREE_PATH_ROWS * att.qkv * 2u,"attention chain gate");
+	co = (uint16_t *)Shared(&chain_output,(uint64_t)TREE_PATH_ROWS * width * 2u,"attention chain output");
+	trunk = (uint16_t *)malloc((size_t)TREE_PATH_ROWS * width * 2u);
+	Shared(&f.partial,SparkOpsAttentionScratchBytes(TREE_ROWS,att.heads,AttVdim(),CONTEXT),"attention tree partial");
+	(void)Shared(&one_sequence,4u,"attention tree one sequence");
+	(void)Shared(&one_position,4u,"attention tree one position");
+	FillBf16(query,(uint64_t)TREE_ROWS * att.heads * att.dim,1.0 / 16.0);
+	FillBf16(gate,(uint64_t)TREE_ROWS * att.qkv,1.0);
+	SparkDeviceFree(&f.sequence);
+	SparkDeviceFree(&f.positions);
+	sequence = (uint32_t *)Shared(&f.sequence,TREE_ROWS * 4u,"attention tree sequence");
+	position = (uint32_t *)Shared(&f.positions,TREE_ROWS * 4u,"attention tree positions");
+	slot_table = (uint32_t *)Shared(&slots,TREE_ROWS * 4u,"attention tree slots");
+	fork_table = (uint32_t *)Shared(&forks,TREE_ROWS * 4u,"attention tree forks");
+	offset_table = (uint32_t *)Shared(&offsets,TREE_ROWS * 4u,"attention tree offsets");
+	for ( row = 0u; row < TREE_ROWS; row++ )
+	{
+		sequence[row] = 0u;
+		position[row] = COMMITTED + tree_depths[row];
+		slot_table[row] = COMMITTED + tree_depths[row] + branches[row] * STRIDE_SLOTS;
+		fork_table[row] = branches[row] == 0u ? COMMITTED + tree_depths[row] + 1u : COMMITTED + fork_depths[row];
+		offset_table[row] = branches[row] * STRIDE_SLOTS;
+	}
+	f.paged.sequence_of_row = Whole(&f.sequence);
+	f.paged.positions = Whole(&f.positions);
+	params = AttentionParamsFor(&f,TREE_ROWS,1u);
+	params.row_exact = 1u;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		f.paged.tree = 1u;
+		f.paged.slots = Whole(&slots);
+		f.paged.fork_positions = Whole(&forks);
+		f.paged.slot_offsets = Whole(&offsets);
+		params.rows = TREE_ROWS;
+		if ( !Run(SparkOpsAttention(&ops,queue,&f.paged,Whole(&f.query),Whole(&f.gate),0,Whole(&f.partial),Whole(&f.output),&params,position,sequence),"attention tree") )
+			break;
+		f.paged.tree = 0u;
+		for ( path = 0u; path < TREE_PATHS; path++ )
+		{
+			SparkOpsPaged chain = f.paged;
+			uint32_t *chain_position = position;
+			for ( k = 0u; k < tree_lengths[path]; k++ )
+			{
+				const uint32_t tree_row = tree_paths[path][k];
+				AttentionStoreRow(&f,slot_table[tree_row],COMMITTED + k,&one_sequence,&one_position);
+				memcpy(cq + (uint64_t)k * att.heads * att.dim,query + (uint64_t)tree_row * att.heads * att.dim,(size_t)att.heads * att.dim * 2u);
+				memcpy(cg + (uint64_t)k * att.qkv,gate + (uint64_t)tree_row * att.qkv,(size_t)att.qkv * 2u);
+				chain_position[k] = COMMITTED + k;
+			}
+			chain.slots = chain.positions;
+			params.rows = tree_lengths[path];
+			if ( !Run(SparkOpsAttention(&ops,queue,&chain,Whole(&chain_query),Whole(&chain_gate),0,Whole(&f.partial),Whole(&chain_output),&params,chain_position,sequence),
+				"attention tree path") )
+				break;
+			for ( k = 0u; k < tree_lengths[path]; k++ )
+			{
+				AttentionStoreRow(&f,COMMITTED + k,COMMITTED + k,&one_sequence,&one_position);
+				chain_position[k] = COMMITTED + tree_depths[k];
+			}
+			if ( path == 0u )
+				memcpy(trunk,co,(size_t)TREE_PATH_ROWS * width * 2u);
+			ObserveTreeRows(check,output,pass == 0u ? co : trunk,width,width,path,pass);
+		}
+	}
+	Report("attention_decode tree","300 committed keys, a 7-row tree with two branches at stride 4, 24 q / 4 kv heads x 256",&clean,&corrupted,
+		"a tree row equals the same row of its root path verified as a chain, bit for bit; the control compares branch rows with trunk rows of equal depth");
+	free(trunk);
+	AttentionFree(&f);
+	SparkDeviceFree(&f.query);
+	SparkDeviceFree(&f.gate);
+	SparkDeviceFree(&f.partial);
+	SparkDeviceFree(&f.output);
+	SparkDeviceFree(&slots);
+	SparkDeviceFree(&forks);
+	SparkDeviceFree(&offsets);
+	SparkDeviceFree(&chain_query);
+	SparkDeviceFree(&chain_gate);
+	SparkDeviceFree(&chain_output);
+	SparkDeviceFree(&one_sequence);
+	SparkDeviceFree(&one_position);
+}
+
+static void TestKvMove(void)
+{
+	enum { KV = 2, DIM = 128, CONTEXT = 200, MOVES = 2, WIDTH = KV * 2 * DIM };
+	SparkDeviceBuffer pool, table, sequence, positions, keys, values, from, to;
+	const uint32_t pages = (CONTEXT + ATT_SLOTS - 1u) / ATT_SLOTS;
+	uint16_t *p = (uint16_t *)Shared(&pool,(uint64_t)pages * ATT_SLOTS * WIDTH * 2u,"move pool");
+	uint32_t *t = (uint32_t *)Shared(&table,pages * 4u,"move table");
+	uint32_t *seq = (uint32_t *)Shared(&sequence,CONTEXT * 4u,"move sequence");
+	uint32_t *pos = (uint32_t *)Shared(&positions,CONTEXT * 4u,"move positions");
+	uint16_t *k = (uint16_t *)Shared(&keys,(uint64_t)CONTEXT * KV * DIM * 2u,"move keys");
+	uint16_t *v = (uint16_t *)Shared(&values,(uint64_t)CONTEXT * KV * DIM * 2u,"move values");
+	uint32_t *src = (uint32_t *)Shared(&from,MOVES * 4u,"move sources");
+	uint32_t *dst = (uint32_t *)Shared(&to,MOVES * 4u,"move destinations");
+	SparkOpsPaged paged;
+	SparkKvParams store, move;
+	Check clean, corrupted;
+	uint32_t pass, i, e;
+	FillBf16(k,(uint64_t)CONTEXT * KV * DIM,1.0);
+	FillBf16(v,(uint64_t)CONTEXT * KV * DIM,1.0);
+	for ( i = 0u; i < pages; i++ )
+		t[i] = pages - 1u - i;
+	for ( i = 0u; i < CONTEXT; i++ )
+	{
+		seq[i] = 0u;
+		pos[i] = i;
+	}
+	src[0] = 150u;
+	src[1] = 190u;
+	dst[0] = 101u;
+	dst[1] = 102u;
+	memset(&paged,0,sizeof(paged));
+	paged.pool = Whole(&pool);
+	paged.page_table = Whole(&table);
+	paged.sequence_of_row = Whole(&sequence);
+	paged.positions = paged.slots = Whole(&positions);
+	paged.page_slots = ATT_SLOTS;
+	paged.pages_per_sequence = pages;
+	paged.pool_pages = pages;
+	paged.kv_heads = KV;
+	memset(&store,0,sizeof(store));
+	store.rows = CONTEXT;
+	store.kv_heads = KV;
+	store.head_dimension = DIM;
+	store.page_slots = ATT_SLOTS;
+	store.pages_per_sequence = pages;
+	store.key_stride = KV * DIM;
+	store.value_stride = KV * DIM;
+	store.pool_pages = pages;
+	move = store;
+	move.rows = MOVES;
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( !Run(SparkOpsKvStore(&ops,queue,&paged,Whole(&keys),Whole(&values),&store),"kv_store before move") ||
+			!Run(SparkOpsKvMove(&ops,queue,&paged,Whole(&from),Whole(&to),&move),"kv_move") )
+			return;
+		for ( i = 0u; i < MOVES; i++ )
+		{
+			const uint32_t expected_row = pass == 0u ? src[i] : src[i] - 1u;
+			const uint64_t slot = ((uint64_t)t[dst[i] / ATT_SLOTS] * ATT_SLOTS + dst[i] % ATT_SLOTS) * WIDTH;
+			const uint64_t source = ((uint64_t)t[src[i] / ATT_SLOTS] * ATT_SLOTS + src[i] % ATT_SLOTS) * WIDTH;
+			for ( e = 0u; e < KV * DIM; e++ )
+			{
+				Observe(check,Bf16(p[slot + e]),Bf16(k[(uint64_t)expected_row * KV * DIM + e]),0.0);
+				Observe(check,Bf16(p[slot + KV * DIM + e]),Bf16(v[(uint64_t)expected_row * KV * DIM + e]),0.0);
+				Observe(check,Bf16(p[source + e]),Bf16(k[(uint64_t)src[i] * KV * DIM + e]),0.0);
+			}
+		}
+	}
+	Report("kv_move_paged","2 kv heads x 128, two slots moved down a reversed page table",&clean,&corrupted,
+		"the destination slot holds the source slot's keys and values exactly and the source is untouched");
+	SparkDeviceFree(&pool);
+	SparkDeviceFree(&table);
+	SparkDeviceFree(&sequence);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&keys);
+	SparkDeviceFree(&values);
+	SparkDeviceFree(&from);
+	SparkDeviceFree(&to);
 }
 
 static int AttentionPagesRun(AttentionFixture *f, uint32_t rows, const uint32_t *position, const uint32_t *sequence, uint32_t sequences,
@@ -5677,10 +6099,12 @@ int main(int argc, char **argv)
 	TestHcCombKernels(3u,0u);
 	TestHcCombKernels(9u,0u);
 	TestCausalConv();
+	TestCausalConvTree();
 	TestCausalConvF32();
 	TestDeltaPrenorm();
 	TestCausalConvDilated();
 	TestGatedDelta();
+	TestGatedDeltaTree();
 	TestChannelDelta();
 	TestAttention(1u,1u,0u);
 	TestAttention(1000u,1u,0u);
@@ -5718,6 +6142,8 @@ int main(int argc, char **argv)
 		att = qwen;
 	}
 	TestAttentionPages();
+	TestAttentionTree();
+	TestKvMove();
 	TestGeluMul(2u);
 	TestGatedMulRouted(24u,SPARK_GATED_GELU_TANH);
 	TestGatedMulRouted(24u,SPARK_GATED_SILU);

@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
 from context_retention import EXPIRY_SWEEP_SECONDS, RETENTION_SECONDS, evict_contexts, expire_contexts
 from block_drafter import DraftGraph, open_drafter
+from dft3_tree import ROOT_PARENT, draft_nodes
 from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
 from tapstream import FRAME, HELLO, MAGIC, read_hello
 
@@ -50,7 +51,6 @@ DFT3_NODE = struct.Struct("<IIIIf")
 DFT3_FOOTER = struct.Struct("<8I4I")
 STATUS_OK, STATUS_BAD_REQUEST, STATUS_BAD_SEQUENCE, STATUS_INTERNAL, STATUS_UNAVAILABLE = 0, 1, 2, 3, 4
 SPEC_DSPARK = 2
-ROOT_PARENT = 0xFFFFFFFF
 
 
 class Context:
@@ -382,13 +382,13 @@ class Server:
                 missing = np.flatnonzero(~context.held[:position]) if position <= context.held.shape[0] else np.arange(context.held.shape[0], position)
                 print(f"DRAFT-GAP sequence {sequence} position {position} missing {missing.size} first {int(missing[0]) if missing.size else -1} "
                       f"last {int(missing[-1]) if missing.size else -1} ring_window {context.window}", flush=True)
-            drafts, confidence = self.graph.draft(int(anchor), position, contexts, min(depth, self.max_drafts), sampling)
+            drafts, confidence, alternates, alternate_scores = self.graph.draft(int(anchor), position, contexts, min(depth, self.max_drafts), sampling)
         elapsed = int((time.monotonic() - started) * 1e6)
         self.timing["compute"] += elapsed / 1e6
         self.timing["context"] += position
         self.stats["drafted"] += 1
         self.stats["draft_us"] += elapsed
-        return drafts, confidence, elapsed
+        return drafts, confidence, elapsed, alternates, alternate_scores
 
     def draft(self, request):
         if self.latent:
@@ -419,7 +419,7 @@ class Server:
         self.timing["context"] += position
         self.stats["drafted"] += 1
         self.stats["draft_us"] += elapsed
-        return drafts, confidence, elapsed
+        return drafts, confidence, elapsed, None, None
 
     def serve(self, connection):
         while True:
@@ -449,10 +449,8 @@ class Server:
                 if result is None and status == STATUS_OK:
                     status = STATUS_UNAVAILABLE
                 elif result is not None:
-                    drafts, confidence, draft_us = result
-                    nodes.append((int(anchor), ROOT_PARENT, 0, SPEC_DSPARK, 1.0))
-                    for index, token in enumerate(drafts[:max(0, max_nodes - 1)]):
-                        nodes.append((int(token), index, index + 1, SPEC_DSPARK, float(confidence[index]) if confidence else 0.0))
+                    drafts, confidence, draft_us, alternates, alternate_scores = result
+                    nodes = draft_nodes(anchor, drafts, confidence, max_nodes, SPEC_DSPARK, alternates, alternate_scores, self.args.alternates)
             footer = [0] * 8
             footer[1] = draft_us
             elapsed = int((time.monotonic() - started) * 1e6)
@@ -515,6 +513,7 @@ def main():
     parser.add_argument("--draft-port", type=int, required=True)
     parser.add_argument("--window", type=int, default=4096, help="context positions each sequence keeps and a draft attends to")
     parser.add_argument("--wait-ms", type=float, default=30.0, help="how long a request waits for the taps it needs")
+    parser.add_argument("--alternates", type=int, default=2, help="runner-up tokens of the latent drafter returned as one-node branches, best first; 0 for chains")
     parser.add_argument("--context-bytes", type=int, default=8 << 30, help="keys and values held for all sequences; the least recently used goes first")
     parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
     parser.add_argument("--record-dir", default="", help="directory that receives a copy of every tap stream, one file per connection")

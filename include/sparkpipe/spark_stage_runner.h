@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 4u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 5u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -141,6 +141,15 @@ typedef struct SparkStageRunnerDispatch
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
 	const uint32_t *host_state_target;
+	uint32_t tree;
+	const uint32_t *slots;
+	const uint32_t *fork_positions;
+	const uint32_t *slot_offsets;
+	const uint32_t *parent_rows;
+	const uint32_t *state_loads;
+	const uint32_t *state_saves;
+	const uint32_t *host_slots;
+	const uint32_t *host_parent_rows;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv
@@ -196,8 +205,11 @@ uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner);
 SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv);
 uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner);
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture);
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);

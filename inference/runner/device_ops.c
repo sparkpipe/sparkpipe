@@ -136,7 +136,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_poly_norm_mul",
 	"spark_differential_gate",
 	"spark_hc_site_clamped",
-	"spark_route_combine_weighted_shared"
+	"spark_route_combine_weighted_shared",
+	"spark_kv_move_paged"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -721,7 +722,7 @@ SparkStatus SparkOpsLinearFp8(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spar
 SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences,
 	SparkTensor input, SparkTensor weight, SparkTensor output, const SparkConvParams *params)
 {
-	SparkDeviceBinding bindings[6];
+	SparkDeviceBinding bindings[7];
 	SparkStatus status;
 	if ( params->channels == 0u || params->sequences == 0u || params->kernel_taps == 0u || params->kernel_taps > 8u ||
 		SPARK_CONV_SPAN(params->kernel_taps,params->dilation) > SPARK_CONV_SPAN_MAX || params->sequences != sequences->sequences ||
@@ -736,13 +737,16 @@ SparkStatus SparkOpsCausalConv(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 		status = OpsNeed("causal_conv","window",window,(uint64_t)params->channels * SPARK_CONV_SPAN(params->kernel_taps,params->dilation) * 2u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( params->tree != sequences->tree || (params->tree != 0u && (params->commit != 0u || sequences->parent_rows.range.buffer == 0)) )
+		return(OpsRefuse("causal_conv","a tree step carries its parent rows and never commits"));
 	bindings[0] = OpsBind(window,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[1] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
 	bindings[3] = OpsBind(input,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(weight,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
-	return(OpsLaunch(ops,queue,SPARK_OPS_CAUSAL_CONV,(params->channels + 255u) / 256u,params->sequences,1u,256u,params,sizeof(*params),bindings,6u));
+	bindings[6] = OpsBind(params->tree != 0u ? sequences->parent_rows : sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_CAUSAL_CONV,(params->channels + 255u) / 256u,params->sequences,1u,256u,params,sizeof(*params),bindings,7u));
 }
 
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension)
@@ -757,12 +761,15 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	const uint64_t vectors = (uint64_t)params->rows * params->key_heads * params->key_dimension * 4u;
 	const uint64_t scalars = (uint64_t)params->rows * params->value_heads * 4u;
 	SparkTensor query, key, decay, beta;
-	SparkDeviceBinding bindings[10];
+	SparkDeviceBinding bindings[12];
 	SparkStatus status;
 	if ( params->rows == 0u || params->key_heads == 0u || params->value_heads % params->key_heads != 0u ||
 		params->key_dimension != SPARK_OPS_DELTA_KEY_DIM || params->value_dimension % 4u != 0u || params->value_dimension == 0u ||
 		params->sequences != sequences->sequences || params->commit != sequences->commit || params->value_heads / params->key_heads > 128u )
 		return(OpsRefuse("gated_delta","128-dimensional keys, value heads in whole groups per key head and matching sequence tables are required"));
+	if ( params->tree != sequences->tree || (params->tree != 0u && (params->commit != 0u || sequences->state_loads.range.buffer == 0 ||
+		sequences->state_saves.range.buffer == 0 || sequences->snapshots.range.buffer == 0)) )
+		return(OpsRefuse("gated_delta","a tree step carries its state loads, saves and snapshots and never commits"));
 	status = OpsNeed("gated_delta","scratch",scratch,SparkOpsDeltaScratchBytes(params->rows,params->key_heads,params->value_heads,params->key_dimension));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("gated_delta","state",state,(uint64_t)params->value_heads * params->key_dimension * params->value_dimension * 4u);
@@ -772,6 +779,13 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 		status = OpsNeed("gated_delta","bias",bias,(uint64_t)params->value_heads * 4u);
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("gated_delta","output",output,OpsRowsBytes(params->rows,params->output_stride,params->value_heads * params->value_dimension,2u));
+	if ( status == SPARK_STATUS_OK && params->tree != 0u )
+		status = OpsNeed("gated_delta","state_loads",sequences->state_loads,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK && params->tree != 0u )
+		status = OpsNeed("gated_delta","state_saves",sequences->state_saves,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK && params->tree != 0u )
+		status = OpsNeed("gated_delta","snapshots",sequences->snapshots,
+			(uint64_t)SPARK_DELTA_SNAPSHOT_MAX * params->value_heads * params->key_dimension * params->value_dimension * 4u);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	query = SparkTensorSlice(scratch,0u,vectors);
@@ -798,8 +812,11 @@ SparkStatus SparkOpsGatedDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, Spa
 	bindings[6] = OpsBind(beta,SPARK_DEVICE_BIND_READ);
 	bindings[7] = OpsBind(mix,SPARK_DEVICE_BIND_READ);
 	bindings[8] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	bindings[9] = OpsBind(params->tree != 0u ? sequences->state_loads : sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[10] = OpsBind(params->tree != 0u ? sequences->state_saves : sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[11] = OpsBind(params->tree != 0u ? sequences->snapshots : state,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_DELTA_RULE,params->value_dimension / 4u,params->value_heads,params->sequences,128u,params,sizeof(*params),
-		bindings,9u));
+		bindings,12u));
 }
 
 uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension)
@@ -884,12 +901,34 @@ SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const 
 	bindings[0] = OpsBind(key,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(value,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
-	bindings[3] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(paged->tree != 0u ? paged->slots : paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[4] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,params->skip != 0u ? SPARK_OPS_KV_STORE_SKIP : SPARK_OPS_KV_STORE,params->rows,params->kv_heads,1u,
 		OpsThreads(params->head_dimension,1024u),params,sizeof(*params),bindings,7u));
+}
+
+SparkStatus SparkOpsKvMove(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor sources, SparkTensor destinations,
+	const SparkKvParams *params)
+{
+	SparkDeviceBinding bindings[7];
+	SparkStatus status;
+	if ( params->rows == 0u || params->kv_heads != paged->kv_heads || params->page_slots != paged->page_slots ||
+		params->pages_per_sequence != paged->pages_per_sequence || params->pool_pages != paged->pool_pages || params->head_dimension == 0u )
+		return(OpsRefuse("kv_move","the move geometry must match the paged pool"));
+	status = OpsNeed("kv_move","sources",sources,(uint64_t)params->rows * 4u);
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("kv_move","destinations",destinations,(uint64_t)params->rows * 4u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(sources,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(destinations,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[5] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_KV_MOVE,params->rows,params->kv_heads,1u,OpsThreads(params->head_dimension,1024u),params,sizeof(*params),bindings,6u));
 }
 
 static uint32_t OpsAttentionWidth(const SparkAttentionParams *params)
@@ -944,7 +983,7 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	const uint32_t *host_sequence_of_row)
 {
 	SparkAttentionParams launch = *params;
-	SparkDeviceBinding bindings[7];
+	SparkDeviceBinding bindings[9];
 	SparkStatus status;
 	uint32_t row, longest = 0u, run = 0u, widest = 0u, decode;
 	if ( launch.group == 0u && params->kv_heads != 0u && params->heads % params->kv_heads == 0u )
@@ -967,6 +1006,9 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots )
 		return(OpsRefuse("attention","every row's position must lie inside its sequence's pages"));
 	decode = widest <= OPS_DECODE_ROWS_PER_SEQUENCE || params->row_exact != 0u ? 1u : 0u;
+	if ( paged->tree != 0u && (decode == 0u || paged->fork_positions.range.buffer == 0 || paged->slot_offsets.range.buffer == 0) )
+		return(OpsRefuse("attention","a tree frame takes the decode kernel with its fork positions and slot offsets"));
+	launch.tree = paged->tree;
 	launch.partition_keys = decode != 0u ? OPS_DECODE_PARTITION_KEYS : OPS_PREFILL_PARTITION_KEYS;
 	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
@@ -989,9 +1031,11 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
 	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[7] = OpsBind(paged->tree != 0u ? paged->fork_positions : paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(paged->tree != 0u ? paged->slot_offsets : paged->positions,SPARK_DEVICE_BIND_READ);
 	if ( decode != 0u )
 		status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_DECODE + OpsAttentionWidth(params)),launch.partitions,params->heads,params->rows,256u,
-			&launch,sizeof(launch),bindings,7u);
+			&launch,sizeof(launch),bindings,9u);
 	else
 		status = OpsAttentionPrefill(ops,queue,bindings,&launch,host_sequence_of_row);
 	if ( status != SPARK_STATUS_OK )
@@ -1010,7 +1054,7 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	const uint32_t *host_extra_positions)
 {
 	SparkAttentionParams launch = *params;
-	SparkDeviceBinding bindings[7];
+	SparkDeviceBinding bindings[9];
 	SparkStatus status;
 	uint32_t row, longest = 0u, extra_longest = 0u, primary;
 	if ( launch.group == 0u && params->kv_heads != 0u && params->heads % params->kv_heads == 0u )
@@ -1033,6 +1077,8 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots ||
 		(uint64_t)extra_longest > (uint64_t)params->pages_per_sequence * params->page_slots )
 		return(OpsRefuse("attention_extra","every row's keys must lie inside its sequence's pages"));
+	if ( paged->tree != 0u || extra->tree != 0u )
+		return(OpsRefuse("attention_extra","tree frames take the single-range attention path"));
 	launch.partition_keys = OPS_DECODE_PARTITION_KEYS;
 	primary = (longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.extra_partitions = (extra_longest + launch.partition_keys - 1u) / launch.partition_keys;
@@ -1056,7 +1102,9 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
 	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
-	status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA,primary,params->heads,params->rows,256u,&launch,sizeof(launch),bindings,7u);
+	bindings[7] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA,primary,params->heads,params->rows,256u,&launch,sizeof(launch),bindings,9u);
 	if ( status == SPARK_STATUS_OK && launch.extra_partitions != 0u )
 	{
 		SparkAttentionParams second = launch;
@@ -1064,7 +1112,7 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 		second.window = 0u;
 		bindings[1] = OpsBind(extra->pool,SPARK_DEVICE_BIND_READ);
 		bindings[4] = OpsBind(extra->positions,SPARK_DEVICE_BIND_READ);
-		status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA,launch.extra_partitions,params->heads,params->rows,256u,&second,sizeof(second),bindings,7u);
+		status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA,launch.extra_partitions,params->heads,params->rows,256u,&second,sizeof(second),bindings,9u);
 	}
 	if ( status != SPARK_STATUS_OK )
 		return(status);

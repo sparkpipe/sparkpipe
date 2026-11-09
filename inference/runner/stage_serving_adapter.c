@@ -20,6 +20,7 @@
 #include "sparkpipe/spark_memory_buffer.h"
 #include "sparkpipe/spark_serving_cache_admission.h"
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 #include "sparkpipe/spark_stage_kv_binding.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -82,6 +83,22 @@ typedef struct SparkStageServingState
 	SparkMemoryBuffer seqslot_device;
 	SparkMemoryBuffer order_host;
 	SparkMemoryBuffer order_device;
+	SparkMemoryBuffer slots_host;
+	SparkMemoryBuffer slots_device;
+	SparkMemoryBuffer fork_host;
+	SparkMemoryBuffer fork_device;
+	SparkMemoryBuffer offset_host;
+	SparkMemoryBuffer offset_device;
+	SparkMemoryBuffer parent_host;
+	SparkMemoryBuffer parent_device;
+	SparkMemoryBuffer loads_host;
+	SparkMemoryBuffer loads_device;
+	SparkMemoryBuffer saves_host;
+	SparkMemoryBuffer saves_device;
+	uint32_t tree_frame;
+	uint64_t lane_contexts[SPARK_STAGE_SERVING_MAX_LANES];
+	uint32_t path_begin[SPARK_STAGE_SERVING_MAX_LANES + 1u];
+	uint32_t path_rows[SPARK_STAGE_SERVING_MAX_ROWS];
 	SparkMemoryBuffer output_tokens;
 	SparkMemoryBuffer output_scores;
 	SparkStageModuleLedger ledger;
@@ -565,7 +582,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 	uint32_t steps, const uint32_t *kept)
 {
 	const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
-	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	const uint32_t *order = state->tree_frame != 0u && kept != 0 ? state->path_rows : (const uint32_t *)state->order_host.pointer;
 	const uint32_t *positions = (const uint32_t *)state->positions_host.pointer;
 	uint32_t tokens[SPARK_STAGE_SERVING_MAX_ROWS];
 	for ( uint32_t s = 0u; s < active && StageServingTapOpen(state) != 0u; ++s )
@@ -925,7 +942,8 @@ static SparkStatus StageServingPrepareContinuity(void *context)
 	SparkStageServingContinuity *continuity = (SparkStageServingContinuity *)context;
 	return SparkStageKvBindingContinuity(&continuity->state->kv, continuity->state->lane_states,
 		continuity->rows, continuity->active, continuity->row_slots, continuity->row_sequence_ids,
-		continuity->row_positions, continuity->bound, continuity->sequence_ids, continuity->next_positions);
+		continuity->row_positions, continuity->state->tree_frame != 0u ? continuity->state->lane_contexts : 0, continuity->bound, continuity->sequence_ids,
+		continuity->next_positions);
 }
 
 static void StageServingPublishCompletion(void *context, const SparkModelDriverCompletion *completion)
@@ -995,6 +1013,18 @@ static SparkStatus StageServingAllocate(SparkStageServingState *state)
 		{ &state->seqslot_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->order_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
 		{ &state->order_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->slots_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->slots_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->fork_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->fork_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->offset_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->offset_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->parent_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->parent_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->loads_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->loads_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->saves_host, SPARK_MEMORY_SPACE_HOST_COHERENT, rows * sizeof(uint32_t) },
+		{ &state->saves_device, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_tokens, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_MEMORY_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 	};
@@ -1051,6 +1081,13 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		status = StageServingRunnerWeights(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());
+	if ( status == SPARK_STATUS_OK && (model->descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u &&
+		model->descriptor->tree_slot_grain != SparkStageRunnerTreeSlotGrain(&state->runner) )
+	{
+		fprintf(stderr, "%s: the descriptor's tree slot grain %u is not the runner's %u\n", model->module_tag, model->descriptor->tree_slot_grain,
+			SparkStageRunnerTreeSlotGrain(&state->runner));
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = StageServingOpenTaps(state);
 	if ( status == SPARK_STATUS_OK )
@@ -1069,6 +1106,8 @@ static void StageServingDestroy(void *adapter_state)
 		&state->positions_host, &state->context_host, &state->state_host, &state->positions_device,
 		&state->context_device, &state->state_device, &state->runs_host, &state->runs_device,
 		&state->seqslot_host, &state->seqslot_device, &state->order_host, &state->order_device,
+		&state->slots_host, &state->slots_device, &state->fork_host, &state->fork_device, &state->offset_host, &state->offset_device,
+		&state->parent_host, &state->parent_device, &state->loads_host, &state->loads_device, &state->saves_host, &state->saves_device,
 		&state->output_tokens, &state->output_scores, &state->target_host,
 	};
 	if ( state == 0 )
@@ -1228,6 +1267,33 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 			? submission->row_lane_indices[i] : i;
 		order[cursor[lane]++] = i;
 	}
+	state->tree_frame = 0u;
+	if ( submission->lanes != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u )
+	{
+		SparkSpeculationTreeLayout layout;
+		uint32_t *slot_table = (uint32_t *)state->slots_host.pointer, *fork = (uint32_t *)state->fork_host.pointer;
+		uint32_t *offset = (uint32_t *)state->offset_host.pointer, *parent = (uint32_t *)state->parent_host.pointer;
+		uint32_t *loads = (uint32_t *)state->loads_host.pointer, *saves = (uint32_t *)state->saves_host.pointer;
+		if ( lanes != 1u || submission->row_parent_rows == 0 || submission->row_slots == 0 || submission->token_ids == 0 || rows > SPARK_SPECULATION_TREE_FRAME_MAX_ROWS ||
+			SparkSpeculationTreeLayoutBuild(submission->row_parent_rows, submission->token_ids, rows, (uint32_t)submission->lanes[0].sequence_position,
+				state->model->descriptor->tree_slot_grain, &layout) != SPARK_STATUS_OK ||
+			SparkSpeculationTreeLayoutMatches(&layout, submission->row_positions, submission->row_slots, rows) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+		for ( i = 0u; i < rows; ++i )
+		{
+			slot_table[i] = layout.row[i].slot;
+			fork[i] = layout.row[i].fork_position;
+			offset[i] = layout.row[i].slot_offset;
+			parent[i] = submission->row_parent_rows[i];
+			loads[i] = i != 0u && layout.row[i].branch != layout.row[submission->row_parent_rows[i]].branch ? layout.row[i].branch : 0u;
+			saves[i] = 0u;
+		}
+		for ( i = 1u; i < rows; ++i )
+			if ( loads[i] != 0u )
+				saves[submission->row_parent_rows[i]] |= 1u << (loads[i] - 1u);
+		context[slots[0]] = layout.context;
+		state->tree_frame = 1u;
+	}
 	*active_out = lanes;
 	return SPARK_STATUS_OK;
 }
@@ -1272,13 +1338,16 @@ static void StageServingContinuityRows(SparkStageServingState *state,
 	const uint32_t *begin = (const uint32_t *)state->runs_host.pointer;
 	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
 	const uint32_t *slots = (const uint32_t *)state->seqslot_host.pointer;
+	const uint32_t *slot_table = (const uint32_t *)state->slots_host.pointer;
+	const uint32_t *context = (const uint32_t *)state->context_host.pointer;
 	uint32_t lane, cursor, out = active, row;
 	for ( lane = 0u; lane < active; ++lane )
 	{
 		row = order[begin[lane]];
 		row_slots[lane] = slots[lane];
 		row_sequence_ids[lane] = submission->row_sequence_ids[row];
-		row_positions[lane] = submission->row_positions[row];
+		row_positions[lane] = state->tree_frame != 0u ? slot_table[row] : submission->row_positions[row];
+		state->lane_contexts[lane] = state->tree_frame != 0u ? context[slots[lane]] : 0u;
 	}
 	for ( lane = 0u; lane < active; ++lane )
 		for ( cursor = begin[lane] + 1u; cursor < begin[lane + 1u] && out < rows; ++cursor, ++out )
@@ -1286,7 +1355,7 @@ static void StageServingContinuityRows(SparkStageServingState *state,
 			row = order[cursor];
 			row_slots[out] = slots[lane];
 			row_sequence_ids[out] = submission->row_sequence_ids[row];
-			row_positions[out] = submission->row_positions[row];
+			row_positions[out] = state->tree_frame != 0u ? slot_table[row] : submission->row_positions[row];
 		}
 }
 
@@ -1319,6 +1388,8 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 		*steps_out = 1u;
 		if ( state->runner.owns_final_head == 0u || SparkStageRunnerVerifyCapable(&state->runner) == 0u ||
 			(uint64_t)active * submission->tokens_per_sequence > SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( state->tree_frame != 0u && (active != 1u || SparkStageRunnerTreeVerifyCapable(&state->runner) == 0u) )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		for ( index = 0u; index < frame->cache_lane_count; ++index )
 			if ( (frame->cache_lanes[index].flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) == 0u ||
@@ -1399,6 +1470,14 @@ static SparkStatus StageServingCopyInputs(SparkStageServingState *state, uint32_
 		SparkMemoryBufferCopy(&state->seqslot_device, &state->seqslot_host, (uint64_t)active * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
 		SparkMemoryBufferCopy(&state->order_device, &state->order_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK )
 		return SPARK_STATUS_IO_ERROR;
+	if ( state->tree_frame != 0u &&
+		(SparkMemoryBufferCopy(&state->slots_device, &state->slots_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
+		 SparkMemoryBufferCopy(&state->fork_device, &state->fork_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
+		 SparkMemoryBufferCopy(&state->offset_device, &state->offset_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
+		 SparkMemoryBufferCopy(&state->parent_device, &state->parent_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
+		 SparkMemoryBufferCopy(&state->loads_device, &state->loads_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK ||
+		 SparkMemoryBufferCopy(&state->saves_device, &state->saves_host, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_STATUS_OK) )
+		return SPARK_STATUS_IO_ERROR;
 	return SPARK_STATUS_OK;
 }
 
@@ -1442,6 +1521,18 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_positions = (const uint32_t *)state->positions_host.pointer;
 	dispatch->host_sequence_of_row = (const uint32_t *)state->state_host.pointer;
 	dispatch->host_state_target = (const uint32_t *)state->target_host.pointer;
+	if ( state->tree_frame != 0u )
+	{
+		dispatch->tree = 1u;
+		dispatch->slots = state->slots_device.pointer;
+		dispatch->fork_positions = state->fork_device.pointer;
+		dispatch->slot_offsets = state->offset_device.pointer;
+		dispatch->parent_rows = state->parent_device.pointer;
+		dispatch->state_loads = state->loads_device.pointer;
+		dispatch->state_saves = state->saves_device.pointer;
+		dispatch->host_slots = (const uint32_t *)state->slots_host.pointer;
+		dispatch->host_parent_rows = (const uint32_t *)state->parent_host.pointer;
+	}
 }
 
 static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_t rows, uint32_t steps)
@@ -1455,11 +1546,19 @@ static SparkStatus StageServingReadTokens(SparkStageServingState *state, uint32_
 	return SPARK_STATUS_OK;
 }
 
-static void StageServingVerifyKept(const SparkStageServingState *state, const SparkModelServingSubmission *submission,
+static void StageServingVerifyKept(SparkStageServingState *state, const SparkModelServingSubmission *submission,
 	uint32_t active, uint32_t *kept)
 {
 	const uint32_t *runs = (const uint32_t *)state->runs_host.pointer;
 	const uint32_t *order = (const uint32_t *)state->order_host.pointer;
+	if ( state->tree_frame != 0u )
+	{
+		kept[0] = SparkSpeculationTreeResolvePath(submission->row_parent_rows, submission->token_ids, state->completion_tokens, submission->row_count,
+			state->path_rows);
+		state->path_begin[0] = 0u;
+		state->path_begin[1] = kept[0];
+		return;
+	}
 	for ( uint32_t s = 0u; s < active; ++s )
 		kept[s] = SparkModelServingVerifyKeptRows(runs, order, state->completion_tokens, submission->token_ids, s);
 }
@@ -1483,7 +1582,8 @@ static SparkStatus StageServingComplete(SparkStageServingState *state, const Spa
 		completion.completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS;
 		for ( uint32_t s = 0u; s < active; ++s )
 			for ( uint32_t w = 0u; w < stride; ++w )
-				completion.token_ids[s * stride + w] = w < kept[s] ? state->completion_tokens[order[runs[s] + w]] : SPARK_MODEL_SERVING_NO_TOKEN;
+				completion.token_ids[s * stride + w] = w < kept[s] ? state->completion_tokens[state->tree_frame != 0u ? state->path_rows[w] : order[runs[s] + w]] :
+					SPARK_MODEL_SERVING_NO_TOKEN;
 	}
 	else if ( state->runner.owns_final_head != 0u )
 	{
@@ -1632,7 +1732,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	{
 		const uint64_t keep_started = StageServingNowNs();
 		StageServingVerifyKept(state, submission, active, kept);
-		status = SparkStageRunnerKeepRows(&state->runner, kept, active);
+		if ( state->tree_frame != 0u && kept[0] == 0u )
+			status = SPARK_STATUS_VALIDATION_FAILED;
+		else
+			status = state->tree_frame != 0u ? SparkStageRunnerKeepPath(&state->runner, state->path_rows, state->path_begin, kept, active) :
+				SparkStageRunnerKeepRows(&state->runner, kept, active);
 		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )

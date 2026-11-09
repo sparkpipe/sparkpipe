@@ -151,6 +151,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_DIFFERENTIAL_GATE,
 	SPARK_OPS_HC_SITE_CLAMPED,
 	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,
+	SPARK_OPS_KV_MOVE,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -176,6 +177,11 @@ typedef struct SparkOpsSequences
 	SparkTensor row_begin;
 	uint32_t sequences;
 	uint32_t commit;
+	uint32_t tree;
+	SparkTensor parent_rows;
+	SparkTensor state_loads;
+	SparkTensor state_saves;
+	SparkTensor snapshots;
 } SparkOpsSequences;
 
 typedef struct SparkOpsPaged
@@ -188,6 +194,10 @@ typedef struct SparkOpsPaged
 	uint32_t pages_per_sequence;
 	uint32_t pool_pages;
 	uint32_t kv_heads;
+	uint32_t tree;
+	SparkTensor slots;
+	SparkTensor fork_positions;
+	SparkTensor slot_offsets;
 } SparkOpsPaged;
 
 SparkStatus SparkDeviceOpsOpen(SparkDeviceOps *ops, const char *library_path);
@@ -227,6 +237,8 @@ SparkStatus SparkOpsChannelDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	SparkTensor mix, SparkTensor decay_logits, SparkTensor beta_logits, SparkTensor log_scale, SparkTensor bias, SparkTensor scratch, SparkTensor output,
 	const SparkDeltaParams *params);
 SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor key, SparkTensor value,
+	const SparkKvParams *params);
+SparkStatus SparkOpsKvMove(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor sources, SparkTensor destinations,
 	const SparkKvParams *params);
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions,
