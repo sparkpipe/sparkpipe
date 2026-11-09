@@ -289,10 +289,15 @@ failed gate.
   Metal Qwen3.8-27B tool: slot and position split, the key mapping in the
   GQA kernels, parent taps and branch snapshots in the recurrent kernels,
   path-form `keep_rows` with slot relocation, the `TREE_VERIFY` capability.
-  Gates: `tests/test_ling_verify_frames.cu` and `tests/cuda/gqa_shard_cuda.cu`
-  on a Spark; the Metal kernel library compiles and
-  `metal_stage_run --mode spec` stays token-identical on M5U0, which this
-  change could not run.
+  Gates, all run on 2026-11-09: `tests/test_ling_verify_frames.cu` and
+  `tests/cuda/gqa_shard_cuda.cu` on a Spark; `tests/test_metal_kernels.c`
+  (tree attention, conv, delta and the KV move bit for bit) and
+  `metal_stage_run --mode spec` on M5U0, token-identical on all six
+  Qwen3.8-27B prompts with `--tree-branches 2` (korean accepted 14 tokens
+  off the trunk) and with `--tree-branches 0`. The tool adds every
+  available alternate, so on the rewrite prompt, where chains already
+  accept most drafts, trees cost rows without gain (155 against 182 tok/s);
+  the engine adds a branch only when the frame cost model says it pays.
 - **P3, K3.** MLA ancestor keys and the KDA tree scan. Gate: the same path
   pin on K3 at TP16, and B1 and B2 tokens per second on the speculation
   receipts' workloads against the chain, in one hold. Serve only if the tree
