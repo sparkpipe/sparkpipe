@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_worker.h"
 #include "sparkpipe/spark_weightd_pacer.h"
+#include "sparkpipe/spark_weightd_spine.h"
 #include "sparkpipe/spark_weightd_direct.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_kv_shared_index.h"
@@ -1833,7 +1834,7 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 	CUmemGenericAllocationHandle handle = 0;
 	CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
 	size_t granularity = 0;
-	uint64_t span_bytes,create_bytes;
+	uint64_t span_bytes,create_bytes,started_ns;
 	uint32_t index;
 	int device = 0;
 
@@ -1861,6 +1862,7 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	started_ns = SparkWeightdMonotonicTimeNs();
 	if ( cuMemCreate(&handle,(size_t)create_bytes,&prop,0ull) != CUDA_SUCCESS )
 	{
 		fprintf(stderr,"WD-POOL-PREMAP-FAIL single-alloc create span=%llu failed\n",
@@ -1892,8 +1894,8 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 	arena->pool_committed_bytes += span_bytes;
 	server->resident_bytes += span_bytes;
 	SparkWeightdMeshDeviceProbe("pool",arena->device_base,span_bytes);
-	printf("pool single-alloc chunks=%u span=%llu (one allocation for the whole arena; pooled chunks never evicted)\n",
-	    arena->chunk_count,(unsigned long long)span_bytes);
+	printf("pool single-alloc chunks=%u span=%llu seconds=%.3f (one allocation for the whole arena; pooled chunks never evicted)\n",
+	    arena->chunk_count,(unsigned long long)span_bytes,(double)(SparkWeightdMonotonicTimeNs() - started_ns) / 1e9);
 	fflush(stdout);
 	return(SPARK_STATUS_OK);
 }
@@ -2184,17 +2186,18 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
     fflush(stdout);
 }
 
+static SparkStatus SparkWeightdSpinePaceServer(void *context,uint64_t bytes)
+{
+    return(SparkWeightdServerPace(context,bytes));
+}
+
 static SparkStatus SparkWeightdPreloadSpine(SparkWeightdServer *server,
     SparkWeightdArena *arena,int32_t fd)
 {
     const SparkWeightdSpan *span;
-    uint64_t span_offset,span_end;
     uint32_t first_chunk,last_chunk,chunk,index;
-    ssize_t moved;
     if (arena->manifest.spine_count == 0u)
         return(SPARK_STATUS_OK);
-    if (arena->staging == 0)
-        return(SPARK_STATUS_INVALID_ARGUMENT);
     for ( index = 0u; index < arena->manifest.spine_count; index++ )
     {
         span = &arena->manifest.spine[index];
@@ -2213,34 +2216,7 @@ static SparkStatus SparkWeightdPreloadSpine(SparkWeightdServer *server,
             }
         }
     }
-    for ( index = 0u; index < arena->manifest.spine_count; index++ )
-    {
-        span = &arena->manifest.spine[index];
-        span_offset = span->offset;
-        span_end = span->offset + span->bytes;
-        while ( span_offset < span_end )
-        {
-            uint64_t remain = span_end - span_offset;
-            size_t bytes = remain < SPARK_WEIGHTD_ARENA_STAGING_BYTES ?
-                (size_t)remain : (size_t)SPARK_WEIGHTD_ARENA_STAGING_BYTES;
-            SparkStatus paced = SparkWeightdServerPace(server, (uint64_t)bytes);
-            if ( paced != SPARK_STATUS_OK )
-                return(paced);
-            moved = pread(fd,arena->staging,bytes,(off_t)span_offset);
-            if (moved < 0 && errno == EINTR)
-                continue;
-            if ( moved <= 0 )
-                return(SPARK_STATUS_IO_ERROR);
-            if ( cudaMemcpy((uint8_t *)arena->device_base + span_offset,
-                    arena->staging,moved,cudaMemcpyHostToDevice) != cudaSuccess )
-                return(SPARK_STATUS_IO_ERROR);
-#ifdef POSIX_FADV_DONTNEED
-            (void)posix_fadvise(fd,(off_t)span_offset,(off_t)moved,POSIX_FADV_DONTNEED);
-#endif
-            span_offset += (uint64_t)moved;
-        }
-    }
-    return(SPARK_STATUS_OK);
+    return(SparkWeightdSpinePreload(fd,&arena->manifest,arena->device_base,SparkWeightdSpinePaceServer,server));
 }
 
 static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,SparkWeightdArena *arena,

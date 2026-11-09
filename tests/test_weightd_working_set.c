@@ -94,6 +94,61 @@ static void write_fixture(const char *path,const char *manifest_path)
 	assert(fclose(manifest) == 0);
 }
 
+static SparkStatus count_paced(void *context,uint64_t bytes)
+{
+	uint64_t *paced = context;
+	*paced += bytes;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus refuse_paced(void *context,uint64_t bytes)
+{
+	(void)context;
+	(void)bytes;
+	return(SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
+static void check_spine_preload(const char *path,const char *manifest_path)
+{
+	SparkWeightdManifest manifest;
+	uint8_t *device;
+	uint64_t i,j,cursor = 0u,paced = 0u;
+	uint8_t value = 77u;
+	int32_t fd = open(path,O_RDWR);
+	assert(fd >= 0);
+	assert(pwrite(fd,&value,1u,700) == 1);
+	assert(SparkWeightdManifestLoad(manifest_path,PACK_BYTES,&manifest) == SPARK_STATUS_OK);
+	assert(manifest.spine_bytes != 0u);
+	for (i=0u; i<manifest.spine_count; i++)
+		manifest.spine[i].compact_offset = 0u;
+	device = malloc((size_t)PACK_BYTES);
+	assert(device != 0);
+	memset(device,0xa5,(size_t)PACK_BYTES);
+	assert(SparkWeightdSpinePreload(fd,&manifest,device,refuse_paced,0) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	assert(device[manifest.spine[0].offset] == 0xa5);
+	assert(SparkWeightdSpinePreload(-1,&manifest,device,count_paced,&paced) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkWeightdSpinePreload(fd,&manifest,device,0,0) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(lseek(fd,456,SEEK_SET) == 456);
+	assert(SparkWeightdSpinePreload(fd,&manifest,device,count_paced,&paced) == SPARK_STATUS_OK);
+	assert(lseek(fd,0,SEEK_CUR) == 456);
+	assert(paced >= manifest.spine_bytes);
+	for (i=0u; i<manifest.spine_count; i++)
+	{
+		for (j=cursor; j<manifest.spine[i].offset; j++)
+			assert(device[j] == 0xa5);
+		cursor = (manifest.spine[i].offset + manifest.spine[i].bytes);
+		for (j=manifest.spine[i].offset; j<cursor; j++)
+			assert(device[j] == (j == 700u ? 77u : 0u));
+	}
+	for (j=cursor; j<PACK_BYTES; j++)
+		assert(device[j] == 0xa5);
+	value = 0u;
+	assert(pwrite(fd,&value,1u,700) == 1);
+	free(device);
+	SparkWeightdManifestDestroy(&manifest);
+	assert(close(fd) == 0);
+}
+
 static void check_spine_load(const char *path,const char *manifest_path)
 {
 	SparkWeightdManifest manifest;
@@ -1411,6 +1466,7 @@ int main(int argc,char **argv)
 	snprintf(wset,sizeof(wset),"%s.wset",path);
 	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
 	write_fixture(path,manifest);
+	check_spine_preload(path,manifest);
 	check_spine_load(path,manifest);
 	check_spine_residency_modes(path,manifest,socket_path);
 	config.socket_path = socket_path;

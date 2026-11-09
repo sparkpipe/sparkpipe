@@ -114,7 +114,7 @@ PENDING = {
     "runtime/kv_device_copy.c": {"handle": 1, "header": 1, "token": 50},
     "runtime/launch.h": {"device-include": 1, "token": 23},
     "runtime/memory_buffer.c": {"handle": 2, "header": 1, "token": 23},
-    "runtime/spark_weightd.c": {"header": 2, "token": 172},
+    "runtime/spark_weightd.c": {"header": 2, "token": 169},
     "runtime/spark_weightd_attach.c": {"header": 2, "token": 29},
     "runtime/spark_weightd_kv_pool.c": {"header": 2, "token": 44},
     "runtime/spark_weightd_lazy_pack.c": {"token": 4},
