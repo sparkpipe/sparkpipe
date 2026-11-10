@@ -5,14 +5,15 @@ A fixture fleet (ssh runs the node script against a scratch home) holds, on
 spark3, the K3 and DeepSeek V4.1 Flash rank files two fixture records name
 with their companions, a partner pack only a live lane config names, the
 tool a swap controller command calls, a keep-listed staged pack, a fleet
-agent root, and unused files: a pack
+agent root, FP8 packs and an FP8 checkpoint nothing names, and unused files: a pack
 variant directory, a backup beside a served pack, an unused tree, a
 directory holding only a link, a file modified a minute ago and a file a
 process holds open. The dry run lists exactly the unused entries with their
 bytes and deletes nothing. --delete removes the old unused entries, refuses
-the open and the recent one, leaves every used file and every link target in
-place, and deletes nothing at all on a node that lacks a file a record
-names. The keep list refuses an entry without a reason or a date, and
+the open and the recent one and one written into after the scan, leaves
+every used file, every FP8 build and every link target in place, and deletes
+nothing at all on a node that lacks a file a record The keep list refuses an entry without a reason or a date, the repository's
+list keeps nothing a record already serves, and
 lane_config.py audit reports each unused entry as UNUSED <bytes> <path>.
 """
 import json
@@ -27,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 from test_lane_direct_packs import FAKE_REMOTE, fake_bin
+import lane_pack_files
 import node_pack_prune
 import stage_lane
 
@@ -62,6 +64,10 @@ class NodePackPrune(unittest.TestCase):
         adapter.write_text(json.dumps({"stage_pack_path": f"/home/{HOST}/{k3}", "streamed_prefill": {"node_rows": 1, "partner_pack": f"/home/{HOST}/{partner}"}}))
         self.used += [self.put("sparkdata/motif3.tp16/motif3.rank03.pack", 500), self.put("sparkdata/glmroot/MANIFEST", 5), self.put("sparkdata/glmroot/bin/sparkpipe_model_residentd", 50),
                       self.put("sparkdata/swap/weightd_warm", 50)]
+        self.fp8 = [self.put("sparkdata/glm53full.fp8lin.tp16/packs/glm53full.fp8lin.tp16-rank3.glm52sp", 600),
+                    self.put("sparkdata/hy4.mxfp8.tp16/hy4.tp16.rank03.pack.old", 400),
+                    self.put("sparkdata/checkpoints/Qwen3.8-Max-FP8/model-00001-of-00099.safetensors", 800)]
+        self.used += self.fp8
         self.unused = {
             "sparkdata/k3.mxfp4.tp16/packs-v3": (self.put("sparkdata/k3.mxfp4.tp16/packs-v3/k3.stage0.rank03.pack", 1000), 1000, "/"),
             "sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank03.pack.bak": (self.put(k3 + ".bak", 900), 900, ""),
@@ -120,6 +126,45 @@ class NodePackPrune(unittest.TestCase):
             self.assertEqual(os.path.lexists(self.home / name), name in ("sparkdata/fresh.pack", "sparkdata/held.pack"), name)
         self.assertTrue(all(path.exists() for path in self.used))
 
+    def test_unnamed_fp8_builds_are_kept_and_survive_delete(self):
+        dry = self.run_tool()
+        self.assertFalse(any("fp8" in line.lower() for line in dry.stdout.splitlines() if line.startswith("UNUSED ")), dry.stdout)
+        self.assertRegex(dry.stdout, r"kept: .*fp8 1800 ")
+        result = self.run_tool("--delete")
+        self.assertFalse(any("fp8" in line.lower() for line in result.stdout.splitlines() if line.startswith(("DELETED ", "REFUSED "))), result.stdout)
+        self.assertTrue(all(path.exists() for path in self.fp8))
+
+    def test_delete_refuses_an_entry_written_after_the_scan(self):
+        site = Path(self.temporary.name) / "site"
+        site.mkdir()
+        (site / "sitecustomize.py").write_text(
+            "import os\n"
+            "if os.environ.get('HOME') == os.environ.get('PRUNE_LATE_HOME'):\n"
+            "    walk = os.walk\n"
+            "    def late_walk(top, *arguments, **options):\n"
+            "        yield from walk(top, *arguments, **options)\n"
+            "        if os.path.basename(os.path.normpath(top)) == 'sparkdata':\n"
+            "            with open(os.environ['PRUNE_LATE_FILE'], 'w') as handle:\n"
+            "                handle.write('late')\n"
+            "    os.walk = late_walk\n")
+        late = self.home / "sparkdata/qwenmax.nvfp4.tp16/receipts/late.json"
+        self.environment.update(PYTHONPATH=os.pathsep.join(filter(None, [str(site), os.environ.get("PYTHONPATH")])),
+                                PRUNE_LATE_HOME=str(self.home), PRUNE_LATE_FILE=str(late))
+        result = self.run_tool("--delete")
+        self.assertIn(f"REFUSED {HOST} /home/{HOST}/sparkdata/qwenmax.nvfp4.tp16: modified within the last 3600 s", result.stdout)
+        self.assertEqual(late.read_text(), "late")
+        self.assertTrue((self.home / "sparkdata/qwenmax.nvfp4.tp16/rank3.pack").exists())
+        self.assertIn(f"DELETED {HOST} 1000 /home/{HOST}/sparkdata/k3.mxfp4.tp16/packs-v3", result.stdout)
+        self.assertTrue(all(path.exists() for path in self.used))
+
+    def test_repository_keep_list_keeps_nothing_a_record_serves(self):
+        prefix = f"/home/{HOST}/sparkdata/"
+        named = {path[len(prefix):] for record in stage_lane.lane_records()["lanes"] for row_host, _, _, path in lane_pack_files.lane_files(record)
+                 if row_host == HOST and path.startswith(prefix)}
+        for entry in node_pack_prune.keep_list():
+            with self.subTest(keep=entry["path"]):
+                self.assertFalse([path for path in named if path == entry["path"] or path.startswith(entry["path"] + "/")])
+
     def test_a_node_missing_a_named_file_deletes_nothing(self):
         sibling = stage_lane.rank_weight_files(stage_lane.MODELS["dsv41_flash"], 3)[-1]
         Path(self.home.as_posix() + sibling[len(f"/home/{HOST}"):]).unlink()
@@ -141,7 +186,7 @@ class NodePackPrune(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("every keep entry has a sparkdata-relative path, a since date (YYYY-MM-DD) and a reason", result.stderr)
         entries = node_pack_prune.keep_list()
-        self.assertTrue({"core", "weightd", "swap", "motif3.tp16", "glm53full.bf16.tp16", "glm53flash.bf16.tp16", "k3.mxfp4.tp16/partner"} <= {entry["path"] for entry in entries})
+        self.assertTrue({"core", "weightd", "swap", "working-state", "motif3.tp16", "k3.mxfp4.tp16/partner"} <= {entry["path"] for entry in entries})
 
     def test_audit_reports_each_unused_entry(self):
         result = subprocess.run([sys.executable, str(ROOT / "tools/lane_config.py"), "audit"], env=self.environment, capture_output=True, text=True, timeout=900)

@@ -22,28 +22,13 @@
   },
   {
    "path": "motif3.tp16",
-   "since": "2026-11-01",
-   "reason": "Motif 3 packs staged for the driver the owner ordered on 2026-11-01 (branch drivers/motif3); not served yet"
-  },
-  {
-   "path": "glm53full.bf16.tp16",
-   "since": "2026-10-25",
-   "reason": "the publisher's BF16 GLM 5.3 Full release for the precision A/B (#1558) whose result decides the served precision"
-  },
-  {
-   "path": "glm53flash.bf16.tp16",
-   "since": "2026-09-05",
-   "reason": "the publisher's BF16 GLM 5.3 Flash build (docs/STAGEPACK_NAMING.md), the full-precision reference the lead kept in the 2026-11-02 prune review"
+   "since": "2026-11-10",
+   "reason": "Motif 3 packs for the motif3 serving adapter on main (Makefile MOTIF3_TP16_SERVING_ADAPTER); no lane record serves it yet"
   },
   {
    "path": "hy4.fp8.tp16",
-   "since": "2026-11-02",
-   "reason": "HY4 FP8 packs (tools/hy4_fp8_chain.sh) beside the served MXFP8 build, kept in the lead's 2026-11-02 prune review"
-  },
-  {
-   "path": "qwen38_27b.bf16.tp16",
-   "since": "2026-11-02",
-   "reason": "BF16 packs for the qwen38_27b BF16 adapter (Makefile QWEN38_27B_BF16_TP16_SERVING_ADAPTER), kept in the lead's 2026-11-02 prune review"
+   "since": "2026-11-10",
+   "reason": "HY4 FP8 packs at the placement model_contracts/hy4_authoritative.json names, beside the MXFP8 build the hy4-preview record serves"
   },
   {
    "path": "glm53flash.fp8.tp16.mtp",
@@ -52,8 +37,8 @@
   },
   {
    "path": "k3.mxfp4.tp16/partner",
-   "since": "2026-10-29",
-   "reason": "each node's pair-partner K3 rank pack for streamed prefill (draft #1652); no lane record renders streamed_prefill yet"
+   "since": "2026-11-10",
+   "reason": "each node's pair-partner K3 rank pack for the streamed-weights prefill engine (#1652); no lane record renders streamed_prefill yet"
   }
  ]
 }

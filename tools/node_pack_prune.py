@@ -16,6 +16,9 @@ A file under /home/<host>/sparkdata is used when one of these names it:
   only a live config names is reported, because its record does not name it;
 - the keep list deployment/sparkdata_keep.json: packs staged but not served
   yet and the infrastructure directories, each with a reason and a date;
+- an FP8 build: a path any of whose names under sparkdata contains fp8 (an
+  FP8 or MXFP8 pack, an FP8 checkpoint), because FP8 packs and checkpoints
+  are kept when disk is freed;
 - a fleet agent root: a directory with a release MANIFEST, or a root named
   by ~/.fleet_agent_roots or the fleet-agent unit, which the release channel
   owns.
@@ -27,7 +30,7 @@ and the bytes per host. --delete, which only the owner runs, deletes them on
 the node, but refuses an entry a running process holds open (file
 descriptors, mappings, working directories and executables in /proc, or
 lsof where /proc is missing), an entry with anything modified in the last
-hour, and every entry on a host that lacks a file a record names, because
+hour, checked again on the node just before that entry is deleted, and every entry on a host that lacks a file a record names, because
 its layout is then not the one the records describe.
 """
 
@@ -109,10 +112,11 @@ def role(relative):
             return "keep:" + inner
         if path in agents:
             return "agent"
+    if any("fp8" in name.lower() for name in relative.split("/")[1:]):
+        return "fp8"
     return "unused"
 
-roles, sizes, children, recent, links = {}, {}, {}, {}, set()
-now = time.time()
+roles, sizes, children, links = {}, {}, {}, set()
 for directory, dirnames, filenames in os.walk(top, topdown=False):
     relative_directory = os.path.relpath(directory, home)
     entries = []
@@ -128,7 +132,6 @@ for directory, dirnames, filenames in os.walk(top, topdown=False):
             continue
         roles[relative] = role(relative)
         sizes[relative] = info.st_size if stat.S_ISREG(info.st_mode) else 0
-        recent[relative] = info.st_mtime > now - request["minimum_age_seconds"]
         if stat.S_ISLNK(info.st_mode):
             links.add(relative)
         entries.append(relative)
@@ -139,7 +142,6 @@ for directory, dirnames, filenames in os.walk(top, topdown=False):
     unused = own == "unused" and all(roles.get(entry) == "unused" for entry in entries)
     roles[relative_directory] = "unused" if unused else (own if own != "unused" else "mixed")
     sizes[relative_directory] = sum(sizes.get(entry, 0) for entry in entries)
-    recent[relative_directory] = os.lstat(directory).st_mtime > now - request["minimum_age_seconds"] or any(recent.get(entry) for entry in entries)
 
 def parent(relative):
     return os.path.dirname(relative)
@@ -153,8 +155,7 @@ for relative, value in roles.items():
 missing = sorted(path for path in request["required"] if not os.path.lexists(os.path.join(home, path)))
 linked = sorted(path for path in referenced if os.path.islink(os.path.join(home, path)))
 live_only = sorted(path for path in live if path not in referenced and os.path.lexists(os.path.join(home, path)) and not path.startswith(tuple(a + "/" for a in agents)))
-result = {"entries": [{"path": relative, "bytes": sizes[relative], "kind": "link" if relative in links else "directory" if relative in children else "file",
-                       "recent": recent[relative]} for relative in sorted(found)],
+result = {"entries": [{"path": relative, "bytes": sizes[relative], "kind": "link" if relative in links else "directory" if relative in children else "file"} for relative in sorted(found)],
           "kept": kept, "missing": missing, "linked": linked, "live": live_only, "agents": sorted(agents), "deleted": [], "refused": []}
 
 def open_paths():
@@ -183,6 +184,23 @@ def open_paths():
         return {line[1:] for line in listing.splitlines() if line.startswith("n/")}
     return None
 
+def modified_since_cutoff(relative):
+    cutoff = time.time() - request["minimum_age_seconds"]
+    path = os.path.join(home, relative)
+    try:
+        if os.lstat(path).st_mtime > cutoff:
+            return True
+    except OSError:
+        return False
+    for directory, dirnames, filenames in os.walk(path):
+        for name in dirnames + filenames:
+            try:
+                if os.lstat(os.path.join(directory, name)).st_mtime > cutoff:
+                    return True
+            except OSError:
+                pass
+    return False
+
 def real(relative):
     path = os.path.join(home, relative)
     return os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
@@ -198,7 +216,7 @@ if request["delete"]:
                 result["refused"].append({"path": entry["path"], "reason": "no /proc and no lsof: cannot see which files are open"})
             elif any(path == target or path.startswith(target + "/") for path in holders):
                 result["refused"].append({"path": entry["path"], "reason": "a running process holds it open"})
-            elif entry["recent"]:
+            elif modified_since_cutoff(entry["path"]):
                 result["refused"].append({"path": entry["path"], "reason": "modified within the last %d s" % request["minimum_age_seconds"]})
             else:
                 path = os.path.join(home, entry["path"])

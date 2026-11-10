@@ -124,6 +124,9 @@ A node keeps under `~/sparkdata` only what something uses:
 - the entries of `deployment/sparkdata_keep.json`, each with a reason and the
   date it was kept: staged packs that no lane serves yet and the
   infrastructure directories (`core`, `weightd`, `swap`, `working-state`);
+- every FP8 build: a path with `fp8` in any of its names under `sparkdata`
+  (an FP8 or MXFP8 pack, an FP8 checkpoint). FP8 packs and checkpoints are
+  kept when disk is freed, so a new one needs no keep entry;
 - the fleet agent's roots: a directory with a release `MANIFEST`, or one
   `~/.fleet_agent_roots` or the `fleet-agent` unit names. The release channel
   owns them.
@@ -146,8 +149,10 @@ only a live config names. The default is a dry run.
 itself, after checking each one again: an entry that a running process holds
 open (a file descriptor, a mapping, a working directory or an executable in
 `/proc`, or `lsof` where there is no `/proc`) or that holds anything modified
-in the last hour is refused, and a node that lacks any file a record names
-deletes nothing, since its layout is then not the one the records describe.
+in the last hour is refused. The node walks the entry's tree again just
+before deleting it, so a file written into it after the scan stops the
+delete. A node that lacks any file a record names deletes nothing, since its
+layout is then not the one the records describe.
 Every refusal is a `REFUSED <host> <path>: <reason>` line and makes the
 command exit 1. A full `lane_config.py audit` reports each unused entry as
 `UNUSED <bytes> <host>:<path>` and each absent named file as `MISSING`.
