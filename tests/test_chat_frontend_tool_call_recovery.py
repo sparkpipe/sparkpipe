@@ -8,7 +8,9 @@ token before its end marker is accepted as it is when its body parses and names 
 of a declared tool, greedy or not. Every fault is counted."""
 
 import asyncio
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -112,7 +114,12 @@ async def run(failures):
     sampled = {"prompt_token_ids": PROMPT, "max_tokens": 40, "temperature": 0.7, "seed": 11, "stream": True}
     try:
         engine.replies = [([0] + BAD, "stop"), (GOOD + [8], "stop")]
-        events, error = await collect(frontend, model, dict(sampled))
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            events, error = await collect(frontend, model, dict(sampled))
+        faults = [json.loads(line) for line in log.getvalue().splitlines() if '"tool_call_fault"' in line]
+        check(len(faults) == 1 and "broken" not in log.getvalue() and "text" not in faults[0] and faults[0]["bytes"] > 0 and len(faults[0]["sha256"]) == 16,
+              f"the fault log names the kind, length and a hash of the bad call, never its text: {log.getvalue()[:300]}")
         calls = [value for kind, value in events if kind == "tool_call"]
         content = "".join(value for kind, value in events if kind == "content")
         finish = [value for kind, value in events if kind == "finish"]
