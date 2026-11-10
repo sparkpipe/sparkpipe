@@ -6,7 +6,7 @@ driver private behind that gateway.
 ## Topology
 
 ```text
-client / Centaur / demo UI
+client / agent service / demo UI
     -> Spark0 API gateway on management LAN
         -> PP13 ingress queue
             -> spark0 stage 0
