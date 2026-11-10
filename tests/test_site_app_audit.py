@@ -164,7 +164,7 @@ def pages(failures):
     buy = (site / "buy.html").read_text()
     if "String(S.hc)" in buy or "S.me.role !== 'owner'" not in buy:
         failures.append("buy.html sends HC in exponent form or lets a non-owner reach payment")
-    for name, label in (("buy.html", 'id="accept"'), ("buy.html", 'id="accept-again"'), ("market.html", 'id="accept"')):
+    for name, label in (("buy.html", 'id="accept"'), ("buy.html", 'id="accept-again"'), ("market.html", 'id="accept"'), ("market.html", 'id="accept-again"')):
         text = (site / name).read_text()
         line = next((line for line in text.splitlines() if label in line), "")
         if 'href="agreement.html"' not in line or 'href="dpa.html"' not in line:

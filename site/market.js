@@ -27,12 +27,15 @@
   };
 
   const spend = async (path, body, method = 'POST') => {
+    const again = !$('reaccept').hidden && $('accept-again').checked;
     try {
-      return await call(method, path, body);
+      const result = await call(method, path, again ? Object.assign({}, body, { accept: true }) : body);
+      if (again) { $('reaccept').hidden = true; $('accept-again').checked = false; }
+      return result;
     } catch (error) {
       if (error.reason !== 'terms') throw error;
-      if (!confirm('The SparkPipe Customer Agreement or its Data Processing Agreement has changed since you accepted them. Accept the current texts (the Korean texts prevail) and continue?')) throw error;
-      return call(method, path, Object.assign({}, body, { accept: true }));
+      $('reaccept').hidden = false;
+      throw new Error('The Customer Agreement or its Data Processing Agreement changed since you accepted them. Read both, tick the box under your balance to accept them, and try again.');
     }
   };
 
@@ -187,6 +190,7 @@
     $('me-email').textContent = me.email;
     $('balance').textContent = hc(me.balance);
     $('locked').textContent = hc(me.locked || 0) + ' HC';
+    if (me.termsCurrent === false) $('reaccept').hidden = false;
     fill('lots', (me.lots || []).map((l, i) => row([String(i + 1), hc(l.hc), kstDay(l.expires)])), 'No HC yet.');
     fill('bookings', (me.bookings || []).map((b) => row([kst(b.start), kst(b.end), b.fleet, b.kind === 'week' ? `${b.weeks} week${b.weeks === 1 ? '' : 's'}` : `${b.hours} hour${b.hours === 1 ? '' : 's'}`, hc(b.hc)])), 'No bookings yet.');
     $('waitlist-status').textContent = me.position ? `On the waitlist: ${hc(me.locked)} HC locked, position ${me.position}.` : 'Not on the waitlist.';
