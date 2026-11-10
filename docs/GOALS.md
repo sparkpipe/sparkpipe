@@ -67,10 +67,10 @@ Use the qsort pattern: one optimized common algorithm parameterized by narrow
 operation callbacks and an opaque context. Call at stage/batch boundaries,
 not once per tensor element. Keep scheduling and cache policy independent of
 hardware; allocation, execution, events, copies and collectives belong behind
-the existing device/backend interfaces. Eight Mac Studios (M5 Ultra,
-256 GB) are on order: CUDA streams, CUDA pointers and NCCL semantics must not
+the existing device/backend interfaces. The Metal backend serves the same
+common algorithms: CUDA streams, CUDA pointers and NCCL semantics must not
 leak into common serving policy. Qualify the common algorithms with the host
-backend now and the Metal backend on that hardware when available.
+backend and the Metal backend.
 
 Execute distinct ready lanes together and reuse dense weight tiles across
 rows; group routed MoE rows by expert for weight reuse. Qualify odd batch sizes

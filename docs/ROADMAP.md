@@ -162,13 +162,13 @@ steady-state decode hot-path audit, production qualification.
 Exit:
 
 - modules run behind the device layer, with Metal and ROCm backends;
-- eight Mac Studios serve the catalog as replicas and Thunderbolt 5 islands;
+- a Mac Studio pool serves the catalog as replicas and Thunderbolt 5 islands;
 - a mixed fleet that prefills on Sparks and decodes on Studios serves a
   workload faster end to end than either pool alone;
 - the fleet grows from 4 to 8 to 16 Sparks with rollback receipts.
 
 The Studio pool needs the device layer and a Metal backend, not the GLM work
-of M1-M3, so it can proceed alongside them once the Studios arrive. Pipeline
+of M1-M3, so it can proceed alongside them. Pipeline
 stages across the two classes also need M5's pipeline execution.
 
 TECHDEBT: hardware independence, Mac Studio deployment, incremental

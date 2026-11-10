@@ -1429,8 +1429,8 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 - **Korean site.** The checkout, account and two-year pages (`site/buy.html`, `account.html`, `two-year.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
   - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
-  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
-  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain;
   - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
   - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
 - **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
@@ -2000,8 +2000,8 @@ Metal backend and the single-Studio stage are in
   format per model, and the resumable request moves with its cache.
 - Run PP2 across hardware classes once routes waiting on transport input can
   be cancelled when a peer rank fails.
-- Measure each bridge when the Studios arrive: Studio 10GbE into the fabric;
-  IP over Thunderbolt from a Studio to the RTX 5090 host, on that host's
+- Measure each bridge on a Studio pool: Studio 10GbE into the fabric;
+  IP over Thunderbolt from a Studio to the hub, on that host's
   controller; the host's ConnectX-6 into the CRS804. Record the winners as
   named link classes in the deployment JSON.
 - Stand up reference nodes for every hardware combination the provider

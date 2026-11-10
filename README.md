@@ -591,7 +591,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
 | 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
-| 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
+| 1 to 8 Mac Studios (Apple silicon) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 | Prefill accelerators (4 RTX 5080) | compute long prompts for a fleet and hand it the KV cache |
 
