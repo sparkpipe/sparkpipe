@@ -131,8 +131,9 @@ are being prefilled takes a second value for about one prompt in five.
 - What the numerics merge changes for this family is row-local (rope with
   rounded terms, the rounded residual sum), and Gemma takes the tiled GQA
   shard kernel, which did not get the value-weight rounding of the scalar
-  one. Taking out either change alone leaves the defect (rope with plain
-  terms: 21 of 96; residual sum unrounded: 13 of 96).
+  one. Taking them out leaves the defect: rope with plain terms 21 of 96,
+  residual sum unrounded 13 of 96, both together 9 of 96. Something else the
+  numerics line changes for this family takes part.
 - So the defect does not come from this pull request's audit and runner
   work. It belongs to the numerics line (#1739, #1865), or to a batch
   dependence already on `main` that `main`'s Gemma output hides. The cause is
