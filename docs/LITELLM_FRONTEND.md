@@ -1,7 +1,7 @@
 # LiteLLM front end — one door for the SparkPipe fleet
 
 Status, 2026-10-02: GLM-5.3 Full (TP16, 65,536 positions per sequence) serves
-through this stack on the rtx5090 hub:
+through this stack on the hub:
 
 | Port | Process | Protocol |
 | --- | --- | --- |
@@ -193,7 +193,7 @@ OpenAI `reasoning_effort` maps onto K3's `thinking_effort`: low → low, medium 
 ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json`:
 
 - `"providerId": "custom:sparkpipe"`;
-- `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
+- `"api": {"type": "anthropic-messages", "baseUrl": "http://hub:4000"}`;
 - all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-16: `kimi-k3` 737280, `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
 
 LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
@@ -340,12 +340,12 @@ completion off-node and compare it bit for bit.
 OpenAI clients (tools, streaming, `reasoning_effort` low, medium or high):
 
 ```sh
-curl http://100.123.97.61:4000/v1/chat/completions \
+curl http://hub:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"glm-5.3","messages":[{"role":"user","content":"Hello"}],"max_tokens":2048}'
 ```
 
-Anthropic clients such as Claude Code: `ANTHROPIC_BASE_URL=http://100.123.97.61:4000`,
+Anthropic clients such as Claude Code: `ANTHROPIC_BASE_URL=http://hub:4000`,
 any `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL=glm-5.3`. The proxy maps any
 model name to `glm-5.3`, so the client's small-model calls land there too.
 
@@ -408,7 +408,7 @@ Check the md5 against the downloaded `.md5` first. The builder refuses a file wi
 | `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
 | `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 
-The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
+The tunnel is the hub system unit `sparkpipe-ai-door` (root, with its own tunnel key). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
 
 ### Public API keys (2026-10-24)
 
@@ -855,7 +855,7 @@ fresh data directory starts the same. That is how `ui.default_models`
 2026-10-14.
 
 The first account created becomes the admin: it was created through
-`ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090 before port
+`ssh -N -L 8090:127.0.0.1:8090 hub` and http://localhost:8090 before port
 8443 was opened. Creating it turns sign-up off by itself (`ui.enable_signup`
 false); it was turned back on because the owner chose open sign-up with
 approval. New accounts arrive with the `pending` role and see only a waiting
@@ -997,10 +997,9 @@ local accounts could still reach. Verified on the hub before the fix:
 | --- | --- |
 | The swap controller (127.0.0.1:8440) switched or stopped the fleet for any local caller | fixed: every route needs the controller token |
 | The chat layer listened on 0.0.0.0:8433, and its `POST /v1/sparkpipe/activate` started a switch for anyone | fixed: the route is gone and the layer serves loopback only |
-| LiteLLM 4000 (`config/litellm-config.yaml`) serves the LAN and the tailnet without a master key | open, owner decision: a key breaks ZCode until ZCode carries it |
-| Six root `sparkpipe_model_api` test processes from 2026-09-27 (`--runtime-root /tmp/chatfix`) and one spec test instance from 2026-09-28 answer on 0.0.0.0 | open, owner step: stop them |
-| `glm-5.3-fp8` (145 files) and `glm-5.3-bf16` (11 files) on `/mnt/model-warm` are 0666, and five directories there are 2777 | open, owner step: remove the world write bit |
-| `/etc/exports.d/qpn.exports` exports `/srv/qpn` rw with `no_root_squash` to 10.10.0.0/16 and 192.168.50.0/24; no client mounts it and it holds two empty probe files | open, owner step: drop the export or squash root |
+
+Exposures still open are tracked in the operator's private notes, not in
+this public repository.
 
 **The controller token.** `model_swap.py` refuses to start without
 `--token-file`, or when the file can be read by its group or others or holds
@@ -1201,7 +1200,7 @@ repository.
 
 ```sh
 python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 \
+  --pair glm-5.3-flash=http://127.0.0.1:8433 \
   --master-key --out config/litellm-config.yaml
 ```
 
@@ -1227,7 +1226,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 
 | model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3` and `*` | the chat layer on the rtx5090, `http://127.0.0.1:8433/v1` (LiteLLM runs on the hub) | smoke receipts above, 2026-10-02 |
+| `glm-5.3` and `*` | the chat layer on the hub, `http://127.0.0.1:8433/v1` (LiteLLM runs on the hub) | smoke receipts above, 2026-10-02 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
 (`docs/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).
@@ -1246,7 +1245,7 @@ kill $(cat /tmp/litellm-sparkpipe.pid)
 
 Uvicorn access lines and LiteLLM error details land in
 `/tmp/litellm-sparkpipe.stdout`, the usage log of the database-free setup.
-Probe an upstream directly with `curl http://100.123.97.61:8433/health`.
+Probe an upstream directly on the hub with `curl http://127.0.0.1:8433/health`; the chat layer serves loopback only.
 Smoke the door with the standard tester, which sends two temperature-0 text
 completions per listed model and requires identical output:
 
@@ -1266,7 +1265,7 @@ brew install postgresql@16
 /opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 start
 /opt/homebrew/opt/postgresql@16/bin/createdb litellm
 python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 --master-key \
+  --pair glm-5.3-flash=http://127.0.0.1:8433 --master-key \
   --database-url postgresql://mac@localhost:5432/litellm \
   --out config/litellm-config.yaml
 ```
