@@ -894,7 +894,7 @@ static SparkStatus SparkModelResidentClientProcessCompletion(
 	pending = SparkModelResidentClientFindPending(client,completion.submission_id);
 	if ( pending == 0 || pending->committed == 0u )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	status = SparkModelServingAdapterValidateStageCompletion(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,&completion);
+	status = SparkModelServingAdapterValidateStageCompletionPrevalidated(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,&completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( ((const SparkModelResidentIpcHeader *)message)->message_id != pending->message_id || pending->request_id != completion.request_id || pending->sequence_id != completion.sequence_id || pending->sequence_position != completion.sequence_position || pending->control_generation != completion.control_generation || pending->transaction_id != completion.transaction_id || pending->dispatch_generation != completion.dispatch_generation || pending->request_generation != completion.request_generation || pending->step_generation != completion.step_generation )

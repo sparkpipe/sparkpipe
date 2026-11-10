@@ -357,8 +357,93 @@ static void TestStuckRoutesRepeatWithFifoPosition(void)
 	pthread_mutex_destroy(&runtime.mutex);
 }
 
+static void TestBoundRouteKeepsTheSingleDecode(void)
+{
+	static uint8_t message[8192],slot_message[8192];
+	SparkModelResidentdRuntime runtime;
+	SparkModelResidentdRoute route;
+	SparkModelResidentdSlot slot;
+	SparkModelResidentdSequenceSlot sequence_slots[8];
+	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingSubmission submission,decoded,fresh;
+	SparkModelServingLane lanes[2];
+	SparkModelServingCacheIdentity identity;
+	uint32_t tokens[2],row_lanes[2],message_bytes;
+	uint64_t positions[2],sequences[2];
+	uint8_t extension[3] = {4u,5u,6u};
+	memset(&runtime,0,sizeof(runtime));
+	memset(&route,0,sizeof(route));
+	memset(&slot,0,sizeof(slot));
+	memset(sequence_slots,0,sizeof(sequence_slots));
+	memset(&submission,0,sizeof(submission));
+	memset(lanes,0,sizeof(lanes));
+	memset(&identity,0x5a,sizeof(identity));
+	TestDescriptor(&descriptor);
+	assert(pthread_mutex_init(&runtime.mutex,0) == 0);
+	runtime.routes = &route;
+	runtime.slots = &slot;
+	runtime.route_capacity = 1u;
+	runtime.route_message_capacity = sizeof(slot_message);
+	runtime.sequence_slots = sequence_slots;
+	runtime.runtime_limits.resident_sequence_capacity = 8u;
+	runtime.adapter_library.adapter_interface.descriptor = &descriptor;
+	slot.message = slot_message;
+	for (uint32_t lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 21u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = 5u;
+		lanes[lane].sequence_id = 31u + lane;
+		lanes[lane].sequence_position = 63u;
+		lanes[lane].context_token_count = 64u;
+		lanes[lane].resident_sequence_slot = 3u + lane;
+		lanes[lane].input_token_id = 100u + lane;
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+		tokens[lane] = 100u + lane;
+		row_lanes[lane] = lane;
+		positions[lane] = 63u;
+		sequences[lane] = 31u + lane;
+	}
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.submission_id = 44u;
+	submission.request_id = 44u;
+	submission.sequence_id = 44u;
+	submission.control_generation = 1u;
+	submission.transaction_id = 44u;
+	submission.dispatch_generation = 44u;
+	submission.request_generation = 1u;
+	submission.step_generation = 5u;
+	submission.active_sequence_count = 2u;
+	submission.new_token_count = 2u;
+	submission.lane_count = 2u;
+	submission.row_count = 2u;
+	submission.token_count = 2u;
+	submission.tokens_per_sequence = 1u;
+	submission.model_extension_kind = 9u;
+	submission.model_extension_bytes = sizeof(extension);
+	submission.model_extension = extension;
+	submission.lanes = lanes;
+	submission.token_ids = tokens;
+	submission.row_lane_indices = row_lanes;
+	submission.row_positions = positions;
+	submission.row_sequence_ids = sequences;
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,7u,9u,message,sizeof(message),&message_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcDecodeSubmission(message,message_bytes,&decoded) == SPARK_STATUS_OK);
+	assert(SparkModelResidentdBindRoute(&runtime,&route,message,message_bytes,&decoded,0u) == SPARK_STATUS_OK);
+	memset(message,0xee,message_bytes);
+	assert(SparkModelResidentIpcDecodeSubmission(slot_message,message_bytes,&fresh) == SPARK_STATUS_OK);
+	assert(memcmp(&route.submission,&fresh,sizeof(fresh)) == 0);
+	assert(route.submission.lanes[1].input_token_id == 101u && route.submission.row_positions[0] == 63u &&
+		((const uint8_t *)route.submission.model_extension)[2] == 6u);
+	assert(sequence_slots[3].active_owner == 1u && sequence_slots[4].active_owner == 1u);
+	pthread_mutex_destroy(&runtime.mutex);
+}
+
 int main(void)
 {
+	TestBoundRouteKeepsTheSingleDecode();
 	TestRejectedCompletionFailsRouteWithItsStatus((uint32_t)SPARK_STATUS_MAXIMUM + 1u,0u,SPARK_STATUS_INVALID_ARGUMENT);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_NO_LANE);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_EVICT_DENIED);

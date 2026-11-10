@@ -1890,42 +1890,53 @@ static void *SparkModelResidentdSidebandAddress(
 	return((uint8_t *)boundary->cuda_address + primary_capacity);
 }
 
+static const void *SparkModelResidentdRebase(const void *pointer,const void *from,void *to)
+{
+	return(pointer != 0 ? (const void *)((uint8_t *)to + ((const uint8_t *)pointer - (const uint8_t *)from)) : 0);
+}
+
+static void SparkModelResidentdRebaseSubmission(SparkModelServingSubmission *submission,const void *from,void *to)
+{
+	submission->lanes = (const SparkModelServingLane *)SparkModelResidentdRebase(submission->lanes,from,to);
+	submission->token_ids = (const uint32_t *)SparkModelResidentdRebase(submission->token_ids,from,to);
+	submission->row_lane_indices = (const uint32_t *)SparkModelResidentdRebase(submission->row_lane_indices,from,to);
+	submission->row_positions = (const uint64_t *)SparkModelResidentdRebase(submission->row_positions,from,to);
+	submission->row_sequence_ids = (const uint64_t *)SparkModelResidentdRebase(submission->row_sequence_ids,from,to);
+	submission->row_parent_rows = (const uint32_t *)SparkModelResidentdRebase(submission->row_parent_rows,from,to);
+	submission->row_slots = (const uint32_t *)SparkModelResidentdRebase(submission->row_slots,from,to);
+	submission->model_extension = SparkModelResidentdRebase(submission->model_extension,from,to);
+	submission->cache_block_identities = (const SparkModelServingCacheIdentity *)SparkModelResidentdRebase(submission->cache_block_identities,from,to);
+}
+
 static SparkStatus SparkModelResidentdBindRoute(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
 	const void *message,
 	uint32_t message_bytes,
+	const SparkModelServingSubmission *submission,
 	uint32_t decision_required)
 {
 	SparkModelResidentdSlot *slot;
 	uint64_t hidden_bytes,input_sideband_bytes,output_sideband_bytes;
 	void *input_sideband_address,*output_sideband_address;
 	SparkStatus status;
-	if ( runtime == 0 || route == 0 || message == 0 || message_bytes > runtime->route_message_capacity || route->slot_index >= runtime->route_capacity )
+	if ( runtime == 0 || route == 0 || message == 0 || submission == 0 || message_bytes > runtime->route_message_capacity || route->slot_index >= runtime->route_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	slot = &runtime->slots[route->slot_index];
 	memcpy(slot->message,message,message_bytes);
 	route->message_bytes = message_bytes;
-	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
-	hidden_bytes = status == SPARK_STATUS_OK &&
-		((runtime->rank_plan.flags &
-		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ||
-		 (runtime->adapter_library.adapter_interface.descriptor->capability_flags &
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u) ?
-		(uint64_t)route->submission.row_count *
-		runtime->rank_plan.boundary_bytes_per_sequence : 0u;
-	input_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
-	output_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
-	if ( status == SPARK_STATUS_OK && (hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes) )
-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		pthread_mutex_lock(&runtime->mutex);
-		status = SparkModelResidentdClaimResidentSlotsLocked(runtime,route);
-		pthread_mutex_unlock(&runtime->mutex);
-	}
+	route->submission = *submission;
+	SparkModelResidentdRebaseSubmission(&route->submission,message,slot->message);
+	hidden_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ||
+		(runtime->adapter_library.adapter_interface.descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ?
+		(uint64_t)route->submission.row_count * runtime->rank_plan.boundary_bytes_per_sequence : 0u;
+	input_sideband_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
+	output_sideband_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
+	if ( hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdClaimResidentSlotsLocked(runtime,route);
+	pthread_mutex_unlock(&runtime->mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
@@ -2203,7 +2214,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,1u);
+		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,&submission,1u);
 		if ( status == SPARK_STATUS_OK )
 			route->prepared_cache = cache_prepared;
 	}
@@ -2348,7 +2359,7 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 		SPARK_RETURN(status);
 	if ( route == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
-	status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,0u);
+	status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,&submission,0u);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( status == SPARK_STATUS_OK )
 	{

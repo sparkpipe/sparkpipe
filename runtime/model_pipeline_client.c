@@ -541,7 +541,7 @@ static SparkStatus SparkModelPipelineClientValidateRankCompletion(
 {
 	SparkStatus status;
 	uint32_t lane;
-	status = SparkModelServingAdapterValidateStageCompletion(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion);
+	status = SparkModelServingAdapterValidateStageCompletionPrevalidated(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion);
 	if ( status != SPARK_STATUS_OK || (transaction->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u || completion->status != SPARK_STATUS_OK ||
 		(completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) == 0u )
 		return(status);

@@ -777,6 +777,141 @@ static void TestRuntimeSubmissionValidation(void)
 	assert(SparkModelServingAdapterValidateRuntimeSubmission(&descriptor,&limits,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+typedef struct TestPrevalidatedCase
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[3];
+	SparkModelServingCacheIdentity identities[1];
+	uint32_t token_ids[3];
+	uint32_t row_lanes[3];
+	uint64_t row_positions[3];
+	uint64_t row_sequences[3];
+} TestPrevalidatedCase;
+
+static void TestPrevalidatedCaseBuild(TestPrevalidatedCase *test)
+{
+	uint32_t lane;
+	memset(test,0,sizeof(*test));
+	for (lane=0u; lane<2u; lane++)
+	{
+		test->lanes[lane].request_id = 10u + lane;
+		test->lanes[lane].request_generation = 1u;
+		test->lanes[lane].step_generation = 1u;
+		test->lanes[lane].sequence_id = 100u + lane;
+		test->lanes[lane].sequence_position = 5u;
+		test->lanes[lane].context_token_count = 6u;
+		test->lanes[lane].resident_sequence_slot = lane == 0u ? 63u : 64u;
+		test->lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+		test->token_ids[lane] = 20u + lane;
+		test->row_lanes[lane] = lane;
+		test->row_positions[lane] = 5u;
+		test->row_sequences[lane] = 100u + lane;
+	}
+	test->lanes[2].resident_sequence_slot = SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT;
+	test->submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	test->submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	test->submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	test->submission.tokens_per_sequence = 1u;
+	test->submission.submission_id = 10u;
+	test->submission.request_id = 10u;
+	test->submission.sequence_id = 100u;
+	test->submission.control_generation = 1u;
+	test->submission.transaction_id = 2u;
+	test->submission.dispatch_generation = 3u;
+	test->submission.request_generation = 1u;
+	test->submission.step_generation = 4u;
+	test->submission.active_sequence_count = 2u;
+	test->submission.new_token_count = 2u;
+	test->submission.lane_count = 3u;
+	test->submission.row_count = 2u;
+	test->submission.token_count = 2u;
+	test->submission.lanes = test->lanes;
+	test->submission.token_ids = test->token_ids;
+	test->submission.row_lane_indices = test->row_lanes;
+	test->submission.row_positions = test->row_positions;
+	test->submission.row_sequence_ids = test->row_sequences;
+}
+
+static void TestPrevalidatedAgrees(const SparkModelServingAdapterDescriptor *descriptor,const SparkModelServingRuntimeLimits *limits,const TestPrevalidatedCase *test,SparkStatus expected)
+{
+	assert(SparkModelServingAdapterValidateRuntimeSubmission(descriptor,limits,&test->submission) == expected);
+	assert(SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(descriptor,limits,&test->submission) == expected);
+}
+
+static void TestPrevalidatedRefusesWhatRuntimeValidationRefuses(void)
+{
+	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingRuntimeLimits limits;
+	TestPrevalidatedCase test;
+	TestBuildDescriptor(&descriptor);
+	descriptor.max_output_token_count = 4u;
+	memset(&limits,0,sizeof(limits));
+	limits.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	limits.descriptor_bytes = SPARK_MODEL_SERVING_RUNTIME_LIMITS_BYTES;
+	limits.max_inflight_submission_count = 2u;
+	limits.max_active_sequence_count = 3u;
+	limits.max_input_row_count = 3u;
+	limits.resident_sequence_capacity = 128u;
+	limits.kv_logical_page_capacity = 256u;
+	limits.kv_physical_page_capacity = 128u;
+	limits.output_vocabulary = 32000u;
+	TestPrevalidatedCaseBuild(&test);
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_OK);
+	test.lanes[1].resident_sequence_slot = 63u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[0].resident_sequence_slot = 64u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[1].resident_sequence_slot = 200u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_CAPACITY_EXCEEDED);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[1].resident_sequence_slot = 600u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[1].flags = 0u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[2].request_id = 9u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.row_lanes[1] = 2u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.row_sequences[1] = 100u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.row_lanes[1] = 0u;
+	test.row_sequences[1] = 100u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[0].flags |= SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.lanes[0].cache_block_identity_count = 1u;
+	test.submission.cache_block_identity_count = 1u;
+	test.submission.cache_block_identities = test.identities;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.submission.submission_id = 0u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_INVALID_ARGUMENT);
+	TestPrevalidatedCaseBuild(&test);
+	test.submission.descriptor_bytes = 1u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_ABI_MISMATCH);
+	TestPrevalidatedCaseBuild(&test);
+	test.submission.tokens_per_sequence = 2u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_UNSUPPORTED);
+	TestPrevalidatedCaseBuild(&test);
+	limits.max_active_sequence_count = 2u;
+	limits.max_input_row_count = 2u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_CAPACITY_EXCEEDED);
+	test.submission.lane_count = 2u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_OK);
+	limits.max_input_row_count = 1u;
+	limits.max_active_sequence_count = 1u;
+	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
 static void TestEmitRowSelection(void)
 {
 	static SparkModelServingLane lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -1292,6 +1427,7 @@ int main(void)
 	TestDriverCacheLaneMapping();
 	TestDriverCacheAdmissionIdentity();
 	TestRuntimeSubmissionValidation();
+	TestPrevalidatedRefusesWhatRuntimeValidationRefuses();
 	TestEmitRowSelection();
 	TestMaximumRoundMajorRowLayout();
 	TestCompletionValidation();

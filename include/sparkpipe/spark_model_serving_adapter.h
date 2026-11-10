@@ -528,6 +528,14 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	uint32_t tokens_per_sequence,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion);
+SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t stage_index,
+	uint32_t work_kind,
+	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion);
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
 	const char *shared_object_path,
 	uint32_t required_capability_flags,
