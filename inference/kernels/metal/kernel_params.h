@@ -28,6 +28,21 @@
 #define SPARK_GATED_SILU_ROUNDED 2u
 #define SPARK_GATED_SILU_CLAMP 3u
 #define SPARK_GATED_SILU_GATE_LIMIT 4u
+#define SPARK_INDEXER_KERNEL_NONE 0xffffffffu
+#define SPARK_INDEXER_KERNEL_MAX_HEADS 128u
+#define SPARK_INDEXER_KERNEL_MAX_DIM 256u
+#define SPARK_INDEXER_KERNEL_MAX_QUERY 8192u
+#define SPARK_INDEXER_KERNEL_MAX_TOPK 2048u
+#define SPARK_INDEXER_KERNEL_HEAD_GROUPS 8u
+#define SPARK_INDEXER_SCORE_SIMDS 8u
+#define SPARK_INDEXER_SCORE_THREADS (SPARK_INDEXER_SCORE_SIMDS * 32u)
+#define SPARK_INDEXER_SCORE_BLOCK_POSITIONS 256u
+#define SPARK_INDEXER_TOPK_THREADS 1024u
+#define SPARK_INDEXER_TOPK_BUCKETS 256u
+#define SPARK_INDEXER_TOPK_RADIX_BITS 8u
+#define SPARK_INDEXER_NORM_KERNEL_NONE 0u
+#define SPARK_INDEXER_NORM_KERNEL_RMS 1u
+#define SPARK_INDEXER_NORM_KERNEL_LAYER 2u
 #define SPARK_GATED_SITU 5u
 #define SPARK_GATED_SILU_ROUNDED_CLAMP 6u
 #define SPARK_HEAD_GATE_SOFTPLUS 0u
@@ -285,7 +300,8 @@ typedef struct SparkAttentionParams
 	uint32_t partition_base;
 	uint32_t extra_partitions;
 	uint32_t tree;
-	uint32_t pad[2];
+	uint32_t gather_keys;
+	uint32_t gather_ratio;
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams
@@ -459,5 +475,32 @@ typedef struct SparkSampleLogprob
 	uint32_t token;
 	float logprob;
 } SparkSampleLogprob;
+
+typedef struct SparkIndexerParams
+{
+	uint32_t rows;
+	uint32_t heads;
+	uint32_t head_dimension;
+	uint32_t key_norm;
+	float key_norm_epsilon;
+	float score_scale;
+	uint32_t topk;
+	uint32_t key_ratio;
+	uint32_t query_stride;
+	uint32_t weight_stride;
+	uint32_t key_stride;
+	uint32_t score_stride;
+	uint32_t page_slots;
+	uint32_t pages_per_sequence;
+	uint32_t pool_pages;
+	uint32_t has_weight;
+	uint32_t has_bias;
+	uint32_t rope_dimension;
+	uint32_t rope_rounding;
+	uint32_t rope_interleaved;
+	float rope_scale;
+	uint32_t pad[3];
+	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
+} SparkIndexerParams;
 
 #endif

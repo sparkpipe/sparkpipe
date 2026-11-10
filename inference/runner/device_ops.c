@@ -146,7 +146,20 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_rank_sum_f32",
 	"spark_gemv_routed_f32",
 	"spark_route_combine_weighted_shared_f32",
-	"spark_sample_rows"
+	"spark_sample_rows",
+	"spark_indexer_store_keys",
+	"spark_indexer_score",
+	"spark_indexer_topk",
+	"spark_attention_decode_gather_d256",
+	"spark_attention_decode_gather_d512",
+	"spark_attention_decode_gather_d128",
+	"spark_attention_decode_gather_d192v128",
+	"spark_attention_decode_gather_d576v512",
+	"spark_attention_combine_gather_d256",
+	"spark_attention_combine_gather_d512",
+	"spark_attention_combine_gather_d128",
+	"spark_attention_combine_gather_d192v128",
+	"spark_attention_combine_gather_d576v512"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1172,6 +1185,177 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	bindings[4] = OpsBind(sinks != 0 ? *sinks : partial,SPARK_DEVICE_BIND_READ);
 	bindings[5] = OpsBind(extra->positions,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_COMBINE_EXTRA,params->heads,params->rows,1u,256u,&launch,sizeof(launch),bindings,6u));
+}
+
+static uint32_t OpsIndexerPagesKnown(const SparkIndexerParams *params)
+{
+	return(params->page_slots != 0u && params->pages_per_sequence != 0u && params->pool_pages != 0u ? 1u : 0u);
+}
+
+static uint64_t OpsIndexerPoolBytes(const SparkIndexerParams *params)
+{
+	return((uint64_t)params->pool_pages * params->page_slots * params->head_dimension * sizeof(uint16_t));
+}
+
+SparkStatus SparkOpsIndexerStoreKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor keys, const SparkTensor *norm_weight,
+	const SparkTensor *norm_bias, SparkTensor sequence_of_row, SparkTensor rope_positions, SparkTensor store_positions, SparkTensor page_table,
+	SparkTensor pool, const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[9];
+	SparkStatus status;
+	if ( params->rows == 0u || params->head_dimension == 0u || params->head_dimension > SPARK_INDEXER_KERNEL_MAX_DIM ||
+		params->key_norm > SPARK_INDEXER_NORM_KERNEL_LAYER || (norm_weight != 0) != (params->has_weight != 0u) ||
+		(norm_bias != 0) != (params->has_bias != 0u) || (params->has_bias != 0u && params->key_norm != SPARK_INDEXER_NORM_KERNEL_LAYER) ||
+		(params->has_weight != 0u && params->key_norm == SPARK_INDEXER_NORM_KERNEL_NONE) || params->rope_dimension > params->head_dimension ||
+		params->rope_dimension % 2u != 0u || params->rope_dimension > 2u * SPARK_KERNEL_ROPE_PAIRS || params->key_stride < params->head_dimension ||
+		OpsIndexerPagesKnown(params) == 0u )
+		return(OpsRefuse("indexer_store_keys","index keys up to 256 wide, a known key norm whose weight and bias tensors match the flags, an even rope part "
+			"inside the key and a configured page geometry"));
+	status = OpsNeed("indexer_store_keys","keys",keys,OpsRowsBytes(params->rows,params->key_stride,params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK && norm_weight != 0 )
+		status = OpsNeed("indexer_store_keys","norm_weight",*norm_weight,(uint64_t)params->head_dimension * sizeof(float));
+	if ( status == SPARK_STATUS_OK && norm_bias != 0 )
+		status = OpsNeed("indexer_store_keys","norm_bias",*norm_bias,(uint64_t)params->head_dimension * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_store_keys","sequence_of_row",sequence_of_row,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_store_keys","rope_positions",rope_positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_store_keys","store_positions",store_positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_store_keys","page_table",page_table,(uint64_t)params->pages_per_sequence * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_store_keys","pool",pool,OpsIndexerPoolBytes(params));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(keys,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(norm_weight != 0 ? *norm_weight : keys,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(norm_bias != 0 ? *norm_bias : keys,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(sequence_of_row,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(rope_positions,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(store_positions,SPARK_DEVICE_BIND_READ);
+	bindings[6] = OpsBind(page_table,SPARK_DEVICE_BIND_READ);
+	bindings[7] = OpsBind(pool,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[8] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_STORE_KEYS,params->rows,1u,1u,OpsThreads(params->head_dimension,256u),params,sizeof(*params),bindings,9u));
+}
+
+SparkStatus SparkOpsIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor query, SparkTensor head_weight, SparkTensor pool,
+	SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[8];
+	SparkStatus status;
+	if ( params->rows == 0u || params->heads < 16u || params->heads % 16u != 0u || params->heads > SPARK_INDEXER_KERNEL_MAX_HEADS ||
+		params->head_dimension == 0u || params->head_dimension > SPARK_INDEXER_KERNEL_MAX_DIM ||
+		(uint64_t)params->heads * params->head_dimension > SPARK_INDEXER_KERNEL_MAX_QUERY || params->score_stride == 0u ||
+		params->query_stride < params->heads * params->head_dimension || params->weight_stride < params->heads || OpsIndexerPagesKnown(params) == 0u )
+		return(OpsRefuse("indexer_score","whole 16-head groups up to 128 heads, keys up to 256 wide with at most 8192 query values per row, "
+			"a score stride and a configured page geometry"));
+	status = OpsNeed("indexer_score","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","head_weight",head_weight,OpsRowsBytes(params->rows,params->weight_stride,params->heads,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","pool",pool,OpsIndexerPoolBytes(params));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","page_table",page_table,(uint64_t)params->pages_per_sequence * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","sequence_of_row",sequence_of_row,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","row_positions",row_positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_score","scores",scores,(uint64_t)params->rows * params->score_stride * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(head_weight,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(pool,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(page_table,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(sequence_of_row,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(row_positions,SPARK_DEVICE_BIND_READ);
+	bindings[6] = OpsBind(scores,SPARK_DEVICE_BIND_WRITE);
+	bindings[7] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_SCORE,(params->score_stride + SPARK_INDEXER_SCORE_BLOCK_POSITIONS - 1u) / SPARK_INDEXER_SCORE_BLOCK_POSITIONS,
+		params->rows,1u,SPARK_INDEXER_SCORE_THREADS,params,sizeof(*params),bindings,8u));
+}
+
+SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[2];
+	SparkStatus status;
+	if ( params->rows == 0u || params->score_stride == 0u || params->topk == 0u || params->topk > SPARK_INDEXER_KERNEL_MAX_TOPK )
+		return(OpsRefuse("indexer_topk","rows, a score stride and between 1 and 2048 selected keys per row"));
+	status = OpsNeed("indexer_topk","scores",scores,(uint64_t)params->rows * params->score_stride * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_topk","selected",selected,(uint64_t)params->rows * params->topk * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(scores,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(selected,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_TOPK,params->rows,1u,1u,SPARK_INDEXER_TOPK_THREADS,params,sizeof(*params),bindings,2u));
+}
+
+uint64_t SparkOpsAttentionGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t value_dimension, uint32_t gather_keys)
+{
+	const uint64_t partitions = (gather_keys + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	return((uint64_t)rows * heads * partitions * (value_dimension + 2u) * sizeof(float));
+}
+
+SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
+	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params)
+{
+	SparkAttentionParams launch = *params;
+	SparkDeviceBinding bindings[9];
+	SparkStatus status;
+	if ( launch.group == 0u && params->kv_heads != 0u && params->heads % params->kv_heads == 0u )
+		launch.group = params->heads / params->kv_heads;
+	if ( params->rows == 0u || params->heads == 0u || params->kv_heads != paged->kv_heads || launch.group == 0u ||
+		(uint64_t)params->first_head + params->heads > (uint64_t)launch.group * params->kv_heads || OpsAttentionShapeKnown(params) == 0u ||
+		(sinks != 0) != (params->has_sinks != 0u) || params->page_slots != paged->page_slots || params->pages_per_sequence != paged->pages_per_sequence ||
+		params->pool_pages != paged->pool_pages || paged->tree != 0u || params->gather_keys == 0u || params->gather_keys > SPARK_INDEXER_KERNEL_MAX_TOPK )
+		return(OpsRefuse("attention_gather","the dense attention head shapes, whole query groups per key head, one page geometry, no tree frame, "
+			"a sink tensor exactly when the parameters ask for sinks and between 1 and 2048 gathered keys per row"));
+	launch.tree = 0u;
+	launch.row_offset = 0u;
+	launch.partition_base = 0u;
+	launch.extra_partitions = 0u;
+	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	launch.partitions = (params->gather_keys + launch.partition_keys - 1u) / launch.partition_keys;
+	status = OpsNeed("attention_gather","partial",partial,SparkOpsAttentionGatherScratchBytes(params->rows,params->heads,OpsAttentionValueDimension(params),params->gather_keys));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_gather","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK && params->output_gate != 0u )
+		status = OpsNeed("attention_gather","gate",gate,
+			OpsRowsBytes(params->rows,params->gate_stride,params->gate_offset + (params->heads - 1u) * params->gate_head_stride + OpsAttentionValueDimension(params),2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_gather","output",output,OpsRowsBytes(params->rows,params->output_stride,params->heads * OpsAttentionValueDimension(params),2u));
+	if ( status == SPARK_STATUS_OK && sinks != 0 )
+		status = OpsNeed("attention_gather","sinks",*sinks,(uint64_t)params->heads * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_gather","selected",selected,(uint64_t)params->rows * params->gather_keys * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_gather","positions",paged->positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
+	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[7] = OpsBind(selected,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	status = OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_DECODE_GATHER + OpsAttentionWidth(params)),launch.partitions,params->heads,params->rows,
+		SPARK_ATTENTION_SIMDS * 32u,&launch,sizeof(launch),bindings,9u);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(partial,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(params->output_gate != 0u ? gate : query,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	bindings[4] = OpsBind(sinks != 0 ? *sinks : partial,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_COMBINE_GATHER + OpsAttentionWidth(params)),params->heads,params->rows,1u,256u,&launch,
+		sizeof(launch),bindings,5u));
 }
 
 SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor addend, uint32_t rows,
