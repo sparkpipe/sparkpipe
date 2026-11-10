@@ -10,6 +10,7 @@
 #include "inference/runner/device_ops.h"
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 #include "sparkpipe/spark_tp_device_collective.h"
@@ -167,7 +168,7 @@ static SparkStatus RunnerRound(void *context, void *device_queue, uint32_t opera
 	{
 		fprintf(stderr,"device_stage_runner: rank %u cannot run collective %u (degree %u, stage %u, %u rows); a device round is a whole round on the "
 			"rank's queue\n",runner->tp_rank,operation,degree,stage,rows);
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
 	status = SparkDeviceResolve((SparkDeviceAddress)(uintptr_t)local,local_bytes,&source);
 	if ( status == SPARK_STATUS_OK )
@@ -210,14 +211,14 @@ static SparkStatus RunnerExpertWeights(void *context, uint32_t layer, const uint
 {
 	(void)context; (void)layer; (void)group_row_offset_device; (void)routed_rows; (void)w1; (void)w2;
 	fprintf(stderr,"device_stage_runner: routed expert leases need weightd, which the device runner does not have\n");
-	return(SPARK_STATUS_UNSUPPORTED);
+	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 static SparkStatus RunnerExpertWeightsAhead(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2)
 {
 	(void)context; (void)layer; (void)routed_rows; (void)w1; (void)w2;
 	fprintf(stderr,"device_stage_runner: expert leases need weightd, which the device runner does not have\n");
-	return(SPARK_STATUS_UNSUPPORTED);
+	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 static SparkStatus RunnerPackRecord(SparkDeviceStageRunner *runner)
@@ -418,7 +419,7 @@ static SparkStatus RunnerOpenRank(SparkDeviceStageRunner **out, const SparkDevic
 	*out = 0;
 	runner = (SparkDeviceStageRunner *)calloc(1u,sizeof(*runner));
 	if ( runner == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	runner->config = *config;
 	runner->tp_degree = config->tp_degree > 1u ? config->tp_degree : 1u;
 	runner->tp_rank = runner->tp_degree > 1u ? config->tp_rank : 0u;
@@ -563,7 +564,7 @@ static SparkStatus RunnerGroupOpen(SparkDeviceStageRunner **out, const SparkDevi
 	if ( mark == 0 || strlen(config->pack_path) >= sizeof(((RunnerGroup *)0)->paths[0]) )
 	{
 		fprintf(stderr,"device_stage_runner: a TP%u group names rank 00's pack; the path holds rank00 where each rank's number goes\n",config->tp_degree);
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	leader = (SparkDeviceStageRunner *)calloc(1u,sizeof(*leader));
 	group = (RunnerGroup *)calloc(1u,sizeof(*group));
@@ -571,7 +572,7 @@ static SparkStatus RunnerGroupOpen(SparkDeviceStageRunner **out, const SparkDevi
 	{
 		free(leader);
 		free(group);
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	leader->config = *config;
 	leader->pack_fd = -1;
@@ -653,14 +654,14 @@ SparkStatus SparkDeviceStageRunnerOpen(SparkDeviceStageRunner **out, const Spark
 	{
 		fprintf(stderr,"device_stage_runner: needs a model with open, bind_device, close, step, attach_kv and reset_slot, a pack, and nonzero rows, "
 			"sequences, context and head rows\n");
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( config->tp_degree > SPARK_DEVICE_COLLECTIVE_MAX_RANKS || (config->tp_degree > 1u && config->collective != 0 &&
 		(config->tp_rank >= config->tp_degree || config->collective->degree != config->tp_degree || config->collective->exchange == 0)) )
 	{
 		fprintf(stderr,"device_stage_runner: a TP rank names its rank below the degree (at most %u) and a collective of that degree\n",
 			SPARK_DEVICE_COLLECTIVE_MAX_RANKS);
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( config->tp_degree > 1u && config->collective == 0 )
 		return(RunnerGroupOpen(out,config));
@@ -689,7 +690,10 @@ static SparkStatus RunnerValidateTree(SparkDeviceStageRunner *runner, const Spar
 	for ( row = 0u; row < batch->rows; row++ )
 		if ( batch->sequence_of_row[row] != slot || batch->token_ids[row] >= runner->geometry.vocab )
 			return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame's rows belong to one sequence and name tokens in the vocabulary"));
-	if ( SparkSpeculationTreeLayoutBuild(batch->parent_rows,batch->token_ids,batch->rows,runner->next_position[slot],1u,&runner->tree_layout) != SPARK_STATUS_OK )
+	if ( runner->config.external_kv != 0u )
+		runner->next_position[slot] = batch->positions[0];
+	if ( SparkSpeculationTreeLayoutBuild(batch->parent_rows,batch->token_ids,batch->rows,runner->next_position[slot],SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN,
+		&runner->tree_layout) != SPARK_STATUS_OK )
 		return(RunnerFail(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame lists its trunk, then whole branches off it, siblings with distinct tokens"));
 	for ( row = 0u; row < batch->rows; row++ )
 		if ( batch->positions[row] != runner->tree_layout.anchor_position + runner->tree_layout.row[row].depth )

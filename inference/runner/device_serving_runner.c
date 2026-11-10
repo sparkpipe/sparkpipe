@@ -4,6 +4,7 @@
 
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_device.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sampling.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -63,7 +64,9 @@ static SparkStatus ServingScratch(DeviceServing *serving)
 	serving->output_scores = (float *)(base + 7u * rows);
 	serving->head_of = base + 8u * rows;
 	serving->rules = (SparkSampleRow *)calloc(serving->head_rows,sizeof(*serving->rules));
-	return(serving->rules != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( serving->rules == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration,
@@ -80,7 +83,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 		return(ServingRefuse(SPARK_STATUS_UNSUPPORTED,"a device stage serves the whole model on one device"));
 	serving = (DeviceServing *)calloc(1u,sizeof(*serving));
 	if ( serving == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(&config,0,sizeof(config));
 	config.pack_path = configuration->rank_pack_path;
 	config.model = model;
@@ -208,6 +211,17 @@ static SparkStatus ServingSample(DeviceServing *serving, const SparkStageRunnerD
 	return(status);
 }
 
+static SparkStatus ServingTree(const SparkStageRunnerDispatch *dispatch, uint32_t verify, uint32_t prefill, const uint32_t **parents)
+{
+	*parents = 0;
+	if ( dispatch->tree == 0u )
+		return(SPARK_STATUS_OK);
+	if ( verify == 0u || prefill != 0u || dispatch->active_sequence_count != 1u || dispatch->host_parent_rows == 0 )
+		return(ServingRefuse(SPARK_STATUS_INVALID_ARGUMENT,"a tree frame is one sequence's verify step with its parent rows"));
+	*parents = dispatch->host_parent_rows;
+	return(SPARK_STATUS_OK);
+}
+
 static void ServingCompletion(const SparkStageRunnerDispatch *dispatch, const uint32_t *tokens, uint32_t rows)
 {
 	SparkModelDriverCompletion completion;
@@ -233,10 +247,11 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	SparkDeviceStageRunnerBatch batch;
 	SparkDeviceStageRunnerResult result;
 	SparkDeviceQueue *queue;
+	const uint32_t *parents;
 	uint32_t rows, steps, step, row, head, head_count = 0u, verify, prefill;
 	SparkStatus status;
 	if ( serving == 0 || dispatch == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = dispatch->row_count;
 	steps = dispatch->chain_steps > 1u ? dispatch->chain_steps : 1u;
 	verify = (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY) != 0u ? 1u : 0u;
@@ -253,7 +268,9 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		return(ServingRefuse(SPARK_STATUS_INVALID_ARGUMENT,"a dispatch names rows within capacity, its host row tables and its sequences; a chain decodes "
 			"one row per sequence"));
 	queue = SparkDeviceStageRunnerQueue(serving->device);
-	status = ServingRead(queue,serving->lane_slots,&serving->scratch,dispatch->recurrent_index,(uint64_t)dispatch->active_sequence_count * sizeof(uint32_t));
+	status = ServingTree(dispatch,verify,prefill,&parents);
+	if ( status == SPARK_STATUS_OK )
+		status = ServingRead(queue,serving->lane_slots,&serving->scratch,dispatch->recurrent_index,(uint64_t)dispatch->active_sequence_count * sizeof(uint32_t));
 	if ( status == SPARK_STATUS_OK )
 		status = ServingGroup(serving,dispatch,prefill,&head_count);
 	if ( status != SPARK_STATUS_OK )
@@ -273,6 +290,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	batch.head_rows = head_count;
 	batch.head_row_index = serving->heads;
 	batch.verify = verify;
+	batch.parent_rows = parents;
 	for ( step = 0u; status == SPARK_STATUS_OK && step < steps; step++ )
 	{
 		uint32_t *tokens = serving->output_tokens + (uint64_t)step * rows;
@@ -311,8 +329,10 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t *slots, uint32_t count)
 {
 	DeviceServing *serving = ServingOf(runner);
-	SparkStatus status = serving != 0 && (count == 0u || slots != 0) ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t index;
+	if ( serving == 0 || (count != 0u && slots == 0) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for ( index = 0u; status == SPARK_STATUS_OK && index < count; index++ )
 		status = SparkDeviceStageRunnerResetSequence(serving->device,slots[index]);
 	return(status);
@@ -321,7 +341,7 @@ SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t 
 SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner, SparkStageRunnerStats *stats_out)
 {
 	if ( runner == 0 || stats_out == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*stats_out = runner->stats;
 	return(SPARK_STATUS_OK);
 }
@@ -349,7 +369,9 @@ uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner)
 SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv)
 {
 	DeviceServing *serving = ServingOf(runner);
-	return(serving != 0 ? SparkDeviceStageRunnerAttachKv(serving->device,kv) : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( serving == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkDeviceStageRunnerAttachKv(serving->device,kv));
 }
 
 uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner)
@@ -373,34 +395,42 @@ uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner)
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
 {
 	DeviceServing *serving = ServingOf(runner);
-	return(serving != 0 ? SparkDeviceStageRunnerKeepRows(serving->device,kept,sequences) : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( serving == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkDeviceStageRunnerKeepRows(serving->device,kept,sequences));
 }
 
 uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
 {
-	(void)runner;
-	return(0u);
+	const DeviceServing *serving = ServingOf(runner);
+	SparkDeviceStageRunnerInfo info;
+	if ( serving == 0 || SparkStageRunnerVerifyCapable(runner) == 0u || SparkDeviceStageRunnerInfoGet(serving->device,&info) != SPARK_STATUS_OK )
+		return(0u);
+	return(info.tree_verify != 0u ? 1u : 0u);
 }
 
 uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
 {
-	(void)runner;
-	return(0u);
+	return(SparkStageRunnerTreeVerifyCapable(runner) != 0u ? SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN : 0u);
 }
 
 SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
 {
-	(void)runner;
-	(void)path_rows;
-	(void)path_begin;
-	(void)kept;
-	(void)sequences;
-	return(ServingRefuse(SPARK_STATUS_UNSUPPORTED,"a device stage serves chain verify frames; tree frames are not served"));
+	DeviceServing *serving = ServingOf(runner);
+	uint32_t sequence;
+	if ( serving == 0 || path_rows == 0 || path_begin == 0 || kept == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for ( sequence = 0u; sequence < sequences; sequence++ )
+		if ( path_begin[sequence + 1u] < path_begin[sequence] || kept[sequence] != path_begin[sequence + 1u] - path_begin[sequence] )
+			return(ServingRefuse(SPARK_STATUS_INVALID_ARGUMENT,"each sequence keeps the rows of its path"));
+	return(SparkDeviceStageRunnerKeepPath(serving->device,path_rows,path_begin,sequences));
 }
 
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 {
-	return(ServingOf(runner) != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ServingOf(runner) == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture)
@@ -412,7 +442,7 @@ SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRu
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers)
 {
 	(void)runner; (void)hidden; (void)total_layers;
-	return(SPARK_STATUS_UNSUPPORTED);
+	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements)
@@ -431,7 +461,7 @@ SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_
 {
 	DeviceServing *serving = ServingOf(runner);
 	if ( serving == 0 || (queue != 0 && queue != SparkDeviceStageRunnerQueue(serving->device)) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkDeviceStageRunnerRecurrentCopy(serving->device,to_buffer,slot,(SparkDeviceAddress)(uintptr_t)buffer,bytes));
 }
 
@@ -441,7 +471,7 @@ SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t
 	SparkDeviceStageRunnerInfo info;
 	if ( serving == 0 || digest == 0 || digest_bytes < SPARK_SHA256_DIGEST_BYTES ||
 		SparkDeviceStageRunnerInfoGet(serving->device,&info) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkSha256HexToDigest(info.pack_sha256,digest));
 }
 
