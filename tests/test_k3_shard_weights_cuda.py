@@ -29,6 +29,6 @@ if shutil.which(NVCC) is None:
 with tempfile.TemporaryDirectory(prefix="k3-streamed-shard-weights-cuda-") as directory:
     binary = str(pathlib.Path(directory) / "probe")
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
-                    "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include", "-Imodules/k3_resident_decode_stage/include", "-Imodules/k3_resident_decode_stage/source",
+                    "-I.", "-Iinclude", "-Imodel-families/common/include", "-Imodel-families/k3/include", "-Imodules/k3_resident_decode_stage/include", "-Imodel-families/k3/source",
                     "tests/cuda/k3_shard_weights_cuda.cu", "-o", binary, "-lpthread", "-lcuda"], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)

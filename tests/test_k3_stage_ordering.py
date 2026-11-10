@@ -4,9 +4,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
 RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
-MODEL = MODULE / "spark_k3_stage_model.cu"
+MODEL = ROOT / "model-families" / "k3" / "source" / "k3_stage.cuh"
 ADAPTER = ROOT / "inference" / "runner" / "stage_serving_adapter.c"
 
 

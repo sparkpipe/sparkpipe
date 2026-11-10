@@ -23,7 +23,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KERNEL_DIRS = ["inference/kernels", "runtime"]
-CALLER_GLOBS = ["inference/llms"]
+CALLER_GLOBS = ["model-families/k3/source"]
 
 COUNT_WORDS = ("tokens", "rows", "count", "heads", "layers")
 WIDTH_WORDS = ("dimension", "width", "hidden", "_dim")

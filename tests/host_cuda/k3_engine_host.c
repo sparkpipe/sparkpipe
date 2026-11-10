@@ -1,6 +1,6 @@
 
 #include <stdio.h>
-#include "inference/llms/kimi_k3/engine.h"
+#include "model-families/k3/source/engine.h"
 
 float state_s[65536u / sizeof(float)];
 

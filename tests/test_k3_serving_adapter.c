@@ -1,7 +1,7 @@
 #include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/generated_config.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"

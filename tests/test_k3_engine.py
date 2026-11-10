@@ -44,7 +44,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-ENGINE = ROOT / "inference" / "llms" / "kimi_k3" / "engine.h"
+ENGINE = ROOT / "model-families" / "k3" / "source" / "engine.h"
 
 
 def engine_constants():

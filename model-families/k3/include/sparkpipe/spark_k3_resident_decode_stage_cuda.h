@@ -7,7 +7,7 @@ struct SparkWeightdLazyPack;
 #include "sparkpipe/spark_k3_bind.h"
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
-#include "inference/llms/kimi_k3/slice.cuh"
+#include "model-families/k3/source/slice.cuh"
 
 
 #define SPARK_K3_DISPATCH_OK 0

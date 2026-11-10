@@ -2,8 +2,8 @@
 
 #include <stdint.h>
 
-#include "inference/llms/kimi_k3/config.h"
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/config.h"
+#include "model-families/k3/source/generated_config.h"
 
 #define SPARK_K3_DSPARK_MAGIC 0x5344334Bu
 #define SPARK_K3_DSPARK_FORMAT_VERSION 3u

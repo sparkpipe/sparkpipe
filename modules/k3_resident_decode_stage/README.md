@@ -1,8 +1,10 @@
 # k3_resident_decode_stage
 
-Kimi K3 resident decode stage (rank-pack loader, stage runner and serving
-adapter), which the root `Makefile` links into
-`build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)` (TP16).
+Kimi K3's serving adapter, stage-model unit, configs and recipes. The root
+`Makefile` links them with the K3 family's rank-pack loader and stage runner
+(`model-families/k3/`) into
+`build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)` (TP16). The notes
+below describe that runner.
 
 ## Implementation notes
 

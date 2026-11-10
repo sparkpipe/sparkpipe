@@ -1515,7 +1515,7 @@ and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
 
 Kimi K3 (93 layers of 7,168: 69 KDA layers, 24 rope-free latent attention
 layers, 896 MXFP4 experts) runs on `K3Schedule` through `K3Device`
-(`model-families/k3/device/`), geometry from `inference/llms/kimi_k3/config.h`.
+(`model-families/k3/device/`), geometry from `model-families/k3/source/config.h`.
 The schedule's CUDA-only paths (context-sharded attention, expert cells, lazy
 experts) sit behind `kShardedMla`, `kExpertCells` and `kLazyExperts`, which the
 CUDA backend sets and the Metal one does not. The residual stream is AttnRes:

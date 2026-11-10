@@ -217,7 +217,7 @@ def validate_quantizer_writes() -> None:
 
 def validate_model_precision_contracts() -> None:
     codec = read("inference/kernels/weight_codec.cuh")
-    k3 = read("inference/llms/kimi_k3/layer.cuh")
+    k3 = read("model-families/k3/source/layer.cuh")
 
     for name in (
         "INT6",
@@ -242,8 +242,8 @@ def validate_model_precision_contracts() -> None:
 
 
 def validate_k3_exact_replay() -> None:
-    layer = read("inference/llms/kimi_k3/layer.cuh")
-    slice_source = read("inference/llms/kimi_k3/slice.cuh")
+    layer = read("model-families/k3/source/layer.cuh")
+    slice_source = read("model-families/k3/source/slice.cuh")
     combined_code = strip_comments_and_literals(layer + "\n" + slice_source)
 
     require(layer, "float *replay_retention;", "K3 retained decay values")

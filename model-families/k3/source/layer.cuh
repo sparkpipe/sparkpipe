@@ -20,13 +20,13 @@
 #include "inference/kernels/index_select.cuh"
 #include "inference/kernels/attn_expanded_prefill.cuh"
 #include "inference/kernels/gqa_shard.cuh"
-#include "inference/llms/kimi_k3/config.h"
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/config.h"
+#include "model-families/k3/source/generated_config.h"
 
 using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, K3_KV_PAGE_SLOTS>;
 
 
-#include "inference/llms/kimi_k3/launch_shape.h"
+#include "model-families/k3/source/launch_shape.h"
 
 static_assert(K3_KDA_QK_L2NORM == 1u, "kda qk l2norm is part of the kernel contract");
 static_assert(K3_KDA_A_LOG_SOURCE_HEADS == 128u && K3_KDA_HEADS == 96u, "A_log loads 128 heads and narrows to 96");

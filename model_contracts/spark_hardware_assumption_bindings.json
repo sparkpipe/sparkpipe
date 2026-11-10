@@ -261,7 +261,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -311,7 +311,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -329,7 +329,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",

@@ -25,7 +25,7 @@ def main() -> None:
 
     contracts = {
         "k3": (
-            "inference/llms/kimi_k3/layer.cuh",
+            "model-families/k3/source/layer.cuh",
             "LM_TOPK_SCORE_SIGMOID",
             "K3_ROUTED_SCALE",
         ),
@@ -40,7 +40,7 @@ def main() -> None:
         require(text, scale, f"{family} router scale")
         reject(text, "LmLaunchGroupedTileM(packed_rows", f"{family} route-priced tile")
 
-    k3 = read("inference/llms/kimi_k3/layer.cuh")
+    k3 = read("model-families/k3/source/layer.cuh")
     require(k3, "b->expert_w1_weight,packed_rows,rows,", "K3 W1 token count")
     require(k3, "b->expert_w2_weight,packed_rows,rows,", "K3 W2 token count")
     # K3 consumes the indirect form (route.cuh's contract), so the gather and

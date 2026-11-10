@@ -13,7 +13,7 @@ def main():
     launch = (ROOT / "runtime/gemm.cuh").read_text()
     stream = (ROOT / "inference/kernels/stream_gemm.cuh").read_text()
     models = {
-        "kimi_k3": "inference/llms/kimi_k3/layer.cuh",
+        "kimi_k3": "model-families/k3/source/layer.cuh",
     }
     failures = []
     if "void *output_f32;" not in gemm:
@@ -33,7 +33,7 @@ def main():
         refused = bf16_router.get(model, ()) + (r"output_bf16\s*=\s*\w+->router_logits\s*;",)
         if any(re.search(pattern, source) for pattern in refused):
             failures.append(f"{model} router still writes BF16")
-    kimi = (ROOT / "inference/llms/kimi_k3/layer.cuh").read_text()
+    kimi = (ROOT / "model-families/k3/source/layer.cuh").read_text()
     sigmoid_topk = re.search(
         r"LmTopkRouteLaunch<\s*K3_LAYER_THREADS\s*,\s*K3_TOP_K\s*,"
         r"\s*true\s*,\s*LM_TOPK_SCORE_SIGMOID\s*>\s*\(\s*rows\s*,"

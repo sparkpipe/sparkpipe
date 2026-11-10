@@ -3,7 +3,7 @@
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "inference/kernels/attention_block.cuh"
 #include "inference/kernels/tp_reduce.cuh"
-#include "inference/llms/kimi_k3/slice.cuh"
+#include "model-families/k3/source/slice.cuh"
 #include "inference/runner/pass_keys.cuh"
 
 static int32_t K3StreamedAccumulate(float *accumulator, const uint16_t *value, uint64_t elements, uint32_t first, cudaStream_t stream)

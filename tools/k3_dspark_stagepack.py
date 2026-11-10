@@ -7,7 +7,7 @@ a 5-layer Qwen3-shaped attention drafter that reads target hidden taps and emits
 one block per round, with a low-rank Markov bias head and a confidence head.
 This tool REPACKAGES the tensors as shipped (BF16 bytes move, never recomputed
 - the quantization policy) into the K3DS wire layout the k3 module's drafter
-bind reads (modules/k3_resident_decode_stage/source/spark_k3_dspark_format.h).
+bind reads (model-families/k3/include/sparkpipe/spark_k3_dspark_format.h).
 
 Wire shape: the qwen38_27b drafter pack's Q6SP v3 discipline - a fixed little-
 endian header, 56-byte entries (6I4Q), 256-byte-aligned payloads - with the

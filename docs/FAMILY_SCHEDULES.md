@@ -29,7 +29,7 @@ The backends:
 | HY4 | `HyModel<G>` in `model-families/hy4/source/hy4_stage.cuh` | not yet |
 | GLM 5.3 Flash | `Glm5NextStage<G>` in `model-families/glm5_next/source/glm5_next_stage_model.cuh` | not yet |
 | GLM 5.3 Full (GLM 5.3 Full, A.X K2) | `GlmModel<G>` in `model-families/glm52/source/glm52_stage.cuh` | not yet |
-| K3 | `K3Cuda<Format, Geometry>` in `inference/llms/kimi_k3/slice.cuh` | not yet |
+| K3 | `K3Cuda<Format, Geometry>` in `model-families/k3/source/slice.cuh` | not yet |
 | DeepSeek V4.1 Flash | `D41Cuda` in `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | `D41Device<TP>` in `model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp` (dense, below position 512) |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and

@@ -171,7 +171,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   for GLM Full, GLM Flash, the Qwen 3.8 hybrid and the Ling and Gemma stages
   (Solar Open 2 +12% and K-EXAONE 2.0 +8% short-prompt prefill on the fleet,
   tokens identical), and `K3LaunchSlicePair`
-  (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
+  (`model-families/k3/source/slice.cuh`) for K3. K3 also splits some rounds into
   Begin and Finish. Every other decode step and multi-sequence wave is still
   one serial chain (compute, all-reduce, compute), so every collective wait is
   exposed. At B1 on 2026-10-02 a GLM-5.3 Full token took 36.7 ms. Of that,
@@ -327,7 +327,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - The shared runner splits a single-sequence prefill wave into two lanes whose
   collectives overlap the other lane's compute (`StageRunnerLanesStep`,
   `inference/runner/stage_runner.cu`), and K3 pairs its half-waves
-  (`K3LaunchSlicePair`, `inference/llms/kimi_k3/slice.cuh`). The
+  (`K3LaunchSlicePair`, `model-families/k3/source/slice.cuh`). The
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
@@ -1013,7 +1013,7 @@ Related common-code debt:
 - K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
   uses the skinny experts. Wide waves use `LmCellMmaExperts`
   (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
-  (`inference/llms/kimi_k3/unity.cu`), with UE8M0 scales decoded in the load
+  (`model-families/k3/source/unity.cu`), with UE8M0 scales decoded in the load
   and the route build in `inference/kernels/route.cuh`. Only the skinny path
   has a device test against an f64 reference
   (`tests/cuda/skinny_mxfp4_cuda.cu`); the host tests stand a shim in for
@@ -1185,9 +1185,6 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Driver consolidation
 
-- Kimi K3's device code (its slices and unity kernels) lives in
-  `inference/llms/kimi_k3/`, outside `model-families/k3/` where every other
-  model's math lives. Move it there.
 - Every stage-runner model, K3 included, resets every runner slot and the KV
   binding on a client reset and refuses stale-generation submissions
   (`StageServingReset` and the `reset_generation` check in
@@ -1748,7 +1745,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   have a Metal backend. Still open: the GLM 5.3 Full and A.X
   K2 geometries stay in their `.cu` files until `LmRopePairing` and the
   stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
-  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  V4.1 Flash keep their geometry as macros (`model-families/k3/source/config.h`,
   the `D41_*` defines) rather than a geometry struct. The CUDA backends still
   carry one copy of an operation per family: GQA attention with its gather,
   split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed

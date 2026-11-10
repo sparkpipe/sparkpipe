@@ -21,7 +21,7 @@ FAMILIES = {
 		"pairs": [],
 	},
 	"k3": {
-		"config": "inference/llms/kimi_k3/config.h",
+		"config": "model-families/k3/source/config.h",
 		"host": "model-families/k3/include/sparkpipe/spark_k3_llm_defines.h",
 		"module": None,
 		"pairs": [
