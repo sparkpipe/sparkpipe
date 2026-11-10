@@ -4,8 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=sparkpipe-pay
-Group=sparkpipe-pay
+User=sparkpipe-pay-sandbox
+Group=sparkpipe-pay-sandbox
 EnvironmentFile=/etc/sparkpipe-pay/sandbox.env
 ExecStart=/usr/bin/python3 /opt/sparkpipe-pay/sparkpipe_pay.py serve
 Restart=on-failure
@@ -16,7 +16,8 @@ ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/sparkpipe-pay-sandbox
-ReadOnlyPaths=/var/www/html /etc/sparkpipe-pay /opt/sparkpipe-pay
+ReadOnlyPaths=/var/www/html /opt/sparkpipe-pay
+InaccessiblePaths=-/var/lib/sparkpipe-pay -/etc/sparkpipe-pay/env -/etc/sparkpipe-pay/client_secret -/etc/sparkpipe-pay/pool_key
 
 [Install]
 WantedBy=multi-user.target
