@@ -98,8 +98,7 @@ class WeightdWarmFamilyIdentity(unittest.TestCase):
         cls.directory.cleanup()
 
     def run_warm(self, *extra):
-        environment = {key: value for key, value in os.environ.items()
-                       if key != "SPARK_WEIGHTD_EXPERT_POOL_BYTES"}
+        environment = dict(os.environ)
         return subprocess.run(
             [str(self.binary), "/nonexistent/weightd.sock", str(self.pack),
              DIGEST, REVISION, "16", "--identity-print", *extra],
@@ -127,8 +126,7 @@ class WeightdWarmFamilyIdentity(unittest.TestCase):
                 })
 
     def warm_topology(self, topology, *extra):
-        environment = {key: value for key, value in os.environ.items()
-                       if key != "SPARK_WEIGHTD_EXPERT_POOL_BYTES"}
+        environment = dict(os.environ)
         return subprocess.run(
             [str(self.binary), "/nonexistent/weightd.sock", str(self.pack),
              DIGEST, "x", topology, "--identity-print", *extra],

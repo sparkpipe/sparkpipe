@@ -167,9 +167,7 @@ it.
 
 Status on 2026-10-01:
 
-- glm5_next declares it, with the rank-local I27 probe
-  `tools/glm5_next_driver_probe.c` (`tests/test_glm5_next_driver_probe.c`). It
-  is the only adapter that loads.
+- glm5_next declared it; its module and rank-local I27 probe are deleted.
 - dsv4 declares prefix reuse but speculates without the cache-publish work
   kind, so it is refused.
 - glm52 (GLM-5.3 Full), qwen38_27b, gemma4, ling, laguna, k3, minimax,

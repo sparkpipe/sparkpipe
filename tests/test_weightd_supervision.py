@@ -96,11 +96,9 @@ int main(void) {
 
     def warm(self, mode="", budget=None, extra=()):
         env = dict(os.environ, WARM_FAILURE=mode)
-        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
-        if budget is not None:
-            env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"] = budget
+        cap = () if budget is None else ("--expert-pool-cap", budget)
         return subprocess.run([str(self.warmer), "unused", str(self.pack), "a"*64,
-                               "review", "16", *extra], env=env, capture_output=True, text=True)
+                               "review", "16", *cap, *extra], env=env, capture_output=True, text=True)
 
     def test_manifest_keys_release_before_warm(self):
         result = self.warm()
@@ -195,7 +193,6 @@ int main(void) {
 
     def reclaim(self, mode="", extra=()):
         env = dict(os.environ, WARM_FAILURE=mode)
-        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
         return subprocess.run([str(self.warmer), "unused", "--reclaim", *extra],
                               env=env, capture_output=True, text=True)
 
@@ -221,7 +218,6 @@ int main(void) {
 
     def reclaim_pack(self, *specs, mode=""):
         env = dict(os.environ, WARM_FAILURE=mode)
-        env.pop("SPARK_WEIGHTD_EXPERT_POOL_BYTES", None)
         return subprocess.run([str(self.warmer), "unused", "--reclaim-pack", *specs],
                               env=env, capture_output=True, text=True)
 

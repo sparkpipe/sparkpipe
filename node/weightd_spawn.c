@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include "sparkpipe/spark_weightd_attach.h"
 #include "weightd_spawn.h"
 
 static int32_t SparkWeightdReadDigest(FILE *file,char digest[65])
@@ -104,15 +105,11 @@ int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_pa
 {
 	struct sockaddr_un address;
 	char digest[65];
-	const char *attach;
 	int32_t fd,status;
 	if ( root == 0 || socket_path == 0 || root[0] == '\0' || socket_path[0] == '\0' )
 		return(-12);
 	if ( strlen(socket_path) >= sizeof(address.sun_path) )
 		return(-13);
-	attach = getenv("SPARK_WEIGHTD_ATTACH");
-	if ( attach != 0 && strcmp(attach,"1") != 0 )
-		return(-14);
 	status = SparkWeightdResolveDigest(root,digest);
 	if ( status != 0 )
 		SPARK_RETURN(status);
@@ -131,9 +128,9 @@ int32_t SparkModelResidentdPrepareWeightd(const char *root,const char *socket_pa
 	(void)close(fd);
 	if ( status != 0 )
 		return(-16);
-	if ( setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) != 0 )
+	if ( setenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET,socket_path,1) != 0 )
 		return(-17);
-	if ( setenv("SPARK_WEIGHTD_PACK_SHA256",digest,1) != 0 )
+	if ( setenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256,digest,1) != 0 )
 		return(-18);
 	return(0);
 }

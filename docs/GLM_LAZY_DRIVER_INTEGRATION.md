@@ -40,8 +40,8 @@ Memory cost: one expert's rank-local slice is about 1.573 MB at TP16 (see
 inventory is therefore about 19.0 GB per rank (arithmetic: 12096 × 1.573 MB).
 That fits the pool weightd sizes from the pack without a cap: the whole arena
 in one allocation (Pool sizing in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)).
-The agent passes `SPARK_WEIGHTD_EXPERT_POOL_BYTES` only when
-`G5_EXPERT_POOL_CAP_BYTES` names a cap.
+A cap is the stage config's `expert_pool_cap_bytes`, set only by a lane that
+streams experts on purpose.
 
 This is a deviation from the contract. I29 ("Expert residency is bounded")
 expects a working set loaded within a budget, with unowned data reclaimed.
@@ -77,21 +77,22 @@ same tokens as the pinned build under the gates in
 
 ## Startup and shared code
 
-Use `SparkWeightdLazyPackCreateChecked` from `spark_weightd_lazy_pack.h`. The
+Use `SparkWeightdLazyPackCreate` from `spark_weightd_lazy_pack.h`. The
 composed object owns its manifest, compact spine, attachment and client,
 consumer map, and CUDA-context worker. Link `runtime/weightd_sources.mk`; do
 not keep private weightd source lists. The GLM Flash and DSV4 module builds
 already use the shared list.
 
-The lazy settings are:
+The lazy inputs are:
 
-| Variable | Rule |
+| Input | Rule |
 | --- | --- |
-| `SPARK_WEIGHTD_SOCKET` | Required. Without it `SparkWeightdAttachRequested` returns `BUSY`, which the module reports as `UNSUPPORTED` (`c67be23`). |
-| `SPARK_WEIGHTD_PACK_SHA256` | Required, the pack's 64-character SHA-256 digest. |
-| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | Optional, the explicit expert pool cap: a positive whole number of 2 MiB chunks no larger than the pack's exact pool. Unset, the pool is sized from `PACK.experts`. |
-| `SPARK_WEIGHTD_SPINE_BUDGET_BYTES` | Optional. Defaults to 8 GiB. |
-| `SPARK_WEIGHTD_ATTACH` | `0` with a socket fails with `INVALID_ARGUMENT`. `1` without a socket fails the same way. |
+| weightd socket | Required. residentd hands it to the adapter from the deployment's `weightd.socket_path`; the adapter refuses to configure without it. |
+| pack digest | Required, the 64-character SHA-256 residentd reads from the root's one `packs/*.sha256`. |
+| `expert_pool_cap_bytes` | Optional stage config member, the explicit expert pool cap: a positive whole number of 2 MiB chunks no larger than the pack's exact pool. Absent, the pool is sized from `PACK.experts`. |
+
+The spine allocation is the one the pack's manifest derives; nothing passes a
+budget for it.
 
 GLM supplies its module identity, pack revision and TP degree. Lazy MTP fails
 with `UNSUPPORTED`. The manifest check (`spark_module_manifest_check.h`)

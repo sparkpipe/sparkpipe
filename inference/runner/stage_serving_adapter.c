@@ -54,8 +54,7 @@ typedef struct SparkStageServingState
 	char *pack_path;
 	char *stray_working_set_path;
 	uint64_t state_memory_bytes;
-	char *device_backend_path;
-	char *device_local_host;
+	char *weightd_socket_path;
 	uint32_t saves_held;
 	uint32_t streamed_failed;
 	char *streamed_partner_pack;
@@ -65,7 +64,6 @@ typedef struct SparkStageServingState
 	uint32_t max_shared_rows;
 	SparkTpDeviceCollectiveConfig device_config;
 	SparkWeightdClient *lane_client;
-	SparkTpDeviceCollectiveTopology device_topology;
 	int device_collective_present;
 	SparkDeviceBuffer positions_host;
 	SparkDeviceBuffer context_host;
@@ -183,51 +181,68 @@ static SparkStatus StageServingCheckOwnPack(const SparkStageServingState *state)
 	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
-static uint32_t StageServingJsonU32(SparkJsonDocument *doc, int32_t root, const char *name, uint32_t fallback)
+static SparkStatus StageServingU32Member(const SparkStageServingState *state, SparkJsonDocument *doc, int32_t object, const char *where,
+	const char *name, uint32_t *value)
 {
-	uint32_t value = 0u;
-	int32_t token = SparkJsonFindObjectMember(doc, root, name);
-	if ( token >= 0 && SparkJsonGetUInt32(doc, token, &value) == SPARK_STATUS_OK )
-		return value;
-	return fallback;
+	int32_t token = SparkJsonFindObjectMember(doc, object, name);
+	if ( token >= 0 && SparkJsonGetUInt32(doc, token, value) == SPARK_STATUS_OK )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "%s adapter: %s needs \"%s\", an unsigned 32-bit integer\n", state->model->module_tag, where, name);
+	return SPARK_STATUS_SCHEMA_ERROR;
 }
 
-static SparkStatus StageServingEnvU64(const char *name, uint64_t *value)
+static SparkStatus StageServingOptionalU32Member(const SparkStageServingState *state, SparkJsonDocument *doc, int32_t object,
+	const char *where, const char *name, uint32_t absent, uint32_t *value)
 {
-	const char *text = getenv(name);
-	char *end = 0;
-	if ( text == 0 || *text == '\0' )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	errno = 0;
-	*value = strtoull(text, &end, 10);
-	return errno != 0 || end == text || *end != '\0' ? SPARK_STATUS_PARSE_ERROR : SPARK_STATUS_OK;
+	if ( SparkJsonFindObjectMember(doc, object, name) >= 0 )
+		return StageServingU32Member(state, doc, object, where, name, value);
+	*value = absent;
+	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageServingRunnerWeights(SparkStageServingState *state)
+static SparkStatus StageServingWeightdHandoff(SparkStageServingState *state)
 {
 	SparkStageRunnerConfiguration *config = &state->runner_config;
+	const char *socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	const char *digest = getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256);
-	SparkStatus cap = SPARK_STATUS_OK, spine;
-	config->weights.socket_path = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-	config->weights.expert_pool_cap_bytes = 0u;
-	if ( getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 )
-		cap = StageServingEnvU64("SPARK_WEIGHTD_EXPERT_POOL_BYTES", &config->weights.expert_pool_cap_bytes);
-	spine = StageServingEnvU64("SPARK_WEIGHTD_SPINE_BUDGET_BYTES", &config->weights.spine_budget_bytes);
-	if ( digest == 0 || strlen(digest) != SPARK_STAGE_RUNNER_DIGEST_HEX || spine == SPARK_STATUS_INVALID_ARGUMENT )
+	if ( socket == 0 || socket[0] == '\0' || digest == 0 || strlen(digest) != SPARK_STAGE_RUNNER_DIGEST_HEX )
 	{
-		fprintf(stderr, "%s: the runner needs %s and SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n",
-			state->model->module_tag, SPARK_WEIGHTD_ATTACH_ENV_SHA256);
+		fprintf(stderr, "%s adapter: residentd hands the adapter the weightd socket in %s and the pack digest in %s, and this process has %s\n",
+			state->model->module_tag, SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_WEIGHTD_ATTACH_ENV_SHA256,
+			socket == 0 || socket[0] == '\0' ? "no socket" : "no 64-digit digest");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( cap != SPARK_STATUS_OK || (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 && config->weights.expert_pool_cap_bytes == 0u) )
-	{
-		fprintf(stderr, "%s: SPARK_WEIGHTD_EXPERT_POOL_BYTES is the lane's explicit expert pool cap, a positive byte count; unset it to size the pool from the pack\n",
-			state->model->module_tag);
-		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	}
-	if ( spine != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	state->weightd_socket_path = strdup(socket);
+	if ( state->weightd_socket_path == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	config->weights.socket_path = state->weightd_socket_path;
 	memcpy(config->weights.pack_sha256, digest, SPARK_STAGE_RUNNER_DIGEST_HEX + 1u);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageServingParseWeights(SparkStageServingState *state, SparkJsonDocument *doc, int32_t root)
+{
+	SparkStageRunnerWeights *weights = &state->runner_config.weights;
+	int32_t cap = SparkJsonFindObjectMember(doc, root, "expert_pool_cap_bytes");
+	int32_t share = SparkJsonFindObjectMember(doc, root, "weights_share");
+	weights->expert_pool_cap_bytes = 0u;
+	weights->read_only = 0u;
+	if ( (cap >= 0 && StageServingWeightdRefused(state, "expert_pool_cap_bytes") != 0u) ||
+		(share >= 0 && StageServingWeightdRefused(state, "weights_share") != 0u) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( cap >= 0 && (SparkJsonGetUInt64(doc, cap, &weights->expert_pool_cap_bytes) != SPARK_STATUS_OK || weights->expert_pool_cap_bytes == 0u) )
+	{
+		fprintf(stderr, "%s adapter: expert_pool_cap_bytes is the lane's explicit expert pool cap, a positive byte count; leave it out to size the pool from the pack\n",
+			state->model->module_tag);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( share >= 0 && !SparkJsonStringEquals(doc, share, "readonly") )
+	{
+		fprintf(stderr, "%s adapter: weights_share names \"readonly\", which maps an arena another lane already holds; leave it out for the lane's own attach\n",
+			state->model->module_tag);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	weights->read_only = share >= 0 ? 1u : 0u;
 	return SPARK_STATUS_OK;
 }
 
@@ -265,12 +280,13 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 		StageServingCopyMember(doc, object, "fabric_device", &state->streamed_fabric_device) != SPARK_STATUS_OK ||
 		StageServingCopyMember(doc, object, "pair_device", &state->streamed_pair_device) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	streamed->node_rows = StageServingJsonU32(doc, object, "node_rows", 0u);
-	streamed->gid_index = StageServingJsonU32(doc, object, "gid_index", 3u);
-	streamed->pair_gid_index = StageServingJsonU32(doc, object, "pair_gid_index", streamed->gid_index);
-	streamed->traffic_class = StageServingJsonU32(doc, object, "traffic_class", 106u);
-	streamed->dense_buffers = StageServingJsonU32(doc, object, "dense_buffers", 1u);
-	streamed->expert_slots = StageServingJsonU32(doc, object, "expert_slots", 2u);
+	if ( StageServingU32Member(state, doc, object, "streamed_prefill", "node_rows", &streamed->node_rows) != SPARK_STATUS_OK ||
+		StageServingU32Member(state, doc, object, "streamed_prefill", "gid_index", &streamed->gid_index) != SPARK_STATUS_OK ||
+		StageServingU32Member(state, doc, object, "streamed_prefill", "pair_gid_index", &streamed->pair_gid_index) != SPARK_STATUS_OK ||
+		StageServingU32Member(state, doc, object, "streamed_prefill", "traffic_class", &streamed->traffic_class) != SPARK_STATUS_OK ||
+		StageServingU32Member(state, doc, object, "streamed_prefill", "dense_buffers", &streamed->dense_buffers) != SPARK_STATUS_OK ||
+		StageServingU32Member(state, doc, object, "streamed_prefill", "expert_slots", &streamed->expert_slots) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	streamed->partner_pack_path = state->streamed_partner_pack;
 	streamed->fabric_device = state->streamed_fabric_device;
 	streamed->pair_device = state->streamed_pair_device;
@@ -282,81 +298,55 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageServingLoadSessionPorts(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev,
-	uint32_t peer_count)
+static SparkStatus StageServingLoadMeshRanks(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev)
 {
-	int32_t ports = SparkJsonFindObjectMember(doc, dev, "session_ports");
-	uint32_t row, column, value;
-	if ( ports < 0 || SparkJsonGetArrayElementCount(doc, ports) != peer_count )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	for ( row = 0u; row < peer_count; ++row )
+	int32_t ranks = SparkJsonFindObjectMember(doc, dev, "mesh_ranks");
+	uint32_t count = 0u, index, seen = 0u, value;
+	if ( ranks >= 0 && SparkJsonTokenIsType(doc, ranks, SPARK_JSON_TOKEN_ARRAY) )
+		count = SparkJsonGetArrayElementCount(doc, ranks);
+	if ( count != state->runner_config.tp_degree )
 	{
-		int32_t row_token = SparkJsonGetArrayElement(doc, ports, row);
-		if ( row_token < 0 || !SparkJsonTokenIsType(doc, row_token, SPARK_JSON_TOKEN_ARRAY) ||
-			SparkJsonGetArrayElementCount(doc, row_token) != peer_count )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		for ( column = 0u; column < peer_count; ++column )
+		fprintf(stderr, "%s adapter: device_collective.mesh_ranks lists the physical mesh rank of each of the %u TP ranks\n",
+			state->model->module_tag, state->runner_config.tp_degree);
+		return SPARK_STATUS_SCHEMA_ERROR;
+	}
+	for ( index = 0u; index < count; ++index )
+	{
+		int32_t cell = SparkJsonGetArrayElement(doc, ranks, index);
+		value = 0u;
+		if ( cell < 0 || SparkJsonGetUInt32(doc, cell, &value) != SPARK_STATUS_OK || value >= SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE ||
+			(seen & (1u << value)) != 0u )
 		{
-			int32_t cell = SparkJsonGetArrayElement(doc, row_token, column);
-			value = 0u;
-			if ( cell < 0 || SparkJsonGetUInt32(doc, cell, &value) != SPARK_STATUS_OK || value > 65535u ||
-				(row == column ? value != 0u : value == 0u) )
-				SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-			state->device_topology.session_ports[row][column] = (uint16_t)value;
+			fprintf(stderr, "%s adapter: device_collective.mesh_ranks names distinct physical ranks below %u\n",
+				state->model->module_tag, SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE);
+			return SPARK_STATUS_SCHEMA_ERROR;
 		}
+		seen |= 1u << value;
+		state->device_config.mesh_ranks[index] = value;
 	}
 	return SPARK_STATUS_OK;
 }
 
 static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *state, SparkJsonDocument *doc, int32_t dev)
 {
-	static const char *const members[] = { "backend", "backend_module_path", "local_host", "collective_identifier", "listen_port",
-		"connect_timeout_milli", "operation_timeout_milli", "peer_hosts", "session_ports", "wait_mode" };
+	static const char *const members[] = { "wait_mode", "connect_timeout_milli", "operation_timeout_milli", "mesh_lane", "mesh_ranks" };
 	const SparkModelServingAdapterDescriptor *descriptor = &StageServingDescriptor;
-	int32_t token, hosts;
-	uint32_t peer_count, index;
-	uint64_t identifier = 0u;
+	SparkTpDeviceCollectiveConfig *config = &state->device_config;
+	int32_t token;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(doc, dev, SPARK_JSON_TOKEN_OBJECT) )
 		return SPARK_STATUS_SCHEMA_ERROR;
 	status = StageServingKnownMembers(state, doc, dev, "device_collective", members, sizeof(members) / sizeof(members[0]));
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	memset(&state->device_config, 0, sizeof(state->device_config));
-	memset(&state->device_topology, 0, sizeof(state->device_topology));
-	state->device_topology.abi_version = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_ABI_VERSION;
-	state->device_topology.descriptor_bytes = SPARK_TP_DEVICE_COLLECTIVE_TOPOLOGY_BYTES;
-	state->device_config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
-	token = SparkJsonFindObjectMember(doc, dev, "backend");
-	if ( token >= 0 && SparkJsonStringEquals(doc, token, "hidden_transport") )
-		state->device_config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
-	else
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	status = StageServingCopyMember(doc, dev, "backend_module_path", &state->device_backend_path);
-	if ( status == SPARK_STATUS_OK )
-		status = StageServingCopyMember(doc, dev, "local_host", &state->device_local_host);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	state->device_config.backend_module_path = state->device_backend_path;
-	state->device_config.local_host = state->device_local_host;
-	token = SparkJsonFindObjectMember(doc, dev, "collective_identifier");
-	if ( token >= 0 && SparkJsonGetUInt64(doc, token, &identifier) != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	state->device_config.collective_identifier = identifier;
-	state->device_config.control_port_base = StageServingJsonU32(doc, dev, "listen_port", 0u);
-	state->device_config.connect_timeout_milli = StageServingJsonU32(doc, dev, "connect_timeout_milli", 5000u);
-	state->device_config.operation_timeout_milli = StageServingJsonU32(doc, dev, "operation_timeout_milli", 30000u);
-	state->device_config.operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
-	state->device_config.credit_count = 8u;
-	state->device_config.local_hidden_dimension = descriptor->boundary_element_count;
-	state->device_config.max_active_sequence_count =
+	memset(config, 0, sizeof(*config));
+	config->abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	config->backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
+	config->operation_kind = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16;
+	config->credit_count = 8u;
+	config->local_hidden_dimension = descriptor->boundary_element_count;
+	config->max_active_sequence_count =
 		state->model->collective_sequences(state->runner_config.max_input_row_count, state->runner_config.tp_degree);
-	hosts = SparkJsonFindObjectMember(doc, dev, "peer_hosts");
-	peer_count = hosts >= 0 ? SparkJsonGetArrayElementCount(doc, hosts) : 0u;
-	if ( peer_count == 0u || peer_count > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	state->device_topology.rank_count = peer_count;
-	state->device_topology.algorithm_mask = SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_TREE;
 	token = SparkJsonFindObjectMember(doc, dev, "wait_mode");
 	if ( token < 0 )
 	{
@@ -365,24 +355,30 @@ static SparkStatus StageServingLoadDeviceCollective(SparkStageServingState *stat
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
 	if ( SparkJsonStringEquals(doc, token, "hardware") )
-		state->device_topology.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
-	else if ( !SparkJsonStringEquals(doc, token, "spin") )
+		config->wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+	else if ( SparkJsonStringEquals(doc, token, "spin") )
+		config->wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN;
+	else
 	{
 		fprintf(stderr, "%s adapter: device_collective.wait_mode names \"hardware\" or \"spin\"\n", state->model->module_tag);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
-	status = StageServingLoadSessionPorts(state, doc, dev, peer_count);
+	status = StageServingU32Member(state, doc, dev, "device_collective", "connect_timeout_milli", &config->connect_timeout_milli);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, dev, "device_collective", "operation_timeout_milli", &config->operation_timeout_milli);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, dev, "device_collective", "mesh_lane", &config->mesh_lane);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	for ( index = 0u; index < peer_count; ++index )
+	if ( config->connect_timeout_milli == 0u || config->operation_timeout_milli == 0u || config->mesh_lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
 	{
-		int32_t peer = SparkJsonGetArrayElement(doc, hosts, index);
-		char *text = 0;
-		if ( peer < 0 || SparkJsonCopyString(doc, peer, &text) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-		strncpy(state->device_topology.rank_hosts[index], text, SPARK_TP_DEVICE_COLLECTIVE_HOST_NAME_BYTES - 1u);
-		free(text);
+		fprintf(stderr, "%s adapter: device_collective needs positive timeouts and a mesh_lane below %u\n", state->model->module_tag,
+			SPARK_WEIGHTD_MESH_MAX_LANES);
+		return SPARK_STATUS_SCHEMA_ERROR;
 	}
+	status = StageServingLoadMeshRanks(state, doc, dev);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	state->device_collective_present = 1;
 	return SPARK_STATUS_OK;
 }
@@ -405,8 +401,12 @@ static SparkStatus StageServingParseTaps(SparkStageServingState *state, SparkJso
 		fprintf(stderr, "%s adapter: taps need \"entries\" and exactly one of \"file\" and \"stream\"\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	state->tap_rank = StageServingJsonU32(doc, taps, "rank", 0u);
-	state->tap_window = StageServingJsonU32(doc, taps, "window", 0u);
+	if ( StageServingU32Member(state, doc, taps, "taps", "rank", &state->tap_rank) != SPARK_STATUS_OK ||
+		StageServingOptionalU32Member(state, doc, taps, "taps", "window", 0u, &state->tap_window) != SPARK_STATUS_OK )
+	{
+		free(entries);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	token = SparkJsonFindObjectMember(doc, taps, "file_max_bytes");
 	if ( file >= 0 && (token < 0 || SparkJsonGetUInt64(doc, token, &state->tap_file_max_bytes) != SPARK_STATUS_OK || state->tap_file_max_bytes == 0u) )
 	{
@@ -754,10 +754,10 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 {
 	static const char *const members[] = { "stage_pack_path", "stray_working_set_path", "state_budget_bytes", "state_memory_bytes", "hidden",
 		"tp_degree", "tp_rank", "world_size", "max_sequences", "max_rows", "max_shared_rows", "resident_capacity", "kv_pages", "taps",
-		"streamed_prefill", "device_collective" };
+		"streamed_prefill", "device_collective", "expert_pool_cap_bytes", "weights_share" };
 	const SparkModelServingAdapterDescriptor *descriptor = &StageServingDescriptor;
 	SparkStageRunnerConfiguration *config = &state->runner_config;
-	uint32_t world_size, tp_rank = 0u;
+	uint32_t world_size = 0u, tp_rank = 0u, hidden = 0u;
 	int32_t token;
 	SparkStatus status;
 	if ( !SparkJsonTokenIsType(doc, root, SPARK_JSON_TOKEN_OBJECT) )
@@ -783,13 +783,21 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 		fprintf(stderr, "%s adapter: state_memory_bytes must be a positive byte count\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	if ( StageServingJsonU32(doc, root, "hidden", descriptor->boundary_element_count) != descriptor->boundary_element_count )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	config->tp_degree = StageServingJsonU32(doc, root, "tp_degree", 1u);
-	world_size = StageServingJsonU32(doc, root, "world_size", descriptor->stage_count);
-	if ( config->tp_degree != state->model->tp_degree || world_size != descriptor->stage_count ||
+	status = StageServingU32Member(state, doc, root, "the stage config", "hidden", &hidden);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, root, "the stage config", "tp_degree", &config->tp_degree);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, root, "the stage config", "world_size", &world_size);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( hidden != descriptor->boundary_element_count || config->tp_degree != state->model->tp_degree || world_size != descriptor->stage_count ||
 		world_size % config->tp_degree != 0u )
+	{
+		fprintf(stderr, "%s adapter: the stage config names hidden %u, tp_degree %u and world_size %u; this model is hidden %u at tp_degree %u over %u ranks\n",
+			state->model->module_tag, hidden, config->tp_degree, world_size, descriptor->boundary_element_count, state->model->tp_degree,
+			descriptor->stage_count);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	config->stage_index = configuration->stage_index / config->tp_degree;
 	config->stage_count = world_size / config->tp_degree;
 	config->tp_rank = configuration->stage_index % config->tp_degree;
@@ -800,18 +808,20 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 			state->model->module_tag, config->tp_rank, configuration->stage_index, config->tp_degree);
 		return SPARK_STATUS_SCHEMA_ERROR;
 	}
-	config->max_active_sequence_count = StageServingJsonU32(doc, root, "max_sequences",
-		configuration->runtime_limits.max_active_sequence_count);
-	config->max_input_row_count = StageServingJsonU32(doc, root, "max_rows", configuration->runtime_limits.max_input_row_count);
-	config->max_shared_row_count = StageServingJsonU32(doc, root, "max_shared_rows", config->max_input_row_count);
-	config->resident_sequence_capacity = StageServingJsonU32(doc, root, "resident_capacity",
-		configuration->runtime_limits.resident_sequence_capacity);
-	if ( SparkJsonFindObjectMember(doc, root, "kv_pages") < 0 )
-	{
-		fprintf(stderr, "%s adapter: kv_pages is required; the context of a lane is never a default\n", state->model->module_tag);
-		return SPARK_STATUS_SCHEMA_ERROR;
-	}
-	config->kv_pages_per_sequence = StageServingJsonU32(doc, root, "kv_pages", 0u);
+	status = StageServingU32Member(state, doc, root, "the stage config", "max_sequences", &config->max_active_sequence_count);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, root, "the stage config", "max_rows", &config->max_input_row_count);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingOptionalU32Member(state, doc, root, "the stage config", "max_shared_rows", config->max_input_row_count,
+			&config->max_shared_row_count);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, root, "the stage config", "resident_capacity", &config->resident_sequence_capacity);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingU32Member(state, doc, root, "the stage config", "kv_pages", &config->kv_pages_per_sequence);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingParseWeights(state, doc, root);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	config->kv_page_bytes = 0u;
 	token = SparkJsonFindObjectMember(doc, root, "taps");
 	if ( token >= 0 && StageServingParseTaps(state, doc, token) != SPARK_STATUS_OK )
@@ -831,43 +841,28 @@ static SparkStatus StageServingParse(SparkStageServingState *state, const SparkM
 
 static SparkStatus StageServingAcquireLane(SparkStageServingState *state)
 {
-	const char *socket = getenv("SPARK_WEIGHTD_SOCKET");
-	const char *lane_text = getenv("SPARK_WEIGHTD_LANE");
+	SparkTpDeviceCollectiveConfig *config = &state->device_config;
 	SparkWeightdMeshTopology mesh_topology;
-	uint32_t requested_lane = SPARK_WEIGHTD_LANE_NONE, resolved_lane;
-	char *end = 0;
-	unsigned long value;
-	if ( socket == 0 || socket[0] == '\0' )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	if ( lane_text != 0 && lane_text[0] != '\0' )
-	{
-		errno = 0;
-		value = strtoul(lane_text, &end, 10);
-		if ( lane_text[0] < '0' || lane_text[0] > '9' || end == lane_text || *end != '\0' || errno != 0 ||
-			value >= SPARK_WEIGHTD_MESH_MAX_LANES )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		requested_lane = (uint32_t)value;
-	}
-	if ( SparkTpDeviceCollectiveMeshTopology(state->runner_config.tp_rank, state->runner_config.tp_degree,
-		&mesh_topology) != SPARK_STATUS_OK )
+	uint32_t resolved_lane = SPARK_WEIGHTD_LANE_NONE;
+	if ( SparkTpDeviceCollectiveMeshTopology(config->tp_rank, config->tp_degree, config->mesh_ranks, &mesh_topology) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	if ( SparkWeightdClientConnect(socket, &state->lane_client, 0) != SPARK_STATUS_OK )
+	if ( SparkWeightdClientConnect(state->weightd_socket_path, &state->lane_client, 0) != SPARK_STATUS_OK )
 	{
+		fprintf(stderr, "%s adapter: cannot reach weightd at %s to acquire mesh lane %u\n", state->model->module_tag,
+			state->weightd_socket_path, config->mesh_lane);
 		state->lane_client = 0;
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	if ( SparkWeightdClientLaneAcquire(state->lane_client, requested_lane, &mesh_topology, &resolved_lane,
-		(uint64_t)state->device_config.connect_timeout_milli * 1000000ull) != SPARK_STATUS_OK )
+	if ( SparkWeightdClientLaneAcquire(state->lane_client, config->mesh_lane, &mesh_topology, &resolved_lane,
+		(uint64_t)config->connect_timeout_milli * 1000000ull) != SPARK_STATUS_OK || resolved_lane != config->mesh_lane )
 	{
-		fprintf(stderr, "%s: mesh lane acquire failed requested=%u status=cold19-shared-lane\n",
-			state->model->module_tag, requested_lane);
+		fprintf(stderr, "%s adapter: weightd did not grant mesh lane %u\n", state->model->module_tag, config->mesh_lane);
 		(void)SparkWeightdClientClose(state->lane_client);
 		state->lane_client = 0;
 		SPARK_FAIL(SPARK_STATUS_NO_LANE);
 	}
-	fprintf(stderr, "%s: mesh lane acquired requested=%u resolved=%u shared-owner\n",
-		state->model->module_tag, requested_lane, resolved_lane);
-	state->device_config.mesh_lane_client = state->lane_client;
+	fprintf(stderr, "%s adapter: mesh lane %u acquired\n", state->model->module_tag, config->mesh_lane);
+	config->mesh_lane_client = state->lane_client;
 	return SPARK_STATUS_OK;
 }
 
@@ -881,6 +876,12 @@ static SparkStatus StageServingLoadConfiguration(SparkStageServingState *state,
 	memset(config, 0, sizeof(*config));
 	config->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	config->descriptor_bytes = (uint32_t)sizeof(*config);
+	if ( StageServingOwnPack(state->implementation_flags) == 0u )
+	{
+		status = StageServingWeightdHandoff(state);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+	}
 	status = SparkJsonLoadFile(configuration->adapter_configuration_path, &doc);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -902,9 +903,8 @@ static SparkStatus StageServingLoadConfiguration(SparkStageServingState *state,
 		return SPARK_STATUS_OK;
 	state->device_config.tp_degree = config->tp_degree;
 	state->device_config.tp_rank = config->tp_rank;
+	state->device_config.weightd_socket_path = state->weightd_socket_path;
 	state->device_config.registration_cuda_stream = configuration->execution_stream;
-	if ( SparkTpDeviceCollectiveApplyTopology(&state->device_topology, &state->device_config) != SPARK_STATUS_OK )
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = StageServingAcquireLane(state);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -967,6 +967,7 @@ static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	kv.physical_page_count = configuration->runtime_limits.kv_physical_page_capacity;
 	kv.pipeline_slot_count = 1u;
 	kv.pool_source = StageServingOwnPack(state->implementation_flags) != 0u ? SPARK_STAGE_KV_POOL_SOURCE_DEVICE : SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD;
+	kv.weightd_socket_path = kv.pool_source == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD ? state->weightd_socket_path : 0;
 	kv.backing_directory = configuration->kv_backing_directory;
 	kv.backing_maximum_bytes = configuration->kv_backing_maximum_bytes;
 
@@ -1195,8 +1196,6 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
 	status = StageServingAllocate(state);
-	if ( status == SPARK_STATUS_OK && StageServingOwnPack(state->implementation_flags) == 0u )
-		status = StageServingRunnerWeights(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());
 	if ( status == SPARK_STATUS_OK && model->tree_slot_grain != 0u && model->tree_slot_grain != SparkStageRunnerTreeSlotGrain(&state->runner) )
@@ -1243,8 +1242,7 @@ static void StageServingDestroy(void *adapter_state)
 			(void)SparkDeviceFree(plan[index].buffer);
 	free(state->pack_path);
 	free(state->stray_working_set_path);
-	free(state->device_backend_path);
-	free(state->device_local_host);
+	free(state->weightd_socket_path);
 	free(state->streamed_partner_pack);
 	free(state->streamed_fabric_device);
 	free(state->streamed_pair_device);

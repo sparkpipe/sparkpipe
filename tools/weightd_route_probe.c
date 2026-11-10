@@ -178,7 +178,7 @@ int main(int argc,char **argv)
 		raw_generation = raw_attached.arena_generation;
 		goto raw_waves;
 	}
-	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,pool_bytes,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
+	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,&(SparkWeightdLazyPackOptions){ .expert_pool_cap_bytes = pool_bytes, .timeout_nanoseconds = timeout_ns },&pack) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"route-probe-8 attach failed\n");
 		return(1);

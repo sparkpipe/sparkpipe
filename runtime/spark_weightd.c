@@ -5734,25 +5734,6 @@ SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
         timeout_nanoseconds,SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED));
 }
 
-SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only)
-{
-    const char *mode;
-    if (read_only == 0)
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    *read_only = 0u;
-    mode = getenv(SPARK_WEIGHTD_SHARE_ENV);
-    if (mode == 0 || mode[0] == '\0')
-        return SPARK_STATUS_OK;
-    if (strcmp(mode, SPARK_WEIGHTD_SHARE_READONLY) == 0)
-    {
-        *read_only = 1u;
-        return SPARK_STATUS_OK;
-    }
-    fprintf(stderr,"weightd share mode refused: %s=%s; the only accepted value is %s (unset keeps the default private attach)\n",
-        SPARK_WEIGHTD_SHARE_ENV,mode,SPARK_WEIGHTD_SHARE_READONLY);
-    SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 SparkStatus SparkWeightdClientMeshActivity(SparkWeightdClient *client,
     uint64_t generation, uint32_t active, uint64_t timeout_nanoseconds)
 {

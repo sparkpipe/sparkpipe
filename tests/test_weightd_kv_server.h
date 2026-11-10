@@ -49,8 +49,6 @@ static void TestKvServerStart(uint64_t kv_reserve_bytes)
 	TestKvServerStopFlag = 0;
 	assert(SparkWeightdServerCreate(&config,&TestKvServer) == SPARK_STATUS_OK);
 	assert(pthread_create(&TestKvServerThread,0,TestKvServerMain,TestKvServer) == 0);
-	assert(setenv("SPARK_WEIGHTD_SOCKET",TestKvServerSocket,1) == 0);
-	assert(unsetenv("SPARK_WEIGHTD_ATTACH") == 0);
 }
 
 static void TestKvServerFinish(void)
@@ -59,7 +57,6 @@ static void TestKvServerFinish(void)
 	assert(pthread_join(TestKvServerThread,0) == 0);
 	SparkWeightdServerDestroy(TestKvServer);
 	TestKvServer = 0;
-	(void)unsetenv("SPARK_WEIGHTD_SOCKET");
 	if ( TestKvServerMeminfo[0] != '\0' )
 		(void)unlink(TestKvServerMeminfo);
 }

@@ -210,7 +210,7 @@ def install(fail_host, process=None):
         firmware = work / "fw"
         firmware.mkdir()
         (firmware / "SOURCE_COMMIT").write_text("abcdef123\n")
-        for name in ["sparkpipe_weightd", "sparkpipe_model_residentd", "weightd_warm", "weightd_spine_budget.py",
+        for name in ["sparkpipe_weightd", "sparkpipe_model_residentd", "weightd_warm",
                      "libhidden_transport_spark_host_rdma_verbs.so"] + libraries:
             (firmware / name).write_text(f"release {name}")
         (firmware / "runtime_libs").mkdir()

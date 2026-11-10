@@ -93,12 +93,10 @@ class SupervisedWeightd(unittest.TestCase):
         self.sidecar.mkdir()
         self.assertEqual(self.call(), -20)
 
-    def test_explicit_off_cannot_override_deployment(self):
+    def test_environment_cannot_switch_off_the_deployment_weightd(self):
         for value in ("0", "", "true", "2"):
             os.environ["SPARK_WEIGHTD_ATTACH"] = value
-            self.assertEqual(self.call(), -14)
-        os.environ["SPARK_WEIGHTD_ATTACH"] = "1"
-        self.assertEqual(self.call(), 0)
+            self.assertEqual(self.call(), 0)
 
     def test_bad_sidecar_cannot_be_hidden_by_valid_digest(self):
         (self.root / "packs/broken.sha256").write_text("z" * 64)

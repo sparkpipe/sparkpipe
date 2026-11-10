@@ -29,7 +29,6 @@ typedef struct SparkK3ProbeSettings
 	uint64_t budget;
 	const char *socket;
 	const char *digest;
-	uint64_t pool;
 } SparkK3ProbeSettings;
 
 static int expect(int condition, const char *what)
@@ -111,7 +110,6 @@ static SparkStatus SparkK3ProbeInitialize(InitFunction init, ModelFunction model
 	config.weights.socket_path = settings->socket;
 	if ( settings->digest != 0 )
 		snprintf(config.weights.pack_sha256, sizeof(config.weights.pack_sha256), "%s", settings->digest);
-	config.weights.spine_budget_bytes = settings->pool;
 	config.descriptor_bytes = (uint32_t)sizeof(config);
 	config.stage_index = 0u;
 	config.stage_count = 1u;
@@ -143,11 +141,6 @@ int main(void)
 	for ( i = 0u; i < 64u; i++ )
 		digest[i] = "0123456789abcdef"[i % 16u];
 	digest[64] = '\0';
-	unsetenv("SPARK_WEIGHTD_SOCKET");
-	unsetenv("SPARK_WEIGHTD_ATTACH");
-	unsetenv("SPARK_WEIGHTD_PACK_SHA256");
-	unsetenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES");
-	unsetenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES");
 	adapter = dlopen(TEST_K3_SERVING_ADAPTER_PATH, RTLD_NOW);
 	if ( adapter == 0 )
 	{
@@ -175,14 +168,12 @@ int main(void)
 		"a rank state plan over the budget is refused before any allocation");
 	settings.budget = 1073741824u;
 	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
-		SPARK_STATUS_UNSUPPORTED,
-		"weightd absent fails closed with a non-retryable UNSUPPORTED (no direct load)");
+		SPARK_STATUS_INVALID_ARGUMENT,
+		"a configuration that names no weightd socket fails closed (no direct load)");
 	if ( runner.private_state != 0 )
 		failures += expect(0, "runner state leaked on failure");
-	setenv("SPARK_WEIGHTD_SOCKET", "/tmp/k3attach-probe-absent.sock", 1);
 	settings.socket = "/tmp/k3attach-probe-absent.sock";
 	settings.digest = digest;
-	settings.pool = (uint64_t)pack_bytes;
 	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_IO_ERROR,
 		"configured weightd with dead socket fails closed (no direct load)");

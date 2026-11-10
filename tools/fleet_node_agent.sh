@@ -228,6 +228,8 @@ root_config() {
                     RC_SYNC=$value ;;
                 AGENT_*)
                     rc_fail "unknown agent key $key in ${f#"$rr"/}" || return 1 ;;
+                SPARK_*)
+                    rc_fail "$key in ${f#"$rr"/}: residentd takes its inputs from model_resident.json and the stage config, and hands weightd's socket and pack digest to the adapter itself" || return 1 ;;
                 *)
                     RC_ENV+=("$key=$value") ;;
             esac
@@ -535,8 +537,8 @@ start_root() {
     sha16 "$rr/stages/stage_000/model_driver.so" > "$rr/.driver_sha_at_boot" 2>/dev/null
     [ -s residentd.log ] && mv residentd.log "residentd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     note_root "$name" "" ""
-    if [ -n "${G5_EXPERT_POOL_BYTES:-}" ]; then
-        note_root "$name" failed-start "G5_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and G5_EXPERT_POOL_CAP_BYTES is the optional explicit cap"
+    if [ -n "${G5_EXPERT_POOL_BYTES:-}${G5_EXPERT_POOL_CAP_BYTES:-}" ]; then
+        note_root "$name" failed-start "an expert pool cap is the stage config's expert_pool_cap_bytes; G5_EXPERT_POOL_BYTES and G5_EXPERT_POOL_CAP_BYTES are not read"
         return 1
     fi
     if [ "$RC_LAYOUT" = 1 ]; then
@@ -544,7 +546,6 @@ start_root() {
     else
         env CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0 \
             ${G5_LAUNCH_BLOCKING:+CUDA_LAUNCH_BLOCKING=$G5_LAUNCH_BLOCKING} \
-            ${G5_EXPERT_POOL_CAP_BYTES:+SPARK_WEIGHTD_EXPERT_POOL_BYTES=$G5_EXPERT_POOL_CAP_BYTES} \
             LD_LIBRARY_PATH="$rr/lib" nohup stdbuf -o0 -e0 ./bin/sparkpipe_model_residentd \
             --deployment model_resident.json --rank-index "$RANK" \
             > residentd.log 2>&1 < /dev/null &

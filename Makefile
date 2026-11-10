@@ -434,7 +434,6 @@ PYTHON_TESTS := \
 	tests/test_spark_queue.py \
 	tests/test_sparkcp.py \
 	tests/test_multi_dev_orchestrate.py \
-	tests/test_inference_smoke.py \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_contract_freeze.py \
 	tests/test_laguna_reference_fixture.py \
@@ -495,7 +494,6 @@ PYTHON_TESTS := \
 	tests/test_k3_head_rank_host.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
-	tests/test_k3_multidev_lane.py \
 	tests/test_k3_pack.py \
 	tests/test_k3_pack_layout.py \
 	tests/test_k3_pack_append.py \
@@ -561,7 +559,6 @@ PYTHON_TESTS := \
 	tests/test_gateway_capacity_check.py \
 	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
-	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_glm5_next_routed_oracle.py \
 	tests/test_glm52_experts_manifest.py \
@@ -1150,7 +1147,6 @@ hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 		mkdir -p build; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware tools/hardware/spark_cuda_characterize.cu -o build/spark_cuda_characterize; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Xcompiler=-pthread tools/hardware/spark_nvme_characterize.cu -o build/spark_nvme_characterize -lpthread; \
-		$(MAKE) build/spark_tp_device_collective_characterize; \
 	fi
 
 .PHONY: test-tp-f32-arithmetic-gpu
@@ -1168,9 +1164,6 @@ build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/t
 
 build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
-
-build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -lcuda -ldl -lpthread -o $@
 
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py
@@ -1871,8 +1864,6 @@ build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu module
 
 build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include $< -lm -o $@
-
-build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h
 	$(CC) $(GLM52_INCLUDE_FLAGS) \

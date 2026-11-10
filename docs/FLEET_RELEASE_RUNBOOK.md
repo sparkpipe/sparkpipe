@@ -269,8 +269,7 @@ directories it installs into.
    (`runtime_libs/libsparkpipe_device_cuda.so`) and the same adapters (log `~/build-rp/fw-<sha>.out`).
 4. It prints the first error lines of both logs and writes the firmware
    directory `/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-<sha>`:
-   the node files, the adapters, `tools/weightd_spine_budget.py`,
-   `SOURCE_COMMIT`, `SHA16` and `SHA256SUMS`. The hub build gets a `SHA16`
+   the node files, the adapters, `SOURCE_COMMIT`, `SHA16` and `SHA256SUMS`. The hub build gets a `SHA16`
    too.
 
 The last lines are `FW-DIR <dir>` and `APIB $HUB_WORK/api-build-<sha>/build`,
