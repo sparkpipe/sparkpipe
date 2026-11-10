@@ -15,12 +15,12 @@ window.SP_PRICING = {
   ],
   "models": [
     { "id": "kimi-k3", "name": "Kimi K3", "decode": 16.2, "prefill": 590 },
-    { "id": "glm-5.3", "name": "GLM 5.3", "decode": 28.9, "prefill": 1162 },
-    { "id": "glm-5.3-flash", "name": "GLM 5.3 Flash", "decode": 55.0, "prefill": 876 },
-    { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "decode": 42.5, "prefill": 1290 },
-    { "id": "k-exaone-2.0", "name": "K-EXAONE 2.0", "decode": 27.3, "prefill": 324 },
-    { "id": "a.x-k2", "name": "A.X K2", "decode": 23.8, "prefill": 1274 },
-    { "id": "solar-open-2", "name": "Solar Open 2", "decode": 61.2, "prefill": 1025 },
+    { "id": "glm-5.3", "name": "GLM 5.3", "decode": null, "prefill": null },
+    { "id": "glm-5.3-flash", "name": "GLM 5.3 Flash", "decode": null, "prefill": null },
+    { "id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "decode": 29.5, "prefill": 182 },
+    { "id": "k-exaone-2.0", "name": "K-EXAONE 2.0", "decode": null, "prefill": null },
+    { "id": "a.x-k2", "name": "A.X K2", "decode": null, "prefill": null },
+    { "id": "solar-open-2", "name": "Solar Open 2", "decode": null, "prefill": null },
     { "id": "motif-3", "name": "Motif 3", "decode": null, "prefill": null },
     { "id": "mimo-v2.6-pro", "name": "MiMo V2.6 Pro", "decode": 19.0, "prefill": 55 },
     { "id": "mimo-v2.6-flash", "name": "MiMo V2.6 Flash", "decode": 40.9, "prefill": 157 },
@@ -31,7 +31,7 @@ window.SP_PRICING = {
     { "id": "laguna-s-2.1", "name": "Laguna S 2.1", "decode": 51.0, "prefill": 773 },
     { "id": "muse-glimmer-30b", "name": "Muse Glimmer 30B", "decode": 37.9, "prefill": 1186 },
     { "id": "hy4-preview", "name": "Hunyuan Hy4 Preview", "decode": 14.2, "prefill": 53 },
-    { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B", "decode": 57.4, "prefill": 1852 },
+    { "id": "qwen3.8-27b", "name": "Qwen 3.8 27B", "decode": null, "prefill": null },
     { "id": "qwen3.8-max", "name": "Qwen 3.8 Max", "decode": 10.4, "prefill": 35 }
   ],
   "hc": {

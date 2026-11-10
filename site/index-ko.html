@@ -6,6 +6,15 @@
 <title>SparkPipe · 내 코드베이스를 위한 나만의 플릿</title>
 <meta name="description" content="한국에 있는 AI 플릿 전체가 고객만을 위해 일하고 코드베이스를 일주일 내내 캐시에 유지합니다. 캐시 만료도, 토큰당 요금도 없고, 밤사이 코드를 다루는 기능과 Kimi K3, GLM 5.3 옆에서 돌아가는 고객 자신의 모델까지. 1주 144 HC.">
 <meta name="theme-color" content="#0a0c10">
+<link rel="canonical" href="https://sparkpipe.ai/index-ko.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SparkPipe">
+<meta property="og:title" content="SparkPipe · 내 코드베이스를 위한 나만의 플릿">
+<meta property="og:description" content="한국에 있는 AI 플릿 전체가 고객만을 위해 일하고 코드베이스를 일주일 내내 캐시에 유지합니다. 캐시 만료도, 토큰당 요금도 없고, 밤사이 코드를 다루는 기능과 Kimi K3, GLM 5.3 옆에서 돌아가는 고객 자신의 모델까지. 1주 144 HC.">
+<meta property="og:url" content="https://sparkpipe.ai/index-ko.html">
+<meta property="og:image" content="https://sparkpipe.ai/apple-touch-icon.png">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:locale:alternate" content="en_US">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
@@ -70,7 +79,7 @@ h1 { max-width: 14em; }
         <thead><tr><th scope="col">순간</th><th scope="col">토큰 단위 API</th><th scope="col" class="you">내 플릿</th></tr></thead>
         <tbody>
           <tr><td>09:00 첫 턴</td><td data-l="토큰 단위 API"><span>콜드: 전체 컨텍스트를 다시 과금하고 다시 프리필</span></td><td class="you" data-l="내 플릿"><span>웜: 밤사이 기능이 갱신</span></td></tr>
-          <tr><td>10:45 회의 후</td><td data-l="토큰 단위 API"><span>5분 뒤 캐시 만료: 다시 과금</span></td><td class="you" data-l="내 플릿"><span>웜: 첫 토큰까지 0.3–5초</span></td></tr>
+          <tr><td>10:45 회의 후</td><td data-l="토큰 단위 API"><span>5분 뒤 캐시 만료: 다시 과금</span></td><td class="you" data-l="내 플릿"><span>웜: 137,700토큰에서 첫 토큰까지 4.7–5.1초</span></td></tr>
           <tr><td>13:30 점심 후</td><td data-l="토큰 단위 API"><span>다시 콜드</span></td><td class="you" data-l="내 플릿"><span>여전히 웜</span></td></tr>
           <tr><td>14:10 다른 브랜치</td><td data-l="토큰 단위 API"><span>새 프리픽스: 캐시 쓰기 한 번 더</span></td><td class="you" data-l="내 플릿"><span>미리 프리필됨</span></td></tr>
           <tr><td>16:00 파일 재작성</td><td data-l="토큰 단위 API"><span>제공자의 속도, 출력 토큰당 과금</span></td><td class="you" data-l="내 플릿"><span>126 tok/s, 같은 출력</span></td></tr>
@@ -78,7 +87,7 @@ h1 { max-width: 14em; }
         </tbody>
       </table>
       <div class="screen-read">
-        <div><small>웜 턴, 137,700토큰</small><strong>0.3–5초</strong></div>
+        <div><small>웜 턴, 137,700토큰</small><strong>4.7–5.1초</strong></div>
         <div><small>Kimi K3, 파일 재작성</small><strong>126 tok/s</strong></div>
         <div><small>24시간 기준 시간당</small><strong data-week="effective">$12.86</strong></div>
       </div>
@@ -104,7 +113,7 @@ h1 { max-width: 14em; }
     <div class="table-wrap"><table>
       <thead><tr><th scope="col">하루의 순간</th><th scope="col">토큰 단위 API</th><th scope="col" class="you">내 플릿</th></tr></thead>
       <tbody>
-        <tr><td>몇 분 안의 다음 턴</td><td>캐시 읽기, 토큰당 과금</td><td class="you"><b>웜.</b> 137,700토큰에서 첫 토큰까지 0.3–5초(실측), 토큰당 요금 없음</td></tr>
+        <tr><td>몇 분 안의 다음 턴</td><td>캐시 읽기, 토큰당 과금</td><td class="you"><b>웜.</b> 137,700토큰에서 첫 토큰까지 4.7–5.1초, 짧은 캐시 턴은 0.3–0.9초(실측), 토큰당 요금 없음</td></tr>
         <tr><td>휴식이나 회의 후</td><td>캐시 만료: 전체 컨텍스트를 다시 과금하고 다시 프리필</td><td class="you"><b>여전히 웜.</b> 플릿을 보유하는 동안 캐시가 남습니다</td></tr>
         <tr><td>브랜치나 모듈 전환</td><td>새 프리픽스: 캐시 쓰기 한 번 더, 콜드 대기 한 번 더</td><td class="you"><b>미리 프리필.</b> 밤사이와 턴 사이에</td></tr>
         <tr><td>아침 첫 턴</td><td>모두 콜드</td><td class="you"><b>웜.</b> 어제의 커밋에 맞춰 기능이 캐시를 갱신했습니다</td></tr>
@@ -211,7 +220,7 @@ h1 { max-width: 14em; }
       <li><h3>A 플릿 고정</h3><p>각 쌍의 A 반쪽은 주 단위로 빌립니다. 비어 있는 A 플릿의 첫 주를 다음 월요일부터 예약합니다. 모든 A 플릿이 보유되어 있으면 최소 <span data-week="hc">144</span> HC를 잠가 대기 명단에 들어갑니다. 매주 일요일, 풀린 플릿은 가장 큰 잠금에 넘어갑니다.</p></li>
       <li><h3>유지</h3><p>마지막으로 예약한 주의 일요일 00:00 전에 다음 주를 예약하면 플릿은 계속 고객의 것이며, 그 B 반쪽도 고정해 Spark 32대, 4 TB의 쌍으로 쓸 수 있습니다. 더 많은 주를 미리 보유할수록 예약하는 모든 주와 모든 시간의 할인이 커지며, 최대 <span data-off="max">20%</span>입니다.</p></li>
     </ol>
-    <p class="prose">잠시 플릿이 더 필요한가요? 각 쌍의 B 반쪽은 시간 플릿으로, 누구나 최대 <span data-hourfleet="days">7</span>일 앞까지 고객의 할인으로 시간 단위로 예약할 수 있으며, 플릿의 최소 4분의 1은 항상 시간 예약용으로 남습니다. 아무도 보유하지 않은 A 플릿도 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서이며, 기다리는 동안 시간 예약은 잠금으로 예약될 주 수의 할인만큼 저렴해지며, 플릿을 배정받기 전에 나오면 그 할인은 잠금에서 상환됩니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 캐시와 저장공간이 삭제됩니다. <b>모든 고객은 같은 보드에서 경쟁합니다:</b> <a href="availability-ko.html">지금 누가 무엇을 보유하고 있는지, 플릿을 얻고 지키고 잃는 방법을 보세요</a>.</p>
+    <p class="prose">잠시 플릿이 더 필요한가요? 각 쌍의 B 반쪽은 시간 플릿으로, 누구나 최대 <span data-hourfleet="days">7</span>일 앞까지, 계정당 주 최대 <span data-hourfleet="hours">24</span>시간까지 고객의 할인으로 시간 단위로 예약할 수 있으며, 플릿의 최소 4분의 1은 항상 시간 예약용으로 남습니다. 아무도 보유하지 않은 A 플릿도 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 요청은 고객의 플릿처럼 그 플릿으로 갑니다. 대기 명단은 가장 큰 잠금이 먼저, 같으면 먼저 들어온 순서이며, 기다리는 동안 시간 예약은 잠금으로 예약될 주 수의 할인만큼 저렴해지며, 플릿을 배정받기 전에 나오면 그 할인은 잠금에서 상환됩니다. 플릿은 매주 일요일 00:00(KST)에 배정되며, 잠금 전체로 지불할 수 있는 만큼의 주가 예약됩니다. 고객은 자신의 순위와 대기 중인 잠금 수만 볼 수 있습니다. 예약을 멈추면 그 일요일에 플릿은 대기 명단으로 넘어가고, 다음 고객이 시작할 때 또는 그 플릿에서의 마지막 시간이 끝나고 24시간 뒤 중 먼저 오는 때에 캐시와 저장공간이 삭제됩니다. <b>모든 고객은 같은 보드에서 경쟁합니다:</b> <a href="availability-ko.html">지금 누가 무엇을 보유하고 있는지, 플릿을 얻고 지키고 잃는 방법을 보세요</a>.</p>
     <p class="caption">주는 월요일 00:00부터 일요일 24:00(KST)까지이며, 일요일이 무료입니다. 출시 시 플릿 8개, 4쌍.</p>
   </div>
 </section>
@@ -228,7 +237,7 @@ h1 { max-width: 14em; }
       <thead><tr><th scope="col">항목</th><th scope="col">가격</th></tr></thead>
       <tbody>
         <tr><th scope="row">시간 크레딧</th><td><span data-hc="bulk-from">144</span> HC 미만은 개당 <span data-hc="small-usd">$20</span>(<span data-hc="small-krw">₩27,200</span>), <span data-hc="bulk-from">144</span> HC부터는 개당 <span data-hc="bulk-usd">$15</span>(<span data-hc="bulk-krw">₩20,400</span>). 상한 없음. 각 구매분은 예약에 쓰지 않으면 <span data-hc="months">12</span>개월 후 소멸하며, 예약에 쓴 HC는 소멸하지 않습니다</td></tr>
-        <tr><th scope="row">시간</th><td>시간 플릿 전체 1시간에 <span data-hour="hc">1</span> HC에서 고객의 할인을 뺀 값, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC</td></tr>
+        <tr><th scope="row">시간</th><td>시간 플릿 전체 1시간에 <span data-hour="hc">1</span> HC에서 고객의 할인을 뺀 값, 하루 근무 시간만큼은 <span data-hour="day">8</span> HC, 계정당 주 최대 <span data-hourfleet="hours">24</span>시간</td></tr>
         <tr><th scope="row">유휴 플릿</th><td>아무도 보유하지 않은 그 밖의 플릿을 시간 단위로, 시간당 <span data-hour="hc">1</span> HC에 그 플릿의 요율을 곱하고 고객의 할인을 뺀 값으로, 현재 주의 끝까지: 큰 리팩터링, 병렬 리뷰, 야간 일괄 작업을 위해 고객의 플릿에 더해 쓰는 추가 용량</td></tr>
         <tr><th scope="row">주</th><td>고객에게 고정된 플릿 7일에 <span data-week="hc">144</span> HC: HC 가격 <span data-hc="bulk-usd">$15</span> 기준 <span data-week="usd">$2,160</span>, 시간당 약 <span data-week="effective">$12.86</span></td></tr>
         <tr><th scope="row">쌍</th><td>플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 쌍의 A 플릿을 보유하면, A 플릿을 보유한 주 동안 B 플릿도 같은 가격과 고객 플릿의 할인으로 고정할 수 있습니다: Spark 32대, 4 TB 메모리의 한 클러스터. 서비스 중인 플릿의 최소 4분의 1, 출시 시 <span data-fleets="all">8</span>개 중 <span data-hourfleet="free">2</span>개는 항상 시간 예약용으로 남습니다</td></tr>
@@ -236,7 +245,7 @@ h1 { max-width: 14em; }
         <tr><th scope="row">미리 보유한 주</th><td data-off="table">예약하는 주와 현재 주를 포함하여 4주 이상 보유 시 새로 예약하는 각 주 5% 할인, 13주 이상 10%, 26주 이상 15%, 52주 20%</td></tr>
         <tr><th scope="row">시간 할인</th><td>모든 시간 예약은 한 플릿에서 보유한 가장 많은 주 수의 할인, 또는 대기 명단에 있는 동안 잠금으로 예약될 주 수의 할인(플릿을 배정받기 전에 나오면 잠금에서 상환)만큼 저렴해집니다: 최대 <span data-off="max">20%</span></td></tr>
         <tr><th scope="row">예약 가능 기간</th><td>최대 <span data-ahead>52</span>주 앞까지</td></tr>
-        <tr><th scope="row">장애</th><td>15분 넘게 장애가 있었던 예약 시간은 저희 기록에 따라 자동으로 HC로 돌려드립니다. 점검은 플릿당 주 최대 3시간이며 같은 방식으로 적립됩니다</td></tr>
+        <tr><th scope="row">장애</th><td>15분 넘게 연속된 장애는 그 기간이 걸친 모든 예약 시간을 저희 기록에 따라 자동으로 HC로 적립합니다. 점검은 플릿당 주 최대 <span data-maintenance="hours">3</span>시간이며 같은 방식으로 적립됩니다</td></tr>
         <tr><th scope="row">결제</th><td>토스페이먼츠를 통한 원화 결제(국내·해외 카드, 계좌이체, 가상계좌, 간편결제), CoinPayments를 통한 USDC 또는 USDT, 또는 대한민국 밖의 고객 명의 계좌에서 보내는 미국 달러 계좌이체(SWIFT). 한국 사업자는 카드 매출전표나 전자세금계산서를 받습니다</td></tr>
         <tr><th scope="row">부가가치세</th><td>10%가 더해집니다. 대한민국에 사업장이 없는 고객의 미국 달러 계좌이체(SWIFT)는 0%입니다</td></tr>
         <tr><th scope="row">환불</th><td>저희가 HC 서비스 제공을 중단하거나 고객의 귀책 없이 계정을 닫는 경우를 제외하고 없습니다. 대기 명단에 잠긴 HC가 기다리는 동안 소멸하게 되면 환불합니다</td></tr>
@@ -306,8 +315,8 @@ curl $OPENAI_BASE_URL/chat/completions \
     <h2>캐시가 남는 플릿이 중요한 곳에서 빠릅니다.</h2>
     <div class="facts">
       <div><strong>126 tok/s</strong><p>추측 디코딩으로 파일 전체를 다시 쓰는 Kimi K3. 없으면 15 tok/s. 출력은 모델 자신의 것입니다.</p></div>
-      <div><strong>0.3–5초</strong><p>대화가 캐시된 후속 턴의 첫 토큰까지, Kimi K3로 137,700토큰까지. 콜드 상태에서는 299초.</p></div>
-      <div><strong>15.6분</strong><p>플릿 하나에서 100만 토큰 Kimi K3 프롬프트를 처음부터 프리필하는 시간. 나만의 플릿에서는 쉴 때마다가 아니라 한 번만 치릅니다.</p></div>
+      <div><strong>4.7–5.1초</strong><p>대화가 캐시된 후속 턴의 첫 토큰까지, Kimi K3로 137,700토큰에서. 짧은 캐시된 채팅 턴은 0.3–0.9초. 콜드 상태에서는 299초.</p></div>
+      <div><strong>16.2분</strong><p>플릿 하나에서 990,881토큰 Kimi K3 프롬프트를 처음부터 프리필하는 시간. 나만의 플릿에서는 쉴 때마다가 아니라 한 번만 치릅니다.</p></div>
     </div>
     <div class="bars" role="img" aria-label="파일 전체 재작성에서 Kimi K3 디코드: 일반 초당 15.3토큰, 추측 디코딩 126.4. GLM 5.3: 일반 27.6, 추측 디코딩 124.2.">
       <div class="bar"><span>K3, 일반</span><i style="--w: 12.1%"></i><b>15.3</b></div>
@@ -362,11 +371,11 @@ curl $OPENAI_BASE_URL/chat/completions \
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="market.html" hreflang="en">내 계정 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="terms-ko.html">약관</a><a href="security-ko.html">보안</a><a href="privacy-ko.html">개인정보처리방침</a><a href="compare-ko.html">비용 확인</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="바닥글"><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="market.html" hreflang="en">내 계정 (영문)</a><a href="fleets-ko.html">플릿 목록</a><a href="availability-ko.html">예약 현황</a><a href="terms-ko.html">약관</a><a href="security-ko.html">보안</a><a href="privacy-ko.html">개인정보처리방침</a><a href="compare-ko.html">비용 확인</a><a href="index.html?lang=en" hreflang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js?v=2"></script>
-<script src="prices.js?v=3"></script>
+<script src="pricing.js?v=3"></script>
+<script src="prices.js?v=4"></script>
 <script>
 (function () {
   var reduce = false;
