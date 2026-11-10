@@ -26,7 +26,12 @@ static uint64_t Place(SparkDsv41FlashStagePackEntry *entry, uint32_t kind, uint3
 {
 	SparkDsv41FlashStagePackTensorShape shape;
 	memset(entry, 0, sizeof(*entry));
-	SparkDsv41FlashStagePackExpectedShape(kind, SPARK_WEIGHT_CODEC_MXFP4_E2M1, 16u, &shape);
+	memset(&shape, 0, sizeof(shape));
+	if ( SparkDsv41FlashStagePackExpectedShape(kind, SPARK_WEIGHT_CODEC_MXFP4_E2M1, 16u, &shape) == 0u )
+	{
+		fprintf(stderr, "FAIL tensor kind %u has no expected shape in the pack contract\n", kind);
+		exit(1);
+	}
 	entry->tensor_kind = kind;
 	entry->layer_index = layer;
 	entry->payload_type = shape.payload_type;

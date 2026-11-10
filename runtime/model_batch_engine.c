@@ -1776,7 +1776,11 @@ static void SparkModelBatchSubmitResult(
 			    "batch result for unknown submission %llu (session reset?) — ignoring\n",
 			    (unsigned long long)submission_id);
 		else if ( engine != 0 )
+		{
+			fprintf(stderr,"batch result received twice for submission %llu (first status %d, second %d): the pipeline client reports each result once, so the engine fails\n",
+				(unsigned long long)submission_id,(int)submission->result_status,(int)status);
 			SparkModelBatchSetFailed(engine,SPARK_STATUS_SCHEMA_ERROR);
+		}
 		return;
 	}
 	submission->result_received = 1u;

@@ -933,9 +933,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 						transaction->result_mask |= UINT32_C(1) << rejected_rank;
 				break;
 			}
-			if ( status != SPARK_STATUS_IO_ERROR )
-				SparkModelPipelineClientSetFailure(pipeline,
-				    status,rank);
+			SparkModelPipelineClientSetFailure(pipeline,status,rank);
 			break;
 		}
 	}
