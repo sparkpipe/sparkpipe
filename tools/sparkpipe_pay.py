@@ -1069,6 +1069,9 @@ class Uptime:
             closed = [span for span in self.recent if span["end"] >= market.stamp(since)]
             return closed + [dict(entry["open"], end=None) for entry in self.state.values() if entry.get("open")]
 
+    def periods(self, since):
+        return market.joined(self.spans(since), timedelta(seconds=self.app.cfg.health_seconds))
+
     def entry(self, fleet):
         return self.state.get(fleet)
 

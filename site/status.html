@@ -46,7 +46,7 @@
   <section id="how">
     <h2>How we measure</h2>
     <ul>
-      <li>Every 30 seconds the gateway at sparkpipe.ai asks each fleet's hub over its tunnel whether every loaded model answers. A fleet is down from its last good answer until its next one, so a period always starts a little early and ends a little late.</li>
+      <li>Every 30 seconds the gateway at sparkpipe.ai asks each fleet over its tunnel whether every loaded model answers. A fleet is down from its last good answer until its next one, so a period always starts a little early and ends a little late. Periods that only a single good answer separates count as one period for the credit, and each of them is marked creditable when that period is.</li>
       <li>A time in which the gateway itself was not running, or could not ask, counts as down too: you could not reach the fleet then either.</li>
       <li>A period over <span data-outage>15</span> minutes is credited as soon as it passes <span data-outage>15</span> minutes, again each day it lasts, and when it ends, each booked hour once. Hours under announced maintenance are credited as maintenance instead (clause 4.3), and uptime here leaves them out.</li>
       <li>If your records show such a period and ours do not, send them to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> within 7 days, and we credit the hours unless our records show the fleet was available throughout.</li>

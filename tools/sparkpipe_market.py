@@ -62,6 +62,17 @@ def stamp_time(text):
     return datetime.strptime(text, STAMP).replace(tzinfo=timezone.utc)
 
 
+def joined(spans, within):
+    found = []
+    for span in sorted(spans, key=lambda s: (s["fleet"], s["start"])):
+        last = found[-1] if found else None
+        if last and last["fleet"] == span["fleet"] and last["end"] is not None and stamp_time(span["start"]) - stamp_time(last["end"]) <= within:
+            found[-1] = dict(last, end=None if span["end"] is None else max(last["end"], span["end"]))
+        else:
+            found.append(span)
+    return found
+
+
 def slot_text(moment):
     return moment.astimezone(timezone.utc).strftime(SLOT)
 
@@ -751,7 +762,7 @@ class Market:
 
     def outage_at(self, now):
         found = []
-        for span in self.app.uptime.spans(now - 30 * DAY):
+        for span in self.app.uptime.periods(now - 30 * DAY):
             begins, ends = stamp_time(span["start"]), stamp_time(span["end"]) if span["end"] else None
             ends = ends if ends and ends <= now else None
             if (ends or now) - begins <= OUTAGE:
@@ -759,8 +770,10 @@ class Market:
             done = self.st.downtime.get(span["span"])
             if not done:
                 at = ends or begins + OUTAGE + timedelta(seconds=1)
-            elif ends and not done["end"]:
+            elif ends and done["end"] != stamp(ends):
                 at = ends
+            elif not ends and done["end"]:
+                at = stamp_time(done["end"])
             elif not ends and stamp_time(done["now"]) + OUTAGE_PASS <= now:
                 at = stamp_time(done["now"]) + OUTAGE_PASS
             else:
@@ -886,6 +899,7 @@ class Market:
         else:
             status, since = "unknown", None
         first = stamp_time(entry["first"]) if entry else None
+        periods = [(stamp_time(p["start"]), stamp_time(p["end"]) if p["end"] else now) for p in joined(spans, timedelta(seconds=self.app.cfg.health_seconds))]
         uptime = {}
         for label, days in UPTIME_WINDOWS:
             start = max(now - DAY * days, first) if first else None
@@ -898,7 +912,7 @@ class Market:
                 down += overlap(begins, ends, start, now) - sum((overlap(max(begins, m["begins"]), min(ends, m["ends"]), start, now) for m in self.maintained(fleet["id"], begins, ends)), timedelta(0))
             uptime[label] = round(100 * (1 - down / (now - start)), 3)
         incidents = [{"start": s["start"], "end": s["end"], "minutes": int(((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) // timedelta(minutes=1)), "cause": s["cause"],
-                      "creditable": ((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) > OUTAGE} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
+                      "creditable": any(b <= stamp_time(s["start"]) and (stamp_time(s["end"]) if s["end"] else now) <= e and e - b > OUTAGE for b, e in periods)} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
         return {"id": fleet["id"], "name": listed["name"], "serving": fleet["serving"], "hourFleet": listed["hourFleet"], "status": status, "since": since, "recordsSince": entry["first"] if entry else None,
                 "uptime": uptime, "incidents": incidents, "maintenance": merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK))}
 
