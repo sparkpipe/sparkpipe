@@ -322,6 +322,9 @@ Warm-ups are used:
 
 Deletes the account's working-state cache on that fleet now, as clause 6.2 of the Agreement allows ("earlier when Customer asks"). With `?storage=true`, the customer storage goes too.
 
+- The answer is `{"deleted", "not_deleted", "note"}`. `deleted` names what went: the replay store, the alias table, stored responses, packs (and repositories with `?storage=true`), and `memory` once the memory program confirms it forgot the account's context-memory sessions. `not_deleted` names anything still to go.
+- The account's cached-token ledger (§3.3) is cleared with it, and only that account's.
+
 ### 4.5 Resident models and aliases
 
 A fleet keeps as many models resident as fit in its memory. Kimi K3 (1.56 TB) fills most of a 16-Spark fleet on its own. Smaller models share it: for example GLM 5.3 with GLM 5.3 Flash, or several 27–31B models together.

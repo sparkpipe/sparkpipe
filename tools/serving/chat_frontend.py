@@ -75,6 +75,7 @@ chat_shapes.RequestError = RequestError
 chat_shapes.chat_replay = chat_replay
 KEEPALIVE_SECONDS = 10.0
 MEMORY_HEALTH_SECONDS = 2.0
+MEMORY_FORGET_SECONDS = 30.0
 MEMORY_COMMAND_SECONDS = 600.0
 MEMORY_IMPORT_SECONDS = 3900.0
 BUSY_WAIT_SECONDS = 60.0
@@ -1921,6 +1922,8 @@ class Frontend:
         self.directive_state = (wiped, held_until)
         if not (changed or sweep):
             return 0
+        if self.memory is not None:
+            self.memory.notify("expire", {"wiped": wiped, "held_until": held_until, "now": now})
         if self.workspace is not None:
             try:
                 areas = self.workspace.expire(lambda used: working_state.expired(used, wiped, held_until, now))
@@ -3491,6 +3494,7 @@ class Frontend:
             return error_response(RequestError(400, "invalid_request", "storage is true or false"))
         storage = request.query.get("storage") == "true"
         deleted = self.replay.forget(scope)
+        memory = await self.forget_memory(scope)
         for name in [name for name in self.public_prefixes if name[0] == scope]:
             del self.public_prefixes[name]
         removed = ["replay_store", "aliases", "stored_responses"]
@@ -3502,10 +3506,21 @@ class Frontend:
             else:
                 self.workspace.delete_packs(scope_dir)
                 removed.append("packs")
-        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage}), file=sys.stderr, flush=True)
+        removed += ["memory"] if memory is True else []
+        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage, "memory": memory}), file=sys.stderr, flush=True)
         return web.json_response({"deleted": removed,
-                                  "not_deleted": ["engine_cache"] + (["storage"] if storage and self.workspace is None else []),
+                                  "not_deleted": ["engine_cache"] + (["memory"] if memory is False else []) + (["storage"] if storage and self.workspace is None else []),
                                   "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+
+    async def forget_memory(self, scope):
+        if self.memory is None:
+            return None
+        try:
+            await self.memory.call("forget", {"scope": scope}, MEMORY_FORGET_SECONDS)
+        except RequestError as error:
+            print(json.dumps({"event": "memory_forget_failed", "scope": scope, "code": error.code, "message": error.message}), file=sys.stderr, flush=True)
+            return False
+        return True
 
     def workspace_scope(self, request):
         if self.workspace is None:

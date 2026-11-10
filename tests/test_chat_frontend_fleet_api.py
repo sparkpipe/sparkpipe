@@ -234,6 +234,45 @@ async def ledger_rules(harness, check):
     check(await cached("ledger-a") == 0, "an account's own DELETE /v1/cache resets its cached count")
 
 
+class RecordingMemory:
+    def __init__(self, failing=False):
+        self.failing, self.calls, self.notices = failing, [], []
+
+    async def call(self, method, request=None, timeout=None):
+        self.calls.append((method, request))
+        if self.failing:
+            raise chat_frontend.RequestError(404, "unsupported", f"no method {method}")
+        return {}
+
+    def notify(self, method, request=None):
+        self.notices.append((method, request))
+
+
+async def memory_rules(harness, check):
+    frontend = harness.frontend
+    kept = frontend.memory
+    try:
+        frontend.memory = RecordingMemory()
+        async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="mem-a")) as response:
+            deleted = await response.json()
+        check(response.status == 200 and "memory" in deleted["deleted"] and "memory" not in deleted["not_deleted"] and
+              frontend.memory.calls == [("forget", {"scope": "account:mem-a"})],
+              f"DELETE /v1/cache asks the memory program to forget the account's scope now and lists memory as deleted: {deleted} {frontend.memory.calls}")
+        frontend.memory = RecordingMemory(failing=True)
+        async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="mem-a")) as response:
+            deleted = await response.json()
+        check(response.status == 200 and "memory" in deleted["not_deleted"] and "memory" not in deleted["deleted"],
+              f"a memory program that cannot forget leaves memory listed as not deleted: {deleted}")
+        frontend.memory = RecordingMemory()
+        harness.directive(time.time() + 5, 0)
+        frontend.expire_working_state(time.time(), False)
+        notices = [request for method, request in frontend.memory.notices if method == "expire"]
+        check(len(notices) == 1 and set(notices[0]) == {"wiped", "held_until", "now"} and abs(notices[0]["wiped"] - time.time() - 5) < 2,
+              f"a change of user passes the working-state directive to the memory program: {frontend.memory.notices}")
+    finally:
+        frontend.memory = kept
+
+
 async def body_rules(harness, check):
     raw = '{"model": "alpha", "messages": [{"role": "user", "content": "café"}]}'.encode("latin-1")
     for path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/tokenize"):
@@ -466,6 +505,7 @@ async def run(tmp, check):
         await ledger_rules(harness, check)
         await body_rules(harness, check)
         await isolation_rules(harness, check)
+        await memory_rules(harness, check)
 
 
 def main():
@@ -482,7 +522,7 @@ def main():
                  "gateway key must name a valid account, each account has its own replay store and alias table, X-SparkPipe-Allow-Swap 1 allows a swap and "
                  "background keys run below interactive ones; bad header values are not echoed; a failed controller falls back to the last residency and "
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
-                 "store failure still delivers the reply; a gateway account reports cached tokens only for prefixes it sent, and its DELETE /v1/cache clears only its own count; a body that is not UTF-8 gets 400 on every shape; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
+                 "store failure still delivers the reply; a gateway account reports cached tokens only for prefixes it sent, and its DELETE /v1/cache clears only its own count; a body that is not UTF-8 gets 400 on every shape; DELETE /v1/cache asks memory to forget the scope and a change of user passes the directive to it; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
                  "its own conversation's turn and only for its own member (the gateway's X-SparkPipe-Member, across that member's keys), also through tokenize; an unreadable store falls back to a normal render; a key "
                  "made with --priority background runs below interactive requests")
 
