@@ -167,7 +167,7 @@ class DirectPacks(unittest.TestCase):
                         self.assertEqual(json.loads((local / "config/adapter.json").read_text())["stage_pack_path"], pack)
                         self.assertEqual(sorted(os.listdir(local / "packs")), ["pack.sha256"])
                         self.assertEqual((local / "packs/pack.sha256").read_text(), DIGEST)
-                        self.assertEqual((local / "spine_budget").read_text().strip(), str(4096 + 255))
+                        self.assertFalse((local / "spine_budget").exists())
             self.assertEqual(old.read_text(), "old run\n")
 
     def test_setup_refuses_a_linked_or_missing_weight_file(self):

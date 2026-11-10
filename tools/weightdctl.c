@@ -20,11 +20,7 @@ int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "status") == 0)
     {
-        char reason[SPARK_WEIGHTD_ATTACH_REASON_BYTES];
-        SparkStatus s = SparkWeightdAttachRequested();
-        printf("requested=%d socket=%s\n", s == SPARK_STATUS_OK,
-               getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET) ? : "(unset)");
-        (void)reason;
+        printf("socket=%s\n", getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET) ? : "(unset)");
         return 0;
     }
     if (argc >= 2 && strcmp(argv[1], "reclaim") == 0)

@@ -1258,7 +1258,7 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
     SparkWeightdClient *owner = 0;
     uint32_t lane,live = mock_clients_live;
     SparkWeightdMeshTopology topology;
-    CHECK(SparkTpDeviceCollectiveMeshTopology(config.tp_rank,config.tp_degree,&topology) == SPARK_STATUS_OK,"paired topology");
+    CHECK(SparkTpDeviceCollectiveMeshTopology(config.tp_rank,config.tp_degree,config.mesh_ranks,&topology) == SPARK_STATUS_OK,"paired topology");
     uint64_t bands = mock_lane_mask[0];
     config.collective_identifier = 1u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&first) == SPARK_STATUS_OK,
@@ -1277,13 +1277,21 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         rejected.implementation == 0 && mock_clients_live == live,
         "reservation rejection rolls back common create client");
     mock_lane_status = SPARK_STATUS_OK;
-    char invalid_lane[16];
-    snprintf(invalid_lane,sizeof(invalid_lane),"%u",SPARK_WEIGHTD_MESH_MAX_LANES);
-    CHECK(setenv("SPARK_WEIGHTD_LANE",invalid_lane,1) == 0 &&
-        SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+    config.mesh_lane = SPARK_WEIGHTD_MESH_MAX_LANES;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
         rejected.implementation == 0 && mock_clients_live == live,
-        "malformed common lane config fails without leaked client");
-    CHECK(unsetenv("SPARK_WEIGHTD_LANE") == 0,"clear invalid test lane");
+        "a configured lane beyond the mesh fails without a leaked client");
+    config.mesh_lane = SPARK_WEIGHTD_LANE_NONE;
+    config.weightd_socket_path = 0;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+        rejected.implementation == 0 && mock_clients_live == live,
+        "a configuration without a weightd socket is refused");
+    config.weightd_socket_path = "/tmp/tp_collective_mock.sock";
+    config.mesh_ranks[1] = config.mesh_ranks[0];
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+        rejected.implementation == 0 && mock_clients_live == live,
+        "a rank map naming one physical rank twice is refused");
+    config.mesh_ranks[1] = 1u;
     CHECK(SparkWeightdClientConnect("fixture",&owner,0) == SPARK_STATUS_OK &&
         SparkWeightdClientLaneAcquire(owner,7u,&topology,&lane,1u) == SPARK_STATUS_OK,
         "paired owner reserves explicit lane");
@@ -1328,7 +1336,6 @@ int main(void)
 {
 	SparkTpDeviceCollectiveConfig config;
 	TestTopologySlice();
-	(void)setenv("SPARK_WEIGHTD_SOCKET","/tmp/tp_collective_mock.sock",1);
 	SparkTpDeviceCollective collective;
 	SparkStatus status;
 	void *mesh_buffer;
@@ -1356,7 +1363,10 @@ int main(void)
 	config.max_active_sequence_count = 4096u;
 	config.connect_timeout_milli = 1000u;
 	config.operation_timeout_milli = 2000u;
-	config.collective_identifier = 0u;
+	config.weightd_socket_path = "/tmp/tp_collective_mock.sock";
+	config.mesh_lane = SPARK_WEIGHTD_LANE_NONE;
+	for ( uint32_t rank = 0u; rank < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++ )
+		config.mesh_ranks[rank] = rank;
 	config.combine_bf16_function = TestCombineBf16;
 	config.combine_fused_bf16_function = TestCombineFusedBf16;
 	config.combine_u64_max_function = TestCombineU64Max;

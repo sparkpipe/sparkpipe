@@ -74,8 +74,8 @@ checks establish host ownership rules; they do not prove GPU or RDMA ordering.
 [`TP_STREAM_MEMOP_QUALIFICATION.md`](TP_STREAM_MEMOP_QUALIFICATION.md) is the
 authority for device waits. In `hardware` mode, the fleet's serving mode, GPU
 waits are stream memory waits on a ready word the daemon publishes. In `spin`
-mode, the default when `SPARK_TP_WAIT_MODE` is unset, they are GPU polling
-kernels. In both modes the weight daemon polls while a mesh activity interval
+mode they are GPU polling kernels. A stage config names one of the two in its
+required `device_collective.wait_mode`. In both modes the weight daemon polls while a mesh activity interval
 is active and sleeps only as described above. An incoming RDMA WRITE produces no
 receiver completion event, and a GPU write to a host doorbell wakes no CPU file
 descriptor, so neither can replace that polling. RDMA completion notifications

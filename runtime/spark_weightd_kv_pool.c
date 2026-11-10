@@ -187,23 +187,20 @@ static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,co
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
+SparkStatus SparkWeightdKvPoolMap(const char *socket,const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
 {
 	SparkWeightdKvPoolGrant grant;
-	const char *socket;
 	SparkStatus status;
 	if ( request == 0 || chunk_offsets == 0 || mapping == 0 || request->label == 0 || request->chunk_bytes == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(mapping,0,sizeof(*mapping));
 	memset(&grant,0,sizeof(grant));
 	grant.metadata_fd = -1;
-	status = SparkWeightdAttachRequested();
-	if ( status != SPARK_STATUS_OK )
+	if ( socket == 0 || socket[0] == '\0' )
 	{
-		fprintf(stderr,"%s kv pool refused: weightd owns node KV memory and %s does not name its socket\n",request->label,SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-		SPARK_RETURN(status);
+		fprintf(stderr,"%s kv pool refused: weightd owns node KV memory and the binding names no weightd socket\n",request->label);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	status = SparkWeightdClientConnect(socket,&mapping->client,0);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -309,19 +306,14 @@ void SparkWeightdKvSharedUnmap(SparkWeightdKvSharedMapping *mapping)
 	memset(mapping,0,sizeof(*mapping));
 }
 
-SparkStatus SparkWeightdKvSharedAttach(const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
+SparkStatus SparkWeightdKvSharedAttach(const char *socket,const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
 {
 	SparkWeightdKvSharedGrant grant;
-	const char *socket;
 	void *metadata;
 	SparkStatus status;
-	if ( request == 0 || mapping == 0 || request->label == 0 )
+	if ( socket == 0 || socket[0] == '\0' || request == 0 || mapping == 0 || request->label == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(mapping,0,sizeof(*mapping));
-	status = SparkWeightdAttachRequested();
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	status = SparkWeightdClientConnect(socket,&mapping->client,0);
 	if ( status != SPARK_STATUS_OK )
 	{

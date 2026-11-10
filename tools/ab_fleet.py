@@ -147,8 +147,8 @@ def check_spec(spec):
     for key in spec["common_env"]:
         if not ENV_KEY.match(key) or key.startswith("AGENT_"):
             errors.append(f"common_env key {key!r} is not an exported env key")
-        if key in ("SPARK_WEIGHTD_LANE", "SPARK_WEIGHTD_EXPERT_POOL_BYTES"):
-            errors.append(f"common_env must not set {key}; it is per arm")
+        if key.startswith("SPARK_"):
+            errors.append(f"common_env must not set {key}; residentd reads its inputs from the deployment and the stage config, and an arm's weightd lane and pool cap are stage config members")
     for member in spec["private_directory_members"]:
         if not isinstance(member, str) or not member:
             errors.append("private_directory_members entries must be member names")
@@ -184,15 +184,12 @@ def render_env(spec, arm):
         "AGENT_SYNC=local",
         f"AGENT_MEMORY_MAX={a['memory_max']}",
         f"AGENT_MEMORY_NEED_GIB={agent_need_gib(spec, arm)}",
-        f"SPARK_WEIGHTD_LANE={a['lane']}",
     ]
-    if "pool_cap_bytes" in a:
-        lines.append(f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={a['pool_cap_bytes']}")
     for key, value in spec["common_env"].items():
         lines.append(f"{key}={value}")
     for key, value in a.get("env", {}).items():
-        if not ENV_KEY.match(key) or key.startswith("AGENT_"):
-            raise FleetError(f"arm {arm}: env key {key!r} is not an exported env key")
+        if not ENV_KEY.match(key) or key.startswith("AGENT_") or key.startswith("SPARK_"):
+            raise FleetError(f"arm {arm}: env key {key!r} is not an exported env key an arm may set")
         lines.append(f"{key}={value}")
     return "\n".join(lines) + "\n"
 
@@ -346,6 +343,14 @@ def check_stage_pack(root, pack_root, document, where, local, errors):
         errors.append(f"{where}: packs/ must hold exactly one *.sha256, a copy of {pack}.sha256, for the weightd attach")
 
 
+def check_stage_weightd(a, document, where, errors):
+    lane = document.get("device_collective", {}).get("mesh_lane")
+    if lane != a["lane"]:
+        errors.append(f"{where}: device_collective.mesh_lane {lane!r} is not the arm's lane {a['lane']}")
+    if document.get("expert_pool_cap_bytes") != a.get("pool_cap_bytes"):
+        errors.append(f"{where}: expert_pool_cap_bytes {document.get('expert_pool_cap_bytes')!r} is not the arm's pool cap {a.get('pool_cap_bytes')!r}")
+
+
 def root_check(spec, arm, root, home=None, fresh=False):
     home = home or os.path.expanduser("~")
     errors = []
@@ -396,6 +401,7 @@ def root_check(spec, arm, root, home=None, fresh=False):
         doc = json.loads(stage.read_text())
         relative = os.path.normpath(os.path.relpath(stage, root))
         check_stage_pack(root, a["pack_root"], doc, f"{stage.parent.name}/{stage.name}", relative in local_configs, errors)
+        check_stage_weightd(a, doc, f"{stage.parent.name}/{stage.name}", errors)
         for member in spec["private_directory_members"]:
             if member in doc:
                 target = check_private_directory(root_real, protected, member, doc[member], f"{stage.parent.name}/{stage.name}", fresh, errors)

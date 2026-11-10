@@ -74,6 +74,7 @@ int32_t main(int argc,char **argv)
 	S.running = 1;
 	S.ready = 1;
 	S.context_limit = 262144u;
+	ApiOutputVocabulary = 262144u;
 	{
 		int32_t client;
 		pthread_t thread = TestEnqueue(&client,"{\"prompt_token_ids\":[1,2],\"max_tokens\":1}");

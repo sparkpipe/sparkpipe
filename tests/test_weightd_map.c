@@ -133,7 +133,6 @@ static void SparkTestSetEnv(const char *name, const char *value)
 static void SparkTestClearAttachEnv(void)
 {
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_MODEL, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_REVISION, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);

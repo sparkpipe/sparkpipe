@@ -211,6 +211,7 @@ static void Configure(SparkStageKvConfiguration *configuration)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->pool_source = POOL_SOURCE;
+	configuration->weightd_socket_path = POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD ? TestKvServerSocket : 0;
 	configuration->backing_directory = DIRECTORY;
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = SNAPSHOT_DIRECTORY;
@@ -1926,10 +1927,13 @@ static void TestWeightdOwnsPool(void)
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 1u && BINDING.kv_pool.pool_generation == generation);
 	Unload();
-	assert(unsetenv("SPARK_WEIGHTD_SOCKET") == 0);
+	CONFIGURATION.weightd_socket_path = 0;
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_INVALID_ARGUMENT && BINDING.kv_pool.client == 0);
+	Unload();
+	CONFIGURATION.weightd_socket_path = "/tmp/spark-kv-weightd-absent.sock";
 	assert(OpenWith(&CONFIGURATION) != SPARK_STATUS_OK && BINDING.kv_pool.client == 0);
 	Unload();
-	assert(setenv("SPARK_WEIGHTD_SOCKET",TestKvServerSocket,1) == 0);
+	CONFIGURATION.weightd_socket_path = TestKvServerSocket;
 	RemoveDirectories();
 	printf("weightd owns the KV pool: regions and page table carved from it, reattach keeps the generation, no weightd refuses\n");
 }
@@ -1938,7 +1942,6 @@ static void TestDevicePoolNeedsNoWeightd(void)
 {
 	SparkModelDriverKvStoreCounters counters;
 	uint64_t lane_bytes;
-	assert(unsetenv("SPARK_WEIGHTD_SOCKET") == 0);
 	Open();
 	lane_bytes = (uint64_t)TEST_LANES * BINDING.pages_per_sequence * sizeof(uint32_t);
 	assert(BINDING.pool.space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE && BINDING.kv_pool.client == 0 && BINDING.kv_pool.chunk_capacity == 0u && BINDING.kv_shared.client == 0);
@@ -1951,7 +1954,10 @@ static void TestDevicePoolNeedsNoWeightd(void)
 	Unload();
 	CONFIGURATION.pool_source = 0u;
 	ExpectRefused(&CONFIGURATION,SPARK_STATUS_INVALID_ARGUMENT);
-	assert(setenv("SPARK_WEIGHTD_SOCKET",TestKvServerSocket,1) == 0);
+	CONFIGURATION.pool_source = SPARK_STAGE_KV_POOL_SOURCE_DEVICE;
+	CONFIGURATION.weightd_socket_path = TestKvServerSocket;
+	ExpectRefused(&CONFIGURATION,SPARK_STATUS_INVALID_ARGUMENT);
+	CONFIGURATION.weightd_socket_path = 0;
 	RemoveDirectories();
 	printf("device pool needs no weightd: one device-private buffer carries the page table and every region at full capacity, with no pool thread, no shared window and no reattach; an unnamed pool source refuses\n");
 }

@@ -21,8 +21,9 @@ void SparkWeightdKvFreeAddress(void *base,uint64_t bytes)
 	(void)bytes;
 }
 
-SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
+SparkStatus SparkWeightdKvPoolMap(const char *socket,const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
 {
+	(void)socket;
 	(void)request;
 	(void)chunk_offsets;
 	(void)timeout_nanoseconds;
@@ -61,8 +62,9 @@ SparkStatus SparkWeightdKvPoolStatus(SparkWeightdKvPoolMapping *mapping,SparkWei
 	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
-SparkStatus SparkWeightdKvSharedAttach(const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
+SparkStatus SparkWeightdKvSharedAttach(const char *socket,const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
 {
+	(void)socket;
 	(void)request;
 	(void)timeout_nanoseconds;
 	(void)mapping;

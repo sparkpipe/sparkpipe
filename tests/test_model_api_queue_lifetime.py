@@ -139,13 +139,14 @@ int32_t main(int argc,char **argv)
 		char response[1024] = {0};
 		const char request[] = "GET /v1/models HTTP/1.1\r\n\r\n";
 		S.context_limit = 262144u;
+		ApiOutputVocabulary = 262144u;
 		assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
 		assert(pthread_create(&thread,0,api_connection,(void *)(intptr_t)sockets[1]) == 0);
 		assert(write(sockets[0],request,sizeof(request) - 1u) == (ssize_t)(sizeof(request) - 1u));
 		while ( (bytes = read(sockets[0],response + total,sizeof(response) - 1u - total)) > 0 )
 			total += bytes;
 		assert(pthread_join(thread,0) == 0);
-		assert(strstr(response,"200 OK") != 0 && strstr(response,"\"max_model_len\":262144") != 0);
+		assert(strstr(response,"503") != 0 && strstr(response,"\"max_model_len\"") == 0);
 		close(sockets[0]);
 	}
 	S.context_limit = api_context_limit(&deployment);
@@ -231,7 +232,7 @@ def main():
             assert record['tokens'] == [[identity, identity * 100 + 50]]
         for identity in range(700,708):
             assert sum(record['request_id'] == identity for record in records[227:]) == 128
-    print("PASS 227 real API replies; seeded completion permutations preserve every queue owner, token and terminal; /v1/models reports the engine context limit as max_model_len")
+    print("PASS 227 real API replies; seeded completion permutations preserve every queue owner, token and terminal; /v1/models answers 503 bring-up until an engine serves a model")
 
 
 if __name__ == "__main__":

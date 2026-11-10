@@ -122,7 +122,7 @@ class Spec(unittest.TestCase):
         self.refused(s, "share a port group")
         s = spec()
         s["common_env"]["SPARK_WEIGHTD_LANE"] = "3"
-        self.refused(s, "per arm")
+        self.refused(s, "stage config members")
         s = spec()
         s["nodes"] = s["nodes"][:15]
         self.refused(s, "FLEET_HOSTS")
@@ -135,10 +135,8 @@ class Env(unittest.TestCase):
         self.assertEqual(env["AGENT_ROLE"], "dev")
         self.assertEqual(env["AGENT_SYNC"], "local")
         self.assertEqual(env["AGENT_MEMORY_NEED_GIB"], "50")
-        self.assertEqual(env["SPARK_WEIGHTD_LANE"], "1")
-        self.assertNotIn("SPARK_WEIGHTD_EXPERT_POOL_BYTES", env)
         s["arms"]["F1"]["pool_cap_bytes"] = 4294967296
-        self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F1"))["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "4294967296")
+        self.assertFalse([key for key in ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F1")) if key.startswith("SPARK_WEIGHTD_")])
         self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F1AA"))["AGENT_MEMORY_NEED_GIB"], "12")
         self.assertEqual(ab_fleet.parse_env_file_text(ab_fleet.render_env(s, "F0"))["AGENT_MEMORY_NEED_GIB"], "12")
 
@@ -264,7 +262,9 @@ class ArmRoot(unittest.TestCase):
             path.write_text(path.name if path.suffix != ".sha256" else "cd" * 32 + "  rank0.sp\n")
         (root / "packs").mkdir()
         (root / "packs" / "rank0.sp.sha256").write_text("cd" * 32)
-        stage = {"stage_pack_path": str(pack)}
+        stage = {"stage_pack_path": str(pack), "device_collective": {"mesh_lane": self.spec["arms"][arm]["lane"]}}
+        if "pool_cap_bytes" in self.spec["arms"][arm]:
+            stage["expert_pool_cap_bytes"] = self.spec["arms"][arm]["pool_cap_bytes"]
         if snapshot is not None:
             stage["kv_snapshot_directory"] = snapshot
         stage["score_dump_directory"] = "runs/r1/dump"
@@ -425,10 +425,21 @@ class ArmRoot(unittest.TestCase):
 
     def test_agent_env_drift_is_refused(self):
         root = self.make_root("F3")
-        text = (root / "agent.env").read_text().replace("SPARK_WEIGHTD_LANE=13", "SPARK_WEIGHTD_LANE=0")
+        text = (root / "agent.env").read_text().replace("AGENT_SYNC=local", "AGENT_SYNC=hub")
         (root / "agent.env").write_text(text)
         errors, _ = self.check("F3", root)
-        self.assertTrue(any("SPARK_WEIGHTD_LANE" in e for e in errors), errors)
+        self.assertTrue(any("AGENT_SYNC" in e for e in errors), errors)
+
+    def test_stage_lane_and_pool_cap_drift_are_refused(self):
+        root = self.make_root("F3")
+        config = root / "config" / "stage_00.json"
+        doc = json.loads(config.read_text())
+        doc["device_collective"]["mesh_lane"] = 0
+        doc["expert_pool_cap_bytes"] = 4294967296
+        config.write_text(json.dumps(doc))
+        errors, _ = self.check("F3", root)
+        self.assertTrue(any("device_collective.mesh_lane 0 is not the arm's lane 13" in e for e in errors), errors)
+        self.assertTrue(any("expert_pool_cap_bytes 4294967296 is not the arm's pool cap" in e for e in errors), errors)
 
 
 @unittest.skipUnless(bash4(), "the agent parser cross-check needs bash >= 4")
@@ -462,8 +473,7 @@ class AgentParser(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         role, sync, need, memory_max, env = out.stdout.strip().split("|")
         self.assertEqual((role, sync, need, memory_max), ("dev", "local", "50", "20G"))
-        self.assertIn("SPARK_WEIGHTD_LANE=1", env.split())
-        self.assertFalse([word for word in env.split() if word.startswith("SPARK_WEIGHTD_EXPERT_POOL_BYTES=")], env)
+        self.assertFalse([word for word in env.split() if word.startswith("SPARK_WEIGHTD_")], env)
 
     def test_agent_gate_agrees_with_placement(self):
         for avail, expected in ((82, True), (81, False)):

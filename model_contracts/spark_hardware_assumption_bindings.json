@@ -218,10 +218,6 @@
         {
           "binding_mode": "generated_policy",
           "path": "inference/kernels/topk.cuh"
-        },
-        {
-          "binding_mode": "generated_policy",
-          "path": "ring/distributed_work.c"
         }
       ],
       "fallback": "forbidden",
@@ -343,11 +339,11 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "cache/nvme_tier.c"
+          "path": "cache/kv_page_store.c"
         },
         {
           "binding_mode": "generated_policy",
-          "path": "include/sparkpipe/spark_nvme_tier.h"
+          "path": "cache/kv_snapshot.c"
         }
       ],
       "fallback": "forbidden",
@@ -361,11 +357,11 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "cache/nvme_tier.c"
+          "path": "cache/kv_page_store.c"
         },
         {
           "binding_mode": "generated_policy",
-          "path": "include/sparkpipe/spark_nvme_tier.h"
+          "path": "cache/kv_snapshot.c"
         }
       ],
       "fallback": "forbidden",
@@ -545,10 +541,6 @@
     },
     {
       "consumers": [
-        {
-          "binding_mode": "generated_policy",
-          "path": "ring/distributed_work.c"
-        },
         {
           "binding_mode": "generated_policy",
           "path": "node/model_residentd.c"

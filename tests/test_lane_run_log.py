@@ -98,23 +98,15 @@ class LaneRunLog(unittest.TestCase):
                 self.assertEqual((len(copies), len(removals)), (16, 16))
                 self.assertTrue(any("rank15.log" in call for call in copies))
 
-    def test_k3_start_passes_only_an_explicit_expert_pool_cap(self):
-        for extra, wanted in (({}, None), ({"K3_EXPERT_POOL_CAP_BYTES": "4194304"}, "-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=4194304 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES")):
+    def test_k3_start_hands_residentd_no_spark_input(self):
+        for extra in ({}, {"K3_EXPERT_POOL_CAP_BYTES": "4194304"}):
             with self.subTest(extra=extra), tempfile.TemporaryDirectory() as directory:
                 result, calls = self.lane(directory, "k3_lane.sh", ["start"], {"K3_RUN_ID": RUN_ID, **extra})
                 starts = [call for call in calls if call.startswith("ssh ") and "sparkpipe_model_residentd --deployment" in call]
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(len(starts), 16)
                 for call in starts:
-                    if wanted is None:
-                        self.assertNotIn("SPARK_WEIGHTD_EXPERT_POOL_BYTES", call)
-                    else:
-                        self.assertIn(wanted, call)
-        with tempfile.TemporaryDirectory() as directory:
-            result, calls = self.lane(directory, "k3_lane.sh", ["start"], {"K3_RUN_ID": RUN_ID, "K3_EXPERT_POOL_BYTES": "99568941440"})
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("K3_EXPERT_POOL_BYTES is gone", result.stderr)
-            self.assertEqual(calls, [])
+                    self.assertNotIn("SPARK_", call)
 
 
 if __name__ == "__main__":

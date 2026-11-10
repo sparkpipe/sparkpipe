@@ -29,7 +29,7 @@ int main(int argc, char **argv)
     SparkWeightdLazyAttachResult attached;
     SparkWeightdManifest manifest;
     struct stat pack;
-    unsigned long topology, pool = 0ul, spine = 4294967296ul, seconds = 120;
+    unsigned long topology, pool = 0ul, seconds = 120;
     SparkWeightdPoolPlan plan;
     SparkStatus status;
     char manifest_path[4096];
@@ -37,18 +37,13 @@ int main(int argc, char **argv)
     void *mesh;
     uint64_t bytes;
 
-    if (argc != 6 ||
+    if ((argc != 6 && argc != 7) ||
         !parse_positive(argv[5], 65535u, &topology) ||
-        (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 &&
-         !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"), 1099511627775ul, &pool)))
+        (argc == 7 && !parse_positive(argv[6], 1099511627775ul, &pool)))
     {
-        fprintf(stderr, "usage: %s SOCKET PACK SHA256 REVISION TOPOLOGY\n"
-                        "env: optional SPARK_WEIGHTD_EXPERT_POOL_BYTES (the expert pool cap), optional "
-                        "SPARK_WEIGHTD_SPINE_BUDGET_BYTES\n", argv[0]);
+        fprintf(stderr, "usage: %s SOCKET PACK SHA256 REVISION TOPOLOGY [EXPERT_POOL_CAP_BYTES]\n", argv[0]);
         return 2;
     }
-    if (getenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES") != 0)
-        (void)parse_positive(getenv("SPARK_WEIGHTD_SPINE_BUDGET_BYTES"), 1099511627775ul, &spine);
 
     memset(&request, 0, sizeof(request));
     if (strlen(argv[2]) >= sizeof(request.pack_path) || strlen(argv[3]) != 64u ||

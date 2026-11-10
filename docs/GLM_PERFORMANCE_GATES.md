@@ -82,8 +82,8 @@ the same prompts:
 `INVALID_ARGUMENT` unless it is `0` or `1`.
 
 For a single rank with collectives disabled,
-[GLM_REAL_DRIVER_PROBE.md](GLM_REAL_DRIVER_PROBE.md) runs the published
-driver lazily at B1, B3 and B5 and checks prefix restore exactly. That is
+[GLM_REAL_DRIVER_PROBE.md](archive/GLM_REAL_DRIVER_PROBE.md) ran the published
+driver lazily at B1, B3 and B5 and checked prefix restore exactly. That is
 component evidence only (I38).
 
 ## Prefix cache
