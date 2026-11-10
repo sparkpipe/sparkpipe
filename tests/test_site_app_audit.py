@@ -100,6 +100,49 @@ def quantities(failures):
         failures.append(f"a large HC quantity is refused, or the refusal of one over the per-order size says to buy at least 1 HC: {big} {huge}")
 
 
+def quoted_interpolations(source):
+    found, stack, i = [], ["code"], 0
+    while i < len(source):
+        state, char = stack[-1], source[i]
+        if state == "template":
+            if char == "\\":
+                i += 2
+                continue
+            if char == "`":
+                stack.pop()
+            elif source.startswith("${", i):
+                stack.append(0)
+                i += 2
+                continue
+            i += 1
+            continue
+        if source.startswith("//", i):
+            i = source.find("\n", i) if "\n" in source[i:] else len(source)
+            continue
+        if source.startswith("/*", i):
+            i = source.index("*/", i) + 2
+            continue
+        if char in "'\"":
+            end = i + 1
+            while source[end] != char:
+                end += 2 if source[end] == "\\" else 1
+            if "${" in source[i:end]:
+                found.append(source[i:end + 1])
+            i = end + 1
+            continue
+        if char == "`":
+            stack.append("template")
+        elif isinstance(state, int) and char == "{":
+            stack[-1] += 1
+        elif isinstance(state, int) and char == "}":
+            if state == 0:
+                stack.pop()
+            else:
+                stack[-1] -= 1
+        i += 1
+    return found
+
+
 def pages(failures):
     site = ROOT / "site"
     for name in ("status.html", "status-ko.html"):
@@ -108,6 +151,13 @@ def pages(failures):
     script = (site / "availability.js").read_text()
     if re.search(r"7 days|7일|24 hours|24시간|4 TB", script):
         failures.append("availability.js states published settings instead of reading them")
+    if quoted_interpolations("const a = 'x ${b} y';") != ["'x ${b} y'"] or quoted_interpolations("const a = `it's ${b ? ` ${c} ` : ''} ok's`;"):
+        failures.append("the quoted-interpolation scanner misreads strings and template literals")
+    for leftover in quoted_interpolations(script):
+        failures.append(f"availability.js has ${{...}} inside a quoted string, which shows it literally: {leftover}")
+    for name in ("availability.html", "availability-ko.html"):
+        if "availability.js?v=6" not in (site / name).read_text():
+            failures.append(f"{name} loads a cached availability.js from before the settings fix")
     account = (site / "account.html").read_text()
     if "12 months" in account or "me.role !== 'owner'" not in account or "not-owner" not in account:
         failures.append("account.html hard-codes the HC validity or invites a non-owner to buy")
