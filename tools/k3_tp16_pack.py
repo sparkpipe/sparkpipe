@@ -38,10 +38,11 @@ dimension):
                        with moe_w2_scale [896, 3584, 3072/TP/32];
                        shared_gate_up: gate then up [2*6144/TP, H];
                        shared_down [H, 6144/TP]
-  K3.1 MLA layers      the DSA indexer, replicated and bit-preserved bf16:
+  K3.1 MLA layers      the DSA indexer, replicated and bit-preserved: bf16
                        mla_index_q [32*128, 1536] (wq_b), mla_index_k
-                       [128, H] (wk), mla_index_w [32, H] (weights_proj),
-                       mla_index_norm and mla_index_norm_bias [128] (k_norm);
+                       [128, H] (wk), mla_index_w [32, H] (weights_proj);
+                       mla_index_norm and mla_index_norm_bias f32 [128]
+                       (k_norm's LayerNorm, the bf16 widened exactly);
                        the layout adds index_topk 2048, index_heads 32 and
                        index_dim 128 and names the model kimi-k3.1-pro
 """
@@ -148,7 +149,11 @@ def check_indexer_census(names, indexer):
 def pack_indexer(reader, packs, a, name):
     i = a + "indexer."
     for target, source, shape in INDEXER:
-        packs.replicated(name + target, np.frombuffer(reader.st.bf16(i + source, shape), dtype=np.uint16).reshape(shape), "bf16")
+        bits = np.frombuffer(reader.st.bf16(i + source, shape), dtype=np.uint16).reshape(shape)
+        if len(shape) == 1:
+            packs.replicated(name + target, (bits.astype(np.uint32) << 16).view(np.float32), "f32")
+        else:
+            packs.replicated(name + target, bits, "bf16")
 
 
 def window(total, rank):

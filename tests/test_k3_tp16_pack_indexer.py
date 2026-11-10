@@ -88,7 +88,12 @@ def main():
                 failures.append(f"rank {rank} lacks layers.3.{target}")
                 continue
             raw, kind, packed_shape = entry
-            if kind != "bf16" or packed_shape != shape or raw != tensors[a + "indexer." + source].tobytes():
+            bits = tensors[a + "indexer." + source]
+            if len(shape) == 1:
+                widened = np.frombuffer(raw, dtype=np.uint32)
+                if kind != "f32" or packed_shape != shape or not np.array_equal(widened >> 16, bits) or np.any(widened & 0xFFFF):
+                    failures.append(f"rank {rank}'s layers.3.{target} must be the checkpoint's {source} widened exactly to f32 {shape}")
+            elif kind != "bf16" or packed_shape != shape or raw != bits.tobytes():
                 failures.append(f"rank {rank}'s layers.3.{target} must be the checkpoint's {source} bit for bit as bf16 {shape}")
     short = dict(tensors)
     short[a + "indexer.wk.weight"] = short[a + "indexer.wk.weight"][:, :64]
@@ -100,7 +105,7 @@ def main():
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS k3 tp pack indexer: K3.1 Pro's dsa_config packs one replicated, bit-preserved bf16 indexer per MLA layer; other indexers, "
+    print("PASS k3 tp pack indexer: K3.1 Pro's dsa_config packs one replicated, bit-preserved indexer per MLA layer (bf16 projections, the LayerNorm widened exactly to f32); other indexers, "
           "missing or stray indexer tensors and wrong shapes are refused; K3 packs without one")
     return 0
 

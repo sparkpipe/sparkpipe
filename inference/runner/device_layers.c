@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "inference/runner/device_layers.h"
+#include "inference/runner/device_indexer.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "inference/runner/device_stage_runner.h"
 
@@ -670,6 +671,13 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
 	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed, SparkTensor output)
 {
+	return(SparkDeviceLatentAttentionSelected(stage,queue,shape,rope,tensors,weights,kv_layer,scratch,0,normed,output));
+}
+
+SparkStatus SparkDeviceLatentAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, const SparkDeviceLatentSelection *selection, SparkTensor normed, SparkTensor output)
+{
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, degree = stage->tp_degree, heads = shape->heads / degree;
 	const uint32_t qk = shape->nope + shape->rope, slot = SparkDeviceLatentAttentionSlot(shape), values = heads * shape->value_dimension;
 	const uint32_t qhead = qk + shape->query_gate, query_input = shape->query_concat != 0u ? 2u * shape->query_lora : shape->query_lora;
@@ -680,12 +688,13 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	SparkOpsPaged paged = SparkDeviceStagePaged(stage,tensors,kv_layer);
 	SparkDifferentialGateParams differential;
 	SparkHeadRopeParams query = rope->query, key = rope->key;
-	SparkTensor sinks = weights->sinks;
+	SparkTensor sinks = weights->sinks, no_gate;
 	SparkNormParams norm;
 	SparkKvParams store;
 	SparkAttentionParams attention;
 	SparkHeadGateParams gate;
 	SparkStatus status = SPARK_STATUS_OK;
+	memset(&no_gate,0,sizeof(no_gate));
 	if ( shape->query_lora != 0u )
 	{
 		const uint64_t raw_at = shape->query_concat != 0u ? (uint64_t)shape->query_lora * sizeof(uint16_t) : 0u;
@@ -744,6 +753,12 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	store.pool_pages = stage->pool_pages;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkOpsKvStore(stage->ops,queue,&paged,scratch->kv,scratch->kv,&store);
+	if ( status == SPARK_STATUS_OK && selection != 0 && (shape->query_lora == 0u || shape->query_concat != 0u || shape->window != 0u || tensors->tree != 0u ||
+		selection->select == 0 || selection->topk == 0u) )
+		status = SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,
+			"selected latent attention needs a query LoRA it can hand the selector, no window, no tree step, a selector and a top-k");
+	if ( status == SPARK_STATUS_OK && selection != 0 )
+		status = selection->select(selection->context,queue,scratch->query_lora,normed);
 	memset(&attention,0,sizeof(attention));
 	attention.rows = rows;
 	attention.heads = heads;
@@ -763,7 +778,10 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	attention.window = shape->window;
 	if ( shape->sinks != 0u )
 		sinks = SparkTensorSlice(weights->sinks,(uint64_t)attention.first_head * sizeof(float),(uint64_t)heads * sizeof(float));
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && selection != 0 )
+		status = SparkIndexerAttention(stage->ops,queue,&paged,scratch->packed,no_gate,shape->sinks != 0u ? &sinks : 0,selection->selected,selection->topk,
+			selection->key_ratio,selection->partial,scratch->latent,&attention);
+	else if ( status == SPARK_STATUS_OK )
 		status = SparkOpsAttention(stage->ops,queue,&paged,scratch->packed,scratch->packed,shape->sinks != 0u ? &sinks : 0,scratch->records,scratch->latent,
 			&attention,tensors->host_positions,tensors->host_sequence_of_row);
 	if ( status == SPARK_STATUS_OK )
