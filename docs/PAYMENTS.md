@@ -137,6 +137,7 @@ sudo install -m 640 -g sparkpipe-pay /dev/null /etc/sparkpipe-pay/client_secret
 sudo install -m 640 -g sparkpipe-pay /dev/null /etc/sparkpipe-pay/pool_key
 sudo install -m 644 deployment/vps/sparkpipe-pay.service deployment/vps/sparkpipe-pay-sandbox.service /etc/systemd/system/
 sudo install -m 644 deployment/vps/sparkpipe-pay.conf /etc/apache2/sparkpipe/
+sudo install -m 644 deployment/vps/sparkpipe-ai.conf /etc/apache2/sites-available/000-default.conf
 sudo install -m 644 deployment/vps/sparkpipe-ai-ssl.conf /etc/apache2/sites-available/000-default-le-ssl.conf
 ```
 
