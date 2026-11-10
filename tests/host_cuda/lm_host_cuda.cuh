@@ -102,6 +102,8 @@ static inline float __shfl_xor_sync(unsigned, float value, int, int = 32) { retu
 static inline unsigned __shfl_up_sync(unsigned, unsigned value, unsigned, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int predicate) { return predicate != 0 ? 1u : 0u; }
 static inline int __popc(unsigned value) { return __builtin_popcount(value); }
+static inline int __clz(unsigned value) { return value == 0u ? 32 : __builtin_clz(value); }
+static inline unsigned __match_any_sync(unsigned, unsigned) { return 1u; }
 static inline unsigned __reduce_max_sync(unsigned, unsigned value) { return value; }
 static inline unsigned __reduce_min_sync(unsigned, unsigned value) { return value; }
 static inline unsigned __reduce_add_sync(unsigned, unsigned value) { return value; }
@@ -113,6 +115,11 @@ static inline unsigned long long __cvta_generic_to_global(const void *p) { retur
 static inline unsigned atomicAdd(unsigned *address, unsigned value)
 {
 	return __atomic_fetch_add(address, value, __ATOMIC_SEQ_CST);
+}
+
+static inline unsigned atomicOr(unsigned *address, unsigned value)
+{
+	return __atomic_fetch_or(address, value, __ATOMIC_SEQ_CST);
 }
 static inline int atomicAdd(int *address, int value)
 {

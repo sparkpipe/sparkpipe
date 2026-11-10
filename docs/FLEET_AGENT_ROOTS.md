@@ -22,8 +22,8 @@ ignored. Removing a name stops supervision only; it does not stop the process.
 
 A root named on the command line with none of the files below is a legacy
 root and behaves exactly as
-before: `--rank-index` is the fleet rank, `config/stage.json` links
-`stage_<fleet rank>.json`, the environment comes from the agent unit (`G5_*`
+before: `--rank-index` is the fleet rank, the deployment names
+`config/stage_<fleet rank>.json` for that rank, the environment comes from the agent unit (`G5_*`
 knobs, `SPARK_TP_WAIT_MODE`), the residentd runs in the agent's cgroup and
 the root is production. Today's GLM root is a legacy root. A root listed only
 in `~/.fleet_agent_roots` must carry `agent.env`; without it the root is a dev
@@ -35,7 +35,7 @@ node's fleet rank as two decimal digits (spark0 = `00`, sparka = `10`).
 
 | file | meaning |
 |---|---|
-| `config/rank_index_<RR>` | one integer: the residentd `--rank-index` on this node; `config/stage.json` then links `stage_<index as %02d>.json`, which must exist |
+| `config/rank_index_<RR>` | one integer: the residentd `--rank-index` on this node; the deployment's node with that index must name `config/stage_<index as %02d>.json`, which must exist |
 | `agent.env` | `KEY=VALUE` lines for every rank of the root |
 | `config/env_<RR>.env` | `KEY=VALUE` lines for this node only; later keys win |
 
@@ -58,6 +58,13 @@ in the env files.
 
 A release that changes `agent.env`, `config/env_*.env` or
 `config/rank_index_*` restarts the root.
+
+No root reaches its stage configuration through a link. `model_resident.json`
+names each rank's own `config/stage_<RR>.json`, and the agent holds a root in
+`blocked-config` when its rank's node names any other file or when that file
+is a symlink. Before a start the agent deletes a `config/stage.json` link an
+older agent left. A changed `config/stage_*.json` restarts nothing; the next
+start reads it.
 
 ## Node KV reserve
 

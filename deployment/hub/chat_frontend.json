@@ -32,7 +32,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/glm-5.3-bf16/generation_config.json",
+   "sampling_source": "glm-5.3-bf16/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -83,7 +83,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/generation_config.json",
+   "sampling_source": "glm-5.3-flash-bf16-official/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -134,7 +134,85 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/kimi-k3/README.md (single-step tasks: temperature 1.0, top-p 0.95)",
+   "sampling_source": "kimi-k3/README.md (single-step tasks: temperature 1.0, top-p 0.95)",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "sequences": 8,
+   "tokenizer": {
+    "kind": "tiktoken",
+    "file": "tiktoken.model",
+    "special_tokens_from": "tokenizer_config.json",
+    "reserved_special_tokens": 256,
+    "pattern": "[\\p{Han}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}&&[^\\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+   },
+   "renderer": {
+    "kind": "segments",
+    "module": "encoding_k3.py",
+    "function": "build_chat_segments"
+   },
+   "stop_tokens": [
+    "<|end_of_msg|>"
+   ],
+   "template_defaults": {
+    "thinking": true
+   },
+   "template_kwargs": [
+    "thinking",
+    "thinking_effort"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "thinking": false
+    },
+    "low": {
+     "thinking_effort": "low"
+    },
+    "medium": {
+     "thinking_effort": "high"
+    },
+    "high": {
+     "thinking_effort": "max"
+    }
+   },
+   "reasoning": {
+    "start": "<|open|>think<|sep|>",
+    "end": "<|close|>think<|sep|>",
+    "close": "<|close|>think<|sep|><|open|>response<|sep|>"
+   },
+   "tool_calls": {
+    "format": "tagged",
+    "start": "<|open|>call",
+    "end": "<|close|>call<|sep|>",
+    "attribute_end": "<|sep|>",
+    "argument_start": "<|open|>argument",
+    "argument_end": "<|close|>argument<|sep|>",
+    "object_start": "<|open|>json",
+    "object_end": "<|close|>json<|sep|>"
+   },
+   "content_markers": [
+    "<|open|>response<|sep|>",
+    "<|close|>response<|sep|>",
+    "<|open|>tools<|sep|>",
+    "<|close|>tools<|sep|>"
+   ],
+   "end_markers": [
+    "<|close|>message<|sep|>"
+   ]
+  },
+  {
+   "id": "kimi-k3.1-pro",
+   "model_dir": "models/kimi-k3.1-pro",
+   "engine": "http://127.0.0.1:8481",
+   "context_tokens": 1048576,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95
+   },
+   "sampling_source": "kimi-k3.1-pro/README.md (reasoning effort max, temperature 1.0, top-p 0.95)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -213,7 +291,7 @@
     "top_p": 0.95,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-27b/generation_config.json",
+   "sampling_source": "qwen3.8-27b/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -270,7 +348,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/deepseek-v4.1-flash/README.md (evaluations use temperature 1.0, top_p 0.95)",
+   "sampling_source": "deepseek-v4.1-flash/README.md (evaluations use temperature 1.0, top_p 0.95)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -338,7 +416,7 @@
     "top_p": 0.95,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-2.4t-a95b-fp8/generation_config.json",
+   "sampling_source": "qwen3.8-2.4t-a95b-fp8/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -383,7 +461,7 @@
     "top_p": 0.95,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/qwen3.8-flash-next/generation_config.json",
+   "sampling_source": "qwen3.8-flash-next/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -441,7 +519,7 @@
     "top_p": 0.95,
     "top_k": 64
    },
-   "sampling_source": "/mnt/cold-raid6/models/gemma-4-31b-it/generation_config.json",
+   "sampling_source": "gemma-4-31b-it/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -494,7 +572,7 @@
     "top_p": 0.95,
     "top_k": 64
    },
-   "sampling_source": "/mnt/cold-raid6/models/gemma-4-26b-a4b-it/generation_config.json",
+   "sampling_source": "gemma-4-26b-a4b-it/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -546,7 +624,7 @@
     "temperature": 0.9,
     "top_p": 1.0
    },
-   "sampling_source": "/mnt/cold-raid6/models/hy4-preview-fp8-official/generation_config.json (top_k -1: off)",
+   "sampling_source": "hy4-preview-fp8-official/generation_config.json (top_k -1: off)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -603,7 +681,7 @@
     "top_p": 0.95,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/ling-3.0-flash/README.md (default parameters)",
+   "sampling_source": "ling-3.0-flash/README.md (default parameters)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -657,7 +735,7 @@
     "top_p": 0.95,
     "top_k": 64
    },
-   "sampling_source": "/mnt/cold-raid6/models/muse-glimmer-30b/generation_config.json",
+   "sampling_source": "muse-glimmer-30b/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -717,7 +795,7 @@
     "top_p": 0.95,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/ling-3.0-flash-fin/README.md (recommended for general inference)",
+   "sampling_source": "ling-3.0-flash-fin/README.md (recommended for general inference)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -771,7 +849,7 @@
     "top_p": 1.0,
     "top_k": 20
    },
-   "sampling_source": "/mnt/cold-raid6/models/laguna-s-2.1/generation_config.json",
+   "sampling_source": "laguna-s-2.1/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -824,7 +902,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/mimo-v2.6-flash-rl/README.md (recommended sampling)",
+   "sampling_source": "mimo-v2.6-flash-rl/README.md (recommended sampling)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -881,7 +959,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/mimo-v2.6-pro-rl/README.md (recommended sampling)",
+   "sampling_source": "mimo-v2.6-pro-rl/README.md (recommended sampling)",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -938,7 +1016,7 @@
     "temperature": 1.0,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/generation_config.json",
+   "sampling_source": "k-exaone-2.0-750b-bf16-official/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -991,7 +1069,7 @@
     "temperature": 0.9,
     "top_p": 0.95
    },
-   "sampling_source": "/mnt/cold-raid6/models/ax-k2-fp8-official/generation_config.json",
+   "sampling_source": "ax-k2-fp8-official/generation_config.json",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -1039,7 +1117,7 @@
     "temperature": 1.0,
     "top_p": 1.0
    },
-   "sampling_source": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/README.md",
+   "sampling_source": "solar-open2-250b-bf16-official/README.md",
    "warm_queue": {
     "depth": 64,
     "wait_seconds": 3900,
@@ -1088,24 +1166,10 @@
   "admin_url": "http://127.0.0.1:8090/api/v1/auths/"
  },
  "site_dir": "site",
- "chat_memory": {
-  "store": "/srv/workspace/sparkpipe/chat-memory",
-  "jwt_secret_file": "/home/spec/sparkpipe-chat/memory-jwt.secret",
-  "open_webui_chat_list": "/srv/workspace/sparkpipe/open-webui-chats.json",
-  "budgets": {
-   "open_budget": 1500,
-   "line_tokens": 48,
-   "group_size": 16,
-   "working_tokens": 24576,
-   "working_context_share": 0.1875,
-   "ledger_tokens": 12288,
-   "ledger_context_share": 0.1,
-   "part_small_tokens": 1024,
-   "part_cap_tokens": 12288,
-   "keep_tokens": 4096,
-   "target_tolerance": 0.25,
-   "target_minimum_tokens": 16384
-  }
+ "memory": {
+  "url": "http://127.0.0.1:8435",
+  "host_listen": "127.0.0.1:8436",
+  "token_file": "memory.token"
  },
  "replay": {
   "directory": "/srv/workspace/sparkpipe/replay",

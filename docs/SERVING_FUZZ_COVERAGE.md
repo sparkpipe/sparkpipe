@@ -276,8 +276,8 @@ status; that ownership boundary remains a concrete item for the deeper review.
 ## HC site and skinny GEMV GPU regressions
 
 `tests/test_glm5_next_hc_site_cuda.py` runs the fused HC site kernel
-(`Glm5NextHcSiteKernel`: mix, Sinkhorn and pre-reduce in one eight-CTA cluster
-launch) on an sm_121 device. A cluster takes eight rows for prefill and one
+(`LmHcSiteKernel` on `Glm5NextHcPolicy`: mix, Sinkhorn and pre-reduce in one
+eight-CTA cluster launch) on an sm_121 device. A cluster takes eight rows for prefill and one
 row for decode. Every output (mixes, pre, post, comb, collapsed and snapshot
 rows) must be bitwise equal between the two, at 1 to 2,049 rows including
 partial clusters. The f64 reference and the frozen pre-fusion comparison of

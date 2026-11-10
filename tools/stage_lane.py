@@ -26,8 +26,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
+CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 SESSION_BLOCK_BASE = 18432
@@ -46,7 +48,7 @@ QWEN38_27B = {
     "api_port": 8461,
     "kv_label": "qwen38_27b_stage",
     "node_memory_bytes": 16 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/qwen3.8-27b/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/qwen3.8-27b/tokenizer.json",
     "pack": "sparkdata/qwen38_27b.bf16.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
     "adapter": "libqwen38_27b_bf16_tp16_serving_adapter.so",
     "program": "qwen38_27b",
@@ -65,13 +67,9 @@ DSV41_FLASH = {
     "api_port": 8463,
     "kv_label": "dsv41_flash_stage",
     "node_memory_bytes": 44 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/deepseek-v4.1-flash/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/deepseek-v4.1-flash/tokenizer.json",
     "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16.xs/packs/rank{rank}.spstage",
-    "dense": True,
-    "extra_packs": {
-        "engram.spengram": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram/engram.rank{rank}.spengram",
-        "engram_tables.bin": "sparkdata/dsv41flash-1017.mxfp4.tp16/engram_tables.bin",
-    },
+    "pack_siblings": ("engram.spengram", "engram.spengram.digest", "engram.spengram.experts", "engram_tables.bin"),
     "adapter": "libdsv41_flash_tp16_serving_adapter.so",
     "program": "dsv41_flash",
     "node_target": "cuda.sm121.dsv41_flash.stage_runner.linear_fp8.expert_mxfp4.kv_bf16",
@@ -91,7 +89,7 @@ QWEN38_MAX = {
     "api_port": 8464,
     "kv_label": "qwen38_max_stage",
     "node_memory_bytes": 88 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/qwen3.8-max-nvfp4-radixark-bf16-spine/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/qwen3.8-max-nvfp4-radixark-bf16-spine/tokenizer.json",
     "pack": "sparkdata/qwen38_max.nvfp4.tp16/qwen38_max.tp16.rank{rank:02d}.pack",
     "adapter": "libqwen38_max_tp16_serving_adapter.so",
     "program": "qwen38_max",
@@ -108,7 +106,7 @@ QWEN38_FLASH = {
     "api_port": 8465,
     "kv_label": "qwen38_flash_bf16_stage",
     "node_memory_bytes": 28 << 30,
-    "tokenizer_json": "/mnt/model-warm/qwen3.8-flash-next-nvfp4-nvidia/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/qwen3.8-flash-next-nvfp4-nvidia/tokenizer.json",
     "pack": "sparkdata/qwen38_flash.bf16.tp16/qwen38_flash.tp16.rank{rank:02d}.pack",
     "adapter": "libqwen38_flash_bf16_tp16_serving_adapter.so",
     "program": "qwen38_flash",
@@ -123,7 +121,7 @@ GEMMA4_31B = {
     "api_port": 8466,
     "kv_label": "gemma4_31b_stage",
     "node_memory_bytes": 16 << 30,
-    "tokenizer_json": "/mnt/model-warm/gemma-4-31b-it/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/gemma-4-31b-it/tokenizer.json",
     "pack": "sparkdata/gemma4_31b.bf16.tp16/gemma4.tp16.rank{rank:02d}.pack",
     "adapter": "libgemma4_31b_tp16_serving_adapter.so",
     "program": "gemma4_31b",
@@ -142,7 +140,7 @@ GEMMA4_26B = {
     "api_port": 8467,
     "kv_label": "gemma4_26b_stage",
     "node_memory_bytes": 12 << 30,
-    "tokenizer_json": "/mnt/model-warm/gemma-4-26b-a4b-it/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/gemma-4-26b-a4b-it/tokenizer.json",
     "pack": "sparkdata/gemma4_26b.bf16.tp16/gemma4_26b.tp16.rank{rank:02d}.pack",
     "adapter": "libgemma4_26b_tp16_serving_adapter.so",
     "program": "gemma4_26b",
@@ -156,7 +154,7 @@ LING3_FLASH = {
     "api_port": 8468,
     "kv_label": "ling3_stage",
     "node_memory_bytes": 24 << 30,
-    "tokenizer_json": "/mnt/model-warm/ling-3.0-flash/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/ling-3.0-flash/tokenizer.json",
     "pack": "sparkdata/ling3_flash.bf16.tp16/ling3_flash.tp16.rank{rank:02d}.pack",
     "adapter": "libling3_flash_tp16_serving_adapter.so",
     "program": "ling3_flash",
@@ -174,7 +172,7 @@ LING3_FIN = {
     **LING3_FLASH,
     "swap_id": "ling-3.0-flash-fin",
     "api_port": 8469,
-    "tokenizer_json": "/mnt/model-warm/ling-3.0-flash-fin/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/ling-3.0-flash-fin/tokenizer.json",
     "pack": "sparkdata/ling3_fin.bf16.tp16/ling3_fin.tp16.rank{rank:02d}.pack",
     "adapter": "libling3_fin_tp16_serving_adapter.so",
     "program": "ling3_fin",
@@ -186,7 +184,7 @@ HY4 = {
     "api_port": 8470,
     "kv_label": "hy4_tp16_stage",
     "node_memory_bytes": 64 << 30,
-    "tokenizer_json": "/mnt/model-warm/hy4-preview-fp8-official/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/hy4-preview-fp8-official/tokenizer.json",
     "pack": "sparkdata/hy4.mxfp8.tp16/hy4.tp16.rank{rank:02d}.pack",
     "adapter": "libhy4_tp16_serving_adapter.so",
     "program": "hy4",
@@ -204,7 +202,7 @@ MUSE_GLIMMER = {
     "api_port": 8471,
     "kv_label": "muse_glimmer_stage",
     "node_memory_bytes": 16 << 30,
-    "tokenizer_json": "/mnt/model-warm/muse-glimmer-30b/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/muse-glimmer-30b/tokenizer.json",
     "pack": "sparkdata/muse_glimmer.bf16.tp16/muse.tp16.rank{rank:02d}.pack",
     "adapter": "libmuse_glimmer_tp16_serving_adapter.so",
     "program": "muse_glimmer",
@@ -222,7 +220,7 @@ GLM53_FLASH = {
     "api_port": 8476,
     "kv_label": "glm53_flash_bf16_stage",
     "node_memory_bytes": 43 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-flash-bf16-official/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/glm-5.3-flash-bf16-official/tokenizer.json",
     "pack": "sparkdata/glm53flash.bf16.tp16/packs/glm53flash.bf16-f12e0fe1.tp16.rank{rank:x}.sp",
     "adapter": "libglm53_flash_bf16_tp16_serving_adapter.so",
     "program": "glm53_flash",
@@ -240,7 +238,7 @@ LAGUNA = {
     "api_port": 8472,
     "kv_label": "laguna_stage",
     "node_memory_bytes": 24964497408,
-    "tokenizer_json": "/mnt/cold-raid6/models/laguna-s-2.1/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/laguna-s-2.1/tokenizer.json",
     "pack": "sparkdata/laguna.bf16.tp16/laguna.tp16.rank{rank:02d}.pack",
     "adapter": "liblaguna_tp16_serving_adapter.so",
     "program": "laguna",
@@ -258,7 +256,7 @@ MOTIF3 = {
     "api_port": 8480,
     "kv_label": "motif3_stage",
     "node_memory_bytes": 48 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/motif-3-bf16-2ed2ed5cfabf/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/motif-3-bf16-2ed2ed5cfabf/tokenizer.json",
     "pack": "sparkdata/motif3.tp16/motif3.tp16.rank{rank:02d}.pack",
     "adapter": "libmotif3_tp16_serving_adapter.so",
     "program": "motif3",
@@ -276,7 +274,7 @@ KEXAONE2 = {
     "api_port": 8477,
     "kv_label": "kexaone2_stage",
     "node_memory_bytes": 100 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/k-exaone-2.0-750b-bf16-official/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/k-exaone-2.0-750b-bf16-official/tokenizer.json",
     "pack": "sparkdata/kexaone2.rows.tp16/kexaone2.tp16.rank{rank:02d}.pack",
     "adapter": "libkexaone2_tp16_serving_adapter.so",
     "program": "kexaone2",
@@ -293,7 +291,7 @@ AXK2 = {
     "api_port": 8478,
     "kv_label": "axk2_tp16_stage",
     "node_memory_bytes": 57 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/ax-k2-fp8-official/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/ax-k2-fp8-official/tokenizer.json",
     "pack": "sparkdata/axk2.fp8.tp16/axk2.tp16.rank{rank:02d}.pack",
     "adapter": "libaxk2_tp16_serving_adapter.so",
     "program": "axk2",
@@ -312,7 +310,7 @@ SOLAR_OPEN2 = {
     "api_port": 8479,
     "kv_label": "solar_open2_stage",
     "node_memory_bytes": 42 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/solar-open2-250b-bf16-official/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/solar-open2-250b-bf16-official/tokenizer.json",
     "pack": "sparkdata/solar_open2.tp16/solar_open2.tp16.rank{rank:02d}.pack",
     "adapter": "libsolar_open2_tp16_serving_adapter.so",
     "program": "solar_open2",
@@ -330,7 +328,7 @@ GLM53_FULL = {
     "api_port": 8475,
     "kv_label": "glm53_full_bf16_tp16_stage",
     "node_memory_bytes": 100 << 30,
-    "tokenizer_json": "/mnt/cold-raid6/models/glm-5.3-bf16/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/glm-5.3-bf16/tokenizer.json",
     "pack": "sparkdata/glm53full.bf16.tp16/packs/glm53full.bf16.tp16-rank{rank}.glm52sp",
     "adapter": "libglm53_full_bf16_tp16_serving_adapter.so",
     "program": "glm53_full",
@@ -348,7 +346,7 @@ MIMO26_FLASH = {
     "api_port": 8473,
     "kv_label": "mimo26_flash_tp16_stage",
     "node_memory_bytes": 21267628032,
-    "tokenizer_json": "/mnt/cold-raid6/models/mimo-v2.6-flash-rl/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/mimo-v2.6-flash-rl/tokenizer.json",
     "pack": "sparkdata/mimo26_flash.fp8_mxfp4.tp16/mimo26_flash.tp16.rank{rank:02d}.pack",
     "adapter": "libmimo26_flash_tp16_serving_adapter.so",
     "program": "mimo26_flash",
@@ -367,7 +365,7 @@ MIMO26_PRO = {
     "api_port": 8474,
     "kv_label": "mimo26_pro_tp16_stage",
     "node_memory_bytes": 46406873088,
-    "tokenizer_json": "/mnt/cold-raid6/models/mimo-v2.6-pro-rl/tokenizer.json",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/mimo-v2.6-pro-rl/tokenizer.json",
     "pack": "sparkdata/mimo26_pro.fp8_mxfp4.tp16/mimo26_pro.tp16.rank{rank:02d}.pack",
     "adapter": "libmimo26_pro_tp16_serving_adapter.so",
     "program": "mimo26_pro",
@@ -381,7 +379,7 @@ K3 = {
     "api_port": 8459,
     "kv_label": "k3_stage",
     "node_memory_bytes": 104689827840,
-    "tokenizer_json": "/mnt/cold-raid6/models/kimi-k3/tiktoken.model",
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/kimi-k3/tiktoken.model",
     "pack": "sparkdata/k3.mxfp4.tp16/packs/k3.stage0.rank{rank:02d}.pack",
     "adapter": "libk3_serving_adapter.so",
     "firmware_adapter": "libk3_tp16_serving_adapter.so",
@@ -395,6 +393,22 @@ K3 = {
     "kv_page_bytes": 24 * 64 * (512 + 64) * 2 // WORLD,
     "recurrent_bytes": 69 * (6 * 128 * 128 * 4 + 6 * (2 * 128 + 128) * 4 * 2),
 }
+K31_PRO = {
+    **K3,
+    "swap_id": "kimi-k3.1-pro",
+    "api_port": 8481,
+    "kv_label": "k31_stage",
+    "node_memory_bytes": 104689827840 + (512 << 20),
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/kimi-k3.1-pro/tiktoken.model",
+    "pack": "sparkdata/k31_pro.cells.tp16/k31_pro.tp16.rank{rank:02d}.pack",
+    "adapter": "libk31_pro_tp16_serving_adapter.so",
+    "firmware_adapter": "libk31_pro_tp16_serving_adapter.so",
+    "program": "k3",
+    "node_target": "cuda.sm121.k31_pro.resident_decode_stage.linear_bf16.expert_mxfp4.kv_bf16",
+    "contract": "model_contracts/k31_pro_authoritative.json",
+    "expert_warm": {"model_tag": "kimi-k3.1-pro", "revision": "mxfp4", "layers": 93, "experts": 896, "timeout_s": 3600},
+    "kv_page_bytes": 24 * 64 * ((512 + 64) * 2 + 128 * 2) // WORLD,
+}
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "gemma4_26b": GEMMA4_26B,
@@ -403,6 +417,7 @@ MODELS = {
     "glm53_full": GLM53_FULL,
     "hy4": HY4,
     "k3": K3,
+    "k31_pro": K31_PRO,
     "laguna": LAGUNA,
     "kexaone2": KEXAONE2,
     "motif3": MOTIF3,
@@ -417,6 +432,10 @@ MODELS = {
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
 }
+for model_name, model_fields in MODELS.items():
+    if not model_fields.get("tokenizer_json", "/home/").startswith(INFERENCE_ROOTS):
+        raise SystemExit(f"{model_name}: tokenizer {model_fields['tokenizer_json']} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)}); "
+                         "cold and warm storage can leave at any moment")
 
 
 def chat_template(model: dict) -> dict:
@@ -438,11 +457,13 @@ def session_table() -> list[list[int]]:
     return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
 
 
-def rank_pack_path(model: dict, lane: int, rank: int, args) -> str:
-    host = HOSTS[rank]
-    if model.get("dense"):
-        return os.path.join(args.runtime_root.format(host=host), "packs", os.path.basename(model["pack"].format(rank=rank)))
-    return f"/home/{host}/" + model["pack"].format(rank=rank)
+def rank_pack_path(model: dict, rank: int) -> str:
+    return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank)
+
+
+def rank_weight_files(model: dict, rank: int) -> list[str]:
+    pack = rank_pack_path(model, rank)
+    return [pack, pack + ".experts", pack + ".sha256"] + [os.path.join(os.path.dirname(pack), name) for name in model.get("pack_siblings", ())]
 
 
 def model_hidden(model: dict) -> int:
@@ -451,10 +472,15 @@ def model_hidden(model: dict) -> int:
     return json.loads((ROOT / model["contract"]).read_text())["source"]["config_json"]["hidden_size"]
 
 
+def streamed_config(streamed: dict, rank: int) -> dict:
+    fields = {key: value for key, value in streamed.items() if key not in ("partner_pack", "min_tokens")}
+    return {**fields, "partner_pack": f"/home/{HOSTS[rank]}/{streamed['partner_pack'].format(partner=rank ^ 1)}"}
+
+
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     host = HOSTS[rank]
     return {
-        "stage_pack_path": rank_pack_path(model, lane, rank, args),
+        "stage_pack_path": rank_pack_path(model, rank),
         "tp_degree": WORLD,
         "tp_rank": rank,
         "world_size": WORLD,
@@ -467,6 +493,7 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         **({"state_memory_bytes": args.state_memory_bytes} if model["recurrent_bytes"] else {}),
         "hidden": model_hidden(model),
         **({"taps": args.taps} if args.taps else {}),
+        **({"streamed_prefill": streamed_config(args.streamed_prefill, rank)} if args.streamed_prefill else {}),
         "device_collective": {
             "backend": "hidden_transport",
             "backend_module_path": "lib/hidden_transport.so",
@@ -497,7 +524,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "control_endpoint": {"kind": "tcp", "host": host, "port": 23000 + 16 * lane + rank},
+            "control_endpoint": {"kind": "tcp", "host": CONTROL_HOST.format(rank=rank), "port": 23000 + 16 * lane + rank},
         })
     result = {
         "schema_version": 2,
@@ -513,6 +540,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "max_active_sequences": args.sequences,
             "max_input_rows": args.rows,
             **({"max_shared_input_rows": args.shared_rows} if args.shared_rows else {}),
+            **({"streamed_prefill_min_tokens": args.streamed_prefill["min_tokens"]} if args.streamed_prefill else {}),
             "resident_sequence_capacity": args.sequences,
             "kv_logical_page_capacity": args.kv_logical_pages,
             "kv_physical_page_capacity": args.kv_physical_pages,
@@ -533,6 +561,7 @@ def deployment(model: dict, lane: int, args) -> dict:
 
 
 HUB_LOG_DIR = "/srv/workspace/sparkpipe/logs"
+ADAPTER_PACK = "$(python3 -c \"import json; print(json.load(open('config/adapter.json'))['stage_pack_path'])\")"
 
 
 def swap_entry(name: str, model: dict, lane: int) -> dict:
@@ -561,10 +590,10 @@ def expert_warm(model: dict, root: str) -> dict:
     warm = model.get("expert_warm")
     if warm is None:
         return {}
-    revision = json.loads((ROOT / model["contract"]).read_text())["revision"]
+    revision = warm.get("revision") or json.loads((ROOT / model["contract"]).read_text())["revision"]
     return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
                           f"./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
-                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} 1800 > warm.log 2>&1")}
+                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:
@@ -615,7 +644,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
-        taps=record.get("taps"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
@@ -705,6 +734,7 @@ def main() -> int:
             parser.error("--model, --lane, --runtime-root and --weightd-socket are required without --record")
         output_dir = args.output_dir
         args.taps = None
+        args.streamed_prefill = None
         args.draft_server = None
     write_lane(args, output_dir)
     print(f"{args.model} lane {args.lane} rendered under {output_dir}")

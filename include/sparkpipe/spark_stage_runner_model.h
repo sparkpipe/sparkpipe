@@ -63,6 +63,7 @@ typedef struct SparkStageRunnerStep
 	const uint32_t *route_override;
 	uint32_t route_override_width;
 	uint32_t *route_fault;
+	uint32_t dispatch_row_offset;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry

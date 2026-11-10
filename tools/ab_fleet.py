@@ -318,11 +318,41 @@ def check_private_directory(root_real, protected, member, value, where, fresh, e
     return target
 
 
+def direct_file(path):
+    return os.path.isfile(path) and not os.path.islink(path)
+
+
+def root_links(root):
+    found = []
+    for directory, names, leaves in os.walk(root):
+        found += [os.path.join(directory, name) for name in sorted(names + leaves) if os.path.islink(os.path.join(directory, name))]
+    return found
+
+
+def check_stage_pack(root, pack_root, document, where, local, errors):
+    pack = document.get("stage_pack_path")
+    if pack is None:
+        return
+    if not isinstance(pack, str) or not pack.startswith("/") or f"/sparkdata/{pack_root}/" not in pack:
+        errors.append(f"{where}: stage_pack_path {pack!r} must name the arm's pack under ~/sparkdata/{pack_root} by its absolute path")
+        return
+    if not local:
+        return
+    missing = [path for path in (pack, pack + ".experts", pack + ".sha256") if not direct_file(path)]
+    errors += [f"{where}: {path} is missing, not a regular file or a symlink; an arm names the real pack files" for path in missing]
+    digests = sorted(Path(root).glob("packs/*.sha256"))
+    if pack + ".sha256" not in missing and (len(digests) != 1 or not direct_file(digests[0]) or
+                                             digests[0].read_text()[:64] != Path(pack + ".sha256").read_text()[:64]):
+        errors.append(f"{where}: packs/ must hold exactly one *.sha256, a copy of {pack}.sha256, for the weightd attach")
+
+
 def root_check(spec, arm, root, home=None, fresh=False):
     home = home or os.path.expanduser("~")
     errors = []
     a = spec["arms"][arm]
     root_real = os.path.realpath(root)
+    errors += [f"{path} is a symlink under the arm root; an arm names its packs and configurations directly" for path in root_links(root)]
+    local_configs = set()
     protected = [home_path(home, p) for p in spec["protected_paths"]]
     if os.path.realpath(os.path.join(home, "sparkdata", a["root"])) != root_real:
         errors.append(f"{root} is not ~/sparkdata/{a['root']}")
@@ -353,11 +383,19 @@ def root_check(spec, arm, root, home=None, fresh=False):
                 errors.append(f"model_resident.json rank {node.get('rank_index')}: kv_backing_directory {backing!r} is outside the arm root")
             if backing is not None and os.path.realpath(runtime_root) == root_real:
                 private["kv_backing_directory"] = check_private_directory(root_real, protected, "kv_backing_directory", backing, "model_resident.json", fresh, errors, True)
+            if os.path.realpath(runtime_root) == root_real:
+                named = node.get("adapter_configuration_path")
+                if not isinstance(named, str) or not direct_file(os.path.join(root, named)):
+                    errors.append(f"model_resident.json rank {node.get('rank_index')}: adapter_configuration_path {named!r} is missing, not a regular file or a symlink")
+                else:
+                    local_configs.add(os.path.normpath(named))
     stages = sorted(Path(root).glob("config*/stage_*.json"))
     if not any(stage.parent.name == "config" for stage in stages):
         errors.append("config/stage_*.json missing")
     for stage in stages:
         doc = json.loads(stage.read_text())
+        relative = os.path.normpath(os.path.relpath(stage, root))
+        check_stage_pack(root, a["pack_root"], doc, f"{stage.parent.name}/{stage.name}", relative in local_configs, errors)
         for member in spec["private_directory_members"]:
             if member in doc:
                 target = check_private_directory(root_real, protected, member, doc[member], f"{stage.parent.name}/{stage.name}", fresh, errors)

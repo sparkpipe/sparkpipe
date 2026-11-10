@@ -1319,6 +1319,95 @@ static void SparkTestPrefixCacheResumePoints(void)
 	printf("prefix cache resume points: only marked publication ends resume, a lookup truncates to the last one, and the marks survive export and import: ok\n");
 }
 
+static double SparkTestNowSeconds(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	return((double)now.tv_sec + (double)now.tv_nsec / 1e9);
+}
+
+static void SparkTestPrefixCacheImportScale(void)
+{
+	enum { records_total = 120000 };
+	const uint32_t buckets = 2u * records_total;
+	SparkKvCacheConfiguration arena_configuration;
+	SparkPrefixCacheConfiguration configuration;
+	SparkKvCacheArena arena;
+	SparkPrefixCache cache;
+	uint32_t resident[2u],added,skipped,index;
+	uint8_t device[2u * SPARK_TEST_BLOCK_BYTES];
+	uint32_t now = (uint32_t)time(0);
+	double started,elapsed;
+	SparkKvCacheBlock *blocks = (SparkKvCacheBlock *)calloc(records_total,sizeof(blocks[0]));
+	SparkPrefixCacheEntry *entries = (SparkPrefixCacheEntry *)calloc(records_total,sizeof(entries[0]));
+	SparkPrefixCacheSequenceBinding *bindings = (SparkPrefixCacheSequenceBinding *)calloc(16u,sizeof(bindings[0]));
+	SparkPrefixCacheCommittedRecord *records = (SparkPrefixCacheCommittedRecord *)calloc(records_total,sizeof(records[0]));
+	uint32_t *entry_heads = (uint32_t *)malloc(buckets * sizeof(uint32_t));
+	uint32_t *lookup_heads = (uint32_t *)malloc(buckets * sizeof(uint32_t));
+	uint32_t *sequence_heads = (uint32_t *)malloc(buckets * sizeof(uint32_t));
+	assert(blocks != 0 && entries != 0 && bindings != 0 && records != 0 && entry_heads != 0 && lookup_heads != 0 && sequence_heads != 0);
+	memset(&arena_configuration,0,sizeof(arena_configuration));
+	arena_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	arena_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	arena_configuration.logical_block_count = records_total;
+	arena_configuration.block_token_count = SPARK_TEST_BLOCK_TOKENS;
+	arena_configuration.resident_block_capacity = 2u;
+	arena_configuration.layer_count = 1u;
+	arena_configuration.kv_head_count = 1u;
+	arena_configuration.head_dim = 8u;
+	arena_configuration.bytes_per_scalar = 1u;
+	arena_configuration.key_block_stride_bytes = SPARK_TEST_BLOCK_BYTES;
+	arena_configuration.key_device_base = device;
+	arena_configuration.blocks = blocks;
+	arena_configuration.resident_slot_logical_block_indices = resident;
+	arena_configuration.evict_function = SparkTestKvEvict;
+	arena_configuration.evict_context = 0;
+	assert(SparkKvCacheArenaInitialize(&arena,&arena_configuration) == SPARK_STATUS_OK);
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	configuration.block_token_count = SPARK_TEST_BLOCK_TOKENS;
+	configuration.entry_count = records_total;
+	configuration.logical_block_count = records_total;
+	configuration.sequence_binding_count = 16u;
+	configuration.entries = entries;
+	configuration.sequence_bindings = bindings;
+	configuration.kv_cache_arena = &arena;
+	configuration.entry_hash_bucket_count = buckets;
+	configuration.binding_hash_bucket_count = buckets;
+	configuration.entry_hash_bucket_heads = entry_heads;
+	configuration.binding_lookup_hash_bucket_heads = lookup_heads;
+	configuration.binding_sequence_hash_bucket_heads = sequence_heads;
+	assert(SparkPrefixCacheInitialize(&cache,&configuration) == SPARK_STATUS_OK);
+	for (index=0u; index<records_total; index++)
+	{
+		records[index].first_token_index = index * SPARK_TEST_BLOCK_TOKENS;
+		records[index].token_count = SPARK_TEST_BLOCK_TOKENS;
+		records[index].parent_hash = index == 0u ? 0u : UINT64_C(0x1000000000000000) + index;
+		records[index].block_hash = UINT64_C(0x1000000000000001) + index;
+		records[index].content_hash = index;
+		records[index].used_seconds = now;
+	}
+	started = SparkTestNowSeconds();
+	assert(SparkPrefixCacheImportCommitted(&cache,records,records_total,&added,&skipped) == SPARK_STATUS_OK && added == records_total && skipped == 0u);
+	elapsed = SparkTestNowSeconds() - started;
+	assert(elapsed < 2.0);
+	records[0].block_hash = UINT64_C(0x2000000000000000);
+	memset(entries,0,records_total * sizeof(entries[0]));
+	memset(blocks,0,records_total * sizeof(blocks[0]));
+	assert(SparkKvCacheArenaInitialize(&arena,&arena_configuration) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheInitialize(&cache,&configuration) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheImportCommitted(&cache,records,2u,&added,&skipped) == SPARK_STATUS_OK && added == 1u && skipped == 1u);
+	printf("prefix cache import: %u chained records load in %.3f s, so the parent search does not scan the cache, and a record with no parent is still skipped\n",(uint32_t)records_total,elapsed);
+	free(blocks);
+	free(entries);
+	free(bindings);
+	free(records);
+	free(entry_heads);
+	free(lookup_heads);
+	free(sequence_heads);
+}
+
 static void SparkTestPrefixCacheResumeInsideLastBlock(void)
 {
 	SparkTestKvFixture fixture;
@@ -3418,6 +3507,7 @@ int main(void)
 	SparkTestKvPageStoreFailedPrefetchCancelsReservation();
 	SparkTestPrefixCacheReusesCommittedLogicalBlocks();
 	SparkTestPrefixCacheResumePoints();
+	SparkTestPrefixCacheImportScale();
 	SparkTestPrefixCacheResumeInsideLastBlock();
 	SparkTestPrefixCacheResumeInsideEarlierBlock();
 	SparkTestPrefixCacheRetention();

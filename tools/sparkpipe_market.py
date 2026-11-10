@@ -4,6 +4,7 @@ import collections
 import hashlib
 import ipaddress
 import json
+import math
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -17,17 +18,23 @@ KST = timezone(timedelta(hours=9))
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
 SLOT = "%Y-%m-%dT%H:00Z"
 KINDS = ("hc_lot", "hc_debit", "booking", "lock", "unlock", "lock_lapse", "round", "api_key", "api_key_revoke", "api_key_rotate", "maintenance", "maintenance_done", "clock",
-         "auto_extend", "auto_extend_wait")
+         "auto_extend", "auto_extend_wait", "downtime", "failover", "failover_end")
 AVAILABILITY = {"free": "available"}
 SCOPES = ("inference", "state", "storage", "functions", "models", "account:read")
+ROLES = ("owner", "admin", "member")
+ROLE_SCOPES = {"owner": SCOPES, "admin": SCOPES, "member": ("inference", "functions", "account:read")}
 PRIORITIES = ("interactive", "background")
 EVENTS = ("booking.deadline", "booking.confirmed", "fleet.allocated", "waitlist.position", "run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token",
-          "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost")
+          "pack.warm", "cache.restored", "models.changed", "downtime.credited", "working_state.lost", "fleet.failover")
 HUB_EVENTS = ("run.finished", "run.failed", "report.ready", "fetch.finished", "fetch.failed", "fetch.needs_token", "pack.warm", "cache.restored", "models.changed")
-EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost")
+EMAIL_EVENTS = ("booking.deadline", "fleet.allocated", "downtime.credited", "working_state.lost", "fleet.failover")
 REQUIRED_EMAIL = ("fleet.allocated", "downtime.credited", "working_state.lost")
-DEADLINE_HOURS = (48, 6)
+DEADLINE_HOURS = (72, 48, 6, 2)
+DEFAULT_WEEKS_AHEAD = 1
 REBUILD_HOURS = 24
+OUTAGE = timedelta(minutes=15)
+OUTAGE_PASS = timedelta(days=1)
+UPTIME_WINDOWS = (("24h", 1), ("7d", 7), ("30d", 30), ("90d", 90))
 KEY_IPS = 32
 GRACE_SECONDS = 30
 
@@ -86,6 +93,14 @@ def week_start(moment):
 def sunday_after(moment):
     found = week_start(moment) + 6 * DAY
     return found if found > moment else found + WEEK
+
+
+def slot_floor(moment):
+    return slot_time(slot_text(moment))
+
+
+def slot_ceil(moment):
+    return slot_floor(moment) + HOUR if slot_floor(moment) < moment else moment
 
 
 def overlap(begins, ends, start, end):
@@ -195,6 +210,9 @@ class State:
         self.seq = 0
         self.extend = {}
         self.rebuilds = {}
+        self.downtime = {}
+        self.downtime_hours = set()
+        self.failovers = {}
 
     def apply(self, line):
         self.seq = line["seq"]
@@ -219,10 +237,12 @@ class State:
         return sum((part for _, part in self.locks.get(account, {}).get("parts", [])), Decimal(0))
 
     def on_hc_lot(self, data):
-        self.lots[data["account"]].append({"lot": data["lot"], "hc": Decimal(data["hc"]), "first": data["hc"], "expires": data["expires"], "source": data["source"], "ref": data["ref"], "issued": data["now"]})
+        self.lots[data["account"]].append(dict({name: data[name] for name in ("fleet", "hours") if name in data}, lot=data["lot"], hc=Decimal(data["hc"]), first=data["hc"], expires=data["expires"], source=data["source"], ref=data["ref"], issued=data["now"]))
         self.lots[data["account"]].sort(key=lambda lot: (lot["expires"], lot["issued"]))
         if data["source"] == "rebuild":
             self.rebuilds[data["ref"]] = data
+        if data["source"] == "downtime":
+            self.downtime_hours.update((data["fleet"], hour) for hour in data["hours"])
 
     def on_hc_debit(self, data):
         if data.get("lot"):
@@ -257,7 +277,7 @@ class State:
         self.round = data["sunday"]
 
     def on_api_key(self, data):
-        self.keys[data["key"]] = {"key": data["key"], "account": data["account"], "note": data["note"], "hint": data["hint"], "created": data["now"], "revoked": False,
+        self.keys[data["key"]] = {"key": data["key"], "account": data["account"], "member": data.get("member", data["account"]), "note": data["note"], "hint": data["hint"], "created": data["now"], "revoked": False,
                                   "scopes": data.get("scopes", list(SCOPES)), "fleet": data.get("fleet"), "allow_swap": data.get("allow_swap", False), "expires": data.get("expires"),
                                   "ips": data.get("ips", []), "priority": data.get("priority"), "rotated_from": data.get("rotated_from"), "retires": None}
         self.key_hashes[data["hash"]] = data["key"]
@@ -276,6 +296,15 @@ class State:
 
     def on_auto_extend_wait(self, data):
         self.extend[(data["account"], data["fleet"])].update(through=data["through"], waiting=data["reason"])
+
+    def on_downtime(self, data):
+        self.downtime[data["downtime"]] = data
+
+    def on_failover(self, data):
+        self.failovers[data["failover"]] = dict(data, begins=stamp_time(data["start"]), ends=None, end=None)
+
+    def on_failover_end(self, data):
+        self.failovers[data["failover"]].update(end=data["end"], ends=stamp_time(data["end"]), reason=data["reason"])
 
     def on_maintenance(self, data):
         self.maintenance[data["maintenance"]] = dict(data, begins=slot_time(data["start"]), ends=slot_time(data["start"]) + HOUR * data["hours"], done=False)
@@ -313,14 +342,17 @@ class Market:
     def fleet_field(self, pricing, value):
         found = next((f for f in self.fleets(pricing) if f["id"] == value), None)
         if not found:
-            raise Refusal("Choose one of the Fleets: " + ", ".join(f["id"] for f in pricing["fleets"]) + ".")
+            raise Refusal("Choose a Fleet on the Fleet List: " + ", ".join(f["id"] for f in pricing["fleets"]) + ".")
         return found
 
     def fleet_name(self, fleet_id):
         return next((f["name"] for f in self.settings()["fleets"] if f["id"] == fleet_id), fleet_id)
 
-    def notify(self, account, kind, data, now, summary, text, once=None):
-        found = {"notice": new_id("NT"), "account": account, "type": kind, "data": data, "summary": summary, "text": text, "targets": self.targets(account, kind), "now": stamp(now)}
+    def notify(self, account, kind, data, now, summary, text, once=None, mail=False):
+        targets = self.targets(account, kind)
+        if mail and "mail" not in targets:
+            targets.append("mail")
+        found = {"notice": new_id("NT"), "account": account, "type": kind, "data": data, "summary": summary, "text": text, "targets": targets, "now": stamp(now)}
         if once:
             found["once"] = once
         self.app.notices.add(found)
@@ -338,8 +370,9 @@ class Market:
     def confirmed(self, booking, now):
         what = f"{booking['weeks']} Weeks" if booking["kind"] == "week" else f"{booking['hours']} hours"
         data = {key: booking[key] for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "source", "auto") if key in booking}
+        keep = " " + self.extend_line(booking["account"], booking["fleet"]) if booking["kind"] == "week" else ""
         self.notify(booking["account"], "booking.confirmed", data, now, f"Booked {self.fleet_name(booking['fleet'])}: {what} from {kst_text(booking['begins'])}",
-                    f"Booking {booking['booking']}: {self.fleet_name(booking['fleet'])}, {what} from {kst_text(booking['begins'])} to {kst_text(booking['ends'])}, for {booking['hc']} HC.")
+                    f"Booking {booking['booking']}: {self.fleet_name(booking['fleet'])}, {what} from {kst_text(booking['begins'])} to {kst_text(booking['ends'])}, for {booking['hc']} HC.{keep}")
 
     def positions(self):
         return {account: n for n, account in enumerate(self.queue_order(), 1)}
@@ -372,30 +405,64 @@ class Market:
     def discount(self, rules, count):
         return max((Decimal(str(d["off"])) for d in rules["discounts"] if d["weeks"] <= count), default=Decimal(0))
 
-    def week_price(self, rules, fleet, weeks, off):
-        return hc(Decimal(str(rules["weekHC"])) * fleet["rate"] * weeks * (1 - off))
+    def week_price(self, rules, rate, weeks, off):
+        return hc(Decimal(str(rules["weekHC"])) * rate * weeks * (1 - off))
 
-    def check_demo(self, pricing, account, fleet, start, end, now):
+    def lock_plan(self, rules, lock, rate, count):
+        for weeks in range(rules["maxWeeksAhead"], 0, -1):
+            off = self.discount(rules, count + weeks)
+            price = self.week_price(rules, rate, weeks, off)
+            if price <= lock:
+                return weeks, off, price
+        return None
+
+    def held_discount(self, rules, account, now):
+        pinned = {b["fleet"] for b in self.st.bookings.values() if b["account"] == account and b["kind"] == "week" and b["ends"] > now}
+        weeks, fleet = max(((self.weeks_left(account, fleet_id, now)[0], fleet_id) for fleet_id in pinned), default=(0, None))
+        return weeks, fleet, self.discount(rules, weeks)
+
+    def hour_discount(self, rules, account, now):
+        weeks, fleet, off = self.held_discount(rules, account, now)
+        found = {"discount": off, "weeks": weeks, "basis": "held" if weeks else None, "fleet": fleet}
+        waiting = self.lock_plan(rules, self.st.locked(account), Decimal(1), 0) if account in self.st.locks else None
+        if waiting and waiting[1] > off:
+            found = {"discount": waiting[1], "weeks": waiting[0], "basis": "waitlist", "fleet": None}
+        return found
+
+    def waitlist_repay(self, account):
+        lock = self.st.locks.get(account)
+        if not lock:
+            return Decimal(0), []
+        joined = stamp_time(lock["joined"])
+        mine = sorted((b for b in self.st.bookings.values() if b["account"] == account and b.get("waitlist_saving") and stamp_time(b["now"]) >= joined), key=lambda b: b["booking"])
+        return sum((Decimal(b["waitlist_saving"]) for b in mine), Decimal(0)), [b["booking"] for b in mine]
+
+    def discount_view(self, found):
+        return dict(found, discount=format(found["discount"], "f"))
+
+    def check_hour_fleet(self, pricing, account, start, end, now):
         rules = pricing["bookings"]
-        gate = self.gate(pricing, "demoFrom")
+        gate = self.gate(pricing, "hoursFrom")
         if gate and start < gate:
-            raise Refusal(f"The Demo Fleet opens on {pricing['demoFrom']}.", 409, "not_open")
-        if end > now + DAY * rules["demoDaysAhead"]:
-            raise Refusal(f"Demo Fleet hours can be booked at most {rules['demoDaysAhead']} days ahead.", 409, "too_far")
+            raise Refusal(f"Hour Fleets open on {pricing['hoursFrom']}.", 409, "not_open")
+        if end > now + DAY * rules["hourFleetDaysAhead"]:
+            raise Refusal(f"Hours on Hour Fleets can be booked at most {rules['hourFleetDaysAhead']} days ahead.", 409, "too_far")
+        listed = {f["id"] for f in pricing["fleets"] if f["hourFleet"]}
+        mine = [b for b in self.st.bookings.values() if b["account"] == account and b["fleet"] in listed]
         week = week_start(start)
         while week < end:
-            used = sum((overlap(b["begins"], b["ends"], week, week + WEEK) for b in self.on_fleet(fleet["id"]) if b["account"] == account), timedelta(0))
-            if used + overlap(start, end, week, week + WEEK) > HOUR * rules["demoHoursPerWeek"]:
-                raise Refusal(f"An account may hold at most {rules['demoHoursPerWeek']} Demo Fleet hours in a Week; it holds {used // HOUR} in the Week of {kst_text(week)[:10]}.", 409, "demo_cap")
+            used = sum((overlap(b["begins"], b["ends"], week, week + WEEK) for b in mine), timedelta(0))
+            if used + overlap(start, end, week, week + WEEK) > HOUR * rules["hourFleetHoursPerWeek"]:
+                raise Refusal(f"An account may hold at most {rules['hourFleetHoursPerWeek']} hours on Hour Fleets in a Week; it holds {used // HOUR} in the Week of {kst_text(week)[:10]}.", 409, "hour_cap")
             week += WEEK
 
-    def hour_price(self, pricing, account, fleet, start, end, now):
+    def check_hours(self, pricing, account, fleet, start, end, now):
         if not fleet["serving"]:
             raise Refusal(f"{fleet['name']} is not serving.", 409, "not_serving")
         if start <= now:
             raise Refusal("Choose an hour that has not started.", 409, "started")
-        if fleet["demo"]:
-            self.check_demo(pricing, account, fleet, start, end, now)
+        if fleet["hourFleet"]:
+            self.check_hour_fleet(pricing, account, start, end, now)
         elif end > week_start(now) + WEEK:
             raise Refusal(f"Hours on {fleet['name']} can be booked only to the end of the current Week, {kst_text(week_start(now) + WEEK)}.", 409, "too_far")
         taken = self.busy(fleet["id"], start, end)
@@ -405,7 +472,19 @@ class Market:
             raise Refusal(f"{fleet['name']} is already booked at {kst_text(max(taken[0]['begins'], start))}.", 409, "taken")
         if self.maintained(fleet["id"], start, end):
             raise Refusal(f"{fleet['name']} is under maintenance in those hours.", 409, "maintenance")
-        return hc(Decimal((end - start) // HOUR) * Decimal(str(pricing["bookings"]["hourHC"])) * fleet["rate"])
+
+    def hour_plan(self, pricing, account, fleet, start, hours, now):
+        end = start + HOUR * hours
+        self.check_hours(pricing, account, fleet, start, end, now)
+        rules = pricing["bookings"]
+        found = self.hour_discount(rules, account, now)
+        base = Decimal(hours) * Decimal(str(rules["hourHC"])) * fleet["rate"]
+        price = hc(base * (1 - found["discount"]))
+        plan = {"fleet": fleet["id"], "start": slot_text(start), "end": slot_text(end), "hours": hours, "discount": format(found["discount"], "f"), "weeks": found["weeks"],
+                "basis": found["basis"], "price": text_hc(price)}
+        if found["basis"] == "waitlist":
+            plan["waitlist_saving"] = text_hc(hc(base * (1 - self.held_discount(rules, account, now)[2])) - price)
+        return plan
 
     def check_first(self, pricing, fleet, first, now):
         gate = self.gate(pricing, "weeksFrom")
@@ -418,10 +497,55 @@ class Market:
         if any(self.st.locked(account) >= week for account in self.st.locks):
             raise Refusal("Customers on the waitlist come first: join the waitlist, which allocates each available Fleet every Sunday at 00:00 KST.", 409, "waitlist")
 
+    def pair_of(self, pricing, fleet):
+        return next((f for f in self.fleets(pricing) if f["id"] == fleet.get("pair")), None) if fleet.get("pair") else None
+
+    def pair_room(self, pricing, monday, fleet_id=None):
+        rules = pricing["bookings"]
+        serving = [f for f in self.fleets(pricing) if f["serving"]]
+        listed = [f for f in serving if f["hourFleet"]]
+        pinned = sum(1 for f in listed if f["id"] != fleet_id and any(b["kind"] == "week" for b in self.busy(f["id"], monday, monday + WEEK)))
+        limit = max(0, len(listed) - math.ceil(Decimal(str(rules["openHourShare"])) * len(serving)))
+        return max(0, limit - pinned), limit
+
+    def pair_plan(self, pricing, account, fleet, weeks, now):
+        rules = pricing["bookings"]
+        partner = self.pair_of(pricing, fleet)
+        if not partner or not fleet["serving"]:
+            raise Refusal(f"{fleet['name']} is booked by the hour" + (f"; only the holder of {partner['name']} may pin it, as its pair." if partner else "."), 409, "not_weekly")
+        current = week_start(now)
+        held, held_through = self.weeks_left(account, partner["id"], now)
+        count, through = self.weeks_left(account, fleet["id"], now)
+        if not held_through:
+            raise Refusal(f"Only the holder of {partner['name']} may pin {fleet['name']}, as its pair.", 409, "pair_not_held")
+        first = through or current + WEEK
+        if not through:
+            gate = self.gate(pricing, "weeksFrom")
+            if gate and first < gate:
+                raise Refusal(f"Weeks can be booked from the Week of {pricing['weeksFrom']}.", 409, "not_open")
+            while first < held_through and self.busy(fleet["id"], first, first + WEEK):
+                first += WEEK
+        end = first + WEEK * weeks
+        if end > held_through:
+            raise Refusal(f"{fleet['name']} is pinned only in Weeks you hold {partner['name']}, now through {kst_text(held_through)}.", 409, "pair_not_held")
+        taken = self.busy(fleet["id"], first, end)
+        if taken:
+            raise Refusal(f"{fleet['name']} is already booked for the Week of {kst_text(max(taken[0]['begins'], first))[:10]}.", 409, "taken")
+        week = first
+        while week < end:
+            if not self.pair_room(pricing, week, fleet["id"])[0]:
+                raise Refusal(f"At least {Decimal(str(rules['openHourShare'])) * 100:.0f}% of the serving Fleets stay open for hours in every Week, so no other pair can be pinned in the Week of {kst_text(week)[:10]}.", 409, "pair_limit")
+            week += WEEK
+        off = self.discount(rules, held)
+        return {"fleet": fleet["id"], "weeks": weeks, "first": slot_text(first), "last": slot_text(end - WEEK), "end": slot_text(end),
+                "count": held, "discount": format(off, "f"), "price": text_hc(self.week_price(rules, fleet["rate"], weeks, off)), "extends": bool(through), "pair": partner["id"]}
+
     def week_plan(self, pricing, account, fleet, weeks, now):
         rules = pricing["bookings"]
-        if fleet["demo"] or not fleet["serving"]:
-            raise Refusal(f"{fleet['name']} is not booked by the Week: choose a serving Fleet other than the Demo Fleet.", 409, "not_weekly")
+        if fleet["hourFleet"]:
+            return self.pair_plan(pricing, account, fleet, weeks, now)
+        if not fleet["serving"]:
+            raise Refusal(f"{fleet['name']} is not booked by the Week: choose a serving Fleet that is not an Hour Fleet.", 409, "not_weekly")
         current = week_start(now)
         count, through = self.weeks_left(account, fleet["id"], now)
         first = through or current + WEEK
@@ -435,25 +559,40 @@ class Market:
             raise Refusal(f"{fleet['name']} is already booked for the Week of {kst_text(max(taken[0]['begins'], first))[:10]}.", 409, "taken")
         off = self.discount(rules, count + weeks)
         return {"fleet": fleet["id"], "weeks": weeks, "first": slot_text(first), "last": slot_text(end - WEEK), "end": slot_text(end),
-                "count": count + weeks, "discount": format(off, "f"), "price": text_hc(self.week_price(rules, fleet, weeks, off)), "extends": bool(through)}
+                "count": count + weeks, "discount": format(off, "f"), "price": text_hc(self.week_price(rules, fleet["rate"], weeks, off)), "extends": bool(through)}
 
     def pay(self, account, fleet, kind, start, end, price, now, extra):
         if self.st.balance(account, stamp(now)) < price:
             raise Refusal(f"This booking costs {text_hc(price)} HC, more than the account's unlocked HC. Buy HC first.", 402, "insufficient_hc")
+        first = kind == "week" and not self.weeks_left(account, fleet["id"], now)[1]
         data = dict(extra, booking=new_id("BK"), account=account, fleet=fleet["id"], kind=kind, start=slot_text(start), end=slot_text(end), hc=text_hc(price), rate=text_hc(fleet["rate"]), source="hc", now=stamp(now))
         self.book.append("booking", data)
+        if first:
+            self.default_extend(account, fleet["id"], now)
         return data["booking"]
 
-    def book_hours(self, account, body):
+    def default_extend(self, account, fleet_id, now):
+        if (account, fleet_id) not in self.st.extend:
+            self.book.append("auto_extend", {"account": account, "fleet": fleet_id, "weeks": DEFAULT_WEEKS_AHEAD, "default": True, "now": stamp(now)})
+
+    def hours_request(self, body):
         pricing = self.settings()
-        fleet = self.fleet_field(pricing, body.get("fleet"))
-        start = slot_field(body.get("start"), "start")
-        hours = count_field(body.get("hours"), "number of hours", 168)
+        return pricing, self.fleet_field(pricing, body.get("fleet")), slot_field(body.get("start"), "start"), count_field(body.get("hours"), "number of hours", 168)
+
+    def quote_hours(self, account, body):
+        pricing, fleet, start, hours = self.hours_request(body)
         with self.book.lock:
             now = self.now()
             self.advance(now)
-            price = self.hour_price(pricing, account, fleet, start, start + HOUR * hours, now)
-            ident = self.pay(account, fleet, "hour", start, start + HOUR * hours, price, now, {"hours": hours})
+            return self.hour_plan(pricing, account, fleet, start, hours, now)
+
+    def book_hours(self, account, body):
+        pricing, fleet, start, hours = self.hours_request(body)
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            plan = self.hour_plan(pricing, account, fleet, start, hours, now)
+            ident = self.pay(account, fleet, "hour", start, slot_time(plan["end"]), Decimal(plan["price"]), now, {key: plan[key] for key in ("hours", "discount", "waitlist_saving") if key in plan})
             self.confirmed(self.st.bookings[ident], now)
             return self.booking_view(self.st.bookings[ident], now)
 
@@ -508,13 +647,18 @@ class Market:
 
     def leave(self, account):
         with self.book.lock:
-            self.advance(self.now())
+            now = self.now()
+            self.advance(now)
             if account not in self.st.locks:
                 raise Refusal("This account is not on the waitlist.", 404)
             places = self.positions()
-            self.book.append("unlock", {"account": account, "hc": text_hc(self.st.locked(account)), "reason": "leave", "now": stamp(self.now())})
-            self.moved(places, self.now(), {account})
-        return {"locked": text_hc(0), "position": None}
+            owed, refs = self.waitlist_repay(account)
+            self.book.append("unlock", {"account": account, "hc": text_hc(self.st.locked(account)), "reason": "leave", "now": stamp(now)})
+            repaid = hc(min(owed, self.st.balance(account, stamp(now))))
+            if repaid > 0:
+                self.book.append("hc_debit", {"account": account, "hc": text_hc(repaid), "reason": "waitlist_discount", "ref": ",".join(refs), "now": stamp(now)})
+            self.moved(places, now, {account})
+        return {"locked": text_hc(0), "position": None, "repaid": text_hc(repaid)}
 
     def lapse_at(self, now):
         moment = stamp(now)
@@ -555,18 +699,12 @@ class Market:
         return found if found <= now else None
 
     def affordable(self, rules, account, fleet, sunday):
-        lock = self.st.locked(account)
-        count, _ = self.weeks_left(account, fleet["id"], sunday)
-        for weeks in range(rules["maxWeeksAhead"], 0, -1):
-            off = self.discount(rules, count + weeks)
-            if self.week_price(rules, fleet, weeks, off) <= lock:
-                return weeks, off, self.week_price(rules, fleet, weeks, off)
-        return None
+        return self.lock_plan(rules, self.st.locked(account), fleet["rate"], self.weeks_left(account, fleet["id"], sunday)[0])
 
     def allocate(self, sunday, pricing):
         monday, waiting, places, granted = sunday + DAY, self.queue_order(), self.positions(), set()
         for fleet in self.fleets(pricing):
-            if fleet["demo"] or not fleet["serving"] or self.busy(fleet["id"], monday, monday + WEEK):
+            if fleet["hourFleet"] or not fleet["serving"] or self.busy(fleet["id"], monday, monday + WEEK):
                 continue
             for account in waiting:
                 found = self.affordable(pricing["bookings"], account, fleet, sunday)
@@ -584,11 +722,14 @@ class Market:
         data = {"booking": new_id("BK"), "account": account, "fleet": fleet["id"], "kind": "week", "start": slot_text(monday), "end": slot_text(monday + WEEK * weeks),
                 "hc": text_hc(price), "rate": text_hc(fleet["rate"]), "weeks": weeks, "discount": format(off, "f"), "source": "waitlist", "unlocked": text_hc(left), "now": stamp(sunday)}
         self.book.append("booking", data)
+        self.default_extend(account, fleet["id"], sunday)
+        self.app.audit(account, "system", "fleet.allocated", {"booking": data["booking"], "fleet": fleet["id"], "first": data["start"], "weeks": weeks, "hc": data["hc"]}, sunday)
         self.notify(account, "fleet.allocated", {key: data[key] for key in ("booking", "fleet", "start", "end", "weeks", "hc", "discount", "unlocked")}, sunday,
                     f"SparkPipe {fleet['name']} is yours from {kst_text(monday)[:10]}", "\n".join([
                         f"The waitlist allocated {fleet['name']} to you: {weeks} Weeks from {kst_text(monday)} to {kst_text(monday + WEEK * weeks)}, for {text_hc(price)} HC of your lock" + (f" at {off * 100:.0f}% off." if off else "."),
                         f"{text_hc(left)} HC of your lock is unlocked and back in your balance." if left > 0 else "Your whole lock paid for those Weeks.",
-                        f"To keep the Fleet, book its next Week by {kst_text(monday + WEEK * weeks - DAY)}: {self.app.cfg.public}/market.html",
+                        self.extend_line(account, fleet["id"]),
+                        f"Without it, book the next Week by {kst_text(monday + WEEK * weeks - DAY)} to keep the Fleet.",
                     ]))
 
     def maintenance_at(self, now):
@@ -607,6 +748,159 @@ class Market:
             self.notify(account, "downtime.credited", {"maintenance": ident, "fleet": found["fleet"], "start": found["start"], "hours": found["hours"], "hc": text_hc(credits)}, found["ends"],
                         f"SparkPipe credited {text_hc(credits)} HC for maintenance on {name}",
                         f"Maintenance on {name} from {kst_text(found['begins'])} to {kst_text(found['ends'])} overlapped your booking. We credited {text_hc(credits)} HC to your account (clause 4.4).")
+
+    def outage_at(self, now):
+        found = []
+        for span in self.app.uptime.spans(now - 30 * DAY):
+            begins, ends = stamp_time(span["start"]), stamp_time(span["end"]) if span["end"] else None
+            ends = ends if ends and ends <= now else None
+            if (ends or now) - begins <= OUTAGE:
+                continue
+            done = self.st.downtime.get(span["span"])
+            if not done:
+                at = ends or begins + OUTAGE + timedelta(seconds=1)
+            elif ends and not done["end"]:
+                at = ends
+            elif not ends and stamp_time(done["now"]) + OUTAGE_PASS <= now:
+                at = stamp_time(done["now"]) + OUTAGE_PASS
+            else:
+                continue
+            if at <= now:
+                found.append((at, span["span"], span, ends))
+        return min(found, key=lambda item: item[:2]) if found else None
+
+    def credit_outage(self, span, at, ends):
+        fleet_id, begins, first = span["fleet"], stamp_time(span["start"]), span["span"] not in self.st.downtime
+        through, moment, owed = slot_ceil(ends) if ends else slot_floor(at) + HOUR, slot_floor(begins), {}
+        while moment < through:
+            if (fleet_id, slot_text(moment)) not in self.st.downtime_hours and not self.maintained(fleet_id, moment, moment + HOUR):
+                for b in self.busy(fleet_id, moment, moment + HOUR):
+                    found = owed.setdefault(b["account"], [Decimal(0), []])
+                    found[0] += Decimal(b["rate"])
+                    found[1].append(slot_text(moment))
+            moment += HOUR
+        lots = {account: self.lot(account, credits, "downtime", span["span"], at, extra={"fleet": fleet_id, "hours": hours}) for account, (credits, hours) in sorted(owed.items())}
+        name, period = self.fleet_name(fleet_id), f"from {kst_text(begins)} to {kst_text(ends)}" if ends else f"since {kst_text(begins)}"
+        for account, lot in lots.items():
+            listed = ", ".join(kst_text(slot_time(hour))[11:16] for hour in lot["hours"])
+            self.notify(account, "downtime.credited", {"downtime": span["span"], "fleet": fleet_id, "start": span["start"], "end": stamp(ends) if ends else None, "hours": lot["hours"], "hc": lot["hc"], "lot": lot["lot"], "clause": "4.4"}, at,
+                        f"SparkPipe credited {lot['hc']} HC for downtime on {name}",
+                        f"{name} was unavailable or unreachable {period}{'' if ends else ', and we are still on it'}. We credited {lot['hc']} HC for {len(lot['hours'])} booked hour{'s' if len(lot['hours']) != 1 else ''} it touched ({listed} KST), at the Fleet's Rate (clause 4.4). "
+                        f"The HC lapses on {lot['expires'][:10]}. Our uptime records: {self.app.cfg.public}/status.html", once=f"downtime:{span['span']}:{account}:{slot_text(through)}")
+        self.book.append("downtime", {"downtime": span["span"], "fleet": fleet_id, "start": span["start"], "end": stamp(ends) if ends else None, "cause": span["cause"], "through": slot_text(through),
+                                      "credited": [[account, lot["hc"]] for account, lot in lots.items()], "now": stamp(at)})
+        if first or ends:
+            credited = "; ".join(f"{self.app.who(account)} {lot['hc']} HC" for account, lot in lots.items()) or "no booked hours"
+            self.app.mail(self.app.cfg.notify, f"{'Fleet down' if not ends else 'Fleet back'}: {fleet_id} {period}", f"{name} was unavailable or unreachable {period} ({span['cause']}). Credited under clause 4.4: {credited}.")
+
+    def fleet_down(self, fleet_id):
+        entry = self.app.uptime.entry(fleet_id)
+        return bool(entry and entry.get("open"))
+
+    def fleet_up(self, fleet_id):
+        entry = self.app.uptime.entry(fleet_id)
+        return not (entry and entry.get("open")) if self.sandbox else bool(entry and not entry.get("open"))
+
+    def active_failovers(self):
+        return [f for f in self.st.failovers.values() if f["ends"] is None]
+
+    def free_now(self, fleet_id, now):
+        return not self.busy(fleet_id, now, now + timedelta(seconds=1)) and not self.maintained(fleet_id, now, now + timedelta(seconds=1))
+
+    def route(self, account, fleet_id):
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            if not self.fleet_down(fleet_id):
+                return fleet_id, None
+            current = next((f for f in self.active_failovers() if f["account"] == account and f["from"] == fleet_id), None)
+            if current:
+                return current["to"], fleet_id
+            taken = {f["to"] for f in self.st.failovers.values() if f["account"] != account and (f["ends"] is None or f["ends"] > slot_floor(now))}
+            choices = sorted((f for f in self.fleets(self.settings()) if f["id"] != fleet_id and f["serving"] and f["id"] not in taken and self.fleet_up(f["id"]) and self.free_now(f["id"], now)), key=lambda f: f["hourFleet"])
+            if not choices:
+                raise Refusal(f"{self.fleet_name(fleet_id)} is down and no free Fleet can serve you now; try again in a minute. Every booked hour a period over 15 minutes touches is credited (clause 4.4).", 503, "fleet_down")
+            target, ident = choices[0], new_id("FO")
+            self.book.append("failover", {"failover": ident, "account": account, "from": fleet_id, "to": target["id"], "start": stamp(now), "now": stamp(now)})
+            held, name = self.fleet_name(fleet_id), self.fleet_name(target["id"])
+            self.notify(account, "fleet.failover", {"failover": ident, "state": "started", "from": fleet_id, "to": target["id"], "start": stamp(now)}, now, f"SparkPipe serves you on {name} while {held} is down",
+                        f"{held}, which you hold, is down. From {kst_text(now)} we serve your requests on {name}, which is free, without your working state, so the first requests there prefill again (clause 15.7). "
+                        f"Every booked hour of {held} that the period touches is still credited (clause 4.4). Your requests go back to {held} as soon as it serves again. {self.app.cfg.public}/status.html")
+            return target["id"], fleet_id
+
+    def failover_left(self, target, now):
+        found = [b["begins"] for b in self.on_fleet(target) if b["begins"] > now] + [m["begins"] for m in self.st.maintenance.values() if m["fleet"] == target and m["begins"] > now]
+        return (min(found) - now).total_seconds() + GRACE_SECONDS if found else 7 * 86400
+
+    def hold_end(self, account, fleet_id, moment):
+        mine, end = [b for b in self.on_fleet(fleet_id) if b["account"] == account], moment
+        while any(b["begins"] <= end < b["ends"] for b in mine):
+            end = max(b["ends"] for b in mine if b["begins"] <= end < b["ends"])
+        return end
+
+    def failover_end_at(self, now):
+        found = []
+        for f in self.active_failovers():
+            later = [b["begins"] for b in self.on_fleet(f["to"]) if f["begins"] < b["ends"] and b["begins"] <= now] + [m["begins"] for m in self.st.maintenance.values() if m["fleet"] == f["to"] and f["begins"] < m["ends"] and m["begins"] <= now]
+            held = self.hold_end(f["account"], f["from"], f["begins"])
+            if not self.fleet_down(f["from"]):
+                found.append((now, f["failover"], "recovered"))
+            elif later:
+                found.append((max(min(later), f["begins"]), f["failover"], "taken"))
+            elif held <= now:
+                found.append((max(held, f["begins"]), f["failover"], "hold_ended"))
+            elif not self.fleet_up(f["to"]):
+                found.append((now, f["failover"], "down"))
+        return min(found) if found else None
+
+    def end_failover(self, at, ident, reason):
+        f = self.st.failovers[ident]
+        self.book.append("failover_end", {"failover": ident, "end": stamp(at), "reason": reason, "now": stamp(at)})
+        held, name = self.fleet_name(f["from"]), self.fleet_name(f["to"])
+        why = {"recovered": f"{held} serves again, and your requests go back to it", "taken": f"{name} is no longer free; while {held} is down your next request goes to another free Fleet if there is one",
+               "hold_ended": f"your hold of {held} ended", "down": f"{name} is down too; while {held} is down your next request goes to another free Fleet if there is one"}[reason]
+        self.notify(f["account"], "fleet.failover", {"failover": ident, "state": "ended", "from": f["from"], "to": f["to"], "start": f["start"], "end": stamp(at), "reason": reason}, at,
+                    f"SparkPipe stopped serving you on {name}", f"We stopped serving your requests on {name} at {kst_text(at)}: {why}.")
+
+    def status_page(self):
+        pricing = self.settings()
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            spans = self.app.uptime.spans(now - (UPTIME_WINDOWS[-1][1] + 1) * DAY)
+            fleets = [self.fleet_status(listed, fleet, [s for s in spans if s["fleet"] == fleet["id"]], now) for listed, fleet in zip(pricing["fleets"], self.fleets(pricing))]
+        return {"now": stamp(now), "outageMinutes": OUTAGE // timedelta(minutes=1), "fleets": fleets}
+
+    def fleet_status(self, listed, fleet, spans, now):
+        entry = self.app.uptime.entry(fleet["id"])
+        closing = [m for m in self.maintained(fleet["id"], now, now + timedelta(seconds=1))]
+        opened = next((s for s in spans if not s["end"]), None)
+        if not fleet["serving"]:
+            status, since = "not_serving", None
+        elif closing:
+            status, since = "maintenance", slot_text(closing[0]["begins"])
+        elif opened:
+            status, since = "down", opened["start"]
+        elif entry:
+            status, since = "up", max([s["end"] for s in spans] + [entry["first"]])
+        else:
+            status, since = "unknown", None
+        first = stamp_time(entry["first"]) if entry else None
+        uptime = {}
+        for label, days in UPTIME_WINDOWS:
+            start = max(now - DAY * days, first) if first else None
+            if not start or start >= now:
+                uptime[label] = None
+                continue
+            down = timedelta(0)
+            for s in spans:
+                begins, ends = max(stamp_time(s["start"]), start), stamp_time(s["end"]) if s["end"] else now
+                down += overlap(begins, ends, start, now) - sum((overlap(max(begins, m["begins"]), min(ends, m["ends"]), start, now) for m in self.maintained(fleet["id"], begins, ends)), timedelta(0))
+            uptime[label] = round(100 * (1 - down / (now - start)), 3)
+        incidents = [{"start": s["start"], "end": s["end"], "minutes": int(((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) // timedelta(minutes=1)), "cause": s["cause"],
+                      "creditable": ((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) > OUTAGE} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
+        return {"id": fleet["id"], "name": listed["name"], "serving": fleet["serving"], "hourFleet": listed["hourFleet"], "status": status, "since": since, "recordsSince": entry["first"] if entry else None,
+                "uptime": uptime, "incidents": incidents, "maintenance": merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK))}
 
     def pins(self, now):
         found = {}
@@ -634,9 +928,28 @@ class Market:
             data["next_week_hc"] = self.week_plan(pricing, account, fleet, 1, at)["price"]
         except Refusal:
             pass
+        setting = self.st.extend.get((account, fleet_id))
+        data["auto_extend"] = setting["weeks"] if setting else 0
+        if self.extend_waiting(account, fleet_id):
+            data["waiting"] = self.extend_waiting(account, fleet_id)
         cost = f" It costs {data['next_week_hc']} HC; your unlocked balance is {data['balance']} HC." if "next_week_hc" in data else ""
         self.notify(account, "booking.deadline", data, at, f"Book the next Week of {fleet['name']} by {kst_text(deadline)}",
-                    f"Your last booked Week of {fleet['name']} ends at {kst_text(through)}. Book the next Week by {kst_text(deadline)} to keep the Fleet; after that the waitlist may be allocated it (clause 15).{cost} {self.app.cfg.public}/market.html", once)
+                    f"Your last booked Week of {fleet['name']} ends at {kst_text(through)}. Book the next Week by {kst_text(deadline)} to keep the Fleet; after that the waitlist may be allocated it (clause 15).{cost} {self.extend_line(account, fleet_id)}", once)
+
+    def extend_line(self, account, fleet_id):
+        setting, page = self.st.extend.get((account, fleet_id)), f"{self.app.cfg.public}/market.html"
+        if not setting:
+            return f"Auto-extend is off for this Fleet: turn it on on your account page to book the next Week from your HC without anyone having to remember: {page}"
+        waits = {"terms": "until you accept the current Customer Agreement", "insufficient_hc": "until your unlocked HC covers the next Week"}
+        ahead = f"{setting['weeks']} Week{'s' if setting['weeks'] != 1 else ''}"
+        if self.extend_waiting(account, fleet_id) in waits:
+            return f"Auto-extend is on, keeping {ahead} booked ahead, but it waits {waits[self.extend_waiting(account, fleet_id)]}: {page}"
+        return f"Auto-extend is on: it keeps {ahead} booked ahead from your unlocked HC, so you keep the Fleet. Turn it off or change it on your account page: {page}"
+
+    def extend_waiting(self, account, fleet_id):
+        setting = self.st.extend.get((account, fleet_id))
+        through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
+        return setting.get("waiting") if setting and through and setting.get("through") == slot_text(through) else None
 
     def extend_at(self, now, pricing):
         found = []
@@ -663,6 +976,8 @@ class Market:
         try:
             plan = self.week_plan(pricing, account, fleet, weeks, at)
         except Refusal as error:
+            if error.reason == "pair_not_held":
+                return (through, lambda: self.stop_extend(account, fleet_id, "pair_not_held", through)) if through <= now else None
             reason = error.reason or "refused"
             return at, lambda: self.stop_extend(account, fleet_id, reason, at)
         blocked = None if self.app.terms_current(account) else "terms"
@@ -687,12 +1002,18 @@ class Market:
                                f"Buy {text_hc(need)} HC before {kst_text(first - DAY)} to keep the Fleet: {self.app.cfg.public}/market.html")
         ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), at, {"weeks": plan["weeks"], "discount": plan["discount"], "auto": True})
         self.confirmed(self.st.bookings[ident], at)
+        self.app.audit(account, "system", "booking.auto", {"booking": ident, "fleet": fleet["id"], "first": plan["first"], "weeks": plan["weeks"], "price": plan["price"]}, at)
 
     def stop_extend(self, account, fleet_id, reason, at):
+        through = max((b["ends"] for b in self.on_fleet(fleet_id) if b["account"] == account and b["kind"] == "week"), default=None)
         self.book.append("auto_extend", {"account": account, "fleet": fleet_id, "weeks": 0, "reason": reason, "now": stamp(at)})
-        if account in self.book.accounts:
-            self.app.mail(self.book.accounts[account]["email"], f"SparkPipe auto-extend stopped on {self.fleet_name(fleet_id)}",
-                          f"Auto-extend on {self.fleet_name(fleet_id)} stopped at {kst_text(at)} ({reason}). Book Weeks yourself, or turn auto-extend on again while you hold the Fleet: {self.app.cfg.public}/market.html")
+        why = {"not_pinned": "the Weeks it kept have ended", "taken": "someone else booked the next Week after your deadline passed", "terms": "your last booked Week ended while it waited for you to accept the current Customer Agreement",
+               "insufficient_hc": "your last booked Week ended while your unlocked HC did not cover the next one", "not_weekly": "the Fleet stopped serving by the Week", "too_far": "the next Week is more than 52 Weeks ahead",
+               "pair_not_held": "you no longer hold the next Week of its pair", "pair_limit": "the Hour Fleets that stay open for hours left no pair free"}.get(reason, reason)
+        data = {"fleet": fleet_id, "stopped": True, "reason": reason, "through": slot_text(through) if through else None, "deadline": slot_text(through - DAY) if through else None, "auto_extend": 0}
+        name, page = self.fleet_name(fleet_id), f"{self.app.cfg.public}/market.html"
+        keep = f" Book the next Week by {kst_text(through - DAY)} to keep the Fleet, or turn auto-extend on again." if through and through - DAY > at else " Book Weeks yourself, or turn auto-extend on again while you hold the Fleet."
+        self.notify(account, "booking.deadline", data, at, f"SparkPipe auto-extend stopped on {name}", f"Auto-extend on {name} stopped at {kst_text(at)}: {why}.{keep} {page}", mail=True)
 
     def auto_extend(self, account, body):
         pricing = self.settings()
@@ -712,7 +1033,7 @@ class Market:
         pricing = self.settings()
         while True:
             lapse, sunday, done = self.lapse_at(now), self.round_at(now), self.maintenance_at(now)
-            due, extension = self.deadline_at(now), self.extend_at(now, pricing)
+            due, extension, outage, moved = self.deadline_at(now), self.extend_at(now, pricing), self.outage_at(now), self.failover_end_at(now)
             events = []
             if lapse:
                 events.append((stamp_time(lapse), 0, lambda: self.lapse(lapse, pricing)))
@@ -720,10 +1041,14 @@ class Market:
                 events.append((sunday, 1, lambda: self.allocate(sunday, pricing)))
             if done:
                 events.append((done[0], 2, lambda: self.credit_maintenance(done[1])))
+            if outage:
+                events.append((outage[0], 3, lambda: self.credit_outage(outage[2], outage[0], outage[3])))
+            if moved:
+                events.append((moved[0], 4, lambda: self.end_failover(*moved)))
             if extension:
-                events.append((extension[0], 3, extension[1]))
+                events.append((extension[0], 5, extension[1]))
             if due:
-                events.append((due[0], 4, lambda: self.deadline(pricing, *due)))
+                events.append((due[0], 6, lambda: self.deadline(pricing, *due)))
             if not events:
                 return
             min(events, key=lambda event: event[:2])[2]()
@@ -740,8 +1065,8 @@ class Market:
             except Exception as error:
                 log(f"market tick: {error}")
 
-    def lot(self, account, credits, source, ref, now, note=None):
-        data = {"lot": new_id("LT"), "account": account, "hc": text_hc(credits), "expires": stamp(months_later(now, self.settings()["hc"]["validityMonths"])), "source": source, "ref": ref, "now": stamp(now)}
+    def lot(self, account, credits, source, ref, now, note=None, extra=None):
+        data = dict(extra or {}, lot=new_id("LT"), account=account, hc=text_hc(credits), expires=stamp(months_later(now, self.settings()["hc"]["validityMonths"])), source=source, ref=ref, now=stamp(now))
         if note:
             data["note"] = note
         self.book.append("hc_lot", data)
@@ -797,43 +1122,48 @@ class Market:
         return {"note": note.strip(), "scopes": [scope for scope in SCOPES if scope in scopes], "fleet": fleet, "allow_swap": body.get("allow_swap", False), "expires": expires, "ips": ips, "priority": priority}
 
     def key_view(self, record):
-        found = {name: record.get(name) for name in ("key", "note", "hint", "created", "revoked", "scopes", "fleet", "allow_swap", "expires", "ips", "priority", "retires", "rotated_from")}
+        found = {name: record.get(name) for name in ("key", "member", "note", "hint", "created", "revoked", "scopes", "fleet", "allow_swap", "expires", "ips", "priority", "retires", "rotated_from")}
         return dict(found, id=record["key"])
 
-    def new_key(self, account, options, now, rotated_from=None):
+    def new_key(self, account, options, now, rotated_from=None, member=None):
         key = "sk-hc-" + secrets.token_urlsafe(24)
         found = new_id("KY")
-        data = dict(options, key=found, account=account, hash=key_digest(key), hint=key[-4:], now=stamp(now))
+        data = dict(options, key=found, account=account, member=member or account, hash=key_digest(key), hint=key[-4:], now=stamp(now))
         if rotated_from:
             data["rotated_from"] = rotated_from
         self.book.append("api_key", data)
         return dict(self.key_view(self.st.keys[found]), key=key)
 
-    def create_key(self, account, body):
+    def create_key(self, account, body, member=None, role="owner"):
         pricing = self.settings()
+        allowed = ROLE_SCOPES[role]
+        body = body if "scopes" in body else dict(body, scopes=list(allowed))
         with self.book.lock:
             now = self.now()
-            return self.new_key(account, self.key_options(pricing, body, now), now)
+            options = self.key_options(pricing, body, now)
+            if any(scope not in allowed for scope in options["scopes"]) or (options["allow_swap"] and role == "member"):
+                raise Refusal(f"A {role} of the account makes keys with the scopes {', '.join(allowed)} only, without allow_swap.", 403, "role")
+            return self.new_key(account, options, now, member=member)
 
-    def own_key(self, account, found, now):
+    def own_key(self, account, found, now, member=None, role="owner"):
         record = self.st.keys.get(found) if isinstance(found, str) else None
-        if not record or record["account"] != account or record["revoked"] or (record["retires"] and stamp_time(record["retires"]) <= now):
+        if not record or record["account"] != account or record["revoked"] or (record["retires"] and stamp_time(record["retires"]) <= now) or (role == "member" and record["member"] != member):
             raise Refusal("No active key with that id on this account.", 404)
         return record
 
-    def revoke_key(self, account, found):
+    def revoke_key(self, account, found, member=None, role="owner"):
         with self.book.lock:
-            self.own_key(account, found, self.now())
+            self.own_key(account, found, self.now(), member, role)
             self.book.append("api_key_revoke", {"key": found})
         return {"id": found, "revoked": True}
 
-    def rotate_key(self, account, found):
+    def rotate_key(self, account, found, member=None, role="owner"):
         with self.book.lock:
             now = self.now()
-            record = self.own_key(account, found, now)
+            record = self.own_key(account, found, now, member, role)
             if record["retires"]:
                 raise Refusal("This key was already rotated.", 409, "rotated")
-            made = self.new_key(account, {name: record[name] for name in ("note", "scopes", "fleet", "allow_swap", "expires", "ips", "priority")}, now, found)
+            made = self.new_key(account, {name: record[name] for name in ("note", "scopes", "fleet", "allow_swap", "expires", "ips", "priority")}, now, found, record["member"])
             self.book.append("api_key_rotate", {"key": found, "account": account, "new": made["id"], "retires": stamp(now + HOUR)})
         return dict(made, replaces=found, retires=stamp(now + HOUR))
 
@@ -860,6 +1190,14 @@ class Market:
     def held(self, account, now):
         serving = {f["id"] for f in self.fleets(self.settings()) if f["serving"]}
         return sorted({b["fleet"] for b in self.st.bookings.values() if b["account"] == account and b["begins"] <= now < b["ends"] and b["fleet"] in serving})
+
+    def gateway_share(self, account):
+        serving = {f["id"] for f in self.fleets(self.settings()) if f["serving"]}
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            active = [b for b in self.st.bookings.values() if b["begins"] <= now < b["ends"] and b["fleet"] in serving]
+        return any(b["account"] == account for b in active), len({b["fleet"] for b in active})
 
     def holds(self, account, fleet):
         with self.book.lock:
@@ -1008,6 +1346,17 @@ class Market:
             raise Refusal(f"No run of {hours} hours on {fleet['name']} that Week starts at least 7 days from now.")
         return best[2]
 
+    def sandbox_fleet(self, body):
+        fleet = self.fleet_field(self.settings(), body.get("fleet"))
+        if not isinstance(body.get("up"), bool):
+            raise Refusal("Give up as true or false.", 400, "invalid_request")
+        with self.book.lock:
+            now = self.now()
+            self.advance(now)
+            self.app.uptime.observe(fleet["id"], body["up"], now, "sandbox", watch=False)
+            self.advance(now)
+        return {"fleet": fleet["id"], "up": body["up"], "now": stamp(now)}
+
     def move_clock(self, hours):
         with self.book.lock:
             self.book.append("clock", {"offset": self.st.offset + hours * 3600})
@@ -1016,7 +1365,7 @@ class Market:
 
     def first_open(self, pricing, fleet, now):
         first = week_start(now) + WEEK
-        if fleet["demo"] or not fleet["serving"] or self.busy(fleet["id"], first, first + WEEK):
+        if fleet["hourFleet"] or not fleet["serving"] or self.busy(fleet["id"], first, first + WEEK):
             return None
         try:
             self.check_first(pricing, fleet, first, now)
@@ -1025,13 +1374,14 @@ class Market:
         return slot_text(first)
 
     def status(self, fleet, now):
-        if fleet["demo"]:
-            return "demo"
-        return "pinned" if any(b["kind"] == "week" for b in self.busy(fleet["id"], now, now + timedelta(seconds=1))) else "free"
+        if any(b["kind"] == "week" for b in self.busy(fleet["id"], now, now + timedelta(seconds=1))):
+            return "pinned"
+        return "hour-fleet" if fleet["hourFleet"] else "free"
 
     def fleet_view(self, pricing, listed, fleet, now):
         return dict(listed, serving=fleet["serving"], status=self.status(fleet, now), firstWeek=self.first_open(pricing, fleet, now),
                     booked=merged((b["begins"], b["ends"]) for b in self.on_fleet(fleet["id"]) if b["ends"] > now),
+                    pinned=merged((b["begins"], b["ends"]) for b in self.on_fleet(fleet["id"]) if b["ends"] > now and b["kind"] == "week"),
                     maintenance=merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK)))
 
     def public(self):
@@ -1041,14 +1391,15 @@ class Market:
             self.advance(now)
             fleets = [self.fleet_view(pricing, listed, fleet, now) for listed, fleet in zip(pricing["fleets"], self.fleets(pricing))]
             waiting = len(self.st.locks)
+            room, limit = self.pair_room(pricing, week_start(now) + WEEK)
         return {
-            "now": stamp(now), "sandbox": self.sandbox, "vatRate": pricing["vatRate"], "demoFrom": pricing["demoFrom"], "weeksFrom": pricing["weeksFrom"],
-            "hc": pricing["hc"], "bookings": pricing["bookings"], "fleets": fleets, "models": pricing["models"], "waitlist": {"locks": waiting},
+            "now": stamp(now), "sandbox": self.sandbox, "vatRate": pricing["vatRate"], "hoursFrom": pricing["hoursFrom"], "weeksFrom": pricing["weeksFrom"],
+            "hc": pricing["hc"], "bookings": pricing["bookings"], "fleets": fleets, "models": pricing["models"], "waitlist": {"locks": waiting}, "pairs": {"open": room, "limit": limit},
         }
 
     def booking_view(self, b, now):
         state = "ended" if b["ends"] <= now else "live" if b["begins"] <= now else "upcoming"
-        shown = {key: b.get(key) for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "source", "unlocked")}
+        shown = {key: b.get(key) for key in ("booking", "fleet", "kind", "start", "end", "hours", "weeks", "hc", "discount", "waitlist_saving", "source", "unlocked")}
         return dict(shown, created=b["now"], state=state)
 
     def pinned_view(self, account, pricing, now):
@@ -1057,7 +1408,11 @@ class Market:
             count, through = self.weeks_left(account, fleet["id"], now)
             if through:
                 room = through - WEEK < week_start(now) + WEEK * pricing["bookings"]["maxWeeksAhead"] and not self.busy(fleet["id"], through, through + WEEK)
-                found.append({"fleet": fleet["id"], "weeks": count, "through": slot_text(through), "deadline": slot_text(through - DAY), "canExtend": room, "autoExtend": self.st.extend.get((account, fleet["id"]), {}).get("weeks", 0)})
+                if fleet["hourFleet"]:
+                    held = self.weeks_left(account, fleet.get("pair"), now)[1]
+                    room = room and bool(held) and held > through and bool(self.pair_room(pricing, through, fleet["id"])[0])
+                found.append({"fleet": fleet["id"], "weeks": count, "through": slot_text(through), "deadline": slot_text(through - DAY), "canExtend": room, "autoExtend": self.st.extend.get((account, fleet["id"]), {}).get("weeks", 0),
+                              "autoExtendWaiting": self.extend_waiting(account, fleet["id"])})
         return found
 
     def view(self, account):
@@ -1073,6 +1428,8 @@ class Market:
                 "locked": text_hc(st.locked(account)),
                 "position": self.position(account),
                 "joined": st.locks[account]["joined"] if account in st.locks else None,
+                "discount": self.discount_view(self.hour_discount(pricing["bookings"], account, now)),
+                "waitlistRepay": text_hc(self.waitlist_repay(account)[0]) if account in st.locks else None,
                 "lots": [{"lot": l["lot"], "hc": text_hc(l["hc"]), "first": l["first"], "expires": l["expires"], "source": l["source"], "ref": l["ref"], "issued": l["issued"], "expired": l["expires"] <= moment} for l in st.lots[account]],
                 "bookings": [self.booking_view(b, now) for b in mine],
                 "pinned": self.pinned_view(account, pricing, now),
@@ -1087,7 +1444,7 @@ class Market:
             self.advance(now)
             rows = [f"{f['id']} {'serving' if f['serving'] else 'not-serving'} {AVAILABILITY.get(self.status(f, now), self.status(f, now))}" for f in self.fleets(pricing)]
             rows.append(f"waitlist locks {len(self.st.locks)}")
-        return "\n".join([f"# SparkPipe availability, generated {stamp(now)}, Customer Agreement clause 4.2", "# fleet serving status (demo, pinned or available)"] + rows) + "\n"
+        return "\n".join([f"# SparkPipe availability, generated {stamp(now)}, Customer Agreement clause 4.2", "# fleet serving status (hour-fleet, pinned or available)"] + rows) + "\n"
 
     def holder_hours(self, fleet_id, start, end):
         if fleet_id not in [f["id"] for f in self.settings()["fleets"]]:
@@ -1098,11 +1455,13 @@ class Market:
             now = self.now()
             self.advance(now)
             closed = self.maintained(fleet_id, start, end)
-            hours = []
-            for b in self.busy(fleet_id, start, end):
-                moment = max(b["begins"], start)
-                while moment < min(b["ends"], end):
+            spans = [(b["begins"], b["ends"], b["account"]) for b in self.busy(fleet_id, start, end)]
+            spans += [(slot_floor(f["begins"]), slot_ceil(f["ends"]) if f["ends"] else slot_floor(now) + HOUR, f["account"]) for f in self.st.failovers.values() if f["to"] == fleet_id]
+            hours = set()
+            for begins, ends, account in spans:
+                moment = max(begins, start)
+                while moment < min(ends, end):
                     if not any(m["begins"] <= moment < m["ends"] for m in closed):
-                        hours.append({"start": slot_text(moment), "account": b["account"]})
+                        hours.add((slot_text(moment), account))
                     moment += HOUR
-        return {"fleet": fleet_id, "now": stamp(now), "hours": sorted(hours, key=lambda h: h["start"])}
+        return {"fleet": fleet_id, "now": stamp(now), "hours": [{"start": hour, "account": account} for hour, account in sorted(hours)]}

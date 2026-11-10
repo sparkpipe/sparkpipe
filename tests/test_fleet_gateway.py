@@ -61,8 +61,10 @@ async def run(tmp):
     (tmp / "logs").mkdir()
     (tmp / "logs" / "k3-kv-api.log").write_text("api one\napi two\n")
     engine_root = tmp / "homes" / "spark1" / "k3-lanes" / "lane8" / "root"
-    engine_root.mkdir(parents=True)
-    (engine_root / "residentd.log").write_text("rank ready\ndecode ok\n")
+    (engine_root / "logs").mkdir(parents=True)
+    (engine_root / "logs" / "residentd-r1.log").write_text("rank ready\nstale run\n")
+    os.utime(engine_root / "logs" / "residentd-r1.log", (1, 1))
+    (engine_root / "logs" / "residentd-r2.log").write_text("rank ready\ndecode ok\n")
     (tmp / "homes" / "spark2").mkdir(parents=True)
     (tmp / "swap.json").write_text(json.dumps({"models": [
         {"id": "kimi-k3", "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs"},

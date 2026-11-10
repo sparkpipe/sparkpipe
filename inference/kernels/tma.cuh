@@ -48,6 +48,12 @@ static __device__ __forceinline__ void LmMbarrierArrive(uint64_t *barrier)
 		: "=l"(state) : "r"(LmTmaSharedAddress(barrier)));
 }
 
+static __device__ __forceinline__ void LmSharedReadsDone(void)
+{
+	__threadfence_block();
+	__syncwarp();
+}
+
 static __device__ __forceinline__ bool LmMbarrierTryWait(uint64_t *barrier, uint32_t phase)
 {
 	uint32_t ready;

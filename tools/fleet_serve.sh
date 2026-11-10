@@ -20,6 +20,7 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 LANE_TOOL=fleet_serve
 LANE_RANKS=${#HOSTS[@]}
 . "$(cd "$(dirname "$0")" && pwd)/lane_run_log.sh"
+. "$(cd "$(dirname "$0")" && pwd)/lane_weights.sh"
 
 rr() { echo "/home/$1/sparkdata/$NAME"; }
 host_of() { echo "${HOSTS[$1]}"; }
@@ -71,7 +72,7 @@ start() {
     fi
     echo "fleet_serve: run $run_id; rank logs are $(lane_log_file "$run_id") under each runtime root"
     for h in "${HOSTS[@]}"; do
-        $SSH "$h" "cd '$(rr "$h")' && ln -sf stage_$(printf %02d $i).json config/stage.json && $(lane_log_prelude "$h" "$run_id") && LD_LIBRARY_PATH='$(rr "$h")'/lib ${SPARK_GLM5_NEXT_MTP:+SPARK_GLM5_NEXT_MTP=$SPARK_GLM5_NEXT_MTP} SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' SPARK_GLM52_SERVING_FLAT_RANKS='${SPARK_GLM52_SERVING_FLAT_RANKS-}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > $(lane_log_file "$run_id") 2>&1 < /dev/null &" &
+        $SSH "$h" "cd '$(rr "$h")' && $(lane_config_check "$h" model_resident.json "$i") && if [ -L config/stage.json ]; then rm -f config/stage.json; fi && $(lane_log_prelude "$h" "$run_id") && { LD_LIBRARY_PATH='$(rr "$h")'/lib ${SPARK_GLM5_NEXT_MTP:+SPARK_GLM5_NEXT_MTP=$SPARK_GLM5_NEXT_MTP} SPARK_TP_D2A_TIMING='${SPARK_TP_D2A_TIMING:-0}' SPARK_GLM52_SERVING_FLAT_RANKS='${SPARK_GLM52_SERVING_FLAT_RANKS-}' nohup ./bin/sparkpipe_model_residentd --deployment model_resident.json --rank-index $i > $(lane_log_file "$run_id") 2>&1 < /dev/null & }" &
         pids+=("$!")
         i=$((i+1))
     done
@@ -89,7 +90,7 @@ start() {
         ready=0
         err=""
         for h in "${HOSTS[@]}"; do
-            line=$($SSH "$h" "tail -1 '$(rr "$h")'/residentd.log 2>/dev/null" 2>/dev/null || true)
+            line=$($SSH "$h" "tail -1 '$(rr "$h")'/$(lane_log_file "$run_id") 2>/dev/null" 2>/dev/null || true)
             case "$line" in
                 *"model_residentd ready"*) ready=$((ready+1)) ;;
                 *usage*|*error*|*failed*|*Mismatch*) err="$err [$h] $line" ;;
@@ -105,7 +106,7 @@ start() {
         fi
         sleep 1
     done
-    echo "TIMEOUT not-ready (see residentd.log per host)"
+    echo "TIMEOUT not-ready (see $(lane_log_file "$run_id") per host)"
     return 1
 }
 

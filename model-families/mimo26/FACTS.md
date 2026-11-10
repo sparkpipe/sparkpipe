@@ -141,9 +141,11 @@ The resident expert set is the one the CPU reference routed through for the prom
 (35-45 GiB). Any other expert the GPU routes to is demand-loaded from local NVMe and
 counted.
 
-`validate_mimo26_model_cuda.sh <checkpoint> <nvme work dir> capital code science` builds
-the binary, stages the inputs (`tools/mimo26_model_inputs.py`, about 160 GB on the first
-prompt, then symlinks for the others) and runs each prompt.
+The measurements below came from `validate_mimo26_model_cuda.sh`, which built the
+binary, staged the inputs with `tools/mimo26_model_inputs.py` and ran each prompt. The
+harness was removed with the legacy per-model modules on 2026-10-11 (82e63a909);
+`tools/mimo26_model_inputs.py` still stages its inputs, about 160 GB of real files per
+prompt, and links none.
 
 Routing uses the shared `LmTopkSmallKernel<..., 8, renormalise, 1, 1, LM_TOPK_SCORE_SIGMOID>`
 with the correction bias, which is the noaux_tc rule. A second pass replays the same

@@ -56,11 +56,11 @@ class Node:
             self.commands[f"findmnt -rn -T /home/{node}/{root} -o TARGET,SOURCE,FSTYPE,OPTIONS"] = "/ /dev/nvme0n1p2 ext4 rw,relatime"
         self.unit_states = {unit:"masked" for unit in MODULE.OPTIONAL_BOOT_UNITS}
         self.unit_states.update({unit:"enabled" for unit in (
-            "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer",
+            "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-rail2-fabric.timer",
             "ssh.service","spark-dma-guard.timer","spark-osd-guard-scan.timer","restart-resolved.service","ds4-ceph-warm-mount.service",
             "sparkpipe-hub-route.service","spark-firewall.service","sparkpipe-roce-qos.service",f"ceph-{FSID}@osd.3.service",
         )})
-        self.unit_states.update({"fstrim.service":"static","fstrim.timer":"enabled","ds4-switched-fabric.service":"static","ds4-direct-pair-fabric.service":"static","sparkpipe-fsck-health.service":"static"})
+        self.unit_states.update({"fstrim.service":"static","fstrim.timer":"enabled","ds4-switched-fabric.service":"static","ds4-rail2-fabric.service":"static","sparkpipe-fsck-health.service":"static"})
         self.memtotal = 127600808
         self.drift: list[str] = []
         self.enabled_instances = ["osd.3"]

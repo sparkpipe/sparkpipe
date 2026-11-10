@@ -23,6 +23,8 @@
     <string>/tmp/ds4mux</string>
     <string>--ssh-control-persist</string>
     <string>600</string>
+    <string>--alert-state</string>
+    <string>@DEST@/alert_state.json</string>
   </array>
   <key>WorkingDirectory</key>
   <string>@DEST@</string>

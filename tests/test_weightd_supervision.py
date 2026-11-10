@@ -525,12 +525,31 @@ curl() { echo FORBIDDEN_CURL >&3; }
             for host in hosts + ["spark10", "sparkg", "rtx5090", ""]:
                 with self.subTest(host=host, paired=paired):
                     result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + identity + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
-                                            env=dict(os.environ, HOST=host), capture_output=True, text=True)
+                                            env=dict(os.environ, HOST=host, SPARK_MESH_SECOND_RAIL=""), capture_output=True, text=True)
                     if host in hosts:
                         rank = hosts.index(host)
                         self.assertEqual((result.returncode, result.stdout), (0, "RANK=%d PAIRED=%s\n" % (rank, "1" if rank < paired else "")))
                     else:
                         self.assertEqual((result.returncode, result.stdout), (2, ""))
+
+    def test_a_second_rail_pairs_every_rank_and_refuses_other_values(self):
+        cabled = 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"'
+        seven = self.identity.replace(cabled, 'MESH_LINK_MAP="0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200"')
+        for host, value, expected in (("sparkf", "1", (0, "RANK=15 PAIRED=1\n")), ("sparke", "1", (0, "RANK=14 PAIRED=1\n")),
+                                      ("sparkf", "", (0, "RANK=15 PAIRED=\n")), ("spark0", "2", (2, ""))):
+            with self.subTest(host=host, value=value):
+                result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + seven + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
+                                        env=dict(os.environ, HOST=host, SPARK_MESH_SECOND_RAIL=value), capture_output=True, text=True)
+                self.assertEqual((result.returncode, result.stdout), expected, result.stderr)
+        unset = {key: value for key, value in os.environ.items() if key != "SPARK_MESH_SECOND_RAIL"}
+        result = subprocess.run(["bash", "-c", "set -uo pipefail\n" + seven + '\necho "RANK=$RANK PAIRED=$MESH_PAIRED"\n'],
+                                env=dict(unset, HOST="sparkf"), capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout), (0, "RANK=15 PAIRED=1\n"), result.stderr)
+
+    def test_a_second_rail_starts_weightd_with_the_rail_flag(self):
+        result = self.agent(owner="shell", extra_env={"MESH_SECOND_RAIL": "1"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(" --mesh-pair-interface test-pair --mesh-pair-sgid-index 3 --mesh-second-rail --mesh-traffic-class 106\n", self.units())
 
     def test_the_mesh_link_map_joins_only_cabled_rank_partners(self):
         line = next(line for line in self.identity.splitlines() if line.startswith("MESH_LINK_MAP="))

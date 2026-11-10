@@ -23,16 +23,17 @@ queue contract (`SPARK_QUEUE_ATTEMPT/RANK/SIZE/PORTS/RUNTIME_ROOT`), rewrites
 the committed family deployment and stage config into a private deployment
 under `$SPARK_QUEUE_RUNTIME_ROOT` (private runtime root, private KV
 directory, all listeners remapped into the lane's queue-reserved port
-ranges), exposes exactly one verified `packs/*.sha256` digest sidecar for
-weightd attach, then `exec`s the verified `sparkpipe_model_residentd` with
+ranges, the real pack named by its path), copies exactly one verified
+`packs/*.sha256` digest for weightd attach, then `exec`s the verified `sparkpipe_model_residentd` with
 `SPARK_WEIGHTD_ATTACH=1`, the socket path, the lane id and the physical mesh
 rank map. Nothing here starts a daemon in shared-socket mode.
 
 ## Porting checklist (per family)
 
 1. Commit the family deployment from `family_deployment.template.json` into
-   `deployment/<family>_<topology>/` with one node entry per rank and the
-   on-NVMe runtime roots (precedent: `deployment/glm5_next_tp16/`).
+   `deployment/<family>_<topology>/` with one node entry per rank, each naming
+   its own `config/stage_<rank as %02d>.json`, and the on-NVMe runtime roots
+   (precedent: `deployment/glm5_next_tp16/`).
 2. Fill `FAMILY PARAMETERS` in the wrapper copy: family, lane, hosts,
    `MESH_RANKS` (see the topology table in `docs/MULTIDEV_QUICKSTART.md`),
    build prefix, deployment source path, family env flags.
@@ -72,8 +73,10 @@ rank map. Nothing here starts a daemon in shared-socket mode.
 - Fail closed on: malformed pack identity, unknown listener configuration
   key, unreserved listener port, missing shared socket, unbounded KV
   backing, pack path escaping the runtime root.
-- `packs/` must contain exactly one `*.sha256` digest for shared weightd
-  attachment; pack bytes are shared read-only via symlinks.
+- The private stage config names the real pack by its path; a pack, digest,
+  manifest or stage config that is missing or a symlink refuses the job.
+  `packs/` holds exactly one copied `*.sha256` digest for shared weightd
+  attachment, and nothing is linked.
 - Every child stays in the queue cgroup; no nested SSH GPU launches; no
   private weightd on multi-node jobs.
 - Shared-lane smoke keeps B1/one-active-sequence with the pinned CUDA

@@ -136,14 +136,15 @@ def apply(args):
             added.seek(add_base + entry["offset"])
             emit(added.read(entry["bytes"]) + b"\0" * ((-entry["bytes"]) % ALIGN))
     experts = Path(str(pack) + ".experts")
-    raw = bytearray(experts.read_bytes())
-    count = struct.unpack_from("<I", raw, 8)[0]
-    if len(raw) != 16 + count * EXPERTS_RECORD:
-        raise PackFailure(f"{experts}: {len(raw)} bytes for {count} records")
-    for index in range(count):
-        at = 16 + index * EXPERTS_RECORD + 16
-        struct.pack_into("<Q", raw, at, struct.unpack_from("<Q", raw, at)[0] + shift)
-    Path(str(target) + ".experts").write_bytes(bytes(raw))
+    if experts.exists():
+        raw = bytearray(experts.read_bytes())
+        count = struct.unpack_from("<I", raw, 8)[0]
+        if len(raw) != 16 + count * EXPERTS_RECORD:
+            raise PackFailure(f"{experts}: {len(raw)} bytes for {count} records")
+        for index in range(count):
+            at = 16 + index * EXPERTS_RECORD + 16
+            struct.pack_into("<Q", raw, at, struct.unpack_from("<Q", raw, at)[0] + shift)
+        Path(str(target) + ".experts").write_bytes(bytes(raw))
     Path(str(target) + ".sha256").write_text(digest.hexdigest() + "\n")
     print(json.dumps({"pack": str(pack), "staged": str(target), "added": len(additions["tensors"]), "payload_shift": shift,
                       "bytes": target.stat().st_size, "sha256": digest.hexdigest()}))

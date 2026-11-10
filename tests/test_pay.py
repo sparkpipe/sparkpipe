@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import socketserver
 import sys
 import tempfile
@@ -32,6 +33,9 @@ SECRET = b"test-client-secret"
 CLIENT = "test-client-id"
 TOSS_LIVE = ("live_gck_fake_client", "live_gsk_fake_secret")
 TOSS_TEST = ("test_gck_fake_client", "test_gsk_fake_secret")
+HC_LADDER = [{"from": 1, "usd": 20, "krw": 26000}, {"from": 144, "usd": 15, "krw": 19500}]
+TEST_FLEETS = [{"id": "F1", "name": "Fleet 1", "kind": "16 Sparks", "state": "serving", "rate": 1, "hourFleet": True, "storageTB": 4},
+               {"id": "F3", "name": "Fleet 3", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": False, "storageTB": 4}]
 NOW = [datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)]
 
 
@@ -314,9 +318,20 @@ def lines_of(cfg, kind=None):
     return [line["type"] for line in found] if kind is None else [line["data"] for line in found if line["type"] == kind]
 
 
+def read_pricing(path):
+    return json.loads(path.read_text().split("=", 1)[1].strip().rstrip(";"))
+
+
+def write_pricing(path, pricing):
+    path.write_text("window.SP_PRICING = " + json.dumps(pricing, indent=2) + ";\n")
+
+
 def site_copy(work):
     (work / "site" / "terms").mkdir(parents=True)
-    shutil.copy(ROOT / "site" / "pricing.js", work / "site" / "pricing.js")
+    pricing = read_pricing(ROOT / "site" / "pricing.js")
+    pricing["hc"]["prices"] = HC_LADDER
+    pricing["fleets"] = [dict(fleet) for fleet in TEST_FLEETS]
+    write_pricing(work / "site" / "pricing.js", pricing)
     for name in sp.TERMS.values():
         shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
     (work / "secret").write_text("test-client-secret\n")
@@ -346,7 +361,7 @@ LEGACY = [
 
 def run_main(cfg, args, capture=True):
     saved = dict(os.environ)
-    os.environ.update({"SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
+    os.environ.update({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": cfg.data, "SPARKPIPE_PAY_SITE": cfg.site, "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(Path(cfg.site).parent / "secret"),
                        "SPARKPIPE_PAY_SMTP": cfg.smtp, "TOSS_API": cfg.toss_api, "TOSS_CLIENT_KEY": cfg.toss_client, "TOSS_SECRET_KEY": cfg.toss_secret})
     try:
         if not capture:
@@ -368,6 +383,48 @@ def mode(path):
     return os.stat(path).st_mode & 0o777
 
 
+def check_listen_queue(failures):
+    burst = 64
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-queue-"))
+    sockets, server, serving = [], None, False
+    try:
+        site_copy(work)
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
+        with contextlib.redirect_stderr(io.StringIO()):
+            server = sp.start(cfg, port=0)
+        for _ in range(burst):
+            sock = socket.socket()
+            sock.settimeout(2)
+            try:
+                sock.connect(server.server_address)
+            except OSError:
+                sock.close()
+                break
+            sockets.append(sock)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        serving = True
+        answered = 0
+        for sock in sockets:
+            try:
+                sock.sendall(b"GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n")
+                reply = b""
+                while chunk := sock.recv(4096):
+                    reply += chunk
+                answered += reply.split(b"\r\n", 1)[0].split(b" ")[1:2] == [b"200"]
+            except OSError:
+                pass
+        if len(sockets) < burst or answered < burst:
+            failures.append(f"a burst of {burst} connections that arrives while the service is busy is not queued and answered: {len(sockets)} queued, {answered} answered")
+    finally:
+        for sock in sockets:
+            sock.close()
+        if serving:
+            server.shutdown()
+        if server is not None:
+            server.server_close()
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def check_torn_files(failures):
     work = Path(tempfile.mkdtemp(prefix="sparkpipe-torn-"))
     try:
@@ -382,7 +439,7 @@ def check_torn_files(failures):
         notices.write_text(whole() + '{"notice": "NTB", "acc' + whole(notice="NTC", once="third") + whole(notice="NTD", once="fourth") + '{"notice": "NTG", "once": "to')
         deliveries.write_text(f'{{"notice": "NTA", "target": "WH1", "attempts": 1, "outcome": "delivered", "at": "{today}T00:00:00Z"}}\n{{"notice": "NT')
         usage.write_text('{"request": "r1", "account": "ACX", "fleet": "F1", "at": "2027-01-05T09:00:00Z"}\nnot json\n{"request": "r2", "acc')
-        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(data), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(data), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret")})
         logged = io.StringIO()
         with contextlib.redirect_stderr(logged):
             try:
@@ -431,7 +488,7 @@ def check_legacy(failures):
         site_copy(work)
         (work / "data").mkdir()
         (work / "data" / "ledger.jsonl").write_text(chain(LEGACY))
-        cfg = sp.Config({"SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
                          "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"})
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -463,7 +520,7 @@ def check_service(failures):
     try:
         site_copy(work)
         cfg = sp.Config({
-            "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
+            "SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"),
             "COINPAYMENTS_API": f"http://127.0.0.1:{fake.server_address[1]}/api/v2",
             "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
             "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}",
@@ -678,7 +735,7 @@ def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
 
 def toss_env(work, fake, mailbox, keys, name="data", sandbox=False):
     env = {
-        "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
+        "SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"),
         "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT, "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"),
         "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "TOSS_API": f"http://127.0.0.1:{fake.server_address[1]}",
     }
@@ -956,7 +1013,7 @@ SHOWN_BANK = {"beneficiary": "Test Beneficiary Co", "bank": "Test Foreign Exchan
 
 
 def swift_env(work, mailbox, name, bank=True):
-    env = {"SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
+    env = {"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / name), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_API": "http://127.0.0.1:9/api/v2", "COINPAYMENTS_CLIENT_ID": CLIENT,
            "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"), "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}"}
     return dict(env, **(BANK if bank else {}))
 
@@ -1093,6 +1150,7 @@ def main():
     check_units(failures)
     check_gateway_units(failures)
     check_torn_files(failures)
+    check_listen_queue(failures)
     check_legacy(failures)
     check_service(failures)
     check_toss(failures)
@@ -1101,7 +1159,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
+    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 

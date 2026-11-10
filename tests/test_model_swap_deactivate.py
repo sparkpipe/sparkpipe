@@ -15,16 +15,17 @@ sys.path.insert(0, str(ROOT / "tools" / "serving"))
 import model_swap  # noqa: E402
 
 GIB = 2 ** 30
-FAKE_SSH = """import os, sys, time
-words = sys.argv[2].split()
-with open(os.path.join(os.path.dirname(sys.argv[0]), "ssh.log"), "a") as log:
-    log.write(sys.argv[1] + " " + sys.argv[2] + "\\n")
-if words[0] == "PROBE":
-    print(200 * 2 ** 30)
-elif words[0] == "READY":
-    print("READY")
-elif words[0] == "STOP":
-    time.sleep(0.3)
+FAKE_SSH = """import os, re, sys, time
+for command in re.findall(r"[(] (.+?) [)]", sys.argv[2]) or [sys.argv[2]]:
+    words = command.split()
+    with open(os.path.join(os.path.dirname(sys.argv[0]), "ssh.log"), "a") as log:
+        log.write(sys.argv[1] + " " + command + "\\n")
+    if words[0] == "PROBE":
+        print(200 * 2 ** 30)
+    elif words[0] == "READY":
+        print("READY")
+    elif words[0] == "STOP":
+        time.sleep(0.3)
 """
 
 
