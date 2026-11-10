@@ -346,9 +346,10 @@ Landed in the pull request that carries this page:
   the model interface, and the common runner drives the layer loop for the
   whole step and for each prefill lane; a model's `Step` remains only as the
   composition the Metal device runner still calls. K3 stays on `step` until
-  its dispatch engine is split the same way. The two prefill lanes are now
-  two frames the runner interleaves layer by layer on one thread; the lane
-  worker thread, its mutex and its turn protocol are gone. A model declares
+  its dispatch engine is split the same way. The two prefill lanes are two
+  frames the runner drives layer by layer; the second runs on its worker
+  thread (a one-thread interleave was tried and cost 12% of prefill on the
+  fleet, see below). A model declares
   its minimum rows per frame (`chunk_rows`) and the runner's split honours it
   before any lane is set up, and the MoE families' own row guards are gone.
   The engine now builds a prefill wave's rows sequence by sequence instead of
@@ -381,9 +382,12 @@ A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
 line is bit-identical to `main` on the release kit's six prompts, the head
 keeps every token with the Metal line's publisher numerics in the logprobs,
-eight streams gain 9 to 12%, and **prefill lost about 12%**, which points at
-the two lanes interleaved on one host thread. That regression comes before
-anything below. The gate also found that the release kit did not ship the
+eight streams gain 13%, and prefill had lost about 12% to the two lanes
+interleaved on one host thread, which serialised one lane's collective rounds
+with the other's enqueues. The second lane is back on its worker thread
+(prefill returns to `main`'s time, outputs unchanged); the one-thread
+interleave needs rounds that do not block the host first, which is step 2's
+collective half. The gate also found that the release kit did not ship the
 device library every adapter now loads (fixed).
 
 Still open, in the order above:

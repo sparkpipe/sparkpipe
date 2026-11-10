@@ -355,9 +355,11 @@ int main(void)
 		for ( index = 0u; index < SPARK_STAGE_RUNNER_LANES; ++index )
 		{
 			lanes->lane[index].epoch = 0u;
-			lanes->lane[index].rounds = 0u;
+			lanes->lane[index].group_rounds = 0u;
+			lanes->lane[index].holding = 0u;
 			lanes->lane[index].finished = 0u;
 		}
+		lanes->failed = 0u;
 		lanes->lane[0].sum_flags = prefill;
 		lanes->lane[1].sum_flags = 0u;
 		state->sum_flags = prefill | verify;

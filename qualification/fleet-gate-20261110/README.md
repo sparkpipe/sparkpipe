@@ -11,6 +11,7 @@ in model mode from its own root, with its own API instance on the hub
 | A | `fded9e032` | `main`, the pull request's base |
 | B | `1dc695de0` | this branch before the Metal line: audit fixes, the runner-owned layer loop, tree verification, the folded perf changes |
 | C | `f5a80228f` | this branch's head: B plus the Metal line and the audit's deletions |
+| D | C plus the fix | C with the second prefill lane back on its worker thread |
 
 Prompts: the release kit's six (`tools/release_capture.py` with the kit's
 `prompt_source.c`: four short, one of 1,980 tokens, one of 7,693), greedy,
@@ -39,16 +40,19 @@ same tokens inside a batch of eight.
 
 ## Speed, speculation off
 
-| | A | B | C |
-| --- | ---: | ---: | ---: |
-| One stream, 256 tokens, tok/s (median of 3) | 46.7 | 45.0 | 47.0 |
-| Eight streams of 256 tokens, aggregate tok/s, prefill included | 218 | 237 | 243 |
-| 5,947-token prefill, seconds (3 runs) | 1.85 to 1.88 | 2.12 to 2.23 | 2.09 to 2.10 |
+| | A | B | C | D |
+| --- | ---: | ---: | ---: | ---: |
+| One stream, 256 tokens, tok/s (median of 3) | 46.7 | 45.0 | 47.0 | 47.2 to 47.6 |
+| Eight streams of 256 tokens, aggregate tok/s, prefill included | 218 | 237 | 243 | 246 to 248 |
+| 5,947-token prefill, seconds (3 runs) | 1.85 to 1.88 | 2.12 to 2.23 | 2.09 to 2.10 | 1.83 to 1.92 |
 
-Eight streams gain 9 to 12%. **Prefill lost about 12% on this branch.** B
-and C share it, so it comes from the runner changes, not the Metal line; the
-suspect is the two prefill lanes interleaved on one host thread in place of
-the lane worker thread. It must be fixed or reverted before a release.
+Eight streams gain 13% over `main`. B and C lost about 12% of prefill: the
+two prefill lanes interleaved on one host thread serialise each lane's
+collective rounds with the other lane's enqueues, where the worker thread
+overlapped them. D restores the worker thread, returns prefill to `main`'s
+time and keeps C's outputs bit for bit (6 of 6 exact against C). The
+interleave on one thread can come back only with rounds that do not block
+the host.
 
 ## Not covered
 
