@@ -129,9 +129,6 @@ current authority.
 - [`SERVING_RELEASE_RECOVERY_20260924.md`](SERVING_RELEASE_RECOVERY_20260924.md):
   reproducing the `shared-serving-20260922` release (dated record; its
   replay needs an operator maintenance window).
-- [`operations/managed-driver-station.md`](operations/managed-driver-station.md):
-  the 2026-09-24 managed driver station layout (dated record; the fleet now
-  serves GLM 5.3 Flash under fleet-agent, see the runbook).
 
 ## Changing status
 
