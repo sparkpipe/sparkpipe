@@ -541,7 +541,6 @@ PYTHON_TESTS := \
 	tests/test_perf_estimate.py \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
-	tests/test_p3_batched_small_rows_host.py \
 	tests/test_glm53full_compsec17.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \

@@ -129,11 +129,6 @@
 1 tools/qwen38_27b_stagepack.py: scalar element width is assigned as a byte literal
 1 tools/qwen38_tp4_collective_bench.c: cudaMalloc uses a raw byte-width multiplier
 1 tools/qwen38_tp4_nccl_bench.c: cudaMalloc uses a raw byte-width multiplier
-10 tools/qwen4_flash_nvfp4_smoke.cu: cudaMalloc uses a raw byte-width multiplier
-8 tools/qwen4_flash_nvfp4_smoke.cu: cudaMemcpy uses a raw byte-width multiplier
-3 tools/qwen4_flash_nvfp4_smoke.cu: malloc uses a raw byte-width multiplier
-16 tools/qwen4_flash_nvfp4_smoke.cu: memcpy uses a direct size/count literal
-1 tools/qwen4_flash_nvfp4_smoke.cu: wire header uses a numeric field offset
 1 tools/qwen4_flash_pack_stamp_check.py: GLM model literal 6144 is outside the model contract
 4 tools/slot_bench.cu: cudaMalloc uses a raw byte-width multiplier
 1 tools/slot_bench.cu: cudaMemset uses a raw byte-width multiplier

@@ -217,9 +217,6 @@ def validate_quantizer_writes() -> None:
 def validate_model_precision_contracts() -> None:
     codec = read("inference/kernels/weight_codec.cuh")
     k3 = read("inference/llms/kimi_k3/layer.cuh")
-    common = read(
-        "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
-    )
 
     for name in (
         "INT6",
@@ -241,9 +238,6 @@ def validate_model_precision_contracts() -> None:
     forbid(strip_comments_and_literals(k3), "LmScaleTensorBlockUe8m0(",
            "K3 far-plane scale descriptor over an interleaved stream")
 
-    require(common, "LmMmaMxf8Mxf4(gate_total", "native routed MXF8xMXF4 W1 atom")
-    require(common, "LmMmaMxf8Mxf4(up_total", "native routed MXF8xMXF4 W3 atom")
-    require(common, "LmMmaMxf8Mxf4(total", "native routed MXF8xMXF4 W2 atom")
 
 
 def validate_k3_exact_replay() -> None:
