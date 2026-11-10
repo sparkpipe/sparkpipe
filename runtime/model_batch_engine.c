@@ -191,6 +191,7 @@ struct SparkModelBatchEngine
 	SparkModelBatchEventFunction event_function;
 	void *event_context;
 	SparkModelBatchRequestState *requests;
+	uint64_t *live_slots;
 	SparkModelBatchSubmissionState *submissions;
 	uint32_t *request_token_storage;
 	uint32_t *resident_slot_next;
@@ -490,6 +491,37 @@ uint32_t SparkModelBatchSchedulerChooseWorkKind(
 		*next_work_kind = selected == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH ? SPARK_MODEL_SERVING_WORK_KIND_PREFILL : selected + 1u;
 	}
 	return(selected);
+}
+
+static uint32_t SparkModelBatchNextLive(
+	const SparkModelBatchEngine *engine,
+	uint32_t from)
+{
+	uint32_t word,words;
+	uint64_t bits;
+	if ( from >= engine->request_capacity )
+		return(engine->request_capacity);
+	words = (engine->request_capacity + 63u) / 64u;
+	word = from / 64u;
+	bits = engine->live_slots[word] & (~UINT64_C(0) << (from % 64u));
+	while ( bits == 0u )
+	{
+		if ( ++word >= words )
+			return(engine->request_capacity);
+		bits = engine->live_slots[word];
+	}
+	return(word * 64u + (uint32_t)__builtin_ctzll(bits));
+}
+
+static void SparkModelBatchMarkLive(
+	SparkModelBatchEngine *engine,
+	uint32_t slot,
+	uint32_t live)
+{
+	if ( live != 0u )
+		engine->live_slots[slot / 64u] |= UINT64_C(1) << (slot % 64u);
+	else
+		engine->live_slots[slot / 64u] &= ~(UINT64_C(1) << (slot % 64u));
 }
 
 static uint32_t *SparkModelBatchRequestTokens(
@@ -801,7 +833,7 @@ static uint32_t SparkModelBatchBackgroundYields(
 	uint32_t index,prefill = 0u,decode = 0u,ready = 0u;
 	if ( work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL && work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
 		return(0u);
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( SparkModelBatchInteractive(request) == 0u )
@@ -834,7 +866,7 @@ static uint32_t SparkModelBatchPrefillWaiting(SparkModelBatchEngine *engine)
 {
 	uint32_t slot,yields;
 	yields = SparkModelBatchBackgroundYields(engine,SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
-	for (slot=0u; slot<engine->request_capacity; slot++)
+	for (slot=SparkModelBatchNextLive(engine,0u); slot<engine->request_capacity; slot=SparkModelBatchNextLive(engine,slot + 1u))
 		if ( SparkModelBatchPrefillCanStart(engine,&engine->requests[slot],yields) != 0u )
 			return(1u);
 	return(0u);
@@ -928,6 +960,7 @@ static void SparkModelBatchFreeRequest(
 	request->resident_sequence_slot = SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT;
 	request->next_free_slot = engine->free_request_head;
 	engine->free_request_head = slot;
+	SparkModelBatchMarkLive(engine,slot,0u);
 	engine->live_request_count--;
 }
 
@@ -1934,6 +1967,7 @@ static SparkStatus SparkModelBatchAllocate(
 	request_tokens = engine->request_capacity * engine->max_context_tokens;
 	submission_lanes = engine->submission_capacity * engine->max_active_sequence_count;
 	engine->requests = (SparkModelBatchRequestState *)calloc(engine->request_capacity,sizeof(engine->requests[0]));
+	engine->live_slots = (uint64_t *)calloc((engine->request_capacity + 63u) / 64u,sizeof(engine->live_slots[0]));
 	engine->submissions = (SparkModelBatchSubmissionState *)calloc(engine->submission_capacity,sizeof(engine->submissions[0]));
 	engine->request_token_storage = (uint32_t *)calloc(request_tokens,sizeof(engine->request_token_storage[0]));
 	engine->resident_slot_next = (uint32_t *)calloc(engine->resident_sequence_capacity,sizeof(engine->resident_slot_next[0]));
@@ -1953,7 +1987,7 @@ static SparkStatus SparkModelBatchAllocate(
 	engine->scratch_request_order = (uint32_t *)calloc(engine->request_capacity,sizeof(engine->scratch_request_order[0]));
 	if ( engine->scratch_request_order == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( engine->requests == 0 || engine->submissions == 0 || engine->request_token_storage == 0 || engine->resident_slot_next == 0 || engine->submission_request_slots == 0 || engine->submission_prefill_counts == 0 || engine->scratch_lanes == 0 || engine->scratch_token_ids == 0 || engine->scratch_row_lane_indices == 0 || engine->scratch_row_positions == 0 || engine->scratch_row_sequence_ids == 0 || engine->scratch_block_identities == 0 || engine->scratch_request_slots == 0 || engine->scratch_prefill_counts == 0 || engine->scratch_row_slots == 0 || engine->scratch_row_parent_rows == 0 || engine->draft_nodes == 0 )
+	if ( engine->requests == 0 || engine->live_slots == 0 || engine->submissions == 0 || engine->request_token_storage == 0 || engine->resident_slot_next == 0 || engine->submission_request_slots == 0 || engine->submission_prefill_counts == 0 || engine->scratch_lanes == 0 || engine->scratch_token_ids == 0 || engine->scratch_row_lane_indices == 0 || engine->scratch_row_positions == 0 || engine->scratch_row_sequence_ids == 0 || engine->scratch_block_identities == 0 || engine->scratch_request_slots == 0 || engine->scratch_prefill_counts == 0 || engine->scratch_row_slots == 0 || engine->scratch_row_parent_rows == 0 || engine->draft_nodes == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( engine->verify_capable != 0u )
 	{
@@ -2337,6 +2371,7 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 	free(engine->lookup_heads);
 	free(engine->lookup_chain);
 	free(engine->submissions);
+	free(engine->live_slots);
 	free(engine->requests);
 	free(engine);
 	return(SPARK_STATUS_OK);
@@ -2348,7 +2383,7 @@ static uint32_t SparkModelBatchRequestIdExists(
 	uint64_t sequence_id)
 {
 	uint32_t index;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 		if ( engine->requests[index].state != SPARK_MODEL_BATCH_REQUEST_FREE && (engine->requests[index].request_id == request_id || engine->requests[index].sequence_id == sequence_id) )
 			return(1u);
 	return(0u);
@@ -2471,6 +2506,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 		}
 	}
 	SparkSha256Initialize(&state->cache_published_digest_context);
+	SparkModelBatchMarkLive(engine,slot,1u);
 	engine->live_request_count++;
 	engine->submitted_request_count++;
 	engine->next_progress_ns = 1u;
@@ -2792,7 +2828,7 @@ static void SparkModelBatchCountDispatchableRequests(
 	unbound_background = 0u;
 	prefill_yields = SparkModelBatchBackgroundYields(engine,SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 	decode_yields = SparkModelBatchBackgroundYields(engine,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
@@ -2989,7 +3025,7 @@ static void SparkModelBatchUpdateRequestAges(
 	uint32_t selected)
 {
 	uint32_t index,lane;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 		if ( engine->requests[index].state == state && engine->requests[index].scheduling_bypass_count != UINT32_MAX )
 			engine->requests[index].scheduling_bypass_count++;
 	for (lane=0u; lane<selected; lane++)
@@ -3005,19 +3041,22 @@ static void SparkModelBatchOrderRequests(
 	SparkModelBatchEngine *engine,
 	uint32_t state)
 {
-	uint32_t index,slot,count = 0u,cursor;
-	for (index=0u; index<engine->request_capacity; index++)
+	uint32_t pass,slot,end,count = 0u,cursor;
+	for (pass=0u; pass<2u; pass++)
 	{
-		slot = (engine->next_request_scan + index) % engine->request_capacity;
-		if ( engine->requests[slot].state != state )
-			continue;
-		cursor = count++;
-		while ( cursor != 0u && SparkModelBatchDeadlineKey(&engine->requests[engine->scratch_request_order[cursor - 1u]]) > SparkModelBatchDeadlineKey(&engine->requests[slot]) )
+		end = pass == 0u ? engine->request_capacity : engine->next_request_scan;
+		for (slot=SparkModelBatchNextLive(engine,pass == 0u ? engine->next_request_scan : 0u); slot<end; slot=SparkModelBatchNextLive(engine,slot + 1u))
 		{
-			engine->scratch_request_order[cursor] = engine->scratch_request_order[cursor - 1u];
-			cursor--;
+			if ( engine->requests[slot].state != state )
+				continue;
+			cursor = count++;
+			while ( cursor != 0u && SparkModelBatchDeadlineKey(&engine->requests[engine->scratch_request_order[cursor - 1u]]) > SparkModelBatchDeadlineKey(&engine->requests[slot]) )
+			{
+				engine->scratch_request_order[cursor] = engine->scratch_request_order[cursor - 1u];
+				cursor--;
+			}
+			engine->scratch_request_order[cursor] = slot;
 		}
-		engine->scratch_request_order[cursor] = slot;
 	}
 	engine->scratch_request_order_count = count;
 }
@@ -3034,7 +3073,7 @@ static uint32_t SparkModelBatchSelectClass(
 {
 	const SparkModelBatchRequestState *request;
 	uint32_t index,maximum_priority = 0u;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( request->state == state && SparkModelBatchInteractive(request) == interactive &&
@@ -4288,7 +4327,7 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	prefill_yields = SparkModelBatchBackgroundYields(engine,SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 	decode_yields = SparkModelBatchBackgroundYields(engine,SPARK_MODEL_SERVING_WORK_KIND_DECODE);
 	pending_prefill = 0u;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL || request->state == SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT )
@@ -4364,7 +4403,7 @@ static void SparkModelBatchExpireStalledRequests(
 		    (uint64_t)timestamp.tv_nsec;
 	if ( now == 0ull )
 		return;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		state = engine->requests[index].state;
 		if ( state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT &&
@@ -4393,7 +4432,7 @@ static void SparkModelBatchFailIdleRequests(
 	SparkStatus status)
 {
 	uint32_t index,state;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		state = engine->requests[index].state;
 		if ( state != SPARK_MODEL_BATCH_REQUEST_FREE && state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT && state != SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT && state != SPARK_MODEL_BATCH_REQUEST_RELEASE_INFLIGHT && state != SPARK_MODEL_BATCH_REQUEST_PUBLISH_INFLIGHT )
@@ -4414,7 +4453,7 @@ static void SparkModelBatchRefreshContextLimit(SparkModelBatchEngine *engine)
 		return;
 	engine->context_tokens = limit;
 	fprintf(stderr,"batch engine context limit %u positions (smallest adapter limit %u, configured %u)\n",limit,view.max_sequence_positions,engine->max_context_tokens);
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_FREE || request->state == SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_DECODE_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_RELEASE_INFLIGHT || request->state == SPARK_MODEL_BATCH_REQUEST_PUBLISH_INFLIGHT )
@@ -4445,7 +4484,7 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 	uint32_t index;
 	if ( engine->inflight_submission_count != 0u )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		SparkModelBatchRequestState *request = &engine->requests[index];
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_FREE )
@@ -4685,7 +4724,7 @@ SparkStatus SparkModelBatchEngineBeginShutdown(
 	if ( engine == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->admission_open = 0u;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		request = &engine->requests[index];
 		if ( request->state == SPARK_MODEL_BATCH_REQUEST_FREE )
@@ -4719,7 +4758,7 @@ static void SparkModelBatchCountStates(
 	SparkModelBatchEngineView *view)
 {
 	uint32_t index;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		if ( engine->requests[index].state == SPARK_MODEL_BATCH_REQUEST_QUEUED_PREFILL )
 			view->queued_prefill_count++;
@@ -4876,7 +4915,7 @@ uint64_t SparkModelBatchEngineNextProgressNs(
 	if ( engine->failed_status != SPARK_STATUS_OK )
 		return(0u);
 	deadline = engine->next_progress_ns;
-	for (index=0u; index<engine->request_capacity; index++)
+	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		const SparkModelBatchRequestState *request = &engine->requests[index];
 		if ( request->state != SPARK_MODEL_BATCH_REQUEST_PREFILL_INFLIGHT &&
