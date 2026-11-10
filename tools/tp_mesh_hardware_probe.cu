@@ -337,6 +337,12 @@ struct Probe
         }
         return static_cast<double>(Now()-begin)/1e6;
     }
+    uint64_t AllToAllAdvances(uint32_t n,uint64_t count) const
+    {
+        if ((routes&SPARK_TP_MESH_ROUTES_PEER)==0u) return SparkTpMeshAllToAllChunks(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES);
+        return SparkTpMeshAllToAllPipelined(count,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SparkTpMeshPipelineChunks(count,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+            SparkTpMeshAllToAllPeerChunks(count,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
+    }
     void Verify(bool failed=false,bool timed_out=false)
     {
         for (uint32_t rank=0u;rank<degree;rank++)
@@ -373,7 +379,7 @@ struct Probe
                 uint64_t advances=rows==1u && SparkTpMeshDirectPipelined(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)!=0u ?
                     SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+
                         ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u && SparkTpMeshGatherPairFirst(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS : 0u) :
-                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? SparkTpMeshPairFirstScatterChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u : SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? SparkTpMeshPairFirstScatterChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u : SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? AllToAllAdvances(degree,elements) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq-seq_base[rank]==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
@@ -396,7 +402,7 @@ struct Probe
                     routes=route_set;
                     Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,false);Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,true);
                     std::printf("ALL-TO-ALL routes=%s degree=%u per_peer=%llu rounds=%llu PASS\n",(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? "peer" : "scatter",n,(unsigned long long)count,
-                        (unsigned long long)((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(count,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES)));
+                        (unsigned long long)AllToAllAdvances(n,count));
                 }
         routes=saved;
     }
