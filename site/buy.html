@@ -61,6 +61,7 @@
         <div id="known" hidden class="form">
           <p>Signed in as <b id="known-email"></b> for <b id="known-company"></b>. <button class="linkish" type="button" id="switch">Use another email</button></p>
           <button class="btn solid big" type="button" id="known-go">Continue</button>
+          <p class="flash" id="m-known" hidden></p>
         </div>
         <form class="form" id="f-2" novalidate>
           <label>Company legal name, or your full name<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd. or Jane Kim"></label>
@@ -262,6 +263,10 @@
   };
 
   const go = (step) => {
+    if (step === 3 && S.me && S.me.role !== 'owner') {
+      step = 2;
+      SP.say($('m-known'), 'Only the account owner can buy HC. You are signed in as ' + S.me.role + ' of ' + S.me.company + '; ask the owner, or use another email.', 'error');
+    } else if (step === 2) SP.say($('m-known'), '');
     S.step = step;
     [1, 2, 3].forEach((n) => {
       const el = $('step-' + n);
@@ -281,6 +286,7 @@
   };
   [1, 2].forEach((n) => $('step-' + n).querySelector('.step-head').addEventListener('click', () => { if (S.step > n) go(n); }));
 
+  const whole = (n) => (Number.isFinite(n) ? BigInt(n).toString() : String(n));
   const busy = async (button, note, task) => {
     button.disabled = true;
     SP.say(note, '');
@@ -326,7 +332,7 @@
       go(3);
     });
   });
-  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); }));
+  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A code is on its way again. Any code we sent in the last 10 minutes still works.', 'ok'); }));
   $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-2').hidden = false; $('email').focus(); });
   $('switch').addEventListener('click', async () => {
     await SP.call('/signout', {}).catch(() => {});
@@ -349,8 +355,8 @@
       if (toss) SP.tossReady();
       $('pay').textContent = toss ? 'Opening the payment…' : 'Creating your invoice…';
       const accept = $('accept-again').checked || undefined;
-      const body = toss ? { product: 'credits', hc: String(S.hc), processor: 'toss', brn: brn || undefined, accept }
-        : bank ? { product: 'credits', hc: String(S.hc), processor: 'swift', declare: true, accept } : { product: 'credits', hc: String(S.hc), coin, accept };
+      const body = toss ? { product: 'credits', hc: whole(S.hc), processor: 'toss', brn: brn || undefined, accept }
+        : bank ? { product: 'credits', hc: whole(S.hc), processor: 'swift', declare: true, accept } : { product: 'credits', hc: whole(S.hc), coin, accept };
       let placed;
       try {
         placed = await SP.call('/order', body);
