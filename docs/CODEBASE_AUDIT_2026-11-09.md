@@ -390,6 +390,8 @@ interleave needs rounds that do not block the host first, which is step 2's
 collective half. The gate also found that the release kit did not ship the
 device library every adapter now loads (fixed).
 
+The second fleet run, Gemma 4 26B-A4B at 16 sequences, is in the same receipt: the work before the Metal line is bit-identical to `main` there too, sixteen streams gain 24%, and the Metal line's numerics leave one open defect (a short prompt's first token depends on its batch) that blocks the release until it is closed.
+
 Still open, in the order above:
 
 - Step 2, the collective half: the wave-boundary IPC and chain key,

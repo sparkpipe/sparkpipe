@@ -58,8 +58,8 @@ the host.
 
 No verify frame ran on A or C for a copy workload (600 tokens after six
 copies of a C file): lookup speculation did not engage on this lane, so
-verify and tree frames are unproven on the fleet. One model of twenty ran;
-MoE families, 16-sequence lanes and the 1M window did not.
+verify and tree frames are unproven on the fleet. Two models of twenty ran
+(the second is below); the 1M window did not.
 
 ## Found on the way
 
@@ -75,3 +75,70 @@ MoE families, 16-sequence lanes and the 1M window did not.
 Raw captures, comparison outputs and the gate scripts are on the hub under
 `/srv/workspace/sparkpipe/audit-lane/` (`gate1` for C, `gateA`, `gateB`,
 `gate2.py`, `gate3.py`, `gate4.py`).
+
+## Gemma 4 26B-A4B: the MoE and 16-sequence run
+
+Gemma 4 26B-A4B at TP16, 16 sequences, 2,048-row waves, on the same lane with
+its own API instance. A and B are the builds above; H is `669b261ce`, this
+branch's head with the worker thread back; C is `f5a80228f` where named.
+
+| Comparison | Tokens | Logprobs |
+| --- | --- | --- |
+| B against A | equal, 6 of 6 | bit-identical, 6 of 6 |
+| H repeated | equal, 6 of 6 | bit-identical |
+| H against A | four prompts differ (first difference at token 0, 3, 14 and 4), two are equal | served-token deltas up to 11.5 |
+| A against the production capture of `a85cf215a` (11-04) | all six differ | A's short prompt decays into one repeated token after seven |
+| H against that capture | the short prompt's 11 tokens are equal; the other five differ (first difference at 3, 47, 2, 26 and 2) | |
+
+Everything in this pull request before the Metal line is bit-identical to
+`main` on an MoE model as well. `main`'s Gemma output is no longer the last
+release's. The Metal line's numerics (for this family: rope with rounded
+terms and the rounded residual sum; its norms keep their order) change the
+output materially and return the short prompt to the release's tokens. No
+Gemma reference golden was compared here, so which of the three is the
+publisher's output is not settled by this run.
+
+| Speed, speculation off | A | H |
+| --- | ---: | ---: |
+| One stream, tok/s | 92.0 | 92.8 |
+| Sixteen streams, aggregate tok/s, prefill included | 438 | 543 |
+| About 6,000-token prefill, seconds | 1.14 to 1.49 | 1.06 to 1.21 |
+
+### Open defect: a short prompt's first token depends on its batch
+
+Seen on H, on C and on `b57f1e375` (the numerics merge alone on top of B);
+not on A or B. A 6-token prompt that is prefilled while other short prompts
+are being prefilled takes a second value for about one prompt in five.
+
+- The second value is one per prompt: the same top-4 candidates reweighted
+  (the served logprob moves by 0.1 to 1.3), and the greedy token flips where
+  the top two were close. It is the same on C and H and does not depend on
+  which other prompts share the batch.
+- It follows the request's place in the wave, not its text: fifteen prompts
+  queued behind a long prefill turn at the same places in forward and in
+  reverse order. In the run that was timed, the requests that turned
+  completed about 5 ms after the ones that did not.
+- Never at two concurrent requests, never for prompts of 12, 18, 25 or 27
+  tokens, never when a single request is repeated. Prompts this short are
+  not cached (`cached_tokens` is 0), so the prefix cache is not involved.
+- B is exact in every cell of the same matrix, bar one 0.0045 logprob
+  difference among sixteen identical copies.
+- Ruled out by lane runs: the 2 to 16 row frame kernel of #1891 (the head
+  without it behaves the same), the second prefill lane's worker thread (C
+  has both lanes on one thread and behaves the same) and the lane split
+  (it starts at 256 rows).
+- What the numerics merge changes for this family is row-local, and Gemma
+  takes the tiled GQA shard kernel, which did not get the value-weight
+  rounding of the scalar one. So either a batch-dependent path in those
+  changes is still unfound, or the merge makes visible a difference that B's
+  output hides. The cause is open.
+
+To reproduce: the lane above, then on the hub under
+`/srv/workspace/sparkpipe/audit-lane/`: `gate7.py <port>` (three rounds of
+sixteen short prompts, batch against single; the numerics merge gives 19 of
+96), `gate5.py <port>` (the cold and warm, single and batch matrix; exact on
+B) and `gate8.py <port>` (the place-in-wave pattern). Captures are in
+`gemma-A-bos`, `gemma-B`, `gemma-H-bos` and `gemma-X` beside them.
+
+Until this is closed the pull request is not ready for a release that serves
+MoE models or short prompts in batches.
