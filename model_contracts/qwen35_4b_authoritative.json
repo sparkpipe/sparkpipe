@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "model_id": "Qwen/Qwen3.5-4B",
+  "revision": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+  "revision_date": "2026-03-02",
+  "source": "https://huggingface.co/Qwen/Qwen3.5-4B",
+  "architecture": "GatedDeltaNet hybrid, dense FFN, multimodal (image-text-to-text), tied embeddings",
+  "sources": {
+    "checkpoint_config": "config.json text_config at the pinned revision, read 2026-11-09",
+    "geometry_note": "the Qwen3_5ForConditionalGeneration hybrid of Qwen 3.8 27B at a smaller size: 3:1 GDN:attention, dense FFN, MTP 1, vocab 248320, with the head tied to the embedding",
+    "known_gaps": [
+      "vision tower and multimodal input out of scope by contract (text decode path only)",
+      "mrope_interleaved sections [11,11,10] degenerate to plain rope for text-only decode",
+      "MTP layer not packed"
+    ],
+    "precision_policy": "all weights and activations BF16, GEMM accumulation and GDN recurrent state FP32 (mamba_ssm_dtype float32)"
+  },
+  "model": {
+    "hidden_dimension": 2560,
+    "layer_count": 32,
+    "vocabulary_size": 248320,
+    "rms_norm_epsilon": 1e-06,
+    "dense_intermediate_dimension": 9216,
+    "mtp_layer_count": 1,
+    "maximum_context_tokens": 262144,
+    "tied_embeddings": true
+  },
+  "hybrid_attention": {
+    "period": 4,
+    "full_phase": 3,
+    "gdn_layer_count": 24,
+    "full_layer_count": 8
+  },
+  "gdn": {
+    "key_head_count": 16,
+    "value_head_count": 32,
+    "key_dimension": 128,
+    "value_dimension": 128,
+    "short_conv_kernel": 4,
+    "state_element_type": "fp32"
+  },
+  "attention": {
+    "query_head_count": 16,
+    "kv_head_count": 4,
+    "head_dimension": 256,
+    "rope_dimension": 64,
+    "rope_theta": 10000000.0,
+    "rope_convention": "partial_rotary_first_dims",
+    "output_gate": true
+  },
+  "precision": {
+    "weight_format": "bf16",
+    "activation_format": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  },
+  "qualification": {
+    "metal_target": "apple10",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}

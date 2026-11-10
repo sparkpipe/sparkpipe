@@ -80,7 +80,7 @@ typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 typedef const SparkStageRunnerModelInterface *(*RunModelAt)(uint32_t tp_degree);
 
 static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel,
-	SparkMuseGlimmerDeviceStageModel, SparkQwen38FlashDeviceStageModel };
+	SparkMuseGlimmerDeviceStageModel, SparkQwen38FlashDeviceStageModel, SparkQwen35_4bDeviceStageModel, SparkQwen35_2bDeviceStageModel };
 static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, SparkGemma4_31bDeviceStageModelAt, SparkMuseGlimmerDeviceStageModelAt,
 	SparkLagunaDeviceStageModelAt, SparkLing3FlashDeviceStageModelAt, SparkLing3FinDeviceStageModelAt, SparkSolarOpen2DeviceStageModelAt,
 	SparkGlm53FlashDeviceStageModelAt,
@@ -96,7 +96,7 @@ typedef struct RunOutputVocabulary
 	uint32_t vocabulary;
 } RunOutputVocabulary;
 
-static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "qwen3.8-max", 248077u }, { "gemma4-26b-a4b", 262144u },
+static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "qwen3.8-max", 248077u }, { "qwen3.5-4b", 248070u }, { "qwen3.5-2b", 248070u }, { "gemma4-26b-a4b", 262144u },
 	{ "gemma4-31b", 262144u }, { "muse-glimmer-30b", 202048u }, { "mimo-v2.6-flash", 151675u }, { "mimo-v2.6-pro", 151675u },
 	{ "laguna-s-2.1", 100352u }, { "k-exaone-2.0", 153600u }, { "ling-3.0-flash", 157153u }, { "ling-3.0-flash-fin", 157153u },
 	{ "solar-open-2", 196608u }, { "hy4-preview", 120832u }, { "glm-5.3-flash", 154856u }, { "glm-5.3-full", 154856u }, { "ax-k2", 163840u },

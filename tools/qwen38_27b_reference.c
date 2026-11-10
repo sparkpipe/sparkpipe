@@ -14,19 +14,21 @@
 #include "sparkpipe/spark_json.h"
 #include "tools/token_prompts.h"
 
-#define REF_LAYERS 64u
-#define REF_HIDDEN 5120u
-#define REF_VOCAB 248320u
-#define REF_FFN 17408u
+#define REF_MAX_LAYERS 64u
+#define REF_MAX_HIDDEN 5120u
+#define REF_LAYERS ref_geometry.layers
+#define REF_HIDDEN ref_geometry.hidden
+#define REF_VOCAB ref_geometry.vocab
+#define REF_FFN ref_geometry.ffn
 #define REF_GATE_UP (2u * REF_FFN)
 #define REF_KEY_HEADS 16u
-#define REF_VALUE_HEADS 48u
+#define REF_VALUE_HEADS ref_geometry.value_heads
 #define REF_DIM 128u
 #define REF_QK (REF_KEY_HEADS * REF_DIM)
 #define REF_V (REF_VALUE_HEADS * REF_DIM)
 #define REF_CHANNELS (2u * REF_QK + REF_V)
-#define REF_HEADS 24u
-#define REF_KV_HEADS 4u
+#define REF_HEADS ref_geometry.heads
+#define REF_KV_HEADS ref_geometry.kv_heads
 #define REF_HEAD_DIM 256u
 #define REF_FP8_BLOCK 128u
 #define REF_MAX_SHARDS 128u
@@ -45,6 +47,20 @@
 #define REF_SUM_ERROR 0.11
 #define REF_SUM_STEP 4.0
 #define REF_SUM_OUTPUTS 8192u
+
+typedef struct RefGeometry
+{
+	uint32_t layers;
+	uint32_t hidden;
+	uint32_t vocab;
+	uint32_t ffn;
+	uint32_t value_heads;
+	uint32_t heads;
+	uint32_t kv_heads;
+	uint32_t tied_head;
+} RefGeometry;
+
+static RefGeometry ref_geometry;
 
 typedef struct RefShard
 {
@@ -74,7 +90,7 @@ typedef struct RefLayer
 
 typedef struct RefModel
 {
-	RefLayer layers[REF_LAYERS];
+	RefLayer layers[REF_MAX_LAYERS];
 	float *final_norm;
 	float *head;
 	const uint16_t *embed;
@@ -82,10 +98,10 @@ typedef struct RefModel
 
 typedef struct RefState
 {
-	float *gdn[REF_LAYERS];
-	float *window[REF_LAYERS];
-	float *keys[REF_LAYERS];
-	float *values[REF_LAYERS];
+	float *gdn[REF_MAX_LAYERS];
+	float *window[REF_MAX_LAYERS];
+	float *keys[REF_MAX_LAYERS];
+	float *values[REF_MAX_LAYERS];
 	uint32_t length;
 } RefState;
 
@@ -227,6 +243,67 @@ static void Die(const char *what, const char *detail)
 	exit(1);
 }
 
+static uint32_t RefConfigCount(const SparkJsonDocument *config, int32_t object, const char *name)
+{
+	const int32_t token = SparkJsonFindObjectMember(config,object,name);
+	uint64_t value = 0u;
+	if ( token < 0 || SparkJsonGetUInt64(config,token,&value) != SPARK_STATUS_OK || value == 0u || value > 0xffffffffu )
+		Die("config.json lacks a count",name);
+	return((uint32_t)value);
+}
+
+static float RefConfigFloat(const SparkJsonDocument *config, int32_t object, const char *name)
+{
+	const int32_t token = object >= 0 ? SparkJsonFindObjectMember(config,object,name) : -1;
+	float value = 0.0f;
+	if ( token < 0 || SparkJsonGetFloat(config,token,&value) != SPARK_STATUS_OK )
+		Die("config.json lacks a number",name);
+	return(value);
+}
+
+static uint32_t RefConfigTied(const SparkJsonDocument *config, int32_t root, int32_t text)
+{
+	const int32_t top = SparkJsonFindObjectMember(config,root,"tie_word_embeddings"), inner = SparkJsonFindObjectMember(config,text,"tie_word_embeddings");
+	bool tied = false;
+	if ( top >= 0 && SparkJsonGetBoolean(config,top,&tied) != SPARK_STATUS_OK )
+		Die("config.json has an unreadable tie_word_embeddings",0);
+	if ( top < 0 && inner >= 0 && SparkJsonGetBoolean(config,inner,&tied) != SPARK_STATUS_OK )
+		Die("config.json has an unreadable tie_word_embeddings",0);
+	return(tied ? 1u : 0u);
+}
+
+static void RefReadGeometry(const char *root_dir)
+{
+	char path[2048];
+	SparkJsonDocument config;
+	int32_t root, text, rope;
+	snprintf(path,sizeof(path),"%s/config.json",root_dir);
+	SparkJsonDocumentReset(&config);
+	if ( SparkJsonLoadFile(path,&config) != SPARK_STATUS_OK )
+		Die("cannot read the checkpoint config",path);
+	root = SparkJsonGetRootToken(&config);
+	text = SparkJsonFindObjectMember(&config,root,"text_config");
+	text = text >= 0 ? text : root;
+	rope = SparkJsonFindObjectMember(&config,text,"rope_parameters");
+	ref_geometry.layers = RefConfigCount(&config,text,"num_hidden_layers");
+	ref_geometry.hidden = RefConfigCount(&config,text,"hidden_size");
+	ref_geometry.vocab = RefConfigCount(&config,text,"vocab_size");
+	ref_geometry.ffn = RefConfigCount(&config,text,"intermediate_size");
+	ref_geometry.value_heads = RefConfigCount(&config,text,"linear_num_value_heads");
+	ref_geometry.heads = RefConfigCount(&config,text,"num_attention_heads");
+	ref_geometry.kv_heads = RefConfigCount(&config,text,"num_key_value_heads");
+	ref_geometry.tied_head = RefConfigTied(&config,root,text);
+	if ( ref_geometry.layers > REF_MAX_LAYERS || ref_geometry.hidden > REF_MAX_HIDDEN || ref_geometry.value_heads % REF_KEY_HEADS != 0u ||
+		ref_geometry.heads % ref_geometry.kv_heads != 0u || RefConfigCount(&config,text,"linear_num_key_heads") != REF_KEY_HEADS ||
+		RefConfigCount(&config,text,"linear_key_head_dim") != REF_DIM || RefConfigCount(&config,text,"linear_value_head_dim") != REF_DIM ||
+		RefConfigCount(&config,text,"head_dim") != REF_HEAD_DIM || RefConfigCount(&config,text,"linear_conv_kernel_dim") != REF_CONV ||
+		RefConfigCount(&config,text,"full_attention_interval") != 4u ||
+		(uint32_t)lrintf(RefConfigFloat(&config,rope,"partial_rotary_factor") * (float)REF_HEAD_DIM) != REF_ROPE ||
+		(double)RefConfigFloat(&config,rope,"rope_theta") != REF_THETA || RefConfigFloat(&config,text,"rms_norm_eps") != REF_EPSILON )
+		Die("the checkpoint is not a dense Qwen hybrid this reference computes",path);
+	SparkJsonDocumentDestroy(&config);
+}
+
 static RefShard *RefOpenShard(RefCheckpoint *checkpoint, const char *name)
 {
 	char path[2048];
@@ -297,7 +374,7 @@ static const uint8_t *RefTensor(RefCheckpoint *checkpoint, const char *name, con
 	return(RefTensorAs(checkpoint,name,dtype,elements,2u));
 }
 
-static uint32_t RefTensorIsFp8(RefCheckpoint *checkpoint, const char *name)
+static uint32_t RefTensorIsKind(RefCheckpoint *checkpoint, const char *name, const char *dtype)
 {
 	const int32_t map = SparkJsonFindObjectMember(&checkpoint->index,SparkJsonGetRootToken(&checkpoint->index),"weight_map");
 	const int32_t entry = map >= 0 ? SparkJsonFindObjectMember(&checkpoint->index,map,name) : -1;
@@ -310,7 +387,18 @@ static uint32_t RefTensorIsFp8(RefCheckpoint *checkpoint, const char *name)
 	free(shard_name);
 	meta = SparkJsonFindObjectMember(&shard->header,SparkJsonGetRootToken(&shard->header),name);
 	kind = meta >= 0 ? SparkJsonFindObjectMember(&shard->header,meta,"dtype") : -1;
-	return(kind >= 0 && SparkJsonStringEquals(&shard->header,kind,"F8_E4M3") ? 1u : 0u);
+	return(kind >= 0 && SparkJsonStringEquals(&shard->header,kind,dtype) ? 1u : 0u);
+}
+
+static float Bf16Nearest(float value)
+{
+	uint32_t bits;
+	memcpy(&bits,&value,sizeof(bits));
+	if ( (bits & 0x7fffffffu) > 0x7f800000u )
+		return(value);
+	bits = (bits + 0x7fffu + ((bits >> 16) & 1u)) & 0xffff0000u;
+	memcpy(&value,&bits,sizeof(value));
+	return(value);
 }
 
 static float E4m3(uint8_t code)
@@ -322,7 +410,8 @@ static float E4m3(uint8_t code)
 
 static float *RefLoad(RefCheckpoint *checkpoint, const char *name, uint64_t elements, float add)
 {
-	const uint16_t *raw = (const uint16_t *)RefTensor(checkpoint,name,"BF16",elements);
+	const uint32_t wide = RefTensorIsKind(checkpoint,name,"F32");
+	const uint8_t *raw = RefTensorAs(checkpoint,name,wide != 0u ? "F32" : "BF16",elements,wide != 0u ? 4u : 2u);
 	float *out = (float *)malloc((size_t)elements * sizeof(float));
 	if ( out == 0 )
 		Die("out of memory loading",name);
@@ -330,7 +419,7 @@ static float *RefLoad(RefCheckpoint *checkpoint, const char *name, uint64_t elem
 	{
 		const uint64_t first = (uint64_t)block * 65536u, last = first + 65536u < elements ? first + 65536u : elements;
 		for ( uint64_t index = first; index < last; index++ )
-			out[index] = Bf16(raw[index]) + add;
+			out[index] = (wide != 0u ? Bf16Nearest(((const float *)(const void *)raw)[index]) : Bf16(((const uint16_t *)(const void *)raw)[index])) + add;
 	});
 	return(out);
 }
@@ -350,7 +439,7 @@ static float *RefLayerLinear(RefCheckpoint *checkpoint, uint32_t layer, const ch
 	float *out;
 	const uint32_t scale_columns = (columns + REF_FP8_BLOCK - 1u) / REF_FP8_BLOCK;
 	snprintf(key,sizeof(key),REF_PREFIX "layers.%u.%s.weight",layer,name);
-	if ( RefTensorIsFp8(checkpoint,key) == 0u )
+	if ( RefTensorIsKind(checkpoint,key,"F8_E4M3") == 0u )
 		return(RefLoad(checkpoint,key,(uint64_t)rows * columns,0.0f));
 	snprintf(scale_key,sizeof(scale_key),"%s_scale_inv",key);
 	raw = RefTensorAs(checkpoint,key,"F8_E4M3",(uint64_t)rows * columns,1u);
@@ -404,7 +493,7 @@ static void RefLoadModel(RefCheckpoint *checkpoint, RefModel *model)
 			fprintf(stderr,"loaded %u layers\n",index + 1u);
 	}
 	model->final_norm = RefLoad(checkpoint,REF_PREFIX "norm.weight",REF_HIDDEN,1.0f);
-	model->head = RefLoad(checkpoint,"lm_head.weight",(uint64_t)REF_VOCAB * REF_HIDDEN,0.0f);
+	model->head = RefLoad(checkpoint,ref_geometry.tied_head != 0u ? REF_PREFIX "embed_tokens.weight" : "lm_head.weight",(uint64_t)REF_VOCAB * REF_HIDDEN,0.0f);
 	model->embed = (const uint16_t *)RefTensor(checkpoint,REF_PREFIX "embed_tokens.weight","BF16",(uint64_t)REF_VOCAB * REF_HIDDEN);
 }
 
@@ -448,7 +537,7 @@ static void RefNorm(uint32_t variant, const float *x, uint32_t rows, const float
 	dispatch_apply(rows,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t row)
 	{
 		const float *in = x + row * REF_HIDDEN;
-		float squares[REF_HIDDEN];
+		float squares[REF_MAX_HIDDEN];
 		for ( uint32_t i = 0u; i < REF_HIDDEN; i++ )
 			squares[i] = in[i] * in[i];
 		const float scale = (float)(1.0 / sqrt((double)(RefSum(variant,squares,REF_HIDDEN,1u) / (float)REF_HIDDEN + REF_EPSILON)));
@@ -512,7 +601,7 @@ static void RefGdn(uint32_t variant, const RefLayer *layer, uint32_t index, RefS
 	});
 	dispatch_apply((size_t)REF_VALUE_HEADS * REF_DIM,dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0),^(size_t item)
 	{
-		const uint32_t head = (uint32_t)(item / REF_DIM), column = (uint32_t)(item % REF_DIM), key_head = head / 3u;
+		const uint32_t head = (uint32_t)(item / REF_DIM), column = (uint32_t)(item % REF_DIM), key_head = head / (REF_VALUE_HEADS / REF_KEY_HEADS);
 		float cell[REF_DIM], products[REF_DIM];
 		for ( uint32_t i = 0u; i < REF_DIM; i++ )
 			cell[i] = s[((uint64_t)head * REF_DIM + i) * REF_DIM + column];
@@ -812,6 +901,9 @@ int main(int argc, char **argv)
 		return(1);
 	new_tokens = (uint32_t)strtoul(argv[4],0,10);
 	mkdir(argv[3],0755);
+	RefReadGeometry(argv[1]);
+	fprintf(stderr,"geometry: %u layers, hidden %u, FFN %u, %u GDN value heads, %u attention heads over %u KV heads, %s head\n",REF_LAYERS,REF_HIDDEN,REF_FFN,
+		REF_VALUE_HEADS,REF_HEADS,REF_KV_HEADS,ref_geometry.tied_head != 0u ? "tied" : "separate");
 	RefLoadModel(&checkpoint,&model);
 	RefStateCreate(&state);
 	fprintf(stderr,"weights converted to f32 in %.1f s\n",Seconds() - start);

@@ -414,6 +414,7 @@ PYTHON_TESTS := \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
 	tests/test_metal_stage_run_inputs.py \
+	tests/test_qwen38_pack_geometry.py \
 	tests/test_metal_gate_summary.py \
 	tests/test_reference_device_error.py \
 	tests/test_reference_flash.py \
@@ -1503,6 +1504,7 @@ DEVICE_SERVING_SOURCES := inference/runner/stage_serving_adapter.c inference/run
 	ring/transport/tp_device_collective_absent.c cache/kv_ledger.c cache/kv_snapshot_purge.c $(SPARKPIPE_CACHE_SOURCES)
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
+	model-families/qwen38/include/sparkpipe/spark_qwen35_small_geometry.h \
 	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
 	modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h \
 	modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_stage_model.h
@@ -1517,6 +1519,18 @@ QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen38_27b_bf16_tp1_metal_
 
 $(QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN38_27B_TP16_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN38_27B_BF16=1 -DQWEN38_27B_DEVICE_STAGE=1 -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
+QWEN35_4B_CONTRACT := model_contracts/qwen35_4b_authoritative.json
+QWEN35_4B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN35_4B_CONTRACT)"; else shasum -a 256 "$(QWEN35_4B_CONTRACT)"; fi | awk '{print $$1}')
+QWEN35_4B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen35_4b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN35_4B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen35_small_stage/source/spark_qwen35_small_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN35_4B_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN35_4B=1 -DQWEN35_SMALL_CONTRACT_SHA256=\"$(QWEN35_4B_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
+QWEN35_2B_CONTRACT := model_contracts/qwen35_2b_authoritative.json
+QWEN35_2B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN35_2B_CONTRACT)"; else shasum -a 256 "$(QWEN35_2B_CONTRACT)"; fi | awk '{print $$1}')
+QWEN35_2B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen35_2b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN35_2B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen35_small_stage/source/spark_qwen35_small_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN35_2B_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN35_2B=1 -DQWEN35_SMALL_CONTRACT_SHA256=\"$(QWEN35_2B_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
 GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.cpp
 GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_device_stage.h \
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
