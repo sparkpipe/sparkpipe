@@ -1427,8 +1427,31 @@ and the shared expert added, as CUDA's finalize and add. The projections stay
 FP8 (`fp8_e4m3` with an FP32 scale per row and 128 inputs, CUDA's skinny FP8
 arithmetic), and the last layer's partial is added and the head norm taken
 in the stage (`prenormed_head`) from the rounded sum, as the publisher's
-closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do. The indexer is not built,
-so a row past position 2,047 is refused. The 704 GB checkpoint packs to about
+closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do.
+
+The sparse-attention indexer runs through the shared Metal indexer
+(`inference/runner/device_indexer.h`) as CUDA's DSA path does. Layers 0-2
+and every fourth layer from 6 carry an indexer
+(`SparkGlm52StagePackLayerHasFullIndexer`); the layers between reuse the
+last selection. On every step each indexer layer projects its 128-wide key
+from the normed residual (`index_k`, FP8), and `SparkIndexerStoreKeys`
+takes the LayerNorm with weight and bias (epsilon 1e-6), ropes the leading
+64 dimensions (interleaved, the main rope's frequencies and rounded terms)
+and stores the key in the stage's second paged KV pool, which shares the
+latent cache's page table (`SparkDeviceStageShape.index_layers`, one layer
+per indexer, `SparkDeviceStageIndexCache`). When a row of the step sees
+more than 2,048 keys the indexer layer also projects 32 index heads of 128
+from the normed query LoRA (`index_q`), ropes them the same way, weights
+each head by `index_head` (BF16, rounded) and `SparkIndexerSelect` scores
+`sum_h w_h relu(q_h . k)` times `128^-0.5 32^-0.5` and keeps the top 2,048
+positions, 16 rows at a time. Both run in the selection callback of
+`SparkDeviceLatentAttentionSelected`, after the latent slot is stored and
+before the attention, which then reads only the selected keys
+(`SparkIndexerAttention`). A step whose rows all see
+at most 2,048 keys attends densely, exactly as before; in a step that
+needs the indexer every row attends its selection, which for a short row
+is every visible key, as CUDA's step-wide context test does. A tree step
+that needs the indexer is refused. The 704 GB checkpoint packs to about
 780 GB at TP8 (`tools/glm52_tp16_pack.py --model glm53full --tp-degree 8`,
 through the CUDA stagepack's reader), paged from the SSD;
 `tools/glm52_reference.py --model glm53full` gives the gate prompts in GLM
@@ -1451,7 +1474,10 @@ the normed query and the raw q_a output side by side, 3,072 wide) and
 head's values as `bf16(v sigmoid(g))` after the value projection, as
 `LmHeadSigmoidGateKernel`); YaRN rope through `SparkRopeYarnRampTable`, the
 CUDA stage's own table builder moved into `spark_rope_plan.h`; and routing
-over 8 groups of which 4 stay open. Layer 0 is dense. The FP8 checkpoint is
+over 8 groups of which 4 stay open. Layer 0 is dense. Every layer carries
+its own indexer, 64 heads of 128 with the half-split rope on the YaRN
+frequencies (`tools/axk2_reference.py`'s `indexer`), so every layer selects.
+The FP8 checkpoint is
 647 GB (`tools/glm52_tp16_pack.py --model axk2`, `tools/glm52_reference.py
 --model axk2` with its ChatML turn):
 
