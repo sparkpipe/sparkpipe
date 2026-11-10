@@ -43,6 +43,7 @@ STREAM_IDLE_MS = 1800000
 PLATFORM = sys.platform
 TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+FLEET_LINE = re.compile(r"X-SparkPipe-Fleet: [A-Za-z0-9_.-]{1,64}")
 CREDENTIAL = re.compile(r"[\x21-\x7e]{1,4096}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 HOST = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
@@ -59,6 +60,8 @@ CODEX_ROOT = ("model", "model_provider")
 CODEX_TABLES = (("model_providers", "sparkpipe"), ("mcp_servers", "sparkpipe"))
 CODEX_PROFILE = "sparkpipe"
 CLAUDE_MCP = ("mcpServers", "sparkpipe")
+CLAUDE_HEADERS = "ANTHROPIC_CUSTOM_HEADERS"
+FLEET_HEADER = "X-SparkPipe-Fleet"
 OPENCODE_AGENTS = {"general": "main", "explore": "main", "compaction": "main", "title": "small", "summary": "small"}
 OPENCODE_OWNED = (("$schema",), ("provider", "sparkpipe"), ("model",), ("small_model",), *(("agent", name, "model") for name in OPENCODE_AGENTS),
                   ("mcp", "sparkpipe"), ("compaction", "prune"), ("share",))
@@ -594,7 +597,7 @@ def book_week(ctx):
     off = percent(plan.get("discount"))
     discount = f" ({off} off)" if off else ""
     confirm(ctx, f"Book {ctx.args.fleet_id} for {ctx.args.weeks} week(s), {plan.get('first')} to {plan.get('end')}, for {plan.get('price')} HC{discount}?")
-    booked = spend(ctx, client, "/market/book-weeks", request)
+    booked = spend(ctx, client, "/market/book-weeks", dict(request, first=plan.get("first"), price=plan.get("price")))
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('first')} to {booked.get('end')} for {booked.get('price')} HC."])
     return 0
 
@@ -606,7 +609,7 @@ def book_hours(ctx):
     off = percent(plan.get("discount"))
     discount = f" ({off} off)" if off else ""
     confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {plan.get('price')} HC{discount}?")
-    booked = spend(ctx, client, "/market/book-hours", request)
+    booked = spend(ctx, client, "/market/book-hours", dict(request, price=plan.get("price")))
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('start')} to {booked.get('end')} for {booked.get('hc')} HC."])
     return 0
 
@@ -657,6 +660,14 @@ def keys_create(ctx):
         body["allow_swap"] = True
     made = ctx.client().call("POST", "/market/keys", body, auth="session")
     emit(ctx, made, [f"Key {made.get('id')}: {made.get('key')}", "It is shown only once: store it now."])
+    return 0
+
+
+def keys_show(ctx):
+    key = ctx.mine().get("key")
+    if not key:
+        raise Failure("This machine has no API key: run sparkpipe login.")
+    print(credential(key, f"The key in {config_path()}"))
     return 0
 
 
@@ -1006,7 +1017,7 @@ def sync_target(dest):
     return LocalTarget(dest)
 
 
-def apply_change(client, target, prefix, change, delete, counts):
+def apply_change(client, target, prefix, change, delete, counts, kept):
     if not isinstance(change, dict):
         raise Failure("The fleet listed a change that is not an object.")
     parts = sync_parts(prefix, change.get("path"))
@@ -1014,10 +1025,14 @@ def apply_change(client, target, prefix, change, delete, counts):
     if kind == "deleted":
         if delete:
             target.remove(parts)
+            kept.discard(change["path"])
+        else:
+            kept.add(change["path"])
         counts["deleted" if delete else "kept"] += 1
         return
     if kind not in ("added", "changed"):
         raise Failure(f"The fleet listed {change.get('path')} with an unknown change {kind!r}.")
+    kept.discard(change["path"])
     expected, sha = listed(change)
     if target.matches(parts, expected, sha):
         counts["unchanged"] += 1
@@ -1033,7 +1048,7 @@ def apply_change(client, target, prefix, change, delete, counts):
     counts["copied"] += 1
 
 
-def sync_lines(counts, prefix, target, delete):
+def sync_lines(counts, prefix, target, delete, kept):
     lines = [f"Copied {counts['copied']} file(s), {size(counts['bytes'])}, from {prefix or 'storage'} to {target.name}."]
     if counts["unchanged"]:
         lines.append(f"{counts['unchanged']} file(s) were already there with the same SHA-256.")
@@ -1041,24 +1056,50 @@ def sync_lines(counts, prefix, target, delete):
         lines.append(f"Skipped {counts['skipped']} file(s) that changed or went away on the fleet during the sync; the change list brings their newer state.")
     if counts["deleted"]:
         lines.append(f"Deleted {counts['deleted']} file(s) deleted on the fleet.")
-    if counts["kept"] and not delete:
-        lines.append(f"Kept {counts['kept']} file(s) deleted on the fleet; add --delete to remove them here too.")
+    if kept and not delete:
+        lines.append(f"{len(kept)} file(s) deleted on the fleet are still here; add --delete to remove them here too.")
     return lines
+
+
+def sync_key(ctx, client, prefix, target):
+    mine = ctx.mine()
+    account = mine.get("email") if mine.get("email") and client.key == mine.get("key") else "key " + hashlib.sha256(client.key.encode()).hexdigest()[:16]
+    return json.dumps([ctx.api, account, client.fleet or "", prefix, target.name])
+
+
+def sync_state(ctx, key):
+    found = ctx.cfg.get("sync", {}).get(key)
+    found = found if isinstance(found, dict) else {}
+    kept = found.get("kept")
+    return found.get("since"), {path for path in kept if isinstance(path, str)} if isinstance(kept, list) else set()
+
+
+def save_sync(ctx, key, since, kept):
+    ctx.cfg.setdefault("sync", {})[key] = {"since": since, "kept": sorted(kept)}
+    ctx.save()
 
 
 def storage_sync(ctx):
     prefix = remote_prefix(ctx.args.path)
     target = sync_target(ctx.args.dest)
     client = ctx.client()
-    key = f"{ctx.api} {prefix} {target.name}"
-    since = ctx.cfg.get("sync", {}).get(key)
+    if not client.key:
+        raise Failure("This machine has no API key: run sparkpipe login, or set SPARKPIPE_API_KEY.")
+    key = sync_key(ctx, client, prefix, target)
+    since, kept = sync_state(ctx, key)
     counts = {"copied": 0, "bytes": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "kept": 0}
+    if ctx.args.delete and kept:
+        for path in sorted(kept):
+            target.remove(sync_parts(prefix, path))
+            counts["deleted"] += 1
+        kept = set()
+        save_sync(ctx, key, since, kept)
     while True:
         query = dict({"prefix": prefix}, **({"since": since} if since else {}))
         page = client.call("GET", "/v1/storage/changes", query=query)
         for change in page.get("data") or []:
             try:
-                apply_change(client, target, prefix, change, ctx.args.delete, counts)
+                apply_change(client, target, prefix, change, ctx.args.delete, counts, kept)
             except Skipped as error:
                 counts["skipped"] += 1
                 print(f"sparkpipe: skipped {error}", file=sys.stderr)
@@ -1066,11 +1107,10 @@ def storage_sync(ctx):
             raise Failure("The fleet's list of changes did not advance; nothing more was copied.")
         if page.get("until") and page["until"] != since:
             since = page["until"]
-            ctx.cfg.setdefault("sync", {})[key] = since
-            ctx.save()
+        save_sync(ctx, key, since, kept)
         if not page.get("more"):
             break
-    emit(ctx, dict(counts, until=since), sync_lines(counts, prefix, target, ctx.args.delete))
+    emit(ctx, dict(counts, until=since, pending_deletions=len(kept)), sync_lines(counts, prefix, target, ctx.args.delete, kept))
     return 0
 
 
@@ -1112,12 +1152,17 @@ def limits(listing, model, fields=MODEL_FIELDS):
 def key_reminder(client, tool):
     if os.environ.get("SPARKPIPE_API_KEY") == client.key:
         return
-    print(f"{tool} reads the key from SPARKPIPE_API_KEY. Add this line to your shell profile:")
-    print(f"  export SPARKPIPE_API_KEY={client.key}")
+    print(f"{tool} reads the key from SPARKPIPE_API_KEY. Add this line to your shell profile; it reads this machine's key from {config_path()} without printing it:")
+    print('  export SPARKPIPE_API_KEY="$(sparkpipe keys show)"')
 
 
-def claude_env(api, key, main, haiku, context):
+def fleet_headers(client):
+    return {FLEET_HEADER: client.fleet} if client.fleet else {}
+
+
+def claude_env(api, key, main, haiku, context, fleet=None):
     return {
+        **({CLAUDE_HEADERS: f"{FLEET_HEADER}: {fleet}"} if fleet else {}),
         "ANTHROPIC_BASE_URL": api,
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": main,
@@ -1156,8 +1201,12 @@ def claude_state():
     return modern
 
 
-def claude_mcp(api, key):
-    return {"type": "http", "url": api + "/mcp", "headers": {"Authorization": "Bearer " + key}}
+def claude_mcp(api, key, headers):
+    return {"type": "http", "url": api + "/mcp", "headers": dict({"Authorization": "Bearer " + key}, **headers)}
+
+
+def fleet_text(client):
+    return f" for fleet {client.fleet}" if client.fleet else ""
 
 
 def setup_all(ctx):
@@ -1177,21 +1226,25 @@ def setup_claude_code(ctx):
     state_path = claude_state()
     state = read_json(state_path)
     object_fields(state_path, state, (CLAUDE_MCP[0],))
-    env = claude_env(ctx.api, client.key, main, haiku, context)
+    env = claude_env(ctx.api, client.key, main, haiku, context, client.fleet)
     settings["env"] = dict(settings.get("env", {}), **env)
+    if not client.fleet and FLEET_LINE.fullmatch(str(settings["env"].get(CLAUDE_HEADERS, ""))):
+        del settings["env"][CLAUDE_HEADERS]
     settings["modelOverrides"] = dict(settings.get("modelOverrides", {}), **{name: main if role == "main" else haiku for name, role in CLAUDE_MODELS.items()})
-    state.setdefault(CLAUDE_MCP[0], {})[CLAUDE_MCP[1]] = claude_mcp(ctx.api, client.key)
-    owned = [("env", name) for name in env] + [("modelOverrides", name) for name in CLAUDE_MODELS]
+    state.setdefault(CLAUDE_MCP[0], {})[CLAUDE_MCP[1]] = claude_mcp(ctx.api, client.key, fleet_headers(client))
+    owned = [("env", name) for name in (*env, CLAUDE_HEADERS)] + [("modelOverrides", name) for name in CLAUDE_MODELS]
     print(commit("claude-code", "json", path, json_text(settings), 0o600, owned))
     print(commit("claude-code", "json", state_path, json_text(state), 0o600, [CLAUDE_MCP]))
     background = f", and {haiku} for background calls" if haiku != main else ""
-    print(f"Claude Code uses {main} on {ctx.api}{background}, with the fleet's MCP server as sparkpipe. sparkpipe setup claude-code --undo restores the previous settings.")
+    print(f"Claude Code uses {main} on {ctx.api}{fleet_text(client)}{background}, with the fleet's MCP server as sparkpipe. sparkpipe setup claude-code --undo restores the previous settings.")
     if "ANTHROPIC_API_KEY" in settings["env"] or os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is also set: Claude Code would send it to SparkPipe as X-Api-Key. Remove it from your settings and shell.")
     return 0
 
 
 def toml_value(value):
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{json.dumps(name, ensure_ascii=False)} = {toml_value(item)}" for name, item in value.items()) + " }"
     return str(value) if isinstance(value, int) else json.dumps(value, ensure_ascii=False)
 
 
@@ -1271,11 +1324,12 @@ def merge_codex(text, root, tables):
     return codex_text("\n".join(toml_pairs(root)), split_codex(text)[0], [toml_block(path, pairs) for path, pairs in tables])
 
 
-def codex_tables(api):
+def codex_tables(api, headers):
+    extra = [("http_headers", headers)] if headers else []
     return [
         (("model_providers", "sparkpipe"), [("name", "SparkPipe"), ("base_url", api + "/v1"), ("env_key", "SPARKPIPE_API_KEY"), ("wire_api", "responses"),
-                                            ("stream_idle_timeout_ms", 600000), ("model_catalog_url", api + "/v1/codex/models")]),
-        (("mcp_servers", "sparkpipe"), [("url", api + "/mcp"), ("bearer_token_env_var", "SPARKPIPE_API_KEY")]),
+                                            ("stream_idle_timeout_ms", 600000), ("model_catalog_url", api + "/v1/codex/models"), *extra]),
+        (("mcp_servers", "sparkpipe"), [("url", api + "/mcp"), ("bearer_token_env_var", "SPARKPIPE_API_KEY"), *extra]),
     ]
 
 
@@ -1328,23 +1382,24 @@ def setup_codex(ctx):
     path = Path(ctx.args.config or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
     profile = path.with_name(CODEX_PROFILE + ".config.toml")
     before = read_text(path)
-    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api)
+    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api, fleet_headers(client))
     after = merge_codex(before, root, tables)
     check_codex(path, before, after, root, tables)
     print(commit("codex", "codex", path, after, file_mode(path, 0o600), ()))
     print(commit("codex", "whole", profile, codex_profile(main, found), file_mode(profile, 0o600), ()))
-    print(f"Codex uses {main} on {ctx.api}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents. "
+    print(f"Codex uses {main} on {ctx.api}{fleet_text(client)}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents. "
           "sparkpipe setup codex --undo restores the previous settings.")
     key_reminder(client, "Codex")
     return 0
 
 
-def opencode_provider(api, main, small, listing):
+def opencode_provider(api, main, small, listing, headers):
     models = {}
     for name in dict.fromkeys((main, small)):
         found = limits(listing, name, ("context_window", "max_output_tokens"))
         models[name] = {"name": name, "limit": {"context": found["context_window"], "output": found["max_output_tokens"]}}
-    return {"npm": "@ai-sdk/anthropic", "name": "SparkPipe", "options": {"baseURL": api + "/v1", "apiKey": "{env:SPARKPIPE_API_KEY}"}, "models": models}
+    options = dict({"baseURL": api + "/v1", "apiKey": "{env:SPARKPIPE_API_KEY}"}, **({"headers": headers} if headers else {}))
+    return {"npm": "@ai-sdk/anthropic", "name": "SparkPipe", "options": options, "models": models}
 
 
 def setup_opencode(ctx):
@@ -1355,18 +1410,18 @@ def setup_opencode(ctx):
     settings = read_json(path)
     object_fields(path, settings, ("provider", "agent", "mcp", "compaction"))
     settings.setdefault("$schema", "https://opencode.ai/config.json")
-    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, small, listing)
+    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, small, listing, fleet_headers(client))
     settings["model"] = "sparkpipe/" + main
     settings["small_model"] = "sparkpipe/" + small
     agents = settings.setdefault("agent", {})
     for name, role in OPENCODE_AGENTS.items():
         agents[name] = dict(agents.get(name) if isinstance(agents.get(name), dict) else {}, model="sparkpipe/" + (main if role == "main" else small))
-    settings.setdefault("mcp", {})["sparkpipe"] = {"type": "remote", "url": ctx.api + "/mcp", "headers": {"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, "enabled": True}
+    settings.setdefault("mcp", {})["sparkpipe"] = {"type": "remote", "url": ctx.api + "/mcp", "headers": dict({"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, **fleet_headers(client)), "enabled": True}
     if settings.get("compaction", {}).get("prune"):
         settings["compaction"]["prune"] = False
     settings["share"] = "disabled"
     print(commit("opencode", "json", path, json_text(settings), file_mode(path, 0o600), OPENCODE_OWNED))
-    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}, and sparkpipe/{small} for titles and summaries. sparkpipe setup opencode --undo restores the previous settings.")
+    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}{fleet_text(client)}, and sparkpipe/{small} for titles and summaries. sparkpipe setup opencode --undo restores the previous settings.")
     key_reminder(client, "OpenCode")
     return 0
 
@@ -1620,6 +1675,7 @@ def account_commands(commands, base):
     create.add_argument("--note")
     create.add_argument("--fleet", dest="key_fleet", help="limit the key to one fleet")
     create.add_argument("--allow-swap", action="store_true", help="let the key replace resident models")
+    leaf(keys, "show", keys_show, [base], "Print this machine's key, for $(sparkpipe keys show) in a shell profile")
     leaf(keys, "revoke", keys_revoke, [base], "Revoke a key").add_argument("id")
 
 

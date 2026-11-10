@@ -349,7 +349,12 @@ def weeks_and_hours(failures, app, m, port):
     quote = m.quote_weeks(H, {"fleet": "F3", "weeks": 3})
     if (quote["first"], quote["count"], quote["discount"], quote["price"], quote["extends"]) != (slot(kst(2027, 1, 11)), 4, "0.05", "410.400000", True):
         failures.append(f"an extension does not follow the booked Week, or its discount does not count the current Week: {quote}")
-    m.book_weeks(H, {"fleet": "F3", "weeks": 3})
+    stale = (refused(lambda: m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": slot(kst(2027, 1, 4)), "price": quote["price"]})),
+             refused(lambda: m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": quote["first"], "price": "1"})),
+             refused(lambda: m.book_hours(C, {"fleet": "F4", "start": slot(kst(2027, 1, 6, 13)), "hours": 2, "price": "1"})))
+    if stale != ((409, "quote_changed"),) * 3 or balance(app, H) != 10000 - 144:
+        failures.append(f"a booking whose quoted first Week or price no longer holds is charged: {stale}")
+    m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": quote["first"], "price": "410.4"})
     if refused(lambda: m.quote_weeks(H, {"fleet": "F3", "weeks": 50})) != (409, "too_far") or m.quote_weeks(H, {"fleet": "F3", "weeks": 49})["first"] != slot(kst(2027, 2, 1)):
         failures.append("an extension is not contiguous, or reaches past 52 Weeks after the current Week")
     if m.view(H)["pinned"] != [{"fleet": "F3", "weeks": 4, "through": slot(kst(2027, 2, 1)), "deadline": slot(kst(2027, 1, 31)), "canExtend": True, "autoExtend": 0, "autoExtendWaiting": None}]:
