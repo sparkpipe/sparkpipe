@@ -2743,8 +2743,9 @@ class Frontend:
 
     def tool_call_fault(self, model, fault, attempt, action):
         self.tool_call_faults[action] = self.tool_call_faults.get(action, 0) + 1
+        text = fault["text"].encode("utf-8", "surrogatepass")
         print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
-                          "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
+                          "bytes": len(text), "sha256": hashlib.sha256(text).hexdigest()[:16]}), file=sys.stderr, flush=True)
 
     async def generate(self, model, engine_body, parser, public, timing=None):
         prompt = list(engine_body["prompt_token_ids"])
