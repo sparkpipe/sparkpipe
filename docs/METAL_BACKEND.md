@@ -1486,15 +1486,39 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   rank's `engram_kv` rows, gathers the ranks' rows and gates every stream
   (`spark_stream_key_gate`). `End` keeps the last three mapped tokens.
 
-The sparse-attention indexer is not built. A row at position 512 or later
-is refused: from there the ratio-1 layers see more than the indexer's 512
-compressed keys, and below it the indexer keeps every key, so attention is
-exactly dense. The gate prompts are therefore 496 tokens.
+- Indexer: when layers 2, 8, 14 and 20 store a compressed key they also
+  store its index key, through the shared indexer
+  (`inference/runner/device_indexer.h`): the normed latent projected by the
+  layer's `idx_k` (BF16, 512 to 128), normed with `idx_k_norm`, roped at the
+  group's first position and rounded through FP4 with power-of-two 32-wide
+  blocks (`SPARK_QDQ_FP4_POW2`), as the publisher's `Indexer` does, then
+  `SparkIndexerStoreKeys` at the compressed index into the cache's index KV
+  layer (the KV layers are the 40 window layers, the 4 compressed caches
+  and the 4 index caches). Every key is stored from position 0, so a row
+  that later needs a selection finds them all. An index source layer (2, 8,
+  14, 20, 24, 28, 32, 36) with a row that sees more than 512 compressed keys
+  projects the index query (`idx_q_b`, all 32 index heads on every rank, on
+  the FP8 query latent; rope at the row's position; the same FP4 rounding)
+  and the head weights (`idx_weights` on the normed input, scaled by
+  1/sqrt(32 x 128)) and keeps the top 512 compressed keys of the owner
+  cache with `SparkIndexerSelect`; the layers up to the next index source
+  reuse the selection, as the publisher's shared `topk_idxs` does. A step
+  whose rows all see at most 512 compressed keys at a layer attends every
+  key exactly as before.
+
+A row whose layer sees more than 512 compressed keys (position 512 on the
+ratio-1 layers, 1,024 on the ratio-2 ones) is refused at its attention: the
+shared indexer attends one KV layer's selected keys, and DeepSeek V4.1 needs
+the window keys of the layer and the selected keys of the cache's layer in
+one softmax with the sinks. A row at position 16,384 or later is refused in
+`Begin`: from there layer 20's 2,048 candidate blocks of 8 mask the later
+index layers' scores, and the candidate blocks are not built. The gate
+prompts are therefore 496 tokens.
 
 `tools/dsv41_flash_tp16_pack.py --tp-degree 8` writes the rank packs (about
 38 GB each: the official FP8 bytes with the 32 x 32 UE8M0 block scales
-repeated per row, the MXFP4 expert planes, the hash tables) and the engram
-file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
+repeated per row, the MXFP4 expert planes, the indexer's tensors, the hash
+tables) and the engram file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
 chat turn and the FP32 teacher:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
