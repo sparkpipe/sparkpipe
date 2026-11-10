@@ -24,12 +24,23 @@ struct HyDevice
 		SparkTensor scale;
 	};
 
+	struct Indexer
+	{
+		SparkDeviceWeight query;
+		SparkDeviceWeight key;
+		SparkTensor key_norm;
+		SparkTensor key_bias;
+		SparkTensor weights;
+	};
+
 	struct Layer
 	{
 		Hyper hyper[2];
 		SparkTensor input_norm;
 		SparkTensor post_norm;
 		SparkDeviceLatentAttentionWeights attention;
+		Indexer indexer;
+		uint32_t index_slot;
 		SparkDeviceFfnWeights ffn;
 		SparkDeviceFfnWeights shared;
 		SparkTensor router;
@@ -202,6 +213,23 @@ struct HyDevice
 		return status;
 	}
 
+	static SparkStatus BindIndexer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Indexer *indexer)
+	{
+		SparkStatus status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_q", L::kIndexWidth, G::kQLora, &indexer->query);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_k", G::kIndexDim, G::kHidden, &indexer->key);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_k_norm", "f32", (uint64_t)G::kIndexDim * sizeof(float), &indexer->key_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_k_bias", "f32", (uint64_t)G::kIndexDim * sizeof(float), &indexer->key_bias);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_weights", "bf16", (uint64_t)G::kIndexHeads * G::kHidden * 2u,
+				&indexer->weights);
+		if ( status == SPARK_STATUS_OK && (indexer->query.scale_group != SPARK_MXFP8_GROUP || indexer->key.scale_group != SPARK_MXFP8_GROUP) )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "the indexer's query and key projections are MXFP8");
+		return status;
+	}
+
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
 		Layer *layer = &state->layers[index];
@@ -219,6 +247,8 @@ struct HyDevice
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "post_norm", "bf16", G::kHidden * 2u, &layer->post_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceLatentAttentionBind(&state->stage, weights, index, &state->attention_shape, &layer->attention);
+		if ( status == SPARK_STATUS_OK && G::IndexerLayer(index) )
+			status = BindIndexer(state, weights, index, &layer->indexer);
 		if ( status == SPARK_STATUS_OK && index < G::kDenseLayers )
 			return SparkDeviceFfnBind(&state->stage, weights, index, state->ffn_rows, &layer->ffn);
 		if ( status == SPARK_STATUS_OK )
@@ -236,6 +266,14 @@ struct HyDevice
 		return status;
 	}
 
+	static uint32_t IndexSlots(State *state)
+	{
+		uint32_t indexers = 0u;
+		for ( uint32_t index = 0u; index < G::kLayers; index++ )
+			state->layers[index].index_slot = G::IndexerLayer(index) ? indexers++ : indexers == 0u ? 0u : indexers - 1u;
+		return indexers;
+	}
+
 	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
 	{
 		State *state = (State *)model;
@@ -249,6 +287,8 @@ struct HyDevice
 			status = BindLayer(state, weights, index);
 		if ( status != SPARK_STATUS_OK )
 			return status;
+		if ( IndexSlots(state) != G::kIndexLayers || !G::IndexerLayer(0u) )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "the indexer layers must number the model's and include the first layer");
 		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
 	}
 
