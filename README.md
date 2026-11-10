@@ -331,9 +331,10 @@ change its tokens. Decode graphs are captured for each row count. A frame
 that no graph covers enqueues the same launches in one pass and checks its
 collective rounds once, at the end of the frame.
 
-**The harness.** `tools/glm5_next_batch_roofline.cu` runs the real kernels
-on one GPU at any batch and context. It prints per-phase time against the
-memory bound, so the next bottleneck can be read off directly.
+**The roofline.** `tools/roofline_estimator.py` derives each lane's bytes
+per token from the pack layouts and prints receipted tokens per second
+against the measured memory bound, so the gap to the bound can be read off
+per lane.
 
 ## KV cache and model state
 

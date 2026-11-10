@@ -227,7 +227,8 @@ TECHDEBT: speculation, dynamic batching.
 
 Exit: every driver module meets three conditions on merged main. It builds
 for sm_121a and links. It is releasable by
-`tools/module_build_release.sh`. It has a functional receipt (COMPSEC-17 or
+`scripts/release_build.sh`: its lane in `deployment/lanes.json` resolves
+through `tools/lane_config.py release-row`. It has a functional receipt (COMPSEC-17 or
 its model's equivalent) and a B1 measurement in PERFORMANCE_STATUS.md.
 
 Drivers are taken in the order that GOALS.md's model direction sets.
