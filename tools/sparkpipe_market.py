@@ -586,12 +586,18 @@ class Market:
             self.advance(now)
             return self.hour_plan(pricing, account, fleet, start, hours, now)
 
+    def held_quote(self, plan, body, what):
+        price = hc_field(body["price"], "quoted price") if "price" in body else None
+        if "first" in body and body["first"] != plan["first"] or price is not None and price != Decimal(plan["price"]):
+            raise Refusal(f"The quote changed: {what(plan)} now costs {plan['price']} HC. Nothing was booked; check the new quote and book again.", 409, "quote_changed")
+
     def book_hours(self, account, body):
         pricing, fleet, start, hours = self.hours_request(body)
         with self.book.lock:
             now = self.now()
             self.advance(now)
             plan = self.hour_plan(pricing, account, fleet, start, hours, now)
+            self.held_quote(plan, {"price": body["price"]} if "price" in body else {}, lambda p: f"{p['hours']} hour(s) of {p['fleet']} from {p['start']}")
             ident = self.pay(account, fleet, "hour", start, slot_time(plan["end"]), Decimal(plan["price"]), now, {key: plan[key] for key in ("hours", "discount", "waitlist_saving") if key in plan})
             self.confirmed(self.st.bookings[ident], now)
             return self.booking_view(self.st.bookings[ident], now)
@@ -613,6 +619,7 @@ class Market:
             now = self.now()
             self.advance(now)
             plan = self.week_plan(pricing, account, fleet, weeks, now)
+            self.held_quote(plan, body, lambda p: f"{p['weeks']} week(s) of {p['fleet']}, {p['first']} to {p['end']},")
             ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), now, {"weeks": weeks, "discount": plan["discount"]})
             self.confirmed(self.st.bookings[ident], now)
             return dict(plan, booking=ident)
