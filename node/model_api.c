@@ -151,8 +151,6 @@ static int HaveSidecar;
 static uint32_t ApiOutputVocabulary;
 static SparkQuantArm QuantArm;
 static int HaveQuantArm;
-static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
-static uint32_t EngineStopTokenCount;
 static const SparkModelResidentChatTemplate *ChatTemplate;
 static uint32_t TextPromptPrefix[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
 static uint32_t TextPromptPrefixCount;
@@ -1110,13 +1108,6 @@ static int api_resolve_seed(ApiOptions *options)
 _Static_assert(SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS <= API_MAX_STOP_TOKENS, "a chat template's stop markers fit a request's stop list");
 _Static_assert(API_MAX_STOP_TOKENS <= SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT, "a request's stop list fits the engine's per-request stops");
 
-static uint32_t api_stop_list(const ApiRequest *req, uint32_t *stops)
-{
-	memcpy(stops,EngineStopTokens,(size_t)EngineStopTokenCount * sizeof(uint32_t));
-	memcpy(stops + EngineStopTokenCount,req->stop_tokens,(size_t)req->stop_token_count * sizeof(uint32_t));
-	return EngineStopTokenCount + req->stop_token_count;
-}
-
 static void api_usage_counts_json(char *buffer, size_t capacity, uint32_t prompt, uint32_t output, uint32_t cached)
 {
 	(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":%u,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u}}",
@@ -1274,7 +1265,7 @@ static uint32_t api_stream_take(ApiRequest *req, ApiStream *stream, uint32_t *to
 	return count;
 }
 
-static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t count, const uint32_t *stops, uint32_t stop_count, uint32_t flush)
+static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t count, uint32_t flush)
 {
 	uint32_t index,bytes,ready;
 	size_t escaped_length = 0u;
@@ -1283,7 +1274,7 @@ static int api_stream_text(ApiStream *stream, const uint32_t *tokens, uint32_t c
 		return 1;
 	for (index = 0u; index < count; index++)
 	{
-		if ( SparkTokenizerSidecarDecodeText(&Sidecar,tokens + index,1u,stops,stop_count,0u,stream->piece,stream->piece_capacity,&bytes) != SPARK_STATUS_OK || stream->pending_bytes + bytes > stream->pending_capacity )
+		if ( SparkTokenizerSidecarDecodeText(&Sidecar,tokens + index,1u,0,0u,0u,stream->piece,stream->piece_capacity,&bytes) != SPARK_STATUS_OK || stream->pending_bytes + bytes > stream->pending_capacity )
 			return 0;
 		memcpy(stream->pending + stream->pending_bytes,stream->piece,bytes);
 		stream->pending_bytes += bytes;
@@ -1352,7 +1343,7 @@ static int api_failure(const ApiRequest *req, char *body, size_t capacity)
 	return code;
 }
 
-static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, int chat_format, const uint32_t *stops, uint32_t stop_count, int alive)
+static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, int chat_format, int alive)
 {
 	static const char done[] = "data: [DONE]\n\n";
 	char error[224],event[240];
@@ -1363,7 +1354,7 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 		alive = send_all(fd,event,strlen(event));
 	}
 	else if ( alive )
-		alive = api_stream_text(stream,0,0u,stops,stop_count,1u) && api_stream_event(fd,stream,chat_format,req,stream->sent_tokens,0,0u,req);
+		alive = api_stream_text(stream,0,0u,1u) && api_stream_event(fd,stream,chat_format,req,stream->sent_tokens,0,0u,req);
 	if ( alive )
 		(void)send_all(fd,done,sizeof(done) - 1u);
 	free(stream->pending);
@@ -1374,11 +1365,10 @@ static void api_stream_close(int fd, const ApiRequest *req, ApiStream *stream, i
 
 static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 {
-	uint32_t stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,text_capacity = 1u,text_bytes = 0u;
+	uint32_t text_capacity = 1u,text_bytes = 0u;
 	char *text = 0,*escaped = 0,*response = 0,*logprobs = 0,usage[160],err[160];
 	size_t escaped_capacity,escaped_length = 0u,response_capacity,logprobs_capacity,logprobs_length = 0u;
 	SparkStatus status = SPARK_STATUS_OK;
-	stop_count = api_stop_list(req,stops);
 	if (HaveSidecar)
 		text_capacity = req->output_token_count * Sidecar.maximum_token_text_bytes + 1u;
 	escaped_capacity = (size_t)text_capacity * 6u + 8u;
@@ -1397,7 +1387,7 @@ static void api_send_completion(int fd, const ApiRequest *req, int chat_format)
 			status = SPARK_STATUS_INTERNAL_ERROR;
 	}
 	if (status == SPARK_STATUS_OK && HaveSidecar)
-		status = SparkTokenizerSidecarDecodeText(&Sidecar,req->output_token_ids,req->output_token_count,stops,stop_count,0u,text,text_capacity,&text_bytes);
+		status = SparkTokenizerSidecarDecodeText(&Sidecar,req->output_token_ids,req->output_token_count,0,0u,0u,text,text_capacity,&text_bytes);
 	if (status == SPARK_STATUS_OK && !SparkJsonAppendEscaped(escaped,escaped_capacity,&escaped_length,text,text_bytes))
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	api_usage_json(usage,sizeof(usage),req);
@@ -1442,7 +1432,7 @@ static void api_release_request(ApiRequest *req)
 static void api_stream(int fd, ApiRequest *req, int chat_format)
 {
 	ApiStream stream;
-	uint32_t tokens[API_STREAM_BATCH_TOKENS],stops[API_MAX_STOP_TOKENS + SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT],stop_count,count,first_token;
+	uint32_t tokens[API_STREAM_BATCH_TOKENS],count,first_token;
 	char error[224];
 	int alive;
 	api_await(fd,req,0u,API_WAIT_ADMISSION);
@@ -1453,7 +1443,6 @@ static void api_stream(int fd, ApiRequest *req, int chat_format)
 		send_response(fd,api_failure(req,error,sizeof(error)),error);
 		return;
 	}
-	stop_count = api_stop_list(req,stops);
 	alive = api_stream_open(fd,&stream,req);
 	while ( alive )
 	{
@@ -1463,11 +1452,11 @@ static void api_stream(int fd, ApiRequest *req, int chat_format)
 		if ( count == 0u && (req->done != 0 || S.running == 0) )
 			break;
 		if ( count != 0u )
-			alive = api_stream_text(&stream,tokens,count,stops,stop_count,0u) && api_stream_event(fd,&stream,chat_format,req,first_token,tokens,count,0);
+			alive = api_stream_text(&stream,tokens,count,0u) && api_stream_event(fd,&stream,chat_format,req,first_token,tokens,count,0);
 	}
 	if ( req->done == 0 )
 		api_abandon(req,alive != 0 ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_IO_ERROR,0u);
-	api_stream_close(fd,req,&stream,chat_format,stops,stop_count,alive);
+	api_stream_close(fd,req,&stream,chat_format,alive);
 }
 
 static int api_parse_chat_thinking(const SparkJsonDocument *doc, int32_t root, bool *thinking)
@@ -2077,13 +2066,11 @@ int main(int argc, char **argv)
 	}
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
-	EngineStopTokenCount = dep.eos_token_count;
-	if ( EngineStopTokenCount == 0u || EngineStopTokenCount > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
+	if ( dep.eos_token_count == 0u || dep.eos_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )
 	{
 		fprintf(stderr,"model_api: required model EOS metadata missing or invalid\n");
 		return 1;
 	}
-	memcpy(EngineStopTokens,dep.eos_token_ids,EngineStopTokenCount * sizeof(uint32_t));
 	if (dep.tokenizer_asset_path != 0)
 	{
 		char asset_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES];
