@@ -20,7 +20,7 @@ static inline bool SparkIndexerSlot(constant SparkIndexerParams &p, device const
 		atomic_store_explicit(error, 1u + row, memory_order_relaxed);
 		return false;
 	}
-	slot = ((ulong)page * p.page_slots + position % p.page_slots) * p.head_dimension;
+	slot = (ulong)page * p.page_pitch + (ulong)(position % p.page_slots) * p.slot_pitch;
 	return true;
 }
 
@@ -32,7 +32,7 @@ static inline uint SparkIndexerVisible(constant SparkIndexerParams &p, uint posi
 kernel void spark_indexer_store_keys(constant SparkIndexerParams &p [[buffer(0)]], device const ushort *keys [[buffer(1)]],
 	device const float *norm_weight [[buffer(2)]], device const float *norm_bias [[buffer(3)]], device const uint *sequence_of_row [[buffer(4)]],
 	device const uint *rope_positions [[buffer(5)]], device const uint *store_positions [[buffer(6)]], device const uint *page_table [[buffer(7)]],
-	device ushort *pool [[buffer(8)]], device atomic_uint *error [[buffer(9)]],
+	device ushort *pool [[buffer(8)]], device atomic_uint *error [[buffer(9)]], device const ushort *gates [[buffer(10)]],
 	uint row [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
@@ -86,6 +86,8 @@ kernel void spark_indexer_store_keys(constant SparkIndexerParams &p [[buffer(0)]
 				value = low ? SparkMathRopeLow(value, normed[mate], c, s) : SparkMathRopeHigh(normed[mate], value, c, s);
 		}
 		slot[i] = SparkMathFloatToBf16(value);
+		if ( p.has_gate != 0u )
+			slot[p.head_dimension + i] = gates[(ulong)row * p.gate_stride + i];
 	}
 }
 
@@ -132,6 +134,13 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 				shared_relu[simd][h] = fmax(dot, 0.0f);
 			}
 			simdgroup_barrier(mem_flags::mem_threadgroup);
+			if ( p.weight_scale != 0.0f )
+			{
+				float total = 0.0f;
+				for ( uint h = 0u; h < p.heads; h++ )
+					total += fmax(shared_relu[simd][h] * p.score_scale, 0.0f) * shared_weight[h] * p.weight_scale;
+				score = total;
+			}
 			const uint g = lane % groups;
 			float sum = shared_weight[g] * shared_relu[simd][g];
 			sum = fma(shared_weight[g + groups], shared_relu[simd][g + groups], sum);
@@ -143,10 +152,105 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 			sum += simd_shuffle_xor(sum, ushort(1));
 			sum += simd_shuffle_xor(sum, ushort(2));
 			sum += simd_shuffle_xor(sum, ushort(4));
-			score = sum * p.score_scale;
+			if ( p.weight_scale == 0.0f )
+				score = sum * p.score_scale;
 		}
 		if ( lane == 0u )
 			scores[(ulong)row * p.score_stride + position] = score;
+	}
+}
+
+kernel void spark_indexer_score_pooled(constant SparkIndexerParams &p [[buffer(0)]], device const ushort *query [[buffer(1)]],
+	device const ushort *head_weight [[buffer(2)]], device const ushort *pool [[buffer(3)]], device const uint *page_table [[buffer(4)]],
+	device const uint *sequence_of_row [[buffer(5)]], device const uint *row_positions [[buffer(6)]], device float *scores [[buffer(7)]],
+	device atomic_uint *error [[buffer(8)]], device const float *ape [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
+{
+	threadgroup float pool_key[SPARK_INDEXER_KERNEL_MAX_DIM];
+	threadgroup float scratch[32];
+	threadgroup ulong slots[SPARK_INDEXER_KERNEL_MAX_RATIO];
+	threadgroup uint failed;
+	const uint row = group.y, pooled = group.x, ratio = max(p.key_ratio, 1u);
+	if ( row >= p.rows || pooled >= p.score_stride )
+		return;
+	device float *score = scores + (ulong)row * p.score_stride + pooled;
+	if ( pooled >= SparkIndexerVisible(p, row_positions[row]) )
+	{
+		if ( tid == 0u )
+			*score = -INFINITY;
+		return;
+	}
+	if ( tid == 0u )
+	{
+		failed = 0u;
+		for ( uint i = 0u; i < ratio; i++ )
+			if ( !SparkIndexerSlot(p, page_table, sequence_of_row[row], pooled * ratio + i, error, row, slots[i]) )
+				failed = 1u;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if ( failed != 0u )
+	{
+		if ( tid == 0u )
+			*score = -INFINITY;
+		return;
+	}
+	for ( uint d = tid; d < p.head_dimension; d += threads )
+	{
+		float logits[SPARK_INDEXER_KERNEL_MAX_RATIO];
+		float maximum = -INFINITY, sum = 0.0f, key = 0.0f;
+		for ( uint i = 0u; i < ratio; i++ )
+		{
+			logits[i] = SparkMathBf16ToFloat(pool[slots[i] + p.head_dimension + d]) + ape[i * p.head_dimension + d];
+			maximum = fmax(maximum, logits[i]);
+		}
+		for ( uint i = 0u; i < ratio; i++ )
+			if ( logits[i] != -INFINITY )
+				sum += SPARK_MATH_EXP_FAST(logits[i] - maximum);
+		for ( uint i = 0u; i < ratio; i++ )
+		{
+			const float mix = logits[i] == -INFINITY ? 0.0f : SPARK_MATH_EXP_FAST(logits[i] - maximum) / fmax(sum, 1.0e-20f);
+			if ( mix != 0.0f )
+				key += mix * SparkMathBf16ToFloat(pool[slots[i] + d]);
+		}
+		pool_key[d] = key;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	float total = 0.0f;
+	for ( uint h = 0u; h < p.heads; h++ )
+	{
+		float dot = 0.0f;
+		for ( uint d = tid; d < p.head_dimension; d += threads )
+			dot += SparkMathBf16ToFloat(query[(ulong)row * p.query_stride + h * p.head_dimension + d]) * pool_key[d];
+		dot = SparkGroupSum(dot, scratch, lane, simd, simds) * p.score_scale;
+		if ( dot < 0.0f )
+			dot = 0.0f;
+		total += dot * SparkMathBf16ToFloat(head_weight[(ulong)row * p.weight_stride + h]) * p.weight_scale;
+	}
+	if ( tid == 0u )
+		*score = total;
+}
+
+kernel void spark_indexer_expand_pools(constant SparkIndexerParams &p [[buffer(0)]], device const uint *selected_pools [[buffer(1)]],
+	device const uint *row_positions [[buffer(2)]], device uint *selected [[buffer(3)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]])
+{
+	if ( row >= p.rows )
+		return;
+	const uint ratio = max(p.key_ratio, 1u), context = row_positions[row] + 1u, pooled = context - context % ratio, spread = p.topk * ratio;
+	for ( uint index = tid; index < p.expand_width; index += threads )
+	{
+		uint position = SPARK_INDEXER_KERNEL_NONE;
+		if ( index < spread )
+		{
+			const uint chosen = selected_pools[(ulong)row * p.topk + index / ratio];
+			position = chosen == SPARK_INDEXER_KERNEL_NONE ? SPARK_INDEXER_KERNEL_NONE : chosen * ratio + index % ratio;
+			if ( position >= pooled )
+				position = SPARK_INDEXER_KERNEL_NONE;
+		}
+		else if ( pooled + index - spread < context )
+			position = pooled + index - spread;
+		selected[(ulong)row * p.expand_width + index] = position;
 	}
 }
 

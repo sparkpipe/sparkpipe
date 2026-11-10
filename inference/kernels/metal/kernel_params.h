@@ -33,6 +33,7 @@
 #define SPARK_INDEXER_KERNEL_MAX_DIM 256u
 #define SPARK_INDEXER_KERNEL_MAX_QUERY 8192u
 #define SPARK_INDEXER_KERNEL_MAX_TOPK 2048u
+#define SPARK_INDEXER_KERNEL_MAX_RATIO 16u
 #define SPARK_INDEXER_KERNEL_HEAD_GROUPS 8u
 #define SPARK_INDEXER_SCORE_SIMDS 8u
 #define SPARK_INDEXER_SCORE_THREADS (SPARK_INDEXER_SCORE_SIMDS * 32u)
@@ -499,6 +500,12 @@ typedef struct SparkIndexerParams
 	uint32_t rope_rounding;
 	uint32_t rope_interleaved;
 	float rope_scale;
+	uint32_t slot_pitch;
+	uint32_t page_pitch;
+	uint32_t has_gate;
+	uint32_t gate_stride;
+	float weight_scale;
+	uint32_t expand_width;
 	uint32_t pad[3];
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkIndexerParams;

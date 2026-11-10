@@ -172,6 +172,8 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ATTENTION_COMBINE_GATHER_NARROW,
 	SPARK_OPS_ATTENTION_COMBINE_GATHER_SPLIT,
 	SPARK_OPS_ATTENTION_COMBINE_GATHER_LATENT,
+	SPARK_OPS_INDEXER_SCORE_POOLED,
+	SPARK_OPS_INDEXER_EXPAND_POOLS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -369,11 +371,15 @@ SparkStatus SparkOpsNgramGatherE8m0(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	const SparkNgramParams *params);
 SparkStatus SparkOpsNgramHistoryMapped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor token_map, const SparkOpsSequences *sequences,
 	SparkTensor history, const SparkNgramParams *params);
-SparkStatus SparkOpsIndexerStoreKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor keys, const SparkTensor *norm_weight,
+SparkStatus SparkOpsIndexerStoreKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor keys, const SparkTensor *gates, const SparkTensor *norm_weight,
 	const SparkTensor *norm_bias, SparkTensor sequence_of_row, SparkTensor rope_positions, SparkTensor store_positions, SparkTensor page_table,
 	SparkTensor pool, const SparkIndexerParams *params);
 SparkStatus SparkOpsIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor query, SparkTensor head_weight, SparkTensor pool,
 	SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerScorePooled(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor query, SparkTensor head_weight, SparkTensor ape,
+	SparkTensor pool, SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor selected_pools, SparkTensor row_positions,
+	SparkTensor selected, const SparkIndexerParams *params);
 SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params);
 SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params);

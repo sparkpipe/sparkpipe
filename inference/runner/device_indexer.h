@@ -34,6 +34,8 @@ typedef struct SparkIndexerShape
 	uint32_t query_stride;
 	uint32_t weight_stride;
 	uint32_t key_stride;
+	float weight_scale;
+	uint32_t gate_stride;
 } SparkIndexerShape;
 
 typedef struct SparkIndexerCache
@@ -44,6 +46,8 @@ typedef struct SparkIndexerCache
 	uint32_t pages_per_sequence;
 	uint32_t pool_pages;
 	uint32_t sequences;
+	uint32_t slot_pitch;
+	uint32_t page_pitch;
 } SparkIndexerCache;
 
 uint64_t SparkIndexerCacheBytes(const SparkIndexerShape *shape, uint32_t pool_pages, uint32_t page_slots);
@@ -67,6 +71,16 @@ SparkStatus SparkIndexerSelect(SparkDeviceOps *ops, SparkDeviceQueue *queue, con
 SparkStatus SparkIndexerAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor selected, uint32_t topk, uint32_t key_ratio, SparkTensor partial, SparkTensor output,
 	const SparkAttentionParams *params);
+SparkStatus SparkIndexerStoreGatedKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkIndexerCache *cache, SparkTensor keys,
+	SparkTensor gates, const SparkTensor *norm_weight, const SparkTensor *norm_bias, const SparkHeadRopeParams *rope, SparkTensor sequence_of_row,
+	SparkTensor rope_positions, SparkTensor store_positions, const SparkIndexerShape *shape, uint32_t rows);
+SparkStatus SparkIndexerScorePooled(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkIndexerCache *cache, SparkTensor query,
+	SparkTensor head_weight, SparkTensor ape, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores,
+	const SparkIndexerShape *shape, uint32_t rows, uint32_t score_stride);
+SparkStatus SparkIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor selected_pools, SparkTensor row_positions,
+	SparkTensor selected, const SparkIndexerShape *shape, uint32_t rows, uint32_t width);
+uint32_t SparkIndexerExpandWidth(const SparkIndexerShape *shape);
+uint32_t SparkIndexerSlotPitch(const SparkIndexerShape *shape, uint32_t gated);
 
 #ifdef __cplusplus
 }
