@@ -264,12 +264,51 @@ static void SparkPrefixCacheDigestBlock(
     SparkSha256Finalize(&context, digest);
 }
 
+typedef struct SparkPrefixCacheDigestSource
+{
+    const uint32_t *token_ids;
+    uint32_t token_count;
+    uint32_t ready;
+    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+} SparkPrefixCacheDigestSource;
+
+static void SparkPrefixCacheDigestFromTokens(
+    SparkPrefixCacheDigestSource *source,
+    const uint32_t *token_ids,
+    uint32_t token_count)
+{
+    source->token_ids = token_ids;
+    source->token_count = token_count;
+    source->ready = 0u;
+}
+
+static void SparkPrefixCacheDigestFromValue(
+    SparkPrefixCacheDigestSource *source,
+    const uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
+{
+    source->token_ids = 0;
+    source->token_count = 0u;
+    memcpy(source->digest, digest, SPARK_SHA256_DIGEST_BYTES);
+    source->ready = 1u;
+}
+
+static const uint8_t *SparkPrefixCacheDigestValue(
+    SparkPrefixCacheDigestSource *source)
+{
+    if (source->ready == 0u)
+    {
+        SparkPrefixCacheDigestBlock(source->token_ids, source->token_count, source->digest);
+        source->ready = 1u;
+    }
+    return source->digest;
+}
+
 static SparkPrefixCacheEntry *SparkPrefixCacheFindEntry(
     SparkPrefixCache *cache,
     uint64_t parent_hash,
     uint64_t block_hash,
     uint64_t content_hash,
-    const uint8_t content_digest[SPARK_SHA256_DIGEST_BYTES],
+    SparkPrefixCacheDigestSource *content_digest,
     uint32_t first_token_index,
     uint32_t token_count,
     uint32_t reusable_only)
@@ -306,7 +345,7 @@ static SparkPrefixCacheEntry *SparkPrefixCacheFindEntry(
                 entry->token_count == token_count &&
                 ((entry->flags &
                     SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u ||
-                 memcmp(entry->content_digest, content_digest,
+                 memcmp(entry->content_digest, SparkPrefixCacheDigestValue(content_digest),
                     SPARK_SHA256_DIGEST_BYTES) == 0) &&
                 (reusable_only == 0u ||
                  SparkPrefixCacheEntryIsReusable(cache, entry)))
@@ -331,7 +370,7 @@ static SparkPrefixCacheEntry *SparkPrefixCacheFindEntry(
             entry->token_count == token_count &&
             ((entry->flags &
                 SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u ||
-             memcmp(entry->content_digest, content_digest,
+             memcmp(entry->content_digest, SparkPrefixCacheDigestValue(content_digest),
                 SPARK_SHA256_DIGEST_BYTES) == 0) &&
             (reusable_only == 0u ||
              SparkPrefixCacheEntryIsReusable(cache, entry)))
@@ -1336,7 +1375,28 @@ typedef struct SparkPrefixCacheWalk
     uint32_t token_offset;
     uint32_t matched_block_count;
     uint32_t partial;
+    uint32_t clock_read;
+    uint32_t now_seconds;
 } SparkPrefixCacheWalk;
+
+static void SparkPrefixCacheHashPrefixStates(
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint64_t parent_hash,
+    uint64_t *block_states,
+    uint64_t *content_states)
+{
+    uint32_t token_index;
+    block_states[0] = parent_hash ^ 1099511628211ull;
+    content_states[0] = 7809847782465536322ull;
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        block_states[token_index + 1u] = SparkPrefixCacheMixU64(block_states[token_index],
+            (uint64_t)token_ids[token_index] + ((uint64_t)token_index << 32u));
+        content_states[token_index + 1u] = SparkPrefixCacheMixU64(content_states[token_index],
+            ((uint64_t)token_ids[token_index] << 1u) ^ (uint64_t)(token_index + 0x9e3779b9u));
+    }
+}
 
 static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
     SparkPrefixCache *cache,
@@ -1345,9 +1405,11 @@ static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
     SparkPrefixCacheWalk *walk)
 {
     SparkPrefixCacheEntry *entry;
+    SparkPrefixCacheDigestSource digest;
     uint32_t count;
     uint64_t block_hash,content_hash;
-    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+    uint64_t block_states[SPARK_PREFIX_CACHE_MAX_BLOCK_TOKENS + 1u];
+    uint64_t content_states[SPARK_PREFIX_CACHE_MAX_BLOCK_TOKENS + 1u];
 
     if (walk->partial != 0u || walk->token_offset >= maximum)
         return 0;
@@ -1355,20 +1417,25 @@ static SparkPrefixCacheEntry *SparkPrefixCacheWalkNextBounded(
         walk->parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
     count = SparkPrefixCacheMinimumU32(cache->block_token_count,
         maximum - walk->token_offset);
+    SparkPrefixCacheHashPrefixStates(&token_ids[walk->token_offset],count,
+        walk->parent_hash,block_states,content_states);
     for (; count != 0u; count--)
     {
-        block_hash = SparkPrefixCacheHashBlock(
-            &token_ids[walk->token_offset],count,walk->parent_hash);
-        content_hash = SparkPrefixCacheHashBlockContent(
-            &token_ids[walk->token_offset],count);
-        SparkPrefixCacheDigestBlock(&token_ids[walk->token_offset],count,digest);
+        block_hash = SparkPrefixCacheMixU64(block_states[count],count);
+        content_hash = SparkPrefixCacheMixU64(content_states[count],count);
+        SparkPrefixCacheDigestFromTokens(&digest,&token_ids[walk->token_offset],count);
         entry = SparkPrefixCacheFindEntry(cache,walk->parent_hash,
-            block_hash,content_hash,digest,walk->token_offset,count,1u);
+            block_hash,content_hash,&digest,walk->token_offset,count,1u);
         if (entry == 0)
             continue;
+        if (walk->clock_read == 0u)
+        {
+            walk->now_seconds = SparkPrefixCacheNowSeconds();
+            walk->clock_read = 1u;
+        }
         cache->tick++;
         entry->last_used_tick = cache->tick;
-        entry->used_seconds = SparkPrefixCacheNowSeconds();
+        entry->used_seconds = walk->now_seconds;
         walk->parent_hash = block_hash;
         walk->token_offset += count;
         walk->matched_block_count++;
@@ -1993,15 +2060,15 @@ SparkStatus SparkPrefixCacheLookupPrompt(
         content_hash = SparkPrefixCacheHashBlockContent(
             &token_ids[token_offset],
             block_tokens);
-        { uint8_t digest_c[SPARK_SHA256_DIGEST_BYTES];
-        SparkPrefixCacheDigestBlock(&token_ids[token_offset],
-            block_tokens, digest_c);
+        { SparkPrefixCacheDigestSource digest_c;
+        SparkPrefixCacheDigestFromTokens(&digest_c,&token_ids[token_offset],
+            block_tokens);
         entry = SparkPrefixCacheFindEntry(
             cache,
             parent_hash,
             block_hash,
             content_hash,
-            digest_c,
+            &digest_c,
             token_offset,
             block_tokens,
             1u); }
@@ -2051,6 +2118,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
     uint32_t block_count;
     uint32_t block_index;
     uint32_t token_offset;
+    uint32_t now_seconds;
     SparkStatus status;
 
     status = SparkPrefixCacheValidate(cache);
@@ -2085,11 +2153,13 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         operation_epoch);
     parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
     token_offset = 0u;
+    now_seconds = SparkPrefixCacheNowSeconds();
 
     for (block_index = 0u; block_index < block_count; ++block_index)
     {
         SparkPrefixCacheSequenceBinding *existing_binding;
         SparkPrefixCacheEntry *entry;
+        SparkPrefixCacheDigestSource digest;
         uint32_t block_token_count;
         uint32_t entry_flags;
         uint32_t binding_is_pending;
@@ -2103,6 +2173,8 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
             parent_hash);
         content_hash = SparkPrefixCacheHashBlockContent(
             &token_ids[token_offset],
+            block_token_count);
+        SparkPrefixCacheDigestFromTokens(&digest,&token_ids[token_offset],
             block_token_count);
         existing_binding = SparkPrefixCacheFindBindingAtTokenOffset(
             cache,
@@ -2122,18 +2194,15 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         }
         if (entry == 0 && allow_cross_sequence_reuse != 0u)
         {
-            { uint8_t digest_d[SPARK_SHA256_DIGEST_BYTES];
-            SparkPrefixCacheDigestBlock(&token_ids[token_offset],
-                block_token_count, digest_d);
             entry = SparkPrefixCacheFindEntry(
                 cache,
                 parent_hash,
                 block_hash,
                 content_hash,
-                digest_d,
+                &digest,
                 token_offset,
                 block_token_count,
-                1u); }
+                1u);
         }
         if (entry == 0)
         {
@@ -2151,9 +2220,6 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
             {
                 entry_flags |= SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY;
             }
-            { uint8_t install_digest[SPARK_SHA256_DIGEST_BYTES];
-            SparkPrefixCacheDigestBlock(&token_ids[token_offset],
-                block_token_count, install_digest);
             status = SparkPrefixCacheInstallEntry(
                 cache,
                 entry,
@@ -2161,10 +2227,10 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
                 parent_hash,
                 block_hash,
                 content_hash,
-                install_digest,
+                SparkPrefixCacheDigestValue(&digest),
                 token_offset,
                 block_token_count,
-                operation_epoch); }
+                operation_epoch);
             if (status != SPARK_STATUS_OK)
             {
                 SparkPrefixCacheRollbackEpoch(
@@ -2209,7 +2275,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         }
         cache->tick += 1u;
         entry->last_used_tick = cache->tick;
-        entry->used_seconds = SparkPrefixCacheNowSeconds();
+        entry->used_seconds = now_seconds;
         parent_hash = block_hash;
         token_offset += block_token_count;
     }
@@ -3106,13 +3172,13 @@ static SparkPrefixCacheEntry *SparkPrefixCacheFindPromptBlock(
     uint64_t parent_hash,
     uint64_t *block_hash_out)
 {
-    uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
+    SparkPrefixCacheDigestSource digest;
     uint64_t content_hash;
 
     *block_hash_out = SparkPrefixCacheHashBlock(&token_ids[token_offset], block_tokens, parent_hash);
     content_hash = SparkPrefixCacheHashBlockContent(&token_ids[token_offset], block_tokens);
-    SparkPrefixCacheDigestBlock(&token_ids[token_offset], block_tokens, digest);
-    return SparkPrefixCacheFindEntry(cache, parent_hash, *block_hash_out, content_hash, digest,
+    SparkPrefixCacheDigestFromTokens(&digest, &token_ids[token_offset], block_tokens);
+    return SparkPrefixCacheFindEntry(cache, parent_hash, *block_hash_out, content_hash, &digest,
         token_offset, block_tokens, 1u);
 }
 
@@ -3493,12 +3559,14 @@ SparkStatus SparkPrefixCacheImportCommitted(
     {
         const SparkPrefixCacheCommittedRecord *record = &records[index];
         SparkPrefixCacheEntry *entry,*parent = 0;
+        SparkPrefixCacheDigestSource record_digest;
+        SparkPrefixCacheDigestFromValue(&record_digest, record->content_digest);
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
             (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->used_seconds == 0u ||
             (uint64_t)record->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
-                record->content_digest, record->first_token_index, record->token_count, 0u) != 0 ||
+                &record_digest, record->first_token_index, record->token_count, 0u) != 0 ||
             cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)
         {
             skipped++;
