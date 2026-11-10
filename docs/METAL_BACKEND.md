@@ -531,8 +531,11 @@ pages of 16 blocks on the main page table, `SparkDeviceStageIndexCache` with
 attends densely, exactly as without the indexer: there each row sees at most
 512 complete blocks, all of which the indexer keeps. A frame with a row at
 or past 2,051 scores each complete block `sum over heads of ReLU(q . k) /
-sqrt(128)`, keeps the 512 best and attends their positions plus the row's
-open block (`SparkDeviceAttentionSelected`).
+sqrt(128)` in head order (`heads_in_order`, one FP32 unit weight set shared
+by every row: `weight_f32` and `weight_shared`), keeps the 512 best, expands
+them with the row's open block into 2,051 positions
+(`SparkIndexerExpandPools`) and attends those with a key ratio of one
+(`SparkDeviceAttentionSelected`).
 
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
@@ -1589,11 +1592,13 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   whose rows all see at most 512 compressed keys at a layer attends every
   key exactly as before.
 
-A row whose layer sees more than 512 compressed keys (position 512 on the
-ratio-1 layers, 1,025 on the ratio-2 ones) is refused at its attention: the
-shared indexer attends one KV layer's selected keys, and DeepSeek V4.1 needs
-the window keys of the layer and the selected keys of the cache's layer in
-one softmax with the sinks. A row at position 16,384 or later is refused in
+A step with a row whose layer sees more than 512 compressed keys (position
+512 on the ratio-1 layers, 1,025 on the ratio-2 ones) attends through
+`SparkIndexerAttentionExtra`: the layer's window keys and the selected keys
+of the cache's layer in one softmax with the sinks, with the head weights
+as FP32 (`weight_f32`). Its partitions cover each row's positions up to its
+own, so the stage runs it in row blocks that fit the attention records and
+refuses a row whose partitions alone do not fit. A row at position 16,384 or later is refused in
 `Begin`: from there layer 20's 2,048 candidate blocks of 8 mask the later
 index layers' scores, and the candidate blocks are not built. The gate
 prompts are therefore 496 tokens.

@@ -13,7 +13,7 @@
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
 #include "sparkpipe/spark_qwen38_max_stage_model.h"
 
-#define QD_SLICES 58u
+#define QD_SLICES 59u
 #define QD_PLE_WINDOW_POOL 2u
 #define QD_PLE_HISTORY_POOL 3u
 #define QD_INDEX_WINDOW_POOL 4u
@@ -24,6 +24,7 @@ struct QwenDevice
 {
 	using G = typename P::Geometry;
 	using L = QwenHybridLayout<G>;
+	static constexpr uint32_t kIndexExpanded = L::kIndexBlocks * G::kIndexRatio + L::kIndexTail;
 
 	static_assert(L::kHyper == L::kPle, "the device layers run the n-gram embedding inside the hyper-connection streams");
 	static_assert(G::kTpDegree == 1u || !L::kHyper, "the hyper-connection variant runs on one rank");
@@ -129,6 +130,7 @@ struct QwenDevice
 		SparkTensor index_last;
 		SparkTensor index_scores;
 		SparkTensor index_selected;
+		SparkTensor index_expanded;
 		SparkTensor index_keep;
 	};
 
@@ -210,7 +212,9 @@ struct QwenDevice
 		shape->topk = L::kIndexBlocks;
 		shape->key_ratio = G::kIndexRatio;
 		shape->query_stride = G::kIndexHeads * G::kIndexDim;
-		shape->weight_stride = 0u;
+		shape->weight_f32 = 1u;
+		shape->weight_shared = 1u;
+		shape->heads_in_order = 1u;
 		shape->key_stride = L::kIndexWidth;
 		state->index_store_shape = *shape;
 		state->index_store_shape.key_stride = G::kIndexDim;
@@ -254,7 +258,7 @@ struct QwenDevice
 			{ rows * SparkDeviceAttentionKvWidth(attention) * 2u, &state->attention.key },
 			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension, state->stage.max_positions),
 				L::kIndexer ? SparkIndexerAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension,
-				L::kIndexBlocks) : 0u), &state->attention.records },
+				kIndexExpanded) : 0u), &state->attention.records },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
 			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep },
@@ -296,6 +300,7 @@ struct QwenDevice
 			{ L::kIndexer ? rows * sizeof(uint32_t) : 0u, &state->index_last },
 			{ L::kIndexer ? SparkIndexerScoreBytes(state->stage.max_rows, state->index_score_stride) : 0u, &state->index_scores },
 			{ L::kIndexer ? SparkIndexerSelectedBytes(state->stage.max_rows, L::kIndexBlocks) : 0u, &state->index_selected },
+			{ L::kIndexer ? SparkIndexerSelectedBytes(state->stage.max_rows, kIndexExpanded) : 0u, &state->index_expanded },
 			{ L::kIndexer ? (uint64_t)state->stage.verify_rows * L::kIndexWidth * 2u * L::kAttnLayers : 0u, &state->index_keep }
 		};
 		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
@@ -627,6 +632,9 @@ struct QwenDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkIndexerSelect(ops, frame.queue, &cache, state->index_query, SparkDeviceStageUnitScale(&state->stage), frame.t.sequence_of_row,
 				frame.t.positions, state->index_scores, state->index_selected, &state->index_shape, rows, state->index_score_stride);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerExpandPools(ops, frame.queue, state->index_selected, frame.t.positions, state->index_expanded, &state->index_shape, rows,
+				kIndexExpanded);
 		return status;
 	}
 
@@ -634,7 +642,7 @@ struct QwenDevice
 	{
 		if constexpr ( L::kIndexer )
 		{
-			const SparkDeviceAttentionSelection selection = { state->index_selected, L::kIndexBlocks, G::kIndexRatio };
+			const SparkDeviceAttentionSelection selection = { state->index_expanded, kIndexExpanded, 1u };
 			const SparkStatus status = Index(state, frame, layer);
 			if ( status != SPARK_STATUS_OK )
 				return status;

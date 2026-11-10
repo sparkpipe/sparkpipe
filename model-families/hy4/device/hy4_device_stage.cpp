@@ -145,6 +145,7 @@ struct HyDevice
 		index->key_ratio = 1u;
 		index->query_stride = L::kIndexWidth;
 		index->weight_stride = G::kIndexHeads;
+		index->weight_f32 = 1u;
 		index->key_stride = G::kIndexDim;
 		shape->index_layers = G::kIndexLayers;
 		shape->index_page_bytes = SparkIndexerCacheBytes(index, 1u, SPARK_DEVICE_RUNNER_PAGE_SLOTS);

@@ -894,6 +894,7 @@ struct D41Device
 		shape.key_ratio = ratio;
 		shape.query_stride = kIndexWidth;
 		shape.weight_stride = kIndexHeads;
+		shape.weight_f32 = 1u;
 		shape.key_stride = kIndexDim;
 		return shape;
 	}
@@ -955,6 +956,40 @@ struct D41Device
 		return status;
 	}
 
+	static SparkStatus AttendSelected(State *state, Frame &frame, const Layer &layer, const SparkOpsPaged &paged, const SparkOpsPaged &extra,
+		const SparkAttentionParams &base)
+	{
+		const uint32_t rows = frame.t.rows;
+		const uint64_t query_row = (uint64_t)kQueryWidth * sizeof(uint16_t), selected_row = SparkIndexerSelectedBytes(1u, kDenseKeys);
+		uint32_t longest = 0u;
+		for ( uint32_t row = 0u; row < rows; row++ )
+			if ( frame.t.host_positions[row] + 1u > longest )
+				longest = frame.t.host_positions[row] + 1u;
+		const uint64_t per_row = SparkIndexerAttentionExtraScratchBytes(1u, kHeads, longest, kDenseKeys);
+		const uint64_t fit = per_row == 0u ? 0u : state->records.bytes / per_row;
+		if ( fit == 0u )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
+				"the attention records cannot hold one row's window partitions and its selected compressed keys");
+		SparkStatus status = SPARK_STATUS_OK;
+		for ( uint32_t first = 0u; status == SPARK_STATUS_OK && first < rows; )
+		{
+			const uint32_t count = (uint64_t)(rows - first) < fit ? rows - first : (uint32_t)fit;
+			const SparkTensor rows_of = SparkTensorSlice(frame.t.sequence_of_row, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t));
+			SparkOpsPaged window = paged, compressed = extra;
+			SparkAttentionParams params = base;
+			window.sequence_of_row = compressed.sequence_of_row = rows_of;
+			window.positions = window.slots = SparkTensorSlice(frame.t.positions, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t));
+			compressed.positions = SparkTensorSlice(extra.positions, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t));
+			params.rows = count;
+			status = SparkIndexerAttentionExtra(state->stage.ops, frame.queue, &window, &compressed,
+				SparkTensorSlice(state->query, (uint64_t)first * query_row, (uint64_t)count * query_row), &layer.sinks,
+				SparkTensorSlice(state->selected, (uint64_t)first * selected_row, (uint64_t)count * selected_row), kDenseKeys, state->records,
+				SparkTensorSlice(state->attended, (uint64_t)first * query_row, (uint64_t)count * query_row), &params, frame.t.host_positions + first);
+			first += count;
+		}
+		return status;
+	}
+
 	static SparkStatus Attend(State *state, Frame &frame, uint32_t index)
 	{
 		const Layer &layer = state->layers[index];
@@ -976,12 +1011,10 @@ struct D41Device
 		if ( ratio == 0u )
 			return SparkOpsAttention(state->stage.ops, frame.queue, &paged, state->query, state->query, &layer.sinks, state->records, state->attended, &params,
 				frame.t.host_positions, frame.t.host_sequence_of_row);
-		if ( Sparse(frame, ratio) )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-				"the shared indexer cannot attend a layer's window keys and the selected keys of its compressed cache in one softmax with the sinks: "
-				"a row that sees more than 512 compressed keys is refused");
 		SparkOpsPaged extra = SparkDeviceStagePaged(&state->stage, &frame.t, kLayers + D41CacheIndex(index));
 		extra.positions = state->last[RatioSlot(ratio)];
+		if ( Sparse(frame, ratio) )
+			return AttendSelected(state, frame, layer, paged, extra, params);
 		return SparkOpsAttentionExtra(state->stage.ops, frame.queue, &paged, &extra, state->query, &layer.sinks, state->records, state->attended, &params,
 			frame.t.host_positions, ratio == 2u ? state->host_last : frame.t.host_positions);
 	}
