@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_prefix_index_file.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
@@ -12,13 +13,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-static uint64_t SparkPrefixIndexNowNs(void)
-{
-	struct timespec now;
-	(void)clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
 
 static void SparkPrefixIndexDigestText(SparkSha256Context *context,const char *text)
 {
@@ -253,9 +247,9 @@ static void *SparkPrefixIndexWriterMain(void *context)
 		writer->pending = 0u;
 		writer->busy = 1u;
 		(void)pthread_mutex_unlock(&writer->mutex);
-		start = SparkPrefixIndexNowNs();
+		start = SparkMonotonicNs();
 		status = SparkPrefixIndexFileWrite(writer->path,writer->model_sha256,writer->block_token_count,writer->records,writer->record_count);
-		elapsed = SparkPrefixIndexNowNs() - start;
+		elapsed = SparkMonotonicNs() - start;
 		if ( status != SPARK_STATUS_OK )
 			fprintf(stderr,"batch engine prefix index save path=%s status=%s\n",writer->path,SparkStatusToString(status));
 		(void)pthread_mutex_lock(&writer->mutex);

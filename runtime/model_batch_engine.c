@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_batch_engine.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_error_site.h"
 
@@ -980,7 +981,6 @@ static uint32_t SparkModelBatchTokenIsStop(
 	return(0u);
 }
 
-static uint64_t SparkModelBatchNowNs(void);
 
 static uint64_t SparkModelBatchElapsedNs(uint64_t start_ns,uint64_t end_ns)
 {
@@ -990,7 +990,7 @@ static uint64_t SparkModelBatchElapsedNs(uint64_t start_ns,uint64_t end_ns)
 static void SparkModelBatchRecordFirstToken(SparkModelBatchEngine *engine,const SparkModelBatchRequestState *request)
 {
 	uint64_t now_ns,ttft_ns;
-	now_ns = SparkModelBatchNowNs();
+	now_ns = SparkMonotonicNs();
 	ttft_ns = SparkModelBatchElapsedNs(request->accepted_ns,now_ns);
 	engine->first_token_count++;
 	engine->queue_ns_total += SparkModelBatchElapsedNs(request->accepted_ns,request->first_dispatch_ns);
@@ -1276,9 +1276,9 @@ static void SparkModelBatchHandleRejected(
 			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		}
 		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || status == SPARK_STATUS_EVICT_DENIED || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
-			(request->busy_since_ns == 0u || SparkModelBatchNowNs() - request->busy_since_ns < engine->inflight_budget_ns) )
+			(request->busy_since_ns == 0u || SparkMonotonicNs() - request->busy_since_ns < engine->inflight_budget_ns) )
 		{
-			uint64_t now = SparkModelBatchNowNs();
+			uint64_t now = SparkMonotonicNs();
 			if ( request->busy_since_ns == 0u )
 				request->busy_since_ns = now;
 			request->busy_restore_count++;
@@ -1300,7 +1300,7 @@ static void SparkModelBatchHandleRejected(
 				fprintf(stderr,"batch_retry_deadline request=%llu restores=%u waited_ns=%llu budget_ns=%llu; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count,
-					(unsigned long long)(SparkModelBatchNowNs() - request->busy_since_ns),
+					(unsigned long long)(SparkMonotonicNs() - request->busy_since_ns),
 					(unsigned long long)engine->inflight_budget_ns);
 			SparkModelBatchRejectedResidency(request,submission);
 			SparkModelBatchFailRequest(engine,request,status);
@@ -2104,7 +2104,7 @@ static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	engine->prefix_index_loaded = 1u;
-	engine->next_status_ns = SparkModelBatchNowNs() + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
+	engine->next_status_ns = SparkMonotonicNs() + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
 	return(SPARK_STATUS_OK);
 }
 
@@ -2139,7 +2139,7 @@ static void SparkModelBatchSavePrefixIndex(SparkModelBatchEngine *engine,uint64_
 	start = now_ns;
 	if ( SparkPrefixCacheExportCommitted(&engine->prefix_cache,SparkPrefixIndexWriterBuffer(&engine->prefix_index_writer),engine->prefix_cache_entry_capacity,&count) != SPARK_STATUS_OK )
 		return;
-	elapsed = SparkModelBatchNowNs() - start;
+	elapsed = SparkMonotonicNs() - start;
 	if ( elapsed > engine->prefix_index_export_ns_maximum )
 		engine->prefix_index_export_ns_maximum = elapsed;
 	engine->prefix_index_dirty = 0u;
@@ -2301,7 +2301,7 @@ SparkStatus SparkModelBatchEngineDestroy(SparkModelBatchEngine *engine)
 	{
 		SparkPrefixIndexWriterWaitIdle(&engine->prefix_index_writer);
 		engine->prefix_index_dirty = 1u;
-		SparkModelBatchSavePrefixIndex(engine,SparkModelBatchNowNs());
+		SparkModelBatchSavePrefixIndex(engine,SparkMonotonicNs());
 		SparkPrefixIndexWriterStop(&engine->prefix_index_writer);
 		engine->prefix_index_loaded = 0u;
 	}
@@ -2436,7 +2436,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->request_id = request->request_id;
 	state->sequence_id = request->sequence_id;
 	state->handle = SparkModelBatchMakeHandle(slot,state->generation);
-	state->accepted_ns = SparkModelBatchNowNs();
+	state->accepted_ns = SparkMonotonicNs();
 	memcpy(SparkModelBatchRequestTokens(engine,slot),request->prompt_token_ids,(size_t)request->prompt_token_count * sizeof(uint32_t));
 	state->draft_count = 0u;
 	state->draft_tree = 0u;
@@ -2912,7 +2912,7 @@ static uint32_t SparkModelBatchSelectRequestPass(
 	SparkModelBatchRequestState *request;
 	uint64_t now_ns;
 	uint32_t aged,context,index,resident_bound,slot,stride;
-	now_ns = SparkModelBatchNowNs();
+	now_ns = SparkMonotonicNs();
 	stride = SparkModelBatchLogprobStride(engine,selected);
 	for (index=0u; index<engine->scratch_request_order_count && selected<lane_limit; index++)
 	{
@@ -3407,7 +3407,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	SparkDraftBridgeProposalInfo info;
 	const uint32_t depth = engine->draft_depth < limit ? engine->draft_depth : limit;
 	const uint32_t node_capacity = engine->tree_capable != 0u ? SPARK_SPECULATION_TREE_FRAME_MAX_ROWS : depth + 1u;
-	const uint64_t started = SparkModelBatchNowNs();
+	const uint64_t started = SparkMonotonicNs();
 	uint32_t count = 0u, drafts = 0u, index, node = 0u;
 	float expected = 1.0f, path = 1.0f, all_accepted = 0.0f, wait_ns = 0.0f;
 	SparkStatus status;
@@ -3421,8 +3421,8 @@ static uint32_t SparkModelBatchPlanModelDraft(
 		request->sampling.inverse_temperature != 0.0f ? &request->sampling : 0,nodes,node_capacity,&count,&info);
 	engine->draft_node_count = status == SPARK_STATUS_OK ? count : 0u;
 	engine->draft_trunk_nodes[0] = 0u;
-	engine->model_draft_wait_us += (SparkModelBatchNowNs() - started) / 1000u;
-	request->model_wait_ns = (float)(SparkModelBatchNowNs() - started);
+	engine->model_draft_wait_us += (SparkMonotonicNs() - started) / 1000u;
+	request->model_wait_ns = (float)(SparkMonotonicNs() - started);
 	request->trace_draft_wait_ns = request->model_wait_ns;
 	if ( status != SPARK_STATUS_OK && info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE )
 	{
@@ -4166,9 +4166,9 @@ static void SparkModelBatchTraceStep(
 	fprintf(stderr,"batch_step kind=%s request=%llu rows=%u steps=%u drafts=%u trunk=%u tree=%u kept=%u match=%u class=%u expect=%.2f predict_ms=%.2f service_ms=%.2f wall_ms=%.2f context=%u gap_ms=%.2f draft_wait_ms=%.2f\n",
 		kind,(unsigned long long)submission->trace_request_id,submission->rows,submission->steps,submission->trace_drafts,submission->trace_trunk,submission->tree,kept,submission->trace_match,submission->trace_class,
 		(double)submission->trace_expected,(double)submission->trace_frame_ns / 1e6,(double)completion->service_time_ns / 1e6,
-		(double)(SparkModelBatchNowNs() - submission->dispatched_ns) / 1e6,submission->context,(double)submission->trace_gap_ns / 1e6,
+		(double)(SparkMonotonicNs() - submission->dispatched_ns) / 1e6,submission->context,(double)submission->trace_gap_ns / 1e6,
 		(double)submission->trace_draft_wait_ns / 1e6);
-	engine->requests[SparkModelBatchSubmissionRequestSlots(engine,submission)[0]].trace_completed_ns = SparkModelBatchNowNs();
+	engine->requests[SparkModelBatchSubmissionRequestSlots(engine,submission)[0]].trace_completed_ns = SparkMonotonicNs();
 }
 
 static void SparkModelBatchRecordSubmission(
@@ -4178,7 +4178,7 @@ static void SparkModelBatchRecordSubmission(
 {
 	uint32_t *request_slots,*prefill_counts;
 	uint32_t lane,inflight_state;
-	uint64_t now_ns = SparkModelBatchNowNs();
+	uint64_t now_ns = SparkMonotonicNs();
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,state);
 	prefill_counts = SparkModelBatchSubmissionPrefillCounts(engine,state);
 	state->lane_count = lane_count;
@@ -4214,14 +4214,6 @@ static void SparkModelBatchRecordSubmission(
 	engine->inflight_kv_page_count = engine->selected_kv_page_count;
 }
 
-static uint64_t SparkModelBatchNowNs(void)
-{
-	struct timespec timestamp = {0,0};
-	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0 )
-		return(0ull);
-	return((uint64_t)timestamp.tv_sec * UINT64_C(1000000000) + (uint64_t)timestamp.tv_nsec);
-}
-
 static SparkStatus SparkModelBatchDispatchKind(
 	SparkModelBatchEngine *engine,
 	uint32_t work_kind,
@@ -4233,7 +4225,7 @@ static SparkStatus SparkModelBatchDispatchKind(
 	uint32_t lane_count;
 	uint64_t now_ns,dispatch_ns;
 	*dispatched_out = 0u;
-	now_ns = SparkModelBatchNowNs();
+	now_ns = SparkMonotonicNs();
 	if ( engine->circuit_open_until_ns != 0u && now_ns < engine->circuit_open_until_ns )
 	{
 		engine->next_progress_ns = engine->circuit_open_until_ns;
@@ -4258,7 +4250,7 @@ static SparkStatus SparkModelBatchDispatchKind(
 		engine->next_submission_id--;
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
-	dispatch_ns = SparkModelBatchNowNs();
+	dispatch_ns = SparkMonotonicNs();
 	status = SparkModelPipelineClientSubmit(engine->pipeline,&submission);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -4270,7 +4262,7 @@ static SparkStatus SparkModelBatchDispatchKind(
 		{
 			fprintf(stderr,"batch circuit open: %u consecutive pipeline failures; dispatch suspended 15s\n",
 				(unsigned)engine->consecutive_pipeline_failures);
-			engine->circuit_open_until_ns = SparkModelBatchNowNs() + UINT64_C(15000000000);
+			engine->circuit_open_until_ns = SparkMonotonicNs() + UINT64_C(15000000000);
 			engine->consecutive_pipeline_failures = 0u;
 		}
 		SPARK_RETURN(status);
@@ -4329,7 +4321,7 @@ static uint32_t SparkModelBatchChooseWorkKind(
 	if ( engine->decode_barrier_closed != 0u && pending_prefill == 0u && available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] != 0u )
 	{
 		engine->decode_barrier_closed = 0u;
-		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier open: ready_decode=%u monotonic_ns=%llu\n",available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE],(unsigned long long)SparkModelBatchNowNs());
+		fprintf(stderr,"batch engine DEBUG decode-after-prefill barrier open: ready_decode=%u monotonic_ns=%llu\n",available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE],(unsigned long long)SparkMonotonicNs());
 	}
 	if ( engine->decode_barrier_closed != 0u )
 		available_by_kind[SPARK_MODEL_SERVING_WORK_KIND_DECODE] = 0u;
@@ -4558,7 +4550,7 @@ static void SparkModelBatchLogFrames(SparkModelBatchEngine *engine)
 
 static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 {
-	uint64_t now = SparkModelBatchNowNs();
+	uint64_t now = SparkMonotonicNs();
 	if ( engine->peer_prefix_index_count != 0u && now >= engine->peer_prefix_next_import_ns )
 	{
 		SparkModelBatchImportPeerPrefixes(engine);

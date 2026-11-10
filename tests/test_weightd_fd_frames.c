@@ -339,7 +339,7 @@ static void check_frame(uint32_t sent,uint32_t capacity,SparkStatus expected)
 	client.fd = sockets[0];
 	before = fd_count();
 	send_fds(sockets[1],source,sent);
-	assert(SparkWeightdClientReadFrameWithFds(&client,&byte,1u,SparkWeightdMonotonicTimeNs() + UINT64_C(1000000000),fds,capacity,&received) == expected);
+	assert(SparkWeightdClientReadFrameWithFds(&client,&byte,1u,SparkMonotonicNs() + UINT64_C(1000000000),fds,capacity,&received) == expected);
 	assert(received == (expected == SPARK_STATUS_OK ? sent : 0u));
 	for (i=0u; i<received; i++)
 	{

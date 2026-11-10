@@ -1,5 +1,6 @@
 
 #include <cstdio>
+#include "sparkpipe/spark_clock.h"
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
@@ -736,13 +737,12 @@ static SparkStatus StageRunnerLeaseTensorBase(SparkStageRunnerState *state,
 	return SPARK_STATUS_OK;
 }
 
-static uint64_t StageRunnerNowNs(void);
 
 static void StageRunnerLeaseTiming(SparkStageRunnerState *state, uint64_t started, uint64_t waited, uint32_t ahead)
 {
 	if ( state->layer_marks == 0u )
 		return;
-	state->lease_ns += StageRunnerNowNs() - started;
+	state->lease_ns += SparkMonotonicNs() - started;
 	state->lease_wait_ns += waited;
 	state->lease_calls++;
 	state->lease_ahead_layers += ahead;
@@ -770,7 +770,7 @@ static SparkStatus StageRunnerExpertWeightsService(void *context, uint32_t layer
 		*w2 = (const uint8_t *)state->resident_base + state->geometry.expert_w2_offset[layer];
 		return SPARK_STATUS_OK;
 	}
-	started = StageRunnerNowNs();
+	started = SparkMonotonicNs();
 	error = cudaStreamSynchronize(state->stream);
 	if ( error != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -818,13 +818,13 @@ static SparkStatus StageRunnerExpertWeightsAheadService(void *context, uint32_t 
 	}
 	if ( state->lease_ahead == 0u || routed_rows < STAGE_RUNNER_LEASE_AHEAD_ROUTES * state->geometry.experts )
 		return SPARK_STATUS_PENDING;
-	started = StageRunnerNowNs();
+	started = SparkMonotonicNs();
 	set = layer % STAGE_RUNNER_LEASE_SETS;
 	status = SparkWeightdLeaseSetsRelease(state->lease_sets, state->lazy_pack->map, set,
 		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	waited = StageRunnerNowNs() - started;
+	waited = SparkMonotonicNs() - started;
 	keys = state->lease_keys;
 	for ( expert = 0u; expert < state->geometry.experts; ++expert )
 	{
@@ -850,7 +850,7 @@ static void StageRunnerLayerMark(SparkStageRunnerState *state, uint32_t index)
 		state->layer_marks = 0u;
 		return;
 	}
-	state->layer_host_ns[index] = StageRunnerNowNs();
+	state->layer_host_ns[index] = SparkMonotonicNs();
 	state->layer_mark_last = index;
 }
 
@@ -1503,13 +1503,6 @@ static SparkStatus StageRunnerChainEnd(SparkStageRunnerState *state, cudaStream_
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveEndChain(&state->device_collective, stream);
 	return status;
-}
-
-static uint64_t StageRunnerNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
 static void StageRunnerPhases(SparkStageRunnerState *state, uint32_t rank, const uint64_t *marks)
@@ -2236,7 +2229,7 @@ static void StageRunnerGraphPrefetchFree(SparkStageRunnerState *state)
 static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkStageRunner *runner,
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
-	const uint64_t started = StageRunnerNowNs();
+	const uint64_t started = SparkMonotonicNs();
 	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state));
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
@@ -2278,9 +2271,9 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	state->graph_token_out[slot] = state->step_dispatch->output_token_ids;
 	state->graph_score_out[slot] = state->step_dispatch->output_scores;
 	state->graph_distribution_count[slot] = state->step_dispatch->distribution_count;
-	state->capture_ns += StageRunnerNowNs() - started;
+	state->capture_ns += SparkMonotonicNs() - started;
 	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_dropped=%u\n", in->graph_key, rows,
-		(unsigned long long)nodes, (double)(StageRunnerNowNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
+		(unsigned long long)nodes, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
 }
 
 static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGraphExec_t exec, cudaStream_t stream)
@@ -2288,10 +2281,10 @@ static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGrap
 	SparkStatus status = SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkTpDeviceCollectiveGraphCancelSeed(&state->device_collective, stream);
-	const uint64_t started = StageRunnerNowNs();
+	const uint64_t started = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && cudaGraphLaunch(exec, stream) != cudaSuccess )
 		status = SPARK_STATUS_IO_ERROR;
-	state->timing_graph_ns += StageRunnerNowNs() - started;
+	state->timing_graph_ns += SparkMonotonicNs() - started;
 	state->timing_graph_steps++;
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -2588,7 +2581,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	SparkStatus exchange_status;
 	SparkModelDriverCompletion completion;
 	uint32_t i, step, steps;
-	const uint64_t submit_started = StageRunnerNowNs();
+	const uint64_t submit_started = SparkMonotonicNs();
 	uint64_t phase_marks[5];
 	if ( runner == 0 || dispatch == 0 || runner->private_state == 0 )
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -2740,7 +2733,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
 #endif
-	phase_marks[1] = StageRunnerNowNs();
+	phase_marks[1] = SparkMonotonicNs();
 	state->step_dispatch = dispatch;
 	state->graph_launched = 0u;
 	if ( cudaMemsetAsync(state->chain_step_device, 0, sizeof(uint32_t), stream) != cudaSuccess )
@@ -2770,10 +2763,10 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 			cudaMemcpyAsync(state->tap_chain_device + (uint64_t)step * rows * state->tap_plan.row_stride_elements, state->tap_slab_device,
 				(uint64_t)rows * state->tap_plan.row_stride_elements * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
 			exchange_status = SPARK_STATUS_IO_ERROR;
-		phase_marks[2] = StageRunnerNowNs();
+		phase_marks[2] = SparkMonotonicNs();
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerStepOutputs(state, runner, dispatch, stream, rows);
-		phase_marks[3] = StageRunnerNowNs();
+		phase_marks[3] = SparkMonotonicNs();
 		if ( state->layer_marks != 0u && exchange_status == SPARK_STATUS_OK )
 			StageRunnerLayerMarksEnd(state, runner->tp_rank);
 		state->layer_marks = 0u;
@@ -2797,9 +2790,9 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 		exchange_status = StageRunnerTakeFailure(state);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
-	StageRunnerTiming(state, runner->tp_rank, StageRunnerNowNs() - submit_started, steps);
+	StageRunnerTiming(state, runner->tp_rank, SparkMonotonicNs() - submit_started, steps);
 	exchange_status = StageRunnerChainEnd(state, stream);
-	phase_marks[4] = StageRunnerNowNs();
+	phase_marks[4] = SparkMonotonicNs();
 	if ( exchange_status == SPARK_STATUS_OK && rows > STAGE_RUNNER_WIDE_ROWS )
 		StageRunnerPhases(state, runner->tp_rank, phase_marks);
 	if ( exchange_status != SPARK_STATUS_OK )

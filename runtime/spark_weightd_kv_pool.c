@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_weightd_kv_pool.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_error_site.h"
 
@@ -11,13 +12,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-
-static uint64_t SparkWeightdKvPoolNowNs(void)
-{
-	struct timespec now;
-	(void)clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
 
 SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes)
 {
@@ -119,7 +113,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 {
 	SparkWeightdKvPoolState state;
 	struct timespec pause;
-	uint64_t minimum = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes,deadline = SparkWeightdKvPoolNowNs() + timeout_nanoseconds;
+	uint64_t minimum = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes,deadline = SparkMonotonicNs() + timeout_nanoseconds;
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( minimum == 0u )
 		minimum = 1u;
@@ -129,7 +123,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 			mapping->chunk_count,(unsigned long long)minimum,(unsigned long long)mapping->kv_reserve_bytes,(unsigned long long)mapping->kv_committed_bytes);
 	while ( mapping->chunk_count < minimum )
 	{
-		if ( SparkWeightdKvPoolNowNs() >= deadline )
+		if ( SparkMonotonicNs() >= deadline )
 		{
 			fprintf(stderr,"%s kv pool refused: weightd granted %u of the minimum %llu chunks of %llu bytes within %llu ms; kv_reserve=%llu kv_committed=%llu\n",request->label,
 				mapping->chunk_count,(unsigned long long)minimum,(unsigned long long)request->chunk_bytes,(unsigned long long)(timeout_nanoseconds / 1000000ull),

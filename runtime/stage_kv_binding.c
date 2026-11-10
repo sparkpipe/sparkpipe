@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_stage_kv_binding.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_model_driver_support.h"
 #include "sparkpipe/spark_stage_module_claims.h"
@@ -19,25 +20,18 @@ static const char *const SparkStageKvLockSiteNames[SPARK_STAGE_KV_LOCK_SITE_COUN
 	"admit","reset","continuity","claim","finish","publish","save","restore"
 };
 
-static uint64_t SparkStageKvNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
-
 static SparkStatus SparkStageKvBindingLock(SparkStageKvBinding *binding,uint64_t *start_ns)
 {
 	if ( pthread_mutex_lock(&binding->mutex) != 0 )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	*start_ns = SparkStageKvNowNs();
+	*start_ns = SparkMonotonicNs();
 	return(SPARK_STATUS_OK);
 }
 
 static void SparkStageKvBindingAccount(SparkStageKvBinding *binding,uint32_t site,uint64_t start_ns)
 {
 	SparkStageKvLockSite *counter = &binding->counters.lock_sites[site];
-	uint64_t held = SparkStageKvNowNs() - start_ns;
+	uint64_t held = SparkMonotonicNs() - start_ns;
 	counter->count++;
 	counter->total_ns += held;
 	if ( held > counter->max_ns )
@@ -587,7 +581,7 @@ static void *SparkStageKvBindingRestoreMain(void *context)
 		}
 		slot->state = SPARK_STAGE_KV_RESTORE_RUNNING;
 		slot->status = SparkStageKvBindingRestoreRun(binding,slot);
-		slot->done_ns = SparkStageKvNowNs();
+		slot->done_ns = SparkMonotonicNs();
 		slot->state = SPARK_STAGE_KV_RESTORE_DONE;
 	}
 	(void)pthread_mutex_unlock(&binding->mutex);
@@ -866,13 +860,13 @@ static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *bindin
 		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.orphan_count,(unsigned long long)binding->snapshot_store.eviction_count,
 		(unsigned long long)binding->snapshot_store.expired_count,(unsigned long long)binding->snapshot_store.expired_bytes,
 		(unsigned long long)binding->snapshot_store.removed_temporary_count,(unsigned long long)binding->snapshot_store.removed_legacy_count,binding->driver_path,
-		(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
+		(unsigned long long)((SparkMonotonicNs() - start_ns) / 1000u),binding->layout_hex);
 	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkStageKvBindingOpenSnapshot(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
-	uint64_t start_ns = SparkStageKvNowNs();
+	uint64_t start_ns = SparkMonotonicNs();
 	SparkStatus status;
 	status = SparkStageKvBindingLayout(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
@@ -1332,9 +1326,9 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 	}
 	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
-	attach_start_ns = SparkStageKvNowNs();
+	attach_start_ns = SparkMonotonicNs();
 	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_pool);
-	attach_ms = (SparkStageKvNowNs() - attach_start_ns) / 1000000ull;
+	attach_ms = (SparkMonotonicNs() - attach_start_ns) / 1000000ull;
 	free(offsets);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"%s kv pool attach failed status=%s after %llu ms of a %llu ms deadline\n",binding->module_tag,SparkStatusToString(status),
@@ -1482,7 +1476,7 @@ static void SparkStageKvBindingSealPool(SparkStageKvBinding *binding)
 
 static void SparkStageKvBindingAttachWriteMeter(SparkStageKvBinding *binding)
 {
-	SparkKvWriteMeterInitialize(&binding->write_meter,binding->module_tag,SparkStageKvNowNs());
+	SparkKvWriteMeterInitialize(&binding->write_meter,binding->module_tag,SparkMonotonicNs());
 	binding->page_store.write_meter = &binding->write_meter;
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		binding->state_store.write_meter = &binding->write_meter;
@@ -1713,7 +1707,7 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	SparkStatus status;
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
-	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
+	status = SparkStageKvBindingSaveAll(binding,SparkMonotonicNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
 	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu write_failures=%llu resaved=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu quota_refusals=%llu quota_honored_bytes=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
 		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.write_failed_count,(unsigned long long)binding->snapshot.write_resaved_count,
@@ -2321,10 +2315,10 @@ static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *bindin
 	}
 	reset = binding->reset_generation;
 	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_ADMIT,*held);
-	start = SparkStageKvNowNs();
+	start = SparkMonotonicNs();
 	for (index=0u; index<count; index++)
 		jobs[index].status = SparkStageKvStateRead(binding,&jobs[index]);
-	atomic_fetch_add(&binding->recurrent_restore_ns,SparkStageKvNowNs() - start);
+	atomic_fetch_add(&binding->recurrent_restore_ns,SparkMonotonicNs() - start);
 	(void)SparkStageKvBindingLock(binding,held);
 	if ( binding->reset_generation != reset )
 	{
@@ -2503,10 +2497,10 @@ static SparkStatus SparkStageKvBindingWriteStates(SparkStageKvBinding *binding,c
 	}
 	reset = binding->reset_generation;
 	SparkStageKvBindingUnlock(binding,site,*held);
-	start = SparkStageKvNowNs();
+	start = SparkMonotonicNs();
 	for (index=0u; index<count && result==SPARK_STATUS_OK; index++)
 		result = SparkStageKvWriteJob(binding,&jobs[index],site,held);
-	atomic_fetch_add(&binding->recurrent_capture_ns,SparkStageKvNowNs() - start);
+	atomic_fetch_add(&binding->recurrent_capture_ns,SparkMonotonicNs() - start);
 	(void)SparkStageKvBindingLock(binding,held);
 	free(jobs);
 	if ( binding->reset_generation != reset )
@@ -2837,7 +2831,7 @@ SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t
 	SparkStageKvBindingCompletionRecord *record;
 	uint64_t entry_ns,elapsed;
 	uint32_t state;
-	entry_ns = SparkStageKvNowNs();
+	entry_ns = SparkMonotonicNs();
 	if ( binding == 0 || completion == 0 || binding->sync_initialized == 0u || dispatch_slot >= binding->pipeline_slot_count ||
 		completion->lane_count == 0u || completion->lane_count > binding->resident_sequence_capacity || completion->resident_slots == 0 ||
 		completion->bound == 0 || completion->sequence_ids == 0 || completion->next_positions == 0 || completion->finished_function == 0 )
@@ -2867,11 +2861,11 @@ SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t
 	memcpy(record->next_positions,completion->next_positions,(size_t)completion->lane_count * sizeof(uint64_t));
 	record->finished_function = completion->finished_function;
 	record->finished_context = completion->finished_context;
-	record->queued_ns = SparkStageKvNowNs();
+	record->queued_ns = SparkMonotonicNs();
 	record->state = SPARK_STAGE_KV_COMPLETION_QUEUED;
 	binding->completion_queue[(binding->completion_head + binding->completion_count) % binding->pipeline_slot_count] = dispatch_slot;
 	binding->completion_count++;
-	elapsed = SparkStageKvNowNs() - entry_ns;
+	elapsed = SparkMonotonicNs() - entry_ns;
 	binding->counters.entry_count++;
 	binding->counters.entry_total_ns += elapsed;
 	if ( elapsed > binding->counters.entry_max_ns )
@@ -2923,7 +2917,7 @@ static void *SparkStageKvBindingCompletionMain(void *context)
 		function = record->finished_function;
 		function_context = record->finished_context;
 		(void)pthread_mutex_lock(&binding->completion_mutex);
-		waited = SparkStageKvNowNs() - record->queued_ns;
+		waited = SparkMonotonicNs() - record->queued_ns;
 		binding->counters.completion_count++;
 		binding->counters.completion_queue_total_ns += waited;
 		if ( waited > binding->counters.completion_queue_max_ns )
@@ -2971,7 +2965,7 @@ static void SparkStageKvBindingSaveOne(SparkStageKvBinding *binding,uint64_t *he
 		{
 			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,*held);
 			(void)pthread_cond_wait(&binding->save_ready,&binding->mutex);
-			*held = SparkStageKvNowNs();
+			*held = SparkMonotonicNs();
 			return;
 		}
 	}
@@ -3017,7 +3011,7 @@ static void *SparkStageKvBindingSaveMain(void *context)
 			SparkStageKvBindingAccount(binding,SPARK_STAGE_KV_LOCK_SITE_SAVE,held);
 			SparkStageKvBindingDeadline((uint64_t)SPARK_KV_EXPIRY_SWEEP_SECONDS * 1000000000ull,&wake);
 			(void)pthread_cond_timedwait(&binding->save_ready,&binding->mutex,&wake);
-			held = SparkStageKvNowNs();
+			held = SparkMonotonicNs();
 			SparkStageKvBindingExpire(binding);
 		}
 		if ( binding->save_stop != 0u )
@@ -3264,7 +3258,7 @@ static SparkStatus SparkStageKvBindingSaveDrain(SparkStageKvBinding *binding,uin
 			status = binding->snapshot_store.failed_status;
 			break;
 		}
-		if ( SparkStageKvNowNs() >= deadline_ns )
+		if ( SparkMonotonicNs() >= deadline_ns )
 		{
 			status = SPARK_STATUS_BUSY;
 			break;
@@ -3300,7 +3294,7 @@ SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t dea
 		(void)pthread_mutex_lock(&binding->mutex);
 		status = SparkKvPageCacheCountUnsaved(&binding->page_cache,&unsaved,&ineligible);
 		(void)pthread_mutex_unlock(&binding->mutex);
-		if ( drain != SPARK_STATUS_OK || SparkStageKvNowNs() >= deadline_ns || binding->snapshot_store.failed_status != SPARK_STATUS_OK || (marked == 0u && deferred == 0u) )
+		if ( drain != SPARK_STATUS_OK || SparkMonotonicNs() >= deadline_ns || binding->snapshot_store.failed_status != SPARK_STATUS_OK || (marked == 0u && deferred == 0u) )
 			break;
 	}
 	(void)SparkKvSnapshotFlush(&binding->snapshot_store);
@@ -3345,7 +3339,7 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	counters->pool_generation = binding->kv_pool.pool_generation;
 	counters->pool_reattached = binding->kv_pool.reattached;
 	counters->pool_adopted_pages = binding->kv_pool_adopted_pages;
-	counters->write_alerting = SparkKvWriteMeterAlerting(&binding->write_meter,SparkStageKvNowNs());
+	counters->write_alerting = SparkKvWriteMeterAlerting(&binding->write_meter,SparkMonotonicNs());
 	counters->write_bytes = __atomic_load_n(&binding->write_meter.written_bytes,__ATOMIC_ACQUIRE);
 	counters->write_bytes_this_hour = __atomic_load_n(&binding->write_meter.window_bytes,__ATOMIC_ACQUIRE);
 	counters->write_bytes_previous_hour = __atomic_load_n(&binding->write_meter.previous_window_bytes,__ATOMIC_ACQUIRE);

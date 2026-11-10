@@ -7,6 +7,7 @@
 #endif
 
 #include <errno.h>
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include <fcntl.h>
 #include <netdb.h>
@@ -280,7 +281,6 @@ typedef struct SparkModelResidentdRuntime
 
 static volatile sig_atomic_t SparkModelResidentdStop;
 
-static uint64_t SparkModelResidentdMonotonicTimeNs(void);
 
 static void SparkModelResidentdSignal(int32_t signal_number)
 {
@@ -847,7 +847,7 @@ static void SparkModelResidentdReportSlotOwner(const SparkModelResidentdRuntime 
 	const SparkModelResidentdRoute *owner;
 	uint64_t now_ns;
 	uint32_t owner_index;
-	now_ns = SparkModelResidentdMonotonicTimeNs();
+	now_ns = SparkMonotonicNs();
 	owner_index = runtime->sequence_slots[slot].active_owner - 1u;
 	if ( owner_index >= runtime->route_capacity || (reported_ns != 0u && now_ns - reported_ns < UINT64_C(1000000000)) )
 		return;
@@ -1206,7 +1206,7 @@ static SparkStatus SparkModelResidentdExpireTransportRouteLocked(
 	{
 		if ( route->submission.deadline_time_ns == 0u )
 			return(SPARK_STATUS_OK);
-		now = SparkModelResidentdMonotonicTimeNs();
+		now = SparkMonotonicNs();
 		if ( now == 0u )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( now < route->submission.deadline_time_ns )
@@ -1279,7 +1279,7 @@ static void SparkModelResidentdAcceptCompletionLocked(SparkModelResidentdRuntime
 	uint64_t completed_time_ns;
 	route->completion = *completion;
 	route->driver_completed = 1u;
-	completed_time_ns = SparkModelResidentdMonotonicTimeNs();
+	completed_time_ns = SparkMonotonicNs();
 	route->completed_time_ns = completed_time_ns;
 	if ( route->adapter_submit_time_ns != 0u && completed_time_ns >= route->adapter_submit_time_ns )
 		runtime->frame_ns[2] += completed_time_ns - route->adapter_submit_time_ns;
@@ -1383,7 +1383,7 @@ static void SparkModelResidentdResetRuntime(SparkModelResidentdRuntime *runtime)
 	runtime->client.fd = -1;
 	runtime->candidate_fd = -1;
 	runtime->candidate_input_bytes = 0u;
-	runtime->client.generation = SparkModelResidentdMonotonicTimeNs();
+	runtime->client.generation = SparkMonotonicNs();
 	if ( runtime->client.generation == 0u )
 		runtime->client.generation = 1u;
 	atomic_init(&runtime->failed_status,SPARK_STATUS_OK);
@@ -1696,14 +1696,6 @@ static void SparkModelResidentdDetachClient(SparkModelResidentdRuntime *runtime)
 	SparkModelResidentdCloseClient(runtime);
 }
 
-static uint64_t SparkModelResidentdMonotonicTimeNs(void)
-{
-	struct timespec timestamp;
-	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0 )
-		return(0u);
-	return(((uint64_t)timestamp.tv_sec * UINT64_C(1000000000)) + (uint64_t)timestamp.tv_nsec);
-}
-
 static SparkStatus SparkModelResidentdQuiesceAdapter(
 	SparkModelResidentdRuntime *runtime)
 {
@@ -1714,7 +1706,7 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 		quiesce_status = SPARK_STATUS_OK;
 	else
 	{
-		now = SparkModelResidentdMonotonicTimeNs();
+		now = SparkMonotonicNs();
 		if ( now == 0u )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		deadline = now + SPARK_MODEL_RESIDENTD_QUIESCE_TIMEOUT_NS;
@@ -1729,7 +1721,7 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 			if ( progress_status != SPARK_STATUS_OK && progress_status != SPARK_STATUS_BUSY && progress_status != SPARK_STATUS_PENDING )
 				return(progress_status);
 			(void)nanosleep(&sleep_time,0);
-			now = SparkModelResidentdMonotonicTimeNs();
+			now = SparkMonotonicNs();
 			if ( now == 0u )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			if ( now >= deadline )
@@ -1838,7 +1830,7 @@ static SparkModelResidentdRoute *SparkModelResidentdReserveRoute(
 		{
 			memset(route,0,sizeof(*route));
 			route->active = 1u;
-			route->active_since_ns = SparkModelResidentdMonotonicTimeNs();
+			route->active_since_ns = SparkMonotonicNs();
 			if ( runtime->frame_flush_ns != 0u && route->active_since_ns >= runtime->frame_flush_ns )
 				runtime->frame_ns[0] += route->active_since_ns - runtime->frame_flush_ns;
 			runtime->frame_flush_ns = 0u;
@@ -2053,7 +2045,7 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 		runtime->client.pending_client_reset = runtime->client.generation;
 	}
 	runtime->client.fd = fd;
-	runtime->client.last_activity_ns = SparkModelResidentdMonotonicTimeNs();
+	runtime->client.last_activity_ns = SparkMonotonicNs();
 	return(SparkModelResidentdProcessHello(runtime,hello,
 		SPARK_MODEL_RESIDENT_IPC_HELLO_BYTES));
 }
@@ -2564,7 +2556,7 @@ static SparkStatus SparkModelResidentdReadClient(
 		if ( bytes_read < 0 )
 			return(errno == EAGAIN || errno == EWOULDBLOCK ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 		runtime->client.input_bytes += (uint32_t)bytes_read;
-		runtime->client.last_activity_ns = SparkModelResidentdMonotonicTimeNs();
+		runtime->client.last_activity_ns = SparkMonotonicNs();
 		if ( runtime->client.input_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES && runtime->client.target_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES )
 		{
 			header = (SparkModelResidentIpcHeader *)runtime->client.input;
@@ -2591,7 +2583,7 @@ static SparkStatus SparkModelResidentdReadClient(
 
 static void SparkModelResidentdFrameSent(SparkModelResidentdRuntime *runtime)
 {
-	const uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+	const uint64_t now_ns = SparkMonotonicNs();
 	if ( runtime->frame_completed_ns != 0u && now_ns >= runtime->frame_completed_ns )
 		runtime->frame_ns[3] += now_ns - runtime->frame_completed_ns;
 	runtime->frame_completed_ns = 0u;
@@ -2810,7 +2802,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(SparkModelResidentdRuntime *
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER;
-	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
+	route->adapter_submit_time_ns = SparkMonotonicNs();
 	runtime->frame_ns[1] += route->adapter_submit_time_ns - route->active_since_ns;
 	pthread_mutex_unlock(&runtime->mutex);
 	*submitted = 1u;
@@ -2997,7 +2989,7 @@ static SparkStatus SparkModelResidentdFinalizeFailedRoute(SparkModelResidentdRun
 	pthread_mutex_lock(&runtime->mutex);
 	if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 	{
-		uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+		uint64_t now_ns = SparkMonotonicNs();
 		if ( route->abort_retry_since_ns == 0u )
 			route->abort_retry_since_ns = now_ns;
 		if ( now_ns - route->abort_retry_since_ns < SPARK_MODEL_RESIDENTD_ABORT_RETRY_NS )
@@ -3213,7 +3205,7 @@ static SparkStatus SparkModelResidentdProgressRoutes(
 		runtime->next_adapter_route = (index + 1u) % runtime->route_capacity;
 		if ( budget.refused != 0u && budget.ops == 0u )
 		{
-			uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+			uint64_t now_ns = SparkMonotonicNs();
 			if ( runtime->fairness_log_ns == 0u ||
 			     now_ns - runtime->fairness_log_ns >= UINT64_C(1000000000) )
 			{
@@ -3275,7 +3267,7 @@ static uint32_t SparkModelResidentdReportStuckRoutesAt(SparkModelResidentdRuntim
 
 static void SparkModelResidentdReportStuckRoutes(SparkModelResidentdRuntime *runtime)
 {
-	uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+	uint64_t now_ns = SparkMonotonicNs();
 	if ( runtime->routes == 0 || (runtime->last_stuck_scan_ns != 0u && now_ns - runtime->last_stuck_scan_ns < UINT64_C(10000000000)) )
 		return;
 	runtime->last_stuck_scan_ns = now_ns;

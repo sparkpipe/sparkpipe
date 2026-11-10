@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include "sparkpipe/spark_clock.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -581,7 +582,6 @@ static void StageServingTapClose(SparkStageServingState *state)
 	state->tap_buffered = 0u;
 }
 
-static uint64_t StageServingNowNs(void);
 
 static uint32_t StageServingTapStreamConnect(SparkStageServingState *state, int timeout_ms)
 {
@@ -597,7 +597,7 @@ static uint32_t StageServingTapStreamConnect(SparkStageServingState *state, int 
 				state->tap_stream, strerror(errno), (unsigned long long)(STAGE_SERVING_TAP_RETRY_NS / 1000000000ull));
 		StageServingTapClose(state);
 		state->tap_stream_down = 1u;
-		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+		state->tap_retry_ns = SparkMonotonicNs() + STAGE_SERVING_TAP_RETRY_NS;
 		return 0u;
 	}
 	if ( state->tap_stream_down != 0u )
@@ -733,7 +733,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 			{
 				state->tap_full = 0u;
 				state->tap_stream_down = 1u;
-				state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+				state->tap_retry_ns = SparkMonotonicNs() + STAGE_SERVING_TAP_RETRY_NS;
 			}
 			return;
 		}
@@ -745,7 +745,7 @@ static void StageServingTapEmit(SparkStageServingState *state, const SparkModelS
 			state->tap_stream, (unsigned long long)state->tap_written, strerror(errno));
 		StageServingTapClose(state);
 		state->tap_stream_down = 1u;
-		state->tap_retry_ns = StageServingNowNs() + STAGE_SERVING_TAP_RETRY_NS;
+		state->tap_retry_ns = SparkMonotonicNs() + STAGE_SERVING_TAP_RETRY_NS;
 	}
 }
 
@@ -1524,13 +1524,6 @@ static SparkStatus StageServingChainSteps(const SparkStageServingState *state,
 	return SPARK_STATUS_OK;
 }
 
-static uint64_t StageServingNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
-
 static void StageServingWaveHost(SparkStageServingState *state, const uint64_t *marks)
 {
 	uint32_t phase;
@@ -1712,7 +1705,7 @@ static SparkStatus StageServingComplete(SparkStageServingState *state, const Spa
 	const SparkRowSampling *distribution_rules, const SparkSamplingLogprob *distribution_logprobs, uint32_t logprob_stride, uint64_t started_ns)
 {
 	SparkModelServingCompletion completion;
-	const uint64_t capture_ns = SparkStageRunnerTakeCaptureNs(&state->runner), elapsed_ns = StageServingNowNs() - started_ns;
+	const uint64_t capture_ns = SparkStageRunnerTakeCaptureNs(&state->runner), elapsed_ns = SparkMonotonicNs() - started_ns;
 	StageServingCompletionHeader(submission, rows, &completion);
 	if ( capture_ns != 0u )
 		completion.service_time_ns = elapsed_ns > capture_ns ? elapsed_ns - capture_ns : 1u;
@@ -1771,7 +1764,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	uint64_t marks[6], keep_ns = 0u;
 	SparkStatus status, finished;
 	SparkDeviceQueue *queue;
-	marks[0] = StageServingNowNs();
+	marks[0] = SparkMonotonicNs();
 	status = StageServingValidateSubmission(state, submission);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -1854,10 +1847,10 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
 		dispatch.distribution_logprobs = logprob_stride != 0u ? distribution_logprobs : 0;
-		marks[1] = StageServingNowNs();
+		marks[1] = SparkMonotonicNs();
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
-	marks[2] = StageServingNowNs();
+	marks[2] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u && state->saves_held == 0u )
 	{
 		status = SparkStageKvBindingHoldSaves(&state->kv, 1u);
@@ -1867,15 +1860,15 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, queue);
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, queue, rows, steps);
-	marks[3] = StageServingNowNs();
+	marks[3] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
-	marks[4] = StageServingNowNs();
+	marks[4] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && verify != 0u )
 	{
-		const uint64_t keep_started = StageServingNowNs();
+		const uint64_t keep_started = SparkMonotonicNs();
 		StageServingVerifyKept(state, submission, active, kept);
 		if ( state->tree_frame != 0u && kept[0] == 0u )
 			status = SPARK_STATUS_VALIDATION_FAILED;
@@ -1886,12 +1879,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageRunnerCheck(&state->runner);
-		keep_ns = StageServingNowNs() - keep_started;
+		keep_ns = SparkMonotonicNs() - keep_started;
 	}
 	for ( uint32_t lane = 0u; status == SPARK_STATUS_OK && lane < active; ++lane )
 		next_positions[lane] = verify != 0u ? state->row_positions[lane] + kept[lane] : next_positions[lane] + steps - 1u;
 	if ( status == SPARK_STATUS_OK && state->tap_stream != 0 && state->tap_socket < 0 && state->tap_count != 0u &&
-		state->runner_config.tp_rank == state->tap_rank && StageServingNowNs() >= state->tap_retry_ns )
+		state->runner_config.tp_rank == state->tap_rank && SparkMonotonicNs() >= state->tap_retry_ns )
 		(void)StageServingTapStreamConnect(state, STAGE_SERVING_TAP_RECONNECT_MS);
 	if ( status == SPARK_STATUS_OK && StageServingTapOpen(state) != 0u && state->tap_full == 0u && (dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u )
 		StageServingTapEmit(state, submission, rows, active, steps, verify != 0u ? kept : 0);
@@ -1907,7 +1900,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 				state->model->module_tag, (int)(status != SPARK_STATUS_OK ? status : finished));
 		}
 	}
-	marks[5] = StageServingNowNs();
+	marks[5] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 		StageServingWaveHost(state, marks);
 	else if ( status == SPARK_STATUS_OK && verify != 0u )

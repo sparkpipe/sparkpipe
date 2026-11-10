@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include <errno.h>
+#include "sparkpipe/spark_clock.h"
 #include <fcntl.h>
 #include <pwd.h>
 #include <signal.h>
@@ -393,19 +394,12 @@ void SparkKvLedgerForgetMissing(SparkKvLedger *ledger)
 	SparkKvLedgerUnlock(ledger);
 }
 
-static uint64_t SparkKvLedgerNowNs(void)
-{
-	struct timespec now;
-	(void)clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
-
 SparkStatus SparkKvLedgerMakeRoom(SparkKvLedger *ledger,uint32_t slot,uint64_t incoming_bytes,uint64_t wait_ns,SparkKvLedgerEvictOwn evict_own,void *context,
 	uint64_t (*own_bytes)(void *context),uint64_t (*own_oldest)(void *context))
 {
 	const struct timespec pause = {0,20000000L};
 	SparkKvLedgerVictim victim;
-	uint64_t deadline = SparkKvLedgerNowNs() + wait_ns,freed;
+	uint64_t deadline = SparkMonotonicNs() + wait_ns,freed;
 	SparkStatus status;
 	for (;;)
 	{
@@ -428,7 +422,7 @@ SparkStatus SparkKvLedgerMakeRoom(SparkKvLedger *ledger,uint32_t slot,uint64_t i
 				SPARK_RETURN(status);
 		}
 		SparkKvLedgerRequest(ledger,&victim);
-		if ( SparkKvLedgerNowNs() >= deadline )
+		if ( SparkMonotonicNs() >= deadline )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		(void)nanosleep(&pause,0);
 	}

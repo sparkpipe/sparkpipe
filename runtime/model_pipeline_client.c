@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_model_pipeline_client.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <stdlib.h>
@@ -100,14 +101,6 @@ static SparkModelServingLane *SparkModelPipelineClientTransactionLanes(
 	return(&pipeline->transaction_lanes[index]);
 }
 
-static uint64_t SparkModelPipelineClientMonotonicNanoseconds(void)
-{
-	struct timespec timestamp;
-	if ( clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0 )
-		return(0u);
-	return(((uint64_t)timestamp.tv_sec * UINT64_C(1000000000)) + (uint64_t)timestamp.tv_nsec);
-}
-
 static SparkModelPipelineTransaction *SparkModelPipelineClientFind(
 	SparkModelPipelineClient *pipeline,
 	uint64_t submission_id)
@@ -141,7 +134,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 			transaction->lane_count = submission->active_sequence_count;
 			transaction->status = SPARK_STATUS_OK;
 			if ( pipeline->stage_completion_function != 0 )
-				transaction->submitted_time_ns = SparkModelPipelineClientMonotonicNanoseconds();
+				transaction->submitted_time_ns = SparkMonotonicNs();
 			transaction->submission_id = submission->submission_id;
 			transaction->request_id = submission->request_id;
 			transaction->sequence_id = submission->sequence_id;
@@ -585,7 +578,7 @@ static void SparkModelPipelineClientReportStageCompletion(
 	stage_completion.service_time_ns = completion->service_time_ns;
 	stage_completion.device_memcpy_bytes = completion->device_memcpy_bytes;
 	stage_completion.host_staging_bytes = completion->host_staging_bytes;
-	completed_time_ns = SparkModelPipelineClientMonotonicNanoseconds();
+	completed_time_ns = SparkMonotonicNs();
 	if ( completed_time_ns != 0u )
 	{
 		stage_completion.flags |= SPARK_MODEL_PIPELINE_STAGE_COMPLETION_FLAG_CLIENT_COMPLETION_TIME_VALID;
@@ -680,7 +673,7 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	pipeline->rank_count = configuration->deployment->node_count;
 	pipeline->transaction_capacity = configuration->deployment->runtime_limits.max_inflight_submission_count;
 	pipeline->lease_generation = 1u;
-	pipeline->session_epoch = SparkModelPipelineClientMonotonicNanoseconds();
+	pipeline->session_epoch = SparkMonotonicNs();
 	pipeline->session_epoch ^= (uint64_t)(getpid() & 0xffffu) << 32;
 	pipeline->session_epoch ^= (uint64_t)(configuration->deployment->coordinator_rank_index + 1u);
 	if ( pipeline->session_epoch == 0u )

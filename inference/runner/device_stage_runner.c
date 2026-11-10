@@ -1,4 +1,5 @@
 #include <fcntl.h>
+#include "sparkpipe/spark_clock.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,13 +123,6 @@ static SparkStatus RunnerFail(SparkStatus status, const char *what)
 {
 	fprintf(stderr,"device_stage_runner: %s (status %d; device: %s %s)\n",what,(int)status,SparkDeviceLastError()->operation,SparkDeviceLastError()->text);
 	return(status);
-}
-
-static uint64_t RunnerNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
 static SparkStatus RunnerLanes(SparkDeviceStageRunner *runner, uint64_t bytes)
@@ -850,7 +844,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	const SparkStageRunnerModelGeometry *g = &runner->geometry;
 	SparkStageRunnerStep step;
 	uint32_t sequences = 0u, row, error = 0u;
-	const uint64_t start = RunnerNowNs();
+	const uint64_t start = SparkMonotonicNs();
 	SparkStatus status;
 	if ( runner->group != 0 )
 	{
@@ -859,7 +853,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 		if ( status == SPARK_STATUS_OK )
 		{
 			*result = runner->group->results[0];
-			result->step_ns = RunnerNowNs() - start;
+			result->step_ns = SparkMonotonicNs() - start;
 		}
 		return(status);
 	}
@@ -932,7 +926,7 @@ SparkStatus SparkDeviceStageRunnerStep(SparkDeviceStageRunner *runner, const Spa
 	result->logprob = (const float *)runner->logprob.host;
 	result->logits = (const float *)runner->logits.host;
 	result->logit_stride = g->vocab;
-	result->step_ns = RunnerNowNs() - start;
+	result->step_ns = SparkMonotonicNs() - start;
 	return(SPARK_STATUS_OK);
 }
 
