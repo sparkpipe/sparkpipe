@@ -8,7 +8,6 @@ MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
 RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
 MODEL = MODULE / "spark_k3_stage_model.cu"
 ADAPTER = ROOT / "inference" / "runner" / "stage_serving_adapter.c"
-TRANSPORT = ROOT / "ring" / "transport" / "host_staged_tcp.c"
 
 
 def body(text, name):
@@ -114,23 +113,10 @@ def check_adapter(failures):
                         "run and the tap rows hold an earlier wave's hidden states")
 
 
-def check_transport(failures):
-    match = body(TRANSPORT.read_text(), "host_staged_match")
-    async_copy = match.find("cudaMemcpyAsync((void *)packet->hidden_bf16")
-    sync = match.find("cudaStreamSynchronize((cudaStream_t)packet->cuda_stream)")
-    complete = match.find("host_staged_complete(state,packet,status)")
-    if re.search(r"\bcudaMemcpy\(", match):
-        failures.append("the transport receive copies a frame on the legacy stream")
-    if async_copy < 0 or sync < 0 or complete < 0 or not async_copy < sync < complete:
-        failures.append("the transport completes a received packet before its "
-                        "stream-ordered copy has landed")
-
-
 def main():
     failures = []
     check_runner(failures)
     check_adapter(failures)
-    check_transport(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:

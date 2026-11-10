@@ -26,10 +26,6 @@ extern "C" {
     "spark.hidden_transport.persistent_ring.device.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID \
     "spark.hidden_transport.spark_host_pinned_rdma.verbs.v1"
-#define SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID \
-    "spark.hidden_transport.spark_gpudirect_rdma.verbs.v1"
-#define SPARK_HIDDEN_TRANSPORT_HOST_STAGED_TCP_MODULE_ID \
-    "spark.hidden_transport.host_staged_tcp.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH \
     "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
@@ -54,7 +50,6 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY 0x00000400u
 #define SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE 0x00000800u
 #define SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL 0x00001000u
-#define SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA 0x00002000u
 #define SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS 0x00004000u
 #define SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY 0x80000000u
 
@@ -93,17 +88,6 @@ extern "C" {
      SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE | \
      SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL)
 
-#define SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA)
-
-#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION | \
-     SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE | \
-     SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL)
-
 #define SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
      SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED | \
@@ -113,17 +97,6 @@ extern "C" {
 
 #define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
-
-#define SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
-     SPARK_HIDDEN_TRANSPORT_CAP_DEVICE_POINTER_IO | \
-     SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED | \
-     SPARK_HIDDEN_TRANSPORT_CAP_NO_FILE_TRANSPORT | \
-     SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT)
-
-#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PIPELINE_HOST_STAGED_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS | \
      SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
 
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 0x00000001u
@@ -349,7 +322,6 @@ typedef struct SparkHiddenTransportDynamicLibrary
     SparkHiddenTransportInterface transport_interface;
 } SparkHiddenTransportDynamicLibrary;
 
-
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
 SparkStatus SparkHiddenTransportConfigureEndpointOpenTimeout(
@@ -477,17 +449,6 @@ void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
 SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
 SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
-    const SparkHiddenTransportEndpoint *endpoint,
-    const char *infiniband_sysfs_path);
-void SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
-    SparkHiddenTransportEndpoint *endpoint,
-    uint32_t hidden_dimension,
-    uint32_t max_active_sequence_count,
-    uint64_t validated_latency_ns,
-    const char *route_name);
-SparkStatus SparkHiddenTransportValidateSparkGpudirectRdmaEndpoint(
-    const SparkHiddenTransportEndpoint *endpoint);
-SparkStatus SparkHiddenTransportSparkGpudirectRdmaVerbsPreflight(
     const SparkHiddenTransportEndpoint *endpoint,
     const char *infiniband_sysfs_path);
 

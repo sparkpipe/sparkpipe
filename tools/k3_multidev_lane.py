@@ -286,7 +286,6 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
                         kv_backing_bytes: int = DEFAULT_KV_BACKING_BYTES,
                         sequences: int = 16,
                         kv_pages: int = KV_PAGES_PER_SEQUENCE,
-                        pipeline_transport: str = "host-rdma",
                         tokenizer_sha256: str | None = None,
                         rows: int | None = None,
                         physical_pages: int | None = None,
@@ -325,9 +324,8 @@ def resident_deployment(runtime_root: str, weightd_socket: str,
             "program_name": "k3",
         },
         "transport": {
-            "shared_object_path": "lib/hidden_pipeline.so"
-            if pipeline_transport == "host-staged" else "lib/hidden_transport.so",
-            "mode": pipeline_transport,
+            "shared_object_path": "lib/hidden_transport.so",
+            "mode": "host-rdma",
             "control_port_base": TRANSPORT_BASE,
         },
         "weightd": {
@@ -408,12 +406,6 @@ def main() -> int:
     parser.add_argument("--kv-logical-pages", type=int, default=None,
                         help="KV pages per rank including the NVMe tier "
                              "(default: the physical pages)")
-    parser.add_argument("--pipeline-transport",
-                        choices=("host-rdma", "host-staged"),
-                        default="host-rdma",
-                        help="stage-to-stage hidden hand-off: the weightd "
-                             "host-rdma module or the host-staged TCP module "
-                             "(lib/hidden_pipeline.so) (default %(default)s)")
     parser.add_argument("--topology", choices=("tp4pp4", "tp16"),
                         default="tp4pp4",
                         help="rank layout: 4 PP stages of TP4, or one TP16 "
@@ -474,7 +466,7 @@ def main() -> int:
     deployment = render(resident_deployment(
         arguments.runtime_root, arguments.weightd_socket,
         arguments.kv_backing_bytes, arguments.sequences, arguments.kv_pages,
-        arguments.pipeline_transport, arguments.tokenizer_sha256,
+        arguments.tokenizer_sha256,
         arguments.rows, arguments.kv_physical_pages, arguments.kv_logical_pages))
     wrote = write_or_check(output / "deployment.json", deployment,
                            arguments.check)

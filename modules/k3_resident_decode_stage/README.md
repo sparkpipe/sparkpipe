@@ -2,10 +2,7 @@
 
 Kimi K3 resident decode stage (rank-pack loader, stage runner and serving
 adapter), which the root `Makefile` links into
-`build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)` (TP4 x PP4,
-`SPARK_K3_SERVING_TOPOLOGY=404`) and
-`build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)` (TP16,
-`SPARK_K3_SERVING_TOPOLOGY=16`).
+`build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)` (TP16).
 
 ## Implementation notes
 

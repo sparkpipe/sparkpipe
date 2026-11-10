@@ -274,14 +274,9 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     spark_hidden_spark_host_rdma_interface.descriptor_bytes =
         sizeof(SparkHiddenTransportInterface);
     spark_hidden_spark_host_rdma_interface.capability_flags =
-#if SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS |
-        SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
-#else
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS |
         SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS |
         SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
-#endif
     spark_hidden_spark_host_rdma_interface.initialize =
         SparkHiddenSparkHostRdmaInitialize;
     spark_hidden_spark_host_rdma_interface.destroy =

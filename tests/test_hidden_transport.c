@@ -605,27 +605,6 @@ static void SparkTestHiddenTransportLoadsProductionModule(void)
 
 
 
-static void SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan(void)
-{
-    SparkHiddenTransportEndpoint endpoint;
-    SparkHiddenTransportInterface transport_interface;
-    SparkHiddenTransportSession *session;
-
-    SparkTestInitializeEndpoint(&endpoint);
-    SparkTestInitializeTransportInterface(
-        &transport_interface,
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS);
-    transport_interface.get_poll_descriptors = 0;
-    session = 0;
-    assert(SparkHiddenTransportOpen(
-        &endpoint,
-        &transport_interface,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
-        &session) == SPARK_STATUS_OK);
-    assert(session != 0);
-    SparkHiddenTransportClose(session);
-}
-
 static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -686,7 +665,6 @@ int main(void)
     SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
     SparkTestHiddenTransportLoadsProductionModule();
-    SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan();
     SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint();
     SparkTestHiddenTransportSparkHostRdmaPreflight();
     return 0;

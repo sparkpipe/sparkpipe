@@ -131,14 +131,6 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
 }
 
-static uint32_t SparkHiddenTransportCapabilitiesMeetSparkGpudirectRdma(
-    uint32_t capability_flags)
-{
-    return (capability_flags &
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS) ==
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS;
-}
-
 static void SparkHiddenTransportCopyRouteConfiguration(
     SparkHiddenTransportEndpoint *destination,
     const SparkHiddenTransportEndpoint *source)
@@ -165,22 +157,6 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
     }
     *effective_endpoint = *endpoint;
     if (transport_interface != 0 &&
-        SparkHiddenTransportCapabilitiesMeetSparkGpudirectRdma(
-            transport_interface->capability_flags))
-    {
-        SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
-            effective_endpoint,
-            endpoint->hidden_dimension,
-            endpoint->max_active_sequence_count,
-            endpoint->validated_latency_ns,
-            endpoint->route_name);
-        effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
-        effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
-        SparkHiddenTransportCopyRouteConfiguration(effective_endpoint,endpoint);
-        effective_endpoint->capability_flags |= endpoint->capability_flags &
-            SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS;
-    }
-    else if (transport_interface != 0 &&
         SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
             transport_interface->capability_flags))
     {
@@ -204,14 +180,6 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSimulation(
     return (capability_flags &
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS) ==
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
-}
-
-static uint32_t SparkHiddenTransportCapabilitiesMeetPipelineHostStaged(
-    uint32_t capability_flags)
-{
-    return (capability_flags &
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS) ==
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS;
 }
 
 static uint32_t SparkHiddenTransportStringsEqual(
@@ -258,8 +226,6 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
         }
     }
     else if (!SparkHiddenTransportCapabilitiesMeetProduction(
-            endpoint->capability_flags) &&
-        !SparkHiddenTransportCapabilitiesMeetPipelineHostStaged(
             endpoint->capability_flags))
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1538,39 +1504,3 @@ SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS);
 }
 
-void SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
-    SparkHiddenTransportEndpoint *endpoint,
-    uint32_t hidden_dimension,
-    uint32_t max_active_sequence_count,
-    uint64_t validated_latency_ns,
-    const char *route_name)
-{
-    SparkHiddenTransportInitializeRdmaEndpoint(
-        endpoint,
-        hidden_dimension,
-        max_active_sequence_count,
-        validated_latency_ns,
-        route_name,
-        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS);
-}
-
-SparkStatus SparkHiddenTransportValidateSparkGpudirectRdmaEndpoint(
-    const SparkHiddenTransportEndpoint *endpoint)
-{
-    return SparkHiddenTransportValidateRdmaEndpoint(
-        endpoint,
-        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS);
-}
-
-SparkStatus SparkHiddenTransportSparkGpudirectRdmaVerbsPreflight(
-    const SparkHiddenTransportEndpoint *endpoint,
-    const char *infiniband_sysfs_path)
-{
-    return SparkHiddenTransportRdmaVerbsPreflight(
-        endpoint,
-        infiniband_sysfs_path,
-        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS);
-}

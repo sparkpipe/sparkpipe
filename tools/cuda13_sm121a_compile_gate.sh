@@ -112,10 +112,7 @@ for relative_source in "${translation_units[@]}"; do
 	compile_cuda "${relative_source}" "${artifact_name}"
 done
 
-for direct_mode in 0 1; do
-	compile_cuda ring/transport/rdma.cu "rdma_mode_${direct_mode}" \
-		-DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT="${direct_mode}"
-done
+compile_cuda ring/transport/rdma.cu rdma
 
 make_variable()
 {

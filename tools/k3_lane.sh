@@ -64,7 +64,6 @@ render() {
     ${K3_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$K3_KV_PHYSICAL_PAGES_CAP"} \
     ${K3_KV_LOGICAL_PAGES:+--kv-logical-pages "$K3_KV_LOGICAL_PAGES"} \
     --topology "$K3_TOPOLOGY" \
-    --pipeline-transport "${K3_PIPELINE_TRANSPORT:-host-rdma}" \
     --runtime-root "/home/{host}/k3-lanes/lane$K3_LANE/root" \
     --state-budget-bytes "$K3_STATE_BUDGET_BYTES" \
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
@@ -83,9 +82,6 @@ setup() {
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/libk3_serving_adapter.so"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
-      if [ "${K3_PIPELINE_TRANSPORT:-host-rdma}" = host-staged ]; then
-        scp -q "$K3_FIRMWARE/libhidden_transport_host_staged_tcp.so" "$host:$root/lib/hidden_pipeline.so"
-      fi
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget"

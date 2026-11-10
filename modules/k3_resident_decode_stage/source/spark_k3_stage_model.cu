@@ -767,12 +767,10 @@ static SparkStatus K3RunnerCreateDispatch(SparkK3ModelState *state,
 			configuration->tp_degree);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-#if SPARK_K3_SERVING_TOPOLOGY == 16
 	if ( SparkK3DispatchEnableVerify(&state->dispatch, SPARK_K3_SERVING_VERIFY_ROWS) != SPARK_K3_DISPATCH_OK )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	fprintf(stderr, "sparkpipe_k3: verify replay rows=%u bytes=%llu\n", state->dispatch.replay_rows,
 		(unsigned long long)state->dispatch.replay_bytes);
-#endif
 	planned = state->dispatch.state_bytes.total + state->dispatch.scratch_bytes;
 	fprintf(stderr, "sparkpipe_k3: rank state planned=%llu budget=%llu"
 		" kda_state=%llu kda_windows=%llu scratch=%llu"
@@ -1303,7 +1301,6 @@ static uint32_t K3ModelGraphKey(void *model, const SparkStageRunnerStep *step)
 		step->rows <= LM_SKINNY_ROWS_WIDE ? 2u : 1u;
 }
 
-#if SPARK_K3_SERVING_TOPOLOGY == 16
 static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
@@ -1345,7 +1342,6 @@ static SparkStatus K3ModelTapPlan(void *model, const SparkStageRunnerTapPlan *pl
 	fprintf(stderr, "sparkpipe_k3: taps entries=%u capture=%u\n", plan->entry_count, plan->capture);
 	return SPARK_STATUS_OK;
 }
-#endif
 
 static const SparkStageRunnerModelInterface spark_k3_stage_model =
 {
@@ -1366,13 +1362,8 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	K3ModelReport,
 	K3ModelGraphKey,
 	0,
-#if SPARK_K3_SERVING_TOPOLOGY == 16
 	K3ModelKeepRows,
 	K3ModelTapPlan,
-#else
-	0,
-	0,
-#endif
 	0,
 	0,
 	K3ModelStreamedPrefill,

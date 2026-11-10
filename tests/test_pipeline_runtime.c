@@ -162,7 +162,7 @@ int main(void)
 	assert((rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u);
 	assert((rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u);
 	TestBuildNode(&node,12u,12u,10u,SPARK_PIPELINE_RUNTIME_NO_RANK,"node-omega","node-psi",0);
-	assert(SparkPipelineRuntimeBuildLinearRankPlan(&descriptor,&node,128u,128u,SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS,59000u,SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,&rank_plan) == SPARK_STATUS_OK);
+	assert(SparkPipelineRuntimeBuildLinearRankPlan(&descriptor,&node,128u,128u,SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS,59000u,SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,&rank_plan) == SPARK_STATUS_OK);
 	assert(rank_plan.first_layer_index == 41u);
 	assert(rank_plan.layer_count == 2u);
 	assert(strcmp(rank_plan.host_name,"node-omega") == 0);

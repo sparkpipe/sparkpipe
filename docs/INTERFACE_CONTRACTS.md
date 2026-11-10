@@ -335,7 +335,7 @@ The host RDMA backend in `ring/transport/rdma.cu` declares, in its default build
 - `SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS`;
 - `SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS`.
 
-When `SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT` is nonzero it instead declares `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS` and `SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS`. A module must declare only capabilities it implements. This backend implements neither multi-lane nor the remote-completion doorbell, so it does not declare them.
+A module must declare only capabilities it implements. This backend implements neither multi-lane nor the remote-completion doorbell, so it does not declare them.
 
 Poll descriptors:
 

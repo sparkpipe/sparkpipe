@@ -101,13 +101,11 @@ def main() -> int:
         encoding="utf-8"
     )
     require(
-        'strcmp(deployment->transport_mode,"host-rdma")' in deployment_source
-        and 'strcmp(deployment->transport_mode,"gpudirect-rdma")'
-        in deployment_source,
-        "deployment transport modes are not explicit",
+        'strcmp(deployment->transport_mode,"host-rdma")' in deployment_source,
+        "the deployment transport mode is not explicit",
     )
     require('strcmp(mode,"host-rdma")' in resident, "host RDMA mode missing")
-    require('strcmp(mode,"gpudirect-rdma")' in resident, "GPUDirect mode missing")
+    require('strcmp(mode,"gpudirect-rdma")' not in resident and 'strcmp(mode,"host-staged")' not in resident, "an unserved transport mode is back")
     require('strcmp(mode,"device")' not in resident, "device alias reintroduces fallback")
     require(
         "SPARKPIPE_RING_TRANSPORT_PORT_BASE" not in resident,

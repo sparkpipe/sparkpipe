@@ -1198,9 +1198,7 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   `max_input_row_count`, but it captures its per-row-count decode graphs (1 to
   16 rows, `STAGE_RUNNER_GRAPH_ROWS` in `inference/runner/stage_runner.cu`) on
   the first step of each row count, so the first request at a new batch width
-  pays the capture. Prewarm them at load. The root `Makefile` still passes
-  `-DSPARK_BATCH_BUCKET=1024u` (`DEFAULT_BATCH_FLAGS`), which no source reads;
-  drop it.
+  pays the capture. Prewarm them at load.
 
 ## Runtime completion
 
@@ -1243,8 +1241,7 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   recurrent state, restore the lanes' recurrent state before a retried frame,
   then map it to `BUSY` for every model.
 - Pipeline-parallel stages no longer wedge after a failure on another rank in
-  the host tests: the hidden transport has a `cancel` operation (ABI 6;
-  `host_staged_tcp` drops the posted receive and any queued frame), and
+  the host tests: the hidden transport has a `cancel` operation (ABI 6), and
   residentd cancels a route's transfer when the route is abandoned, its client
   generation changed or its deadline expired. A route cancelled while waiting
   for input fails through the failed-route path, which aborts its committed

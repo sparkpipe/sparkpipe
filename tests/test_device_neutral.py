@@ -101,7 +101,6 @@ PENDING = {
     "node/model_residentd.c": {"header": 1, "token": 29},
     "node/weightd_mesh.c": {"header": 1, "token": 3},
     "ring/transport/hidden_transport.c": {"handle": 1},
-    "ring/transport/host_staged_tcp.c": {"header": 1, "token": 21},
     "ring/transport/rdma.cu": {"placement": 1, "rename": 1},
     "ring/transport/tp_device_collective.c": {"handle": 14, "token": 100},
     "runtime/gemm.cuh": {"placement": 1},

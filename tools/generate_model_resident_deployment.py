@@ -189,8 +189,8 @@ def validate_common(specification: dict[str, Any]) -> None:
         "transport.shared_object_path"), False,
         "transport.shared_object_path")
     mode = text_value(specification["transport"]["mode"], "transport.mode")
-    if mode not in ("host-rdma", "gpudirect-rdma"):
-        raise DeploymentError("transport.mode is not a production RDMA mode")
+    if mode != "host-rdma":
+        raise DeploymentError("transport.mode is not host-rdma, the one served mode")
     integer_value(specification["transport"]["control_port_base"],
                   "transport.control_port_base", 1, 65535)
     inflight = integer_value(limits["max_inflight_submissions"],
