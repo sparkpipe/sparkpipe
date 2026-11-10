@@ -208,7 +208,7 @@ spark8 failed twice (2026-10-01, 2026-10-02) the same way:
 - `self-test` checks the matcher against the real spark8 lines.
 
 **Hub listener**
-- `listen --port 5514 --log ~/spark-dma-guard/events.log` runs on the rtx5090 as the transient user unit `spark-dma-guard-listen`. Start it again after a hub reboot.
+- `listen --port 5514 --log ~/spark-dma-guard/events.log` runs on the hub as the transient user unit `spark-dma-guard-listen`. Start it again after a hub reboot.
 
 **Verification (spark8, 2026-10-02)**
 - A clean reboot re-armed the guard 61 s after boot.

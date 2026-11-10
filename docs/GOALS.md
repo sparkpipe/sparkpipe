@@ -322,7 +322,7 @@ longer applies: the agent cap, the 15-minute cycle and burst approval.
 
 GLM 5.3 Flash now serves on the Sparks. Agents' own inference (drafting,
 analysis, doc summarization) should run on the fleet rather than on paid
-APIs. The live GLM API is the `g53-api` user unit on the rtx5090 hub, port
+APIs. The live GLM API is the `g53-api` user unit on the hub, port
 8433. It is an x86 build of the engines' source commit, and every Spark runs
 no API: `tools/fleet_node_agent.sh` no longer starts one (#1261). The
 LiteLLM front door is the seam: `config/litellm-config.yaml` routes

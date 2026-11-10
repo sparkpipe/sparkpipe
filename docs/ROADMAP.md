@@ -209,7 +209,7 @@ Work:
 - a draft tree fed by several drafters, cut short or extended conditionally,
   that spends the compute left idle below the compute-bound batch size
   (GOALS.md);
-- drafters on the rtx5090 hub. It is 22.6 us p50 from sparkf and about
+- drafters on the hub. It is 22.6 us p50 from sparkf and about
   300 us p50 from the other Sparks, which reach it through sparkf
   (PERFORMANCE_STATUS.md, Measured fabric). GLM needs a glm5_next
   `DraftRemoteChain` call site first, with drafting pipelined one round

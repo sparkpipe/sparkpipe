@@ -1,6 +1,6 @@
-# RTX 5090 host: hub, model APIs, draft farm
+# Hub: model APIs, draft farm
 
-`rtx5090` (x86_64, RTX 5090 32 GB) is the fleet hub and the model API host,
+The hub (`rtx5090`, x86_64) is the fleet hub and the model API host,
 and holds the draft farm and drafter store. It is not a Spark: it has no
 rank and is not part of the TP collectives. State below was surveyed
 read-only on 2026-09-28 about 09:00 UTC unless another source is named.
@@ -20,8 +20,7 @@ Hub operations (publishing roots, heartbeats) are governed by
 - Review the output of `tools/rtx5090_spec_node.py plan` against the live
   host before installing any of it (see [Tooling](#tooling)).
 - Do not run `tools/hardware/rtx5090_qualify.cu` on a busy host: it
-  allocates all free VRAM minus 2 GiB, capped at 28 GiB (rtx5090_qualify.cu:47-49),
-  then runs a 60 s cuBLAS GEMM stress (:139). Rerun only with an idle GPU and
+  allocates nearly all free GPU memory (rtx5090_qualify.cu:47-49), then runs a 60 s cuBLAS GEMM stress (:139). Rerun only with an idle GPU and
   the operator's sign-off.
 
 ## Roles
@@ -67,7 +66,7 @@ it is about 300 us p50.
 
 ## K3 block drafter (production since 2026-10-17)
 
-K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
+K3 serves model drafts from the RadixArk DSpark block drafter on the hub.
 - **Unit:** the transient user unit `sparkpipe-draftd`, started from the
   lane record's `draftd` entry (`deployment/lanes.json`) by
   `tools/lane_config.py draftd kimi-k3`, which runs `tools/hub_draftd.sh`
@@ -231,16 +230,6 @@ Drafters in `/srv/workspace/drafters/`, copied 09-03 with the transfer record
 `kimi-k3-dflash-modal`, `kimi-k3-dflash2-lightseek`,
 `qwen3.8-27b-dflash2-incoai`, `qwen3.8-max-dflash-modal`.
 
-## GPU qualification record (2026-09-03, historical)
-
-From `/srv/workspace/.qualification/RTX5090-GPU-QUALIFICATION.txt` (driver
-595.84 open, CUDA 13.3.73, `-arch=sm_120`): 30,064,771,072 bytes (89.3% of
-VRAM) pattern-verified with no mismatches; device copy 762.87 GB/s; PCIe
-49.56 GB/s host-to-device and 22.75 GB/s device-to-host; 8192-square cuBLAS
-GEMM for 60 s averaged 233.89 TFLOP/s with correct output; peak 384 W and
-59 C, no power or thermal violation, no PCIe, Xid or AER errors.
-`nvidia-smi` reports 32,607 MiB.
-
 ## Tooling
 
 `tools/rtx5090_spec_node.py` and `deployment/rtx5090_speculation/node.example.json`
@@ -263,7 +252,7 @@ affected.
 
 ## draftd drafters (2026-09-29)
 
-Drafters run on this host; the fleet only verifies. Measured on the RTX 5090
+Drafters run on this host; the fleet only verifies. Measured on this host
 (receipts and roofline lines in the spec-draftd lane notes):
 
 - GLM-5.3 Flash MTP (layer 45). `tools/safetensors_subset.py` copies the MTP

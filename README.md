@@ -624,8 +624,8 @@ evidence rules.
 
 **Hub.** One host outside the Sparks publishes release roots, collects node
 heartbeats and serves the model API. In the reference fleet it is an x86
-workstation with an RTX 5090, so the API is built for x86 separately from
-the aarch64 Spark binaries. Host roles and the release procedure are in
+host, so the API is built for x86 separately from the aarch64 Spark
+binaries. Host roles and the release procedure are in
 [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
 
 ## Models

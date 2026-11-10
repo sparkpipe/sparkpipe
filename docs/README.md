@@ -95,8 +95,8 @@ current authority.
 - [`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md):
   speculation seam, source mask, draft bridge, per-family state and
   direction.
-- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
-  (fleet hub, model APIs, draft farm, drafter store).
+- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub
+  (release hub, model APIs, draft farm, drafter store).
 - [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
   drafters per model, and the PR sequence.
 

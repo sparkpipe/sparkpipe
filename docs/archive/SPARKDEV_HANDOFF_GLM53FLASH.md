@@ -50,10 +50,10 @@
 
 ## 4. Architecture map (what runs where)
 
-- **rtx5090 (10.10.250.2, tailscale 100.123.97.61, user `spec`):** the api (`sparkpipe_model_api`, port 8433, systemd user unit `g53-api`), release hub (`fleet-release.service` serving `~/release` on :8802), draft/tokenizer host. Reachable from the workstation as `rtx5090` (ProxyJump sparkf).
+- **The hub (10.10.250.2):** the api (`sparkpipe_model_api`, port 8433, systemd user unit `g53-api`), release hub (`fleet-release.service` serving `~/release` on :8802), draft/tokenizer host. Reachable from the workstation as `rtx5090` (ProxyJump sparkf).
 - **sparkf (10.10.100.25):** aarch64 build host ONLY (`~/g5n-rd-build` — do NOT touch `~/sparkpipe-build`, it's glmdev's). Also NATs the 5090's traffic to the fleet (masquerade — api appears as 10.10.100.25 on some ranks; this is NORMAL, not a squatter).
 - **16 sparks:** `fleet-agent` (systemd user) runs `~/sparkdata/core/bin/fleet_node_agent.sh` → pulls releases over tailscale HTTP from the 5090, runs `weightd` (mesh + expert arena) and `residentd` (the engine) per node. Engines listen on 19560+rank. Single-client control protocol (hello → reset → submissions).
-- **weightd** owns: expert pack lazy-attach arena (32GB pool, `G5_EXPERT_POOL_BYTES`), lease table (256), mesh QP wiring + records. Mesh records ship via scp to `spec@100.123.97.61:release/qpn/<host>/...` and fetch via HTTP from same.
+- **weightd** owns: expert pack lazy-attach arena (32GB pool, `G5_EXPERT_POOL_BYTES`), lease table (256), mesh QP wiring + records. Mesh records ship via scp to the hub's `release/qpn/<host>/...` and fetch via HTTP from same.
 - **KV lane protocol:** EMPTY→PREPARED→COMMITTED/EXECUTING→EMPTY per resident slot; prefill chunks are 1-row submissions (`SPARK_MODEL_API_MAX_PREFILL_ROWS=1` on the api — multi-row blocked by glmdev's prefill bug).
 
 ## 5. Build/publish/test loop (exact commands)
