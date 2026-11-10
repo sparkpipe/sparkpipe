@@ -32,6 +32,7 @@ h1 { max-width: 15ch; }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="strip">
   <div class="wrap">
     <span>Fleets in <b>Korea</b></span>
@@ -60,7 +61,7 @@ h1 { max-width: 15ch; }
   </div>
 </header>
 
-<main>
+<main id="main">
 <section class="wrap hero">
   <p class="label hero-kicker">For engineers who live in a large codebase</p>
   <h1>Your codebase, warm all week, on a fleet of your own.</h1>
@@ -110,7 +111,7 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Per-token APIs bill you for your codebase again and again.</h2>
     <p class="prose">The API cache is built for short sessions. On Claude it lasts 5 minutes by default; a 1-hour cache costs twice the input price to write, and a 5-minute write costs 1.25 times. Kimi's default is also 5 minutes. So every break, meeting, branch switch and subagent pays for the whole context again, and waits while it prefills. That is why a $20–50 top-up runs out so fast in agentic work, and why subscription limits arrive before lunch.</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="Per-token APIs bill you for your codebase again and again."><table>
       <thead><tr><th scope="col">Moment in the day</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
       <tbody>
         <tr><td>Next turn, within minutes</td><td>A cache read, billed per token</td><td class="you"><b>Warm.</b> First token in 4.7–5.1 s at 137,700 tokens and 0.3–0.9 s for a short cached turn, measured, with no per-token charge</td></tr>
@@ -233,7 +234,7 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Seven days for the price of six.</h2>
     <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on hours of an Hour Fleet and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
-    <div class="table-wrap"><table class="cmp">
+    <div class="table-wrap" tabindex="0" role="region" aria-label="Seven days for the price of six."><table class="cmp">
       <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
       <tbody>
         <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩27,200</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩20,400</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
@@ -266,7 +267,7 @@ h1 { max-width: 15ch; }
     <p class="prose">Create an API key in your account and set it in your tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded.</p>
     <div class="code">
       <div class="code-head"><span>Your fleet, while you hold it</span><span>shell</span></div>
-      <pre><span class="d"># Claude Code</span>
+      <pre tabindex="0" role="region" aria-label="Point your coding agent at your fleet."><span class="d"># Claude Code</span>
 <span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
 <span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
 <span class="k">export</span> ANTHROPIC_MODEL=kimi-k3

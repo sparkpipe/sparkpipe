@@ -42,6 +42,7 @@
 </style>
 </head>
 <body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿 목록</span></a>
@@ -60,7 +61,7 @@
   </div>
 </header>
 
-<main class="wrap policy">
+<main id="main" class="wrap policy">
   <section>
     <h1>플릿 목록</h1>
     <p class="effective">2026년 11월 1일 갱신</p>
@@ -71,7 +72,7 @@
 
   <section id="fleets">
     <h2>플릿</h2>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="플릿">
     <table>
       <tr><th>플릿</th><th>장비</th><th>상태</th><th>예약</th><th class="num">시간당 HC(요율)</th><th class="num">캐시</th><th class="num">고객 저장공간</th><th>모델</th></tr>
       <tr><td><b>플릿&nbsp;1A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;1B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
@@ -92,7 +93,7 @@
   <section id="models">
     <h2>플릿 1의 모델</h2>
     <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 고객이 보유한 어느 플릿에서든 고객 자신의 키로 저희 API를 통해 쓸 수 있습니다. 고객이 자신의 저장공간에 추가한 모델은 그 고객의 계정에만 표시됩니다. 플릿은 메모리에 들어가는 만큼 여러 모델을 동시에 적재합니다. 적재되지 않은 모델에 대한 요청은 그 모델을 적재하는 동안(보통 20~80초) 기다립니다. 모두 들어가지 않을 때에만 다른 모델을 내리며, 내린 모델의 캐시는 그 모델이 다시 적재될 때를 위해 보관합니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="플릿 1의 모델">
     <table>
       <tr><th>모델</th><th>게시자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th>분류</th><th>제공 여부</th></tr>
       <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>핵심</td><td>제공</td></tr>
@@ -126,7 +127,7 @@
   <section id="precision">
     <h2>정밀도: BF16과 FP8·NVFP4 비교(실측)</h2>
     <p>2026-11-04부터 네 모델이 게시자의 BF16 가중치로 제공됩니다. 높은 정밀도로 무엇을 얻는지 보려고, 각 모델로 92문항 ds4-eval 세트(GPQA Diamond 25, SuperGPQA 25, AIME 2025 25, COMPSEC 17)를 같은 빌드에서 두 번 실행했습니다. 한 번은 BF16으로, 한 번은 이전에 제공하던 정밀도로 실행했습니다. 온도 0, 답변당 최대 16,000토큰, 한 번에 16문항씩, 채팅 엔드포인트를 통해 실행했습니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="정밀도: BF16과 FP8·NVFP4 비교(실측)">
     <table>
       <tr><th>모델</th><th class="num">BF16</th><th class="num">FP8 또는 NVFP4</th><th class="num">둘 다 정답</th><th class="num">BF16만 정답</th><th class="num">FP8·NVFP4만 정답</th><th class="num">92문항 소요 시간, BF16 / 다른 정밀도</th></tr>
       <tr><td><b>GLM 5.3 Flash</b></td><td class="num">77</td><td class="num">77 (FP8)</td><td class="num">74</td><td class="num">3</td><td class="num">3</td><td class="num">61.5 / 46.0분</td></tr>
@@ -142,7 +143,7 @@
   <section id="precision-choice">
     <h2>정밀도 선택(예정)</h2>
     <p>모든 모델을 게시자의 원래 정밀도(기본)로 제공하고, 8비트(FP8)와 4비트(NVFP4 또는 MXFP4)로도 제공하며, 좋은 빌드가 있는 경우 EXL3로도 제공할 예정입니다. 모델 이름으로 고르며, 예를 들어 <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span>, <span class="mono">glm-5.3-nvfp4</span>입니다. 정밀도가 낮을수록 더 빠르고 캐시에 쓸 메모리가 더 많이 남아, 더 긴 대화나 더 많은 요청을 한 번에 처리할 수 있습니다. 이 목록은 각 변형의 속도, 원래 정밀도 모델 대비 정확도, 캐시 용량을 모두 실측으로 보여 줄 것이며, 모든 변형은 제공 전에 같은 정확도 검사를 통과합니다. 현재는 각 모델이 위 모델 표에 있는 한 가지 정밀도로만 제공됩니다. 지금까지 측정한 네 모델은 다음과 같습니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="정밀도 선택(예정)">
     <table>
       <tr><th>모델</th><th>정밀도</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th class="num">ds4-eval, 92문항 중</th><th class="num">GPU 메모리의 캐시</th><th class="num">컨텍스트 창</th></tr>
       <tr><td><b>GLM 5.3</b></td><td>BF16 (기본)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">–</td><td class="num">1.8M 토큰</td><td class="num">768K</td></tr>
@@ -161,7 +162,7 @@
   <section id="limits">
     <h2>하드웨어 한계에 얼마나 가까운가</h2>
     <p>각 단계는 가장 먼저 포화되는 자원이 한계를 정합니다. 단일 요청 디코드의 한계는 메모리입니다. 16대의 Spark가 각각 토큰에 필요한 가중치의 16분의 1을 273 GB/s로 읽습니다. Spark 16대에서 프리필의 한계는 네트워크입니다. 레이어마다 부분 결과를 16대 전체에서 합산하며, 실제로는 노드당 약 10 GB/s입니다. 연산 한계는 이보다 20~100배 멀리 있습니다. 아래는 위의 속도가 각 한계의 몇 퍼센트에 이르는지입니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="하드웨어 한계에 얼마나 가까운가">
     <table>
       <tr><th>모델</th><th class="num">디코드, 메모리 한계 대비</th><th class="num">프리필, 네트워크 한계 대비</th></tr>
       <tr><td><b>Kimi K3</b></td><td class="num">65%</td><td class="num">36%</td></tr>
@@ -189,7 +190,7 @@
   <section id="speculation">
     <h2>추측 디코딩(실측)</h2>
     <p>추측 디코딩은 요청 자체의 컨텍스트와 드래프트 모델에서 토큰 초안을 만들고, 모델이 한 번에 검증하므로 출력은 모델 자신의 것과 정확히 같습니다. 플릿 1에서 측정했으며, 따로 적지 않으면 단일 요청입니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="추측 디코딩(실측)">
     <table>
       <tr><th>모델</th><th>작업</th><th class="num">일반 디코드</th><th class="num">추측 디코딩</th></tr>
       <tr><td><b>Kimi K3</b></td><td>파일 전체 코드 재작성</td><td class="num">15.3 tok/s</td><td class="num">126.4 tok/s(최고 140.6)</td></tr>
@@ -212,7 +213,7 @@
   <section id="next-models">
     <h2>다음에 오는 모델</h2>
     <p>중국 외 게시자의 대형 오픈 모델로, 사업자에게 서비스로 제공할 수 있는 라이선스를 가진 모델입니다. 각 모델은 제공 전에 검증합니다.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="다음에 오는 모델">
     <table>
       <tr><th>모델</th><th>게시자</th><th class="num">파라미터</th><th class="num">크기</th><th>라이선스</th><th>비고</th></tr>
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, 미국</td><td class="num">550B, 활성 55B</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA의 최대 오픈 모델</td></tr>

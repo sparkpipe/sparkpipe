@@ -42,6 +42,7 @@
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">fleet list</span></a>
@@ -60,7 +61,7 @@
   </div>
 </header>
 
-<main class="wrap policy">
+<main id="main" class="wrap policy">
   <section>
     <h1>Fleet List</h1>
     <p class="effective">Updated 1 November 2026</p>
@@ -71,7 +72,7 @@
 
   <section id="fleets">
     <h2>Fleets</h2>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Fleets">
     <table>
       <tr><th>Fleet</th><th>Machines</th><th>State</th><th>Booked</th><th class="num">HC an hour (Rate)</th><th class="num">Cache</th><th class="num">Customer storage</th><th>Models</th></tr>
       <tr><td><b>Fleet 1A</b></td><td>16 NVIDIA DGX Spark (GB10), 128 GB of memory each; shares a 32-port 100 Gb/s switch with Fleet 1B</td><td>Under construction</td><td>By the week, pinned; by the hour while nobody holds it</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>Listed here when the fleet opens</td></tr>
@@ -92,7 +93,7 @@
   <section id="models">
     <h2>Models on Fleet 1</h2>
     <p>Every model installed on Fleet 1. An <b>offered</b> model can be called on any fleet you hold, through our API with your own keys. A model a customer adds to its own storage is listed only in that customer's account. A fleet keeps as many models loaded at once as fit in its memory. A request for a model that is not loaded waits while it loads, usually 20 to 80 seconds. Loading it unloads another model only if they do not all fit, and the unloaded model's cache is kept for when it comes back. A <b>core</b> model gets ongoing performance work; a <b>qualified</b> model passed the release qualification and serves at the speeds shown; a <b>verifying</b> model serves and passes the chat checks while its tokens are compared with the publisher's reference implementation.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Models on Fleet 1">
     <table>
       <tr><th>Model</th><th>Publisher</th><th>License</th><th class="num">Context window</th><th class="num">Decode, one request</th><th class="num">Prefill, 7K prompt</th><th>Track</th><th>Availability</th></tr>
       <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>Core</td><td>Offered</td></tr>
@@ -126,7 +127,7 @@
   <section id="precision">
     <h2>Precision: BF16 against FP8 and NVFP4 (measured)</h2>
     <p>Since 2026-11-04 four models serve their publishers' BF16 weights. To see what the higher precision buys, each ran the 92-question ds4-eval suite (GPQA Diamond 25, SuperGPQA 25, AIME 2025 25, COMPSEC 17) twice on the same build: once at BF16 and once at the precision it served before. Temperature 0, up to 16,000 tokens an answer, 16 questions at a time, through the chat endpoint.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Precision: BF16 against FP8 and NVFP4 (measured)">
     <table>
       <tr><th>Model</th><th class="num">BF16</th><th class="num">FP8 or NVFP4</th><th class="num">Right in both</th><th class="num">Only BF16 right</th><th class="num">Only FP8 or NVFP4 right</th><th class="num">Time for the 92, BF16 / other</th></tr>
       <tr><td><b>GLM 5.3 Flash</b></td><td class="num">77</td><td class="num">77 (FP8)</td><td class="num">74</td><td class="num">3</td><td class="num">3</td><td class="num">61.5 / 46.0 min</td></tr>
@@ -142,7 +143,7 @@
   <section id="precision-choice">
     <h2>Choosing a precision (coming)</h2>
     <p>Every model will be offered at its publisher's full precision, the default, and also at 8 bits (FP8) and 4 bits (NVFP4 or MXFP4), and in EXL3 where good builds exist. You choose by model name, for example <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span> or <span class="mono">glm-5.3-nvfp4</span>. A lower precision runs faster and leaves more memory for the cache, so longer conversations or more requests fit at once. For every variant this list will show its speed, its accuracy against the full-precision model and its cache capacity, all measured, and each variant passes the same accuracy check before it is offered. Today each model serves one precision, the one in the model table above. The four models measured so far:</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Choosing a precision (coming)">
     <table>
       <tr><th>Model</th><th>Precision</th><th class="num">Decode, one request</th><th class="num">Prefill, 7K prompt</th><th class="num">ds4-eval, of 92</th><th class="num">Cache in GPU memory</th><th class="num">Context window</th></tr>
       <tr><td><b>GLM 5.3</b></td><td>BF16 (default)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">–</td><td class="num">1.8M tokens</td><td class="num">768K</td></tr>
@@ -161,7 +162,7 @@
   <section id="limits">
     <h2>How close to the hardware limit</h2>
     <p>Each step is bounded by the resource that saturates first. Decoding one request is bounded by memory: each of the 16 Sparks reads its sixteenth of the weights a token needs, at 273 GB/s. Prefill on 16 Sparks is bounded by the network: every layer adds up its partial results across all 16, about 10 GB/s a node in practice. Compute is 20 to 100 times further away. Shown is the share of each floor the speeds above reach:</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="How close to the hardware limit">
     <table>
       <tr><th>Model</th><th class="num">Decode, of the memory floor</th><th class="num">Prefill, of the network floor</th></tr>
       <tr><td><b>Kimi K3</b></td><td class="num">65%</td><td class="num">36%</td></tr>
@@ -189,7 +190,7 @@
   <section id="speculation">
     <h2>Speculation (measured)</h2>
     <p>Speculation drafts tokens from the request's own context and from a draft model, and the model checks them in one pass, so the output is exactly the model's own. Measured on Fleet 1, one request unless noted:</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Speculation (measured)">
     <table>
       <tr><th>Model</th><th>Workload</th><th class="num">Plain decode</th><th class="num">With speculation</th></tr>
       <tr><td><b>Kimi K3</b></td><td>Whole-file code rewrite</td><td class="num">15.3 tok/s</td><td class="num">126.4 tok/s (best 140.6)</td></tr>
@@ -212,7 +213,7 @@
   <section id="next-models">
     <h2>Models coming next</h2>
     <p>Large open models from non-Chinese publishers, under licenses that allow serving them to businesses. We qualify each one before it is offered.</p>
-    <div class="scroll">
+    <div class="scroll" tabindex="0" role="region" aria-label="Models coming next">
     <table>
       <tr><th>Model</th><th>Publisher</th><th class="num">Parameters</th><th class="num">Size</th><th>License</th><th>Note</th></tr>
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, US</td><td class="num">550B, 55B active</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA's largest open model</td></tr>
