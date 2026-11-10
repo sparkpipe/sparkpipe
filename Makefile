@@ -788,6 +788,7 @@ PYTHON_TESTS := \
 	tests/test_laguna_reference_torch.py \
 	tests/test_python_tests_registered.py \
 	tests/test_spark_pack_common_extents.py \
+	tests/test_spark_pack_core.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
