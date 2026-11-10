@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Kimi K3 checkpoint -> TP16 (or --tp-degree N) named stage packs for the device stage.
+"""Kimi K3 or K3.1 Pro checkpoint -> TP16 (or --tp-degree N) named stage packs for the device stage.
 
-Output per rank: <out>/k3.tp<N>.rank<NN>.pack (tools/spark_named_pack.py
+Output per rank: <out>/k3.tp<N>.rank<NN>.pack, k31.tp<N>.rank<NN>.pack for
+K3.1 Pro (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts. The
 checkpoint is read through tools/k3_pack.py's SafetensorDir; the AttnRes
 weights are its gamma folds, bf16(gamma x proj). Unlike the CUDA pack, the
@@ -37,6 +38,13 @@ dimension):
                        with moe_w2_scale [896, 3584, 3072/TP/32];
                        shared_gate_up: gate then up [2*6144/TP, H];
                        shared_down [H, 6144/TP]
+  K3.1 MLA layers      the DSA indexer, replicated and bit-preserved: bf16
+                       mla_index_q [32*128, 1536] (wq_b), mla_index_k
+                       [128, H] (wk), mla_index_w [32, H] (weights_proj);
+                       mla_index_norm and mla_index_norm_bias f32 [128]
+                       (k_norm's LayerNorm, the bf16 widened exactly);
+                       the layout adds index_topk 2048, index_heads 32 and
+                       index_dim 128 and names the model kimi-k3.1-pro
 """
 
 import argparse
@@ -60,6 +68,14 @@ HEADS, KEY = 96, 128
 Q_LORA, KV_LORA, NOPE, ROPE, VALUE = 1536, 512, 128, 64, 128
 EXPERTS, TOP_K, INTER, LATENT, SHARED, DENSE = 896, 16, 3072, 3584, 6144, 33792
 GROUP, CONV = 32, 4
+INDEX_TOPK, INDEX_HEADS, INDEX_DIM = 2048, 32, 128
+DSA = {"index_topk": INDEX_TOPK, "index_num_heads": INDEX_HEADS, "index_head_dim": INDEX_DIM, "index_rope_dim": 0, "index_topk_freq": 1,
+       "index_k_norm_type": "layernorm"}
+INDEXER = (("mla_index_q", "wq_b.weight", (INDEX_HEADS * INDEX_DIM, Q_LORA)), ("mla_index_k", "wk.weight", (INDEX_DIM, H)),
+           ("mla_index_w", "weights_proj.weight", (INDEX_HEADS, H)), ("mla_index_norm", "k_norm.weight", (INDEX_DIM,)),
+           ("mla_index_norm_bias", "k_norm.bias", (INDEX_DIM,)))
+MODELS = {False: ("kimi-k3", "k3", "f831ab66814297da540d832a5235f8e904f29d06"),
+          True: ("kimi-k3.1-pro", "k31", "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e")}
 EXPERTS_MAGIC = 0x58504557
 EXPERTS_VERSION = 2
 S = "language_model.model."
@@ -105,6 +121,39 @@ class Reader:
 
     def fold(self, gamma, proj):
         return np.frombuffer(gamma_fold_bf16(self.st.bf16(proj, (1, H)), self.st.bf16(gamma, (H,)), H), dtype=np.uint16)
+
+
+def mla_layer(layer):
+    return layer % 4 == 3 or layer == LAYERS - 1
+
+
+def indexed(config):
+    dsa = config.get("dsa_config")
+    if dsa is None:
+        return False
+    wrong = {key: dsa.get(key) for key, value in DSA.items() if dsa.get(key) != value}
+    if wrong:
+        raise PackFailure(f"dsa_config {wrong} is not Kimi K3.1 Pro's indexer {DSA}: the device stage runs only that one")
+    return True
+
+
+def check_indexer_census(names, indexer):
+    found = sorted(name for name in names if ".self_attn.indexer." in name)
+    expected = sorted(f"{S}layers.{layer}.self_attn.indexer.{source}" for layer in range(LAYERS) if mla_layer(layer) for _, source, _ in INDEXER) \
+        if indexer else []
+    if found != expected:
+        missing, extra = sorted(set(expected) - set(found)), sorted(set(found) - set(expected))
+        raise PackFailure(f"the checkpoint's indexer tensors are not one indexer per MLA layer: missing {missing[:4]}, unexpected {extra[:4]}")
+
+
+def pack_indexer(reader, packs, a, name):
+    i = a + "indexer."
+    for target, source, shape in INDEXER:
+        bits = np.frombuffer(reader.st.bf16(i + source, shape), dtype=np.uint16).reshape(shape)
+        if len(shape) == 1:
+            packs.replicated(name + target, (bits.astype(np.uint32) << 16).view(np.float32), "f32")
+        else:
+            packs.replicated(name + target, bits, "bf16")
 
 
 def window(total, rank):
@@ -189,7 +238,7 @@ def pack_experts(reader, packs, m, name):
             packs.add(rank, name + target + "_scale", np.stack(planes[rank][key + "s"]), "e8m0")
 
 
-def pack_layer(reader, packs, layer):
+def pack_layer(reader, packs, layer, indexer):
     p = f"{S}layers.{layer}."
     name = f"layers.{layer}."
     a = p + "self_attn."
@@ -197,10 +246,12 @@ def pack_layer(reader, packs, layer):
     packs.replicated(name + "mlp_norm", reader.gain(p + "post_attention_layernorm.weight", H), "f32")
     packs.replicated(name + "attnres_attn", reader.fold(p + "self_attention_res_norm.weight", p + "self_attention_res_proj.weight"), "bf16")
     packs.replicated(name + "attnres_mlp", reader.fold(p + "mlp_res_norm.weight", p + "mlp_res_proj.weight"), "bf16")
-    if layer % 4 != 3 and layer != LAYERS - 1:
+    if not mla_layer(layer):
         pack_kda(reader, packs, a, name)
     else:
         pack_mla(reader, packs, a, name)
+        if indexer:
+            pack_indexer(reader, packs, a, name)
     m = p + "block_sparse_moe."
     if m + "gate.weight" not in reader.names:
         pack_gated(reader, packs, p + "mlp.", name, "ffn_gate_up", "ffn_down", DENSE)
@@ -219,13 +270,15 @@ def pack_layer(reader, packs, layer):
     pack_gated(reader, packs, m + "shared_experts.", name, "shared_gate_up", "shared_down", SHARED)
 
 
-def finish(packs, revision, contract_sha256):
+def finish(packs, revision, contract_sha256, indexer):
     vocab_rows = VOCAB // TP
     for rank in packs.ranks:
         packs.writers[rank].close()
-        layout = {"model": "kimi-k3", "tp_degree": TP, "tp_rank": rank, "hidden": H, "layers": LAYERS, "vocab": VOCAB, "vocab_first": rank * vocab_rows,
+        layout = {"model": MODELS[indexer][0], "tp_degree": TP, "tp_rank": rank, "hidden": H, "layers": LAYERS, "vocab": VOCAB, "vocab_first": rank * vocab_rows,
                   "vocab_rows": vocab_rows, "ffn_rows": DENSE // TP, "experts": EXPERTS, "local_experts": EXPERTS, "expert_first": 0, "top_k": TOP_K,
                   "shared_rows": SHARED // TP, "moe_rows": INTER // TP, "latent_rows": LATENT // TP}
+        if indexer:
+            layout.update({"index_topk": INDEX_TOPK, "index_heads": INDEX_HEADS, "index_dim": INDEX_DIM})
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
                "linear_codec": "bf16", "expert_codec": "mxfp4", "revision": revision, "contract_sha256": contract_sha256}
         final = packs.final(rank)
@@ -244,12 +297,12 @@ def main():
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--contract", type=Path, required=True)
-    parser.add_argument("--revision", default="f831ab66814297da540d832a5235f8e904f29d06")
+    parser.add_argument("--revision")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--tp-degree", type=int, choices=(1, 2, 4, 8, 16), default=16)
     parser.add_argument("--ranks")
     args = parser.parse_args()
-    global TP
+    global TP, PREFIX
     TP = args.tp_degree
     if args.ranks is None:
         args.ranks = ",".join(str(rank) for rank in range(TP))
@@ -262,12 +315,12 @@ def main():
     config = config.get("text_config", config)
     if config.get("num_hidden_layers") != LAYERS or config.get("hidden_size") != H or config.get("vocab_size") != VOCAB:
         raise PackFailure("the checkpoint is not the Kimi K3 geometry this packer pins")
-    if config.get("dsa_config") is not None:
-        raise PackFailure("the checkpoint carries dsa_config (Kimi K3.1's MLA indexer), which the device stage does not run: "
-                          "a pack without the indexer would attend every position and serve another model")
+    indexer = indexed(config)
+    _, PREFIX, revision = MODELS[indexer]
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     reader = Reader(args.checkpoint)
+    check_indexer_census(reader.names, indexer)
     packs = RankPacks(args.output_dir, args.resume, ranks, source_identity(args.checkpoint, PREFIX, files=(args.contract,)))
     embed = reader.u16(S + "embed_tokens.weight", (VOCAB, H))
     head = reader.u16("language_model.lm_head.weight", (VOCAB, H))
@@ -278,9 +331,9 @@ def main():
     packs.replicated("head_norm", reader.gain(S + "norm.weight", H), "f32")
     packs.replicated("attnres_out", reader.fold(S + "output_attn_res_norm.weight", S + "output_attn_res_proj.weight"), "bf16")
     for layer in range(LAYERS):
-        pack_layer(reader, packs, layer)
+        pack_layer(reader, packs, layer, indexer)
         print(f"layer {layer} packed", flush=True)
-    finish(packs, args.revision, contract_sha256)
+    finish(packs, args.revision or revision, contract_sha256, indexer)
     return 0
 
 

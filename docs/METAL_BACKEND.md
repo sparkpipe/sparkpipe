@@ -1644,6 +1644,31 @@ tiktoken vocabulary and the FP32 teacher:
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh kimi-k3 PACKS/k3.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+Kimi K3.1 Pro is the same stage with `kIndexer` set (`kimi-k3.1-pro`,
+`SparkK31ProDeviceStageModelAt`). Its checkpoint's `dsa_config` makes the
+packer add the DSA indexer to each MLA layer, replicated on every rank so each
+rank selects the same positions without a collective: `mla_index_q` (wq_b),
+`mla_index_k` (wk) and `mla_index_w` (weights_proj) as the checkpoint's bf16,
+`mla_index_norm` and `mla_index_norm_bias` (k_norm) widened exactly to f32;
+the rank files are `k31.tp<N>.rank<NN>.pack` and their layout adds
+`index_topk`, `index_heads` and `index_dim`. Each MLA layer runs
+`SparkDeviceLatentAttentionSelected` with HY4's selection: after the KV store
+its selector projects the key from the normed hidden and stores the
+layer-normed keys through `SparkIndexerStoreKeys` in the stage's second KV
+region (one index layer per MLA layer, `SparkDeviceStageIndexCache`). When a
+row of the step sees more than 2,048 keys the step is sparse: the selector
+also projects the head weights from the normed hidden and the index query
+from the normed q latent, selects each row's top 2,048 earlier positions with
+`SparkIndexerSelect` in row blocks that keep the score buffer under 256 MiB,
+and attention reads only those (`SparkIndexerAttention`); other steps attend
+densely. The plain K3 stage refuses a pack that carries the indexer. Sparse
+tree steps are refused: the indexer API has no tree visibility.
+
+    python3 tools/k3_tp16_pack.py --tp-degree 8 --checkpoint K31_CHECKPOINT \
+        --output-dir PACKS --contract model_contracts/k31_pro_authoritative.json
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh kimi-k3.1-pro PACKS/k31.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
 ### Motif 3 on eight ranks
 
 Motif 3 (53 layers of 4,096, four mHC streams, 80 query heads in 16 groups
