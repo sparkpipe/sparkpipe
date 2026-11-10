@@ -470,27 +470,13 @@ static int32_t SparkModelBatchWriteStageProfile(
 
 static int32_t SparkModelBatchWriteJsonString(const char *text)
 {
-	const uint8_t *cursor;
-	uint8_t value;
-	if ( fputc('"',stdout) == EOF )
+	char *escaped = SparkJsonEscapeString(text);
+	int32_t result;
+	if ( escaped == 0 )
 		return(-1);
-	for (cursor=(const uint8_t *)text; *cursor!=0u; cursor++)
-	{
-		value = *cursor;
-		if ( value == '"' || value == '\\' )
-		{
-			if ( fputc('\\',stdout) == EOF || fputc(value,stdout) == EOF )
-				return(-2);
-		}
-		else if ( value < 0x20u )
-		{
-			if ( fprintf(stdout,"\\u%04x",(uint32_t)value) < 0 )
-				return(-3);
-		}
-		else if ( fputc(value,stdout) == EOF )
-			return(-4);
-	}
-	return(fputc('"',stdout) == EOF ? -5 : 0);
+	result = fputc('"',stdout) == EOF || fputs(escaped,stdout) == EOF || fputc('"',stdout) == EOF ? -2 : 0;
+	free(escaped);
+	return(result);
 }
 
 static int32_t SparkModelBatchWriteQuantArm(

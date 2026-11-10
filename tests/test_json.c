@@ -5,8 +5,25 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_sha256.h"
 
+static void TestJsonEscape(void)
+{
+	char buffer[64];
+	size_t length = 0u;
+	char *escaped;
+	static const char input[] = "a\"b\\c\n\t\x01\xc3\xa9\xff z";
+	assert(SparkJsonAppendEscaped(buffer,sizeof(buffer),&length,input,sizeof(input) - 1u));
+	assert(strcmp(buffer,"a\\\"b\\\\c\\n\\t\\u0001\xc3\xa9\xef\xbf\xbd z") == 0 && length == strlen(buffer));
+	length = 0u;
+	assert(!SparkJsonAppendEscaped(buffer,4u,&length,"\"\"\"",3u));
+	escaped = SparkJsonEscapeString("\x1f" "end");
+	assert(escaped != 0 && strcmp(escaped,"\\u001fend") == 0);
+	free(escaped);
+	assert(SparkJsonEscapeString(0) == 0);
+}
+
 int main(void)
 {
+	TestJsonEscape();
     static const char ValidJson[] =
         "{\"name\":\"firmware\\nmodel\",\"unicode\":\"\\u03bb\",\"values\":[1,true,{\"x\":7}]}";
     static const char InvalidJson[] = "{\"value\":1,}";
