@@ -205,6 +205,7 @@ typedef struct SparkModelResidentdRoute
 	uint64_t sequence_position;
 	uint64_t client_generation;
 	uint64_t adapter_submit_time_ns;
+	uint64_t completed_time_ns;
 	uint64_t abort_retry_since_ns;
 	SparkModelServingSubmission submission;
 	SparkHiddenTransportPacket input_packet;
@@ -242,6 +243,10 @@ typedef struct SparkModelResidentdRuntime
 	uint8_t *route_messages;
 	uint32_t route_capacity;
 	uint64_t last_stuck_scan_ns;
+	uint64_t frame_flush_ns;
+	uint64_t frame_completed_ns;
+	uint64_t frame_ns[4];
+	uint32_t frame_count;
 	uint64_t fairness_log_ns;
 	uint32_t route_message_capacity;
 	uint32_t next_adapter_route;
@@ -1262,17 +1267,18 @@ static SparkStatus SparkModelResidentdValidateRouteCompletion(const SparkModelRe
 	return(SPARK_STATUS_OK);
 }
 
-static void SparkModelResidentdAcceptCompletionLocked(const SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion)
+static void SparkModelResidentdAcceptCompletionLocked(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion)
 {
 	uint64_t completed_time_ns;
 	route->completion = *completion;
 	route->driver_completed = 1u;
-	if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u )
-	{
-		completed_time_ns = SparkModelResidentdMonotonicTimeNs();
-		if ( completed_time_ns >= route->adapter_submit_time_ns )
-			route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
-	}
+	completed_time_ns = SparkModelResidentdMonotonicTimeNs();
+	route->completed_time_ns = completed_time_ns;
+	if ( route->adapter_submit_time_ns != 0u && completed_time_ns >= route->adapter_submit_time_ns )
+		runtime->frame_ns[2] += completed_time_ns - route->adapter_submit_time_ns;
+	runtime->frame_completed_ns = completed_time_ns;
+	if ( route->completion.service_time_ns == 0u && route->adapter_submit_time_ns != 0u && completed_time_ns >= route->adapter_submit_time_ns )
+		route->completion.service_time_ns = completed_time_ns - route->adapter_submit_time_ns;
 	route->state = SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT : SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 }
 
@@ -1826,6 +1832,9 @@ static SparkModelResidentdRoute *SparkModelResidentdReserveRoute(
 			memset(route,0,sizeof(*route));
 			route->active = 1u;
 			route->active_since_ns = SparkModelResidentdMonotonicTimeNs();
+			if ( runtime->frame_flush_ns != 0u && route->active_since_ns >= runtime->frame_flush_ns )
+				runtime->frame_ns[0] += route->active_since_ns - runtime->frame_flush_ns;
+			runtime->frame_flush_ns = 0u;
 			route->last_reported_state = 0u;
 			route->slot_index = index;
 			route->message_id = message_id;
@@ -2110,6 +2119,7 @@ static SparkStatus SparkModelResidentdQueueSubmitResult(
 		status = SparkModelResidentdQueueRawLocked(runtime,&result,sizeof(result));
 	if ( route != 0 && submit_status == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
 		route->result_queued = 1u;
+#ifdef DEBUG
 	{
 		static uint32_t submit_result_trace;
 		if ( submit_result_trace < 12u )
@@ -2123,6 +2133,7 @@ static SparkStatus SparkModelResidentdQueueSubmitResult(
 			    runtime->client.fd);
 		}
 	}
+#endif
 	SPARK_RETURN(status);
 }
 
@@ -2160,9 +2171,11 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
 	uint32_t cache_prepared,decoded;
 	wire = (const SparkModelResidentIpcSubmit *)message;
+#ifdef DEBUG
 	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u\n",
 		(unsigned long long)(message_bytes >= 24u ? wire->submission_id : 0ull),
 		(unsigned)message_bytes);
+#endif
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
 	decoded = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (runtime->client.hello_complete == 0u ||
@@ -2385,10 +2398,12 @@ static SparkStatus SparkModelResidentdProcessDecision(
 			&route->submission,resolution);
 	}
 	pthread_mutex_lock(&runtime->mutex);
+#ifdef DEBUG
 	fprintf(stderr,"DECISION id=%llu decision=%u status=%u slot=%u\n",
 		(unsigned long long)decision->submission_id,
 		(unsigned)decision->decision,(unsigned)status,
 		(unsigned)(slot_index == UINT32_MAX ? 999u : slot_index));
+#endif
 	if ( slot_index != UINT32_MAX && (route != &runtime->routes[slot_index] ||
 		route->active == 0u ||
 		route->state != SPARK_MODEL_RESIDENTD_ROUTE_RESOLVING ||
@@ -2567,6 +2582,23 @@ static SparkStatus SparkModelResidentdReadClient(
 	return(SPARK_STATUS_OK);
 }
 
+static void SparkModelResidentdFrameSent(SparkModelResidentdRuntime *runtime)
+{
+	const uint64_t now_ns = SparkModelResidentdMonotonicTimeNs();
+	if ( runtime->frame_completed_ns != 0u && now_ns >= runtime->frame_completed_ns )
+		runtime->frame_ns[3] += now_ns - runtime->frame_completed_ns;
+	runtime->frame_completed_ns = 0u;
+	runtime->frame_flush_ns = now_ns;
+	if ( ++runtime->frame_count < 128u )
+		return;
+	fprintf(stderr,"RESIDENTD-FRAMES rank=%u frames=%u idle_after_completion_ms=%.3f to_adapter_ms=%.3f adapter_ms=%.3f to_sent_ms=%.3f\n",
+		runtime->rank_plan.rank_index,runtime->frame_count,(double)runtime->frame_ns[0] / runtime->frame_count / 1e6,
+		(double)runtime->frame_ns[1] / runtime->frame_count / 1e6,(double)runtime->frame_ns[2] / runtime->frame_count / 1e6,
+		(double)runtime->frame_ns[3] / runtime->frame_count / 1e6);
+	memset(runtime->frame_ns,0,sizeof(runtime->frame_ns));
+	runtime->frame_count = 0u;
+}
+
 static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *runtime)
 {
 	SparkModelResidentdOutput *output;
@@ -2584,6 +2616,7 @@ static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *ru
 			return(bytes_written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
 		}
 		output->sent_bytes += (uint32_t)bytes_written;
+#ifdef DEBUG
 		{
 			static uint32_t flush_trace;
 			if ( flush_trace < 12u )
@@ -2597,8 +2630,11 @@ static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *ru
 				    (unsigned)runtime->client.output_count);
 			}
 		}
+#endif
 		if ( output->sent_bytes != output->message_bytes )
 			break;
+		if ( ((const SparkModelResidentIpcHeader *)output->message)->kind == SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION )
+			SparkModelResidentdFrameSent(runtime);
 		runtime->client.output_head = (runtime->client.output_head + 1u) % runtime->client.output_capacity;
 		runtime->client.output_count--;
 	}
@@ -2768,6 +2804,7 @@ static SparkStatus SparkModelResidentdSubmitAdapter(SparkModelResidentdRuntime *
 	}
 	route->state = SPARK_MODEL_RESIDENTD_ROUTE_WAIT_ADAPTER;
 	route->adapter_submit_time_ns = SparkModelResidentdMonotonicTimeNs();
+	runtime->frame_ns[1] += route->adapter_submit_time_ns - route->active_since_ns;
 	pthread_mutex_unlock(&runtime->mutex);
 	*submitted = 1u;
 	status = runtime->adapter_library.adapter_interface.submit(runtime->adapter_state,&route->submission);

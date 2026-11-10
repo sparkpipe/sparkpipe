@@ -580,9 +580,14 @@ static void StageRunnerCountSum(SparkStageRunnerState *state, uint32_t operation
 
 static void StageRunnerSumReport(SparkStageRunnerState *state, uint32_t flags, uint32_t rows)
 {
+#ifdef DEBUG
 	if ( (flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL) != 0u )
 		fprintf(stderr, "TP-ROUND rank=%u rows=%u pair_allreduce=%u allreduce=%u\n", state->tp_rank, rows,
 			state->wave_pair_sums, state->wave_plain_sums);
+#else
+	(void)flags;
+	(void)rows;
+#endif
 	state->timing_pair_sums += state->wave_pair_sums;
 	state->timing_plain_sums += state->wave_plain_sums;
 	state->wave_pair_sums = 0u;
@@ -1521,6 +1526,7 @@ static void StageRunnerPhases(SparkStageRunnerState *state, uint32_t rank, const
 	state->phase_waves = 0u;
 }
 
+#ifdef DEBUG
 static uint32_t StageRunnerLayerMarksBegin(SparkStageRunnerState *state)
 {
 	uint32_t index;
@@ -1539,6 +1545,7 @@ static uint32_t StageRunnerLayerMarksBegin(SparkStageRunnerState *state)
 	StageRunnerLayerMark(state, 0u);
 	return state->layer_marks;
 }
+#endif
 
 static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank)
 {
@@ -2729,8 +2736,10 @@ static SparkStatus StageRunnerSubmitFrame(SparkStageRunner *runner, const SparkS
 	phase_marks[0] = submit_started;
 	state->wave_pair_sums = 0u;
 	state->wave_plain_sums = 0u;
+#ifdef DEBUG
 	if ( steps == 1u && rows > STAGE_RUNNER_WIDE_ROWS )
 		(void)StageRunnerLayerMarksBegin(state);
+#endif
 	phase_marks[1] = StageRunnerNowNs();
 	state->step_dispatch = dispatch;
 	state->graph_launched = 0u;

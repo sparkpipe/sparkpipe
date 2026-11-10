@@ -71,6 +71,9 @@ typedef struct SparkStageServingState
 	SparkDeviceBuffer state_host;
 	uint64_t wave_host_ns[5];
 	uint32_t wave_host_count;
+	uint64_t chain_host_ns[5];
+	uint64_t chain_host_steps;
+	uint32_t chain_host_count;
 	uint64_t verify_host_ns[STAGE_SERVING_VERIFY_BUCKETS][6];
 	uint64_t verify_host_rows[STAGE_SERVING_VERIFY_BUCKETS];
 	uint32_t verify_host_count[STAGE_SERVING_VERIFY_BUCKETS];
@@ -1563,6 +1566,24 @@ static void StageServingWaveHost(SparkStageServingState *state, const uint64_t *
 	state->wave_host_count = 0u;
 }
 
+static void StageServingChainHost(SparkStageServingState *state, const uint64_t *marks, uint32_t steps)
+{
+	uint32_t phase;
+	for ( phase = 0u; phase < 5u; ++phase )
+		state->chain_host_ns[phase] += marks[phase + 1u] - marks[phase];
+	state->chain_host_steps += steps;
+	if ( ++state->chain_host_count < 64u )
+		return;
+	fprintf(stderr, "STAGE-CHAIN-HOST tag=%s rank=%u chains=%u mean_steps=%.1f admit_ms=%.2f submit_ms=%.2f capture_ms=%.2f sync_ms=%.2f finish_ms=%.2f\n",
+		state->model->module_tag, state->runner_config.tp_rank, state->chain_host_count, (double)state->chain_host_steps / state->chain_host_count,
+		(double)state->chain_host_ns[0] / state->chain_host_count / 1e6, (double)state->chain_host_ns[1] / state->chain_host_count / 1e6,
+		(double)state->chain_host_ns[2] / state->chain_host_count / 1e6, (double)state->chain_host_ns[3] / state->chain_host_count / 1e6,
+		(double)state->chain_host_ns[4] / state->chain_host_count / 1e6);
+	memset(state->chain_host_ns, 0, sizeof(state->chain_host_ns));
+	state->chain_host_steps = 0u;
+	state->chain_host_count = 0u;
+}
+
 static void StageServingVerifyHost(SparkStageServingState *state, const uint64_t *marks, uint64_t keep_ns, uint32_t rows)
 {
 	static const char *const names[STAGE_SERVING_VERIFY_BUCKETS] = { "2-4", "5-8", "9-16", "17+" };
@@ -1911,6 +1932,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		StageServingWaveHost(state, marks);
 	else if ( status == SPARK_STATUS_OK && verify != 0u )
 		StageServingVerifyHost(state, marks, keep_ns, rows);
+	else if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		StageServingChainHost(state, marks, steps);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, row_slots, active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
