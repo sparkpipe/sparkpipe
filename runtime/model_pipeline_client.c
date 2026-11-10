@@ -18,6 +18,7 @@ typedef struct SparkModelPipelineLeaseSlot
 	uint64_t request_generation;
 	uint64_t sequence_id;
 	SparkModelContinuationLease lease;
+	SparkModelServingLane lane;
 } SparkModelPipelineLeaseSlot;
 
 typedef struct SparkModelPipelineTransaction
@@ -325,8 +326,37 @@ static SparkStatus SparkModelPipelineClientUpdateLeases(
 			lanes[lane].step_generation);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
+		slot->lane = lanes[lane];
 	}
 	return(SPARK_STATUS_OK);
+}
+
+static uint32_t SparkModelPipelineClientContinuesTokensOnly(
+	const SparkModelPipelineClient *pipeline,
+	const SparkModelServingSubmission *submission)
+{
+	const SparkModelPipelineLeaseSlot *slot;
+	const SparkModelServingLane *lane;
+	SparkModelResidentIpcContinueToken token;
+	SparkModelServingLane expected;
+	uint32_t index;
+	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE || submission->flags != 0u ||
+		submission->lane_count != submission->active_sequence_count || submission->row_count != submission->lane_count ||
+		submission->cache_block_identity_count != 0u || submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u )
+		return(0u);
+	for (index=0u; index<submission->lane_count; index++)
+	{
+		lane = &submission->lanes[index];
+		slot = &pipeline->lease_slots[lane->resident_sequence_slot];
+		if ( submission->row_lane_indices[index] != index || submission->token_ids[index] != lane->input_token_id ||
+			submission->row_positions[index] != lane->sequence_position || submission->row_sequence_ids[index] != lane->sequence_id )
+			return(0u);
+		SparkModelResidentIpcContinueTokenOf(lane,&token);
+		SparkModelResidentIpcContinuedLane(&slot->lane,&token,submission->step_generation,&expected);
+		if ( memcmp(&expected,lane,sizeof(expected)) != 0 )
+			return(0u);
+	}
+	return(1u);
 }
 
 static void SparkModelPipelineClientReportResult(
@@ -896,7 +926,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 {
 	SparkModelPipelineTransaction *transaction;
 	SparkStatus status;
-	uint32_t continuation,message_bytes,rank;
+	uint32_t continuation,message_bytes,rank,tokens_only;
 	if ( pipeline == 0 || submission == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
@@ -910,10 +940,12 @@ SparkStatus SparkModelPipelineClientSubmit(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	continuation = SparkModelPipelineClientCanContinue(pipeline,submission);
+	tokens_only = continuation != 0u ? SparkModelPipelineClientContinuesTokensOnly(pipeline,submission) : 0u;
 	message_bytes = 0u;
 	if ( continuation != 0u )
 	{
-		status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,
+		status = tokens_only != 0u ? SparkModelResidentIpcCalculateTokenContinuationBytes(submission->lane_count,&message_bytes) :
+			SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,
 			submission->model_extension_bytes,(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u,&message_bytes);
 		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
 			rank++)
@@ -926,8 +958,11 @@ SparkStatus SparkModelPipelineClientSubmit(
 	if ( transaction == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	transaction->continued = continuation;
-	status = continuation != 0u ? SparkModelResidentIpcEncodeContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes) :
-		SparkModelResidentIpcEncodePreparation(submission,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
+	if ( tokens_only != 0u )
+		status = SparkModelResidentIpcEncodeTokenContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
+	else
+		status = continuation != 0u ? SparkModelResidentIpcEncodeContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes) :
+			SparkModelResidentIpcEncodePreparation(submission,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 	{
 		if ( status == SPARK_STATUS_OK )

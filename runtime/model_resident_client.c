@@ -649,7 +649,7 @@ static SparkStatus SparkModelResidentClientQueueSubmission(
 		memcpy(message,encoded,encoded_bytes);
 		message_bytes = encoded_bytes;
 		status = SparkModelResidentIpcStampSubmission(message,message_bytes,pending->message_id,
-			message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE ? client->client_generation : 0u);
+			message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ? client->client_generation : 0u);
 	}
 	else if ( message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
 		status = SparkModelResidentIpcEncodePreparation(submission,
@@ -666,7 +666,7 @@ static SparkStatus SparkModelResidentClientQueueSubmission(
 	}
 	output->message_bytes = message_bytes;
 	output->sent_bytes = 0u;
-	pending->continued = message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE ?
+	pending->continued = message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ?
 		1u : 0u;
 	client->output_count++;
 	client->submitted_count++;
@@ -762,9 +762,10 @@ SparkStatus SparkModelResidentClientQueueEncoded(
 {
 	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
 	if ( client == 0 || submission == 0 || message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES ||
-		(header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) )
+		(header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE &&
+		 header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	if ( header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
 	{
 		SparkStatus status = SparkModelResidentClientCanQueueEncodedContinuation(client,submission->submission_id,message_bytes);
 		if ( status != SPARK_STATUS_OK )

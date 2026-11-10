@@ -478,6 +478,114 @@ static void TestStampedSubmissionMatchesDirectEncoding(void)
 	assert(memcmp(stamped,encoded,encoded_bytes) == 0);
 }
 
+static void TestTokenContinuationBuild(SparkModelServingSubmission *submission,SparkModelServingLane *lanes,uint32_t *tokens,uint32_t *row_lanes,uint64_t *positions,uint64_t *sequences,uint32_t lane_count)
+{
+	memset(submission,0,sizeof(*submission));
+	memset(lanes,0,lane_count * sizeof(lanes[0]));
+	for (uint32_t lane=0u; lane<lane_count; lane++)
+	{
+		lanes[lane].request_id = 21u + lane;
+		lanes[lane].request_generation = 3u;
+		lanes[lane].step_generation = 77u;
+		lanes[lane].sequence_id = 31u + lane;
+		lanes[lane].sequence_position = 90u + lane;
+		lanes[lane].context_token_count = 91u + lane;
+		lanes[lane].state_target_token_count = 91u + lane;
+		lanes[lane].resident_sequence_slot = 5u + 2u * lane;
+		lanes[lane].input_token_id = 400u + lane;
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | (lane == 1u ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX : 0u);
+		lanes[lane].cache_prefix_token_count = lane == 1u ? 64u : 0u;
+		memset(&lanes[lane].cache_prefix_identity,lane == 1u ? 0x31 : 0,sizeof(lanes[lane].cache_prefix_identity));
+		lanes[lane].sampling = SparkSamplingRuleWith(lane == 2u ? 0.7f : 0.0f,lane == 2u ? 5u : 0u,1.0f,0u,0u);
+		tokens[lane] = lanes[lane].input_token_id;
+		row_lanes[lane] = lane;
+		positions[lane] = lanes[lane].sequence_position;
+		sequences[lane] = lanes[lane].sequence_id;
+	}
+	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission->submission_id = 70u;
+	submission->request_id = 70u;
+	submission->sequence_id = 70u;
+	submission->control_generation = 2u;
+	submission->transaction_id = 70u;
+	submission->dispatch_generation = 70u;
+	submission->request_generation = 1u;
+	submission->step_generation = 77u;
+	submission->priority = 2u;
+	submission->tokens_per_sequence = 8u;
+	submission->residency.word0 = 70u;
+	submission->residency.owner = 1u;
+	submission->active_sequence_count = lane_count;
+	submission->new_token_count = lane_count;
+	submission->lane_count = lane_count;
+	submission->row_count = lane_count;
+	submission->token_count = lane_count;
+	submission->lanes = lanes;
+	submission->token_ids = tokens;
+	submission->row_lane_indices = row_lanes;
+	submission->row_positions = positions;
+	submission->row_sequence_ids = sequences;
+}
+
+static void TestTokenContinuationCarriesEveryLane(void)
+{
+	static uint8_t full[16384],compact[16384],expanded[16384];
+	SparkModelServingSubmission submission,decoded;
+	SparkModelServingLane lanes[3],previous[3];
+	SparkModelResidentIpcContinueToken token;
+	const SparkModelResidentIpcContinueToken *tokens_view;
+	uint32_t tokens[3],row_lanes[3],full_bytes,compact_bytes,expanded_bytes,count;
+	uint64_t positions[3],sequences[3];
+	TestTokenContinuationBuild(&submission,lanes,tokens,row_lanes,positions,sequences,3u);
+	for (uint32_t lane=0u; lane<3u; lane++)
+	{
+		previous[lane] = lanes[lane];
+		previous[lane].step_generation = 60u;
+		previous[lane].sequence_position -= 8u;
+		previous[lane].context_token_count -= 8u;
+		previous[lane].state_target_token_count -= 8u;
+		previous[lane].input_token_id = 7u;
+		SparkModelResidentIpcContinueTokenOf(&lanes[lane],&token);
+		SparkModelServingLane rebuilt;
+		SparkModelResidentIpcContinuedLane(&previous[lane],&token,77u,&rebuilt);
+		assert(memcmp(&rebuilt,&lanes[lane],sizeof(rebuilt)) == 0);
+	}
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,13u,19u,full,sizeof(full),&full_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodeTokenContinuation(&submission,13u,19u,compact,sizeof(compact),&compact_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcCalculateTokenContinuationBytes(3u,&count) == SPARK_STATUS_OK && count == compact_bytes);
+	assert(compact_bytes - SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES == 3u * (uint32_t)sizeof(SparkModelResidentIpcContinueToken));
+	assert(full_bytes - SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES == 3u * (SPARK_MODEL_SERVING_LANE_BYTES + 2u * (uint32_t)sizeof(uint32_t) + 2u * (uint32_t)sizeof(uint64_t)));
+	assert(SparkModelResidentIpcTokenContinuationTokens(compact,compact_bytes,&tokens_view,&count) == SPARK_STATUS_OK && count == 3u &&
+		tokens_view[2].input_token_id == 402u && tokens_view[1].resident_sequence_slot == 7u && tokens_view[0].sequence_position == 90u);
+	assert(SparkModelResidentIpcExpandTokenContinuation(compact,compact_bytes,previous,expanded,sizeof(expanded),&expanded_bytes) == SPARK_STATUS_OK);
+	assert(expanded_bytes == full_bytes);
+	assert(memcmp(expanded,full,full_bytes) == 0);
+	assert(SparkModelResidentIpcDecodeSubmission(expanded,expanded_bytes,&decoded) == SPARK_STATUS_OK && decoded.lanes[1].cache_prefix_token_count == 64u);
+	assert(SparkModelResidentIpcStampSubmission(compact,compact_bytes,14u,20u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcStampSubmission(compact,compact_bytes,14u,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcExpandTokenContinuation(compact,compact_bytes - 8u,previous,expanded,sizeof(expanded),&expanded_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcExpandTokenContinuation(compact,compact_bytes,previous,expanded,full_bytes - 1u,&expanded_bytes) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	((SparkModelResidentIpcSubmit *)compact)->flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
+	assert(SparkModelResidentIpcTokenContinuationTokens(compact,compact_bytes,&tokens_view,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	((SparkModelResidentIpcSubmit *)compact)->flags = 0u;
+	((SparkModelResidentIpcSubmit *)compact)->row_count = 2u;
+	assert(SparkModelResidentIpcTokenContinuationTokens(compact,compact_bytes,&tokens_view,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	((SparkModelResidentIpcSubmit *)compact)->row_count = 3u;
+	((SparkModelResidentIpcSubmit *)compact)->client_generation = 0u;
+	assert(SparkModelResidentIpcTokenContinuationTokens(compact,compact_bytes,&tokens_view,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	((SparkModelResidentIpcSubmit *)compact)->client_generation = 20u;
+	((SparkModelResidentIpcSubmit *)compact)->model_extension_offset = 0u;
+	assert(SparkModelResidentIpcTokenContinuationTokens(compact,compact_bytes,&tokens_view,&count) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcDecodeSubmission(compact,compact_bytes,&decoded) == SPARK_STATUS_SCHEMA_ERROR);
+	submission.flags = SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY;
+	assert(SparkModelResidentIpcEncodeTokenContinuation(&submission,13u,19u,compact,sizeof(compact),&compact_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+	submission.flags = 0u;
+	submission.row_count = 2u;
+	assert(SparkModelResidentIpcEncodeTokenContinuation(&submission,13u,19u,compact,sizeof(compact),&compact_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void TestIndependentPrefillMessageCapacity(void)
 {
 	uint32_t message_bytes;
@@ -496,6 +604,7 @@ int main(void)
 	TestCompletionRoundTrip();
 	TestCompletionDecodeReplacesHeldCompletion();
 	TestStampedSubmissionMatchesDirectEncoding();
+	TestTokenContinuationCarriesEveryLane();
 	TestIndependentPrefillMessageCapacity();
 	TestContinuationLease();
 	return(0);

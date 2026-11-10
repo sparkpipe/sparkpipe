@@ -76,6 +76,7 @@ struct SparkModelResidentClient
 	uint32_t abort_calls;
 	uint32_t status_request_calls;
 	uint32_t cache_hint_calls;
+	uint32_t token_continuations;
 	uint32_t last_cache_hint_tokens;
 	uint32_t status_outstanding;
 	SparkModelResidentStatusReport status_report;
@@ -171,6 +172,12 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_CACHE_HINT: return(c->cache_hint_calls);
 	}
 	return(0u);
+}
+
+uint32_t MockResidentClientTokenContinuations(uint32_t stage_index)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	return( c != 0 ? c->token_continuations : 0u );
 }
 
 uint64_t MockResidentClientGeneration(uint32_t stage_index)
@@ -721,7 +728,9 @@ SparkStatus SparkModelResidentClientQueueEncoded(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
 		return(SparkModelResidentClientPrepare(client,submission));
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS && client != 0 )
+		client->token_continuations++;
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE || header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS )
 		return(SparkModelResidentClientContinue(client,submission));
 	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
