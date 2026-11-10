@@ -71,7 +71,7 @@ DEVICE_CUDA_NVCC_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinke
 METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
 	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal \
 	inference/kernels/metal/hyper.metal inference/kernels/metal/ngram.metal inference/kernels/metal/collective.metal \
-	inference/kernels/metal/sample.metal
+	inference/kernels/metal/sample.metal inference/kernels/metal/indexer.metal
 METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h inference/kernels/kernel_math.cuh
 METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
 METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
@@ -1436,8 +1436,8 @@ build/test_metal_bf16_convert: tests/test_metal_bf16_convert.c $(DEVICE_METAL_LI
 build/test_device_contract_metal: tests/test_device_contract.c $(DEVICE_METAL_LIBRARY) $(METAL_TEST_KERNEL_LIBRARY) | build
 	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_metal (no Metal device library)"; fi
 
-DEVICE_OPS_SOURCES := inference/runner/device_ops.c
-DEVICE_OPS_HEADERS := inference/runner/device_ops.h inference/kernels/metal/kernel_params.h
+DEVICE_OPS_SOURCES := inference/runner/device_ops.c inference/runner/device_indexer.c
+DEVICE_OPS_HEADERS := inference/runner/device_ops.h inference/runner/device_indexer.h inference/kernels/metal/kernel_params.h
 
 .PHONY: test-metal-kernels
 test-metal-kernels: build/test_metal_kernels

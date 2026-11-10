@@ -159,6 +159,23 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_GEMV_ROUTED_F32,
 	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,
 	SPARK_OPS_SAMPLE_ROWS,
+	SPARK_OPS_INDEXER_STORE_KEYS,
+	SPARK_OPS_INDEXER_SCORE,
+	SPARK_OPS_INDEXER_TOPK,
+	SPARK_OPS_ATTENTION_DECODE_GATHER,
+	SPARK_OPS_ATTENTION_DECODE_GATHER_WIDE,
+	SPARK_OPS_ATTENTION_DECODE_GATHER_NARROW,
+	SPARK_OPS_ATTENTION_DECODE_GATHER_SPLIT,
+	SPARK_OPS_ATTENTION_DECODE_GATHER_LATENT,
+	SPARK_OPS_ATTENTION_COMBINE_GATHER,
+	SPARK_OPS_ATTENTION_COMBINE_GATHER_WIDE,
+	SPARK_OPS_ATTENTION_COMBINE_GATHER_NARROW,
+	SPARK_OPS_ATTENTION_COMBINE_GATHER_SPLIT,
+	SPARK_OPS_ATTENTION_COMBINE_GATHER_LATENT,
+	SPARK_OPS_INDEXER_SCORE_POOLED,
+	SPARK_OPS_INDEXER_EXPAND_POOLS,
+	SPARK_OPS_INDEXER_POOL_KEYS,
+	SPARK_OPS_ATTENTION_DECODE_EXTRA_GATHER,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -356,6 +373,25 @@ SparkStatus SparkOpsNgramGatherE8m0(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	const SparkNgramParams *params);
 SparkStatus SparkOpsNgramHistoryMapped(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor token_ids, SparkTensor token_map, const SparkOpsSequences *sequences,
 	SparkTensor history, const SparkNgramParams *params);
+SparkStatus SparkOpsIndexerStoreKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor keys, const SparkTensor *gates, const SparkTensor *norm_weight,
+	const SparkTensor *norm_bias, SparkTensor sequence_of_row, SparkTensor rope_positions, SparkTensor store_positions, SparkTensor page_table,
+	SparkTensor pool, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor query, SparkTensor head_weight, SparkTensor pool,
+	SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerScorePooled(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor query, SparkTensor head_weight, SparkTensor ape,
+	SparkTensor pool, SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor selected_pools, SparkTensor row_positions,
+	SparkTensor selected, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
+	SparkTensor pooled, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params);
+SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
+	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params);
+SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
+	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params,
+	const uint32_t *host_positions);
+uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t gather_keys);
+uint64_t SparkOpsAttentionGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t value_dimension, uint32_t gather_keys);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
 uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension);
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions);
