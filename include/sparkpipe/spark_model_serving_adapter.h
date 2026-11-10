@@ -536,6 +536,10 @@ SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
 	uint32_t tokens_per_sequence,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion);
+void SparkModelServingCompletionReset(SparkModelServingCompletion *completion);
+void SparkModelServingCompletionCopy(
+	SparkModelServingCompletion *destination,
+	const SparkModelServingCompletion *source);
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
 	const char *shared_object_path,
 	uint32_t required_capability_flags,

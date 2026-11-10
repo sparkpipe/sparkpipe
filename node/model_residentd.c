@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1237,6 +1238,8 @@ static SparkStatus SparkModelResidentdQueueCompletionLocked(
 	{
 		fprintf(stderr,"ROUTE-SLOTS-UNSETTLED id=%llu kind=%u status=%s — releasing the route's claims and failing its completion\n",(unsigned long long)route->submission_id,route->submission.work_kind,SparkStatusToString(status));
 		SparkModelResidentdDropClaimsLocked(runtime,route);
+		memset(route->completion.token_ids,0,(size_t)(route->completion.token_count < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT ?
+			route->completion.token_count : SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(route->completion.token_ids[0]));
 		route->completion.status = (uint32_t)status;
 		route->completion.completion_flags = 0u;
 		route->completion.accepted_token_count = 0u;
@@ -1278,7 +1281,7 @@ static SparkStatus SparkModelResidentdValidateRouteCompletion(const SparkModelRe
 static void SparkModelResidentdAcceptCompletionLocked(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion)
 {
 	uint64_t completed_time_ns;
-	route->completion = *completion;
+	SparkModelServingCompletionCopy(&route->completion,completion);
 	route->driver_completed = 1u;
 	completed_time_ns = SparkMonotonicNs();
 	route->completed_time_ns = completed_time_ns;
@@ -1312,7 +1315,7 @@ static void SparkModelResidentdCompletion(void *completion_context,const SparkMo
 		SparkModelResidentdAcceptCompletionLocked(runtime,route,completion);
 	else if ( failure_reason == SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS )
 	{
-		route->completion = *completion;
+		SparkModelServingCompletionCopy(&route->completion,completion);
 		route->completion.accepted_token_count = 0u;
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
@@ -1829,7 +1832,8 @@ static SparkModelResidentdRoute *SparkModelResidentdReserveRoute(
 		route = &runtime->routes[index];
 		if ( route->active == 0u )
 		{
-			memset(route,0,sizeof(*route));
+			memset(route,0,offsetof(SparkModelResidentdRoute,completion));
+			SparkModelServingCompletionReset(&route->completion);
 			route->active = 1u;
 			route->active_since_ns = SparkMonotonicNs();
 			if ( runtime->frame_flush_ns != 0u && route->active_since_ns >= runtime->frame_flush_ns )

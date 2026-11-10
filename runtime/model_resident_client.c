@@ -98,6 +98,7 @@ struct SparkModelResidentClient
 	SparkModelResidentClientPending *pending;
 	uint8_t *output_storage;
 	uint8_t *input;
+	SparkModelServingCompletion *completion;
 };
 
 static SparkStatus SparkModelResidentClientSetNonblocking(int32_t fd)
@@ -188,7 +189,8 @@ static SparkStatus SparkModelResidentClientAllocate(
 	client->pending = (SparkModelResidentClientPending *)calloc(client->queue_capacity,sizeof(client->pending[0]));
 	client->output_storage = (uint8_t *)calloc(client->queue_capacity,output_bytes);
 	client->input = (uint8_t *)malloc(client->input_capacity);
-	if ( client->outputs == 0 || client->pending == 0 || client->output_storage == 0 || client->input == 0 )
+	client->completion = (SparkModelServingCompletion *)calloc(1u,sizeof(*client->completion));
+	if ( client->outputs == 0 || client->pending == 0 || client->output_storage == 0 || client->input == 0 || client->completion == 0 )
 	{
 		SparkModelResidentClientDestroy(client);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -418,6 +420,7 @@ void SparkModelResidentClientDestroy(SparkModelResidentClient *client)
 		return;
 	if ( client->fd >= 0 )
 		close(client->fd);
+	free(client->completion);
 	free(client->input);
 	free(client->output_storage);
 	free(client->pending);
@@ -885,23 +888,23 @@ static SparkStatus SparkModelResidentClientProcessCompletion(
 	const void *message,
 	uint32_t message_bytes)
 {
-	SparkModelServingCompletion completion;
+	SparkModelServingCompletion *completion = client->completion;
 	SparkModelResidentClientPending *pending;
 	SparkStatus status;
-	status = SparkModelResidentIpcDecodeCompletion(message,message_bytes,&completion);
+	status = SparkModelResidentIpcDecodeCompletionReplacing(message,message_bytes,completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	pending = SparkModelResidentClientFindPending(client,completion.submission_id);
+	pending = SparkModelResidentClientFindPending(client,completion->submission_id);
 	if ( pending == 0 || pending->committed == 0u )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	status = SparkModelServingAdapterValidateStageCompletionPrevalidated(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,&completion);
+	status = SparkModelServingAdapterValidateStageCompletionPrevalidated(client->adapter_descriptor,client->stage_index,pending->work_kind,pending->active_sequence_count,pending->tokens_per_sequence,&pending->residency,completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( ((const SparkModelResidentIpcHeader *)message)->message_id != pending->message_id || pending->request_id != completion.request_id || pending->sequence_id != completion.sequence_id || pending->sequence_position != completion.sequence_position || pending->control_generation != completion.control_generation || pending->transaction_id != completion.transaction_id || pending->dispatch_generation != completion.dispatch_generation || pending->request_generation != completion.request_generation || pending->step_generation != completion.step_generation )
+	if ( ((const SparkModelResidentIpcHeader *)message)->message_id != pending->message_id || pending->request_id != completion->request_id || pending->sequence_id != completion->sequence_id || pending->sequence_position != completion->sequence_position || pending->control_generation != completion->control_generation || pending->transaction_id != completion->transaction_id || pending->dispatch_generation != completion->dispatch_generation || pending->request_generation != completion->request_generation || pending->step_generation != completion->step_generation )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	client->completed_count++;
 	SparkModelResidentClientReleasePending(client,pending);
-	client->completion_function(client->completion_context,&completion);
+	client->completion_function(client->completion_context,completion);
 	return(SPARK_STATUS_OK);
 }
 

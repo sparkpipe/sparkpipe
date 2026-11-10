@@ -365,6 +365,10 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	const void *message_buffer,
 	uint32_t message_bytes,
 	SparkModelServingCompletion *completion_out);
+SparkStatus SparkModelResidentIpcDecodeCompletionReplacing(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion);
 
 #ifdef __cplusplus
 }

@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
 #include <dlfcn.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -941,6 +942,42 @@ SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
 	if ( descriptor == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkModelServingAdapterValidateStageCompletionShape(descriptor,stage_index,work_kind,active_sequence_count,tokens_per_sequence,expected_residency,completion));
+}
+
+static uint32_t SparkModelServingCompletionBound(uint32_t count,uint32_t capacity)
+{
+	return(count < capacity ? count : capacity);
+}
+
+void SparkModelServingCompletionReset(SparkModelServingCompletion *completion)
+{
+	memset(completion->token_ids,0,(size_t)SparkModelServingCompletionBound(completion->token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(completion->token_ids[0]));
+	memset(completion->logprobs,0,(size_t)SparkModelServingCompletionBound(completion->logprob_entry_count,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES) * sizeof(completion->logprobs[0]));
+	memset(completion->model_extension,0,SparkModelServingCompletionBound(completion->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
+	memset(completion,0,offsetof(SparkModelServingCompletion,token_ids));
+	completion->logprob_stride = 0u;
+	completion->logprob_entry_count = 0u;
+	completion->model_extension_kind = 0u;
+	completion->model_extension_bytes = 0u;
+	memset(&completion->queue_delay_ns,0,sizeof(*completion) - offsetof(SparkModelServingCompletion,queue_delay_ns));
+}
+
+void SparkModelServingCompletionCopy(
+	SparkModelServingCompletion *destination,
+	const SparkModelServingCompletion *source)
+{
+	if ( destination == source )
+		return;
+	SparkModelServingCompletionReset(destination);
+	memcpy(destination,source,offsetof(SparkModelServingCompletion,token_ids));
+	memcpy(destination->token_ids,source->token_ids,(size_t)SparkModelServingCompletionBound(source->token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(source->token_ids[0]));
+	destination->logprob_stride = source->logprob_stride;
+	destination->logprob_entry_count = source->logprob_entry_count;
+	memcpy(destination->logprobs,source->logprobs,(size_t)SparkModelServingCompletionBound(source->logprob_entry_count,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES) * sizeof(source->logprobs[0]));
+	destination->model_extension_kind = source->model_extension_kind;
+	destination->model_extension_bytes = source->model_extension_bytes;
+	memcpy(destination->model_extension,source->model_extension,SparkModelServingCompletionBound(source->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
+	memcpy(&destination->queue_delay_ns,&source->queue_delay_ns,sizeof(*source) - offsetof(SparkModelServingCompletion,queue_delay_ns));
 }
 
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

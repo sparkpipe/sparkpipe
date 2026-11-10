@@ -441,9 +441,45 @@ static void TestBoundRouteKeepsTheSingleDecode(void)
 	pthread_mutex_destroy(&runtime.mutex);
 }
 
+static void TestReservedRouteStartsWithAnEmptyCompletion(void)
+{
+	static SparkModelServingCompletion held,zero;
+	static SparkModelResidentdRoute route;
+	SparkModelResidentdRuntime runtime;
+	SparkModelServingSubmission submission;
+	memset(&runtime,0,sizeof(runtime));
+	memset(&route,0x3c,sizeof(route));
+	memset(&submission,0,sizeof(submission));
+	memset(&zero,0,sizeof(zero));
+	memset(&route.completion,0,sizeof(route.completion));
+	runtime.routes = &route;
+	runtime.route_capacity = 1u;
+	submission.submission_id = 44u;
+	submission.request_id = 45u;
+	held.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	held.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+	held.token_count = 900u;
+	for (uint32_t index=0u; index<900u; index++)
+		held.token_ids[index] = index + 1u;
+	held.logprob_stride = 2u;
+	held.logprob_entry_count = 1800u;
+	for (uint32_t index=0u; index<1800u; index++)
+		held.logprobs[index].token = index + 7u;
+	held.model_extension_bytes = 5u;
+	memset(held.model_extension,9,5u);
+	held.service_time_ns = 3u;
+	SparkModelServingCompletionCopy(&route.completion,&held);
+	route.active = 0u;
+	assert(SparkModelResidentdReserveRoute(&runtime,&submission,11u) == &route);
+	assert(memcmp(&route.completion,&zero,sizeof(zero)) == 0);
+	assert(route.active == 1u && route.message_id == 11u && route.submission_id == 44u && route.request_id == 45u &&
+		route.resident_slots_claimed == 0u && route.state == SPARK_MODEL_RESIDENTD_ROUTE_IDLE && route.committed_fifo_queued == 0u);
+}
+
 int main(void)
 {
 	TestBoundRouteKeepsTheSingleDecode();
+	TestReservedRouteStartsWithAnEmptyCompletion();
 	TestRejectedCompletionFailsRouteWithItsStatus((uint32_t)SPARK_STATUS_MAXIMUM + 1u,0u,SPARK_STATUS_INVALID_ARGUMENT);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_NO_LANE);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_EVICT_DENIED);

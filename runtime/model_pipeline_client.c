@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -89,7 +90,15 @@ struct SparkModelPipelineClient
 	SparkModelPipelineTransaction *transactions;
 	SparkModelServingLane *transaction_lanes;
 	SparkModelPipelineLeaseSlot *lease_slots;
+	SparkModelServingCompletion *delivery;
 };
+
+static void SparkModelPipelineClientClearTransaction(
+	SparkModelPipelineTransaction *transaction)
+{
+	memset(transaction,0,offsetof(SparkModelPipelineTransaction,final_completion));
+	SparkModelServingCompletionReset(&transaction->final_completion);
+}
 
 static SparkModelServingLane *SparkModelPipelineClientTransactionLanes(
 	SparkModelPipelineClient *pipeline,
@@ -124,7 +133,7 @@ static SparkModelPipelineTransaction *SparkModelPipelineClientReserve(
 		transaction = &pipeline->transactions[index];
 		if ( transaction->active == 0u )
 		{
-			memset(transaction,0,sizeof(*transaction));
+			SparkModelPipelineClientClearTransaction(transaction);
 			transaction->active = 1u;
 			transaction->work_kind = submission->work_kind;
 			transaction->flags = submission->flags;
@@ -159,7 +168,7 @@ static void SparkModelPipelineClientRelease(
 	SparkModelPipelineClient *pipeline,
 	SparkModelPipelineTransaction *transaction)
 {
-	memset(transaction,0,sizeof(*transaction));
+	SparkModelPipelineClientClearTransaction(transaction);
 	pipeline->active_transaction_count--;
 }
 
@@ -340,7 +349,7 @@ static void SparkModelPipelineClientReportCompletion(
 	SparkModelPipelineClient *pipeline,
 	SparkModelPipelineTransaction *transaction)
 {
-	SparkModelServingCompletion completion;
+	SparkModelServingCompletion *completion = pipeline->delivery;
 	SparkModelServingCompletionFunction completion_function;
 	void *completion_context;
 	SparkStatus lease_status;
@@ -357,30 +366,30 @@ static void SparkModelPipelineClientReportCompletion(
 		}
 	}
 	if ( transaction->status == SPARK_STATUS_OK )
-		completion = transaction->final_completion;
+		SparkModelServingCompletionCopy(completion,&transaction->final_completion);
 	else
 	{
 		SparkModelPipelineClientDropLeases(pipeline,transaction);
-		memset(&completion,0,sizeof(completion));
-		completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-		completion.status = transaction->status;
-		completion.submission_id = transaction->submission_id;
-		completion.request_id = transaction->request_id;
-		completion.sequence_id = transaction->sequence_id;
-		completion.sequence_position = transaction->sequence_position;
-		completion.control_generation = transaction->control_generation;
-		completion.transaction_id = transaction->transaction_id;
-		completion.dispatch_generation = transaction->dispatch_generation;
-		completion.request_generation = transaction->request_generation;
-		completion.step_generation = transaction->step_generation;
+		SparkModelServingCompletionReset(completion);
+		completion->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+		completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+		completion->status = transaction->status;
+		completion->submission_id = transaction->submission_id;
+		completion->request_id = transaction->request_id;
+		completion->sequence_id = transaction->sequence_id;
+		completion->sequence_position = transaction->sequence_position;
+		completion->control_generation = transaction->control_generation;
+		completion->transaction_id = transaction->transaction_id;
+		completion->dispatch_generation = transaction->dispatch_generation;
+		completion->request_generation = transaction->request_generation;
+		completion->step_generation = transaction->step_generation;
 	}
 	completion_function = pipeline->completion_function;
 	completion_context = pipeline->completion_context;
 	pipeline->completed_count++;
 	SparkModelPipelineClientRelease(pipeline,transaction);
 	if ( completion_function != 0 )
-		completion_function(completion_context,&completion);
+		completion_function(completion_context,completion);
 }
 
 static SparkStatus SparkModelPipelineClientResolveAdmission(
@@ -640,7 +649,7 @@ static void SparkModelPipelineClientRankCompletion(
 		SparkModelPipelineClientRecordFailure(transaction,(SparkStatus)completion->status);
 	SparkModelPipelineClientReportStageCompletion(context,transaction,completion,stage_status);
 	if ( context->stage_index == final_rank )
-		transaction->final_completion = *completion;
+		SparkModelServingCompletionCopy(&transaction->final_completion,completion);
 	transaction->completion_mask |= rank_mask;
 	SparkModelPipelineClientReportCompletion(context->pipeline,transaction);
 }
@@ -701,9 +710,10 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	pipeline->lease_slots = (SparkModelPipelineLeaseSlot *)calloc(
 		pipeline->runtime_limits.resident_sequence_capacity,
 		sizeof(pipeline->lease_slots[0]));
+	pipeline->delivery = (SparkModelServingCompletion *)calloc(1u,sizeof(*pipeline->delivery));
 	return(pipeline->clients != 0 && pipeline->rank_contexts != 0 &&
 		pipeline->transactions != 0 && pipeline->transaction_lanes != 0 &&
-		pipeline->lease_slots != 0 ? SPARK_STATUS_OK :
+		pipeline->lease_slots != 0 && pipeline->delivery != 0 ? SPARK_STATUS_OK :
 		SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
@@ -791,6 +801,7 @@ void SparkModelPipelineClientDestroy(SparkModelPipelineClient *pipeline)
 	if ( pipeline->clients != 0 )
 		for (rank=0u; rank<pipeline->rank_count; rank++)
 			SparkModelResidentClientDestroy(pipeline->clients[rank]);
+	free(pipeline->delivery);
 	free(pipeline->lease_slots);
 	free(pipeline->transaction_lanes);
 	free(pipeline->transactions);
@@ -942,7 +953,7 @@ static void SparkModelPipelineClientFailTransactions(
 	SparkStatus status)
 {
 	SparkModelPipelineTransaction *transaction;
-	SparkModelServingCompletion completion;
+	SparkModelServingCompletion *completion = pipeline->delivery;
 	uint64_t submission_id;
 	uint32_t report_result;
 	uint32_t index;
@@ -955,24 +966,24 @@ static void SparkModelPipelineClientFailTransactions(
 		report_result = transaction->result_reported == 0u ? 1u : 0u;
 		if ( report_result != 0u )
 			pipeline->rejected_count++;
-		memset(&completion,0,sizeof(completion));
-		completion.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
-		completion.descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
-		completion.status = status;
-		completion.submission_id = submission_id;
-		completion.request_id = transaction->request_id;
-		completion.sequence_id = transaction->sequence_id;
-		completion.sequence_position = transaction->sequence_position;
-		completion.control_generation = transaction->control_generation;
-		completion.transaction_id = transaction->transaction_id;
-		completion.dispatch_generation = transaction->dispatch_generation;
-		completion.request_generation = transaction->request_generation;
-		completion.step_generation = transaction->step_generation;
+		SparkModelServingCompletionReset(completion);
+		completion->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+		completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+		completion->status = status;
+		completion->submission_id = submission_id;
+		completion->request_id = transaction->request_id;
+		completion->sequence_id = transaction->sequence_id;
+		completion->sequence_position = transaction->sequence_position;
+		completion->control_generation = transaction->control_generation;
+		completion->transaction_id = transaction->transaction_id;
+		completion->dispatch_generation = transaction->dispatch_generation;
+		completion->request_generation = transaction->request_generation;
+		completion->step_generation = transaction->step_generation;
 		pipeline->completed_count++;
 		SparkModelPipelineClientRelease(pipeline,transaction);
 		if ( report_result != 0u && pipeline->submit_result_function != 0 )
 			pipeline->submit_result_function(pipeline->submit_result_context,submission_id,status);
-		pipeline->completion_function(pipeline->completion_context,&completion);
+		pipeline->completion_function(pipeline->completion_context,completion);
 	}
 }
 

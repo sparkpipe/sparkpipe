@@ -912,6 +912,58 @@ static void TestPrevalidatedRefusesWhatRuntimeValidationRefuses(void)
 	TestPrevalidatedAgrees(&descriptor,&limits,&test,SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
+static void TestCompletionFill(SparkModelServingCompletion *completion,uint32_t tokens,uint32_t stride,uint32_t extension_bytes,uint32_t seed)
+{
+	uint32_t index;
+	memset(completion,0,sizeof(*completion));
+	completion->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
+	completion->status = SPARK_STATUS_OK;
+	completion->completion_flags = SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS | (extension_bytes != 0u ? SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION : 0u);
+	completion->submission_id = seed;
+	completion->request_id = seed + 1u;
+	completion->step_generation = seed + 2u;
+	completion->residency.word0 = seed + 3u;
+	completion->accepted_token_count = tokens;
+	completion->token_count = tokens;
+	completion->tokens_per_sequence = 1u;
+	for (index=0u; index<tokens; index++)
+		completion->token_ids[index] = seed * 1000u + index;
+	completion->logprob_stride = stride;
+	completion->logprob_entry_count = tokens * stride;
+	for (index=0u; index<tokens * stride; index++)
+	{
+		completion->logprobs[index].token = seed + index;
+		completion->logprobs[index].logprob = -0.5f * (float)(index + 1u);
+	}
+	completion->model_extension_kind = extension_bytes != 0u ? 7u : 0u;
+	completion->model_extension_bytes = extension_bytes;
+	for (index=0u; index<extension_bytes; index++)
+		completion->model_extension[index] = (uint8_t)(seed + index);
+	completion->queue_delay_ns = seed + 4u;
+	completion->service_time_ns = seed + 5u;
+	completion->device_memcpy_bytes = seed + 6u;
+	completion->host_staging_bytes = seed + 7u;
+}
+
+static void TestCompletionCopyTouchesOnlyUsedRanges(void)
+{
+	static SparkModelServingCompletion large,small,copy,zero;
+	TestCompletionFill(&large,300u,4u,100u,3u);
+	TestCompletionFill(&small,2u,1u,1u,9u);
+	memset(&copy,0,sizeof(copy));
+	memset(&zero,0,sizeof(zero));
+	SparkModelServingCompletionCopy(&copy,&large);
+	assert(memcmp(&copy,&large,sizeof(copy)) == 0);
+	SparkModelServingCompletionCopy(&copy,&small);
+	assert(memcmp(&copy,&small,sizeof(copy)) == 0);
+	SparkModelServingCompletionCopy(&copy,&large);
+	SparkModelServingCompletionReset(&copy);
+	assert(memcmp(&copy,&zero,sizeof(copy)) == 0);
+	SparkModelServingCompletionCopy(&copy,&copy);
+	assert(memcmp(&copy,&zero,sizeof(copy)) == 0);
+}
+
 static void TestEmitRowSelection(void)
 {
 	static SparkModelServingLane lanes[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
@@ -1428,6 +1480,7 @@ int main(void)
 	TestDriverCacheAdmissionIdentity();
 	TestRuntimeSubmissionValidation();
 	TestPrevalidatedRefusesWhatRuntimeValidationRefuses();
+	TestCompletionCopyTouchesOnlyUsedRanges();
 	TestEmitRowSelection();
 	TestMaximumRoundMajorRowLayout();
 	TestCompletionValidation();

@@ -736,16 +736,14 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelResidentIpcDecodeCompletion(
+static SparkStatus SparkModelResidentIpcCheckCompletion(
 	const void *message_buffer,
-	uint32_t message_bytes,
-	SparkModelServingCompletion *completion_out)
+	uint32_t message_bytes)
 {
 	const SparkModelResidentIpcCompletion *wire;
-	const uint8_t *bytes;
 	uint32_t expected;
 	SparkStatus status;
-	if ( message_buffer == 0 || completion_out == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES )
+	if ( message_buffer == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	wire = (const SparkModelResidentIpcCompletion *)message_buffer;
 	status = SparkModelResidentIpcValidateHeader(&wire->header,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION,SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES);
@@ -755,8 +753,15 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_ids_offset != SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES || wire->model_extension_offset != wire->token_ids_offset + (wire->token_count * sizeof(uint32_t)) ||
 		wire->logprobs_offset != SparkModelResidentIpcLogprobsOffset(wire->token_count,wire->model_extension_bytes) || wire->reserved != 0u )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR);
-	bytes = (const uint8_t *)message_buffer;
-	memset(completion_out,0,sizeof(*completion_out));
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkModelResidentIpcFillCompletion(
+	const void *message_buffer,
+	SparkModelServingCompletion *completion_out)
+{
+	const SparkModelResidentIpcCompletion *wire = (const SparkModelResidentIpcCompletion *)message_buffer;
+	const uint8_t *bytes = (const uint8_t *)message_buffer;
 	completion_out->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion_out->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion_out->status = wire->status;
@@ -786,5 +791,36 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	completion_out->logprob_entry_count = wire->logprob_entry_count;
 	if ( wire->logprob_entry_count != 0u )
 		memcpy(completion_out->logprobs,bytes + wire->logprobs_offset,(size_t)wire->logprob_entry_count * sizeof(SparkSamplingLogprob));
+}
+
+SparkStatus SparkModelResidentIpcDecodeCompletion(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion_out)
+{
+	SparkStatus status;
+	if ( completion_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcCheckCompletion(message_buffer,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(completion_out,0,sizeof(*completion_out));
+	SparkModelResidentIpcFillCompletion(message_buffer,completion_out);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcDecodeCompletionReplacing(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion)
+{
+	SparkStatus status;
+	if ( completion == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcCheckCompletion(message_buffer,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	SparkModelServingCompletionReset(completion);
+	SparkModelResidentIpcFillCompletion(message_buffer,completion);
 	return(SPARK_STATUS_OK);
 }
