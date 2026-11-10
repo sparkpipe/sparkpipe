@@ -3,12 +3,12 @@
 
 A tool or module deleted from the tree leaves its documentation behind unless
 something checks it. This gate reads the documents in DOCUMENTS, takes each
-backticked token that starts with a tracked top-level directory, and fails
-when that path is not in the tree.
+backticked token that starts with a top-level directory, and each section
+titled after a tool file, and fails when that path or tool is not in the tree.
 """
+import glob
 import os
 import re
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,16 +24,14 @@ HEADING = re.compile(r"^#{2,4} `?([\w.-]+\.(?:py|sh|c|cu|cuh|h|metal|json))`?\s*
 PLACEHOLDER = re.compile(r"[<>*{}$~\[\]|]")
 
 
-def tracked():
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout.split("\n")
-    files = {line for line in out if line}
-    dirs = set()
-    for path in files:
-        parts = path.split("/")
-        for i in range(1, len(parts)):
-            dirs.add("/".join(parts[:i]))
-    return files, dirs
+def top_directories():
+    return {name for name in os.listdir(ROOT)
+            if os.path.isdir(os.path.join(ROOT, name)) and not name.startswith(".")}
+
+
+def tool_exists(name):
+    pattern = os.path.join(ROOT, "tools", "**", name)
+    return bool(glob.glob(pattern, recursive=True))
 
 
 def candidates(text, roots):
@@ -51,29 +49,27 @@ def candidates(text, roots):
 
 
 def missing_paths(documents):
-    files, dirs = tracked()
-    roots = {d for d in dirs if "/" not in d}
-    basenames = {os.path.basename(path) for path in files}
+    roots = top_directories()
     failures = []
     for document in documents:
         text = open(os.path.join(ROOT, document), encoding="utf-8").read()
         for token, path in candidates(text, roots):
-            if path not in files and path not in dirs:
+            if not os.path.exists(os.path.join(ROOT, path)):
                 failures.append(f"{document}: `{token}`")
         for name in HEADING.findall(text):
-            if name not in basenames:
+            if not tool_exists(name):
                 failures.append(f"{document}: heading {name}")
     return failures
 
 
 def check_detects_missing():
-    files, dirs = tracked()
-    roots = {d for d in dirs if "/" not in d}
     sample = "`tools/no_such_tool_for_this_gate.sh` and `README.md`"
-    found = [path for _, path in candidates(sample, roots)]
+    found = [path for _, path in candidates(sample, top_directories())]
     assert found == ["tools/no_such_tool_for_this_gate.sh"], found
-    assert found[0] not in files
+    assert not os.path.exists(os.path.join(ROOT, found[0]))
     assert HEADING.findall("### gone_tool.cu\n\n## Section\n") == ["gone_tool.cu"]
+    assert not tool_exists("gone_tool.cu")
+    assert tool_exists("hy4_fp8_rung.cu")
 
 
 def main():
