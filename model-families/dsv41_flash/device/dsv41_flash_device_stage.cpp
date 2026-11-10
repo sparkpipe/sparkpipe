@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
 #include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_dsv41_flash_family.h"
@@ -52,10 +53,17 @@ struct D41Device
 	static constexpr uint32_t kCaches = SPARK_DSV41_FLASH_MODEL_KV_SOURCE_COUNT;
 	static constexpr uint32_t kPairCaches = kCaches - 1u;
 	static constexpr uint32_t kDenseKeys = SPARK_DSV41_FLASH_MODEL_INDEX_TOP_K;
+	static constexpr uint32_t kIndexHeads = SPARK_DSV41_FLASH_MODEL_INDEX_HEAD_COUNT;
+	static constexpr uint32_t kIndexDim = SPARK_DSV41_FLASH_MODEL_INDEX_HEAD_DIMENSION;
+	static constexpr uint32_t kIndexWidth = kIndexHeads * kIndexDim;
+	static constexpr uint32_t kCandidateKeys = SPARK_DSV41_FLASH_MODEL_CANDIDATE_TOPK_BLOCKS * SPARK_DSV41_FLASH_MODEL_CANDIDATE_BLOCK_SIZE;
 	static constexpr float kEpsilon = SPARK_DSV41_FLASH_MODEL_RMS_NORM_EPSILON;
 
 	static_assert(TP != 0u && SPARK_DSV41_FLASH_MODEL_OUTPUT_GROUP_COUNT % TP == 0u, "a rank holds whole output groups");
 	static_assert(kSharedRows % SPARK_MXFP8_GROUP == 0u && kEngramKvLocal % SPARK_MXFP8_GROUP == 0u, "rank slices hold whole 32-wide scale groups");
+	static_assert(kIndexHeads <= SPARK_INDEXER_MAX_HEADS && kIndexDim <= SPARK_INDEXER_MAX_HEAD_DIM && kDenseKeys <= SPARK_INDEXER_MAX_TOPK,
+		"the indexer fits the shared indexer's heads, head width and top-k");
+	static_assert(kIndexDim > kRope && kIndexDim % 32u == 0u, "an index head ropes its last 64 dimensions and rounds in 32-wide FP4 blocks");
 
 	struct Hyper
 	{
@@ -79,6 +87,10 @@ struct D41Device
 		SparkTensor c_kv;
 		SparkTensor c_gate;
 		SparkTensor c_norm;
+		SparkTensor idx_k;
+		SparkTensor idx_k_norm;
+		SparkDeviceWeight idx_q_b;
+		SparkTensor idx_weights;
 		SparkTensor router;
 		SparkTensor router_bias;
 		SparkDeviceExpertMatrix gate;
@@ -111,6 +123,8 @@ struct D41Device
 		SparkHeadRopeParams query_rope[2];
 		SparkHeadRopeParams key_rope[2];
 		SparkHeadRopeParams output_rope[2];
+		SparkHeadRopeParams index_query_rope;
+		SparkHeadRopeParams index_key_rope;
 		SparkTensor streams;
 		SparkTensor pre;
 		SparkTensor post;
@@ -132,6 +146,11 @@ struct D41Device
 		SparkTensor compressed_score;
 		SparkTensor pooled;
 		SparkTensor latent;
+		SparkTensor index_key;
+		SparkTensor index_query;
+		SparkTensor index_weights;
+		SparkTensor index_scores;
+		SparkTensor selected;
 		SparkTensor store[2];
 		SparkTensor rope[2];
 		SparkTensor last[2];
@@ -190,15 +209,15 @@ struct D41Device
 			table[pair] = 1.0f / powf(SPARK_DSV41_FLASH_MODEL_ROPE_THETA, (float)(2u * pair) / (float)kRope);
 	}
 
-	static SparkHeadRopeParams TailRope(uint32_t heads, const float *table, float sign)
+	static SparkHeadRopeParams TailRope(uint32_t heads, uint32_t width, const float *table, float sign)
 	{
 		SparkHeadRopeParams params;
 		memset(&params, 0, sizeof(params));
 		params.heads = heads;
 		params.head_dimension = kRope;
-		params.input_stride = params.output_stride = heads * kHeadDim;
-		params.input_offset = kNope;
-		params.input_head_stride = params.output_head_stride = kHeadDim;
+		params.input_stride = params.output_stride = heads * width;
+		params.input_offset = width - kRope;
+		params.input_head_stride = params.output_head_stride = width;
 		params.rope_dimension = kRope;
 		params.plain = 1u;
 		params.scale = 1.0f;
@@ -216,7 +235,7 @@ struct D41Device
 		shape->hidden = kHidden;
 		shape->vocab = kVocab;
 		shape->layers = kLayers;
-		shape->kv_layers = kLayers + kCaches;
+		shape->kv_layers = kLayers + 2u * kCaches;
 		shape->kv_heads = 1u;
 		shape->kv_head_dimension = kHeadDim;
 		shape->pack_alignment = DD_ALIGNMENT;
@@ -227,9 +246,14 @@ struct D41Device
 		{
 			float table[SPARK_KERNEL_ROPE_PAIRS];
 			RopeTable(table, yarn);
-			state->query_rope[yarn] = TailRope(kHeads, table, 1.0f);
-			state->key_rope[yarn] = TailRope(1u, table, 1.0f);
-			state->output_rope[yarn] = TailRope(kHeads, table, -1.0f);
+			state->query_rope[yarn] = TailRope(kHeads, kHeadDim, table, 1.0f);
+			state->key_rope[yarn] = TailRope(1u, kHeadDim, table, 1.0f);
+			state->output_rope[yarn] = TailRope(kHeads, kHeadDim, table, -1.0f);
+			if ( yarn != 0u )
+			{
+				state->index_query_rope = TailRope(kIndexHeads, kIndexDim, table, 1.0f);
+				state->index_key_rope = TailRope(1u, kIndexDim, table, 1.0f);
+			}
 		}
 	}
 
@@ -237,8 +261,14 @@ struct D41Device
 	{
 		const uint32_t positions = state->stage.max_positions < kDenseKeys ? state->stage.max_positions : kDenseKeys;
 		const uint64_t partitions = 2u * (((uint64_t)positions + 127u) / 128u);
-		return Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
-			(uint64_t)state->stage.max_rows * kHeads * partitions * (kHeadDim + 2u) * sizeof(float));
+		return Max(Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
+			(uint64_t)state->stage.max_rows * kHeads * partitions * (kHeadDim + 2u) * sizeof(float)),
+			SparkIndexerAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, kWindow + kDenseKeys));
+	}
+
+	static uint32_t ScoreStride(const State *state)
+	{
+		return SparkIndexerScoreStride(state->stage.max_positions < kCandidateKeys ? state->stage.max_positions : kCandidateKeys);
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -269,6 +299,11 @@ struct D41Device
 			{ rows * kHeadDim * sizeof(float), &state->compressed_score },
 			{ rows * kHeadDim * 2u, &state->pooled },
 			{ rows * kHeadDim * 2u, &state->latent },
+			{ rows * kIndexDim * 2u, &state->index_key },
+			{ rows * kIndexWidth * 2u, &state->index_query },
+			{ rows * kIndexHeads * 2u, &state->index_weights },
+			{ SparkIndexerScoreBytes(state->stage.max_rows, ScoreStride(state)), &state->index_scores },
+			{ SparkIndexerSelectedBytes(state->stage.max_rows, kDenseKeys), &state->selected },
 			{ table, &state->store[0] },
 			{ table, &state->store[1] },
 			{ table, &state->rope[0] },
@@ -453,13 +488,27 @@ struct D41Device
 			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "o_a", kOutputWidth, kGroupInput, &layer->o_a);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "o_b", kHidden, kOutputWidth, &layer->o_b);
-		if ( status != SPARK_STATUS_OK || D41KvSource(index) == 0u )
-			return status;
-		status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "c_kv", "bf16", (uint64_t)kHeadDim * kHidden * 2u, &layer->c_kv);
+		if ( status == SPARK_STATUS_OK && D41KvSource(index) != 0u )
+			status = BindCompressor(state, weights, index, layer);
+		if ( status == SPARK_STATUS_OK && D41IndexSource(index) != 0u )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "idx_q_b", kIndexWidth, kQLora, &layer->idx_q_b);
+		if ( status == SPARK_STATUS_OK && D41IndexSource(index) != 0u )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "idx_weights", "bf16", (uint64_t)kIndexHeads * kHidden * 2u,
+				&layer->idx_weights);
+		return status;
+	}
+
+	static SparkStatus BindCompressor(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Layer *layer)
+	{
+		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "c_kv", "bf16", (uint64_t)kHeadDim * kHidden * 2u, &layer->c_kv);
 		if ( status == SPARK_STATUS_OK && D41Ratio(index) == 2u )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "c_gate", "bf16", (uint64_t)kHeadDim * kHidden * 2u, &layer->c_gate);
 		if ( status == SPARK_STATUS_OK )
 			status = BindVector(state, weights, index, "c_norm", kHeadDim, &layer->c_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "idx_k", "bf16", (uint64_t)kIndexDim * kHeadDim * 2u, &layer->idx_k);
+		if ( status == SPARK_STATUS_OK )
+			status = BindVector(state, weights, index, "idx_k_norm", kIndexDim, &layer->idx_k_norm);
 		return status;
 	}
 
@@ -614,9 +663,9 @@ struct D41Device
 	static SparkStatus Tail(State *state, const Frame &frame, const SparkHeadRopeParams &base, SparkTensor rows, SparkTensor positions)
 	{
 		SparkHeadRopeParams params = base;
+		const uint64_t offset = (uint64_t)base.input_offset * sizeof(uint16_t);
 		params.rows = frame.t.rows;
-		return SparkOpsHeadRmsNormRope(state->stage.ops, frame.queue, rows, positions, positions,
-			SparkTensorSlice(rows, kNope * sizeof(uint16_t), rows.bytes - kNope * sizeof(uint16_t)), &params);
+		return SparkOpsHeadRmsNormRope(state->stage.ops, frame.queue, rows, positions, positions, SparkTensorSlice(rows, offset, rows.bytes - offset), &params);
 	}
 
 	static SparkStatus Store(State *state, const Frame &frame, uint32_t kv_layer, SparkTensor rows, SparkTensor positions, uint32_t skip)
@@ -698,9 +747,9 @@ struct D41Device
 		SparkStatus status = SparkDeviceStageStepTables(&state->stage, step, &frame->t);
 		for ( uint32_t row = 0u; status == SPARK_STATUS_OK && row < frame->t.rows; row++ )
 		{
-			if ( frame->t.host_positions[row] >= kDenseKeys )
+			if ( frame->t.host_positions[row] >= kCandidateKeys )
 				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-					"the sparse-attention indexer is not built: a row past position 511 sees more compressed keys than the indexer keeps, where attention is no longer dense");
+					"the indexer's candidate blocks are not built: a row at position 16,384 or later sees more compressed keys than layer 20's 2,048 candidate blocks of 8 keep for the later index layers");
 			else
 				state->host_last[row] = (frame->t.host_positions[row] + 1u) / 2u - 1u;
 		}
@@ -819,12 +868,107 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = Norm(state, frame, state->pooled, layer.c_norm, state->latent, kHeadDim);
 		if ( status == SPARK_STATUS_OK )
+			status = IndexKeys(state, frame, index, slot);
+		if ( status == SPARK_STATUS_OK )
 			status = Tail(state, frame, state->key_rope[1], state->latent, state->rope[slot]);
 		if ( status == SPARK_STATUS_OK )
 			status = Qdq(state, frame, state->latent, state->latent, kHeadDim, SPARK_QDQ_FP4);
 		if ( status == SPARK_STATUS_OK )
 			status = Store(state, frame, kLayers + cache, state->latent, state->store[slot], 1u);
 		return status;
+	}
+
+	static SparkIndexerShape IndexShape(uint32_t ratio)
+	{
+		SparkIndexerShape shape;
+		memset(&shape, 0, sizeof(shape));
+		shape.heads = kIndexHeads;
+		shape.head_dimension = kIndexDim;
+		shape.key_norm = SPARK_INDEXER_NORM_NONE;
+		shape.key_norm_epsilon = kEpsilon;
+		shape.score_scale = 1.0f / sqrtf((float)kIndexWidth);
+		shape.topk = kDenseKeys;
+		shape.key_ratio = ratio;
+		shape.query_stride = kIndexWidth;
+		shape.weight_stride = kIndexHeads;
+		shape.key_stride = kIndexDim;
+		return shape;
+	}
+
+	static SparkStatus IndexCache(State *state, const Frame &frame, uint32_t cache, const SparkIndexerShape &shape, SparkIndexerCache *out)
+	{
+		const SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame.t, kLayers + kCaches + cache);
+		memset(out, 0, sizeof(*out));
+		out->pool = paged.pool;
+		out->page_table = paged.page_table;
+		out->page_slots = paged.page_slots;
+		out->pages_per_sequence = paged.pages_per_sequence;
+		out->pool_pages = paged.pool_pages;
+		out->sequences = frame.t.sequences.sequences;
+		if ( SparkIndexerCacheBytes(&shape, paged.pool_pages, paged.page_slots) > paged.pool.bytes )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED, "an index key cache does not fit the KV layer that holds it");
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus IndexKeys(State *state, Frame &frame, uint32_t index, uint32_t slot)
+	{
+		const Layer &layer = state->layers[index];
+		const SparkIndexerShape shape = IndexShape(D41Ratio(index));
+		SparkIndexerCache cache;
+		SparkStatus status = SparkDeviceLinear(&state->stage, frame.queue, state->latent, kHeadDim, layer.idx_k, state->index_key, kIndexDim, frame.t.rows,
+			kHeadDim, kIndexDim);
+		if ( status == SPARK_STATUS_OK )
+			status = Norm(state, frame, state->index_key, layer.idx_k_norm, state->index_key, kIndexDim);
+		if ( status == SPARK_STATUS_OK )
+			status = Tail(state, frame, state->index_key_rope, state->index_key, state->rope[slot]);
+		if ( status == SPARK_STATUS_OK )
+			status = Qdq(state, frame, state->index_key, state->index_key, kIndexDim, SPARK_QDQ_FP4_POW2);
+		if ( status == SPARK_STATUS_OK )
+			status = IndexCache(state, frame, D41CacheIndex(index), shape, &cache);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerStoreKeys(state->stage.ops, frame.queue, &cache, state->index_key, 0, 0, 0, frame.t.sequence_of_row, state->rope[slot],
+				state->store[slot], &shape, frame.t.rows);
+		return status;
+	}
+
+	static bool Sparse(const Frame &frame, uint32_t ratio)
+	{
+		for ( uint32_t row = 0u; ratio != 0u && row < frame.t.rows; row++ )
+			if ( (frame.t.host_positions[row] + 1u) / ratio > kDenseKeys )
+				return true;
+		return false;
+	}
+
+	static SparkStatus Select(State *state, Frame &frame, uint32_t index)
+	{
+		const Layer &layer = state->layers[index];
+		const SparkIndexerShape shape = IndexShape(D41Ratio(index));
+		SparkIndexerCache cache;
+		SparkStatus status = Linear(state, frame, state->q_normed, kQLora, layer.idx_q_b, state->index_query, kIndexWidth, kQLora, kIndexWidth);
+		if ( status == SPARK_STATUS_OK )
+			status = Tail(state, frame, state->index_query_rope, state->index_query, frame.t.positions);
+		if ( status == SPARK_STATUS_OK )
+			status = Qdq(state, frame, state->index_query, state->index_query, kIndexWidth, SPARK_QDQ_FP4_POW2);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLinear(&state->stage, frame.queue, state->normed, kHidden, layer.idx_weights, state->index_weights, kIndexHeads, frame.t.rows,
+				kHidden, kIndexHeads);
+		if ( status == SPARK_STATUS_OK )
+			status = IndexCache(state, frame, D41CacheIndex(index), shape, &cache);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerSelect(state->stage.ops, frame.queue, &cache, state->index_query, state->index_weights, frame.t.sequence_of_row,
+				frame.t.positions, state->index_scores, state->selected, &shape, frame.t.rows, ScoreStride(state));
+		return status;
+	}
+
+	static SparkStatus AttendSelected(State *state, Frame &frame, uint32_t index, SparkOpsPaged *paged, const SparkAttentionParams &params)
+	{
+		(void)frame;
+		(void)index;
+		(void)paged;
+		(void)params;
+		return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
+			"the shared indexer has no attention over a layer's window keys and the selected keys of another KV layer in one softmax with sinks: "
+			"a row that sees more than 512 compressed keys is refused");
 	}
 
 	static SparkStatus Attend(State *state, Frame &frame, uint32_t index)
@@ -848,6 +992,8 @@ struct D41Device
 		if ( ratio == 0u )
 			return SparkOpsAttention(state->stage.ops, frame.queue, &paged, state->query, state->query, &layer.sinks, state->records, state->attended, &params,
 				frame.t.host_positions, frame.t.host_sequence_of_row);
+		if ( Sparse(frame, ratio) )
+			return AttendSelected(state, frame, index, &paged, params);
 		SparkOpsPaged extra = SparkDeviceStagePaged(&state->stage, &frame.t, kLayers + D41CacheIndex(index));
 		extra.positions = state->last[RatioSlot(ratio)];
 		return SparkOpsAttentionExtra(state->stage.ops, frame.queue, &paged, &extra, state->query, &layer.sinks, state->records, state->attended, &params,
@@ -896,6 +1042,8 @@ struct D41Device
 			status = Store(state, frame, index, state->kv, frame.t.positions, 0u);
 		if ( status == SPARK_STATUS_OK && D41KvSource(index) != 0u )
 			status = Compress(state, frame, index);
+		if ( status == SPARK_STATUS_OK && D41IndexSource(index) != 0u && Sparse(frame, D41Ratio(index)) )
+			status = Select(state, frame, index);
 		if ( status == SPARK_STATUS_OK )
 			status = Attend(state, frame, index);
 		if ( status == SPARK_STATUS_OK )
