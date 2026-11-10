@@ -983,6 +983,49 @@ packs on the packs' volume, where `cp -c` clones them and only the corrupted
 blocks take space.
 
 
+### Qwen 3.8 Max on eight ranks
+
+Qwen 3.8 Max (92 layers of 8,192: 69 gated-delta layers with 16 key and 128
+value heads, and every fourth layer from the fourth gated attention with 64
+query and 4 KV heads of 256; 512 NVFP4 experts, top 10, 2,048 wide, and a
+2,048-wide shared expert behind its sigmoid gate) is the Qwen family
+schedule's plain layout with the routed FFN, and `QwenDevice` places it at
+TP 1, 2, 4 or 8 (`SparkQwen38MaxDeviceStageModelAt`): the 27B's residual
+norms and layers with Flash's experts (`spark_route_topk`,
+`SparkDeviceRoutedFfn` on the NVFP4 experts with the route weight before the
+down projection, the shared expert gated by `spark_sigmoid_gate_rows` and
+added last by `spark_route_combine_shared`). No Metal kernel is new. Each rank
+holds 16/T key and 128/T value heads of every gated-delta layer with their
+recurrent state and convolution window, its window of the fused attention
+projection (gathered before the rank's heads run), 512/T whole experts
+(`spark_route_local` skips the others) and 2,048/T shared-expert rows, and the
+attention and FFN partials are all-reduced.
+
+CUDA's Max geometry sets `kRankHeads`: its TP16 packs
+(`tools/qwen38_max_tp16_convert.py`) put each rank's own query heads, then its
+slices of the key and value rows, in its `attn_qkv`, and CUDA's split kernel
+reorders the gathered row. The Metal attention reads the fused rows in order,
+as for every Metal model, so the Metal packer writes windows and declares
+`attn_rank_heads` 0, and the stage refuses a TP > 1 pack that does not. At TP1
+the two layouts are the same tensor.
+
+The checkpoint (`qwen3.8-max-nvfp4-radixark-bf16-spine`, 1.4 TB: NVFP4 experts
+with an E4M3 scale per 16 inputs and an FP32 `weight_scale_2` per expert,
+everything else BF16) does not fit one Studio, so Max gates at TP8 with the
+packs paged from the SSD (`tools/qwen38_max_tp16_pack.py --tp-degree 8`, 180 GB
+per rank). The experts' `input_scale` is the checkpoint's W4A4
+activation scale; CUDA and Metal multiply BF16 activations and apply neither.
+`tools/qwen38_max_reference.py gate-prompts` writes
+`qualification/metal/qwen38_max/` (the Gemma set in the Qwen 3.8 chat turn;
+Max's tokenizer is the 27B's, so the framing tokens are the 27B set's), and
+`teacher` writes references a, b and h in FP32 through the Flash reference's
+gated delta rule, attention and experts, with the 27B reference's residual
+and norms and the SiLU gate of the gated norm. The controls corrupt
+`moe_shared_down`, layer 11 for the single-layer ones:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh qwen3.8-max PACKS/qwen38_max.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
 ### Ling 3.0 Flash on eight ranks
 
 Ling 3.0 Flash runs on the Ling family schedule (`LingSchedule` in

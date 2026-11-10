@@ -1955,6 +1955,23 @@ Metal backend and the single-Studio stage are in
     count; CUDA switches to a BF16-dequantised GEMM once a step routes more
     than 16 rows per expert (820 rows at TP1), so long prefill chunks differ
     from CUDA by that operand rounding, and run slower than a grouped GEMM.
+- Qwen 3.8 Max on the Studio (`QwenDevice<Qwen38MaxDevice<TP>>`):
+  - not gated yet: its TP8 pack and FP32 reference wait for hub capacity,
+    and the 1.44 TB of packs for room on the Studio's model disk;
+  - two attention layouts for one geometry: the Metal packs hold windows of
+    the fused projection (`attn_rank_heads` 0), CUDA's TP16 packs each
+    rank's own heads (`kRankHeads`), from two packers (the Metal one reads
+    the checkpoint, `tools/qwen38_max_tp16_convert.py` the SPQ8 rank packs).
+    One packer writing the geometry's layout at every degree needs the Metal
+    gather to reorder rank-head rows;
+  - the attention is head-parallel, so every rank stores the whole KV and
+    norms and rotates all 64 query heads before attending its own; CUDA
+    shards the context;
+  - route overrides (pinned routes) are refused for its experts, and the
+    NVFP4 experts keep CUDA's skinny decode arithmetic at every row count,
+    as for Flash Next;
+  - the MTP layer is not packed, and there are no speculation prompts:
+    the TP8 gate leaves out speculation, the batch ladder and the benchmark.
 - FP8 projections between 3 and 16 rows. `SparkOpsLinearFp8` keeps CUDA's
   skinny arithmetic up to 16 rows (`LM_SKINNY_ROWS_WIDE`) on the FP8 GEMV,
   in passes of eight rows. Qwen3.8-27B FP8 beats its BF16 pack up to B4 (30.2
