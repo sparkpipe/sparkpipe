@@ -435,8 +435,14 @@ async def record_rules(harness, check):
     check(any((folder / "account-bob").glob("*.jsonl")), "another account's requests are kept under that account")
     config = harness.tmp / "erase.json"
     config.write_text(json.dumps({"replay": {"directory": "state/replay"}}))
-    erased = subprocess.run([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", "acme", "--note", "written request of 3 January"],
-                            capture_output=True, text=True, timeout=60)
+    with harness.frontend.records.locked():
+        erasing = subprocess.Popen([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", "acme", "--note",
+                                    "written request of 3 January"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(3.0)
+        check(erasing.poll() is None and any((folder / "account-acme").glob("*.jsonl")),
+              f"--erase-records waits while the running chat layer holds the records lock, so an erasure and a record write never interleave: {erasing.poll()}")
+    stdout, stderr = erasing.communicate(timeout=60)
+    erased = subprocess.CompletedProcess(erasing.args, erasing.returncode, stdout, stderr)
     told = json.loads(erased.stdout or "{}")
     log = [json.loads(line) for line in (folder / "erasures.jsonl").read_text().splitlines()]
     check(erased.returncode == 0 and told == {"event": "request_records_erased", "account": "acme", "records": len(lines)} and not (folder / "account-acme").exists()

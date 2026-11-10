@@ -639,27 +639,33 @@ names the pack version the request ran on (`core@3672dbc4f1f9`), or is null.
 The operational record of each request (the `sparkpipe` object above, with
 `at`, `account`, `member`, `key` and `shape`) is a line of
 `request-records/<owner>/<day>.jsonl` next to the config, or in the config's
-`records.directory`. `<owner>` is `account-<id>` for a gateway request,
-`key-<id>` for a direct key and `own` for our own requests. The folder is
-mode 700 and its files mode 600. It is not working state: the chat layer
-refuses a records directory inside the replay store, and a wipe does not
-touch it. A record holds counts, times and ids, never prompt text, reply
-text or token numbers, and nothing of it goes to stderr, so journald keeps
-no copy; the log lines keep only the model, counts, times and settings. Day
+`records.directory`; the hub's config keeps them in
+`/srv/workspace/sparkpipe/request-records`, beside the replay store but not
+inside it. `<owner>` is `account-<id>` for a gateway request, `key-<id>`
+for a direct key and `own` for our own requests. The folder is mode 700 and
+its files mode 600. It is not working state: the chat layer refuses a
+records directory inside the replay store, and a wipe does not touch it. A
+record holds counts, times and ids, never prompt text, reply text or token
+numbers, and nothing of it goes to stderr, so the chat layer's log keeps no
+copy; the log lines keep only the model, counts, times and settings. Day
 files are deleted 366 days after their day (checked hourly).
 
 When a customer asks in writing to have the records of its requests deleted
-(Data Processing Agreement clause 9.3: within 30 days), run on each hub, as
-the chat layer's user:
+(Data Processing Agreement clause 9.3: within 30 days), run on the hub, as
+the chat layer's user, in `~/sparkpipe-chat`, with the config the
+`sparkpipe-chat` unit serves:
 
 ```sh
-python3 chat_frontend.py --config chat_frontend.json --erase-records AC... --note "request of 2027-01-03"
+python3 chat_frontend.py --config config.json --erase-records AC... --note "request of 2027-01-03"
 ```
 
 It deletes that account's folder, appends `{account, at, records, note}` to
-`request-records/erasures.jsonl` and prints `request_records_erased` with the
-count. Records of later requests are kept again. The VPS's copy is deleted
-with `sparkpipe_pay.py erase-records` (`docs/PAYMENTS.md`).
+`erasures.jsonl` in the records folder and prints `request_records_erased`
+with the count. Records of later requests are kept again. The chat layer may
+keep running: the erasure, each record write and the pruning of year-old
+days take an exclusive lock on `.lock` in the records folder, so an erasure
+never races a request being recorded. The VPS's copy is deleted with
+`sparkpipe_pay.py erase-records` (`docs/PAYMENTS.md`).
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
 `"priority": "background"`, `<model>-bulk`, Claude Code's

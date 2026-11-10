@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import base64
 import codecs
+import contextlib
 import copy
+import fcntl
 import functools
 import hashlib
 import importlib.util
@@ -120,6 +122,7 @@ OWN_SCOPE = "own"
 RECORD_DAYS = 366
 RECORD_PRUNE_SECONDS = 3600.0
 RECORDS_DIRECTORY = "request-records"
+RECORDS_LOCK = ".lock"
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -1814,6 +1817,16 @@ class RequestRecords:
     def owner(scope):
         return (scope or OWN_SCOPE).replace(":", "-")
 
+    @contextlib.contextmanager
+    def locked(self):
+        with self.lock:
+            descriptor = os.open(self.folder / RECORDS_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(descriptor)
+
     def append(self, path, line):
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
@@ -1821,13 +1834,13 @@ class RequestRecords:
 
     def add(self, scope, record):
         folder = self.folder / self.owner(scope)
-        with self.lock:
+        with self.locked():
             folder.mkdir(mode=0o700, exist_ok=True)
             self.append(folder / (record["at"][:10] + ".jsonl"), record)
 
     def erase(self, account, note, now):
         folder = self.folder / self.owner("account:" + account)
-        with self.lock:
+        with self.locked():
             records = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in folder.glob("*.jsonl")) if folder.is_dir() else 0
             if folder.is_dir():
                 shutil.rmtree(folder)
@@ -1838,7 +1851,7 @@ class RequestRecords:
         if self.pruned is not None and now - self.pruned < RECORD_PRUNE_SECONDS:
             return 0
         self.pruned, cutoff, removed = now, utc_stamp(now - RECORD_DAYS * 86400)[:10], 0
-        with self.lock:
+        with self.locked():
             for folder in [path for path in self.folder.iterdir() if path.is_dir()]:
                 for path in folder.glob("*.jsonl"):
                     if path.stem < cutoff:
