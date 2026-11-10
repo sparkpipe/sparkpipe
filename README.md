@@ -775,7 +775,7 @@ HYOR AI Tech Ltd. rents whole SparkPipe fleets from Seoul to engineers and small
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the HC checkout (`buy.html`), the customer account with bookings and the waitlist (`market.html`), the payment status page (`account.html`), the sandbox (`market-test.html`) and the cost check (`compare.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the HC checkout (`buy.html`), the customer account with bookings and the waitlist (`market.html`), the payment status page (`account.html`), the sandbox (`market.html?sandbox`) and the cost check (`compare.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those
