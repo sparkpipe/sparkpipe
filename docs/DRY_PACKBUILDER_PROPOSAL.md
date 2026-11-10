@@ -13,13 +13,14 @@ Baseline: main `ce2f8d2`; the dsv5 packer was read from
 
 The tables below are measurements at `ce2f8d2`. Since then:
 
-* The common packer core is four modules (1,318 LOC):
+* The common packer core is four modules (1,340 LOC):
   * `tools/spark_pack_common.py`: failures, alignment, sha256 and sidecars,
-    receipts, the safetensors header and tensor walk (`SafetensorsSource`),
-    atomic output (`replaced_output`, `publish_link`), tensor-parallel
-    windows and plans, pipeline-stage checks, pack names and chunked copies
-    (`stream_range`, `window_chunks`). `make_directory`, `pack_entry` and
-    `pack_header` (section 1) are gone.
+    receipts, the safetensors header and tensor walk (`SafetensorsSource`,
+    indexed or single-file), atomic and no-clobber output
+    (`replaced_output`, `publish_new`), tensor-parallel windows and plans,
+    pipeline-stage checks, pack names and chunked copies (`stream_range`,
+    `window_chunks`). `make_directory`, `pack_entry` and `pack_header`
+    (section 1) are gone.
   * `tools/spark_pack_codecs.py`: payload, codec and scale ids, the weight
     codec table, BF16 and F32 conversions, the E4M3 and E2M1 tables, FP8
     block and NVFP4 decoding, the E8M0 check, sub-byte packing and the
@@ -32,7 +33,7 @@ The tables below are measurements at `ce2f8d2`. Since then:
     scale planes).
 * The twelve `tools/*_stagepack.py` packers and `tools/k3_pack.py` keep only
   their tensor-name maps, layouts and family transforms. With the core they
-  are 8,165 LOC, down from 12,622. Each migration was gated on byte identity
+  are 8,138 LOC, down from 12,622. Each migration was gated on byte identity
   with the previous packer: synthetic checkpoints with real tensor names,
   every codec path and several TP degrees and stages, comparing every output
   file, exit code and dry-run listing.
