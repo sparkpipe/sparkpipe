@@ -1417,16 +1417,16 @@ from the normed residual (`index_k`, FP8), and `SparkIndexerStoreKeys`
 takes the LayerNorm with weight and bias (epsilon 1e-6), ropes the leading
 64 dimensions (interleaved, the main rope's frequencies and rounded terms)
 and stores the key in the stage's second paged KV pool, which shares the
-latent cache's page table (`SparkDeviceStageShape.kv_second_layers`, one
-layer per indexer, `SparkDeviceStageSecondKv`). When a row of the step sees
+latent cache's page table (`SparkDeviceStageShape.index_layers`, one layer
+per indexer, `SparkDeviceStageIndexCache`). When a row of the step sees
 more than 2,048 keys the indexer layer also projects 32 index heads of 128
 from the normed query LoRA (`index_q`), ropes them the same way, weights
 each head by `index_head` (BF16, rounded) and `SparkIndexerSelect` scores
 `sum_h w_h relu(q_h . k)` times `128^-0.5 32^-0.5` and keeps the top 2,048
-positions, 16 rows at a time; `SparkDeviceLatentAttentionProject` and
-`SparkDeviceLatentAttentionAttend` split the latent attention so that the
-selection sits between the KV store and the attention, which then reads
-only the selected keys (`SparkIndexerAttention`). A step whose rows all see
+positions, 16 rows at a time. Both run in the selection callback of
+`SparkDeviceLatentAttentionSelected`, after the latent slot is stored and
+before the attention, which then reads only the selected keys
+(`SparkIndexerAttention`). A step whose rows all see
 at most 2,048 keys attends densely, exactly as before; in a step that
 needs the indexer every row attends its selection, which for a short row
 is every visible key, as CUDA's step-wide context test does. A tree step

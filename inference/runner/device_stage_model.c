@@ -145,8 +145,8 @@ SparkStatus SparkDeviceStageGeometry(SparkDeviceStage *stage, SparkStageRunnerMo
 	geometry->pack_bytes = stage->pack.file_bytes;
 	geometry->kv_layer_count = shape->kv_layers;
 	geometry->kv_layer_page_bytes = StagePageBytes(shape);
-	geometry->kv_second_layer_count = shape->kv_second_layers;
-	geometry->kv_second_layer_page_bytes = shape->kv_second_layers != 0u ? shape->kv_second_page_bytes : 0u;
+	geometry->kv_second_layer_count = shape->index_layers;
+	geometry->kv_second_layer_page_bytes = shape->index_layers != 0u ? shape->index_page_bytes : 0u;
 	geometry->kv_shard.degree = 1u;
 	geometry->kv_shard.rank = 0u;
 	geometry->kv_shard.grain = 1u;
@@ -552,6 +552,21 @@ SparkStatus SparkDeviceStageKeepRelocate(SparkDeviceStage *stage, SparkDeviceQue
 	return(status);
 }
 
+SparkIndexerCache SparkDeviceStageIndexCache(const SparkDeviceStage *stage, uint32_t index_layer)
+{
+	SparkIndexerCache cache;
+	memset(&cache,0,sizeof(cache));
+	if ( index_layer >= stage->shape->index_layers || stage->kv_attached == 0u )
+		return(cache);
+	cache.pool = SparkTensorSlice(stage->index_pool,(uint64_t)index_layer * stage->index_layer_stride,stage->index_layer_stride);
+	cache.page_table = stage->page_table;
+	cache.page_slots = SPARK_DEVICE_RUNNER_PAGE_SLOTS;
+	cache.pages_per_sequence = stage->pages_per_sequence;
+	cache.pool_pages = stage->pool_pages;
+	cache.sequences = stage->slots;
+	return(cache);
+}
+
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer)
 {
 	SparkOpsPaged paged;
@@ -569,11 +584,6 @@ SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDe
 	paged.fork_positions = tensors->fork_positions;
 	paged.slot_offsets = tensors->slot_offsets;
 	return(paged);
-}
-
-SparkTensor SparkDeviceStageSecondKv(const SparkDeviceStage *stage, uint32_t layer)
-{
-	return(SparkTensorSlice(stage->kv_second_pool,(uint64_t)layer * stage->kv_second_layer_stride,stage->kv_second_layer_stride));
 }
 
 void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k)
@@ -734,26 +744,27 @@ SparkStatus SparkDeviceStageAttachKv(void *model, const SparkStageRunnerKv *kv)
 	SparkDeviceStage *stage = (SparkDeviceStage *)model;
 	const uint64_t page_bytes = StagePageBytes(stage->shape);
 	SparkStatus status;
+	const uint32_t index_layers = stage->shape->index_layers;
 	if ( kv == 0 || kv->layer_count != stage->shape->kv_layers || kv->layer_page_bytes != page_bytes || kv->sequence_count > stage->slots ||
 		kv->page_table_stride != stage->pages_per_sequence || kv->pool_page_count == 0u ||
 		kv->layer_stride_bytes < (uint64_t)kv->pool_page_count * page_bytes || kv->context_shard.degree != 1u ||
-		(stage->shape->kv_second_layers == 0u ? kv->second_pool != 0 : kv->second_pool == 0 || kv->second_layer_count != stage->shape->kv_second_layers ||
-			kv->second_layer_page_bytes != stage->shape->kv_second_page_bytes ||
-			kv->second_layer_stride_bytes < (uint64_t)kv->pool_page_count * stage->shape->kv_second_page_bytes) )
+		(index_layers == 0u && kv->second_pool != 0) || (index_layers != 0u && (kv->second_pool == 0 || kv->second_layer_count != index_layers ||
+		kv->second_layer_page_bytes != stage->shape->index_page_bytes ||
+		kv->second_layer_stride_bytes < (uint64_t)kv->pool_page_count * stage->shape->index_page_bytes)) )
 	{
-		fprintf(stderr,"%s: the KV pool must hold %u layers of %u-slot pages for the model's slots, unsharded, and a second pool of %u layers\n",
-			stage->shape->tag,stage->shape->kv_layers,SPARK_DEVICE_RUNNER_PAGE_SLOTS,stage->shape->kv_second_layers);
+		fprintf(stderr,"%s: the KV pool must hold %u layers of %u-slot pages for the model's slots, unsharded, and its second pool %u index-key layers\n",
+			stage->shape->tag,stage->shape->kv_layers,SPARK_DEVICE_RUNNER_PAGE_SLOTS,index_layers);
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	status = StageResolve(stage,kv->pool,(uint64_t)kv->layer_count * kv->layer_stride_bytes,&stage->kv_pool);
+	if ( status == SPARK_STATUS_OK && index_layers != 0u )
+		status = StageResolve(stage,kv->second_pool,(uint64_t)index_layers * kv->second_layer_stride_bytes,&stage->index_pool);
 	if ( status == SPARK_STATUS_OK )
 		status = StageResolve(stage,kv->page_table,(uint64_t)kv->sequence_count * kv->page_table_stride * 4u,&stage->page_table);
-	if ( status == SPARK_STATUS_OK && stage->shape->kv_second_layers != 0u )
-		status = StageResolve(stage,kv->second_pool,(uint64_t)kv->second_layer_count * kv->second_layer_stride_bytes,&stage->kv_second_pool);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	stage->kv_layer_stride = kv->layer_stride_bytes;
-	stage->kv_second_layer_stride = stage->shape->kv_second_layers != 0u ? kv->second_layer_stride_bytes : 0u;
+	stage->index_layer_stride = index_layers != 0u ? kv->second_layer_stride_bytes : 0u;
 	stage->pool_pages = kv->pool_page_count;
 	stage->kv_attached = 1u;
 	return(SPARK_STATUS_OK);
