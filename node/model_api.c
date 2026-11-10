@@ -62,6 +62,8 @@ typedef struct ApiOptions
 	uint32_t top_k;
 	uint32_t logprobs;
 	uint32_t drafts_disabled;
+	uint32_t cache_point_count;
+	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 } ApiOptions;
 
 typedef struct ApiRequest
@@ -103,6 +105,8 @@ typedef struct ApiRequest
 	uint32_t top_k;
 	uint32_t logprob_count;
 	uint32_t drafts_disabled;
+	uint32_t cache_point_count;
+	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 	SparkSamplingLogprob *logprobs;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
@@ -496,6 +500,8 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
 	sub.drafts_disabled = r->drafts_disabled;
+	sub.cache_point_count = r->cache_point_count;
+	memcpy(sub.cache_points,r->cache_points,sizeof(sub.cache_points));
 	sub.stop_token_count = r->stop_token_count;
 	sub.stop_token_ids = r->stop_tokens;
 	sub.output_token_budget = r->max_tokens;
@@ -1115,6 +1121,23 @@ static int api_parse_sampling_options(const SparkJsonDocument *doc, int32_t root
 	if ( member >= 0 && SparkJsonGetBoolean(doc,member,&speculation) != SPARK_STATUS_OK )
 		return 0;
 	options->drafts_disabled = member >= 0 && speculation == false ? 1u : 0u;
+	member = SparkJsonFindObjectMember(doc,root,"cache_points");
+	if ( member >= 0 )
+	{
+		int32_t element;
+		if ( !SparkJsonTokenIsType(doc,member,SPARK_JSON_TOKEN_ARRAY) ||
+			(uint32_t)SparkJsonGetArrayElementCount(doc,member) > SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS )
+			return 0;
+		element = SparkJsonGetArrayElementFirst(doc,member);
+		for (options->cache_point_count=0u; element >= 0; element=SparkJsonGetArrayElementNext(doc,member,element))
+		{
+			uint32_t point;
+			if ( SparkJsonGetUInt32(doc,element,&point) != SPARK_STATUS_OK || point == 0u ||
+				(options->cache_point_count != 0u && point <= options->cache_points[options->cache_point_count - 1u]) )
+				return 0;
+			options->cache_points[options->cache_point_count++] = point;
+		}
+	}
 	if ( options->temperature == 0.0f )
 	{
 		options->top_p = 1.0f;
@@ -1800,6 +1823,8 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	req->top_k = options.top_k;
 	req->logprob_count = options.logprobs;
 	req->drafts_disabled = options.drafts_disabled;
+	req->cache_point_count = options.cache_point_count;
+	memcpy(req->cache_points,options.cache_points,sizeof(req->cache_points));
 	pthread_mutex_lock(&S.queue_mutex);
 	req->id = ++S.next_id + 100000;
 	req->prompt_tokens = prompt;

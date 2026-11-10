@@ -2569,6 +2569,59 @@ static uint32_t TestRowTargets(uint64_t request_id,uint32_t prompt_count,uint32_
 	return(count);
 }
 
+static SparkStatus TestSubmitWithCachePoints(SparkModelBatchEngine *engine,uint64_t request_id,uint64_t sequence_id,const uint32_t *prompt,uint32_t prompt_count,
+	const uint32_t *points,uint32_t point_count)
+{
+	SparkModelBatchSubmitRequest request;
+	SparkModelBatchRequestHandle handle = 0;
+	memset(&request,0,sizeof(request));
+	request.abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
+	request.descriptor_bytes = sizeof(request);
+	request.priority = SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE;
+	request.top_p = 1.0f;
+	request.request_id = request_id;
+	request.sequence_id = sequence_id;
+	request.prompt_token_ids = prompt;
+	request.prompt_token_count = prompt_count;
+	request.output_token_budget = 1u;
+	request.drafts_disabled = TestDraftsDisabled;
+	request.cache_point_count = point_count;
+	memcpy(request.cache_points,points,(size_t)point_count * sizeof(points[0]));
+	return(SparkModelBatchEngineSubmit(engine,&request,&handle));
+}
+
+static void TestScenarioDeclaredCachePoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t points[2] = {10u,18u},backwards[2] = {9u,5u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0};
+	uint32_t first[18],second[18],ends[8],stateful[8],count,index,kept_at_block = 0u;
+	for (index=0u; index<18u; index++)
+		first[index] = second[index] = 700u + index;
+	second[10] = 9u;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	CHECK(TestSubmitWithCachePoints(engine,2u,791u,first,18u,backwards,2u) == SPARK_STATUS_INVALID_ARGUMENT,"declared cache point: points out of order are refused");
+	CHECK(TestSubmitWithCachePoints(engine,3u,792u,first,18u,points,2u) == SPARK_STATUS_OK,
+		"declared cache point: a prompt may name where its shared prefix ends, and a point at its end is ignored, since that state is kept anyway");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	count = TestPrefillPublishes(3u,18u,ends,stateful,8u);
+	for (index=0u; index<count; index++)
+		kept_at_block |= ends[index] == 8u && stateful[index] != 0u ? 1u : 0u;
+	CHECK(kept_at_block != 0u,"declared cache point: a prefill wave ends at the block boundary below the point and its publish keeps the state");
+	TestSubmitPrompt(engine,4u,793u,1u,second,18u);
+	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.cache_prefix_token_count == 8u,
+		"declared cache point: a prompt that shares the prefix but diverges before the stride resumes at the point instead of recomputing");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	CHECK(state.error_events[3] == 0u && state.error_events[4] == 0u && state.completed_events[4] == 1u,"declared cache point: both requests complete");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_spans[4] = {8u,4u,5u,1u},expected_ends[4] = {8u,12u,17u,18u},expected_stateful[4] = {0u,1u,1u,0u};
@@ -2870,6 +2923,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"recurrent-checkpoints",TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH,path,sizeof(path),&deployment);
 	TestScenarioRecurrentCheckpoints(&deployment,runtime_root);
+	TestScenarioDeclaredCachePoint(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedStaleResume(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
