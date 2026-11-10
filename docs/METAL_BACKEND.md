@@ -1507,7 +1507,7 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   key exactly as before.
 
 A row whose layer sees more than 512 compressed keys (position 512 on the
-ratio-1 layers, 1,024 on the ratio-2 ones) is refused at its attention: the
+ratio-1 layers, 1,025 on the ratio-2 ones) is refused at its attention: the
 shared indexer attends one KV layer's selected keys, and DeepSeek V4.1 needs
 the window keys of the layer and the selected keys of the cache's layer in
 one softmax with the sinks. A row at position 16,384 or later is refused in

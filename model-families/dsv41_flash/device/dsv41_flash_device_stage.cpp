@@ -261,9 +261,8 @@ struct D41Device
 	{
 		const uint32_t positions = state->stage.max_positions < kDenseKeys ? state->stage.max_positions : kDenseKeys;
 		const uint64_t partitions = 2u * (((uint64_t)positions + 127u) / 128u);
-		return Max(Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
-			(uint64_t)state->stage.max_rows * kHeads * partitions * (kHeadDim + 2u) * sizeof(float)),
-			SparkIndexerAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, kWindow + kDenseKeys));
+		return Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, kHeads, kHeadDim, positions),
+			(uint64_t)state->stage.max_rows * kHeads * partitions * (kHeadDim + 2u) * sizeof(float));
 	}
 
 	static uint32_t ScoreStride(const State *state)
@@ -274,8 +273,8 @@ struct D41Device
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = kHidden, routes = rows * kTopK, table = rows * sizeof(uint32_t);
-		const uint64_t dequant = Max(Max((uint64_t)kQLora * kHidden, (uint64_t)kQueryWidth * kQLora), Max((uint64_t)kHidden * kOutputWidth,
-			Max((uint64_t)2u * kSharedRows * kHidden, (uint64_t)kEngramKvLocal * kEngramEmbed)));
+		const uint64_t dequant = Max(Max(Max((uint64_t)kQLora * kHidden, (uint64_t)kQueryWidth * kQLora), (uint64_t)kIndexWidth * kQLora),
+			Max((uint64_t)kHidden * kOutputWidth, Max((uint64_t)2u * kSharedRows * kHidden, (uint64_t)kEngramKvLocal * kEngramEmbed)));
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * kResidual * 2u, &state->streams },
@@ -960,17 +959,6 @@ struct D41Device
 		return status;
 	}
 
-	static SparkStatus AttendSelected(State *state, Frame &frame, uint32_t index, SparkOpsPaged *paged, const SparkAttentionParams &params)
-	{
-		(void)frame;
-		(void)index;
-		(void)paged;
-		(void)params;
-		return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-			"the shared indexer has no attention over a layer's window keys and the selected keys of another KV layer in one softmax with sinks: "
-			"a row that sees more than 512 compressed keys is refused");
-	}
-
 	static SparkStatus Attend(State *state, Frame &frame, uint32_t index)
 	{
 		const Layer &layer = state->layers[index];
@@ -993,7 +981,9 @@ struct D41Device
 			return SparkOpsAttention(state->stage.ops, frame.queue, &paged, state->query, state->query, &layer.sinks, state->records, state->attended, &params,
 				frame.t.host_positions, frame.t.host_sequence_of_row);
 		if ( Sparse(frame, ratio) )
-			return AttendSelected(state, frame, index, &paged, params);
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
+				"the shared indexer cannot attend a layer's window keys and the selected keys of its compressed cache in one softmax with the sinks: "
+				"a row that sees more than 512 compressed keys is refused");
 		SparkOpsPaged extra = SparkDeviceStagePaged(&state->stage, &frame.t, kLayers + D41CacheIndex(index));
 		extra.positions = state->last[RatioSlot(ratio)];
 		return SparkOpsAttentionExtra(state->stage.ops, frame.queue, &paged, &extra, state->query, &layer.sinks, state->records, state->attended, &params,
