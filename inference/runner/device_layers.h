@@ -225,6 +225,13 @@ typedef struct SparkDeviceAttentionScratch
 	SparkTensor qkv_gathered;
 } SparkDeviceAttentionScratch;
 
+typedef struct SparkDeviceAttentionSelection
+{
+	SparkTensor selected;
+	uint32_t topk;
+	uint32_t key_ratio;
+} SparkDeviceAttentionSelection;
+
 typedef struct SparkDeviceFfnWeights
 {
 	SparkDeviceWeight gate_up;
@@ -368,6 +375,9 @@ SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRu
 SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
 	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
 	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output);
+SparkStatus SparkDeviceAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
+	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output, const SparkDeviceAttentionSelection *selection);
 
 SparkStatus SparkDeviceFfnBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, uint32_t ffn,
 	SparkDeviceFfnWeights *bound);
