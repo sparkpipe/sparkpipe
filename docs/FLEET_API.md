@@ -641,6 +641,8 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 ## 12. Teams, keys and audit
 
 - **Members.** The account owner invites members by email. Each signs in with their own email code.
+  - A member may leave the account with its own session: `DELETE /v1/members/{id}` with its own id, whatever its role. Removing anyone else is the owner's.
+  - Sessions belong to a member. The session list (`GET /pay/api/market/state`, `sessions`) shows the browser (cookie) and CLI (bearer) sessions alike, each with `via` (`cookie` or `bearer`); a member sees its own, the owner every session, and either kind can be revoked.
   - **Roles:**
     - **owner:** bookings, payments and members;
     - **admin:** keys, Functions, models and storage;
@@ -660,7 +662,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 
 ## 13. Notifications
 
-`PUT /v1/webhooks {"url", "events", "secret"}` delivers signed JSON (HMAC-SHA256 in `X-SparkPipe-Signature`), Slack-compatible on request. The same events can go by email to chosen members.
+`PUT /v1/webhooks {"url", "events", "secret"}` delivers signed JSON (HMAC-SHA256 in `X-SparkPipe-Signature`), Slack-compatible on request. The same events can go by email to chosen members. `GET /v1/webhooks` shows the owner and admins each URL in full; a member sees only its scheme and host (`https://hooks.example.com/…`), since a URL can carry a secret.
 
 Deliveries run in parallel and are retried when a receiver fails, so they can arrive out of order or more than once. A JSON delivery carries its notice's `id` and `created` time, and `X-SparkPipe-Delivery` repeats the `id`: order notices by `created` and drop repeats by `id`.
 
