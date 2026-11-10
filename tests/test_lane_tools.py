@@ -36,14 +36,34 @@ def main():
     diverged = json.loads(json.dumps(capture))
     diverged["code"]["tokens"][1] = 9
     missing = {"capital": capture["capital"]}
+    paths = json.loads(json.dumps(capture))
+    for entry in paths.values():
+        for path in ("chain_tokens", "speculate_tokens", "batch_tokens", "sampled_tokens", "sampled_batch_tokens"):
+            entry[path] = list(entry["tokens"])
+    chain_moved = json.loads(json.dumps(paths))
+    chain_moved["code"]["chain_tokens"][1] = 9
+    chain_moved["code"]["speculate_tokens"][1] = 9
+    chain_moved["code"]["batch_tokens"][1] = 9
+    sampled_moved = json.loads(json.dumps(paths))
+    sampled_moved["capital"]["sampled_tokens"][0] = 7
+    split = json.loads(json.dumps(paths))
+    split["capital"]["chain_tokens"] = [1, 2, 8]
+    split_reference = json.loads(json.dumps(split))
+    path_missing = json.loads(json.dumps(paths))
+    del path_missing["code"]["speculate_tokens"]
     with tempfile.TemporaryDirectory() as scratch:
         directory = pathlib.Path(scratch)
         for old, new, wanted, why in ((capture, capture, 0, "identical captures"), (capture, drift, 0, "equal tokens with logprob drift"),
                                       (capture, diverged, 1, "a token that differs"), (capture, missing, 1, "a prompt the new capture lacks"),
-                                      ({}, {}, 1, "an empty capture"), (capture, None, 1, "a missing new capture")):
+                                      ({}, {}, 1, "an empty capture"), (capture, None, 1, "a missing new capture"),
+                                      (paths, paths, 0, "identical captures of every path"), (capture, paths, 0, "a reference without the newer paths"),
+                                      (paths, chain_moved, 1, "chain, speculation and batch tokens that differ from the reference"),
+                                      (paths, sampled_moved, 1, "seeded sampled tokens that differ from the reference"),
+                                      (split_reference, split, 1, "chain tokens that differ from the same build's one-step tokens"),
+                                      (paths, path_missing, 1, "a path the reference has and the new capture lacks")):
             code = compare(directory, old, new)
             if (code == 0) != (wanted == 0):
-                failures.append(f"release_compare on {why} exits {code}; the accuracy gate may be skipped only on proof that every prompt's tokens match")
+                failures.append(f"release_compare on {why} exits {code}; the accuracy gate may be skipped only on proof that every prompt's tokens match on every path")
 
         records = json.loads((ROOT / "deployment" / "lanes.json").read_text())
         record = next(name for name, lane in sorted(records["lanes"].items()) if lane["launcher"] == "stage_lane")
@@ -129,7 +149,7 @@ def main():
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS lane tools: release_compare passes only when every prompt's tokens match (not on a diverged token, a missing prompt, an empty or a missing capture); "
+    print("PASS lane tools: release_compare passes only when every prompt's tokens match on the one-step, chain, speculating, batch and seeded sampled paths, and the chain, speculating and batch tokens equal the one-step tokens (not on a diverged token, a missing prompt or path, an empty or a missing capture); "
           "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a record sets SPARK_WEIGHTD_EXPERT_POOL_BYTES only from its explicit expert_pool_cap_bytes; a draft server listens where taps.stream points, and a record without one is refused")
 
 

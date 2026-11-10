@@ -69,7 +69,7 @@ swap_cmd() { hub "python3 -c \"import json,sys; d=json.load(open('/home/spec/spa
 
 capture() {
   local id=$1 tag=$2 port; port=$(field "$id" port)
-  hub "mkdir -p $RD/$id && cd $RD && timeout 3600 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
+  hub "mkdir -p $RD/$id && cd $RD && timeout 5400 python3 kit/release_capture.py $port $id/$tag.json kit/prompt_source.c $HUB_WORK/logs/$(field "$id" api).log > $id/$tag.log 2>&1; echo capture $id $tag rc=\$?"
   case "$id" in
     glm-5.3) hub "cd $RD/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
     kimi-k3) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_k3_golden.py $port $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
