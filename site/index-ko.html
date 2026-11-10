@@ -55,8 +55,8 @@ h1 { max-width: 14em; }
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="언어 / Language"><a href="index.html?lang=en" hreflang="en" lang="en">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
-      <a class="btn small" href="terms-ko.html">약관</a>
-      <a class="btn small solid" href="buy.html" hreflang="en">HC 구매</a>
+      <a class="btn small" href="#how">데모 하루</a>
+      <a class="btn small solid" href="buy.html" hreflang="en">주 예약</a>
     </div>
   </div>
 </header>
@@ -68,10 +68,12 @@ h1 { max-width: 14em; }
   <div class="hero-grid">
     <div class="hero-copy">
       <p class="lead">할당량도, 속도 제한도, 토큰당 요금도 없습니다. SparkPipe 플릿은 <b>고객만을 위해</b> 일하며, 플릿이 감당하는 만큼 많은 에이전트를 동시에, 일주일 내내 한 주 정액으로 돌릴 수 있습니다. 코드베이스에 대해 계산한 것을 턴에서 턴으로, 주에서 주로 그대로 유지하고, 지시하면 <b>밤사이 코드를 다룹니다</b>. 다른 고객의 요청은 실행되지 않으며, 한국에서 처리하고 다른 어떤 AI 서비스로도 보내지 않습니다.</p>
+      <p class="price-line num">주 <b data-week="usd">$2,160</b> · 6일 가격에 7일 · 시간당 약 <span data-week="effective">$12.86</span> · VAT 별도 · 더 많은 주 예약 시 최대 <span data-off="max">20%</span> 할인</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html" hreflang="en">HC 구매 후 데모 하루 예약</a>
-        <a class="btn" href="#why">API의 하루와 플릿의 하루</a>
+        <a class="btn solid" href="buy.html" hreflang="en">플릿 1주 예약</a>
+        <a class="btn" href="#how">데모 하루 체험 · <span data-hour="day">8</span> HC</a>
       </div>
+      <p class="more"><a href="#why">API의 하루와 플릿의 하루</a> · <a href="compare-ko.html">내 세션 로그로 확인</a></p>
       <p class="note">하루에 프롬프트 몇 개만 보낸다면 월 $20 요금제가 더 맞습니다. SparkPipe는 코딩 에이전트와 하루 종일 일하는 엔지니어, 그리고 자체 모델을 가진 팀을 위한 서비스입니다. 가정용 소비자가 아니라 기업, 전문가와 독립 개발자를 위한 서비스입니다. 모든 단계를 돈 없이 <a href="market.html?sandbox" hreflang="en">샌드박스</a>에서 해 볼 수 있습니다.</p>
     </div>
     <figure class="screen">
@@ -111,15 +113,15 @@ h1 { max-width: 14em; }
   <div class="sec-body">
     <h2>토큰 단위 API는 같은 코드베이스에 몇 번이고 요금을 매깁니다.</h2>
     <p class="prose">API 캐시는 짧은 세션을 위해 만들어졌습니다. Claude에서는 기본 5분 유지되며, 1시간 캐시는 쓰는 데 입력 가격의 2배, 5분 캐시는 1.25배가 듭니다. Kimi의 기본값도 5분입니다. 그래서 휴식, 회의, 브랜치 전환, 서브에이전트마다 전체 컨텍스트의 비용을 다시 내고, 프리필되는 동안 기다립니다. 에이전트 작업에서 $20–50 충전이 금방 바닥나고, 구독 한도가 점심 전에 차는 이유입니다.</p>
-    <div class="table-wrap" tabindex="0" role="region" aria-label="토큰 단위 API는 같은 코드베이스에 몇 번이고 요금을 매깁니다."><table>
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="토큰 단위 API는 같은 코드베이스에 몇 번이고 요금을 매깁니다."><table>
       <thead><tr><th scope="col">하루의 순간</th><th scope="col">토큰 단위 API</th><th scope="col" class="you">내 플릿</th></tr></thead>
       <tbody>
-        <tr><td>몇 분 안의 다음 턴</td><td>캐시 읽기, 토큰당 과금</td><td class="you"><b>웜.</b> 137,700토큰에서 첫 토큰까지 4.7–5.1초, 짧은 캐시 턴은 0.3–0.9초(실측), 토큰당 요금 없음</td></tr>
-        <tr><td>휴식이나 회의 후</td><td>캐시 만료: 전체 컨텍스트를 다시 과금하고 다시 프리필</td><td class="you"><b>여전히 웜.</b> 플릿을 보유하는 동안 캐시가 남습니다</td></tr>
-        <tr><td>브랜치나 모듈 전환</td><td>새 프리픽스: 캐시 쓰기 한 번 더, 콜드 대기 한 번 더</td><td class="you"><b>미리 프리필.</b> 밤사이와 턴 사이에</td></tr>
-        <tr><td>아침 첫 턴</td><td>모두 콜드</td><td class="you"><b>웜.</b> 어제의 커밋에 맞춰 기능이 캐시를 갱신했습니다</td></tr>
-        <tr><td>파일 전체 재작성</td><td>제공자의 속도, 빠른 등급은 더 비쌈</td><td class="you"><b>126 tok/s.</b> 추측 디코딩을 쓴 Kimi K3, 같은 출력, 실측, 요금에 포함</td></tr>
-        <tr><td>가격</td><td>다시 읽고 다시 쓸 때마다, 또는 한도가 있는 구독</td><td class="you"><b>1주 <span data-week="hc">144</span> HC:</b> <span data-week="usd">$2,160</span>, 24시간 기준 시간당 약 <span data-week="effective">$12.86</span></td></tr>
+        <tr><td>몇 분 안의 다음 턴</td><td data-l="토큰 단위 API">캐시 읽기, 토큰당 과금</td><td class="you" data-l="내 플릿"><b>웜.</b> 137,700토큰에서 첫 토큰까지 4.7–5.1초, 짧은 캐시 턴은 0.3–0.9초(실측), 토큰당 요금 없음</td></tr>
+        <tr><td>휴식이나 회의 후</td><td data-l="토큰 단위 API">캐시 만료: 전체 컨텍스트를 다시 과금하고 다시 프리필</td><td class="you" data-l="내 플릿"><b>여전히 웜.</b> 플릿을 보유하는 동안 캐시가 남습니다</td></tr>
+        <tr><td>브랜치나 모듈 전환</td><td data-l="토큰 단위 API">새 프리픽스: 캐시 쓰기 한 번 더, 콜드 대기 한 번 더</td><td class="you" data-l="내 플릿"><b>미리 프리필.</b> 밤사이와 턴 사이에</td></tr>
+        <tr><td>아침 첫 턴</td><td data-l="토큰 단위 API">모두 콜드</td><td class="you" data-l="내 플릿"><b>웜.</b> 어제의 커밋에 맞춰 기능이 캐시를 갱신했습니다</td></tr>
+        <tr><td>파일 전체 재작성</td><td data-l="토큰 단위 API">제공자의 속도, 빠른 등급은 더 비쌈</td><td class="you" data-l="내 플릿"><b>126 tok/s.</b> 추측 디코딩을 쓴 Kimi K3, 같은 출력, 실측, 요금에 포함</td></tr>
+        <tr><td>가격</td><td data-l="토큰 단위 API">다시 읽고 다시 쓸 때마다, 또는 한도가 있는 구독</td><td class="you" data-l="내 플릿"><b>1주 <span data-week="hc">144</span> HC:</b> <span data-week="usd">$2,160</span>, 24시간 기준 시간당 약 <span data-week="effective">$12.86</span></td></tr>
       </tbody>
     </table></div>
     <p class="prose">고객에게는 청구서가 더 작은 비용입니다. 1분 넘게 기다리면 다른 창으로 넘어가게 되고, 문제로 다시 돌아오는 데는 기다린 시간보다 더 많은 시간이 듭니다. 나만의 플릿에서는 컨텍스트를 한 번 계산하고, 그다음 턴은 모두 직전 턴이 멈춘 곳에서 시작합니다.</p>
@@ -234,7 +236,7 @@ h1 { max-width: 14em; }
   <div class="sec-body">
     <h2>6일 가격에 7일.</h2>
     <p class="prose">모든 것은 시간 크레딧(HC)으로 지불합니다. 원하는 만큼 사서 시간 플릿의 시간과 나만의 플릿의 주에 씁니다. 토큰당 요금도, 기능에 대한 추가 요금도 없습니다.</p>
-    <div class="table-wrap" tabindex="0" role="region" aria-label="6일 가격에 7일."><table class="cmp">
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="6일 가격에 7일."><table class="cmp">
       <thead><tr><th scope="col">항목</th><th scope="col">가격</th></tr></thead>
       <tbody>
         <tr><th scope="row">시간 크레딧</th><td><span data-hc="bulk-from">144</span> HC 미만은 개당 <span data-hc="small-usd">$20</span>(<span data-hc="small-krw">₩27,200</span>), <span data-hc="bulk-from">144</span> HC부터는 개당 <span data-hc="bulk-usd">$15</span>(<span data-hc="bulk-krw">₩20,400</span>). 상한 없음. 각 구매분은 예약에 쓰지 않으면 <span data-hc="months">12</span>개월 후 소멸하며, 예약에 쓴 HC는 소멸하지 않습니다</td></tr>

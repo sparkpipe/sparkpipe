@@ -115,7 +115,10 @@ code, kbd, samp { font-family: var(--mono); font-size: .9em; }
 .hero-kicker::before, .sec-rail .label:first-child::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 10px; border-radius: 1.5px; background: var(--brand); }
 .hero-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: clamp(28px, 4vw, 60px); align-items: start; margin-top: clamp(8px, 1.5vw, 18px); }
 .hero-copy { display: grid; gap: 24px; align-content: start; }
-.hero .note { font: 400 12px/1.65 var(--mono); color: var(--faint); }
+.price-line { margin: 0; font: 500 14px/1.5 var(--mono); color: var(--steel); }
+.price-line b { font-size: clamp(20px, 2.2vw, 26px); color: var(--ink); }
+.hero .more { margin: 0; font-size: 14px; color: var(--steel); }
+.hero .note { font: 400 13px/1.6 var(--text); color: var(--steel); max-width: 66ch; }
 .hero .note b { color: var(--steel); font-weight: 600; }
 
 .screen { margin: 0; background: var(--screen); color: var(--screen-ink); border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; box-shadow: 0 30px 70px -40px rgba(0, 0, 0, .9); }
@@ -302,10 +305,19 @@ html:lang(ko) .label { letter-spacing: .04em; }
   .day td.you[data-l]::before { color: var(--screen-signal); }
   .bar, .bars-scale { grid-template-columns: 96px minmax(0, 1fr) 52px; gap: 10px; }
   .code pre { font-size: 11px; }
+  .stack table { min-width: 0; }
+  .stack thead { display: none; }
+  .stack tr { display: grid; border-bottom: 1px solid var(--rule); }
+  .stack tr:last-child { border-bottom: 0; }
+  .stack th, .stack td { display: block; width: auto; border-bottom: 0; }
+  .stack th[scope="row"] { width: auto; }
+  .stack tr > :first-child { padding-bottom: 0; font-weight: 600; color: var(--ink); }
+  .stack td[data-l]::before { content: attr(data-l); display: block; margin-bottom: 3px; font: 500 11px/1.3 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .stack td.you { border-left: 2px solid var(--signal); }
   .check-list div { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }
 
-@media (max-width: 370px) {
+@media (max-width: 420px) {
   .nav:has(.nav-actions .btn) .brand .logo { display: none; }
   .nav:has(.nav-actions .btn) .brand .seal { display: block; }
 }

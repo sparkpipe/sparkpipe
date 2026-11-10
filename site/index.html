@@ -55,8 +55,8 @@ h1 { max-width: 15ch; }
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="index.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small" href="terms.html">Terms</a>
-      <a class="btn small solid" href="buy.html">Buy HC</a>
+      <a class="btn small" href="#how">Demo day</a>
+      <a class="btn small solid" href="buy.html">Book a week</a>
     </div>
   </div>
 </header>
@@ -68,10 +68,12 @@ h1 { max-width: 15ch; }
   <div class="hero-grid">
     <div class="hero-copy">
       <p class="lead">No quota, no rate limit, no per-token bill. A SparkPipe fleet serves <b>only you</b>: run as many agents at once as it can carry, all week, for one flat price. It keeps what it computed about your codebase from turn to turn and week to week, and <b>works on it overnight</b> when you tell it to. Nobody else's requests run on it, and nothing is sent to any other AI service.</p>
+      <p class="price-line num"><b data-week="usd">$2,160</b> a week · 7 days for the price of 6 · about <span data-week="effective">$12.86</span>/h · plus VAT · up to <span data-off="max">20%</span> off for more weeks</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html">Buy HC and book a demo day</a>
-        <a class="btn" href="#why">An API day against a fleet day</a>
+        <a class="btn solid" href="buy.html">Book a fleet week</a>
+        <a class="btn" href="#how">Try a demo day · <span data-hour="day">8</span> HC</a>
       </div>
+      <p class="more"><a href="#why">An API day against a fleet day</a> · <a href="compare.html">Check with your own session log</a></p>
       <p class="note">Sending a few prompts a day? A $20 plan serves you better. SparkPipe is for engineers who work all day with coding agents, and for teams with their own model. For companies, professionals and independent developers, not household consumers. Try every step without money in the <a href="market.html?sandbox">sandbox</a>.</p>
     </div>
     <figure class="screen">
@@ -111,15 +113,15 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Per-token APIs bill you for your codebase again and again.</h2>
     <p class="prose">The API cache is built for short sessions. On Claude it lasts 5 minutes by default; a 1-hour cache costs twice the input price to write, and a 5-minute write costs 1.25 times. Kimi's default is also 5 minutes. So every break, meeting, branch switch and subagent pays for the whole context again, and waits while it prefills. That is why a $20–50 top-up runs out so fast in agentic work, and why subscription limits arrive before lunch.</p>
-    <div class="table-wrap" tabindex="0" role="region" aria-label="Per-token APIs bill you for your codebase again and again."><table>
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="Per-token APIs bill you for your codebase again and again."><table>
       <thead><tr><th scope="col">Moment in the day</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
       <tbody>
-        <tr><td>Next turn, within minutes</td><td>A cache read, billed per token</td><td class="you"><b>Warm.</b> First token in 4.7–5.1 s at 137,700 tokens and 0.3–0.9 s for a short cached turn, measured, with no per-token charge</td></tr>
-        <tr><td>After a break or a meeting</td><td>Cache expired: the whole context is billed and prefilled again</td><td class="you"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
-        <tr><td>Switching branch or module</td><td>A new prefix: another cache write, another cold wait</td><td class="you"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
-        <tr><td>First turn in the morning</td><td>Everything cold</td><td class="you"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
-        <tr><td>Rewriting a whole file</td><td>The provider's speed; faster tiers cost more</td><td class="you"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
-        <tr><td>Price</td><td>Every re-read and re-write, or a subscription with quota walls</td><td class="you"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
+        <tr><td>Next turn, within minutes</td><td data-l="Per-token API">A cache read, billed per token</td><td class="you" data-l="Your fleet"><b>Warm.</b> First token in 4.7–5.1 s at 137,700 tokens and 0.3–0.9 s for a short cached turn, measured, with no per-token charge</td></tr>
+        <tr><td>After a break or a meeting</td><td data-l="Per-token API">Cache expired: the whole context is billed and prefilled again</td><td class="you" data-l="Your fleet"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
+        <tr><td>Switching branch or module</td><td data-l="Per-token API">A new prefix: another cache write, another cold wait</td><td class="you" data-l="Your fleet"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
+        <tr><td>First turn in the morning</td><td data-l="Per-token API">Everything cold</td><td class="you" data-l="Your fleet"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
+        <tr><td>Rewriting a whole file</td><td data-l="Per-token API">The provider's speed; faster tiers cost more</td><td class="you" data-l="Your fleet"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
+        <tr><td>Price</td><td data-l="Per-token API">Every re-read and re-write, or a subscription with quota walls</td><td class="you" data-l="Your fleet"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
       </tbody>
     </table></div>
     <p class="prose">For you, the bill is the smaller cost. A wait of a minute or more sends you to another window, and getting back into the problem costs more than the wait. On your own fleet the context is computed once, and every turn after that starts from where the last one stopped.</p>
@@ -234,7 +236,7 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Seven days for the price of six.</h2>
     <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on hours of an Hour Fleet and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
-    <div class="table-wrap" tabindex="0" role="region" aria-label="Seven days for the price of six."><table class="cmp">
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="Seven days for the price of six."><table class="cmp">
       <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
       <tbody>
         <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩27,200</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩20,400</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
