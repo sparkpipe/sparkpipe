@@ -42,15 +42,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NONE, FP8_BLOCK,  # noqa: E402,F401
-                               PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, PAYLOAD_U32, SCALE_F32, SCALE_NONE,
-                               fp8_block_scale_rows)
+from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, FP8_BLOCK, PAYLOAD_BF16,  # noqa: E402,F401
+                               PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, SCALE_F32, fp8_block_scale_rows)
 from spark_pack_common import GLOBAL_LAYER, PackFailure, fsync_directory, sha256_bytes  # noqa: E402,F401
 from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, to_bytes  # noqa: E402,F401
 from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, EXPERT_RANGE_BYTES_MAX,  # noqa: E402,F401
                              PAYLOAD_ALIGNMENT, Entry, SlabDigestSink, append_journal, ck128, codec_directory_offset,
-                             codec_header, emit_region, expert_manifest_bytes, item_region, place_entries,
-                             serialize_entry, trusted_journal_prefix, truncated_revision, write_prefix)
+                             codec_header, emit_region, expert_manifest_bytes, place_entries, trusted_journal_prefix,
+                             truncated_revision, write_prefix)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

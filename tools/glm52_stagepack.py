@@ -19,9 +19,8 @@ if str(TOOLS_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIRECTORY))
 from glm52_model_contract import load_model_contract  # noqa: E402
 from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, PAYLOAD_BF16, PAYLOAD_F32,  # noqa: E402,F401
-                               PAYLOAD_PACKED_WEIGHT, SCALE_E8M0, SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL,
-                               WEIGHT_CODECS as CODECS, encode_e2m1, encode_e4m3_round_up, pack_subbyte,
-                               quantize_matrix)
+                               PAYLOAD_PACKED_WEIGHT, SCALE_F32, SCALE_NONE, WEIGHT_CODECS as CODECS,
+                               encode_e4m3_round_up, pack_subbyte, quantize_matrix)
 from spark_pack_common import GLOBAL_LAYER, PackFailure, align_up, replaced_output, sha256_file, write_receipt  # noqa: E402
 from spark_pack_wire import (CODEC_ENTRY, CODEC_HEADER, PAYLOAD_ALIGNMENT, Entry, codec_header,  # noqa: E402
                              region_offsets, serialize_entry)

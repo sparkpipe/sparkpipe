@@ -42,15 +42,15 @@ from typing import Any, Dict
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NONE, CODEC_NVFP4,  # noqa: E402,F401
-                               FP8_BLOCK, NVFP4_GROUP, PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, PAYLOAD_U32,
-                               SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, fp8_block_scale_rows)
+from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NVFP4, FP8_BLOCK,  # noqa: E402
+                               NVFP4_GROUP, PAYLOAD_BF16, PAYLOAD_PACKED_WEIGHT, SCALE_F32, SCALE_UE4M3_F32_GLOBAL,
+                               fp8_block_scale_rows)
 from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage,  # noqa: E402,F401
                                stage_pack_name as named_stage_pack)
 from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, publish_rank_pack, to_bytes  # noqa: E402,F401
-from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, PAYLOAD_ALIGNMENT, Entry,  # noqa: E402,F401
-                             codec_directory_offset, codec_header, emit_item, place_entries, serialize_entry,
-                             truncated_revision, write_prefix)
+from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, PAYLOAD_ALIGNMENT, Entry,  # noqa: E402
+                             codec_directory_offset, codec_header, emit_item, place_entries, truncated_revision,
+                             write_prefix)
 
 FORMAT_VERSION = 1
 HEADER_BYTES = CODEC_HEADER_BYTES

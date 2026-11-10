@@ -39,7 +39,7 @@ from spark_pack_codecs import (WEIGHT_BF16, WEIGHT_F32, WEIGHT_FP8_E4M3_F32B128,
                                WEIGHT_MXFP4_E2M1_E8M0G32)
 from spark_pack_common import (GLOBAL_LAYER, PackFailure, SafetensorsSource, replaced_output,  # noqa: E402
                                sha256_file, stream_range, window_chunks, write_receipt, write_sha256_sidecar)
-from spark_pack_wire import PAYLOAD_ALIGNMENT, STAGEPACK_ENTRY, STAGEPACK_HEADER, region_offsets  # noqa: E402,F401
+from spark_pack_wire import STAGEPACK_ENTRY, STAGEPACK_HEADER, region_offsets  # noqa: E402
 
 MAGIC = 0x5036324D
 FORMAT_VERSION = 2

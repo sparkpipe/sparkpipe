@@ -62,12 +62,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NONE, CODEC_NVFP4,  # noqa: E402,F401
-                               PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, PAYLOAD_U32, SCALE_F32, SCALE_NONE,
-                               SCALE_UE4M3_F32_GLOBAL, bf16_to_f32, f32_to_bf16, fp8_e4m3_lut)
+                               PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, SCALE_F32, SCALE_NONE, bf16_to_f32,
+                               f32_to_bf16, fp8_e4m3_lut)
 from spark_pack_common import GLOBAL_LAYER, PackFailure, align_up, run_tool, sha256_bytes, write_receipt  # noqa: E402,F401
 from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem  # noqa: E402,F401
-from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, MODEL_REVISION_BYTES, PAYLOAD_ALIGNMENT,  # noqa: E402,F401
-                             Entry, codec_directory_offset, codec_header, emit_item, place_entries, truncated_revision,
+from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, MODEL_REVISION_BYTES,  # noqa: E402,F401
+                             PAYLOAD_ALIGNMENT, Entry, codec_directory_offset, codec_header, emit_item, place_entries,
                              write_prefix)
 
 MAGIC = 0x32534C47

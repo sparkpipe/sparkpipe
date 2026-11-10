@@ -50,10 +50,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NONE, CODEC_NVFP4,  # noqa: E402,F401
-                               PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, PAYLOAD_U32, SCALE_F32, SCALE_NONE,
-                               SCALE_UE4M3_F32_GLOBAL, f32_to_bf16, fp8_e4m3_lut)
-from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage, publish_link,  # noqa: E402,F401
-                               stage_pack_name as named_stage_pack, tp_shard_range)
+                               PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, SCALE_F32, SCALE_NONE,
+                               SCALE_UE4M3_F32_GLOBAL, fp8_e4m3_lut)
+from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage, publish_link,  # noqa: E402
+                               stage_pack_name as named_stage_pack)
 from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, publish_rank_pack  # noqa: E402,F401
 from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, PAYLOAD_ALIGNMENT, Entry,  # noqa: E402,F401
                              codec_directory_offset, codec_header, emit_item, emit_region, place_entries,
