@@ -61,6 +61,8 @@ typedef struct SparkDeviceStageShape
 	uint32_t projection;
 	uint32_t prenormed_head;
 	uint32_t norm_round_first;
+	uint32_t kv_second_layers;
+	uint64_t kv_second_page_bytes;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u
@@ -97,6 +99,8 @@ typedef struct SparkDeviceStage
 	SparkTensor kv_pool;
 	SparkTensor page_table;
 	uint64_t kv_layer_stride;
+	SparkTensor kv_second_pool;
+	uint64_t kv_second_layer_stride;
 	uint32_t pool_pages;
 	uint32_t kv_attached;
 	uint32_t step_exact;
@@ -172,6 +176,7 @@ SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStage
 SparkStatus SparkDeviceStageKeepRelocate(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkStageRunnerStep *step,
 	const SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
+SparkTensor SparkDeviceStageSecondKv(const SparkDeviceStage *stage, uint32_t layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
 void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k);
 SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count);
