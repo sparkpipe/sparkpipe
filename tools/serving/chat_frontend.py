@@ -2325,7 +2325,7 @@ class Frontend:
         if request.can_read_body:
             try:
                 body = await request.json()
-            except json.JSONDecodeError:
+            except ValueError:
                 return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         model = body.get("model") if isinstance(body, dict) else None
         if model is not None and model not in self.models:
@@ -2985,8 +2985,8 @@ class Frontend:
         started = time.monotonic()
         try:
             body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        except ValueError:
+            return web.json_response(error_body("invalid_json", "the request body is not UTF-8 JSON"), status=400)
         public = request.get("public_key")
         if not isinstance(body, dict):
             return web.json_response(error_body("invalid_json", "the request body must be a JSON object"), status=400)
@@ -3087,8 +3087,8 @@ class Frontend:
     async def read_body(self, request):
         try:
             body = await request.json()
-        except json.JSONDecodeError:
-            raise RequestError(400, "invalid_request", "the request body is not JSON")
+        except ValueError:
+            raise RequestError(400, "invalid_request", "the request body is not UTF-8 JSON")
         if not isinstance(body, dict):
             raise RequestError(400, "invalid_request", "the request body must be a JSON object")
         return body
