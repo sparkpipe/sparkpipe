@@ -138,6 +138,8 @@ SparkStatus SparkModelResidentClientProgress(
 	uint32_t maximum_message_count);
 uint64_t SparkModelResidentClientNextProgressNs(
 	const SparkModelResidentClient *client);
+uint32_t SparkModelResidentClientNeedsProgress(
+	const SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientPollDescriptor *descriptor);

@@ -1187,3 +1187,10 @@ uint64_t SparkModelResidentClientNextProgressNs(
 {
 	return(client != 0 && client->connected == 0u ? 1u : 0u);
 }
+
+uint32_t SparkModelResidentClientNeedsProgress(
+	const SparkModelResidentClient *client)
+{
+	(void)client;
+	return(1u);
+}

@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
+#include <poll.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -999,6 +1000,34 @@ static void SparkModelPipelineClientFailTransactions(
 	}
 }
 
+static uint32_t SparkModelPipelineClientReadableRanks(
+	const SparkModelPipelineClient *pipeline)
+{
+	struct pollfd descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	SparkModelResidentClientPollDescriptor descriptor;
+	uint32_t count = 0u,index,rank,readable = 0u;
+	uint32_t ranks[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+	{
+		if ( SparkModelResidentClientNeedsProgress(pipeline->clients[rank]) != 0u ||
+			SparkModelResidentClientGetPollDescriptor(pipeline->clients[rank],&descriptor) != SPARK_STATUS_OK || descriptor.fd < 0 )
+		{
+			readable |= UINT32_C(1) << rank;
+			continue;
+		}
+		descriptors[count].fd = descriptor.fd;
+		descriptors[count].events = POLLIN;
+		descriptors[count].revents = 0;
+		ranks[count++] = rank;
+	}
+	if ( count != 0u && poll(descriptors,count,0) < 0 )
+		return(pipeline->all_rank_mask);
+	for (index=0u; index<count; index++)
+		if ( descriptors[index].revents != 0 )
+			readable |= UINT32_C(1) << ranks[index];
+	return(readable);
+}
+
 SparkStatus SparkModelPipelineClientProgress(
 	SparkModelPipelineClient *pipeline,
 	uint32_t maximum_message_count_per_rank)
@@ -1012,10 +1041,14 @@ SparkStatus SparkModelPipelineClientProgress(
 	recovering = pipeline->failed_status != SPARK_STATUS_OK;
 	status = SPARK_STATUS_OK;
 	uint32_t failing_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
+	uint32_t readable = SparkModelPipelineClientReadableRanks(pipeline);
 	for (rank=pipeline->rank_count; rank!=0u; rank--)
 	{
-		SparkStatus rank_status = SparkModelResidentClientProgress(
-		    pipeline->clients[rank - 1u],maximum_message_count_per_rank);
+		SparkStatus rank_status = SPARK_STATUS_OK;
+		if ( (readable & (UINT32_C(1) << (rank - 1u))) != 0u ||
+			SparkModelResidentClientNeedsProgress(pipeline->clients[rank - 1u]) != 0u )
+			rank_status = SparkModelResidentClientProgress(
+			    pipeline->clients[rank - 1u],maximum_message_count_per_rank);
 		if ( rank_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
 		{
 			status = rank_status;
