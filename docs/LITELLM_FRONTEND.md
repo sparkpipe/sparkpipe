@@ -207,7 +207,7 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | Route | Request | Response |
 | --- | --- | --- |
 | `GET /health` | — | `200 {"status":"ok","served":N,"tokenizer":bool,"ranks":R,"connected_ranks":R,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"OK","live_requests":L}`; `503` with `"status":"degraded"` while a rank is disconnected (`missing_rank` names the first one), a rank's driver runs on a degraded path (`degraded_rank`, `"degraded_path":"eager"` after a GLM Flash graph replay stuck or timed out), or the engine has latched a failure |
-| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is `SPARK_MODEL_ID`, default `sparkpipe-model` |
+| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is the served adapter's model id (for example `google/gemma-4-26B-A4B-it`); 503 with the bring-up state until every rank is ready |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |

@@ -106,7 +106,11 @@ static int32_t TestModelResidentWriteBody(
 {
 	int32_t status;
 	uint32_t rank;
-	status = fprintf(stream,"{\"schema_version\":2,\"eos_token_ids\":[%u],\"coordinator_rank_index\":%u,\"adapter\":{\"shared_object_path\":",fixture->eos_token_id,fixture->coordinator_rank_index) < 0 ? -1 : 0;
+	status = fprintf(stream,"{\"schema_version\":2,\"eos_token_ids\":[%u],\"coordinator_rank_index\":%u,",fixture->eos_token_id,fixture->coordinator_rank_index) < 0 ? -1 : 0;
+	if ( status == 0 && fixture->request_inflight_budget_ms != 0u )
+		status = fprintf(stream,"\"request_inflight_budget_ms\":%u,",fixture->request_inflight_budget_ms) < 0 ? -1 : 0;
+	if ( status == 0 )
+		status = fprintf(stream,"\"adapter\":{\"shared_object_path\":") < 0 ? -1 : 0;
 	if ( status == 0 )
 		status = TestModelResidentWriteText(stream,fixture->adapter_shared_object_path);
 	if ( status == 0 && fputs("},\"driver\":{\"shared_object_path\":",stream) == EOF )

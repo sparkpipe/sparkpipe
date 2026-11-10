@@ -225,6 +225,47 @@ static void TestDraftServerMember(const char *member,SparkStatus expected,SparkM
 	assert(unlink(path) == 0);
 }
 
+static void TestRootMember(const char *member,SparkStatus expected,SparkModelResidentDeployment *deployment)
+{
+	char buffer[8192],path[256];
+	const char *anchor;
+	FILE *file;
+	uint32_t count,prefix;
+	file = fopen("tests/fixtures/model_resident_deployment.json","rb");
+	assert(file != 0);
+	count = (uint32_t)fread(buffer,1,sizeof(buffer) - 1u,file);
+	assert(feof(file) != 0 && count > 1u);
+	assert(fclose(file) == 0);
+	buffer[count] = '\0';
+	anchor = strchr(buffer,'{');
+	assert(anchor != 0);
+	prefix = (uint32_t)(anchor - buffer) + 1u;
+	assert(snprintf(path,sizeof(path),"/tmp/sparkpipe-root-member-%ld.json",(long)getpid()) > 0);
+	file = fopen(path,"wb");
+	assert(file != 0);
+	assert(fwrite(buffer,1,prefix,file) == prefix);
+	assert(fprintf(file,"%s,",member) > 0);
+	assert(fwrite(buffer + prefix,1,count - prefix,file) == count - prefix);
+	assert(fclose(file) == 0);
+	SparkModelResidentDeploymentReset(deployment);
+	assert(SparkModelResidentDeploymentLoad(path,deployment) == expected);
+	assert(unlink(path) == 0);
+}
+
+static void TestRequestInflightBudget(void)
+{
+	SparkModelResidentDeployment deployment;
+	TestRootMember("\"request_inflight_budget_ms\": 5000",SPARK_STATUS_OK,&deployment);
+	assert(deployment.request_inflight_budget_ms == 5000u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	TestRootMember("\"request_inflight_budget_ms\": 999",SPARK_STATUS_SCHEMA_ERROR,&deployment);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	assert(SparkModelResidentDeploymentLoad("tests/fixtures/model_resident_deployment.json",&deployment) == SPARK_STATUS_OK);
+	assert(deployment.request_inflight_budget_ms == 0u);
+	SparkModelResidentDeploymentDestroy(&deployment);
+	printf("test_model_resident_deployment: request_inflight_budget_ms loads when given, defaults to the engine's when absent, and is refused below 1000 ms\n");
+}
+
 static void TestDraftServer(void)
 {
 	static const char *const refused[] =
@@ -717,6 +758,7 @@ static void TestChatTemplates(void)
 
 int main(int argc,char **argv)
 {
+	TestRequestInflightBudget();
 	SparkModelResidentDeployment deployment;
 	SparkModelServingAdapterDescriptor descriptor;
 	const SparkModelResidentDeploymentNode *node;

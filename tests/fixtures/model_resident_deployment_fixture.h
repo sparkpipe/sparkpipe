@@ -35,6 +35,7 @@ typedef struct TestModelResidentDeploymentFixture
 	uint32_t node_count;
 	uint32_t coordinator_rank_index;
 	uint32_t eos_token_id;
+	uint32_t request_inflight_budget_ms;
 } TestModelResidentDeploymentFixture;
 
 int32_t TestModelResidentDeploymentWrite(

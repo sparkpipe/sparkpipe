@@ -1361,6 +1361,15 @@ static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *
 	printf("test_model_api_text: %s refuses startup OK\n",label);
 }
 
+static void TestApiModelList(TestApiStack *stack)
+{
+	char response[4096];
+	TestApiHttpCall(stack->api_port,"GET","/v1/models",0,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(response,"\"id\":\"test/model\"") != 0);
+	printf("test_model_api_text: /v1/models names the served adapter's model\n");
+}
+
 static void TestApiIdleWake(TestApiStack *stack)
 {
 	struct timespec delay = {0,120000000L};
@@ -1394,6 +1403,7 @@ int main(void)
 	TestApiStartStack(&stack,0);
 	TestApiStartApi(&stack);
 	TestApiIdleWake(&stack);
+	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiContextLimit(&stack);
 	TestApiStopApi(&stack);

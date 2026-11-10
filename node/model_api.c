@@ -37,7 +37,6 @@
 
 #define API_MAX_INFLIGHT 16u
 
-#define API_DEFAULT_MODEL_ID "sparkpipe-model"
 #define API_WAIT_SLICE_MS 10u
 #define API_STREAM_BATCH_TOKENS 64u
 #define API_UTF8_MAX_SEQUENCE 4u
@@ -1818,16 +1817,23 @@ static void *api_connection(void *arg)
 	}
 	else if (strcmp(method, "GET") == 0 && strcmp(path, "/v1/models") == 0)
 	{
-		const char *model_id = getenv("SPARK_MODEL_ID");
-		char b[256];
-		if (model_id == 0 || model_id[0] == '\0')
-			model_id = API_DEFAULT_MODEL_ID;
-		(void)snprintf(b, sizeof(b),
-			"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
-			"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
-			"\"max_model_len\":%u,\"served\":%llu}]}",
-			model_id, __atomic_load_n(&S.context_limit, __ATOMIC_ACQUIRE), (unsigned long long)S.served);
-		send_response(fd, 200, b);
+		const SparkModelServingAdapterDescriptor *adapter = api_engines_ready() ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+		char b[1024],id[512];
+		size_t id_length = 0u;
+		if (adapter == 0 || adapter->model_id == 0 || !SparkJsonAppendEscaped(id, sizeof(id), &id_length, adapter->model_id, strlen(adapter->model_id)))
+		{
+			api_bringup_json(b, sizeof(b));
+			send_response(fd, 503, b);
+		}
+		else
+		{
+			(void)snprintf(b, sizeof(b),
+				"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
+				"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
+				"\"max_model_len\":%u,\"served\":%llu}]}",
+				id, __atomic_load_n(&S.context_limit, __ATOMIC_ACQUIRE), (unsigned long long)S.served);
+			send_response(fd, 200, b);
+		}
 	}
 	else if (strcmp(method, "POST") == 0 &&
 		(strcmp(path, "/v1/completions") == 0 ||
@@ -2051,19 +2057,8 @@ int main(int argc, char **argv)
 	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u max_shared_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count, dep.max_shared_input_row_count != 0u ? dep.max_shared_input_row_count : dep.runtime_limits.max_input_row_count);
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;
-	cfg.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
-	{
-		const char *budget_env = getenv("SPARK_BATCH_INFLIGHT_BUDGET_NS");
-		if ( budget_env != 0 && budget_env[0] != '\0' )
-		{
-			cfg.inflight_budget_ns = strtoull(budget_env,0,10);
-			if ( cfg.inflight_budget_ns < SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS )
-			{
-				fprintf(stderr,"model_api: SPARK_BATCH_INFLIGHT_BUDGET_NS=%s is below the %llu ns minimum\n",budget_env,(unsigned long long)SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS);
-				return 1;
-			}
-		}
-	}
+	cfg.inflight_budget_ns = dep.request_inflight_budget_ms != 0u ? (uint64_t)dep.request_inflight_budget_ms * UINT64_C(1000000) :
+		SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	cfg.event_function = api_event;
 	cfg.event_context = 0;
 	if ( dep.eos_token_count == 0u || dep.eos_token_count > SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT )

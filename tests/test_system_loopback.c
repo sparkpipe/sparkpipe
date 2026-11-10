@@ -169,6 +169,7 @@ static void TestLoopbackWriteDeployment(TestLoopbackStack *stack)
 	stage_indices[2] = 1u;
 	memset(&fixture,0,sizeof(fixture));
 	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.request_inflight_budget_ms = 5000u;
 	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
@@ -967,7 +968,6 @@ static void TestLoopbackStopStack(TestLoopbackStack *stack)
 static void TestLoopbackBoot(TestLoopbackStack *stack)
 {
 	memset(stack,0,sizeof(*stack));
-	assert(setenv("SPARK_BATCH_INFLIGHT_BUDGET_NS","5000000000",1) == 0);
 	stack->control_tcp_port = TestTcpPortRange(1u);
 	assert(stack->control_tcp_port != 0u);
 	stack->api_port = TestTcpPortRange(1u);

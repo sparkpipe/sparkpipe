@@ -29,6 +29,11 @@ whether the fleet still matches.
 `weightd` at the top holds the device ceiling and KV reserve every node's
 weightd runs with.
 
+The hub API's `model_resident.json` may also carry `request_inflight_budget_ms`:
+how long a request may wait on a submission that is still in flight before its
+client gets BUSY (at least 1000; without it, the engine's 15 minutes). The API
+reads it from the deployment and from nowhere else; no lane record sets it.
+
 ## Rules
 
 `tests/test_lane_records.py` holds every record to these:
