@@ -109,7 +109,11 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
 - **Latency:** 9-12 ms per request; the draft itself is 6-7 ms.
 - **Recording:** `--record-dir DIR` writes every tap connection to an
   `.spt2` file for offline scoring (`tools/spec_offline`). Use it on hold
-  corpora only, never on users' traffic.
+  corpora only, never on users' traffic: a recording holds the token ids,
+  from which the text can be rebuilt. No production swap entry sets
+  `DRAFTD_RECORD_DIR` (`tests/test_model_swap_hub_services.py`); run a
+  recording as a separate drafter on a hold corpus and delete it once
+  scored.
 
 ## Latent block drafter (lightseek DFlash2, offline)
 
