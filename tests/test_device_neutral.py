@@ -83,7 +83,6 @@ PENDING = {
     "include/sparkpipe/spark_model_driver.h": {"handle": 2},
     "include/sparkpipe/spark_model_serving_adapter.h": {"handle": 1},
     "include/sparkpipe/spark_module_abi.h": {"handle": 1},
-    "include/sparkpipe/spark_stage_module_common.h": {"header": 1, "token": 22},
     "include/sparkpipe/spark_stage_runner.h": {"handle": 2},
     "include/sparkpipe/spark_stage_runner_model.h": {"handle": 7},
     "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 3, "header": 1, "token": 23},
@@ -115,7 +114,6 @@ PENDING = {
     "runtime/spark_weightd_map.c": {"header": 1, "token": 67},
     "runtime/spark_weightd_spine.c": {"header": 1, "token": 3},
     "runtime/spark_weightd_worker.c": {"header": 1, "token": 4},
-    "runtime/stage_module_common.c": {"token": 130},
     "runtime/tensor_map.h": {"device-include": 1, "header": 1, "token": 14},
     "src/spark_sha256.c": {"token": 1},
 }

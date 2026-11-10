@@ -4,7 +4,6 @@ Explanations that used to live as comments in the build files. Each note names t
 
 ## Makefile
 
-- **`CUDA_RUNTIME_HEADER`**: stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h. Nothing in this group supplied that path, so the archive could not have built; the tests hid it behind -Itests/cuda_stub.
 - **`spark-cc-supports`**: Architecture tuning for auto-vectorization. The tokenizer and other hot loops are written as portable scalar C that the compiler auto-vectorizes; these flags tell it which vector units the build host actually has, so it emits AVX2 on x86 and NEON or SVE2 on an Arm Grace host, from one source with no intrinsics. ARCH_TUNE_FLAGS can be overridden or set empty for reproducible or cross builds. On Arm the Grace core is Neoverse V2; older compilers that do not know that name fall back to -mcpu=native. The flag is probed so an unsupported one is dropped rather than breaking the build.
 - **`sp_objects`**: Source path to object path, for any source under any directory. The full source path is preserved under build/obj so two files with the same basename in different directories cannot collide. A prefix-stripping patsubst cannot do this: it returns a non-matching entry unchanged, which is how seven .c paths came to sit in *_OBJECTS and abort the parse via -include.
 - **`$(CORE_OBJECTS)`**: Every object is built by the one rule below. Include flags are attached per object list rather than per directory, so moving a source does not change how it is compiled.

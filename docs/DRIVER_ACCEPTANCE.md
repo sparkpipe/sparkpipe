@@ -51,7 +51,7 @@ specialization of hot math while sharing its dispatch and scheduling policy.
 | Page lifetime, residency, immutable prefix sharing | `cache/kv_page_cache.c`, `cache/kv_cache.c`, `cache/prefix_cache.c` | Complete model payload layout, including recurrent state |
 | Page movement | `cache/kv_page_store.c` | Copy callback and opaque device context |
 | Collective orchestration and progress | `ring/transport/tp_device_collective.c` | Device combine/transfer/completion operations |
-| Slot ownership, completion lifetime | `runtime/stage_module_common.c` | Model stage work and final state publication |
+| Slot and index-set ownership | `runtime/stage_module_claims.c` | Model stage work and final state publication |
 | Development hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
 | Production deployment | fleet-agent (`tools/fleet_node_agent.sh`) pulling release roots from the hub over HTTP :8802 ([`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md)) | A coherent release root per rank |
 

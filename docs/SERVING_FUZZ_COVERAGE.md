@@ -17,7 +17,7 @@ The rtx5090 hub (x86_64, glibc 2.43, gcc 15.2, CUDA toolkit installed) could
 not build the campaign before a22a3af (PR #1258): glibc 2.43 declares
 `rsqrtf`, which clashed with the host CUDA shim in
 `tests/host_cuda/lm_host_cuda.cuh`, and with a toolkit present
-`test_stage_module_common` and `test_dsv4_w1_loader` linked no CUDA stub. No
+`test_stage_module_claims` and `test_dsv4_w1_loader` link no CUDA stub. No
 campaign receipt from the hub exists yet.
 
 An exported source archive additionally requires `--source-commit FULL_SHA`.

@@ -67,7 +67,6 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     $(SPARKPIPE_CACHE_SOURCES) \
     text/tokenizer.c \
     text/tokenizer_sidecar.c \
-    runtime/stage_module_common.c \
     runtime/stage_module_claims.c \
     runtime/stage_kv_binding.c \
     runtime/kv_device_copy.c

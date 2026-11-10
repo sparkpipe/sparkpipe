@@ -12,7 +12,13 @@
 #include <time.h>
 #include <unistd.h>
 
-extern "C" SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site);
+static SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site)
+{
+	if ( error == cudaSuccess )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "%s cuda_error site=%s error=%s\n", module_tag, site, cudaGetErrorString(error));
+	return error == cudaErrorMemoryAllocation ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_INTERNAL_ERROR;
+}
 
 #define SPARK_FAMILY_CAMEL MeshBench
 #define SPARK_FAMILY_UPPER MESH_BENCH

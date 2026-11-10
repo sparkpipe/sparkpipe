@@ -5,7 +5,7 @@ controller client, the shared production daemon, lane assignments, lane tiers an
 the performance-evidence rule.
 
 This is the shared workflow for every driver lane. Family code owns geometry,
-tensor descriptions and model math. Reuse stage_module_common for ownership,
+tensor descriptions and model math. Reuse the stage module claims for ownership,
 weightd for shared residency, the serving adapter/session lifecycle, the topology
 generator and tp_device_collective. Do not fork these protocols per model.
 
@@ -139,7 +139,7 @@ manifest producer and verify it against the exact accepted pack. Generic byte
 segments are not a substitute for routed-expert IDs.
 
 An enabled weightd attach must return errors for missing identity/daemon,
-rejected pack and failed consumer import. stage_module_common must propagate
+rejected pack and failed consumer import. The stage runner propagates
 them without allocating a direct copy. Explicitly disabled attach remains a
 direct-load request; it is not a recovery path and is not lazy debugging.
 Families with a specialized pack identity use SparkWeightdAttachMappedPack,
