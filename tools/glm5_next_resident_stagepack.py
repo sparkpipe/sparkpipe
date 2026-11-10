@@ -54,7 +54,7 @@ from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_N
                                SCALE_UE4M3_F32_GLOBAL, f32_to_bf16, fp8_e4m3_lut)
 from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage, publish_link,  # noqa: E402,F401
                                stage_pack_name as named_stage_pack, tp_shard_range)
-from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem  # noqa: E402,F401
+from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, publish_rank_pack  # noqa: E402,F401
 from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, PAYLOAD_ALIGNMENT, Entry,  # noqa: E402,F401
                              codec_directory_offset, codec_header, emit_item, emit_region, place_entries,
                              serialize_entry, truncated_revision, write_prefix)
@@ -358,18 +358,8 @@ def emit_ranks(packers: List[Packer], paths: List[Path], header_extra: Dict[str,
 
 
 def emit(packer: Packer, path: Path, header_extra: Dict[str, Any], revision: str = REVISION) -> None:
-    if path.exists():
-        raise PackFailure(f"output already exists; choose a new artifact path: {path}")
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
-    os.close(fd)
-    try:
-        file_bytes = _emit(packer, Path(temporary), header_extra, revision)
-        publish_link(temporary, path)
-    finally:
-        os.unlink(temporary)
-    print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
-          f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers "
-          f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")
+    publish_rank_pack(packer, path, header_extra["first_layer"], header_extra["layer_count"],
+                      lambda temporary: _emit(packer, temporary, header_extra, revision))
 
 
 def validate_stage(stage_count, stage_index, first_layer, layer_count, owns_embedding, owns_head, mtp):

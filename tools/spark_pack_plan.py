@@ -28,7 +28,7 @@ from spark_pack_codecs import (CODEC_BF16, CODEC_NONE, CODEC_NVFP4, E4M3_FINITE_
                                NVFP4_GROUP, PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, SCALE_F32, SCALE_NONE,
                                SCALE_UE4M3_F32_GLOBAL, bf16_to_f32, f32_to_bf16, fp8_block_dequant_bf16,
                                nvfp4_to_bf16)
-from spark_pack_common import PackFailure, SafetensorsSource, tp_shard_range
+from spark_pack_common import PackFailure, SafetensorsSource, publish_new, tp_shard_range
 from spark_pack_wire import Entry
 
 
@@ -419,3 +419,11 @@ class PlanBuilder:
                 for name in names if not bf16 else ():
                     yield source.expert_scale(name, r0, r1, c0, c1)
         return self.add_item(entry, produce_payload, produce_scale, payload_bytes, scale_bytes, names)
+
+
+def publish_rank_pack(packer: PlanBuilder, path: Path, first_layer: int, layer_count: int,
+                      write: Callable[[Path], int]) -> int:
+    file_bytes = publish_new(path, write)
+    print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
+          f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers {first_layer}..{first_layer + layer_count - 1})")
+    return file_bytes

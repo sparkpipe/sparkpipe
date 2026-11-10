@@ -18,7 +18,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Mapping, Tuple
+from typing import Any, Callable, Dict, Mapping, Tuple
 
 GLOBAL_LAYER = 0xFFFFFFFF
 INDEX_NAME = "model.safetensors.index.json"
@@ -202,6 +202,20 @@ def publish_link(temporary: Path, path: Path) -> None:
         os.fsync(source.fileno())
     os.link(temporary, path)
     fsync_directory(Path(path).parent)
+
+
+def publish_new(path: Path, write: Callable[[Path], Any]) -> Any:
+    path = Path(path)
+    if path.exists():
+        raise PackFailure(f"output already exists; choose a new artifact path: {path}")
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
+    os.close(fd)
+    try:
+        result = write(Path(temporary))
+        publish_link(temporary, path)
+    finally:
+        os.unlink(temporary)
+    return result
 
 
 class HashingWriter:

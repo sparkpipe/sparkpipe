@@ -34,10 +34,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
@@ -47,9 +45,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, CODEC_NONE, CODEC_NVFP4,  # noqa: E402,F401
                                FP8_BLOCK, NVFP4_GROUP, PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, PAYLOAD_U32,
                                SCALE_F32, SCALE_NONE, SCALE_UE4M3_F32_GLOBAL, fp8_block_scale_rows)
-from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage, publish_link,  # noqa: E402,F401
+from spark_pack_common import (GLOBAL_LAYER, PackFailure, check_pipeline_stage,  # noqa: E402,F401
                                stage_pack_name as named_stage_pack)
-from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, to_bytes  # noqa: E402,F401
+from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, publish_rank_pack, to_bytes  # noqa: E402,F401
 from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, PAYLOAD_ALIGNMENT, Entry,  # noqa: E402,F401
                              codec_directory_offset, codec_header, emit_item, place_entries, serialize_entry,
                              truncated_revision, write_prefix)
@@ -327,18 +325,8 @@ def _emit(packer: Packer, path: Path, header_extra: Dict[str, Any], revision: st
 
 
 def emit(packer: Packer, path: Path, header_extra: Dict[str, Any], revision: str, contract_sha256: str) -> None:
-    if path.exists():
-        raise PackFailure(f"output already exists; choose a new artifact path: {path}")
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
-    os.close(fd)
-    try:
-        file_bytes = _emit(packer, Path(temporary), header_extra, revision, contract_sha256)
-        publish_link(temporary, path)
-    finally:
-        os.unlink(temporary)
-    print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes "
-          f"(tp{packer.tp_degree} rank {packer.tp_rank}, layers "
-          f"{header_extra['first_layer']}..{header_extra['first_layer'] + header_extra['layer_count'] - 1})")
+    publish_rank_pack(packer, path, header_extra["first_layer"], header_extra["layer_count"],
+                      lambda temporary: _emit(packer, temporary, header_extra, revision, contract_sha256))
 
 
 def validate_stage(stage_count, stage_index, first_layer, layer_count, owns_embedding, owns_head):
