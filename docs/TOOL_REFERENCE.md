@@ -821,15 +821,14 @@ connects to a running weightd, lazily attaches a pack, then calls
 
 ```sh
 make build/mesh_register_attach_repro
-build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY
+build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY [EXPERT_POOL_CAP_BYTES]
 ```
 
-`tools/mesh_attach_repro_run.sh` runs it against the shared weightd socket.
 The make target links the real CUDA runtime only when
 `$(CUDA_HOME)/include/cuda_runtime.h` exists; otherwise it links
 `tests/cuda_stub/cuda_runtime_stub.c` and the registrations never reach CUDA.
 
-Arguments and environment:
+Arguments:
 
 - `SOCKET`: weightd socket path.
 - `PACK`: a regular, non-empty file. `<PACK>.experts` must load with
@@ -837,13 +836,11 @@ Arguments and environment:
 - `SHA256`: 64 characters, the pack identity digest.
 - `REVISION`: the identity revision.
 - `TOPOLOGY`: 1 to 65535.
-- `SPARK_WEIGHTD_EXPERT_POOL_BYTES`: optional, 1 to 2^40-1, the explicit
-  expert pool cap. The request's `expert_pool_bytes` is
-  `SparkWeightdManifestPoolPlan` of the loaded manifest and that cap (see
-  Pool sizing in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)); a cap
-  the plan refuses exits 2.
-- `SPARK_WEIGHTD_SPINE_BUDGET_BYTES` is parsed but has no effect:
-  `SparkWeightdLazyAttachRequest` has no spine-budget field.
+- `EXPERT_POOL_CAP_BYTES`: optional, 1 to 2^40-1, the explicit expert pool
+  cap. The request's `expert_pool_bytes` is `SparkWeightdManifestPoolPlan` of
+  the loaded manifest and that cap (see Pool sizing in
+  [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)); a cap the plan refuses
+  exits 2.
 
 The identity model is fixed to `glm5_next_stage`. `arena_bytes` is the pack
 file size and `abi_version` is `SPARK_WEIGHTD_IPC_ABI_VERSION`.

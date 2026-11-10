@@ -385,8 +385,8 @@ static int smoke_dev(const char *socket,const char *pack_path,const char *name,
 		SparkWeightdClientClose(client);
 		return -34;
 	}
-	if ( SparkWeightdLazyPackCreate(socket,&request,pool_bytes,(uint64_t)info.st_size + 255u,
-		SMOKE_TIMEOUT,&pack) != SPARK_STATUS_OK )
+	if ( SparkWeightdLazyPackCreate(socket,&request,&(SparkWeightdLazyPackOptions){ .expert_pool_cap_bytes = pool_bytes, .timeout_nanoseconds = SMOKE_TIMEOUT },
+		&pack) != SPARK_STATUS_OK )
 	{
 		SparkWeightdClientClose(client);
 		return -35;

@@ -1945,7 +1945,9 @@ static SparkStatus D41BindEngram(D41ModelState *state, uint64_t *cursor, const S
 static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerConfiguration *configuration)
 {
 	SparkWeightdLazyAttachRequest request;
+	SparkWeightdLazyPackOptions options;
 	memset(&request, 0, sizeof(request));
+	memset(&options, 0, sizeof(options));
 	memcpy(request.identity.pack_sha256, state->engram_sha256, SPARK_SHA256_HEX_BYTES);
 	snprintf(request.identity.model, sizeof(request.identity.model), "%s", "deepseek-v4.1-flash-engram");
 	snprintf(request.identity.revision, sizeof(request.identity.revision), "%s", "official");
@@ -1955,8 +1957,10 @@ static SparkStatus D41AttachEngram(D41ModelState *state, const SparkStageRunnerC
 	if ( strlen(state->engram_path) >= sizeof(request.pack_path) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memcpy(request.pack_path, state->engram_path, strlen(state->engram_path) + 1u);
-	return SparkWeightdLazyPackCreateChecked(configuration->weights.socket_path, &request, 0u, state->engram_bytes + 255u,
-		SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS, D41DenseManifest, state, &state->engram_pack);
+	options.timeout_nanoseconds = SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS;
+	options.manifest_check = D41DenseManifest;
+	options.manifest_check_context = state;
+	return SparkWeightdLazyPackCreate(configuration->weights.socket_path, &request, &options, &state->engram_pack);
 }
 
 static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy_pack)

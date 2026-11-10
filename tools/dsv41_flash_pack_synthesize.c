@@ -223,9 +223,9 @@ int main(int argc,char **argv)
 		return(2);
 	}
 	synth.cursor = SPARK_DSV41_FLASH_STAGEPACK_HEADER_BYTES;
+	memset(&header,0,sizeof(header));
 	if ( fseeko(synth.file,0,SEEK_SET) != 0 || fwrite(&header,sizeof(header),1u,synth.file) != 1u )
 		return(2);
-	memset(&header,0,sizeof(header));
 	header.magic = SPARK_DSV41_FLASH_STAGEPACK_MAGIC;
 	header.format_version = SPARK_DSV41_FLASH_STAGEPACK_FORMAT_VERSION;
 	header.header_bytes = SPARK_DSV41_FLASH_STAGEPACK_HEADER_BYTES;

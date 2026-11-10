@@ -284,7 +284,7 @@ int main(void)
 	assert(SparkSha256File(path,request.identity.pack_sha256) == SPARK_STATUS_OK);
 	assert(SparkWeightdIdentityPrepare(&request.identity) == SPARK_STATUS_OK);
 	snprintf(request.pack_path,sizeof(request.pack_path),"%s",path);
-	assert(SparkWeightdLazyPackCreate(socket_path,&request,2u * CHUNK,PACK_BYTES + 255u,TIMEOUT,&pack) == SPARK_STATUS_OK);
+	assert(SparkWeightdLazyPackCreate(socket_path,&request,&(SparkWeightdLazyPackOptions){ .expert_pool_cap_bytes = 2u * CHUNK, .timeout_nanoseconds = TIMEOUT },&pack) == SPARK_STATUS_OK);
 	assert(pack->attached.chunk_bytes == CHUNK && pack->attached.expert_pool_bytes == 2u * CHUNK);
 	check_fit(pack);
 	check_read_ahead(pack);

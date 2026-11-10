@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 5u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 6u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -56,7 +56,7 @@ typedef struct SparkStageRunnerWeights
 	const char *socket_path;
 	char pack_sha256[SPARK_STAGE_RUNNER_DIGEST_HEX + 1u];
 	uint64_t expert_pool_cap_bytes;
-	uint64_t spine_budget_bytes;
+	uint32_t read_only;
 } SparkStageRunnerWeights;
 
 typedef struct SparkStageRunnerStreamedPrefillConfig

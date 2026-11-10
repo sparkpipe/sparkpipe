@@ -12,9 +12,6 @@ SYSTEMD_RUN = """#!/usr/bin/env bash
 printf '%s\\n' "$*" > "$FAKE_HOME/systemd-run.args"
 """
 SYSTEMCTL = "#!/usr/bin/env bash\nexit 0\n"
-SPINE = """import os, sys
-print(os.path.getsize(sys.argv[1]) + 7)
-"""
 
 
 def write(path, text, mode=0o644):
@@ -55,22 +52,20 @@ def main():
         script.write_text(text.replace(f"cd {lane_root} ", f"cd {root} "))
         for name in ("bin", "packs", "config"):
             (root / name).mkdir(parents=True)
-        write(root / "bin" / "weightd_spine_budget.py", SPINE)
         write(home / "bin" / "systemd-run", SYSTEMD_RUN, 0o755)
         write(home / "bin" / "systemctl", SYSTEMCTL, 0o755)
         (root / "packs" / "pack.sha256").write_text("f" * 64)
-        (root / "spine_budget").write_text("1\n")
         first = pack(packs, "fp8.rank00.pack", 1000, "a" * 64)
         second = pack(packs, "bf16.rank00.pack", 3000, "b" * 64)
-        for adapter_pack, digest, budget in ((first, "a" * 64, 1007), (second, "b" * 64, 3007)):
+        for adapter_pack, digest in ((first, "a" * 64), (second, "b" * 64)):
             result, arguments = start(script, root, home, adapter_pack)
             if result.returncode != 0:
                 failures.append(f"start with {adapter_pack.name} exited {result.returncode}: {result.stderr.strip()[-300:]}")
                 continue
             if (root / "packs" / "pack.sha256").read_text() != digest:
                 failures.append(f"start with {adapter_pack.name} left packs/pack.sha256 {(root / 'packs' / 'pack.sha256').read_text()!r}, not the configured pack's digest")
-            if (root / "spine_budget").read_text().strip() != str(budget) or f"SPARK_WEIGHTD_SPINE_BUDGET_BYTES={budget} " not in arguments:
-                failures.append(f"start with {adapter_pack.name} launched with spine budget {(root / 'spine_budget').read_text().strip()} ({arguments.strip()[:120]}), not the configured pack's {budget}")
+            if "SPARK_" in arguments or "--deployment deployment.json" not in arguments:
+                failures.append(f"start with {adapter_pack.name} launched residentd with SPARK_ inputs or without its deployment ({arguments.strip()[:120]})")
         printed = subprocess.run(["bash", str(script), "pack"], capture_output=True, text=True).stdout.strip()
         if printed != str(second):
             failures.append(f"lane.sh pack printed {printed!r}, not the configured {second}")
@@ -90,7 +85,7 @@ def main():
         print("FAIL " + failure)
     if failures:
         return 1
-    print("PASS stage lane pack identity: lane.sh start takes the expected pack digest and the spine budget from the pack config/adapter.json names, "
+    print("PASS stage lane pack identity: lane.sh start takes the expected pack digest from the pack config/adapter.json names and hands residentd no SPARK_ input, "
           "so a pushed pack switch launches against the new pack, and a configured pack without a sidecar refuses to start; lane.sh pack prints that pack, "
           "and every stage lane's swap-controller warm command warms it")
     return 0

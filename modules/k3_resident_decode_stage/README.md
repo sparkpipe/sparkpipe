@@ -53,10 +53,10 @@ below describe that runner.
   requested lane already has an owner, and `SPARK_STATUS_DUPLICATE` when the
   connection already owns a lane. Two collectives cannot each acquire the
   same lane.
-- The adapter connects once to `SPARK_WEIGHTD_SOCKET` (unset:
-  `SPARK_STATUS_UNSUPPORTED`; connect failure: `SPARK_STATUS_IO_ERROR`),
-  acquires the lane named by the optional `SPARK_WEIGHTD_LANE` with
-  `SparkWeightdClientLaneAcquire`, keeps the connection in `lane_client`, and
+- The adapter connects once to the weightd socket residentd hands it (absent:
+  `SPARK_STATUS_INVALID_ARGUMENT`; connect failure: `SPARK_STATUS_IO_ERROR`),
+  acquires the lane its stage config names in `device_collective.mesh_lane`
+  with `SparkWeightdClientLaneAcquire`, keeps the connection in `lane_client`, and
   passes it as `mesh_lane_client` in both collective configurations. Each
   collective binds its own band of that lane when it is created
   (`SparkWeightdClientLaneBind`). A failed acquire returns
@@ -73,7 +73,7 @@ below describe that runner.
 ### Lazy expert attach
 
 - The runner sets `request.identity.arena_bytes` to the rank pack's file
-  size. `SparkWeightdLazyPackCreateChecked` (`SPARK_STATUS_IO_ERROR`) and the
+  size. `SparkWeightdLazyPackCreate` (`SPARK_STATUS_IO_ERROR`) and the
   daemon attach (`SparkWeightdServerAttachCold`, logged as
   `WDATTACH size-mismatch`, `SPARK_STATUS_INVALID_ARGUMENT`) both reject an
   identity whose `arena_bytes` differs from the pack file size.

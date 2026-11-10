@@ -98,6 +98,7 @@ static void EngineConfigure(TestEngine *engine,const char *tag)
 	configuration->physical_page_count = TEST_PHYSICAL;
 	configuration->pipeline_slot_count = TEST_SLOTS;
 	configuration->pool_source = SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD;
+	configuration->weightd_socket_path = TestKvServerSocket;
 	configuration->backing_directory = engine->backing;
 	configuration->backing_maximum_bytes = (uint64_t)(TEST_LOGICAL - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
 	configuration->snapshot_directory = engine->snapshot;

@@ -22,6 +22,10 @@ def main():
         if len(cells) > 3 and cells[0].startswith("`") and cells[0].strip("`") in lanes:
             readme[cells[0].strip("`")] = cells[3]
     failures = []
+    agent = (ROOT / "tools/fleet_node_agent.sh").read_text()
+    for key, name in (("device_bytes_max", "WEIGHTD_DEVICE_BYTES_MAX"), ("kv_reserve_bytes", "WEIGHTD_KV_RESERVE_BYTES")):
+        if f"\n{name}={document['weightd'][key]}\n" not in agent:
+            failures.append(f"tools/fleet_node_agent.sh starts weightd with a {name} other than deployment/lanes.json weightd.{key} {document['weightd'][key]}")
     original = lane_config.record
     try:
         cold = dict(lanes["kimi-k3"])
@@ -118,7 +122,7 @@ def main():
             elif hub["tokenizer"].get("text_prompt_prefix_token_ids", []) != prefix:
                 failures.append(f"{record_id}: the hub model_resident.json carries text prompt prefix {hub['tokenizer'].get('text_prompt_prefix_token_ids')}, the record {prefix}")
         if record["launcher"] == "stage_lane":
-            generated = stage_lane.swap_entry(record["model"], model, record["lane"])
+            generated = stage_lane.swap_entry(record["model"], model, record["lane"], record.get("expert_pool_cap_bytes"))
             entry = swap.get(record_id, {})
             for key, value in generated.items():
                 if entry.get(key) != value:

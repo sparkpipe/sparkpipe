@@ -127,8 +127,18 @@ int main(int count,char **arguments)
     const size_t output_elements = operation == 0u ? local_elements * degree : exchange != 0u ? local_elements :
         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 ?
             local_elements / degree : local_elements;
-    bench_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 && setenv("SPARK_TP_MESH_RANKS",rank_map,1) == 0,"environment");
-    bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,&topology),"topology");
+    {
+        const char *cursor = rank_map;
+        for (uint32_t i = 0u; i < degree; i++)
+        {
+            char *end = 0;
+            const unsigned long physical = strtoul(cursor,&end,10);
+            bench_require(end != cursor && physical < 16u && (i + 1u == degree ? *end == '\0' : *end == ','),"rank-map");
+            config.mesh_ranks[i] = (uint32_t)physical;
+            cursor = end + 1;
+        }
+    }
+    bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,config.mesh_ranks,&topology),"topology");
     bench_require(cudaFree(0) == cudaSuccess,"cuda-init");
     bench_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
     bench_status(SparkWeightdClientLaneAcquire(owner,lane,&topology,&acquired,BENCH_WAIT_NS),"lane-acquire");
@@ -154,9 +164,10 @@ int main(int count,char **arguments)
     config.connect_timeout_milli = 60000u;
     config.operation_timeout_milli = 30000u;
     config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+    config.weightd_socket_path = socket_path;
     config.mesh_lane_client = owner;
+    config.mesh_lane = lane;
     config.mesh_band_index = 0u;
-    config.collective_identifier = 2u * (uint64_t)lane;
     SparkMeshBenchModuleRegisterCombines(&config);
     bench_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
     void *mapping = 0;

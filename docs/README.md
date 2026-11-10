@@ -26,6 +26,9 @@ current authority.
 - [`MODEL_SUPPORT.md`](MODEL_SUPPORT.md): product model set: checkpoint
   contracts, owner direction, qualification contract.
 - [`MODULE_MAP.md`](MODULE_MAP.md): source ownership boundaries.
+- [`ENVIRONMENT.md`](ENVIRONMENT.md): every environment variable a process
+  reads: the serving path's two-variable handoff, weightd's flag fallbacks,
+  tool variables and DEBUG diagnostics.
 - [`INFERENCE_OS_DESIGN.md`](INFERENCE_OS_DESIGN.md): device-layer memory
   model for hardware independence.
 - [`METAL_BACKEND.md`](METAL_BACKEND.md): kernel launch in the device API,
@@ -79,8 +82,6 @@ current authority.
   gates (quality, parity, prefix, throughput receipts).
 - [`GLM_LAZY_DRIVER_INTEGRATION.md`](GLM_LAZY_DRIVER_INTEGRATION.md): GLM
   expert residency and lazy loading, including the production pin-all mode.
-- [`GLM_REAL_DRIVER_PROBE.md`](GLM_REAL_DRIVER_PROBE.md): single-rank driver
-  probe.
 - [`MIGRATION_GLM5_NEXT_COMMON.md`](MIGRATION_GLM5_NEXT_COMMON.md):
   glm5_next adoption of the common GLM modules.
 
@@ -111,8 +112,6 @@ current authority.
 - [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
   production fleet guide (hub, fleet-agent, releases, the hub serving
   stack, bootstrap, triage). This is the release and operations procedure.
-- [`MULTIDEV_QUICKSTART.md`](MULTIDEV_QUICKSTART.md): parallel development
-  guide: lanes, tiers, queue, performance-evidence rule, model work rules.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract
   and PR evidence.
 - [`DEVCYCLE.md`](DEVCYCLE.md): queue builds and the shared development

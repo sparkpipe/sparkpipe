@@ -267,6 +267,12 @@ int main(int argument_count,char **arguments)
             shared = 1;
             continue;
         }
+        if ( strcmp(arguments[index_argument],"--expert-pool-cap") == 0 && index_argument + 1 < argument_count )
+        {
+            if ( !parse_positive(arguments[++index_argument],SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&cap) )
+                goto usage;
+            continue;
+        }
         if ( filtered_count == (int)(sizeof(filtered)/sizeof(filtered[0])) )
             goto usage;
         filtered[filtered_count++] = arguments[index_argument];
@@ -326,10 +332,7 @@ int main(int argument_count,char **arguments)
          !parse_positive(arguments[5],UINT32_MAX,&topology) ||
          (wset_path == 0 && argument_count > 6 && !parse_positive(arguments[6],UINT32_MAX,&layers)) ||
          (wset_path == 0 && argument_count > 7 && !parse_positive(arguments[7],SPARK_WEIGHTD_EXPERT_COUNT_MAX,&experts)) ||
-         (argument_count > 8 && !parse_positive(arguments[8],UINT64_MAX / UINT64_C(1000000000),&seconds)) ||
-         (getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES") != 0 &&
-          !parse_positive(getenv("SPARK_WEIGHTD_EXPERT_POOL_BYTES"),
-             SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT,&cap)) )
+         (argument_count > 8 && !parse_positive(arguments[8],UINT64_MAX / UINT64_C(1000000000),&seconds)) )
         goto usage;
     if ( strlen(arguments[2]) >= sizeof(request.pack_path) ||
          strlen(arguments[3]) != 64u ||
@@ -492,7 +495,7 @@ usage:
         "                           --shared (warm only an arena a lane already attached with this identity;\n"
         "                              the daemon refuses instead of loading another copy of the pack)\n"
         "                           --identity-print (print the derived identity and exit)\n"
-        "       the pool is sized from PACK.experts as every engine sizes it; SPARK_WEIGHTD_EXPERT_POOL_BYTES,\n"
-        "       when set, is the lane's explicit expert pool cap and must match the engine's\n");
+        "                           --expert-pool-cap BYTES (the lane's explicit expert pool cap, its stage config's\n"
+        "                              expert_pool_cap_bytes; without it the pool is sized from PACK.experts as every engine sizes it)\n");
     return 2;
 }

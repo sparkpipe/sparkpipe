@@ -14,7 +14,6 @@ AGENT = (ROOT / "tools/fleet_node_agent.sh").read_text()
 HEAD = AGENT[:AGENT.index('\necho "$$" > "$PID_FILE"')] + "\n"
 PROD = "prod.fp8.tp16"
 DEV = "dev-l4"
-PACK_SHA = "ab" * 32
 
 
 def deployment(ranks, named="config/stage_{rank:02d}.json"):
@@ -29,9 +28,8 @@ STUB = r'''
 static volatile sig_atomic_t stop;
 static void on_term(int s) { (void)s; stop = 1; }
 int main(int argc, char **argv) {
-    static const char *keys[] = {"SPARK_WEIGHTD_LANE", "SPARK_TP_MESH_RANKS",
-        "SPARK_WEIGHTD_PACK_SHA256", "SPARK_WEIGHTD_EXPERT_POOL_BYTES",
-        "LD_LIBRARY_PATH", "TEST_MODEL_SWITCH", 0};
+    static const char *keys[] = {"SPARK_WEIGHTD_LANE", "SPARK_WEIGHTD_EXPERT_POOL_BYTES",
+        "TEST_RANK_SWITCH", "LD_LIBRARY_PATH", "TEST_MODEL_SWITCH", 0};
     FILE *f = fopen("launch.txt", "w");
     signal(SIGTERM, on_term);
     if (!f) return 1;
@@ -174,13 +172,13 @@ class FleetAgentMultiRoot(unittest.TestCase):
         for index in range(4):
             (self.dev / "config" / f"stage_{index:02d}.json").write_text("{}\n")
         (self.dev / "config" / "rank_index_10").write_text("2\n")
-        (self.dev / "config" / "env_10.env").write_text(f"SPARK_WEIGHTD_PACK_SHA256={PACK_SHA}\n")
+        (self.dev / "config" / "env_10.env").write_text("TEST_RANK_SWITCH=rank10\n")
         self.write_agent_env()
         (self.home / "sparkdata" / DEV).symlink_to(self.dev)
 
     def write_agent_env(self, extra="", memory_max="AGENT_MEMORY_MAX=40G\n", need="AGENT_MEMORY_NEED_GIB=36\n"):
         (self.dev / "agent.env").write_text(
-            "SPARK_WEIGHTD_LANE=4\nSPARK_TP_MESH_RANKS=10,11,12,13\nTEST_MODEL_SWITCH=a b=c\n"
+            "TEST_MODEL_SWITCH=a b=c\n"
             "AGENT_SYNC=local\n" + memory_max + need + extra)
 
     def run_agent(self, body, roots=PROD):
@@ -227,9 +225,8 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
         self.assertEqual(pid, dev_pid)
         self.assertLess(dev_pid, prod_pid)
         self.assertEqual(args, ["--deployment", "model_resident.json", "--rank-index", "2"])
-        self.assertEqual(env["SPARK_WEIGHTD_LANE"], "4")
-        self.assertEqual(env["SPARK_TP_MESH_RANKS"], "10,11,12,13")
-        self.assertEqual(env["SPARK_WEIGHTD_PACK_SHA256"], PACK_SHA)
+        self.assertEqual(env["SPARK_WEIGHTD_LANE"], "<unset>")
+        self.assertEqual(env["TEST_RANK_SWITCH"], "rank10")
         self.assertEqual(env["TEST_MODEL_SWITCH"], "a b=c")
         self.assertEqual(env["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "<unset>")
         self.assertEqual(env["LD_LIBRARY_PATH"], str(self.dev / "lib"))
@@ -248,16 +245,20 @@ echo "PIDS $(root_pid {PROD}) $(root_pid {DEV})"
             self.assertEqual([path for path in (root / "config").iterdir() if path.is_symlink()], [])
             self.assertFalse(os.path.lexists(root / "config" / "stage.json"))
 
-    def test_production_root_passes_only_an_explicit_expert_pool_cap(self):
-        result = self.run_agent(f'''
-G5_EXPERT_POOL_CAP_BYTES=4294967296
-start_root {PROD} && wait_ready {PROD} || exit 4
+    def test_expert_pool_cap_variables_refuse_the_start(self):
+        for variable in ("G5_EXPERT_POOL_CAP_BYTES=4294967296", "G5_EXPERT_POOL_BYTES=34359738368"):
+            result = self.run_agent(f'''
+{variable}
+start_root {PROD} && exit 5
+exit 0
 ''')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.launch(self.prod)[2]["SPARK_WEIGHTD_EXPERT_POOL_BYTES"], "4294967296")
-        (self.prod / "launch.txt").unlink()
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+            self.assertFalse((self.prod / "launch.txt").exists())
+
+    def test_spark_keys_in_a_root_environment_are_refused(self):
+        self.write_agent_env("SPARK_WEIGHTD_LANE=4\n")
         result = self.run_agent(f'''
-G5_EXPERT_POOL_BYTES=34359738368
+ROOT_LIST={DEV}
 start_root {DEV} && exit 5
 exit 0
 ''')

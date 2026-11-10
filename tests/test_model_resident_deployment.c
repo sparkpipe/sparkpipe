@@ -758,7 +758,6 @@ static void TestChatTemplates(void)
 
 int main(int argc,char **argv)
 {
-	TestRequestInflightBudget();
 	SparkModelResidentDeployment deployment;
 	SparkModelServingAdapterDescriptor descriptor;
 	const SparkModelResidentDeploymentNode *node;
@@ -782,6 +781,7 @@ int main(int argc,char **argv)
 		return(status == SPARK_STATUS_OK ? 0 : 1);
 	}
 	assert(argc == 1);
+	TestRequestInflightBudget();
 	TestEosMetadata("\"eos_token_ids\":[0,154820],",SPARK_STATUS_OK);
 	TestEosMetadata("\"eos_token_ids\":[],",SPARK_STATUS_SCHEMA_ERROR);
 	TestEosMetadata("\"eos_token_ids\":[1,1],",SPARK_STATUS_SCHEMA_ERROR);

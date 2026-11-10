@@ -792,6 +792,8 @@ Each document is the authority for one thing:
   separate from projections;
 - [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md): host
   roles, releases and fleet operations;
+- [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md): every environment variable a
+  process reads; the serving path reads only residentd's own handoff;
 - [`docs/README.md`](docs/README.md): index of maintained technical
   references.
 

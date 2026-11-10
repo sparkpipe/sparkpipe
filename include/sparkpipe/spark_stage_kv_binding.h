@@ -200,6 +200,7 @@ typedef struct SparkStageKvConfiguration
 	uint32_t pipeline_slot_count;
 	SparkKvShard context_shard;
 	uint32_t pool_source;
+	const char *weightd_socket_path;
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
@@ -224,6 +225,7 @@ struct SparkStageKvBinding
 	uint32_t max_sequence_positions;
 	uint32_t pipeline_slot_count;
 	uint32_t pool_source;
+	const char *weightd_socket_path;
 	SparkKvShard context_shard;
 	SparkStageKvRegion regions[SPARK_STAGE_KV_MAX_REGIONS];
 	uint8_t *region_base[SPARK_STAGE_KV_MAX_REGIONS];
