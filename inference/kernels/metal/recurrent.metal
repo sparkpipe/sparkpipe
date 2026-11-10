@@ -48,7 +48,7 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 		}
 		for ( uint tap = 0u; tap < taps_count; tap++ )
 			total += taps[tap * dilation] * weights[tap];
-		if ( p.weight_f32 == 0u )
+		if ( p.weight_f32 == 0u && p.swish_once == 0u )
 			total = SparkMathRoundBf16(total);
 		output[(ulong)row * p.row_stride + channel] = SparkMathFloatToBf16(SparkMathSwishFast(total));
 	}

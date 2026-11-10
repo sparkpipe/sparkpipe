@@ -115,6 +115,7 @@ struct K3Device
 		shape->pack_alignment = KD_ALIGNMENT;
 		shape->epsilon = K3_RMS_EPSILON;
 		shape->projection = SPARK_PROJECTION_GEMV;
+		shape->norm_round_first = 1u;
 		memset(delta, 0, sizeof(*delta));
 		delta->heads = kKdaHeads;
 		delta->dimension = K3_KDA_KEY_DIM;
@@ -324,6 +325,7 @@ struct K3Device
 		norm.rows = c.t.rows;
 		norm.dimension = norm.input_stride = norm.output_stride = width;
 		norm.epsilon = epsilon;
+		norm.round_first = c.state->stage.shape->norm_round_first;
 		return SparkOpsRmsNormResidual(c.state->stage.ops, c.queue, input, 0, weight, output, &norm);
 	}
 

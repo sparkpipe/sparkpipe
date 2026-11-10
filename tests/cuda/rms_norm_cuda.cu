@@ -25,7 +25,7 @@ void ProbeReferenceNormKernel(const uint16_t *__restrict__ input_bf16, const uin
 	{
 		float value = LmBf16ToFloat(input_bf16[base + index]);
 		if ( residual_bf16 != 0 )
-			value += LmBf16ToFloat(residual_bf16[base + index]);
+			value = LmBf16ToFloat(LmFloatToBf16(value + LmBf16ToFloat(residual_bf16[base + index])));
 		row[index] = value;
 		total += value * value;
 		if ( residual_out_bf16 != 0 )

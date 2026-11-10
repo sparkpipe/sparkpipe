@@ -130,6 +130,7 @@ struct Glm52Dimensions : GlmDefaults
 	static constexpr uint32_t kExpertInter = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
 	static constexpr uint32_t kDenseInter = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION;
 	static constexpr float kRmsEpsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr float kIndexEpsilon = SPARK_GLM52_MODEL_DSA_INDEX_NORM_EPSILON;
 	static constexpr float kIndexScale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
 	static constexpr float kRopeTheta = SPARK_GLM52_MODEL_ROPE_THETA;
@@ -138,6 +139,7 @@ struct Glm52Dimensions : GlmDefaults
 	static uint32_t FullIndexer(uint32_t layer) { return SparkGlm52StagePackLayerHasFullIndexer(layer); }
 	static const SparkGlm52StagePackGeometry *PackGeometry(void) { return SparkGlm52StagePackGeometryGlm52(); }
 	static constexpr LmRopePairing kIndexPairing = LM_ROPE_INTERLEAVED;
+	static constexpr bool kRopeRoundedTerms = true;
 };
 
 static_assert(LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS == GLM_SPLIT_PARTITIONS, "split-partials sizing matches the kernel's partition cap");
@@ -371,7 +373,8 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 		total = LmBlockSum<GLM_THREADS>(total, reduction);
 		scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
 		for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-			query_row[index] = LmFloatToBf16(query[index] * scale * LmScalarToFloat(query_norm[index]));
+			query_row[index] = LmFloatToBf16(S::kNormRoundFirst ? SparkMathNormGainRounded(query[index] * scale, LmScalarToFloat(query_norm[index])) :
+				query[index] * scale * LmScalarToFloat(query_norm[index]));
 		if constexpr ( S::kQueryConcat )
 			for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
 			{
@@ -391,15 +394,16 @@ static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel
 	total = LmBlockSum<GLM_THREADS>(total, reduction);
 	scale = SparkMathRmsScale(total, (float)S::kLatent, epsilon);
 	for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
-		slot_out[(uint64_t)row * S::kSlot + index] = index < S::kLatent ? LmFloatToBf16(latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
+		slot_out[(uint64_t)row * S::kSlot + index] = index < S::kLatent ? LmFloatToBf16(S::kNormRoundFirst ?
+			SparkMathNormGainRounded(latent[index] * scale, LmScalarToFloat(latent_norm[index])) : latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
 			LmFloatToBf16(latent[index]);
 	__syncthreads();
 	position = (float)positions[row];
 	for ( index = threadIdx.x; index < half; index += GLM_THREADS )
 		if constexpr ( S::kRopeTable )
-			LmRopeRotate<LM_ROPE_INTERLEAVED>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half, position * rope_table[index]);
+			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half, position * rope_table[index]);
 		else
-			LmRopeRotate<LM_ROPE_INTERLEAVED>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half,
+			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half,
 				position * __powf(theta, -2.0f * (float)index / (float)rope_dimension));
 }
 
@@ -551,7 +555,7 @@ static int32_t GlmIndexerKeys(const GlmBuffers *b, uint32_t rows, uint32_t sms, 
 		return status;
 	LM_LAUNCH((LmLayerNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kIndexDim + 8u) * sizeof(float), stream,
 		b->index_key_bf16, b->weights->index_norm_weight, b->weights->index_norm_bias, b->index_key_bf16, S::kIndexDim, S::kIndexDim, S::kIndexEpsilon);
-	LM_LAUNCH((LmRopeKernel<GLM_THREADS,S::kIndexPairing,S::kRopeTable>), rows, GLM_THREADS, 0, stream,
+	LM_LAUNCH((LmRopeKernel<GLM_THREADS,S::kIndexPairing,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), rows, GLM_THREADS, 0, stream,
 		b->index_key_bf16, b->positions, S::kIndexDim, 0u, S::kRope, S::kRopeTheta, b->rope_table);
 	LM_LAUNCH((LmKvShardStoreKernel<GlmIndexKv<S>,GLM_THREADS>), rows, GLM_THREADS, 0, stream,
 		b->index_shard, b->index_key_bf16, b->sequence_of_row, b->positions, rows, S::kIndexDim);
@@ -567,10 +571,10 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( S::kRopeTable )
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, S::kRope, S::kRopeTheta, b->rope_table, 1.0f, 0u);
 	else
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, 0u, S::kRope, S::kRopeTheta);
 	return GlmLaunched();
 }
@@ -641,7 +645,7 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	int32_t status = LM_LAUNCH_OK;
 	if ( b->prenormed == 0u )
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->hidden_bf16, b->residual_bf16, b->weights->attn_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
 		if ( GlmNormGate<S>(b->normed_bf16, b->weights->attn_gate_down, b->weights->attn_gate_up, b->gate_bottleneck, rows, stream) != LM_LAUNCH_OK )
 			return LM_LAUNCH_ERR_LAUNCH;
@@ -684,7 +688,7 @@ static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t
 		sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
+	LM_LAUNCH((LmExtractRopePerHeadKernel<GLM_THREADS,LM_ROPE_INTERLEAVED,S::kRopeTable,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,b->attn_heads), GLM_THREADS, 0, stream,
 		b->q_bf16, b->query_rope_bf16, b->positions, b->attn_heads, S::kQueryHead, S::kNope, S::kRope, S::kRopeTheta, b->rope_table);
 	if ( LmPerHeadProjectChainLaunch<GLM_THREADS,S::kNope,S::kLatent,S::kQueryHead,0u>(b->q_bf16, b->weights->kv_b_key + (uint64_t)b->tp_rank *
 			b->attn_heads * S::kLatent * S::kNope, b->query_latent_bf16, b->attn_heads, rows, stream) != cudaSuccess )
@@ -847,7 +851,7 @@ static int32_t GlmDenseMlp(const GlmBuffers *b, uint32_t rows, uint32_t sms, cud
 {
 	int32_t status;
 	if ( b->prenormed == 0u )
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
 	status = GlmLinear<S>(b->normed_bf16, b->weights->dense_gate_up, b->gate_up_bf16, rows, S::kHidden, b->dense_gate_up_rows, b->dense_gate_up_rows, 0u, sms, b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -862,7 +866,7 @@ static int32_t GlmMoeRoute(const GlmBuffers *b, uint32_t rows, uint32_t packed_r
 	int32_t status;
 	if ( b->prenormed == 0u )
 	{
-		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
+		LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 			b->attention_out_bf16, b->residual_bf16, b->weights->post_norm, b->residual_bf16, b->normed_bf16, S::kHidden, S::kHidden, S::kRmsEpsilon);
 		if ( GlmNormGate<S>(b->normed_bf16, b->weights->post_gate_down, b->weights->post_gate_up, b->gate_bottleneck, rows, stream) != LM_LAUNCH_OK )
 			return LM_LAUNCH_ERR_LAUNCH;
@@ -2055,7 +2059,7 @@ struct GlmModel
 			state->row_share);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		GlmRowShareNorm<GLM_THREADS>(&row, state->row_share, state->residual, weight, keep_residual, state->row_normed, S::kHidden, S::kRmsEpsilon, stream);
+		GlmRowShareNorm<GLM_THREADS,S::kNormRoundFirst>(&row, state->row_share, state->residual, weight, keep_residual, state->row_normed, S::kHidden, S::kRmsEpsilon, stream);
 		if ( GlmLaunched() != LM_LAUNCH_OK || GlmNormGate<S>(state->row_normed, gate_down, gate_up, state->gate_bottleneck, row.count, stream) != LM_LAUNCH_OK )
 			return Fail("row shard norm", layer, LM_LAUNCH_ERR_LAUNCH);
 		return Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, row.share, 0u, state->row_normed, state->normed);
@@ -2295,7 +2299,7 @@ struct GlmModel
 				return Fail("kv digest check", S::kLayers, LM_LAUNCH_ERR_LAUNCH);
 		}
 		if ( RowSharded(wave) == 0u )
-			LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
+			LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 				hidden, state->residual, state->final_norm, 0, state->normed, S::kHidden, S::kHidden, S::kRmsEpsilon);
 		if ( wave->ordered != 0u )
 			GlmRowsScatterKernel<<<rows, GLM_THREADS, 0, stream>>>(state->order + wave->first, state->normed, step->hidden_bf16, S::kHidden);

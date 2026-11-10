@@ -14,7 +14,7 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 	{
 		float value = SparkMathBf16ToFloat(x[i]);
 		if ( p.has_addend != 0u )
-			value += SparkMathBf16ToFloat(a[i]);
+			value = SparkMathResidualSum(value, SparkMathBf16ToFloat(a[i]));
 		total += value * value;
 	}
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
@@ -24,11 +24,11 @@ kernel void spark_rmsnorm_residual(constant SparkNormParams &p [[buffer(0)]], de
 		float value = SparkMathBf16ToFloat(x[i]);
 		if ( p.has_addend != 0u )
 		{
-			value += SparkMathBf16ToFloat(a[i]);
+			value = SparkMathResidualSum(value, SparkMathBf16ToFloat(a[i]));
 			if ( p.write_sum != 0u )
 				x[i] = SparkMathFloatToBf16(value);
 		}
-		y[i] = SparkMathFloatToBf16(p.weightless != 0u ? value * scale : value * scale * weight[i]);
+		y[i] = SparkMathFloatToBf16(p.weightless != 0u ? value * scale : p.round_first != 0u ? SparkMathNormGainRounded(value * scale, weight[i]) : value * scale * weight[i]);
 	}
 }
 
@@ -49,7 +49,7 @@ kernel void spark_rmsnorm_bf16(constant SparkNormParams &p [[buffer(0)]], device
 	total = SparkGroupSum(total, scratch, lane, simd, simds);
 	const float scale = SparkMathRmsScale(total, float(p.dimension), p.epsilon);
 	for ( uint i = tid; i < p.dimension; i += threads )
-		y[i] = SparkMathFloatToBf16(SparkMathRoundBf16(SparkMathBf16ToFloat(x[i]) * scale) * SparkMathBf16ToFloat(weight[i]));
+		y[i] = SparkMathFloatToBf16(SparkMathNormGainRounded(SparkMathBf16ToFloat(x[i]) * scale, SparkMathBf16ToFloat(weight[i])));
 }
 
 kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], device const ushort *input [[buffer(1)]],
@@ -74,6 +74,13 @@ kernel void spark_rmsnorm_gate(constant SparkGatedNormParams &p [[buffer(0)]], d
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
 		float value;
+		if ( p.round_once != 0u && p.weight_f32 == 0u )
+		{
+			const float g_once = SparkMathBf16ToFloat(g[i]);
+			y[i] = SparkMathFloatToBf16(SparkMathRmsNormGateOnce(SparkMathBf16ToFloat(x[i]), scale, SparkMathBf16ToFloat(weight[i]),
+				p.sigmoid_gate != 0u ? SparkMathSigmoidFast(g_once) : SparkMathSiluFast(g_once)));
+			continue;
+		}
 		if ( p.weight_f32 != 0u )
 		{
 			value = SparkMathBf16ToFloat(x[i]) * scale * ((device const float *)weight)[i];
@@ -108,7 +115,8 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 	const float scale = p.plain != 0u ? 1.0f : SparkMathRmsScale(total, float(p.head_dimension), p.epsilon);
 	for ( uint i = tid; i < p.head_dimension; i += threads )
 	{
-		const float value = SparkMathRoundBf16(p.has_weight != 0u ? SparkMathBf16ToFloat(x[i]) * scale * weight[i] : SparkMathBf16ToFloat(x[i]) * scale);
+		const float scaled = SparkMathBf16ToFloat(x[i]) * scale;
+		const float value = SparkMathRoundBf16(p.has_weight == 0u ? scaled : p.round_first != 0u ? SparkMathNormGainRounded(scaled, weight[i]) : scaled * weight[i]);
 		normed[i] = p.multiply != 0.0f ? SparkMathRoundBf16(value * p.multiply) : value;
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -121,11 +129,12 @@ kernel void spark_head_rmsnorm_rope(constant SparkHeadRopeParams &p [[buffer(0)]
 			const bool low = p.interleaved != 0u ? i % 2u == 0u : i < half_rope;
 			const uint mate = p.interleaved != 0u ? (low ? i + 1u : i - 1u) : (low ? i + half_rope : i - half_rope);
 			const float angle = position * p.inverse_frequency[p.interleaved != 0u ? i / 2u : i % half_rope];
-			const float c = SparkMathRopeCos(angle, p.scale), s = SparkMathRopeSin(angle, p.scale);
-			if ( p.rope_rounded_terms != 0u )
+			const float cosine = SparkMathRopeCos(angle, p.scale), sine = SparkMathRopeSin(angle, p.scale);
+			const float c = p.rope_rounding == SPARK_ROPE_ROUNDING_BF16_TRIG ? SparkMathRoundBf16(cosine) : cosine;
+			const float s = p.rope_rounding == SPARK_ROPE_ROUNDING_BF16_TRIG ? SparkMathRoundBf16(sine) : sine;
+			if ( p.rope_rounding == SPARK_ROPE_ROUNDING_TERMS )
 			{
-				const float partner = low ? -normed[mate] : normed[mate];
-				value = SparkMathRoundBf16(SparkMathRoundBf16(value * SparkMathRoundBf16(c)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(s)));
+				value = SparkMathRopeRoundedTerm(value, low ? -normed[mate] : normed[mate], c, s);
 			}
 			else
 				value = low ? SparkMathRopeLow(value, normed[mate], c, s) : SparkMathRopeHigh(normed[mate], value, c, s);

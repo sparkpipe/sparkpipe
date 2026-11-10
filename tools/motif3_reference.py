@@ -31,11 +31,14 @@ Semantics follow the publisher's modeling_motif.py at revision 2ed2ed5c:
   gate = bf16(bf16(q_latent) wq_b_gate); latent | k_pe = bf16(x wkv_a);
   k_nope | v = bf16(kv_norm(latent) wkv_b) per KV head; rope (rotate-half on
   the 64 rope dims, cos/sin rounded to bf16) with YaRN on full layers
-  (layer % 4 == 0) and plain theta 1e4 on window layers (129 keys). The
-  softmax runs in f32 on f32 scores (scale 192^-0.5, times mscale^2 on full
-  layers) and its probabilities round to bf16. Heads come in 16 groups of
-  five: out = sig - bf16(sigmoid(lambda)) x noise, times bf16(sigmoid(gate)),
-  then wo.
+  (layer % 4 == 0) and plain theta 1e4 on window layers (129 keys). Every
+  head's softmax, signal and noise heads alike, runs on f32 scores (scale
+  192^-0.5, times mscale^2 on full layers) in the publishers' flash form:
+  weights w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+  diagonal (tools/reference_flash.py), the values multiplied by bf16(w), that product
+  divided in f32 by the sum of the f32 weights and rounded to bf16. Heads
+  come in 16 groups of five: out = sig - bf16(sigmoid(lambda)) x noise,
+  times bf16(sigmoid(gate)), then wo.
 - MLPs: gate and up clamped at +-1e6; PolyNorm poly = sigmoid(w0) n(g^3) +
   sigmoid(w1) n(g^2) + sigmoid(w2) n(g) + b in f32 with n(x) = x /
   sqrt(mean x^2 + 1e-6). Dense layers and the shared expert: bf16(poly x u)
@@ -61,6 +64,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash  # noqa: E402
 from t1_reference_common import matmul  # noqa: E402
 
 PREFIX = "model."
@@ -76,7 +80,7 @@ def bf16(values):
 
 def product(left, right):
     if FP32:
-        return np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32)
+        return device.accumulated(left, right, np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32))
     return matmul(left, right)
 
 
@@ -224,9 +228,8 @@ class Reference:
             kv_head = head // per_kv
             scores = (product(q[:, head, :self.nope], k_nope[:, kv_head, :].T) + product(q_pe[:, head, :], k_pe.T)) * scale
             scores = np.where(visible, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
-            heads[:, head, :] = bf16(product(weights, value[:, kv_head, :]))
+            attended, total, _ = flash.attend(scores, value[:, kv_head, :], product, lambda weights: weights.sum(axis=-1, keepdims=True), device.exp, bf16)
+            heads[:, head, :] = bf16(flash.normalize(attended, total))
         grouped = heads.reshape(rows, self.groups, self.group, self.value_dim)
         signal = grouped[:, :, :self.group - 1, :].reshape(rows, -1, self.value_dim)
         noise = np.repeat(grouped[:, :, self.group - 1, :], self.group - 1, axis=1)

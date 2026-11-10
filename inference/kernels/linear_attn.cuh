@@ -37,7 +37,7 @@ void LmGdnGateKernel(const uint16_t *__restrict__ decay_logit_bf16, const uint16
 	scalar = ((uint64_t)row * heads) + head;
 	logit = ((uint64_t)row * (logit_stride != 0u ? logit_stride : heads)) + head;
 	shifted = LmBf16ToFloat(decay_logit_bf16[logit]) + head_bias[head];
-	factor = SparkMathGatedDeltaDecayFast(head_log_scale[head],shifted);
+	factor = SparkMathGatedDeltaDecay(head_log_scale[head],shifted);
 	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		retention[(scalar * KEY_DIM) + index] = factor;
 	if ( threadIdx.x == 0u )
@@ -805,7 +805,8 @@ static inline cudaError_t LmDeltaRuleLaunch(uint32_t rows, uint8_t *state_pool, 
 enum LmConvActivation
 {
 	LM_CONV_NONE = 0,
-	LM_CONV_SWISH = 1
+	LM_CONV_SWISH = 1,
+	LM_CONV_SWISH_ONCE = 2
 };
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
@@ -861,6 +862,8 @@ static __device__ __forceinline__ void LmCausalConvBody(uint16_t *__restrict__ w
 				total = LmBf16ToFloat(LmFloatToBf16(total));
 			total = SparkMathSwishFast(total);
 		}
+		if ( ACTIVATION == LM_CONV_SWISH_ONCE )
+			total = SparkMathSwishFast(total);
 		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 	}
 	if ( commit == 0u || parent_rows != 0 )
@@ -948,6 +951,8 @@ static __device__ __forceinline__ void LmCausalConvTiledBody(uint16_t *__restric
 					total = LmBf16ToFloat(LmFloatToBf16(total));
 				total = SparkMathSwishFast(total);
 			}
+			if ( ACTIVATION == LM_CONV_SWISH_ONCE )
+				total = SparkMathSwishFast(total);
 			output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 		}
 		__syncthreads();

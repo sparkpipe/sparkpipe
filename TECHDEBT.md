@@ -59,6 +59,18 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Mesh collectives
 
+- Solar Open 2's TP partials stay FP32 on Metal only (2026-11-06). Its
+  geometry sets `kTpPartialsF32`: the Metal Ling stage writes the attention,
+  KDA, expert and shared partials in FP32 and sums them with
+  `SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32`. CUDA's Ling
+  stage does not read the switch and the device collective has no FP32 sum,
+  so Solar on the fleet still rounds every rank's partial, and every
+  tensor-parallel expert's slice, to BF16 before the sum; on Metal FP32
+  partials cut Solar's paired excess share from 0.036 to 0.026. Closing it
+  needs an FP32 all-reduce in the device collective (twice the bytes per
+  sum, plain and pair-first), FP32 output projections, expert and shared
+  down projections and an FP32 weighted finalize in `ling_stage.cuh` under
+  the switch, and Solar's CUDA gate against its flash-form references.
 - Prefill sums go pair-first (2026-11-02, unproven on the fleet). The stage
   runner turns a family's BF16 all-reduce into the pair-first all-reduce
   (`SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16`, chosen by
@@ -1558,7 +1570,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
   ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md#shared-kernel-math)):
   bf16 conversion, sigmoid and SiLU (29 CUDA copies), softplus with the
   gated-delta decay, the head-gate softplus, the tanh GeLU, the softcap,
-  the RMS scale, the rotary rotation, the KDA layers' bounded decay
+  the RMS scale, the residual add before a norm (`SparkMathResidualSum`),
+  the gain after a rounded norm (`SparkMathNormGainRounded`),
+  the rotary rotation, the KDA layers' bounded decay
   (`SparkMathBoundedDecay`) and the clamped GLU (`SparkMathClampedGlu`,
   `LmSiluMulLimitKernel`) are there. Still a copy per kernel or per backend:
   - `LingSiluClampPackedKernel` writes the clamped GLU out: it clamps the up
@@ -1574,19 +1588,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - rotary angles (CUDA's `__powf(theta, -2i/d)` in the kernel against
     Metal's host table in double), the delta-rule cell update,
     online-softmax merges and the log-probability reduction;
-  - the Gemma family's rotation: Metal keeps the publisher's eager rounding
-    of the rotary terms, which the reference follows, while CUDA rotates in
-    FP32 (`SparkMathRopeLow`). On Metal, CUDA's rotation took Gemma 4 26B's
-    gate from passing to paired +3.80 / +3.78 sigma, Muse Glimmer's from
-    +3.37 / passing to +5.81 / +4.33, and moved 31B only from +4.8 / +4.3
-    to +3.48 / +3.86, so the two backends differ here until
-    CUDA's Gemma path takes the eager rounding (a CUDA change with its own
-    qualification);
   - expressions that differ inside a backend, each a numerical change that
     needs the affected model's gate: the experts' tanh GeLU
     (`SparkMathGeluTanhScaleFirst`, shared by both backends) multiplies
     `0.044715 * g * g * g` from the left, while the dense one (and PyTorch)
-    cube first, so Gemma 4's dense and expert FFNs round differently; the
+    cube first; on BF16 inputs the two round to the same BF16 GeLU for
+    every value in FP32 with NumPy's tanh (a one-ulp difference in the
+    inner argument for 260 inputs never reaches the rounded output), so
+    only the code text differs; the
     head-gate softplus (`SparkMathSoftplusGate`) uses `log1p(exp(x))`, the
     gated delta `__logf(1 + __expf(x))`. The causal convolution's swish is
     `SparkMathSwishFast` (`x * sigmoid(x)`) on both backends;
@@ -1598,27 +1607,57 @@ and the multidev docs on 2026-09-28. Line numbers are in
     outside (+3.14 against A). With CUDA's rescale, 31B (+4.8 / +4.3) and Muse
     (+3.37 against A) fail the paired test; the attention arithmetic that
     takes all four through, on both backends, is still open;
-  - the residual norm: both backends take the statistic and the normed
-    value from the FP32 sum of residual and branch and store only the
-    residual rounded (CUDA's `LmFusedResidualRmsNormKernel` in the Gemma,
-    Qwen, Ling and GLM 5.2 stages, and Metal's `spark_rmsnorm_residual`
-    since it stopped rounding the sum first), where the publishers' eager
-    modules (and so the gate references) round the sum and normalise the
-    rounded value. Taking CUDA's order moved the paired test from +2.42 /
-    +3.37 sigma to +0.28 / +1.35 for Ling 3.0 Flash (which now passes), from
-    +2.90 / +2.28 to +0.85 / +0.84 for Gemma 4 26B, from -2.10 / +2.01 to
-    +0.47 / +1.32 for Qwen3.8-27B, from +1.79 / +2.05 to +0.78 / +2.97 for
-    Ling 3.0 Flash Fin and from -0.30 / +1.25 to +1.72 / +1.62 for Qwen 3.8
-    Flash, all passing, and from +1.44 / +0.22 to +3.33 / -0.32 for Laguna,
-    which now fails against reference a although its CUDA stage uses the same
-    fused norm; Gemma 4 31B's and Muse Glimmer's gate numbers are identical
-    to the last digit. Both backends apply the gain with one rounding,
-    `bf16(x r w)`, where the publishers round `x r` first, and keep the
-    attention probabilities and the GQA gate in FP32 where the publishers
-    round them: at Solar Open 2's layer 0 (GQA, no residual add before it)
-    Metal's output is 2.5e-3 of its norm from reference a against an a/b
-    floor of 8.3e-5, giving the reference those three roundings brings it
-    to 1.75e-3, and the rest is not located yet;
+  - the norms against the publishers: the residual add before a norm
+    rounds to BF16 first on both backends (`SparkMathResidualSum` in CUDA's
+    `LmFusedResidualRmsNormKernel` and Metal's `spark_rmsnorm_residual`), as
+    the publishers' eager `residual + hidden_states` does, and the gain
+    follows each publisher: Ling, Laguna, K-EXAONE, Solar Open 2, GLM 5.3,
+    A.X K2, Kimi K3 and Motif 3 round the normed value before the BF16 gain
+    (`weight * x.to(bf16)`, `SparkMathNormGainRounded`, `kNormRoundFirst`),
+    Gemma 4, Muse Glimmer, Qwen 3.8 and DeepSeek V4.1 Flash round once, and
+    MiMo, HY4 and GLM 5.3 Flash already ran the twice-rounding BF16 norm.
+    Motif 3's publisher keeps its q-lora norm in FP32 and multiplies it
+    into `wq_b` in FP32; both backends round that norm once to BF16
+    (`SparkDeviceLatentAttentionShape.query_norm_once`), and its
+    hyper-connection site does not round the normed streams before the mix
+    as the reference's `bf16(w bf16(x r))` does. Its reference rounds the
+    normalised attention probabilities to BF16 (the publisher's eager form),
+    where both backends now round the unnormalised weights (its flash form). The
+    multi-floor gate fails Motif at TP8 at +3.71 standard errors after the
+    norm changes (+2.77 before), with Metal's KL 1.03 to 1.09 times the
+    floors. Metal's paired excess is +0.017 for Solar Open 2 and +0.025
+    for Motif, which suggests one systematic difference remains.
+    Until then both backends normalised the FP32 sum and rounded the gain
+    once everywhere, and `tools/glm52_reference.py` and
+    `tools/k3_reference.py` had copied that order. The attention output
+    gate rounds its sigmoid to BF16 before it scales the output where the
+    publisher's code does (Qwen 3.5's `attn_output * torch.sigmoid(gate)`
+    on a BF16 gate, the Ling family's `sigmoid(g.float()).type_as(h)`):
+    Qwen 3.8 and Solar Open 2 now do, as the Gemma family already did.
+    Still different from the publishers: Kimi K3's MLA gate (the publisher
+    rounds the sigmoid) and its KDA gate (the publisher's
+    `FusedRMSNormGated` rounds `x r w sigmoid(g)` once, where both backends
+    round the norm and then the gate) keep their order until K3's reference
+    can be recomputed with them. The attention weights take the publishers'
+    default form on both backends (FlashAttention-2, which Kimi K3's config
+    pins and SDPA picks; DeepSeek's `sparse_attn`): each weight `exp(s - m)`
+    against the running maximum is rounded to BF16 before it multiplies the
+    values, while the running sum adds the FP32 weight
+    (`SparkMathAttentionValueWeight`; CUDA's tiled GQA and sharded latent
+    prefill already did, the unsharded latent prefill does in
+    sparkpipe/sparkpipe#1743). The references still differ until they are
+    recomputed in that form: Ling, K-EXAONE, Solar and Motif round the
+    normalised probabilities as the eager path does, MiMo, Laguna and Gemma
+    keep them in FP32. `tests/cuda/gqa_shard_cuda.cu` checks the rounding
+    of the context-split GQA kernels (where the flash and exact forms round
+    to different BF16 outputs, over 99% of the outputs take the flash
+    form's), and `test_metal_kernels` checks Metal's; the latent decode
+    probes still check only against exact attention within their bounds
+    and against each other. At Solar Open 2's layer 0 (GQA, no residual add before it) Metal's
+    output was 2.5e-3 of its norm from reference a against an a/b floor of
+    8.3e-5; giving the reference the backends' choice at the gain, the
+    probabilities and the gate brought it to 1.75e-3, and the rest is not
+    located yet;
   - exp flavor: CUDA kernels use `__expf` in some places and `expf` in
     others. On the M5 Ultra GPU, `metal::exp` and `metal::fast::exp` are the
     same hardware approximation: bitwise identical over the float range and
@@ -1633,13 +1672,51 @@ and the multidev docs on 2026-09-28. Line numbers are in
     paired test of the models near its limit is within reach of
     reduction-order noise; the code keeps `exp`. The gate's floor now
     carries that noise: reference variant h (`tools/reference_device_error.py`)
-    adds a GPU's measured exp and tanh error to variant b's reduction order,
+    adds a GPU's measured exp and tanh error, and its matrix unit's FP32
+    accumulation error, to variant b's reduction order,
     because the floor of reduction order alone (a against b) failed the
     reference itself run on a second CPU (Gemma 4 31B, paired +4.20 / +3.33);
     the gate now judges every candidate against all three variants a, b
     and h, each the reference in turn ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)),
     and the references that hold only a and h are getting b;
   Kernel bodies (the schedules) stay per backend.
+- HY4's gate references hold a b that never split a matrix product
+  (2026-11-07). From f06f138b7, which gave `tools/hy4_reference.py` its b
+  variant, until 6e9f4b535, the tool set its product chunk to 1,024 and then
+  overwrote it with its 32 MiB read size, so b reversed the reductions and the
+  expert order but took every product whole, as a does. Metal's HY4 gate
+  (`hy4-ref-fl`: +1.30 sigma on the 512-position rule, KL 1.05, 0.99 and 1.03
+  times the floors) judged against that b. Its floors sat close together (a to
+  b 0.0291 nats, a to h 0.0275, b to h 0.0314), so the missing product-order
+  noise did not visibly tighten them, but HY4 is not proven until b and h are
+  recomputed with the fixed tool (h now also carries the GPU accumulation
+  error) and Metal's HY4 logits are re-judged against them. CUDA's HY4 has no
+  reference-floor gate yet (its entry under Production qualification).
+- Prefill attention follows FlashAttention-2's plain forward on Metal and
+  in most references, not yet on CUDA (2026-11-07). FA2 walks a row's
+  64-key tiles from the diagonal back to the first key, unsplit whenever
+  the launch fills the GPU (`num_splits_heuristic`), which Metal follows. CUDA's prefill kernels all walk forward: `LmGqaShardTiledKernel`
+  (64-key tiles to head size 192, 32 above; Solar, Gemma 4, K-EXAONE,
+  Laguna, Muse, MiMo, Qwen 3.8, K3), `LmLatentShardPrefillKernel` and
+  `LmLatentAttentionPrefillKernel` (32), `LmAttentionBlockPartialKernel`
+  (64, K3 streamed) and `LmExpandedGatherPrefillKernel` (16), and under
+  tensor parallelism each rank walks its own strided share of the keys
+  (`SparkKvShardLocalPosition`) before the merge. Closing it needs the
+  shared walk (`SparkMathFlashTiles`, `SparkMathFlashTile`) on whole rows
+  of keys, the PTX changes qualified on the fleet, and the CUDA gates
+  against references with the tiled walk. The references with attention
+  sinks or sparse selection (MiMo, HY4, DeepSeek V4.1, A.X K2) and the Qwen
+  3.8 27B C reference still take one maximum per row; each takes the walk
+  at its next gate, after checking which kernel its publisher runs.
+- GLM 5.3 Flash's Metal gate passed on a hand-written prompt format, not the
+  publisher's (2026-11-07). Its gate prompts are assembled from
+  `model-families/glm5_next/chat_template.json` (a newline after each role
+  tag, thinking closed with an empty block); the publisher's
+  `chat_template.jinja` at 46a050be renders a single user turn as
+  `[gMASK]<sop><|system|>Reasoning Effort: Max<|user|>...<|assistant|><think>`.
+  Closing it: render the gate prompts from that jinja, record the template's
+  revision and sha256 in `gate_prompts.json` and every gate receipt, recompute
+  references a, b and h on them and re-gate Metal.
 - Every family runs one schedule for all backends
   ([`docs/FAMILY_SCHEDULES.md`](docs/FAMILY_SCHEDULES.md)); Gemma 4 (with
   Laguna S 2.1 on its pre-norm path), the Qwen 3.8 hybrid, MiMo 2.6 and Ling 3
@@ -1805,7 +1882,8 @@ Metal backend and the single-Studio stage are in
   and `device_layers.c`), plus its packs and gates; the models larger than
   one Studio gate at TP8 on one Studio with the packs paged from the SSD.
   Gates pass for Gemma 4 26B, Qwen3.8-27B (both codecs), Qwen 3.8 Flash,
-  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash and A.X K2; the paired
+  Ling 3.0 Flash, Ling 3.0 Flash Fin, GLM 5.3 Flash (on the hand-written
+  prompt format; the re-gate on the publisher's follows) and A.X K2; the paired
   test fails, by the worse leg, for Gemma 4 31B (+4.8 sigma), Muse Glimmer
   (+3.4), MiMo Flash (+5.2), MiMo Pro (+5.8), Laguna (+3.3), K-EXAONE 2.0
   (+8.5), HY4 (+4.1) and Solar Open 2 (+5.1); GLM 5.3 Full waits for its
@@ -1907,13 +1985,19 @@ Metal backend and the single-Studio stage are in
     is 52 GB of the Studio's 256 GB for nothing. A windowed attention layer
     should take its pages from a ring of `window / page + 1` pages per
     sequence, indexed by position modulo the ring;
-  - the CUDA stage rounds the experts' tanh GeLU as `0.044715 * g * g * g`
-    and folds the route weight into the activation; the Metal stage and the
-    numpy reference follow the publisher's eager order (cube first, weight
-    after the down projection, BF16 sums in ascending expert order), so the
-    two backends differ by those rounding points. The CUDA stage should take
-    the shared GeLU and the publisher's order and pass this reference's
-    pinned-route gate;
+  - both backends fold the route weight into the activation before the down
+    projection (`bf16(bf16(gelu(g)) u w)`), where the publisher applies it
+    after: transformers' eager `Gemma4TextExperts` (and this reference)
+    rounds each weighted expert output and sums in BF16 in ascending expert
+    order, and its default `grouped_mm` sums the weighted outputs in FP32
+    and rounds once. A reference in the backends' form sits 1.31 times the
+    floor from the eager one, one in `grouped_mm`'s 1.03 times. Metal in
+    `grouped_mm`'s form (`spark_route_combine_weighted`, CUDA's
+    `LmMoeLocalWeightedFinalizeKernel`) moved its pinned runs further from
+    the eager references (pinned multi-floor +0.39 and +3.78 sigma against
+    +0.52 and +0.78), so it is not taken; aligning both backends and the
+    reference with `grouped_mm` together is still open. The experts' and the
+    dense GeLU forms give the same BF16 values;
   - speculation is exact (every run's tokens equal plain decode's on six
     prompts) and takes the rewrite from 92 to 323 tok/s, but a frame costs
     more than a step from two rows on, so the first probe in a match class

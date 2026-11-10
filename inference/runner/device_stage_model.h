@@ -60,6 +60,7 @@ typedef struct SparkDeviceStageShape
 	uint32_t embed_alias_row;
 	uint32_t projection;
 	uint32_t prenormed_head;
+	uint32_t norm_round_first;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u
@@ -175,6 +176,7 @@ void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
 void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k);
 SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count);
 SparkStatus SparkDeviceStageAllReduceWidth(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count, uint32_t width);
+SparkStatus SparkDeviceStageAllReduceF32(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor partial, SparkTensor rows, uint32_t count);
 SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,
 	uint32_t count, uint32_t width);
 SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor rows,

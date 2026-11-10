@@ -11,8 +11,6 @@ typedef uchar SparkMathU8;
 #define SPARK_MATH_AS_BITS(value) as_type<uint>(value)
 #define SPARK_MATH_EXP(x) metal::exp(x)
 #define SPARK_MATH_EXP_FAST(x) metal::exp(x)
-#define SPARK_MATH_LOG(x) metal::log(x)
-#define SPARK_MATH_LOG_FAST(x) metal::log(x)
 #define SPARK_MATH_COS_FAST(x) metal::cos(x)
 #define SPARK_MATH_SIN_FAST(x) metal::sin(x)
 #define SPARK_MATH_TANH(x) metal::tanh(x)
@@ -37,8 +35,6 @@ typedef uint8_t SparkMathU8;
 #define SPARK_MATH_AS_BITS(value) __float_as_uint(value)
 #define SPARK_MATH_EXP(x) expf(x)
 #define SPARK_MATH_EXP_FAST(x) __expf(x)
-#define SPARK_MATH_LOG(x) logf(x)
-#define SPARK_MATH_LOG_FAST(x) __logf(x)
 #define SPARK_MATH_COS_FAST(x) __cosf(x)
 #define SPARK_MATH_SIN_FAST(x) __sinf(x)
 #define SPARK_MATH_TANH(x) tanhf(x)
@@ -77,6 +73,38 @@ SPARK_MATH_FN float SparkMathRoundBf16(float value)
 SPARK_MATH_FN float SparkMathRmsScale(float total, float count, float epsilon)
 {
 	return(SPARK_MATH_RSQRT(total / count + epsilon));
+}
+
+SPARK_MATH_FN float SparkMathResidualSum(float hidden, float branch)
+{
+	return(SparkMathRoundBf16(hidden + branch));
+}
+
+SPARK_MATH_FN float SparkMathNormGainRounded(float normed, float gain)
+{
+	return(SparkMathRoundBf16(normed) * gain);
+}
+
+SPARK_MATH_FN float SparkMathRmsNormGateOnce(float value, float scale, float gain, float activation)
+{
+	return(value * scale * gain * activation);
+}
+
+SPARK_MATH_FN float SparkMathAttentionValueWeight(float weight)
+{
+	return(SparkMathRoundBf16(weight));
+}
+
+#define SPARK_MATH_FLASH_KEY_TILE 64u
+
+SPARK_MATH_FN SparkMathU32 SparkMathFlashTiles(SparkMathU32 begin, SparkMathU32 end)
+{
+	return(end > begin ? (end - 1u) / SPARK_MATH_FLASH_KEY_TILE - begin / SPARK_MATH_FLASH_KEY_TILE + 1u : 0u);
+}
+
+SPARK_MATH_FN SparkMathU32 SparkMathFlashTile(SparkMathU32 end, SparkMathU32 step)
+{
+	return(((end - 1u) / SPARK_MATH_FLASH_KEY_TILE - step) * SPARK_MATH_FLASH_KEY_TILE);
 }
 
 SPARK_MATH_FN float SparkMathExp2Fast(float value)
@@ -127,11 +155,6 @@ SPARK_MATH_FN float SparkMathSwishFast(float value)
 	return(value * SparkMathSigmoidFast(value));
 }
 
-SPARK_MATH_FN float SparkMathSoftplus(float value)
-{
-	return(value > 20.0f ? value : SPARK_MATH_LOG(1.0f + SPARK_MATH_EXP(value)));
-}
-
 SPARK_MATH_FN float SparkMathRopeCos(float angle, float scale)
 {
 	return(SPARK_MATH_COS_FAST(angle) * scale);
@@ -152,6 +175,11 @@ SPARK_MATH_FN float SparkMathRopeHigh(float low, float high, float cosine, float
 	return((low * sine) + (high * cosine));
 }
 
+SPARK_MATH_FN float SparkMathRopeRoundedTerm(float own, float partner, float cosine, float sine)
+{
+	return(SparkMathRoundBf16(SparkMathRoundBf16(own * SparkMathRoundBf16(cosine)) + SparkMathRoundBf16(partner * SparkMathRoundBf16(sine))));
+}
+
 SPARK_MATH_FN float SparkMathLog1p(float value)
 {
 #if defined(__METAL_VERSION__)
@@ -167,21 +195,15 @@ SPARK_MATH_FN float SparkMathSoftplusGate(float logit)
 	return(SparkMathRoundBf16(logit > 20.0f ? logit : SparkMathLog1p(SPARK_MATH_EXP(logit))));
 }
 
-SPARK_MATH_FN float SparkMathSoftplusFast(float value)
+SPARK_MATH_FN float SparkMathSoftplus(float value)
 {
-	return(value > 20.0f ? value : SPARK_MATH_LOG_FAST(1.0f + SPARK_MATH_EXP_FAST(value)));
+	return(value > 20.0f ? value : SparkMathLog1p(SPARK_MATH_EXP(value)));
 }
 
 SPARK_MATH_FN float SparkMathGatedDeltaDecay(float log_scale, float shifted)
 {
 	const float softplus = SparkMathSoftplus(shifted);
 	return(SPARK_MATH_EXP(-SPARK_MATH_EXP(log_scale) * softplus));
-}
-
-SPARK_MATH_FN float SparkMathGatedDeltaDecayFast(float log_scale, float shifted)
-{
-	const float softplus = SparkMathSoftplusFast(shifted);
-	return(SPARK_MATH_EXP_FAST(-SPARK_MATH_EXP_FAST(log_scale) * softplus));
 }
 
 SPARK_MATH_FN float SparkMathBoundedDecay(float logit, float bias, float log_scale, float minimum_log_decay)

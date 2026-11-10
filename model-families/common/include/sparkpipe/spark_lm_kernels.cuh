@@ -349,81 +349,6 @@ static __global__ void SparkLmRmsNormKernel(const void *input_bf16, const void *
 		staged_input,reduce_scratch);
 }
 
-static __global__ void SparkLmFusedResidualRmsNormKernel(void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
-{
-    extern __shared__ float staged_hidden[];
-    __shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
-    uint32_t row = blockIdx.x;
-    uint32_t element;
-    uint64_t row_offset;
-    float sum_squares = 0.0f;
-    float inverse_rms;
-    float sum_x;
-    float sum_y;
-    float2 hidden_value;
-    float2 delta_value;
-    float2 gain_value;
-
-    if (row >= row_count)
-    {
-        return;
-    }
-    row_offset = ((uint64_t)row * (uint64_t)dimension) >> 1u;
-    for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
-    {
-        hidden_value = SparkLmLoadBf16Pair(hidden_bf16, row_offset + element);
-        if (delta_bf16 != 0)
-        {
-            delta_value = SparkLmLoadBf16Pair(delta_bf16, row_offset + element);
-            sum_x = hidden_value.x + delta_value.x;
-            sum_y = hidden_value.y + delta_value.y;
-            SparkLmStoreBf16Pair(hidden_bf16, row_offset + element, sum_x, sum_y);
-        }
-        else
-        {
-            sum_x = hidden_value.x;
-            sum_y = hidden_value.y;
-        }
-        staged_hidden[element << 1u] = sum_x;
-        staged_hidden[(element << 1u) + 1u] = sum_y;
-        sum_squares = fmaf(sum_x, sum_x, sum_squares);
-        sum_squares = fmaf(sum_y, sum_y, sum_squares);
-    }
-    if ((dimension & 1u) != 0u && threadIdx.x == 0u)
-    {
-        uint64_t tail_index = ((uint64_t)row * dimension) + dimension - 1u;
-        float tail = SparkLmBf16ToFloat(hidden_bf16, tail_index);
-        if (delta_bf16 != 0)
-        {
-            tail += SparkLmBf16ToFloat(delta_bf16, tail_index);
-            SparkLmFloatToBf16(hidden_bf16, tail_index, tail);
-        }
-        staged_hidden[dimension - 1u] = tail;
-        sum_squares = fmaf(tail, tail, sum_squares);
-    }
-    sum_squares = SparkLmBlockReduceSum(sum_squares, reduce_scratch);
-    inverse_rms = rsqrtf((sum_squares / (float)dimension) + epsilon);
-    __syncthreads();
-
-    for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
-    {
-        gain_value = SparkLmLoadBf16Pair(gain_bf16, element);
-        SparkLmStoreBf16Pair(
-            output_bf16,
-            row_offset + element,
-            (staged_hidden[element << 1u] * inverse_rms) * gain_value.x,
-            (staged_hidden[(element << 1u) + 1u] * inverse_rms) * gain_value.y);
-    }
-    if ((dimension & 1u) != 0u && threadIdx.x == 0u)
-    {
-        uint64_t tail_index = ((uint64_t)row * dimension) + dimension - 1u;
-        SparkLmFloatToBf16(
-            output_bf16,
-            tail_index,
-            staged_hidden[dimension - 1u] * inverse_rms * SparkLmBf16ToFloat(gain_bf16, dimension - 1u));
-    }
-}
-
 static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_input, const void *weight_payload, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
 {
 	uint64_t pair_row = ((uint64_t)neuron * input_dimension) >> 1u;
@@ -1887,8 +1812,8 @@ static __global__ void SparkLmAttnDecodeKernel(const void *q_bf16, uint64_t q_ro
 			if ( (pair * SPARK_LM_WARP_LANES) + lane < value_pairs )
 			{
 				pair_value = SparkLmLoadBf16Pair(v_cache_bf16,((v_base + (slot * v_slot_stride)) >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
-				accumulator[pair].x = fmaf(accumulator[pair].x,rescale,weight * pair_value.x);
-				accumulator[pair].y = fmaf(accumulator[pair].y,rescale,weight * pair_value.y);
+				accumulator[pair].x = fmaf(accumulator[pair].x,rescale,SparkMathAttentionValueWeight(weight) * pair_value.x);
+				accumulator[pair].y = fmaf(accumulator[pair].y,rescale,SparkMathAttentionValueWeight(weight) * pair_value.y);
 			}
 	}
 	if ( lane == 0u )
@@ -2115,8 +2040,8 @@ static __global__ void SparkLmGroupedAttnDecodeKernel(
             }
             rescale[local_head] = __shfl_sync(
                 0xffffffffu,rescale[local_head],0);
-            weight[local_head] = __shfl_sync(
-                0xffffffffu,weight[local_head],0);
+            weight[local_head] = SparkMathAttentionValueWeight(__shfl_sync(
+                0xffffffffu,weight[local_head],0));
         }
         for (pair_index = 0u;
              pair_index < pairs_per_lane;

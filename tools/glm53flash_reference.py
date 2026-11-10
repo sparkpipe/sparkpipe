@@ -38,9 +38,13 @@ are), and
              rank-128 g_a / g_b gate, and o_proj
   MLA        q_a -> norm -> q_b (256 per head, no rope), kv_a -> norm (the
              512-wide latent is key and value), the query absorbed per
-             head through kv_b's key rows (rounded), softmax(q.k / 16) in
-             FP32 over every earlier position (the indexer keeps them all
-             below 2,048 keys), the latent output rounded, kv_b's value
+             head through kv_b's key rows (rounded), softmax(q.k / 16) over
+             every earlier position (the indexer keeps them all below 2,048
+             keys) in the publishers' flash form: weights w = exp(s - m) in
+             FP32 with m the running maximum over FA2's 64-key tiles walked back from the
+             diagonal (tools/reference_flash.py), the
+             latent multiplied by bf16(w) in FP32, that product divided by
+             the sum of the FP32 weights and rounded, kv_b's value
              rows per head, o_proj
   MLP        bf16(silu(min(g, 10)) clamp(u, +-10)) rounded once; layers 0-2
              dense, the rest the shared expert plus top 8 of 288 experts
@@ -58,6 +62,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
@@ -213,9 +218,8 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :], key_up))
             scores = base.matmul(query, latent.T) * np.float32(1.0 / 16.0)
             scores = np.where(causal, scores, -np.inf)
-            probabilities = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            probabilities = probabilities / base.reduce_sum(probabilities)
-            attended = base.bf16(base.matmul(probabilities, latent))
+            attended, total, _ = flash.attend(scores, latent, base.matmul, base.reduce_sum, device.exp, base.bf16)
+            attended = base.bf16(flash.normalize(attended, total))
             output[:, head, :] = base.bf16(base.matmul(attended, value_up.T))
         return self.linear(output.reshape(rows, heads * self.value_dim), weights["o"])
 

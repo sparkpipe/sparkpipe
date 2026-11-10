@@ -209,8 +209,8 @@ class Reference:
             scores = (matmul(query[:, head, :self.nope], k_nope[:, head, :].T) + matmul(q_rot[:, head, :], k_rot.T)) * self.scale
             scores = np.where(visible, scores, -np.inf)
             weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights /= weights.sum(axis=-1, keepdims=True)
-            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head, :]))
+            total = weights.sum(axis=-1, keepdims=True)
+            output[:, head, :] = bf16(matmul(bf16(weights), value[:, head, :]) / total)
         output = bf16(output * sigmoid(gate))
         return self.linear(output.reshape(rows, heads * self.value), p + "o_proj.weight")
 

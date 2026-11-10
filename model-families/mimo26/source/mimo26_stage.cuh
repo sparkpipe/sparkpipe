@@ -274,10 +274,10 @@ struct MimoModel
 		MimoGatherRowsKernel<<<dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, local_rows, degree);
 		MimoSplitKernel<<<dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream>>>(state->attn_full, state->query, state->key, state->value, S::kQuery,
 			KW, VW, G::kValueScale);
-		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS>), dim3(rows,G::kHeads), MM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,G::kHeads), MM_THREADS, 0, stream,
 			state->query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
 			FULL ? state->full_inv_freq : state->sliding_inv_freq, 1.0f, 0u);
-		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS>), dim3(rows,KVH), MM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,KVH), MM_THREADS, 0, stream,
 			state->key, step->positions, KVH, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
 			FULL ? state->full_inv_freq : state->sliding_inv_freq, 1.0f, 0u);
 		MimoPackSlotKernel<<<dim3(Blocks(KW + VW), rows), MM_THREADS, 0, stream>>>(state->key, state->value, state->slot, KW, VW);

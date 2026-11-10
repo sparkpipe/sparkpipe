@@ -51,6 +51,14 @@ __global__ void ProbeFillKernel(uint16_t *values,uint64_t count,uint64_t salt)
 		values[index] = ProbeValue(index ^ salt);
 }
 
+static double ProbeRoundBf16(double value)
+{
+	float narrow = (float)value;
+	uint32_t bits;
+	memcpy(&bits,&narrow,4u);
+	return ProbeFloat((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+}
+
 static void ProbeCheck(int condition,const char *what,const char *label)
 {
 	if ( condition )
@@ -93,7 +101,8 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 	LmKvView view;
 	uint32_t row,page,rank,index,sequence,state = 11u + rows * 131u + context + heads;
 	uint64_t shard_bytes = 0u;
-	double worst = 0.0,single_worst = 0.0;
+	double worst = 0.0,single_worst = 0.0,flash_worst = 0.0,form_gap = 0.0;
+	uint32_t split_outputs = 0u,flash_matches = 0u,exact_matches = 0u;
 	char label[200];
 
 	snprintf(label,sizeof(label),"heads%u kv%u dim%u/%u seq%u x rows%u ctx%u degree%u grain%u window%u sinks%u",heads,KV_HEADS,HEAD_DIM,VALUE_DIM,sequences,rows_per_sequence,context,degree,grain,window,sinks ? 1u : 0u);
@@ -238,7 +247,7 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 			const uint16_t *out = shard_out.data() + ((uint64_t)row * heads + head) * VALUE_DIM;
 			const uint32_t keys = row_position[row] + 1u;
 			const uint32_t lowest = window != 0u && keys > window ? keys - window : 0u;
-			std::vector<double> scores(keys),result(VALUE_DIM,0.0);
+			std::vector<double> scores(keys),result(VALUE_DIM,0.0),flash(VALUE_DIM,0.0),peak(keys,-1.0e300);
 			double top = -1.0e300,total = 0.0;
 			uint32_t key,element;
 			for (key=lowest; key<keys; key++)
@@ -255,25 +264,57 @@ static void ProbeCase(uint32_t heads,uint32_t sequences,uint32_t rows_per_sequen
 				top = sink_values[head] > top ? sink_values[head] : top;
 				total = exp(sink_values[head] - top);
 			}
+			for (rank=0u; rank<degree; rank++)
+			{
+				const SparkKvShard owner = {degree,rank,grain};
+				const uint32_t tile = LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>() ? LmGqaShardTiledTile<HEAD_DIM>() : 1u;
+				std::vector<double> tile_peak(keys / tile + 2u,-1.0e300);
+				for (key=lowest; key<keys; key++)
+					if ( SparkKvShardOwner(owner,key) == rank )
+					{
+						const uint32_t slot = SparkKvShardLocalIndex(owner,key) / tile;
+						tile_peak[slot] = scores[key] > tile_peak[slot] ? scores[key] : tile_peak[slot];
+					}
+				for (index=1u; index<tile_peak.size(); index++)
+					tile_peak[index] = tile_peak[index - 1u] > tile_peak[index] ? tile_peak[index - 1u] : tile_peak[index];
+				for (key=lowest; key<keys; key++)
+					if ( SparkKvShardOwner(owner,key) == rank )
+						peak[key] = tile_peak[SparkKvShardLocalIndex(owner,key) / tile];
+			}
 			for (key=lowest; key<keys; key++)
 			{
 				const uint64_t base = ((uint64_t)sequence * context + key) * slot_elements + (uint64_t)KV_HEADS * HEAD_DIM + (uint64_t)kv_head * VALUE_DIM;
-				const double weight = exp(scores[key] - top);
+				const double weight = exp(scores[key] - top), rounded = ProbeRoundBf16(exp(scores[key] - peak[key])) * exp(peak[key] - top);
 				total += weight;
 				for (element=0u; element<VALUE_DIM; element++)
+				{
 					result[element] += weight * ProbeFloat(ProbeValue(base + element));
+					flash[element] += rounded * ProbeFloat(ProbeValue(base + element));
+				}
 			}
 			for (element=0u; element<VALUE_DIM; element++)
 			{
 				const double difference = fabs(result[element] / total - ProbeFloat(out[element]));
+				const double from_flash = fabs(flash[element] / total - ProbeFloat(out[element]));
+				const double gap = fabs(flash[element] - result[element]) / total;
 				worst = difference > worst ? difference : worst;
+				flash_worst = from_flash > flash_worst ? from_flash : flash_worst;
+				form_gap = gap > form_gap ? gap : form_gap;
+				if ( ProbeRoundBf16(flash[element] / total) != ProbeRoundBf16(result[element] / total) )
+				{
+					split_outputs++;
+					flash_matches += ProbeFloat(out[element]) == ProbeRoundBf16(flash[element] / total) ? 1u : 0u;
+					exact_matches += ProbeFloat(out[element]) == ProbeRoundBf16(result[element] / total) ? 1u : 0u;
+				}
 			}
 		}
 	}
 	ProbeCheck(worst < 2.0e-3,"merged output matches the f64 attention reference",label);
+	ProbeCheck(split_outputs > 0u && flash_matches * 20u >= split_outputs * 19u && exact_matches * 50u <= split_outputs,
+		"where the flash and exact forms round to different bf16 outputs, the output takes the flash form's (weights rounded to bf16 against each rank's running maximum per key or key tile)",label);
 	ProbeCheck(window != 0u || sinks || single_worst < 4.0e-3,"merged output matches the unsharded attention kernel",label);
-	printf("%s %s: KV per rank %.1f MiB of %.1f MiB, worst |out-f64| %.2e, |sharded-unsharded| %.2e\n",
-		probe_failures == 0 ? "PASS" : "FAIL",label,(double)shard_bytes / degree / 1048576.0,(double)pages * Geometry::kPageBytes / 1048576.0,worst,single_worst);
+	printf("%s %s: KV per rank %.1f MiB of %.1f MiB, worst |out-f64| %.2e, |out-flash f64| %.2e, |flash-exact| %.2e, where the forms round apart (%u) out takes flash %u exact %u, |sharded-unsharded| %.2e\n",
+		probe_failures == 0 ? "PASS" : "FAIL",label,(double)shard_bytes / degree / 1048576.0,(double)pages * Geometry::kPageBytes / 1048576.0,worst,flash_worst,form_gap,split_outputs,flash_matches,exact_matches,single_worst);
 	for (rank=0u; rank<degree; rank++)
 		cudaFree(shard_pool[rank]);
 	cudaFree(table_device); cudaFree(contexts_device); cudaFree(positions_device); cudaFree(sequences_device);
@@ -602,6 +643,6 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads (tiled, with the query read per k-step), 192/128 key/value heads, per-head sink logits in the merge denominator; the tiled kernel (bf16 attention weights in P.V, as the reference computes them) agrees with the f32 scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks; tree frames read each row's committed keys and its own branch slots, a tree row's scalar partials equal its root path verified as a chain bit for bit, trunk rows keep their tiled bits and tiled branch rows agree with the scalar kernel within 2^-9\n");
+	printf("PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grains 1/2/4, partials from each rank's own KV equal the replicated oracle bit for bit, merged output matches f64 and the unsharded kernel, a row alone equals its bits inside the batch, a sliding window keeps exactly the last window positions, 512-wide heads (tiled, with the query read per k-step), 192/128 key/value heads, per-head sink logits in the merge denominator; where the flash form (each rank's weights rounded to bf16 against its running maximum, per key in the scalar kernel and per key tile in the tiled one) and exact attention round to different bf16 outputs, the output takes the flash form's at least 95% of the time and the exact form's at most 2%; the tiled kernel agrees with the scalar kernel within 2^-9 for decode rows, mixed sequences inside one block, windows, block masks and shard ranks; tree frames read each row's committed keys and its own branch slots, a tree row's scalar partials equal its root path verified as a chain bit for bit, trunk rows keep their tiled bits and tiled branch rows agree with the scalar kernel within 2^-9\n");
 	return 0;
 }

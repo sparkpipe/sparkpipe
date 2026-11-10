@@ -55,6 +55,7 @@ struct Qwen38_27bGeometry : QwenHybridDefaults
 	static const char *DumpEnv(void) { return "SPARK_QWEN38_27B_LAYER_DUMP"; }
 	static const char *ReportTag(void) { return "QWEN38_27B-STATE"; }
 	static constexpr bool kGdnSigmoidGate = false;
+	static constexpr bool kRopeRoundedTerms = true;
 };
 #endif
 

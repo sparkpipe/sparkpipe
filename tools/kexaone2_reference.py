@@ -34,10 +34,11 @@ score + bias, weights the unbiased scores normalized (+1e-20) times 2.5 in
 f32, each routed expert's bf16 output times its f32 weight cast to bf16 and
 added in ascending expert order, plus the shared expert. Layers 62..77 clamp
 the gate above at 7 before SiLU and the up projection to +-7 on every MLP.
-Projections round to bf16; the attention softmax runs in f32 and its
-probabilities round to bf16 before they weight the values, as the
-publisher's eager attention (softmax in f32, then .to(bf16)) and flash
-attention do; the final logits are f32. Every matrix product accumulates in
+Projections round to bf16; the attention takes the publishers' flash form:
+weights w = exp(s - m) in f32 with m the running maximum over FA2's 64-key tiles walked back from the
+diagonal (tools/reference_flash.py), the values multiplied by bf16(w), that product divided in
+f32 by the sum of the f32 weights and rounded to bf16; the final logits are
+f32. Every matrix product accumulates in
 f64 before it is rounded, so a prompt's numbers do not depend on the other
 prompts in the run or on how many served tokens follow (BLAS picks its
 summation order by matrix shape, and f32 order noise rounded to bf16 over 78
@@ -54,6 +55,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 from t1_reference_common import matmul
 
 PREFIX = "model."
@@ -69,7 +71,7 @@ def bf16(values):
 
 def product(left, right):
     if FP32:
-        return np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32)
+        return device.accumulated(left, right, np.asarray(left, dtype=np.float32) @ np.asarray(right, dtype=np.float32))
     return matmul(left, right)
 
 
@@ -165,9 +167,8 @@ class Reference:
         for head in range(heads):
             scores = product(query[:, head, :], key[:, head // group, :].T) * self.scale
             scores = np.where(visible, scores, -np.inf)
-            weights = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            weights = bf16(weights / weights.sum(axis=-1, keepdims=True))
-            output[:, head, :] = bf16(product(weights, value[:, head // group, :]))
+            attended, total, _ = flash.attend(scores, value[:, head // group, :], product, lambda weights: weights.sum(axis=-1, keepdims=True), device.exp, bf16)
+            output[:, head, :] = bf16(flash.normalize(attended, total))
         return self.linear(output.reshape(rows, heads * dim), p + "o_proj.weight")
 
     def swiglu(self, gate, up, limit):
