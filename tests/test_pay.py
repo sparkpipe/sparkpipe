@@ -532,6 +532,10 @@ def check_service(failures):
         account_flow(failures, cfg, app, buyer, mailbox, port)
         credits_flow(failures, cfg, app, fake, buyer, mailbox)
         part_payment_flow(failures, cfg, app, fake, buyer, mailbox)
+        team_flow(failures, cfg, app, buyer, mailbox, port)
+        session_flow(failures, cfg, app, mailbox, port)
+        refresh_and_order_flow(failures, cfg, app, buyer, mailbox, port)
+        coin_refund_flow(failures, cfg, app, buyer)
         for path, body in (("/lead", {"company": "Big Co", "email": "cto@big.example"}), ("/plans/quote", {}), ("/plans/order", {}), ("/plans/stop", {}), ("/market/reserve", {}), ("/market/bid", {}), ("/market/release", {}), ("/market/cancel", {}), ("/market/sandbox/tranche", {})):
             if buyer("POST", path, body)[0] != 404:
                 failures.append(f"a removed route still answers: {path}")
@@ -606,6 +610,122 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
     opened = next(m for _, m in mailbox.mail if m["Subject"].startswith("New SparkPipe account"))
     if "Acme 주식회사 <ops@acme.example>" not in opened.get_content() or opened["Content-Transfer-Encoding"] != "quoted-printable":
         failures.append(f"a Korean company name is garbled in mail: {opened.get_content()[:80]!r}")
+
+
+def code_for(client, mailbox, address):
+    client("POST", "/code", {"email": address})
+    return last_code(mailbox, address)
+
+
+def invitations_to(app, mailbox, address):
+    app.mails.join()
+    return [m for rcpt, m in mailbox.mail if rcpt == [address] and "invited you" in m["Subject"]]
+
+
+def team_flow(failures, cfg, app, buyer, mailbox, port):
+    fresh = Client(port, origin="https://sparkpipe.ai")
+    code = code_for(fresh, mailbox, "fresh@new.example")
+    first = fresh("POST", "/verify", {"email": "fresh@new.example", "code": code})
+    unticked = fresh("POST", "/verify", {"email": "fresh@new.example", "code": code, "company": "Fresh Ltd"})
+    opened = fresh("POST", "/verify", {"email": "fresh@new.example", "code": code, "company": "Fresh Ltd", "accept": True})
+    if (first[0], first[1].get("reason"), unticked[0], unticked[1].get("reason"), opened[0], opened[1].get("company")) != (404, "new", 409, "terms", 200, "Fresh Ltd"):
+        failures.append(f"a sign-up refused for a missing company or an unticked box uses up its code: {first} {unticked} {opened}")
+    if fresh("POST", "/verify", {"email": "fresh@new.example", "code": code})[0] != 403:
+        failures.append("a code that opened an account works again")
+    invited = [buyer("POST", "/v1/members", {"email": "cto@victim.example", "role": "member"}) for _ in range(3)]
+    if [s for s, _ in invited] != [200] * 3 or len({found.get("id") for _, found in invited}) != 1 or len(invitations_to(app, mailbox, "cto@victim.example")) != 1:
+        failures.append(f"inviting a pending email again mails it again or makes another invitation: {invited}")
+    victim = Client(port, origin="https://sparkpipe.ai")
+    status, own = sign_in(victim, mailbox, "cto@victim.example", company="Victim Corp", accept=True)
+    if status != 200 or (own.get("company"), own.get("role")) != ("Victim Corp", "owner") or "cto@victim.example" not in app.book.emails:
+        failures.append(f"a sign-up with its own company and the box ticked joins a pending invitation instead of opening its own account: {status} {own}")
+    if any(m["email"] == "cto@victim.example" for m in buyer("GET", "/v1/members")[1]["data"]):
+        failures.append("an invitation stays pending after its email opened its own account")
+    buyer("POST", "/v1/members", {"email": "dev@acme.example", "role": "member"})
+    buyer("POST", "/v1/members", {"email": "boss@acme.example", "role": "admin"})
+    dev, boss = Client(port, origin="https://sparkpipe.ai"), Client(port, origin="https://sparkpipe.ai")
+    joined, chief = sign_in(dev, mailbox, "dev@acme.example")[1], sign_in(boss, mailbox, "boss@acme.example")[1]
+    if (joined.get("role"), joined.get("company"), chief.get("role")) != ("member", "Acme 주식회사", "admin"):
+        failures.append(f"an invited email that signs in without a company does not join: {joined} {chief}")
+    owner = app.book.emails["ops@acme.example"]
+    app.hooks.put("WHAAAAAAAAAAAAAAAA", {"webhook": "WHAAAAAAAAAAAAAAAA", "account": owner, "kind": "url", "events": ["booking.deadline"], "slack": True, "now": "2026-11-02T03:00:00Z",
+                                         "target": "https://hooks.slack.com/services/T000/B000/SECRETPART", "secret": "s" * 24, "hint": "ssss"})
+    shown = {who: [h.get("url") for h in client("GET", "/v1/webhooks")[1]["data"] if "url" in h] for who, client in (("member", dev), ("admin", boss), ("owner", buyer))}
+    if any("SECRETPART" in url for url in shown["member"]) or shown["member"] != ["https://hooks.slack.com/…"] or shown["admin"] != ["https://hooks.slack.com/services/T000/B000/SECRETPART"]:
+        failures.append(f"a member reads a webhook's full URL: {shown}")
+    app.hooks.drop("WHAAAAAAAAAAAAAAAA")
+    ledger = boss("GET", "/market/ledger")[1]
+    if ledger.get("complete") is not False or any(line["type"] in sp.OWNER_LINES or "ip" in line["data"] or "agent" in line["data"] for line in ledger.get("lines", [])) or buyer("GET", "/market/ledger")[1].get("complete") is not True:
+        failures.append(f"an admin's ledger export holds the owner's orders, payments, IP addresses or browsers: {[line['type'] for line in ledger.get('lines', [])]}")
+    left = dev("DELETE", "/v1/members/" + joined["member"])
+    if left[0] != 200 or dev("GET", "/account")[0] != 401 or dev("DELETE", "/v1/members/" + chief["member"])[0] != 401:
+        failures.append(f"a member cannot leave the account on its own: {left}")
+    for index in range(25):
+        buyer("POST", "/v1/members", {"email": f"spam{index}@target.example", "role": "member"})
+    if len([1 for index in range(25) if invitations_to(app, mailbox, f"spam{index}@target.example")]) >= 25:
+        failures.append("an account sends invitations without a daily limit")
+
+
+def session_flow(failures, cfg, app, mailbox, port):
+    buyer, laptop = Client(port, origin="https://sparkpipe.ai"), Client(port, origin="https://sparkpipe.ai")
+    sign_in(buyer, mailbox, "fresh@new.example")
+    sign_in(laptop, mailbox, "fresh@new.example")
+    stolen = Client(port, origin="https://sparkpipe.ai")
+    stolen.cookie = laptop.cookie
+    listed = [s for s in buyer("GET", "/market/state")[1]["account"]["sessions"] if s["via"] == "cookie"]
+    if stolen("GET", "/account")[0] != 200 or len(listed) < 2:
+        failures.append(f"browser sessions are not listed: {listed}")
+    laptop("POST", "/signout", {})
+    if stolen("GET", "/account")[0] != 401:
+        failures.append("a cookie still signs in after its session signed out")
+    phone = Client(port, origin="https://sparkpipe.ai")
+    sign_in(phone, mailbox, "fresh@new.example")
+    target = (app.sessions.get(sp.market.key_digest(phone.cookie.split("=", 1)[1])) or {}).get("session")
+    ended = buyer("POST", "/market/sessions/revoke", {"id": target})
+    if ended[0] != 200 or phone("GET", "/account")[0] != 401 or buyer("GET", "/account")[0] != 200:
+        failures.append(f"the account page cannot end a browser session: {ended}")
+    stale = ("read", "198.51.100.7")
+    app.hits[stale].append(-10 ** 9)
+    app.forget_hits()
+    if stale in app.hits:
+        failures.append("rate-limit buckets of clients long gone are kept")
+
+
+def refresh_and_order_flow(failures, cfg, app, buyer, mailbox, port):
+    before = buyer("GET", "/account")[1]["hc"]
+    if sp.credit(sp.App(cfg, sp.Book(cfg.path("ledger.jsonl"))), ["sparkpipe_pay.py", "credit", "ops@acme.example", "2", "Fleet 1 down from 09:00 to 10:00 KST"]) != 0:
+        failures.append("the credit command fails")
+    after = buyer("GET", "/account")[1]["hc"]
+    if Decimal(after) - Decimal(before) != 2:
+        failures.append(f"the running service does not see an admin command at once: {before} then {after}")
+    order = next(o for o in app.book.orders.values() if o["account"] == app.book.emails["ops@acme.example"])["order"]
+    stranger = Client(port, origin="https://sparkpipe.ai")
+    if stranger("GET", "/order/" + order)[0] != 401:
+        failures.append("an order is readable without signing in")
+    sign_in(stranger, mailbox, "cto@victim.example")
+    if stranger("GET", "/order/" + order)[0] != 404:
+        failures.append("another account reads an order")
+
+
+def coin_refund_flow(failures, cfg, app, buyer):
+    account = app.book.emails["ops@acme.example"]
+    moment = sp.market.stamp(app.market.now())
+    order = next((o for o in app.book.orders.values() if o["account"] == account and o.get("processor") == "coinpayments" and o["issued"] and o["state"] == "completed"
+                  and any(lot["ref"] == o["order"] and lot["hc"] > 0 and lot["expires"] > moment for lot in app.book.market.lots[account])), None)
+    if not order:
+        failures.append("no issued stablecoin order to refund")
+        return
+    before = buyer("GET", "/account")[1]["hc"]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+        lapsed = sp.refund(app, ["sparkpipe_pay.py", "refund", order["order"], "16.4", "1.00", "nothing lapsed"])
+        done = sp.refund(app, ["sparkpipe_pay.py", "refund", order["order"], "10.4", "1.00", "we closed the account"])
+    line = lines_of(cfg, "refund")[-1] if lines_of(cfg, "refund") else {}
+    debit = [d for d in lines_of(cfg, "hc_debit") if d.get("ref") == order["order"]]
+    if (lapsed, done) != (2, 0) or line.get("processor") != "coinpayments" or line.get("amount") != "1.00" or not debit or "in CoinPayments" not in out.getvalue():
+        failures.append(f"a stablecoin order cannot be refunded under clause 10.4, or is refunded under 16.4 with nothing lapsed: {lapsed} {done} {line} {out.getvalue()!r}")
+    if Decimal(before) - Decimal(buyer("GET", "/account")[1]["hc"]) != Decimal(debit[-1]["hc"] if debit else "-1"):
+        failures.append("a stablecoin refund leaves its HC in the account")
 
 
 def credits_flow(failures, cfg, app, fake, buyer, mailbox):
