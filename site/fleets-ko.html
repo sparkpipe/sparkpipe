@@ -137,7 +137,7 @@
     </table>
     </div>
     <p>세 모델을 합치면 두 정밀도가 276문항 중 같은 219문항을 맞혔습니다. BF16만 맞힌 문항이 16개, 낮은 정밀도만 맞힌 문항이 12개로, 이 정도 차이는 우연으로도 절반가량은 나오므로 실행 간 오차 범위 안입니다. 이 문항들에서는 게시자의 FP8 빌드와 저희가 검증한 NVFP4 빌드가 BF16만큼 정확합니다. 다음으로는 120K~600K토큰 문서의 깊은 위치에서 같은 지점을 두 정밀도로 채점하는 긴 컨텍스트 비교를 실행합니다.</p>
-    <p>BF16의 비용은 속도입니다. 토큰마다 읽는 가중치 바이트가 두 배이기 때문입니다. GLM 5.3의 단일 요청 디코드는 28.1 tok/s 대비 21.2 tok/s(−25%), 7K 프리필은 1,286 대비 1,109(−14%)입니다. GLM 5.3 Flash는 디코드가 51.1 대비 47.4(−7%)이고 프리필 차이는 2% 이내입니다. Qwen 3.8 27B는 디코드가 61.3 대비 46.4(−24%)이고 프리필은 같습니다. Qwen 3.8 Flash는 BF16 빌드가 더 새로운 프리필 경로를 쓰기 때문에 BF16에서 프리필이 3.1배 빠릅니다(413 대비 1,299 tok/s). 또한 GLM 5.3은 BF16 가중치가 차지하는 메모리 때문에 컨텍스트가 1M이 아니라 768K입니다.</p>
+    <p>BF16의 비용은 속도입니다. 토큰마다 읽는 가중치 바이트가 두 배이기 때문입니다. 각 쌍의 디코드와 프리필은 위의 모델 표처럼 공개된 근거가 다루게 되면 여기에 표시합니다. 또한 GLM 5.3은 BF16 가중치가 차지하는 메모리 때문에 컨텍스트가 1M이 아니라 768K입니다.</p>
   </section>
 
   <section id="precision-choice">
@@ -146,17 +146,17 @@
     <div class="scroll" tabindex="0" role="region" aria-label="정밀도 선택(예정)">
     <table>
       <tr><th>모델</th><th>정밀도</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th class="num">ds4-eval, 92문항 중</th><th class="num">GPU 메모리의 캐시</th><th class="num">컨텍스트 창</th></tr>
-      <tr><td><b>GLM 5.3</b></td><td>BF16 (기본)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">–</td><td class="num">1.8M 토큰</td><td class="num">768K</td></tr>
-      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">28.1 tok/s</td><td class="num">1,286 tok/s</td><td class="num">–</td><td class="num">9.6M 토큰</td><td class="num">1M</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (기본)</td><td class="num">47.4 tok/s</td><td class="num">1,701 tok/s</td><td class="num">77</td><td class="num">68M 토큰</td><td class="num">128K</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">51.1 tok/s</td><td class="num">1,732 tok/s</td><td class="num">77</td><td class="num">86M 토큰</td><td class="num">128K</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (기본)</td><td class="num">46.4 tok/s</td><td class="num">2,107 tok/s</td><td class="num">78</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">61.3 tok/s</td><td class="num">2,080 tok/s</td><td class="num">76</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (기본)</td><td class="num">44.9 tok/s</td><td class="num">1,299 tok/s</td><td class="num">80</td><td class="num">56M 토큰</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">45.9 tok/s</td><td class="num">413 tok/s</td><td class="num">78</td><td class="num">65M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>BF16 (기본)</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">1.8M 토큰</td><td class="num">768K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">9.6M 토큰</td><td class="num">1M</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (기본)</td><td class="num">–</td><td class="num">–</td><td class="num">77</td><td class="num">68M 토큰</td><td class="num">128K</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">77</td><td class="num">86M 토큰</td><td class="num">128K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (기본)</td><td class="num">–</td><td class="num">–</td><td class="num">78</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">76</td><td class="num">24.6M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (기본)</td><td class="num">–</td><td class="num">–</td><td class="num">80</td><td class="num">56M 토큰</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">–</td><td class="num">–</td><td class="num">78</td><td class="num">65M 토큰</td><td class="num">256K</td></tr>
     </table>
     </div>
-    <p>2026-11-04에 측정했으며, 각 쌍의 디코드와 프리필은 같은 날의 비교 실행에서 나온 값입니다. GPU 메모리의 캐시는 가중치가 남긴 메모리에 플릿이 모든 요청에 걸쳐 한 번에 GPU 메모리에 담아 두는 프롬프트와 답변의 토큰 수이며, 나머지는 SSD에 두었다가 필요할 때 다시 불러옵니다. Qwen 3.8 Flash의 4비트 빌드는 이전 프리필 경로를 쓰기 때문에 프리필이 더 느립니다. Qwen 3.8 Flash는 저희 회사 내부에서만 씁니다.</p>
+    <p>2026-11-04에 측정했습니다. 디코드와 프리필은 위의 모델 표처럼 공개된 근거가 다루게 될 때까지 –로 표시합니다. GPU 메모리의 캐시는 가중치가 남긴 메모리에 플릿이 모든 요청에 걸쳐 한 번에 GPU 메모리에 담아 두는 프롬프트와 답변의 토큰 수이며, 나머지는 SSD에 두었다가 필요할 때 다시 불러옵니다. Qwen 3.8 Flash의 4비트 빌드는 이전 프리필 경로를 쓰기 때문에 프리필이 더 느립니다. Qwen 3.8 Flash는 저희 회사 내부에서만 씁니다.</p>
   </section>
 
   <section id="limits">
@@ -167,21 +167,21 @@
       <tr><th>모델</th><th class="num">디코드, 메모리 한계 대비</th><th class="num">프리필, 네트워크 한계 대비</th></tr>
       <tr><td><b>Kimi K3</b></td><td class="num">65%</td><td class="num">36%</td></tr>
       <tr><td><b>Gemma 4 31B</b></td><td class="num">64%</td><td class="num">21%</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td class="num">54%</td><td class="num">54%</td></tr>
       <tr><td><b>Muse Glimmer 30B</b></td><td class="num">54%</td><td class="num">35%</td></tr>
-      <tr><td><b>GLM 5.3</b></td><td class="num">39%</td><td class="num">39%</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td class="num">39%</td><td class="num">23%</td></tr>
       <tr><td><b>Gemma 4 26B A4B</b></td><td class="num">20%</td><td class="num">14%</td></tr>
       <tr><td><b>Ling 3.0 Flash</b></td><td class="num">19%</td><td class="num">18%</td></tr>
       <tr><td><b>Hunyuan Hy4 Preview</b></td><td class="num">17%</td><td class="num">4%</td></tr>
-      <tr><td><b>A.X K2</b></td><td class="num">–</td><td class="num">45%</td></tr>
-      <tr><td><b>Solar Open 2</b></td><td class="num">–</td><td class="num">31%</td></tr>
       <tr><td><b>DeepSeek V4.1 Flash</b></td><td class="num">–</td><td class="num">27%</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">27%</td></tr>
       <tr><td><b>Laguna S 2.1</b></td><td class="num">–</td><td class="num">13%</td></tr>
       <tr><td><b>MiMo V2.6 Flash</b></td><td class="num">–</td><td class="num">3%</td></tr>
       <tr><td><b>MiMo V2.6 Pro</b></td><td class="num">–</td><td class="num">2%</td></tr>
       <tr><td><b>Qwen 3.8 Max</b></td><td class="num">–</td><td class="num">2%</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>A.X K2</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>Solar Open 2</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">–</td></tr>
     </table>
     </div>
     <p>메모리 한계는 활성 가중치가 형식별로 어떻게 나뉘는지 검증된 모델에만 표시합니다. 네트워크 한계는 각 모델의 너비와 깊이로 추정한 값으로, GLM 5.3의 8K 프롬프트에서 측정한 2.9초 한계에 맞춰 보정했습니다. Kimi K3와 DeepSeek V4.1 Flash처럼 전문가를 다르게 분산하는 모델은 근사치입니다. Ling 3.0 Flash와 Gemma 4 26B A4B 같은 작은 모델은 실제로는 메모리보다 레이어마다 드는 고정된 교환 시간에 묶이므로, 메모리 한계 대비 비율이 실제보다 낮게 보입니다. 프리필 비율이 가장 낮은 Qwen 3.8 Max, MiMo, Hy4가 저희 프리필 작업의 다음 대상입니다.</p>

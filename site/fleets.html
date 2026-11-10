@@ -137,7 +137,7 @@
     </table>
     </div>
     <p>Across the three models, both precisions answer the same 219 of 276 questions correctly. BF16 alone gets 16 more right, the lower precision 12 more: a difference within run noise, since a split this uneven happens by chance about half the time. On these questions the publishers' FP8 builds and our vetted NVFP4 build are as accurate as BF16. A long-context comparison, scoring the same positions deep in a 120K- to 600K-token document at both precisions, runs next.</p>
-    <p>What BF16 costs is speed, because each token reads twice the weight bytes. One-request decode on GLM 5.3 runs at 21.2 against 28.1 tok/s (−25%) and its 7K prefill at 1,109 against 1,286 (−14%); GLM 5.3 Flash decodes at 47.4 against 51.1 (−7%), and its prefill is within 2%; Qwen 3.8 27B decodes at 46.4 against 61.3 (−24%), with prefill unchanged. Qwen 3.8 Flash prefills 3.1 times faster at BF16 (1,299 against 413 tok/s), because its BF16 build runs a newer prefill path. GLM 5.3's BF16 weights also leave room for 768K of context instead of 1M.</p>
+    <p>What BF16 costs is speed, because each token reads twice the weight bytes. The decode and prefill of each pair show here once a published receipt covers them, as in the model table above. GLM 5.3's BF16 weights also leave room for 768K of context instead of 1M.</p>
   </section>
 
   <section id="precision-choice">
@@ -146,17 +146,17 @@
     <div class="scroll" tabindex="0" role="region" aria-label="Choosing a precision (coming)">
     <table>
       <tr><th>Model</th><th>Precision</th><th class="num">Decode, one request</th><th class="num">Prefill, 7K prompt</th><th class="num">ds4-eval, of 92</th><th class="num">Cache in GPU memory</th><th class="num">Context window</th></tr>
-      <tr><td><b>GLM 5.3</b></td><td>BF16 (default)</td><td class="num">21.2 tok/s</td><td class="num">1,109 tok/s</td><td class="num">–</td><td class="num">1.8M tokens</td><td class="num">768K</td></tr>
-      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">28.1 tok/s</td><td class="num">1,286 tok/s</td><td class="num">–</td><td class="num">9.6M tokens</td><td class="num">1M</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (default)</td><td class="num">47.4 tok/s</td><td class="num">1,701 tok/s</td><td class="num">77</td><td class="num">68M tokens</td><td class="num">128K</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">51.1 tok/s</td><td class="num">1,732 tok/s</td><td class="num">77</td><td class="num">86M tokens</td><td class="num">128K</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (default)</td><td class="num">46.4 tok/s</td><td class="num">2,107 tok/s</td><td class="num">78</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">61.3 tok/s</td><td class="num">2,080 tok/s</td><td class="num">76</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (default)</td><td class="num">44.9 tok/s</td><td class="num">1,299 tok/s</td><td class="num">80</td><td class="num">56M tokens</td><td class="num">256K</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">45.9 tok/s</td><td class="num">413 tok/s</td><td class="num">78</td><td class="num">65M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>BF16 (default)</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">1.8M tokens</td><td class="num">768K</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">–</td><td class="num">9.6M tokens</td><td class="num">1M</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>BF16 (default)</td><td class="num">–</td><td class="num">–</td><td class="num">77</td><td class="num">68M tokens</td><td class="num">128K</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">77</td><td class="num">86M tokens</td><td class="num">128K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>BF16 (default)</td><td class="num">–</td><td class="num">–</td><td class="num">78</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td>FP8</td><td class="num">–</td><td class="num">–</td><td class="num">76</td><td class="num">24.6M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>BF16 (default)</td><td class="num">–</td><td class="num">–</td><td class="num">80</td><td class="num">56M tokens</td><td class="num">256K</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">–</td><td class="num">–</td><td class="num">78</td><td class="num">65M tokens</td><td class="num">256K</td></tr>
     </table>
     </div>
-    <p>Measured on 2026-11-04; the decode and prefill of each pair come from the same day's comparison runs. Cache in GPU memory is how many tokens of prompts and answers the fleet keeps in GPU memory at once, across all requests, in the memory the weights leave free; more stay on SSD and come back when needed. Qwen 3.8 Flash's 4-bit build prefills more slowly because it runs an older prefill path. Qwen 3.8 Flash is used only inside our company.</p>
+    <p>Measured on 2026-11-04. Decode and prefill show – until a published receipt covers them, as in the model table above. Cache in GPU memory is how many tokens of prompts and answers the fleet keeps in GPU memory at once, across all requests, in the memory the weights leave free; more stay on SSD and come back when needed. Qwen 3.8 Flash's 4-bit build prefills more slowly because it runs an older prefill path. Qwen 3.8 Flash is used only inside our company.</p>
   </section>
 
   <section id="limits">
@@ -167,21 +167,21 @@
       <tr><th>Model</th><th class="num">Decode, of the memory floor</th><th class="num">Prefill, of the network floor</th></tr>
       <tr><td><b>Kimi K3</b></td><td class="num">65%</td><td class="num">36%</td></tr>
       <tr><td><b>Gemma 4 31B</b></td><td class="num">64%</td><td class="num">21%</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b></td><td class="num">54%</td><td class="num">54%</td></tr>
       <tr><td><b>Muse Glimmer 30B</b></td><td class="num">54%</td><td class="num">35%</td></tr>
-      <tr><td><b>GLM 5.3</b></td><td class="num">39%</td><td class="num">39%</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b></td><td class="num">39%</td><td class="num">23%</td></tr>
       <tr><td><b>Gemma 4 26B A4B</b></td><td class="num">20%</td><td class="num">14%</td></tr>
       <tr><td><b>Ling 3.0 Flash</b></td><td class="num">19%</td><td class="num">18%</td></tr>
       <tr><td><b>Hunyuan Hy4 Preview</b></td><td class="num">17%</td><td class="num">4%</td></tr>
-      <tr><td><b>A.X K2</b></td><td class="num">–</td><td class="num">45%</td></tr>
-      <tr><td><b>Solar Open 2</b></td><td class="num">–</td><td class="num">31%</td></tr>
       <tr><td><b>DeepSeek V4.1 Flash</b></td><td class="num">–</td><td class="num">27%</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">27%</td></tr>
       <tr><td><b>Laguna S 2.1</b></td><td class="num">–</td><td class="num">13%</td></tr>
       <tr><td><b>MiMo V2.6 Flash</b></td><td class="num">–</td><td class="num">3%</td></tr>
       <tr><td><b>MiMo V2.6 Pro</b></td><td class="num">–</td><td class="num">2%</td></tr>
       <tr><td><b>Qwen 3.8 Max</b></td><td class="num">–</td><td class="num">2%</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>GLM 5.3</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>A.X K2</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>Solar Open 2</b></td><td class="num">–</td><td class="num">–</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">–</td></tr>
     </table>
     </div>
     <p>The memory floor is shown only where the split of active weights between formats is verified. The network floor is our estimate from each model's width and depth, calibrated on GLM 5.3's measured 2.9 s floor for an 8K prompt; models whose experts are spread differently, such as Kimi K3 and DeepSeek V4.1 Flash, are approximate. Small models such as Ling 3.0 Flash and Gemma 4 26B A4B are held back in practice by the fixed time each layer's exchange takes rather than by memory, so their memory share understates how close they are. The lowest prefill shares, Qwen 3.8 Max, MiMo and Hy4, are where our prefill work goes next.</p>

@@ -52,6 +52,29 @@ def check_model_speeds(failures):
                 failures.append(f"{mid}: {want} has no row in PERFORMANCE_STATUS.md")
 
 
+def section(text, ident):
+    start = text.index(f'<section id="{ident}">')
+    return text[start:text.index("</section>", start)]
+
+
+def check_precision_and_limits(failures):
+    receipted = {m["name"] for m in pricing()["models"] if m["decode"] is not None}
+    for name in ("fleets.html", "fleets-ko.html"):
+        text = page(name)
+        if re.search(r"\d tok/s", section(text, "precision")):
+            failures.append(f"{name}: the precision comparison quotes a speed that no published receipt covers")
+        for model, cells in re.findall(r'<tr><td><b>([^<]+)</b></td><td>[^<]*</td>((?:<td class="num">[^<]*</td>)+)</tr>', section(text, "precision-choice")):
+            speeds = re.findall(r'<td class="num">([^<]*)</td>', cells)[:2]
+            if model not in receipted and speeds != ["–", "–"]:
+                failures.append(f"{name}: the precision table shows {model} at {speeds}, but the model table has no receipted speed for it")
+        rows = re.findall(r'<tr><td><b>([^<]+)</b></td><td class="num">([^<]*)</td><td class="num">([^<]*)</td></tr>', section(text, "limits"))
+        if not rows:
+            failures.append(f"{name}: no rows in the hardware limit table")
+        for model, decode, prefill in rows:
+            if model not in receipted and (decode, prefill) != ("–", "–"):
+                failures.append(f"{name}: the hardware limit table shows {model} at {decode}/{prefill} of the floors, but the model table has no receipted speed for it")
+
+
 def check_cited_releases(failures):
     for path in sorted(SITE.glob("*.html")):
         for build in re.findall(r"(?:build|release|릴리스|빌드) ([0-9a-f]{9})\b", path.read_text()):
@@ -79,6 +102,10 @@ def check_bindings(failures):
         row = re.search(r'<tr><th scope="row">(?:Downtime|장애)</th><td>(.*?)</td></tr>', page(name))
         if not row or word not in row.group(1) or 'data-maintenance="hours"' not in row.group(1):
             failures.append(f"{name}: the Downtime row does not follow clause 4.4 or the published maintenance allowance")
+    for name, words in (("security.html", ("15 consecutive minutes", "every booked hour it touches")), ("security-ko.html", ("15분 넘게 연속된 장애", "걸친 모든 예약 시간"))):
+        clause = next((item for item in re.findall(r"<li>(.*?)</li>", page(name), re.S) if "4.4" in item), "")
+        if not all(word in clause for word in words):
+            failures.append(f"{name}: the clause 4.4 credit does not say that downtime of more than 15 consecutive minutes credits every booked hour it touches")
 
 
 def check_cells(failures):
@@ -155,12 +182,12 @@ def check_phone_nav(failures):
 
 def main():
     failures = []
-    for check in (check_model_speeds, check_cited_releases, check_ranges, check_bindings, check_cells, check_heads, check_phone_nav):
+    for check in (check_model_speeds, check_precision_and_limits, check_cited_releases, check_ranges, check_bindings, check_cells, check_heads, check_phone_nav):
         check(failures)
     if failures:
         print("\n".join(failures))
         return 1
-    print("marketing pages: speeds match pricing.js and PERFORMANCE_STATUS.md, cited releases have receipts, prices bind the published settings, heads carry title, description, Open Graph, canonical and x-default")
+    print("marketing pages: speeds match pricing.js and PERFORMANCE_STATUS.md, the precision and hardware limit tables show no speed the model table lacks, the security page credits downtime as clause 4.4 does, cited releases have receipts, prices bind the published settings, heads carry title, description, Open Graph, canonical and x-default")
     return 0
 
 
