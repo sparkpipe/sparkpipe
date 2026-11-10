@@ -26,8 +26,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 from test_lane_direct_packs import FAKE_SSH, fake_bin, links_under, place
 
 HOSTS = [f"spark{index:x}" for index in range(16)]
-GENERATORS = {"dsv41_flash_gen_deployment": {}, "gemma4_gen_deployment": {}, "glm5_next_gen_tp4pp4_deployment": {},
-              "laguna_gen_deployment": {"SPARK_LAGUNA_SESSION_BASE": "64800"}, "ling_gen_deployment": {}}
 DIGEST = "ab" * 32
 STUB = "#!/bin/sh\necho 'model_residentd ready'\n"
 FAKE_EXIT = "#!/bin/sh\nexit 0\n"
@@ -45,19 +43,7 @@ def heredoc(path: Path, after: str) -> str:
 
 
 class DirectFiles(unittest.TestCase):
-    def test_generators_and_committed_deployments_name_each_ranks_config(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            for generator, extra in GENERATORS.items():
-                output = Path(scratch) / generator
-                environment = {"PATH": os.environ["PATH"], "HOME": scratch, **extra}
-                result = subprocess.run([sys.executable, str(ROOT / "tools" / f"{generator}.py"), "--output", str(output)],
-                                        env=environment, capture_output=True, text=True, timeout=120)
-                self.assertEqual(result.returncode, 0, f"{generator}: {result.stderr[-400:]}")
-                nodes = json.loads((output / "model_resident.json").read_text())["nodes"]
-                with self.subTest(generator=generator):
-                    self.assertEqual([node["adapter_configuration_path"] for node in nodes], [f"config/stage_{node['rank_index']:02d}.json" for node in nodes])
-                    self.assertTrue(all((output / node["adapter_configuration_path"]).is_file() for node in nodes))
-                    self.assertEqual(links_under(output), [])
+    def test_committed_deployments_name_each_ranks_config(self):
         committed = sorted(path for path in (ROOT / "deployment").glob("*/model_resident.json") if (path.parent / "config").is_dir())
         self.assertGreaterEqual(len(committed), 2)
         for path in committed:

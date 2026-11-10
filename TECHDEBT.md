@@ -54,8 +54,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
   run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
   another switch port to find out which end is at fault.
-- `tools/dsv41_flash_gen_deployment.py` still names `10.10.200.4-7` as its
-  rail 0, which no longer exists.
 
 ## Mesh collectives
 
@@ -203,8 +201,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   Production status). Qualify GPU cancellation, drain and event-driven mesh
   activity on that path too, so that rearming a wait cannot cancel unrelated
   work on the rank.
-- NCCL leftovers after `b31761e`, which deleted the NCCL backend: the `nccl`
-  branch of `tools/dsv41_flash_gen_deployment.py`, `tools/qwen38_tp4_nccl_bench.c`,
+- NCCL leftovers after `b31761e`, which deleted the NCCL backend: `tools/qwen38_tp4_nccl_bench.c`,
   and the `nccl` configs in `tests/test_tp_allreduce_fuzz.c`. The enum value
   and the stage-config parser branch are gone.
 - Awaiting fleet proof (lane `mesh/contracts`): attach now fails with
@@ -442,8 +439,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   (`modules/glm53_flash_tp16_resident_decode_stage/source/spark_glm53_flash_tp16_stage_serving.c`)
   declares parallel fanout without
   `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP`.
-  `tools/glm5_next_gen_tp4pp4_deployment.py` still writes TP4xPP4 configs for
-  the deleted glm5_next module target. The runner already gives the embedding
+  The runner already gives the embedding
   to the first stage and the head to the last (`owns_embedding`,
   `owns_final_head` in `inference/runner/stage_runner.cu`). Complete
   stage-local layer spans and ownership, boundary forwarding and grouped
@@ -998,7 +994,6 @@ Related common-code debt:
 
 - Add an exact checkpoint-derived contract for MiniMax H3; `model_contracts/`
   has none.
-- Remove `deployment/minimax_text_tp4`; the MiniMax driver is gone.
 - `model_contracts/glm53_full_authoritative.json` carries no rope theta or
   interleave flags, so `tools/generate_recipe.py` reads them for the GLM Full
   recipes from `spark_glm52_model.h`. Add them to the contract's geometry at

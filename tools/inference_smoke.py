@@ -130,8 +130,8 @@ def private_config(config, port_map, reserved, protected, attempt):
         return result
 
     result = rewrite(config)
-    if result.get("tp_collective"):
-        result["tp_collective"]["collective_identifier"] = int(attempt[:15], 16) + 1
+    if result.get("device_collective"):
+        result["device_collective"]["collective_identifier"] = int(attempt[:15], 16) + 1
     return result
 
 
@@ -238,7 +238,7 @@ def prepare(spec, environment):
         require(direct(source / name), f"{source / name} is missing, not a regular file or a symlink; name the real file directly")
         require(digest(source / name) == sha, "asset differs from reference: " + name)
     config = json.loads((source / config_name).read_text())
-    backend_module = config.get("tp_collective", {}).get("backend_module_path")
+    backend_module = config.get("device_collective", {}).get("backend_module_path")
     if backend_module:
         require(backend_module in assets, "collective module is not pinned")
     pack = config["stage_pack_path"]
@@ -267,7 +267,7 @@ def prepare(spec, environment):
             require(cap is not None, "partial working set must not premap full pack: it needs an explicit expert_pool_cap_bytes")
     root.mkdir(mode=0o700)
     (root / "mesh").mkdir()
-    peers = config.get("tp_collective", {}).get("peer_hosts", [])
+    peers = config.get("device_collective", {}).get("peer_hosts", [])
     require(all(host in hosts for host in peers), "collective references unreserved peers")
     for index, replica in enumerate(plans):
         local = root if index == 0 else root / ("resident-" + str(replica["lane"]))
@@ -281,8 +281,8 @@ def prepare(spec, environment):
         protected = set(range(replica["port_base"], replica["port_base"] + 2 * size)) | {base + 3 * size}
         effective = private_config(config, replica["port_map"], reserved, protected, attempt)
         effective["stage_pack_path"] = str(source / pack)
-        if replica["lane"] is not None and effective.get("tp_collective"):
-            effective["tp_collective"]["collective_identifier"] += replica["lane"]
+        if replica["lane"] is not None and effective.get("device_collective"):
+            effective["device_collective"]["collective_identifier"] += replica["lane"]
         (runtime / config_name).parent.mkdir(parents=True, exist_ok=True)
         (runtime / config_name).write_text(json.dumps(effective) + "\n")
         require(all(any(first <= port <= last for first, last in reserved) for port in protected), "queue does not reserve resident listeners")
