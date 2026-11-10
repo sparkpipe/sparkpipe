@@ -207,6 +207,29 @@ async def gateway_rules(harness, check):
           "a new user on the fleet (a later wiped in the directive) deletes every earlier account's replay store")
 
 
+async def ledger_rules(harness, check):
+    engine = harness.engine
+    prompt = [{"role": "user", "content": "Shared document. " + LONG}]
+
+    async def cached(account):
+        engine.reply(ANSWER)
+        status, _, text = await harness.post("/v1/chat/completions", chat(prompt), account=account)
+        check(status == 200, f"the gateway request answers: {status} {text[:200]}")
+        return json.loads(text)["usage"]["prompt_tokens_details"]["cached_tokens"]
+    await cached("ledger-a")
+    cold = engine.usage[-1]["cached_tokens"]
+    seen = await cached("ledger-b")
+    check(engine.usage[-1]["cached_tokens"] >= cold + 128 and seen == 0,
+          f"one gateway key forwarding a second account reports no cached tokens for a prefix only the first account sent: {seen} {engine.usage[-1]}")
+    check(await cached("ledger-a") > 0, "the first account reports the cached tokens of its own prefix")
+    async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="ledger-b")) as response:
+        check(response.status == 200, "the second account deletes its cache")
+    check(await cached("ledger-a") > 0, "one account's DELETE /v1/cache leaves another account's cached count in place")
+    async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="ledger-a")) as response:
+        check(response.status == 200, "the first account deletes its cache")
+    check(await cached("ledger-a") == 0, "an account's own DELETE /v1/cache resets its cached count")
+
+
 async def isolation_rules(harness, check):
     engine, frontend = harness.engine, harness.frontend
     for name in ("a", "b"):
@@ -415,6 +438,7 @@ async def run(tmp, check):
         response.release()
         engine.hold = None
         await gateway_rules(harness, check)
+        await ledger_rules(harness, check)
         await isolation_rules(harness, check)
 
 
@@ -432,7 +456,7 @@ def main():
                  "gateway key must name a valid account, each account has its own replay store and alias table, X-SparkPipe-Allow-Swap 1 allows a swap and "
                  "background keys run below interactive ones; bad header values are not echoed; a failed controller falls back to the last residency and "
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
-                 "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
+                 "store failure still delivers the reply; a gateway account reports cached tokens only for prefixes it sent, and its DELETE /v1/cache clears only its own count; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
                  "its own conversation's turn and only for its own member (the gateway's X-SparkPipe-Member, across that member's keys), also through tokenize; an unreadable store falls back to a normal render; a key "
                  "made with --priority background runs below interactive requests")
 

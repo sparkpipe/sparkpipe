@@ -461,10 +461,12 @@ public models:
   own scope, so a gateway key made without `--gateway` would make all
   customers one account: the gateway's pool key must be made with
   `--gateway`.
-- `cached_tokens` in a public reply counts only prefixes that key itself sent
-  (a per-key ledger of 64-token blocks) or that its account's replay store
-  holds, so a key cannot test whether someone else sent a prompt. Prefix
-  reuse itself is shared.
+- `cached_tokens` in a public reply counts only prefixes that the request's
+  scope itself sent (a ledger of 64-token blocks per direct key, or per
+  market account behind the gateway key) or that its replay store holds, so
+  a key or account cannot test whether someone else sent a prompt.
+  `DELETE /v1/cache` clears only that scope's ledger. Prefix reuse itself is
+  shared.
 - A public request for a model that is not resident is served only when no
   model is resident or the controller is already switching to it. Otherwise
   it gets 409 `model_not_loaded` naming the resident models, unless its key

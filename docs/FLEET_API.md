@@ -109,7 +109,7 @@ Anthropic Messages, streaming and non-streaming. What Claude Code sends and how 
 - **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read only for the session id in `user_id` (§3.8).
 - **Response.** `id`, `content` blocks, and `stop_reason`: `end_turn`, `tool_use`, `max_tokens` or `stop_sequence`.
   - **Usage:**
-    - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key itself sent, in 64-token blocks);
+    - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key's account itself sent, in 64-token blocks);
     - `cache_creation_input_tokens` is 0 until the engine reports the prompt tokens it commits;
     - `input_tokens` is the rest;
     - `output_tokens` is what was generated.

@@ -1851,7 +1851,6 @@ class Frontend:
             self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
                                                      repositories["max_packs"])
         self.pack_tasks = set()
-        self.scope_keys = {}
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
@@ -2380,16 +2379,11 @@ class Frontend:
     def scope_directory(scope):
         return chat_replay.scope_file(scope)[:-len(".sqlite")]
 
-    def note_key(self, scope, key):
-        if key is not None and scope is not None:
-            self.scope_keys.setdefault(scope, set()).add(key["id"])
-
     def pack_request(self, scope, pack, headers, key, fallback=None):
         if pack is None:
             return None
         if scope is None:
             raise RequestError(404, "pack_not_found", "packs are served to API keys; send the request with one")
-        self.note_key(scope, key)
         session, _ = self.affinity(headers, fallback)
         return {"scope": scope, "name": pack, "session": session}
 
@@ -2484,9 +2478,7 @@ class Frontend:
         finally:
             await model.sequences.release(scope, None)
         self.prefix_ledger(model).record(list(ids))
-        owners = set(self.scope_keys.get(scope, ())) | ({scope[len("key:"):]} if scope.startswith("key:") else set())
-        for owner in owners:
-            self.public_prefixes.setdefault((owner, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS)).record(list(ids))
+        self.public_prefix_ledger(scope, model).record(list(ids))
         return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
                 "seconds": round(time.monotonic() - started, 3)}
 
@@ -2505,8 +2497,8 @@ class Frontend:
         context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
         return max(PUBLIC_BODY_MIN_BYTES, PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES)
 
-    def public_prefix_ledger(self, key, model):
-        return self.public_prefixes.setdefault((key["id"], model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
+    def public_prefix_ledger(self, scope, model):
+        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         messages, tools, kwargs, trace = self.plan_input(model, body, None)
@@ -2976,7 +2968,7 @@ class Frontend:
 
     def record_public_prefix(self, model, plan, result):
         if "public_key" in plan:
-            self.public_prefix_ledger(plan["public_key"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
+            self.public_prefix_ledger(plan["public_scope"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
 
     def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
@@ -3014,8 +3006,8 @@ class Frontend:
         plan["gate"] = (scope or OWN_SCOPE, self.member_of(public, request.headers))
         if public is not None:
             plan["trace"]["key"] = public["id"]
-            plan["public_key"] = public
-            plan["public_cached"] = max(self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
+            plan.update(public_key=public, public_scope=scope)
+            plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
             return await self.admitted(request, model, body, plan, started, self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
@@ -3196,8 +3188,8 @@ class Frontend:
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)
         if key is not None:
-            plan["public_key"] = key
-            plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replayed_tokens(plan))
+            plan.update(public_key=key, public_scope=scope)
+            plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(ids)[0], replayed_tokens(plan))
         return plan
 
     async def messages(self, request):
@@ -3469,9 +3461,8 @@ class Frontend:
             return error_response(RequestError(400, "invalid_request", "storage is true or false"))
         storage = request.query.get("storage") == "true"
         deleted = self.replay.forget(scope)
-        if key is not None:
-            for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
-                del self.public_prefixes[name]
+        for name in [name for name in self.public_prefixes if name[0] == scope]:
+            del self.public_prefixes[name]
         removed = ["replay_store", "aliases", "stored_responses"]
         if self.workspace is not None:
             scope_dir = self.scope_directory(scope)
@@ -3490,7 +3481,6 @@ class Frontend:
         if self.workspace is None:
             raise RequestError(404, "not_configured", "this fleet keeps no repositories or packs")
         scope = self.scope_of(request.get("public_key"), request.headers)
-        self.note_key(scope, request.get("public_key"))
         return scope, self.scope_directory(scope)
 
     async def create_repository(self, request):
