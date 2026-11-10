@@ -25,7 +25,6 @@
   "SPARK_K3_DYNAMIC_DRAFT_DEPTH": "0"
  },
  "gpu_gated_notes": [
-  "fused verify accept kernel LmSpecVerifyKernel replaces the host K3VerifyResolve scan when wired into the driver completion path",
-  "DCP-style context split via LmAttentionDecodeRangeKernel + LmAttentionRangeMergeKernel + the ALL_GATHER op; dcp_degree knob lands with the GPU validation run"
+  "fused verify accept kernel LmSpecVerifyKernel replaces the host K3VerifyResolve scan when wired into the driver completion path"
  ]
 }

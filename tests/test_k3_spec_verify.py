@@ -15,9 +15,6 @@ Scenarios (driven through tests/host_cuda/k3_spec_verify_host.c):
             depth+1 rows, CommitVerify interleaves drafts and bonuses in
             order, and the engine's decided depth adapts from observed
             acceptance
-  dcp: the decode-context-parallel range split tiles the context exactly
-       (remainder to the leading ranks, empty tails past the context) and the
-       two-range online-softmax merge reproduces the direct value
 """
 import os
 import shlex
@@ -48,7 +45,7 @@ def main():
         print(run.stderr[-400:])
         return 1
     print("PASS k3 spec verify: greedy prefix resolve, adaptive depth rule, "
-          "engine draft-verify cycle, dcp range split + merge")
+          "engine draft-verify cycle")
     return 0
 
 

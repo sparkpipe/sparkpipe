@@ -87,10 +87,8 @@ The scatter is the same partial-softmax structure as DCP's LSE legs
 K3 serve a 1,048,576-token window on a per-node KV pool.
 
 The range-scan and merge kernels that the 2026-09-21 audit landed
-compile-gated (`LmAttentionDecodeRangeKernel` and
-`LmAttentionRangeMergeKernel` in `inference/kernels/attn.cuh`, with
-`K3MlaDecodeRange` and `K3MlaRangeMerge` in `inference/llms/kimi_k3/bind.cu`)
-were never wired. The shard attention replaced them, and they have no caller.
+compile-gated were never wired; the shard attention replaced them and they
+are deleted.
 
 ### MoE padding: not applicable
 

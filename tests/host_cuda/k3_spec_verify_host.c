@@ -4,7 +4,6 @@
 #include <stdlib.h>
 
 #include "inference/llms/kimi_k3/engine.h"
-#include "inference/llms/kimi_k3/dcp.h"
 
 static uint32_t test_failures;
 
@@ -192,83 +191,11 @@ static void ScenarioEngineCycle(void)
 	}
 }
 
-static void ScenarioDcp(void)
-{
-	static struct K3DcpPlan plans[K3_DCP_MAX_DEGREE];
-	uint32_t degree,rank,context;
-	for ( context = 1u; context <= 33u; context += 16u )
-		for ( degree = 1u; degree <= 8u; ++degree )
-		{
-			uint32_t covered;
-			for ( rank = 0u; rank < degree; ++rank )
-				K3DcpPlanRange(&plans[rank], context, degree, rank);
-			covered = K3DcpPlanCoverage(plans, degree);
-			Check(covered == context, "dcp ranges tile the context exactly");
-			for ( rank = 0u; rank < degree; ++rank )
-				Check(plans[rank].end >= plans[rank].begin,
-					"dcp ranges are well formed");
-		}
-	for ( rank = 0u; rank < 8u; ++rank )
-		K3DcpPlanRange(&plans[rank], 3u, 8u, rank);
-	Check(plans[0].begin == 0u && plans[0].end == 1u,
-		"the remainder split gives the leading ranks one extra position");
-	Check(plans[7].begin == 3u && plans[7].end == 3u,
-		"trailing ranks beyond the context take empty ranges");
-	{
-		const uint32_t positions = 8u;
-		float scores_a[8],scores_b[8],values[8];
-		float m_a,m_b,l_a,l_b,acc_a,acc_b,merged;
-		float mm,ll,direct;
-		uint32_t i;
-		float seed = 0.25f;
-		for ( i = 0u; i < positions; ++i )
-		{
-			seed = seed * 1.7f + 0.11f;
-			scores_a[i] = seed - 0.5f;
-			scores_b[i] = 1.3f - seed;
-			values[i] = 0.5f + seed * 0.25f;
-		}
-		m_a = scores_a[0]; m_b = scores_b[0];
-		for ( i = 1u; i < positions; ++i )
-		{
-			m_a = fmaxf(m_a,scores_a[i]);
-			m_b = fmaxf(m_b,scores_b[i]);
-		}
-		l_a = l_b = 0.0f;
-		acc_a = acc_b = 0.0f;
-		for ( i = 0u; i < positions; ++i )
-		{
-			l_a += expf(scores_a[i] - m_a);
-			l_b += expf(scores_b[i] - m_b);
-			acc_a += expf(scores_a[i] - m_a) * values[i];
-			acc_b += expf(scores_b[i] - m_b) * values[i];
-		}
-		merged = K3DcpMerge2(m_a,l_a,acc_a,m_b,l_a ? l_b : l_b,acc_b,&mm,&ll);
-		direct = 0.0f;
-		{
-			float global_max = fmaxf(m_a,m_b);
-			float num = 0.0f,den = 0.0f;
-			for ( i = 0u; i < positions; ++i )
-			{
-				num += expf(scores_a[i] - global_max) * values[i];
-				num += expf(scores_b[i] - global_max) * values[i];
-				den += expf(scores_a[i] - global_max);
-				den += expf(scores_b[i] - global_max);
-			}
-			direct = num / den;
-		}
-		(void)ll;
-		Check(fabsf(merged / ll - direct) < 1.0e-5f,
-			"the two-range merge reproduces the direct softmax value");
-	}
-}
-
 int main(void)
 {
 	ScenarioResolve();
 	ScenarioAdaptive();
 	ScenarioEngineCycle();
-	ScenarioDcp();
 	if ( test_failures != 0u )
 	{
 		printf("k3_spec_verify_host: %u failures\n", test_failures);

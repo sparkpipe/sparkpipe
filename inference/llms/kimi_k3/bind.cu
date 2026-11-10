@@ -56,27 +56,3 @@ extern "C" int32_t K3SpecVerifyAccept(const uint32_t *row_tokens, const uint32_t
 	return(cudaGetLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-extern "C" int32_t K3MlaDecodeRange(const void *layer_buffers, uint32_t rows, uint32_t heads, float qk_scale, uint32_t position_begin, uint32_t position_end, float *partial_max, float *partial_sum, float *partial_acc, uint32_t multiprocessors, void *stream)
-{
-	const K3LayerBuffers *b = (const K3LayerBuffers *)layer_buffers;
-	(void)multiprocessors;
-	if ( b == 0 || partial_max == 0 || partial_sum == 0 || partial_acc == 0
-		|| rows == 0u || heads == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	if ( position_begin >= position_end )
-		return(LM_LAUNCH_ERR_SHAPE);
-	LM_LAUNCH((LmAttentionDecodeRangeKernel<K3GlobalKv,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,heads), K3_ATTN_THREADS, 0, (cudaStream_t)stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,heads,K3_MLA_QK_SCALE,b->positions,position_begin,position_end,partial_max,partial_sum,partial_acc);
-	return(LM_LAUNCH_OK);
-}
-
-extern "C" int32_t K3MlaRangeMerge(const float *partial_max, const float *partial_sum, const float *partial_acc, uint32_t rank_count, uint32_t rows, uint32_t heads, uint16_t *output_bf16, void *stream)
-{
-	if ( partial_max == 0 || partial_sum == 0 || partial_acc == 0
-		|| output_bf16 == 0 || rank_count == 0u || rank_count > 8u
-		|| rows == 0u || heads == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	LmAttentionRangeMergeKernel<K3_ATTN_THREADS,K3_KV_LORA_RANK><<<dim3(rows,heads),K3_ATTN_THREADS,0,(cudaStream_t)stream>>>(
-		partial_max,partial_sum,partial_acc,rank_count,output_bf16,heads);
-	return(cudaGetLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-}
