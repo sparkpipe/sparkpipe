@@ -98,7 +98,7 @@ def emit_pack(source: Path, output: Path, tp_degree: int, tp_rank: int) -> None:
     entries, file_bytes = packer.build_directory(records)
     source_reader = SafetensorsSource(source)
     with output.open("wb") as out:
-        out.write(packer.make_header(tp_degree, len(records), file_bytes))
+        out.write(packer.make_header(len(records), file_bytes))
         for record, payload_offset, _ in entries:
             out.write(packer.ENTRY_STRUCT.pack(
                 record.kind, record.layer, record.weight_format, record.rows,

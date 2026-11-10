@@ -16,6 +16,7 @@ import os
 import struct
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
 
@@ -162,6 +163,25 @@ def write_sha256_sidecar(path: Path, digest: str | None = None) -> str:
     digest = sha256_file(path) if digest is None else digest
     (path.parent / (path.name + ".sha256")).write_text(f"{digest}  {path.name}\n", encoding="utf-8")
     return digest
+
+
+@contextmanager
+def replaced_output(path: Path, temporary: Path | None = None):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if temporary is None:
+        fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+        os.close(fd)
+        temporary = Path(name)
+    try:
+        with open(temporary, "w+b") as out:
+            yield out
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def fsync_directory(path: Path) -> None:

@@ -124,7 +124,6 @@
 2 tools/mesh_round_bench.cu: cudaMemcpy uses a raw byte-width multiplier
 2 tools/mesh_round_bench.cu: malloc uses a raw byte-width multiplier
 9 tools/multi_dev_smoke.c: memcpy uses a direct size/count literal
-1 tools/qwen38_27b_stagepack.py: scalar element width is assigned as a byte literal
 1 tools/qwen38_tp4_collective_bench.c: cudaMalloc uses a raw byte-width multiplier
 1 tools/qwen38_tp4_nccl_bench.c: cudaMalloc uses a raw byte-width multiplier
 1 tools/qwen4_flash_pack_stamp_check.py: GLM model literal 6144 is outside the model contract
