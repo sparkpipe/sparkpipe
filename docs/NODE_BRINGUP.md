@@ -2,10 +2,21 @@
 
 This runbook takes a Spark from its factory DGX OS image to the point where
 [NODE_BASELINE.md](NODE_BASELINE.md) `apply` can take over. It exists because
-spark10 (2026-11-10, fleet 2 node 0) lost about two hours and a power cycle to
-its first `apt full-upgrade` (see [What went wrong on spark10](#what-went-wrong-on-spark10)).
+spark10 (2026-11-10, the second fleet's node 0) lost about two hours and a power
+cycle to its first `apt full-upgrade` (see [What went wrong on spark10](#what-went-wrong-on-spark10)).
 
 `sparkN` is the node name and user, and `A` is its rail-2 host number (step 3).
+
+## Fleets and staging
+
+- A node is named `spark` followed by its node number in hex. The first fleet
+  is `spark0`-`sparkf` (0-15); the second fleet is `spark10`-`spark1f`
+  (16-31), so `spark10` is its node 0; the third fleet starts at `spark20`.
+- Only the first fleet runs Ceph.
+- Until the new office (new switches, more power), nodes of later fleets are
+  staged: they go through this runbook and the network-independent part of the
+  baseline, then wait. Their fabric addresses, ranks in service and switch
+  ports are set at the new office.
 
 ## Rules
 
@@ -71,8 +82,9 @@ ssh -t spark0 'ssh -t sparkN@<link-local>%enP2p1s0f0np0 "sudo groupadd -f codexa
 ## 3. Rail-2 address and the SSH master
 
 Give port 0 a runtime rail-2 address so the hub reaches the node directly. The
-address is lost at reboot. Fleet 1 holds `10.10.201.0`-`.15`. Until fleet 2 has
-an address plan, its bring-up address is `10.10.201.(16 + node)`.
+address is lost at reboot. The bring-up address is the node number:
+`spark0`-`sparkf` hold `10.10.201.0`-`.15`, `spark10` takes `10.10.201.16`,
+`spark1f` takes `.31`.
 
 ```bash
 ssh spark0 'ssh sparkN@<link-local>%enP2p1s0f0np0 "sudo nmcli dev set enP2p1s0f0np0 managed no && sudo ip addr add 10.10.201.A/24 dev enP2p1s0f0np0 && sudo ip link set enP2p1s0f0np0 mtu 9000"'
@@ -180,10 +192,17 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
 
 ## 7. Hand-off to the baseline
 
-Continue with [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node)
-from step 2 (firmware). Step 3 (identity) does not apply to a node with no
-predecessor: the node keeps its own host keys, and its rank file and Ceph role
-come from its fleet's plan.
+- **First fleet:** continue with
+  [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node) from step 2
+  (firmware).
+- **Later fleets (staged):** firmware (baseline step 2) and the
+  network-independent baseline items: boot masks, watchdog and recovery
+  sysctls, earlyoom and the user slice, the dirty-page cap, emergency SSH and the
+  recovery key, the firewall, the DMA guard, the tool packages and the node
+  layout roots. No Ceph. `ds4_spark_brickproof.py` accepts only `spark0`-`sparkf`
+  today, so staged nodes are not yet applied or audited by it.
+- A new node has no predecessor, so baseline step 3 (identity) does not apply:
+  the node keeps its own host keys.
 
 ## Vendor notes
 
