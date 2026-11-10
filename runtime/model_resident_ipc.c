@@ -439,6 +439,37 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	SPARK_RETURN(status);
 }
 
+SparkStatus SparkModelResidentIpcCalculateSubmitCapacity(
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t *message_bytes_out)
+{
+	if ( runtime_limits == 0 || message_bytes_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkModelResidentIpcCalculateSubmitBytes(runtime_limits->max_active_sequence_count,runtime_limits->max_input_row_count,
+		runtime_limits->max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime_limits->max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,
+		SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,
+		runtime_limits->max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ? runtime_limits->max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT,
+		message_bytes_out));
+}
+
+SparkStatus SparkModelResidentIpcStampSubmission(
+	void *message_buffer,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint64_t client_generation)
+{
+	SparkModelResidentIpcSubmit *wire;
+	if ( message_buffer == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES || message_id == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	wire = (SparkModelResidentIpcSubmit *)message_buffer;
+	if ( wire->header.message_bytes != message_bytes || (wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) ||
+		((wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (client_generation != 0u)) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	wire->header.message_id = message_id;
+	wire->client_generation = client_generation;
+	return(SPARK_STATUS_OK);
+}
+
 static void SparkModelResidentIpcCopySubmissionScalars(
 	SparkModelResidentIpcSubmit *wire,
 	const SparkModelServingSubmission *submission)

@@ -91,6 +91,8 @@ struct SparkModelPipelineClient
 	SparkModelServingLane *transaction_lanes;
 	SparkModelPipelineLeaseSlot *lease_slots;
 	SparkModelServingCompletion *delivery;
+	uint8_t *message;
+	uint32_t message_capacity;
 };
 
 static void SparkModelPipelineClientClearTransaction(
@@ -711,9 +713,14 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 		pipeline->runtime_limits.resident_sequence_capacity,
 		sizeof(pipeline->lease_slots[0]));
 	pipeline->delivery = (SparkModelServingCompletion *)calloc(1u,sizeof(*pipeline->delivery));
+	status = SparkModelResidentIpcCalculateSubmitCapacity(&pipeline->runtime_limits,&pipeline->message_capacity);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pipeline->message = (uint8_t *)calloc(1u,pipeline->message_capacity);
 	return(pipeline->clients != 0 && pipeline->rank_contexts != 0 &&
 		pipeline->transactions != 0 && pipeline->transaction_lanes != 0 &&
-		pipeline->lease_slots != 0 && pipeline->delivery != 0 ? SPARK_STATUS_OK :
+		pipeline->lease_slots != 0 && pipeline->delivery != 0 &&
+		pipeline->message != 0 ? SPARK_STATUS_OK :
 		SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
@@ -801,6 +808,7 @@ void SparkModelPipelineClientDestroy(SparkModelPipelineClient *pipeline)
 	if ( pipeline->clients != 0 )
 		for (rank=0u; rank<pipeline->rank_count; rank++)
 			SparkModelResidentClientDestroy(pipeline->clients[rank]);
+	free(pipeline->message);
 	free(pipeline->delivery);
 	free(pipeline->lease_slots);
 	free(pipeline->transaction_lanes);
@@ -887,7 +895,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 {
 	SparkModelPipelineTransaction *transaction;
 	SparkStatus status;
-	uint32_t continuation,rank;
+	uint32_t continuation,message_bytes,rank;
 	if ( pipeline == 0 || submission == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
@@ -901,12 +909,15 @@ SparkStatus SparkModelPipelineClientSubmit(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	continuation = SparkModelPipelineClientCanContinue(pipeline,submission);
+	message_bytes = 0u;
 	if ( continuation != 0u )
 	{
+		status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,
+			submission->model_extension_bytes,(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u,&message_bytes);
 		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
 			rank++)
-			status = SparkModelResidentClientCanQueueContinuation(
-				pipeline->clients[rank],submission);
+			status = SparkModelResidentClientCanQueueEncodedContinuation(
+				pipeline->clients[rank],submission->submission_id,message_bytes);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
@@ -914,11 +925,12 @@ SparkStatus SparkModelPipelineClientSubmit(
 	if ( transaction == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	transaction->continued = continuation;
+	status = continuation != 0u ? SparkModelResidentIpcEncodeContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes) :
+		SparkModelResidentIpcEncodePreparation(submission,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 	{
-		status = continuation != 0u ? SparkModelResidentClientContinue(
-			pipeline->clients[rank],submission) : SparkModelResidentClientPrepare(
-			pipeline->clients[rank],submission);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkModelResidentClientQueueEncoded(pipeline->clients[rank],submission,pipeline->message,message_bytes);
 		if ( status != SPARK_STATUS_OK )
 		{
 			SparkModelPipelineClientRecordFailure(transaction,status);

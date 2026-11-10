@@ -699,6 +699,33 @@ SparkStatus SparkModelResidentClientContinue(
 	return(MockResidentClientEnqueue(client,submission,"continue",MOCK_CALL_CONTINUE));
 }
 
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes)
+{
+	(void)message_bytes;
+	if ( client == 0 || submission_id <= client->last_submission_id )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(client->scripted_call_status[MOCK_CALL_CAN_CONTINUE]);
+}
+
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
+	if ( message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
+		return(SparkModelResidentClientPrepare(client,submission));
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+		return(SparkModelResidentClientContinue(client,submission));
+	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 SparkStatus SparkModelResidentClientCanQueueDecision(
 	const SparkModelResidentClient *client,
 	uint64_t submission_id,

@@ -114,6 +114,15 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 SparkStatus SparkModelResidentClientContinue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes);
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes);
 SparkStatus SparkModelResidentClientCanQueueDecision(
 	const SparkModelResidentClient *client,
 	uint64_t submission_id,

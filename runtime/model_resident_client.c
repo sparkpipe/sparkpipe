@@ -170,8 +170,7 @@ static SparkStatus SparkModelResidentClientAllocate(
 	SparkModelResidentClient *client;
 	uint32_t input_bytes,output_bytes;
 	SparkStatus status;
-	status = SparkModelResidentIpcCalculateSubmitBytes(configuration->runtime_limits.max_active_sequence_count,configuration->runtime_limits.max_input_row_count,configuration->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? configuration->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,
-		configuration->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ? configuration->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT,&output_bytes);
+	status = SparkModelResidentIpcCalculateSubmitCapacity(&configuration->runtime_limits,&output_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(configuration->adapter_descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&input_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -609,30 +608,35 @@ static void SparkModelResidentClientReleasePending(
 	client->pending_count--;
 }
 
-static SparkStatus SparkModelResidentClientSubmitKind(
+static SparkStatus SparkModelResidentClientQueueSubmission(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission,
-	uint32_t message_kind)
+	uint32_t message_kind,
+	const void *encoded,
+	uint32_t encoded_bytes)
 {
 	SparkModelResidentClientPending *pending;
 	SparkModelResidentClientOutput *output;
 	uint8_t *message;
 	uint32_t index,message_bytes;
 	SparkStatus status;
-	if ( client == 0 || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelResidentClientEnsureConnected(client);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( client->connected == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
+	if ( encoded == 0 )
+	{
+		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(client->adapter_descriptor,&client->runtime_limits,submission);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
 	if ( submission->submission_id <= client->last_submission_id )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( client->output_count >= client->queue_capacity || client->pending_count >= client->queue_capacity )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( encoded != 0 && encoded_bytes > client->output_message_capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	pending = SparkModelResidentClientReservePending(client,submission,
 		message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ? 1u : 0u);
 	if ( pending == 0 )
@@ -640,7 +644,14 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	index = (client->output_head + client->output_count) % client->queue_capacity;
 	output = &client->outputs[index];
 	message = client->output_storage + ((uint64_t)index * client->output_message_capacity);
-	if ( message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
+	if ( encoded != 0 )
+	{
+		memcpy(message,encoded,encoded_bytes);
+		message_bytes = encoded_bytes;
+		status = SparkModelResidentIpcStampSubmission(message,message_bytes,pending->message_id,
+			message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE ? client->client_generation : 0u);
+	}
+	else if ( message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
 		status = SparkModelResidentIpcEncodePreparation(submission,
 			pending->message_id,message,client->output_message_capacity,
 			&message_bytes);
@@ -662,6 +673,16 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	client->last_submission_id = submission->submission_id;
 	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkModelResidentClientSubmitKind(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	uint32_t message_kind)
+{
+	if ( client == 0 || submission == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkModelResidentClientQueueSubmission(client,submission,message_kind,0,0u));
 }
 
 SparkStatus SparkModelResidentClientPrepare(
@@ -712,6 +733,44 @@ SparkStatus SparkModelResidentClientContinue(
 		SPARK_RETURN(status);
 	return(SparkModelResidentClientSubmitKind(client,submission,
 		SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE));
+}
+
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes)
+{
+	if ( client == 0 || client->connected == 0u || client->client_generation == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( (client->adapter_descriptor->capability_flags &
+		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE) == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( submission_id <= client->last_submission_id )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->output_count >= client->queue_capacity ||
+		client->pending_count >= client->queue_capacity )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	return(message_bytes <= client->output_message_capacity ? SPARK_STATUS_OK :
+		SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
+	if ( client == 0 || submission == 0 || message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES ||
+		(header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && header->kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	{
+		SparkStatus status = SparkModelResidentClientCanQueueEncodedContinuation(client,submission->submission_id,message_bytes);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	return(SparkModelResidentClientQueueSubmission(client,submission,header->kind,message,message_bytes));
 }
 
 static SparkStatus SparkModelResidentClientQueueDecision(

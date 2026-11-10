@@ -333,6 +333,14 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t model_extension_bytes,
 	uint32_t tree_row_count,
 	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcCalculateSubmitCapacity(
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcStampSubmission(
+	void *message_buffer,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint64_t client_generation);
 SparkStatus SparkModelResidentIpcEncodePreparation(
 	const SparkModelServingSubmission *submission,
 	uint64_t message_id,

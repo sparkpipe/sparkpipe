@@ -416,6 +416,68 @@ static void TestCompletionDecodeReplacesHeldCompletion(void)
 	assert(memcmp(&held,&fresh,sizeof(held)) == 0);
 }
 
+static void TestStampedSubmissionMatchesDirectEncoding(void)
+{
+	static uint8_t encoded[8192],stamped[8192];
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t tokens[2],row_lanes[2],encoded_bytes,stamped_bytes;
+	uint64_t positions[2],sequences[2];
+	memset(&submission,0,sizeof(submission));
+	memset(lanes,0,sizeof(lanes));
+	for (uint32_t lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 21u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = 5u;
+		lanes[lane].sequence_id = 31u + lane;
+		lanes[lane].sequence_position = 9u;
+		lanes[lane].context_token_count = 10u;
+		lanes[lane].resident_sequence_slot = 7u + lane;
+		lanes[lane].input_token_id = 100u + lane;
+		lanes[lane].flags = SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+		tokens[lane] = 100u + lane;
+		row_lanes[lane] = lane;
+		positions[lane] = 9u;
+		sequences[lane] = 31u + lane;
+	}
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
+	submission.submission_id = 44u;
+	submission.request_id = 44u;
+	submission.sequence_id = 44u;
+	submission.control_generation = 1u;
+	submission.transaction_id = 44u;
+	submission.dispatch_generation = 44u;
+	submission.request_generation = 1u;
+	submission.step_generation = 5u;
+	submission.active_sequence_count = 2u;
+	submission.new_token_count = 2u;
+	submission.lane_count = 2u;
+	submission.row_count = 2u;
+	submission.token_count = 2u;
+	submission.tokens_per_sequence = 8u;
+	submission.lanes = lanes;
+	submission.token_ids = tokens;
+	submission.row_lane_indices = row_lanes;
+	submission.row_positions = positions;
+	submission.row_sequence_ids = sequences;
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,17u,23u,encoded,sizeof(encoded),&encoded_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,1u,1u,stamped,sizeof(stamped),&stamped_bytes) == SPARK_STATUS_OK);
+	assert(stamped_bytes == encoded_bytes);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes,17u,23u) == SPARK_STATUS_OK);
+	assert(memcmp(stamped,encoded,encoded_bytes) == 0);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes,17u,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes,0u,23u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes - 4u,17u,23u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcEncodePreparation(&submission,17u,encoded,sizeof(encoded),&encoded_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodePreparation(&submission,1u,stamped,sizeof(stamped),&stamped_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes,17u,23u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcStampSubmission(stamped,stamped_bytes,17u,0u) == SPARK_STATUS_OK);
+	assert(memcmp(stamped,encoded,encoded_bytes) == 0);
+}
+
 static void TestIndependentPrefillMessageCapacity(void)
 {
 	uint32_t message_bytes;
@@ -433,6 +495,7 @@ int main(void)
 	TestSubmissionRoundTrip();
 	TestCompletionRoundTrip();
 	TestCompletionDecodeReplacesHeldCompletion();
+	TestStampedSubmissionMatchesDirectEncoding();
 	TestIndependentPrefillMessageCapacity();
 	TestContinuationLease();
 	return(0);
