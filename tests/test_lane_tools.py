@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import pathlib
 import subprocess
 import sys
@@ -86,6 +87,10 @@ def main():
                                 cwd=ROOT, env=dict(clean, SPARK_LANES=str(candidate)), capture_output=True, text=True)
         if direct.returncode != 0 or not (directory / "direct" / "deployment.json").is_file():
             failures.append(f"{record}: tools/stage_lane.py must render a candidate lanes file outside the repository (SPARK_LANES), as stage_lane.sh setup does: {direct.stderr.strip()[-200:]}")
+        grace = int(re.search(r"#define SPARK_MODEL_RESIDENTD_STOP_GRACE_SECONDS (\d+)u", (ROOT / "node" / "model_residentd.c").read_text()).group(1))
+        stops = [int(found) for data in baseline.values() for found in re.findall(rb"-p TimeoutStopSec=(\d+)", data)]
+        if len(stops) != 16 or min(stops) <= grace:
+            failures.append(f"{record}: every rendered lane script must give systemd a stop timeout above residentd's {grace} s stop grace, so residentd ends its own shutdown before systemd kills it (found {stops})")
         if any(b"-E SPARK_REQUIRED_CHECK" in data for data in baseline.values()):
             failures.append(f"{record}: a rendered lane.sh carries extra residentd environment")
         scripts = {name: data for name, data in baseline.items() if name.startswith("lane.") and name.endswith(".sh")}

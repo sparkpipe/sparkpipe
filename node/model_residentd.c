@@ -262,7 +262,7 @@ typedef struct SparkModelResidentdRuntime
 	int32_t listen_fd;
 	int32_t candidate_fd;
 	uint32_t candidate_input_bytes;
-	uint8_t candidate_input[512];
+	uint8_t candidate_input[sizeof(SparkModelResidentIpcHello)];
 	int32_t wake_read_fd;
 	int32_t wake_write_fd;
 	uint32_t control_endpoint_kind;
@@ -275,6 +275,9 @@ typedef struct SparkModelResidentdRuntime
 	pthread_mutex_t mutex;
 } SparkModelResidentdRuntime;
 
+#define SPARK_MODEL_RESIDENTD_STOP_GRACE_SECONDS 60u
+#define SPARK_MODEL_RESIDENTD_LISTEN_BACKLOG 16
+
 static volatile sig_atomic_t SparkModelResidentdStop;
 
 static uint64_t SparkModelResidentdMonotonicTimeNs(void);
@@ -283,7 +286,7 @@ static void SparkModelResidentdSignal(int32_t signal_number)
 {
 	(void)signal_number;
 	SparkModelResidentdStop = 1;
-	alarm(60u);
+	alarm(SPARK_MODEL_RESIDENTD_STOP_GRACE_SECONDS);
 }
 
 static void SparkModelResidentdAlarm(int32_t signal_number)
@@ -559,7 +562,7 @@ static SparkStatus SparkModelResidentdOpenUnixListenSocket(
 	memset(&address,0,sizeof(address));
 	address.sun_family = AF_UNIX;
 	memcpy(address.sun_path,socket_path,strlen(socket_path) + 1u);
-	if ( bind(fd,(const struct sockaddr *)&address,sizeof(address)) != 0 || listen(fd,1) != 0 || SparkModelResidentdSetNonblocking(fd) != 0 )
+	if ( bind(fd,(const struct sockaddr *)&address,sizeof(address)) != 0 || listen(fd,SPARK_MODEL_RESIDENTD_LISTEN_BACKLOG) != 0 || SparkModelResidentdSetNonblocking(fd) != 0 )
 	{
 		close(fd);
 		unlink(socket_path);
@@ -606,7 +609,7 @@ static SparkStatus SparkModelResidentdOpenTcpListenSocket(
 		if ( fd < 0 )
 			continue;
 		enabled = 1;
-		if ( setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&enabled,sizeof(enabled)) == 0 && bind(fd,address->ai_addr,(socklen_t)address->ai_addrlen) == 0 && listen(fd,1) == 0 && SparkModelResidentdSetNonblocking(fd) == 0 )
+		if ( setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&enabled,sizeof(enabled)) == 0 && bind(fd,address->ai_addr,(socklen_t)address->ai_addrlen) == 0 && listen(fd,SPARK_MODEL_RESIDENTD_LISTEN_BACKLOG) == 0 && SparkModelResidentdSetNonblocking(fd) == 0 )
 		{
 			runtime->listen_fd = fd;
 			status = SPARK_STATUS_OK;
@@ -761,7 +764,11 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	output_bytes = SparkModelResidentdMaximumU32(completion_bytes,SPARK_MODEL_RESIDENT_IPC_HELLO_ACK_BYTES);
 	runtime->client.output_message_capacity = SparkModelResidentdMaximumU32(SparkModelResidentdMaximumU32(output_bytes,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES),SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
 	if ( runtime->route_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.input_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES || runtime->client.output_message_capacity > SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES )
+	{
+		fprintf(stderr,"model_residentd: the runtime limits need %u-byte submissions and %u-byte completions, above the %u-byte IPC message limit; lower max_input_row_count or max_active_sequence_count\n",
+			runtime->route_message_capacity,runtime->client.output_message_capacity,(unsigned)SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	runtime->routes = (SparkModelResidentdRoute *)calloc(runtime->route_capacity,sizeof(runtime->routes[0]));
 	runtime->slots = (SparkModelResidentdSlot *)calloc(runtime->route_capacity,sizeof(runtime->slots[0]));
 	runtime->sequence_slots = (SparkModelResidentdSequenceSlot *)calloc(runtime->runtime_limits.resident_sequence_capacity,sizeof(runtime->sequence_slots[0]));
