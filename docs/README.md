@@ -120,7 +120,7 @@ current authority.
   each item exists, and the procedure for replacing or adding a node.
 - [`NODE_BRINGUP.md`](NODE_BRINGUP.md): a new node from its factory image to
   the baseline: first contact over rail 2, keys and sudo, headless, the first
-  upgrade, and what went wrong on spark10.
+  upgrade, the burn-in, and what went wrong on spark10.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open

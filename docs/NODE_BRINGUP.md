@@ -94,7 +94,7 @@ ssh spark0 'ssh sparkN@<link-local>%enP2p1s0f0np0 "sudo nmcli dev set enP2p1s0f0
 Open the master from the workstation, then send every later command over it:
 
 ```bash
-ssh -o AddressFamily=inet -o ServerAliveInterval=20 -o ControlMaster=yes -o ControlPersist=yes -o ControlPath=~/.ssh/cm-sparkN-bringup -f -N -J hub sparkN@10.10.201.A
+ssh -o AddressFamily=inet -o ServerAliveInterval=20 -o ControlMaster=yes -o ControlPersist=yes -o ControlPath=~/.ssh/cm-sparkN-bringup -f -N -J rtx5090 sparkN@10.10.201.A
 ```
 
 ```bash
@@ -144,7 +144,7 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A "sudo apt-mark ma
   a reverse dynamic forward, and keep it running for the whole upgrade:
 
   ```bash
-  ssh -o AddressFamily=inet -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -J hub -N -R 127.0.0.1:1080 sparkN@10.10.201.A
+  ssh -o AddressFamily=inet -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -J rtx5090 -N -R 127.0.0.1:1080 sparkN@10.10.201.A
   ```
 
   `AddressFamily=inet` is required: without it the workstation tries the
@@ -200,7 +200,7 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
 
 ## 7. Hand-off to the baseline
 
-- **First fleet:** continue with
+- **`spark0`-`sparkf`:** continue with
   [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node) from step 2
   (firmware).
 - **Later fleets (staged):** firmware (baseline step 2) and the
@@ -211,6 +211,45 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
   today, so staged nodes are not yet applied or audited by it.
 - A new node has no predecessor, so baseline step 3 (identity) does not apply:
   the node keeps its own host keys.
+
+## 8. Burn-in
+
+Before it goes into service, every new node runs the load that faulted the
+Lenovo CX-7s, sustained RDMA through both PCIe links at once, together with GPU
+and NVMe load. The scripts and the launch commands are in the coordination
+store (`sparkpipe-coord/holdwork/burnin/`).
+
+- **Wiring:** both ports to `cisco0`, used as in service. PCIe link A drives
+  port 1 (`enp1s0f1np1`), link B drives port 0 (`enP2p1s0f0np0`), and the other
+  two functions are down. Link B takes the bring-up address and link A the next
+  one, while no other node holds it. Both are in one subnet, so set
+  `arp_ignore=1`, `arp_announce=2` and `rp_filter=2` on both netdevs.
+- **Peers:** one idle node per link, one to one. Two peers sending into one
+  port make the switch drop in the default class and fill the RoCE retransmit
+  counters.
+- **Guards first:** the DMA guard reports `event=start mode=armed` on the node
+  and on both peers before any load starts.
+- **Load:** on each link, 8-QP bidirectional 1 MiB RDMA writes and 4-QP
+  bidirectional 64 KiB RDMA reads (perftest `ib_write_bw`, `ib_read_bw`). On
+  the node, a GPU pattern check over 16 GiB with a compute burner, NVMe random
+  writes with crc32c verify capped at 200 MB/s, and uncapped random reads.
+  Never run the fio writes uncapped: the drive takes about 6 GB/s, 21 TB an
+  hour.
+- **Duration:** 2 hours.
+- **Pass:** every item holds.
+  - No guard trigger and no boot-id change on any of the three hosts.
+  - The CX-7 AER counters (correctable, non-fatal, fatal) do not change.
+  - No new kernel line about AER, the SMMU, `CMD_SYNC`, mlx5 errors, GPU Xid,
+    NVMe timeouts or resets, ext4 errors, soft lockups or hung tasks.
+  - `out_of_sequence`, `packet_seq_err`, `local_ack_timeout_err` and
+    `roce_adp_retrans` do not change. They count since boot, so snapshot them
+    before and after.
+  - The GPU pattern check reports `bad=0` and fio `err=0`.
+  - Each link carries about 99.7 Gb/s each way.
+
+| Node | Date | Peers | Result |
+|---|---|---|---|
+| spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 88 TB over RDMA. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
 
 ## Vendor notes
 
