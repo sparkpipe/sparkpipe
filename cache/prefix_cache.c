@@ -2103,13 +2103,37 @@ SparkStatus SparkPrefixCacheLookupPrompt(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkPrefixCacheBoundBlockHashes(
+    SparkPrefixCache *cache,
+    const SparkPrefixCacheSequenceBinding *binding,
+    uint32_t block_token_count,
+    uint64_t parent_hash,
+    uint64_t *block_hash,
+    uint64_t *content_hash)
+{
+    const SparkPrefixCacheEntry *entry;
+    if (binding == 0 || binding->entry_index >= cache->entry_count)
+    {
+        return 0u;
+    }
+    entry = &cache->entries[binding->entry_index];
+    if (entry->token_count != block_token_count || entry->parent_hash != parent_hash)
+    {
+        return 0u;
+    }
+    *block_hash = entry->block_hash;
+    *content_hash = entry->content_hash;
+    return 1u;
+}
+
 static SparkStatus SparkPrefixCacheReservePromptInternal(
     SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
     SparkPrefixCacheReservation *reservation,
-    uint32_t allow_cross_sequence_reuse)
+    uint32_t allow_cross_sequence_reuse,
+    uint32_t verified_token_count)
 {
     uint64_t parent_hash;
     uint64_t block_hash;
@@ -2167,19 +2191,24 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         block_token_count = SparkPrefixCacheMinimumU32(
             cache->block_token_count,
             token_count - token_offset);
-        block_hash = SparkPrefixCacheHashBlock(
-            &token_ids[token_offset],
-            block_token_count,
-            parent_hash);
-        content_hash = SparkPrefixCacheHashBlockContent(
-            &token_ids[token_offset],
-            block_token_count);
-        SparkPrefixCacheDigestFromTokens(&digest,&token_ids[token_offset],
-            block_token_count);
         existing_binding = SparkPrefixCacheFindBindingAtTokenOffset(
             cache,
             sequence_id,
             token_offset);
+        if (token_offset + block_token_count > verified_token_count ||
+            SparkPrefixCacheBoundBlockHashes(cache, existing_binding,
+                block_token_count, parent_hash, &block_hash, &content_hash) == 0u)
+        {
+            block_hash = SparkPrefixCacheHashBlock(
+                &token_ids[token_offset],
+                block_token_count,
+                parent_hash);
+            content_hash = SparkPrefixCacheHashBlockContent(
+                &token_ids[token_offset],
+                block_token_count);
+        }
+        SparkPrefixCacheDigestFromTokens(&digest,&token_ids[token_offset],
+            block_token_count);
         entry = 0;
         if (existing_binding != 0 && existing_binding->entry_index < cache->entry_count)
         {
@@ -2294,7 +2323,7 @@ SparkStatus SparkPrefixCacheReservePrompt(
     SparkPrefixCacheReservation *reservation)
 {
     return SparkPrefixCacheReservePromptInternal(
-        cache,sequence_id,token_ids,token_count,reservation,1u);
+        cache,sequence_id,token_ids,token_count,reservation,1u,0u);
 }
 
 SparkStatus SparkPrefixCacheReserveSequencePrompt(
@@ -2305,7 +2334,7 @@ SparkStatus SparkPrefixCacheReserveSequencePrompt(
     SparkPrefixCacheReservation *reservation)
 {
     return SparkPrefixCacheReservePromptInternal(
-        cache,sequence_id,token_ids,token_count,reservation,0u);
+        cache,sequence_id,token_ids,token_count,reservation,0u,0u);
 }
 
 static SparkStatus SparkPrefixCacheCommitEntry(
@@ -2450,10 +2479,11 @@ SparkStatus SparkPrefixCacheCancelReservation(
         reservation_epoch);
 }
 
-SparkStatus SparkPrefixCacheCommitPrompt(
+static SparkStatus SparkPrefixCacheCommitPromptInternal(
     SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
+    uint32_t verified_token_count,
     uint32_t token_count,
     SparkPrefixCacheLookup *lookup)
 {
@@ -2472,7 +2502,10 @@ SparkStatus SparkPrefixCacheCommitPrompt(
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if (lookup != 0)
         SparkPrefixCacheInitializeLookup(lookup,sequence_id,token_count);
-    for (offset=0u; offset<token_count; offset+=cache->block_token_count)
+    if (verified_token_count > token_count)
+        verified_token_count = token_count;
+    verified_token_count -= verified_token_count % cache->block_token_count;
+    for (offset=verified_token_count; offset<token_count; offset+=cache->block_token_count)
     {
         binding = SparkPrefixCacheFindBindingAtTokenOffset(cache,sequence_id,offset);
         if (binding == 0 || binding->token_count >=
@@ -2503,7 +2536,7 @@ SparkStatus SparkPrefixCacheCommitPrompt(
     memset(&reservation,0,sizeof(reservation));
     reservation.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
     reservation.descriptor_bytes = SPARK_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
-    status = SparkPrefixCacheReservePrompt(cache,sequence_id,token_ids,token_count,&reservation);
+    status = SparkPrefixCacheReservePromptInternal(cache,sequence_id,token_ids,token_count,&reservation,1u,verified_token_count);
     if (status == SPARK_STATUS_OK)
     {
         status = SparkPrefixCacheCommitReservation(cache,sequence_id,reservation.reservation_epoch);
@@ -2531,6 +2564,27 @@ SparkStatus SparkPrefixCacheCommitPrompt(
         lookup->last_block_hash = reservation.last_block_hash;
     }
     return status;
+}
+
+SparkStatus SparkPrefixCacheCommitPrompt(
+    SparkPrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    SparkPrefixCacheLookup *lookup)
+{
+    return SparkPrefixCacheCommitPromptInternal(cache,sequence_id,token_ids,0u,token_count,lookup);
+}
+
+SparkStatus SparkPrefixCacheCommitPromptAfter(
+    SparkPrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t committed_token_count,
+    uint32_t token_count,
+    SparkPrefixCacheLookup *lookup)
+{
+    return SparkPrefixCacheCommitPromptInternal(cache,sequence_id,token_ids,committed_token_count,token_count,lookup);
 }
 
 SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(

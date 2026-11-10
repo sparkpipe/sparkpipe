@@ -1381,10 +1381,11 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		&published_context,
 		&tokens[request->cache_published_token_count],
 		completed_token_count - request->cache_published_token_count);
-	status = SparkPrefixCacheCommitPrompt(
+	status = SparkPrefixCacheCommitPromptAfter(
 		&engine->prefix_cache,
 		request->sequence_id,
 		tokens,
+		request->cache_published_token_count,
 		completed_token_count,
 		&committed);
 	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
