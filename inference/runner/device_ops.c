@@ -162,7 +162,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_combine_gather_d576v512",
 	"spark_indexer_score_pooled",
 	"spark_indexer_expand_pools",
-	"spark_indexer_pool_keys"
+	"spark_indexer_pool_keys",
+	"spark_attention_decode_extra_gather_d512"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1465,6 +1466,87 @@ SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	bindings[4] = OpsBind(sinks != 0 ? *sinks : partial,SPARK_DEVICE_BIND_READ);
 	return(OpsLaunch(ops,queue,(SparkOpsKernel)(SPARK_OPS_ATTENTION_COMBINE_GATHER + OpsAttentionWidth(params)),params->heads,params->rows,1u,256u,&launch,
 		sizeof(launch),bindings,5u));
+}
+
+uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t gather_keys)
+{
+	const uint64_t partitions = (positions + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS +
+		(gather_keys + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	return((uint64_t)rows * heads * partitions * (SPARK_OPS_ATTENTION_WIDE_HEAD_DIM + 2u) * sizeof(float));
+}
+
+SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
+	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params,
+	const uint32_t *host_positions)
+{
+	SparkAttentionParams launch = *params;
+	SparkDeviceBinding bindings[9];
+	SparkStatus status;
+	uint32_t row, longest = 0u, primary;
+	if ( launch.group == 0u && params->kv_heads != 0u && params->heads % params->kv_heads == 0u )
+		launch.group = params->heads / params->kv_heads;
+	if ( params->rows == 0u || params->heads == 0u || params->head_dimension != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM ||
+		OpsAttentionValueDimension(params) != SPARK_OPS_ATTENTION_WIDE_HEAD_DIM || params->output_gate != 0u || launch.group == 0u ||
+		(uint64_t)params->first_head + params->heads > (uint64_t)launch.group * params->kv_heads || (sinks != 0) != (params->has_sinks != 0u) ||
+		params->kv_heads != paged->kv_heads || extra->kv_heads != paged->kv_heads || params->page_slots != paged->page_slots ||
+		extra->page_slots != paged->page_slots || params->pages_per_sequence != paged->pages_per_sequence || extra->pages_per_sequence != paged->pages_per_sequence ||
+		params->pool_pages != paged->pool_pages || extra->pool_pages != paged->pool_pages || host_positions == 0 || paged->tree != 0u || extra->tree != 0u ||
+		params->gather_keys == 0u || params->gather_keys > SPARK_INDEXER_KERNEL_MAX_TOPK )
+		return(OpsRefuse("attention_extra_gather","512-dimensional heads without an output gate, whole query groups, one page geometry for both key ranges, "
+			"no tree frame, a sink tensor exactly when the parameters ask for sinks, the host window positions and between 1 and 2048 gathered keys"));
+	for ( row = 0u; row < params->rows; row++ )
+		if ( host_positions[row] + 1u > longest )
+			longest = host_positions[row] + 1u;
+	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots )
+		return(OpsRefuse("attention_extra_gather","every row's window keys must lie inside its sequence's pages"));
+	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	primary = (longest + launch.partition_keys - 1u) / launch.partition_keys;
+	launch.extra_partitions = (params->gather_keys + launch.partition_keys - 1u) / launch.partition_keys;
+	launch.partitions = primary + launch.extra_partitions;
+	launch.partition_base = 0u;
+	launch.row_offset = 0u;
+	launch.tree = 0u;
+	launch.gather_ratio = 1u;
+	status = OpsNeed("attention_extra_gather","partial",partial,SparkOpsAttentionExtraGatherScratchBytes(params->rows,params->heads,longest,params->gather_keys));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_extra_gather","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_extra_gather","output",output,OpsRowsBytes(params->rows,params->output_stride,params->heads * params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK && sinks != 0 )
+		status = OpsNeed("attention_extra_gather","sinks",*sinks,(uint64_t)params->heads * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("attention_extra_gather","selected",selected,(uint64_t)params->rows * params->gather_keys * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(paged->pool,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(paged->page_table,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(paged->sequence_of_row,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(partial,SPARK_DEVICE_BIND_WRITE);
+	bindings[6] = OpsBind(OpsErrorWord(ops),SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[7] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[8] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA,primary,params->heads,params->rows,256u,&launch,sizeof(launch),bindings,9u);
+	if ( status == SPARK_STATUS_OK )
+	{
+		SparkAttentionParams second = launch;
+		second.partition_base = primary;
+		second.window = 0u;
+		bindings[1] = OpsBind(extra->pool,SPARK_DEVICE_BIND_READ);
+		bindings[4] = OpsBind(extra->positions,SPARK_DEVICE_BIND_READ);
+		bindings[7] = OpsBind(selected,SPARK_DEVICE_BIND_READ);
+		status = OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_DECODE_EXTRA_GATHER,launch.extra_partitions,params->heads,params->rows,256u,&second,sizeof(second),bindings,9u);
+	}
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(partial,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(query,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(paged->positions,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(output,SPARK_DEVICE_BIND_WRITE);
+	bindings[4] = OpsBind(sinks != 0 ? *sinks : partial,SPARK_DEVICE_BIND_READ);
+	bindings[5] = OpsBind(extra->positions,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_ATTENTION_COMBINE_EXTRA,params->heads,params->rows,1u,256u,&launch,sizeof(launch),bindings,6u));
 }
 
 SparkStatus SparkOpsAddRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor hidden, SparkTensor addend, uint32_t rows,

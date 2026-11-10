@@ -406,6 +406,12 @@ template [[host_name("spark_attention_decode_extra_d512")]] kernel void spark_at
 	device atomic_uint *error [[buffer(7)]], device const uint *fork_positions [[buffer(8)]], device const uint *slot_offsets [[buffer(9)]],
 	uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]]);
+template [[host_name("spark_attention_decode_extra_gather_d512")]] kernel void spark_attention_decode<512, 512, true, true>(
+	constant SparkAttentionParams &p [[buffer(0)]], device const ushort *query [[buffer(1)]], device const ushort *pool [[buffer(2)]],
+	device const uint *page_table [[buffer(3)]], device const uint *sequence_of_row [[buffer(4)]], device const uint *positions [[buffer(5)]],
+	device float *partial [[buffer(6)]], device atomic_uint *error [[buffer(7)]], device const uint *row_keys [[buffer(8)]],
+	device const uint *slot_offsets [[buffer(9)]], uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]],
+	uint simd [[simdgroup_index_in_threadgroup]]);
 template [[host_name("spark_attention_combine_extra_d512")]] kernel void spark_attention_combine<512, 512, true>(constant SparkAttentionParams &p [[buffer(0)]],
 	device const float *partial [[buffer(1)]], device const ushort *gate [[buffer(2)]], device const uint *positions [[buffer(3)]],
 	device ushort *output [[buffer(4)]], device const float *sinks [[buffer(5)]], device const uint *extra_positions [[buffer(6)]],

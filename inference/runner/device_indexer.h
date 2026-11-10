@@ -85,6 +85,10 @@ SparkStatus SparkIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue
 uint32_t SparkIndexerExpandWidth(const SparkIndexerShape *shape);
 uint32_t SparkIndexerSlotPitch(const SparkIndexerShape *shape, uint32_t gated);
 uint64_t SparkIndexerPoolWindowBytes(const SparkIndexerShape *shape);
+uint64_t SparkIndexerAttentionExtraScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t topk);
+SparkStatus SparkIndexerAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
+	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, uint32_t topk, SparkTensor partial, SparkTensor output,
+	const SparkAttentionParams *params, const uint32_t *host_positions);
 SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
 	SparkTensor pooled, const SparkIndexerShape *shape, uint32_t rows);
 

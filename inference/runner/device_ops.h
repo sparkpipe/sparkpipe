@@ -175,6 +175,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_INDEXER_SCORE_POOLED,
 	SPARK_OPS_INDEXER_EXPAND_POOLS,
 	SPARK_OPS_INDEXER_POOL_KEYS,
+	SPARK_OPS_ATTENTION_DECODE_EXTRA_GATHER,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -386,6 +387,10 @@ SparkStatus SparkOpsIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue
 SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params);
 SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params);
+SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
+	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params,
+	const uint32_t *host_positions);
+uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t gather_keys);
 uint64_t SparkOpsAttentionGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t value_dimension, uint32_t gather_keys);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
 uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension);

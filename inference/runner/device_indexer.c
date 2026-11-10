@@ -225,3 +225,21 @@ SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	IndexerParams(shape,0,rows,0u,0u,&params);
 	return(SparkOpsIndexerPoolKeys(ops,queue,window,sequences,keys,pooled,&params));
 }
+
+uint64_t SparkIndexerAttentionExtraScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t topk)
+{
+	return(SparkOpsAttentionExtraGatherScratchBytes(rows,heads,positions,topk));
+}
+
+SparkStatus SparkIndexerAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
+	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, uint32_t topk, SparkTensor partial, SparkTensor output,
+	const SparkAttentionParams *params, const uint32_t *host_positions)
+{
+	SparkAttentionParams launch;
+	if ( paged == 0 || extra == 0 || params == 0 || topk == 0u || topk > SPARK_INDEXER_MAX_TOPK )
+		return(IndexerRefuse("attention_extra","both paged ranges, attention parameters and between 1 and 2048 selected keys"));
+	launch = *params;
+	launch.gather_keys = topk;
+	launch.gather_ratio = 1u;
+	return(SparkOpsAttentionExtraGather(ops,queue,paged,extra,query,sinks,selected,partial,output,&launch,host_positions));
+}
