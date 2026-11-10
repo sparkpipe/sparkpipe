@@ -198,8 +198,12 @@ kernel void spark_indexer_score_pooled(constant SparkIndexerParams &p [[buffer(0
 	{
 		failed = 0u;
 		for ( uint i = 0u; i < ratio; i++ )
-			if ( !SparkIndexerSlot(p, page_table, sequence_of_row[row], pooled * ratio + i, error, row, slots[i]) )
+		{
+			ulong offset = 0ul;
+			if ( !SparkIndexerSlot(p, page_table, sequence_of_row[row], pooled * ratio + i, error, row, offset) )
 				failed = 1u;
+			slots[i] = offset;
+		}
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	if ( failed != 0u )
