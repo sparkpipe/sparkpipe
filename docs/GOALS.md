@@ -278,10 +278,14 @@ the harness for it. The operator's multi-speculator-live idea is assessed as
 multi-drafter composition: see that doc's "Direction: multi-drafter trees"
 section.
 
-## FLEET-HOURS TRACK
+## PRODUCT TRACK
 
-The product is the Fleet-hours section of [`README.md`](../README.md), with
-its terms on sparkpipe.ai. ROADMAP M9 orders the work.
+The product is what sparkpipe.ai and the SparkPipe Customer Agreement
+(`site/terms/`) promise: whole fleets pinned by the week, and hours on Hour
+Fleets and on fleets nobody holds, paid in hour-credits. The "Renting a
+fleet" section of [`README.md`](../README.md) summarises it. Where the code
+disagrees with the site or the Agreement, the code is the bug. ROADMAP M9
+orders the work.
 
 ## The island-catalog manifest (operator-ratified abstraction)
 
