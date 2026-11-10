@@ -61,7 +61,7 @@ class Tools:
 
     async def fleet_nodes(self, __user__: dict = None) -> str:
         """
-        Show each machine's uptime, load, free memory, root disk use, GPU clock, utilization, temperature, memory and power, and its busiest processes, for the hub (rtx5090) and every spark (spark0 to sparkf).
+        Show each machine's uptime, load, free memory, root disk use, GPU clock, utilization, temperature, memory and power, and its busiest processes, for the hub and every spark (spark0 to sparkf).
         """
         if not self._admin(__user__):
             return ADMIN_ONLY
@@ -80,8 +80,8 @@ class Tools:
 
     async def fleet_run(self, host: str, command: str, timeout: int = 60, elevated: bool = False, __user__: dict = None, __event_call__=None, __chat_id__: str = None) -> str:
         """
-        Run a shell command on the hub (rtx5090) or one spark (spark0 to sparkf). By default it runs in a sandbox that can read the machine and the SparkPipe files and logs but cannot write outside its own /tmp, open network connections, use the GPUs, use sudo or read secrets, with CPU, memory and time limits; the admin grants that once per chat, and later commands in the chat run without asking. Set elevated to true only when the command must change something or needs the network or the GPU, for example restarting a SparkPipe service; it then runs as the spec user after the admin approves that exact command. Prefer fleet_status, fleet_nodes and fleet_logs when they answer the question.
-        :param host: rtx5090, or a spark from spark0 to sparkf
+        Run a shell command on the hub or one spark (spark0 to sparkf). By default it runs in a sandbox that can read the machine and the SparkPipe files and logs but cannot write outside its own /tmp, open network connections, use the GPUs, use sudo or read secrets, with CPU, memory and time limits; the admin grants that once per chat, and later commands in the chat run without asking. Set elevated to true only when the command must change something or needs the network or the GPU, for example restarting a SparkPipe service; it then runs as the spec user after the admin approves that exact command. Prefer fleet_status, fleet_nodes and fleet_logs when they answer the question.
+        :param host: hub, or a spark from spark0 to sparkf
         :param command: the shell command, run with bash on the hub or through ssh on a spark
         :param timeout: seconds before the command is stopped, at most 600
         :param elevated: run as spec outside the sandbox; the admin approves each such command
@@ -116,7 +116,7 @@ class Tools:
                     "data": {
                         "title": "Give Kimi fleet access for this chat?",
                         "message": (
-                            "For the next 8 hours, Kimi can run commands in this chat on rtx5090 and spark0 to sparkf without asking again, "
+                            "For the next 8 hours, Kimi can run commands in this chat on the hub and spark0 to sparkf without asking again, "
                             "in a sandbox that can read the machine and the SparkPipe files but cannot change anything, reach the network, use the GPUs, "
                             "use sudo or read secrets. Every command is audited. "
                             f"Its first command, on {host}:\n\n```\n{command}\n```"

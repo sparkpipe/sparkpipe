@@ -746,7 +746,7 @@ A held fleet is then never lost to a forgotten Sunday.
 The gateway's limits:
 - An account holds an active rental when one of its bookings' hours includes now. Such an account is not subject to the 6,000 limit. Instead, the holders of the N Fleets rented at that moment share the gateway's measured capacity equally, so each gets `SPARKPIPE_GATEWAY_CAPACITY / N` requests in any 10 minutes.
 - `SPARKPIPE_GATEWAY_CAPACITY` is the number of requests the gateway sustains in 10 minutes. It is required: the gateway refuses to start without a whole number of at least 1, and there is no default.
-- It is measured with `tools/gateway_capacity_check.py` against the sandbox or a staging gateway, never production. Set it to the result's `capacity_per_window`, which is the sustained 2xx requests per second over a 60-second run times 600 (docs/PAYMENTS.md).
+- It is measured with `tools/gateway_capacity_check.py` against the sandbox or a staging gateway, never production: the tool refuses a URL unless its host is loopback or has a `sandbox` or `staging` DNS label, or its path starts with `/pay/sandbox/api/` with no dot segments; a query, fragment or user name never counts. Set it to the result's `capacity_per_window`, which is the sustained 2xx requests per second over a 60-second run times 600 (docs/PAYMENTS.md).
 - Both limits answer 429 `busy` with `Retry-After: 60` in each shape's error body.
 
 Errors use each API shape's own error body, with these `type` or `code` values:

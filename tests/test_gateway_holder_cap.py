@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import json
+import re
 import sys
 import tempfile
 import threading
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +17,22 @@ import sparkpipe_pay as sp
 import test_market as tm
 
 CAPACITY = 12
+VPS = ROOT / "deployment" / "vps"
+SITE = VPS / "sparkpipe-ai-ssl.conf"
+DOOR = VPS / "sparkpipe-public-api.conf"
+PAY_ENV = VPS / "sparkpipe-pay.env.example"
+
+
+def tunnel_ports():
+    ports = set()
+    for line in PAY_ENV.read_text().splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() in ("SPARKPIPE_POOL_UPSTREAM", "SPARKPIPE_FLEET_UPSTREAMS"):
+            for url in re.findall(r"https?://[^\s\"']+", value):
+                ports.add(urllib.parse.urlsplit(url).port)
+    return ports
+
+
 BASE = {"SPARKPIPE_PAY_SANDBOX": "1", "SPARKPIPE_PAY_PREFIX": "/pay/sandbox/api"}
 
 
@@ -143,6 +161,35 @@ def retry_header_rules(failures, work):
         server.shutdown()
 
 
+def public_door_rules(failures):
+    ports = tunnel_ports()
+    if not ports:
+        failures.append(f"{PAY_ENV.name} names no hub tunnel upstream, so this test checks nothing")
+    for conf in sorted(VPS.glob("*.conf")):
+        for number, line in enumerate(conf.read_text().splitlines(), 1):
+            words = line.split()
+            if words and words[0] in ("ProxyPass", "ProxyPassMatch", "ProxyPassReverse"):
+                for url in re.findall(r"https?://[^\s\"']+", line):
+                    if urllib.parse.urlsplit(url).port in ports:
+                        failures.append(f"{conf.name}:{number} proxies to the hub tunnel {url}; only the pay gateway may reach a hub")
+    site = SITE.read_text()
+    if "Include /etc/apache2/sparkpipe/public-api.conf" not in site:
+        failures.append(f"{SITE.name} does not include public-api.conf, so the public header is not stripped and /v1/ is not closed")
+    door = [line.strip() for line in DOOR.read_text().splitlines() if line.strip()]
+    if "RequestHeader unset X-SparkPipe-Public" not in door:
+        failures.append(f"{DOOR.name} does not strip X-SparkPipe-Public from incoming requests")
+    if any("RequestHeader set" in line for line in door):
+        failures.append(f"{DOOR.name} sets the public header itself")
+    closed = [re.fullmatch(r'RedirectMatch 404 "?(.+?)"?', line) for line in door]
+    patterns = [re.compile(match.group(1)) for match in closed if match]
+    for path in ("/v1/models", "/v1/messages", "/v1", "/v1/chat/completions"):
+        if not any(pattern.search(path) for pattern in patterns):
+            failures.append(f"{DOOR.name} does not answer 404 on {path}")
+    for path in ("/pay/api/v1/models", "/index.html", "/v1x"):
+        if any(pattern.search(path) for pattern in patterns):
+            failures.append(f"{DOOR.name} closes {path}, which is not the old hub door")
+
+
 def main():
     failures = []
     with tempfile.TemporaryDirectory() as directory:
@@ -151,13 +198,15 @@ def main():
         startup_rules(failures, work / "startup")
         gateway_rules(failures, work / "gateway")
         retry_header_rules(failures, work / "retry")
+    public_door_rules(failures)
     for failure in failures:
         print("FAIL test_gateway_holder_cap:", failure)
     if failures:
         raise SystemExit(1)
     print("PASS test_gateway_holder_cap: the gateway refuses to start without SPARKPIPE_GATEWAY_CAPACITY; an account with an active rental is not held to "
           "LIMITS['gateway'] but to capacity/N per window with N the Fleets rented now (N=1 and N=3), with the busy 429 and retry-after; "
-          "an account without one keeps LIMITS['gateway']")
+          "an account without one keeps LIMITS['gateway']; the gateway is the only public inference door: no Apache rule proxies to a hub tunnel, "
+          "the public header is stripped and /v1/ answers 404")
 
 
 if __name__ == "__main__":
