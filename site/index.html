@@ -6,6 +6,15 @@
 <title>SparkPipe · a fleet of your own for your codebase</title>
 <meta name="description" content="A whole AI fleet in Korea that serves only you and keeps your codebase warm all week: no cache expiry, no per-token bill, Functions that work on your code overnight, and your own model beside Kimi K3 and GLM 5.3. 144 HC a week.">
 <meta name="theme-color" content="#0a0c10">
+<link rel="canonical" href="https://sparkpipe.ai/index.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SparkPipe">
+<meta property="og:title" content="SparkPipe · a fleet of your own for your codebase">
+<meta property="og:description" content="A whole AI fleet in Korea that serves only you and keeps your codebase warm all week: no cache expiry, no per-token bill, Functions that work on your code overnight, and your own model beside Kimi K3 and GLM 5.3. 144 HC a week.">
+<meta property="og:url" content="https://sparkpipe.ai/index.html">
+<meta property="og:image" content="https://sparkpipe.ai/apple-touch-icon.png">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="ko_KR">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/index.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/index-ko.html">
 <link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/index.html">
@@ -23,6 +32,7 @@ h1 { max-width: 15ch; }
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="strip">
   <div class="wrap">
     <span>Fleets in <b>Korea</b></span>
@@ -45,23 +55,25 @@ h1 { max-width: 15ch; }
     </nav>
     <div class="nav-actions">
       <div class="lang" role="group" aria-label="Language / 언어"><a href="index.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
-      <a class="btn small" href="terms.html">Terms</a>
-      <a class="btn small solid" href="buy.html">Buy HC</a>
+      <a class="btn small" href="#how">Demo day</a>
+      <a class="btn small solid" href="buy.html">Book a week</a>
     </div>
   </div>
 </header>
 
-<main>
+<main id="main">
 <section class="wrap hero">
   <p class="label hero-kicker">For engineers who live in a large codebase</p>
   <h1>Your codebase, warm all week, on a fleet of your own.</h1>
   <div class="hero-grid">
     <div class="hero-copy">
       <p class="lead">No quota, no rate limit, no per-token bill. A SparkPipe fleet serves <b>only you</b>: run as many agents at once as it can carry, all week, for one flat price. It keeps what it computed about your codebase from turn to turn and week to week, and <b>works on it overnight</b> when you tell it to. Nobody else's requests run on it, and nothing is sent to any other AI service.</p>
+      <p class="price-line num"><b data-week="usd">$2,160</b> a week · 7 days for the price of 6 · about <span data-week="effective">$12.86</span>/h · plus VAT · up to <span data-off="max">20%</span> off for more weeks</p>
       <div class="actions">
-        <a class="btn solid" href="buy.html">Buy HC and book a demo day</a>
-        <a class="btn" href="#why">An API day against a fleet day</a>
+        <a class="btn solid" href="buy.html">Book a fleet week</a>
+        <a class="btn" href="#how">Try a demo day · <span data-hour="day">8</span> HC</a>
       </div>
+      <p class="more"><a href="#why">An API day against a fleet day</a> · <a href="compare.html">Check with your own session log</a></p>
       <p class="note">Sending a few prompts a day? A $20 plan serves you better. SparkPipe is for engineers who work all day with coding agents, and for teams with their own model. For companies, professionals and independent developers, not household consumers. Try every step without money in the <a href="market.html?sandbox">sandbox</a>.</p>
     </div>
     <figure class="screen">
@@ -70,7 +82,7 @@ h1 { max-width: 15ch; }
         <thead><tr><th scope="col">Moment</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
         <tbody>
           <tr><td>09:00 first turn</td><td data-l="Per-token API"><span>Cold: the whole context billed and prefilled again</span></td><td class="you" data-l="Your fleet"><span>Warm: your Functions refreshed it overnight</span></td></tr>
-          <tr><td>10:45 after a meeting</td><td data-l="Per-token API"><span>Cache expired after 5 minutes: billed again</span></td><td class="you" data-l="Your fleet"><span>Warm: first token in 0.3–5 s</span></td></tr>
+          <tr><td>10:45 after a meeting</td><td data-l="Per-token API"><span>Cache expired after 5 minutes: billed again</span></td><td class="you" data-l="Your fleet"><span>Warm: first token in 4.7–5.1 s at 137,700 tokens</span></td></tr>
           <tr><td>13:30 after lunch</td><td data-l="Per-token API"><span>Cold again</span></td><td class="you" data-l="Your fleet"><span>Still warm</span></td></tr>
           <tr><td>14:10 other branch</td><td data-l="Per-token API"><span>A new prefix: another cache write</span></td><td class="you" data-l="Your fleet"><span>Prefilled ahead</span></td></tr>
           <tr><td>16:00 rewrite a file</td><td data-l="Per-token API"><span>The provider's speed, per output token</span></td><td class="you" data-l="Your fleet"><span>126 tok/s, identical output</span></td></tr>
@@ -78,7 +90,7 @@ h1 { max-width: 15ch; }
         </tbody>
       </table>
       <div class="screen-read">
-        <div><small>Warm turn, 137,700 tokens</small><strong>0.3–5 s</strong></div>
+        <div><small>Warm turn, 137,700 tokens</small><strong>4.7–5.1 s</strong></div>
         <div><small>Kimi K3, file rewrites</small><strong>126 tok/s</strong></div>
         <div><small>Around the clock</small><strong data-week="effective">$12.86</strong></div>
       </div>
@@ -101,15 +113,15 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Per-token APIs bill you for your codebase again and again.</h2>
     <p class="prose">The API cache is built for short sessions. On Claude it lasts 5 minutes by default; a 1-hour cache costs twice the input price to write, and a 5-minute write costs 1.25 times. Kimi's default is also 5 minutes. So every break, meeting, branch switch and subagent pays for the whole context again, and waits while it prefills. That is why a $20–50 top-up runs out so fast in agentic work, and why subscription limits arrive before lunch.</p>
-    <div class="table-wrap"><table>
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="Per-token APIs bill you for your codebase again and again."><table>
       <thead><tr><th scope="col">Moment in the day</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet</th></tr></thead>
       <tbody>
-        <tr><td>Next turn, within minutes</td><td>A cache read, billed per token</td><td class="you"><b>Warm.</b> First token in 0.3–5 s at 137,700 tokens, measured, with no per-token charge</td></tr>
-        <tr><td>After a break or a meeting</td><td>Cache expired: the whole context is billed and prefilled again</td><td class="you"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
-        <tr><td>Switching branch or module</td><td>A new prefix: another cache write, another cold wait</td><td class="you"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
-        <tr><td>First turn in the morning</td><td>Everything cold</td><td class="you"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
-        <tr><td>Rewriting a whole file</td><td>The provider's speed; faster tiers cost more</td><td class="you"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
-        <tr><td>Price</td><td>Every re-read and re-write, or a subscription with quota walls</td><td class="you"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
+        <tr><td>Next turn, within minutes</td><td data-l="Per-token API">A cache read, billed per token</td><td class="you" data-l="Your fleet"><b>Warm.</b> First token in 4.7–5.1 s at 137,700 tokens and 0.3–0.9 s for a short cached turn, measured, with no per-token charge</td></tr>
+        <tr><td>After a break or a meeting</td><td data-l="Per-token API">Cache expired: the whole context is billed and prefilled again</td><td class="you" data-l="Your fleet"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
+        <tr><td>Switching branch or module</td><td data-l="Per-token API">A new prefix: another cache write, another cold wait</td><td class="you" data-l="Your fleet"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
+        <tr><td>First turn in the morning</td><td data-l="Per-token API">Everything cold</td><td class="you" data-l="Your fleet"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
+        <tr><td>Rewriting a whole file</td><td data-l="Per-token API">The provider's speed; faster tiers cost more</td><td class="you" data-l="Your fleet"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured and included</td></tr>
+        <tr><td>Price</td><td data-l="Per-token API">Every re-read and re-write, or a subscription with quota walls</td><td class="you" data-l="Your fleet"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
       </tbody>
     </table></div>
     <p class="prose">For you, the bill is the smaller cost. A wait of a minute or more sends you to another window, and getting back into the problem costs more than the wait. On your own fleet the context is computed once, and every turn after that starts from where the last one stopped.</p>
@@ -211,7 +223,7 @@ h1 { max-width: 15ch; }
       <li><h3>Pin an A fleet</h3><p>Each pair's A half is rented by the week. Book a first week on a free one, from the next Monday. When every A fleet is held, join the waitlist by locking at least <span data-week="hc">144</span> HC: every Sunday, freed fleets go to the biggest lock.</p></li>
       <li><h3>Keep it</h3><p>Book the next week before 00:00 on the Sunday of your last booked week and the fleet stays yours, and you may pin its B half too, for a 32-Spark, 4 TB pair. The more weeks you hold ahead, the bigger the discount on every week and every hour you book, up to <span data-off="max">20%</span>.</p></li>
     </ol>
-    <p class="prose">Need more than one fleet for a while? The B half of each pair is an Hour Fleet: anyone can book it by the hour, up to <span data-hourfleet="days">7</span> days ahead, at their discount, and at least a quarter of the fleets always stay open for hours. Any A fleet nobody holds can be booked by the hour too, up to the end of the current week. Your requests go to it like to your own. The waitlist goes biggest lock first, then earliest, and while you wait your hours cost less by the discount for the weeks your lock would book, repaid from your lock if you leave before it gives you a fleet. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts. <b>Every renter competes on the same board:</b> <a href="availability.html">see who holds what now, and how fleets are won, kept and lost</a>.</p>
+    <p class="prose">Need more than one fleet for a while? The B half of each pair is an Hour Fleet: anyone can book it by the hour, up to <span data-hourfleet="days">7</span> days ahead and up to <span data-hourfleet="hours">24</span> hours a week per account, at their discount, and at least a quarter of the fleets always stay open for hours. Any A fleet nobody holds can be booked by the hour too, up to the end of the current week. Your requests go to it like to your own. The waitlist goes biggest lock first, then earliest, and while you wait your hours cost less by the discount for the weeks your lock would book, repaid from your lock if you leave before it gives you a fleet. Fleets are allocated every Sunday at 00:00 KST, and your whole lock books as many weeks as it pays for. You see your own position and how many are waiting, nothing more. If you stop booking, the fleet goes to the waitlist that Sunday, and your cache and storage are deleted when the next customer starts, or 24 hours after your last hour on that fleet, whichever comes first. <b>Every renter competes on the same board:</b> <a href="availability.html">see who holds what now, and how fleets are won, kept and lost</a>.</p>
     <p class="caption">Weeks run Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. Eight fleets at launch, in four pairs.</p>
   </div>
 </section>
@@ -224,11 +236,11 @@ h1 { max-width: 15ch; }
   <div class="sec-body">
     <h2>Seven days for the price of six.</h2>
     <p class="prose">Everything is paid in hour-credits (HC). Buy them in any quantity, and spend them on hours of an Hour Fleet and weeks of your own fleet. No per-token charges, and no extra charge for Functions.</p>
-    <div class="table-wrap"><table class="cmp">
+    <div class="table-wrap stack" tabindex="0" role="region" aria-label="Seven days for the price of six."><table class="cmp">
       <thead><tr><th scope="col">Item</th><th scope="col">Price</th></tr></thead>
       <tbody>
         <tr><th scope="row">Hour-credits</th><td><span data-hc="small-usd">$20</span> (<span data-hc="small-krw">₩27,200</span>) each below <span data-hc="bulk-from">144</span> HC, <span data-hc="bulk-usd">$15</span> (<span data-hc="bulk-krw">₩20,400</span>) each from <span data-hc="bulk-from">144</span> HC. No maximum. Each purchase lasts <span data-hc="months">12</span> months unless you book with it, and HC spent on a booking never lapses</td></tr>
-        <tr><th scope="row">Hour</th><td><span data-hour="hc">1</span> HC for a whole Hour Fleet for an hour, less your discount; a working day of them is <span data-hour="day">8</span> HC</td></tr>
+        <tr><th scope="row">Hour</th><td><span data-hour="hc">1</span> HC for a whole Hour Fleet for an hour, less your discount; a working day of them is <span data-hour="day">8</span> HC; up to <span data-hourfleet="hours">24</span> hours a week per account</td></tr>
         <tr><th scope="row">Idle fleets</th><td>Any other fleet nobody holds, by the hour, <span data-hour="hc">1</span> HC an hour times its Rate, less your discount, up to the end of the current week: a burst for a big refactor, a parallel review or an overnight batch, on top of your own fleet</td></tr>
         <tr><th scope="row">Week</th><td><span data-week="hc">144</span> HC for seven days on a fleet pinned to you: <span data-week="usd">$2,160</span> at the <span data-hc="bulk-usd">$15</span> HC price, about <span data-week="effective">$12.86</span> an hour</td></tr>
         <tr><th scope="row">A pair</th><td>Fleets come in pairs on a shared 32-port 100 Gb/s switch. Hold a pair's A fleet and you can pin its B fleet too, for the weeks you hold the A fleet, at the same price and your fleet's discount: one cluster of 32 Sparks with 4 TB of memory. At least a quarter of the serving fleets, <span data-hourfleet="free">2</span> of <span data-fleets="all">8</span> at launch, always stay open for hours</td></tr>
@@ -236,7 +248,7 @@ h1 { max-width: 15ch; }
         <tr><th scope="row">Weeks ahead</th><td data-off="table">5% off each new week when you hold 4 or more weeks, 10% from 13, 15% from 26 and 20% at 52, counting the current week and the weeks you are booking</td></tr>
         <tr><th scope="row">Your discount on hours</th><td>Every hour costs less by the discount for the most weeks you hold on one fleet, or, while you are on the waitlist, for the weeks your lock would book, repaid from your lock if you leave before it gives you a fleet: up to <span data-off="max">20%</span></td></tr>
         <tr><th scope="row">How far ahead</th><td>Up to <span data-ahead>52</span> weeks</td></tr>
-        <tr><th scope="row">Downtime</th><td>A booked hour with more than 15 minutes of downtime comes back as HC, automatically, from our own records. Maintenance takes up to 3 hours a fleet a week and is credited the same way</td></tr>
+        <tr><th scope="row">Downtime</th><td>Downtime of more than 15 consecutive minutes credits every booked hour it touches as HC, automatically, from our own records. Maintenance takes up to <span data-maintenance="hours">3</span> hours a fleet a week and is credited the same way</td></tr>
         <tr><th scope="row">Payment</th><td>In won by card (Korean or overseas), bank transfer, virtual account or Korean easy pay through Toss Payments; in USDC or USDT through CoinPayments; or in US dollars by bank transfer (SWIFT) from your own account outside Korea. Korean businesses get a card slip or an electronic tax invoice</td></tr>
         <tr><th scope="row">VAT</th><td>10% is added. A US dollar bank transfer (SWIFT) carries 0% when you have no place of business in Korea</td></tr>
         <tr><th scope="row">Refunds</th><td>None, unless we stop offering service for HC or close your account through no fault of yours. HC locked in the waitlist that would lapse while you wait is refunded</td></tr>
@@ -257,7 +269,7 @@ h1 { max-width: 15ch; }
     <p class="prose">Create an API key in your account and set it in your tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded.</p>
     <div class="code">
       <div class="code-head"><span>Your fleet, while you hold it</span><span>shell</span></div>
-      <pre><span class="d"># Claude Code</span>
+      <pre tabindex="0" role="region" aria-label="Point your coding agent at your fleet."><span class="d"># Claude Code</span>
 <span class="k">export</span> ANTHROPIC_BASE_URL=https://sparkpipe.ai/pay/api
 <span class="k">export</span> ANTHROPIC_AUTH_TOKEN=<span class="d">your key from your account</span>
 <span class="k">export</span> ANTHROPIC_MODEL=kimi-k3
@@ -306,8 +318,8 @@ curl $OPENAI_BASE_URL/chat/completions \
     <h2>Fast where a warm fleet matters.</h2>
     <div class="facts">
       <div><strong>126 tok/s</strong><p>Kimi K3 rewriting whole files with speculation; 15 tok/s without it. The output is the model's own.</p></div>
-      <div><strong>0.3–5 s</strong><p>to the first token of a follow-up turn whose conversation is cached, on Kimi K3 up to 137,700 tokens. From cold: 299 s.</p></div>
-      <div><strong>15.6 min</strong><p>to prefill a 1M-token Kimi K3 prompt from cold on one fleet. On your own fleet you pay that once, not after every pause.</p></div>
+      <div><strong>4.7–5.1 s</strong><p>to the first token of a follow-up turn whose conversation is cached, on Kimi K3 at 137,700 tokens; 0.3–0.9 s for a short cached chat turn. From cold: 299 s.</p></div>
+      <div><strong>16.2 min</strong><p>to prefill a 990,881-token Kimi K3 prompt from cold on one fleet. On your own fleet you pay that once, not after every pause.</p></div>
     </div>
     <div class="bars" role="img" aria-label="Kimi K3 decode on whole-file rewrites: 15.3 tokens per second plain, 126.4 with speculation. GLM 5.3: 27.6 plain, 124.2 with speculation.">
       <div class="bar"><span>K3, plain</span><i style="--w: 12.1%"></i><b>15.3</b></div>
@@ -362,11 +374,11 @@ curl $OPENAI_BASE_URL/chat/completions \
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="compare.html">Cost check</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="buy.html">Buy HC</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="availability.html">Availability</a><a href="terms.html">Terms</a><a href="security.html">Security</a><a href="privacy.html">Privacy</a><a href="compare.html">Cost check</a><a href="index-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js?v=2"></script>
-<script src="prices.js?v=3"></script>
+<script src="pricing.js?v=3"></script>
+<script src="prices.js?v=4"></script>
 <script>
 (function () {
   var reduce = false;
