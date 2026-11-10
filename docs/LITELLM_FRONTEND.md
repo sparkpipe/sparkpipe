@@ -504,12 +504,16 @@ gives a key's requests background priority unless a request sends its own
 `deployment/hub/chat_frontend.json` makes every model public except the
 Qwen models, as `docs/MODEL_SUPPORT.md` requires.
 
-`https://sparkpipe.ai/v1` is this door: `deployment/vps/sparkpipe-public-api.conf`,
-included in the port-443 virtual host after the language rules
-(`/etc/apache2/sparkpipe/public-api.conf`), strips the header from every
-request, sets it on `/v1/` and proxies `/v1/` to the chat layer through the
-hub tunnel's port 18081. The chat app on port 8443 and the LAN door are
-unchanged.
+The internet reaches this door only through the pay gateway at
+`https://sparkpipe.ai/pay/api` (`docs/FLEET_API.md` §2), which checks the
+account, routes by Fleet, applies the gateway limits, records usage and
+forwards with the gateway key over the hub tunnel. Apache never proxies to a
+hub: `deployment/vps/sparkpipe-public-api.conf`, included in the port-443
+virtual host after the language rules (`/etc/apache2/sparkpipe/public-api.conf`),
+strips the header from every request and answers 404 on `/v1/`, so the gateway
+key is never accepted from a client and a key made without `--gateway` reaches
+no Fleet from the internet (`tests/test_gateway_holder_cap.py`). The chat app on
+port 8443 and the LAN door are unchanged.
 
 ### Fleet API shapes (2026-11-04)
 
