@@ -2579,7 +2579,7 @@ static void StageRunnerModelStep(const SparkStageRunnerState *state, const Spark
 	in->graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, in) : 1u;
 }
 
-static SparkStatus StageRunnerSubmitFrame(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
+SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerState *state;
 	SparkStageRunnerStep in;
@@ -2828,38 +2828,6 @@ static SparkStatus StageRunnerSubmitFrame(SparkStageRunner *runner, const SparkS
 		dispatch->completion_function(dispatch->completion_context, &completion);
 	}
 	return SPARK_STATUS_OK;
-}
-
-SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
-{
-	const SparkStatus status = StageRunnerSubmitFrame(runner, dispatch);
-	if ( status != SPARK_STATUS_OK && runner != 0 && runner->private_state != 0 &&
-		((SparkStageRunnerState *)runner->private_state)->device_collective_created != 0 )
-		SparkTpDeviceCollectiveUnkey(&((SparkStageRunnerState *)runner->private_state)->device_collective);
-	return status;
-}
-
-SparkStatus SparkStageRunnerIdle(SparkStageRunner *runner)
-{
-	SparkStageRunnerState *state;
-	if ( runner == 0 || runner->private_state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->device_collective_created == 0 )
-		return SPARK_STATUS_OK;
-	return SparkTpDeviceCollectiveIdle(&state->device_collective);
-}
-
-SparkStatus SparkStageRunnerSessionReset(SparkStageRunner *runner)
-{
-	SparkStageRunnerState *state;
-	if ( runner == 0 || runner->private_state == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->device_collective_created == 0 )
-		return SPARK_STATUS_OK;
-	SparkTpDeviceCollectiveUnkey(&state->device_collective);
-	return SparkTpDeviceCollectiveIdle(&state->device_collective);
 }
 
 SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t *slots, uint32_t count)

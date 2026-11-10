@@ -318,16 +318,6 @@ SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t 
 	return(status);
 }
 
-SparkStatus SparkStageRunnerIdle(SparkStageRunner *runner)
-{
-	return(ServingOf(runner) != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
-SparkStatus SparkStageRunnerSessionReset(SparkStageRunner *runner)
-{
-	return(ServingOf(runner) != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
-}
-
 SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner, SparkStageRunnerStats *stats_out)
 {
 	if ( runner == 0 || stats_out == 0 )

@@ -51,23 +51,6 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner,
 	return(test_dispatch_status);
 }
 
-static uint32_t test_idle_calls;
-static uint32_t test_session_reset_calls;
-
-SparkStatus SparkStageRunnerIdle(SparkStageRunner *runner)
-{
-	(void)runner;
-	test_idle_calls++;
-	return(SPARK_STATUS_OK);
-}
-
-SparkStatus SparkStageRunnerSessionReset(SparkStageRunner *runner)
-{
-	(void)runner;
-	test_session_reset_calls++;
-	return(SPARK_STATUS_OK);
-}
-
 SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner,
 	SparkStageRunnerStats *stats_out)
 {

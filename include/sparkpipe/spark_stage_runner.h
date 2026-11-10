@@ -202,8 +202,6 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	const SparkStageRunnerModelInterface *model);
 SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch);
 SparkStatus SparkStageRunnerResetSlots(SparkStageRunner *runner, const uint32_t *slots, uint32_t count);
-SparkStatus SparkStageRunnerIdle(SparkStageRunner *runner);
-SparkStatus SparkStageRunnerSessionReset(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerGetStats(const SparkStageRunner *runner, SparkStageRunnerStats *stats_out);
 void SparkStageRunnerDestroy(SparkStageRunner *runner);
 uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner);

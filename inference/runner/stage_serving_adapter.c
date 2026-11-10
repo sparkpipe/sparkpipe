@@ -101,7 +101,6 @@ typedef struct SparkStageServingState
 	SparkDeviceBuffer saves_device;
 	uint32_t tree_frame;
 	uint64_t lane_contexts[SPARK_STAGE_SERVING_MAX_LANES];
-	uint64_t busy_slots[SPARK_STAGE_SERVING_MAX_LANES / 64u];
 	uint32_t path_begin[SPARK_STAGE_SERVING_MAX_LANES + 1u];
 	uint32_t path_rows[SPARK_STAGE_SERVING_MAX_ROWS];
 	SparkDeviceBuffer output_tokens;
@@ -1411,22 +1410,6 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	return SPARK_STATUS_OK;
 }
 
-static void StageServingMarkBusy(SparkStageServingState *state, const SparkModelServingSubmission *submission)
-{
-	for ( uint32_t lane = 0u; lane < submission->active_sequence_count; ++lane )
-		state->busy_slots[submission->lanes[lane].resident_sequence_slot / 64u] |= 1ull << (submission->lanes[lane].resident_sequence_slot % 64u);
-}
-
-static SparkStatus StageServingReleaseBusy(SparkStageServingState *state, const uint32_t *slots, uint32_t count)
-{
-	uint64_t busy = 0u;
-	for ( uint32_t lane = 0u; lane < count; ++lane )
-		state->busy_slots[slots[lane] / 64u] &= ~(1ull << (slots[lane] % 64u));
-	for ( uint32_t word = 0u; word < SPARK_STAGE_SERVING_MAX_LANES / 64u; ++word )
-		busy |= state->busy_slots[word];
-	return busy != 0u ? SPARK_STATUS_OK : SparkStageRunnerIdle(&state->runner);
-}
-
 static SparkStatus StageServingSubmitNonRow(SparkStageServingState *state,
 	const SparkModelServingSubmission *submission)
 {
@@ -1450,8 +1433,6 @@ static SparkStatus StageServingSubmitNonRow(SparkStageServingState *state,
 	}
 	else
 		status = SparkStageRunnerResetSlots(&state->runner, slots, submission->active_sequence_count);
-	if ( status == SPARK_STATUS_OK && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
-		status = StageServingReleaseBusy(state, slots, submission->active_sequence_count);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->completion_function != 0 )
@@ -1804,7 +1785,6 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		return StageServingSubmitNonRow(state, submission);
 	queue = SparkStageRunnerQueue(&state->runner);
 	rows = submission->row_count;
-	StageServingMarkBusy(state, submission);
 	status = StageServingGroupRows(state, submission, rows, &active);
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -2053,11 +2033,6 @@ static SparkStatus StageServingReset(void *adapter_state, uint64_t control_gener
 	status = SparkStageRunnerResetSlots(&state->runner, slots, count);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingReset(&state->kv, control_generation);
-	if ( status == SPARK_STATUS_OK )
-	{
-		memset(state->busy_slots, 0, sizeof(state->busy_slots));
-		status = SparkStageRunnerSessionReset(&state->runner);
-	}
 	if ( status == SPARK_STATUS_OK )
 		atomic_store_explicit(&state->reset_generation, control_generation, memory_order_release);
 	SparkStageModuleIndexSetRelease(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, slots, count);

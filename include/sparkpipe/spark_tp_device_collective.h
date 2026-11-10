@@ -463,10 +463,6 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
 SparkStatus SparkTpDeviceCollectiveEndChain(
     SparkTpDeviceCollective *collective,
     void *cuda_stream);
-SparkStatus SparkTpDeviceCollectiveIdle(
-    SparkTpDeviceCollective *collective);
-void SparkTpDeviceCollectiveUnkey(
-    SparkTpDeviceCollective *collective);
 
 uint64_t SparkTpDeviceCollectiveChainEpoch(
     const SparkTpDeviceCollective *collective);

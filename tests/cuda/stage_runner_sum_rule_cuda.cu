@@ -153,17 +153,6 @@ SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective,
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkTpDeviceCollectiveIdle(SparkTpDeviceCollective *collective)
-{
-	(void)collective;
-	return SPARK_STATUS_OK;
-}
-
-void SparkTpDeviceCollectiveUnkey(SparkTpDeviceCollective *collective)
-{
-	(void)collective;
-}
-
 SparkStatus SparkTpDeviceCollectiveArmCapture(SparkTpDeviceCollective *collective)
 {
 	(void)collective;
