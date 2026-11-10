@@ -4,7 +4,7 @@ set -u
 REPO=${REPO:-/Users/mac/wf/integ}
 SHA=$(cd $REPO && git rev-parse --short=9 ${1:-HEAD})
 HOST=${BUILD_HOST:-lenovo7}
-OUT=/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-$SHA
+OUT=${RELEASE_OUT:-/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-$SHA}
 S=${RELEASE_WORK:-${TMPDIR:-/tmp}/sparkpipe-release}; mkdir -p "$S"
 NODE="build/sparkpipe_model_residentd build/weightd_warm build/libhidden_transport_spark_host_rdma_verbs.so build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch"
 cd $REPO
