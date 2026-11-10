@@ -8,6 +8,7 @@
 
 #include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_dsv41_flash_family.h"
 #include "sparkpipe/spark_rope_plan.h"
@@ -235,13 +236,16 @@ struct D41Device
 		shape->hidden = kHidden;
 		shape->vocab = kVocab;
 		shape->layers = kLayers;
-		shape->kv_layers = kLayers + 2u * kCaches;
+		shape->kv_layers = kLayers + kCaches;
 		shape->kv_heads = 1u;
 		shape->kv_head_dimension = kHeadDim;
 		shape->pack_alignment = DD_ALIGNMENT;
 		shape->epsilon = kEpsilon;
 		shape->projection = SPARK_PROJECTION_GEMV;
 		shape->prenormed_head = 1u;
+		const SparkIndexerShape index = IndexShape(1u);
+		shape->index_layers = kCaches;
+		shape->index_page_bytes = SparkIndexerCacheBytes(&index, 1u, SPARK_DEVICE_RUNNER_PAGE_SLOTS);
 		for ( uint32_t yarn = 0u; yarn < 2u; yarn++ )
 		{
 			float table[SPARK_KERNEL_ROPE_PAIRS];
@@ -894,18 +898,11 @@ struct D41Device
 		return shape;
 	}
 
-	static SparkStatus IndexCache(State *state, const Frame &frame, uint32_t cache, const SparkIndexerShape &shape, SparkIndexerCache *out)
+	static SparkStatus IndexCache(State *state, uint32_t cache, const SparkIndexerShape &shape, SparkIndexerCache *out)
 	{
-		const SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame.t, kLayers + kCaches + cache);
-		memset(out, 0, sizeof(*out));
-		out->pool = paged.pool;
-		out->page_table = paged.page_table;
-		out->page_slots = paged.page_slots;
-		out->pages_per_sequence = paged.pages_per_sequence;
-		out->pool_pages = paged.pool_pages;
-		out->sequences = state->stage.slots;
-		if ( SparkIndexerCacheBytes(&shape, paged.pool_pages, paged.page_slots) > paged.pool.bytes )
-			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED, "an index key cache does not fit the KV layer that holds it");
+		*out = SparkDeviceStageIndexCache(&state->stage, cache);
+		if ( out->pool.bytes == 0u || SparkIndexerCacheBytes(&shape, out->pool_pages, out->page_slots) > out->pool.bytes )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the index-key pool is not attached or does not hold a cache's pages");
 		return SPARK_STATUS_OK;
 	}
 
@@ -923,7 +920,7 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = Qdq(state, frame, state->index_key, state->index_key, kIndexDim, SPARK_QDQ_FP4_POW2);
 		if ( status == SPARK_STATUS_OK )
-			status = IndexCache(state, frame, D41CacheIndex(index), shape, &cache);
+			status = IndexCache(state, D41CacheIndex(index), shape, &cache);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkIndexerStoreKeys(state->stage.ops, frame.queue, &cache, state->index_key, 0, 0, 0, frame.t.sequence_of_row, state->rope[slot],
 				state->store[slot], &shape, frame.t.rows);
@@ -952,7 +949,7 @@ struct D41Device
 			status = SparkDeviceLinear(&state->stage, frame.queue, state->normed, kHidden, layer.idx_weights, state->index_weights, kIndexHeads, frame.t.rows,
 				kHidden, kIndexHeads);
 		if ( status == SPARK_STATUS_OK )
-			status = IndexCache(state, frame, D41CacheIndex(index), shape, &cache);
+			status = IndexCache(state, D41CacheIndex(index), shape, &cache);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkIndexerSelect(state->stage.ops, frame.queue, &cache, state->index_query, state->index_weights, frame.t.sequence_of_row,
 				frame.t.positions, state->index_scores, state->selected, &shape, frame.t.rows, ScoreStride(state));

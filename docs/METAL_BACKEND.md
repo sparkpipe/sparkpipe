@@ -1492,9 +1492,12 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   layer's `idx_k` (BF16, 512 to 128), normed with `idx_k_norm`, roped at the
   group's first position and rounded through FP4 with power-of-two 32-wide
   blocks (`SPARK_QDQ_FP4_POW2`), as the publisher's `Indexer` does, then
-  `SparkIndexerStoreKeys` at the compressed index into the cache's index KV
-  layer (the KV layers are the 40 window layers, the 4 compressed caches
-  and the 4 index caches). Every key is stored from position 0, so a row
+  `SparkIndexerStoreKeys` at the compressed index into the cache's layer
+  of the second KV pool (`index_layers` 4, pages of
+  `SparkIndexerCacheBytes` for one page, through
+  `SparkDeviceStageIndexCache`, as HY4 keeps its index keys; the first pool
+  still holds the 40 window layers and the 4 compressed caches). Every key
+  is stored from position 0, so a row
   that later needs a selection finds them all. An index source layer (2, 8,
   14, 20, 24, 28, 32, 36) with a row that sees more than 512 compressed keys
   projects the index query (`idx_q_b`, all 32 index heads on every rank, on
