@@ -54,7 +54,7 @@ The tables below are measurements at `ce2f8d2`. Since then:
   * Together they are 1,281 LOC.
 * The twelve `tools/*_stagepack.py` packers and `tools/k3_pack.py` keep only
   their tensor-name maps, layouts and family transforms. With the core they
-  are 8,079 LOC, down from 12,622. Each migration was gated on byte identity
+  are 8,077 LOC, down from 12,622. Each migration was gated on byte identity
   with the previous packer: synthetic checkpoints with real tensor names,
   every codec path and several TP degrees and stages, comparing every output
   file, exit code and dry-run listing.
