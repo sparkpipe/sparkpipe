@@ -7,5 +7,5 @@
 
 const SparkStageRunnerModelInterface *SparkDsv41FlashStageModel(void)
 {
-	return &spark_dsv41_flash_stage_model;
+	return D41Cuda::Interface();
 }
