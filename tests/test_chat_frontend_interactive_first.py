@@ -113,11 +113,15 @@ async def cancel_rules(harness, check):
     engine.hold = asyncio.Event()
     held = [asyncio.ensure_future(harness.post("/v1/chat/completions", chat(f"fill {index}"), account="acme")) for index in range(SEQUENCES)]
     await until(lambda: gate.state()["in_use"] == SEQUENCES, 2)
-    queued = asyncio.ensure_future(harness.post("/v1/chat/completions", chat("queued"), account="acme"))
+    target = "r_" + "c0ffee" * 4
+    queued = asyncio.ensure_future(harness.post("/v1/chat/completions", chat("queued"), account="acme", **{"X-SparkPipe-Request": target}))
     await until(lambda: gate.state()["waiting"] == 1, 2)
-    target = list(frontend.live)[-1]
+    status, _, text = await harness.post("/v1/chat/completions", chat("again"), account="acme", **{"X-SparkPipe-Request": target})
+    check(status == 409 and json.loads(text)["error"]["code"] == "request_id_in_use", f"an id already queued or running is refused: {status} {text[:200]}")
+    status, _, text = await harness.post("/v1/chat/completions", chat("bad"), account="acme", **{"X-SparkPipe-Request": "nope"})
+    check(status == 400 and json.loads(text)["error"]["code"] == "invalid_request", f"a malformed chosen id is a 400: {status} {text[:200]}")
     async with harness.session.delete(f"{harness.base}/v1/requests/{target}", headers=harness.headers(account="acme")) as cancelled:
-        check(cancelled.status == 200, f"a request still waiting for a sequence can be cancelled too: {cancelled.status}")
+        check(cancelled.status == 200, f"a request still waiting for a sequence is cancelled by the id its client chose in X-SparkPipe-Request: {cancelled.status}")
     status, _, text = await queued
     check(status == 409 and json.loads(text)["error"]["code"] == "request_cancelled" and gate.state()["waiting"] == 0 and gate.state()["in_use"] == SEQUENCES,
           f"the waiting request gets the named error and leaves the queue, and no running request is touched: {status} {text[:200]} {gate.state()}")

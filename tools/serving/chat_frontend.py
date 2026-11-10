@@ -88,9 +88,11 @@ PRIORITY_HEADER = "X-SparkPipe-Priority"
 PRIORITY_METADATA = "x-sparkpipe-priority"
 PRIORITY_CLASSES = ("interactive", "background")
 CANCEL_WAIT_SECONDS = 5.0
-REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
+REQUEST_ID = re.compile(r"r_[0-9a-f]{24}")
+REQUEST_PATH = re.compile(r"/v1/requests/" + REQUEST_ID.pattern)
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
+REQUEST_HEADER = "X-SparkPipe-Request"
 MEMBER_HEADER = "X-SparkPipe-Member"
 KEY_HEADER = "X-SparkPipe-Key"
 ALLOW_SWAP_HEADER = "X-SparkPipe-Allow-Swap"
@@ -2232,7 +2234,7 @@ class Frontend:
                 "session": session, "agent": agent, "transport": plan.get("transport", "http"), "turn_ms": round((time.monotonic() - started) * 1000)}
 
     def early_headers(self, model, plan, headers):
-        shown = {"X-SparkPipe-Request": plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
+        shown = {REQUEST_HEADER: plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
                  "X-SparkPipe-Replayed-Tokens": str(replayed_tokens(plan)),
                  "X-SparkPipe-Queue-Ms": str(round((plan["timing"].get("admitted", plan["timing"]["arrived"]) - plan["timing"]["arrived"]) * 1000))}
         fleet = clean_header(headers.get(FLEET_HEADER), FLEET_VALUE)
@@ -3060,6 +3062,13 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
+        chosen = request.headers.get(REQUEST_HEADER)
+        if chosen is not None:
+            if not REQUEST_ID.fullmatch(chosen):
+                return failed(RequestError(400, "invalid_request", f"{REQUEST_HEADER} must be r_ followed by 24 lowercase hex digits"))
+            if chosen in self.live:
+                return failed(RequestError(409, "request_id_in_use", f"request {chosen} is already queued or running; choose a new id"))
+            plan["request_id"] = chosen
         live = self.track(plan, scope, member)
         if self.memory is not None:
             self.memory_foreground(model, 1)

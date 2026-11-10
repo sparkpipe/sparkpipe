@@ -79,6 +79,7 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
   - Background work runs whenever no interactive work is queued or running, so it completes when interactive load stops. The class changes timing only, never the tokens.
 - **Cancel.** `DELETE /v1/requests/{id}` cancels the caller's own queued or running request: the same account and, behind the gateway, the same member. The id is the `X-SparkPipe-Request` header of the reply, sent when a stream opens.
+  - A client can choose the id itself: it sends `X-SparkPipe-Request: r_` followed by 24 lowercase hex digits on the request, and can then cancel the request while it still waits for a sequence, before any reply byte. Another value answers 400 `invalid_request`, and an id already queued or running answers 409 `request_id_in_use`.
   - It answers `{"id", "object": "request", "cancelled": true, "released"}` once the request's sequence is free (`released`), within 5 s.
   - The cancelled request ends with 409 `request_cancelled` in its own shape: an error response, or an error event on a stream.
   - Another account's or another member's id, or one that is not queued or running, answers 404 `request_not_found`.
