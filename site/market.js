@@ -90,7 +90,13 @@
   const nowMs = () => (S.state ? parseUtc(S.state.now) : Date.now());
   const pct = (x) => Math.round(Number(x) * 100) + '%';
 
+  const busy = new Set();
   const act = async (flashId, work, done) => {
+    if (busy.has(flashId)) return;
+    busy.add(flashId);
+    const form = $(flashId).closest('form');
+    const buttons = form ? Array.from(form.querySelectorAll('button')) : [];
+    buttons.forEach((b) => { b.disabled = true; });
     say(flashId, 'Working…');
     try {
       const result = await work();
@@ -98,6 +104,9 @@
       await refresh();
     } catch (error) {
       say(flashId, error.message, 'error');
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+      busy.delete(flashId);
     }
   };
 
@@ -206,8 +215,9 @@
   function quoteWeeks() {
     const fleet = $('weeks-fleet').value;
     const weeks = Math.floor(Number($('weeks-count').value) || 0);
+    S.weeksFirst = null;
     quoteInto('weeks-quote', '/market/quote-weeks', fleet && weeks >= 1 ? { fleet, weeks } : null,
-      (q) => `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.first)} to ${lastDay(q.end)}: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off with ${q.count} weeks held` : ''}.`);
+      (q) => (S.weeksFirst = { fleet, weeks, first: q.first }) && `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.first)} to ${lastDay(q.end)}: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off with ${q.count} weeks held` : ''}.`);
   }
 
   function quoteHours() {
@@ -281,7 +291,10 @@
   $('hours-count').addEventListener('input', quoteHours);
   $('weeks').addEventListener('submit', (e) => {
     e.preventDefault();
-    act('m-weeks', () => spend('/market/book-weeks', { fleet: $('weeks-fleet').value, weeks: Math.floor(Number($('weeks-count').value)) }),
+    const fleet = $('weeks-fleet').value;
+    const weeks = Math.floor(Number($('weeks-count').value));
+    const quoted = S.weeksFirst && S.weeksFirst.fleet === fleet && S.weeksFirst.weeks === weeks ? { first: S.weeksFirst.first } : {};
+    act('m-weeks', () => spend('/market/book-weeks', Object.assign({ fleet, weeks }, quoted)),
       (r) => `Booked ${r.weeks} week${r.weeks === 1 ? '' : 's'} on ${r.fleet}, ${kstDay(r.first)} to ${lastDay(r.end)}, for ${hc(r.price)} HC.`);
   });
   $('hours-form').addEventListener('submit', (e) => {
