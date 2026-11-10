@@ -20,6 +20,8 @@
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/cell_mma.cuh"
 #include "inference/kernels/cell_pack.cuh"
+#include "inference/kernels/hc.cuh"
+#include "inference/kernels/hc_site.cuh"
 #include "inference/kernels/index_score.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -137,6 +139,7 @@ static_assert(D41_ENGRAM_KV_ROWS == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && D41_ENGR
 	D41_ENGRAM_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION && D41K_HC == SPARK_DSV41_FLASH_MODEL_HC_MULT, "the stage reads the engram shard the format check accepts");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
+static_assert(D41K_HC == LM_HC_SITE_STREAMS, "the stream expansion writes every hyper-connection stream");
 
 using D41Ratio2Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS / 2u, true>;
 using D41Ratio1Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS, true>;
@@ -363,7 +366,7 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 	float total = 0.0f, scale;
 	for ( index = threadIdx.x; index < dimension; index += THREADS )
 	{
-		float value = LmBf16ToFloat(streams != 0 ? D41HcCollapse(streams, pre, blockIdx.x, dimension, index) : input[base + index]);
+		float value = LmBf16ToFloat(streams != 0 ? LmHcCollapseElement<D41K_HC>(streams, pre, blockIdx.x, dimension, index) : input[base + index]);
 		row[index] = value;
 		total += value * value;
 	}
@@ -458,13 +461,7 @@ static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
 	float *pre, float *post, float *comb, uint32_t rows, cudaStream_t stream)
 {
-	if ( rows >= D41K_HC_MIX_ROWS_FROM )
-		D41HcMixRowsKernel<D41K_HC_MIX_ROWS><<<(rows + D41K_HC_MIX_ROWS - 1u) / D41K_HC_MIX_ROWS, D41K_THREADS, 0, stream>>>(streams, fn, state->mixes,
-			D41_HIDDEN, rows);
-	else
-		D41HcMixPartialKernel<<<dim3(D41K_HC_TASKS, rows), D41K_THREADS, 0, stream>>>(streams, fn, state->mixes, D41_HIDDEN);
-	D41HcSinkhornRowsKernel<<<rows, 32u, 0, stream>>>(state->mixes, scale, base, pre, post, comb, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS,
-		D41_HC_EPS);
+	LmHcSinkhornMixes<D41K_HC>(streams, fn, scale, base, state->mixes, pre, post, comb, rows, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS, D41_HC_EPS, stream);
 	return D41Launched();
 }
 
@@ -1078,7 +1075,7 @@ static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep 
 static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const D41Layer *layer = &state->layers[D41_CANDIDATE_SOURCE];
-	D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), step->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, state->x, D41_HIDDEN);
+	LmHcCollapseKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), step->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, state->x, D41_HIDDEN);
 	D41RmsNorm(state->x, layer->attn_norm, state->x, step->rows, D41_HIDDEN, stream);
 	return D41Compress(state, layer, D41_CANDIDATE_SOURCE, step, stream);
 }
@@ -1200,7 +1197,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 			state->context_slots, 2u);
 		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
 			state->context_slots, 1u);
-		D41ReplicateStreamsKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, D41_HIDDEN);
+		LmHcExpandStreamsKernel<D41_HIDDEN><<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, rows);
 		if ( state->local_attention != 0u || state->local_upper != 0u )
 		{
 			D41RingPackKernel<<<D41_LAYERS, D41_THREADS, 0, stream>>>((const uint16_t *)state->recurrent, step->recurrent_index,
@@ -1263,7 +1260,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		const SparkStageRunnerStep *step = frame.step;
 		cudaStream_t stream = frame.stream;
 		if ( status == SPARK_STATUS_OK && frame.current->rows != 0u )
-			D41HcPreRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head,
+			LmHcCollapseKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head,
 				frame.current->hidden_bf16, D41_HIDDEN);
 		state->streams = frame.streams;
 		state->pre_head = frame.pre_head;
@@ -1324,7 +1321,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 	static SparkStatus HyperPost(D41ModelState *state, Frame &frame, D41Part part)
 	{
 		const bool ffn = part == D41_FFN_PART;
-		D41HcPostRowsKernel<<<dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, frame.stream>>>(state->partial,
+		LmHcPostF32SourceMajorKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, frame.stream>>>(state->partial,
 			ffn ? state->post_ffn : state->post_attn, ffn ? state->comb_ffn : state->comb_attn, state->streams, D41_HIDDEN);
 		return SPARK_STATUS_OK;
 	}
@@ -1447,7 +1444,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->q_local, r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->q_gathered, D41_TP * r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->kv, r * D41_HEAD_DIM * 2u }, { (void **)&state->window_kv, r * D41_HEAD_DIM * 2u },
-		{ (void **)&state->mixes, r * D41K_HC_TASKS * D41K_HC_WARPS * 4u },
+		{ (void **)&state->mixes, r * LmHcSinkhornShape<D41K_HC>::kPartials * 4u },
 		{ (void **)&state->pre_attn, r * D41K_HC * 4u }, { (void **)&state->post_attn, r * D41K_HC * 4u }, { (void **)&state->comb_attn, r * 16u * 4u },
 		{ (void **)&state->post_ffn, r * D41K_HC * 4u }, { (void **)&state->comb_ffn, r * 16u * 4u },
 		{ (void **)&state->pre_head, r * D41K_HC * 4u }, { (void **)&state->pre_init, r * D41K_HC * 4u },

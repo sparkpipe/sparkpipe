@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include "model-families/dsv41_flash/source/dsv41_flash_kernels.cuh"
+#include "tests/cuda/dsv41_flash_hc_reference.cuh"
 
 #define SPARK_TEST_EXPORT extern "C" __attribute__((visibility("default")))
 

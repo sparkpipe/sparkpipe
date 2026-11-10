@@ -662,7 +662,7 @@ static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, con
 
 static int32_t Glm5NextHcPost(const Glm5NextLayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
-	LM_LAUNCH((LmHcPostBf16Kernel), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
+	LM_LAUNCH((LmHcPostBf16Kernel<G5N_HC>), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
 		b->hc_post_f32, b->hc_comb_f32, b->hidden_bf16, rows, G5N_HC, G5N_HIDDEN);
 	return Glm5NextLaunched();
 }

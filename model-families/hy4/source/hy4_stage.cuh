@@ -14,6 +14,7 @@
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/formats/mxfp8.cuh"
+#include "inference/kernels/hc.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -33,13 +34,8 @@
 #include "sparkpipe/spark_hy4_family.h"
 
 #define HY_THREADS 256u
-#define HY_HC_ROWS 4u
 #define HY_SCALE_GROUP 32u
 #define HY_SELECT_CHUNK 64u
-#define HY_HC_LANES 256u
-#define HY_HC_SLICE 32u
-#define HY_HC_LOADERS 128u
-#define HY_HC_SPLIT_ROWS 16u
 
 template<class G>
 struct HyShape : HyLayout<G>
@@ -157,173 +153,6 @@ struct HyState : CudaStagePackState
 	LmKvShardView kv_views[G::kLayers];
 	LmKvShardView index_views[G::kIndexLayers];
 };
-
-__global__ static void HyExpandStreamsKernel(const uint16_t *hidden, uint16_t *streams, uint32_t streams_count, uint32_t width)
-{
-	const uint32_t row = blockIdx.y;
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < streams_count * width; index += gridDim.x * blockDim.x )
-		streams[(uint64_t)row * streams_count * width + index] = hidden[(uint64_t)row * width + index % width];
-}
-
-template<uint32_t STREAMS, uint32_t MIXES>
-static __device__ __forceinline__ void HyHcWeights(const float *total, uint32_t flat, const float *base, const float *scale, float norm_epsilon,
-	float hc_epsilon, float post_magnitude, float *weights, float *post)
-{
-	const float inverse = SparkMathRmsScale(total[MIXES], (float)flat, norm_epsilon);
-	for ( uint32_t s = 0u; s < STREAMS; ++s )
-	{
-		weights[s] = SparkMathSigmoid(total[s] * inverse * scale[0] + base[s]) + hc_epsilon;
-		if ( MIXES > STREAMS && post != 0 )
-			post[s] = SparkMathScaledSigmoid(post_magnitude,total[STREAMS + s] * inverse * scale[1] + base[STREAMS + s]) + hc_epsilon;
-	}
-}
-
-template<uint32_t THREADS, uint32_t STREAMS, uint32_t MIXES>
-__global__ __launch_bounds__(THREADS, 1)
-void HyHcPreKernel(const uint16_t *streams, const float *fn, const float *base, const float *scale, float *post, uint16_t *mixed,
-	uint32_t rows, uint32_t width, float norm_epsilon, float hc_epsilon, float post_magnitude)
-{
-	constexpr uint32_t WARPS = THREADS / 32u;
-	__shared__ float reduction[HY_HC_ROWS][MIXES + 1u][WARPS];
-	__shared__ float weights[HY_HC_ROWS][STREAMS];
-	const uint32_t first = blockIdx.x * HY_HC_ROWS, flat = STREAMS * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
-	float dot[HY_HC_ROWS][MIXES + 1u];
-	for ( uint32_t r = 0u; r < HY_HC_ROWS; ++r )
-		for ( uint32_t m = 0u; m <= MIXES; ++m )
-			dot[r][m] = 0.0f;
-	for ( uint32_t k = threadIdx.x; k < flat; k += THREADS )
-	{
-		float coefficient[MIXES];
-		for ( uint32_t m = 0u; m < MIXES; ++m )
-			coefficient[m] = fn[(uint64_t)m * flat + k];
-		for ( uint32_t r = 0u; r < HY_HC_ROWS; ++r )
-		{
-			if ( first + r >= rows )
-				break;
-			const float x = LmBf16ToFloat(streams[(uint64_t)(first + r) * flat + k]);
-			for ( uint32_t m = 0u; m < MIXES; ++m )
-				dot[r][m] = fmaf(x, coefficient[m], dot[r][m]);
-			dot[r][MIXES] = fmaf(x, x, dot[r][MIXES]);
-		}
-	}
-	for ( uint32_t r = 0u; r < HY_HC_ROWS; ++r )
-		for ( uint32_t m = 0u; m <= MIXES; ++m )
-		{
-			float value = dot[r][m];
-			for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-				value += __shfl_xor_sync(0xffffffffu, value, offset);
-			if ( lane == 0u )
-				reduction[r][m][warp] = value;
-		}
-	__syncthreads();
-	if ( threadIdx.x < HY_HC_ROWS && first + threadIdx.x < rows )
-	{
-		const uint32_t r = threadIdx.x;
-		float total[MIXES + 1u];
-		for ( uint32_t m = 0u; m <= MIXES; ++m )
-		{
-			total[m] = 0.0f;
-			for ( uint32_t w = 0u; w < WARPS; ++w )
-				total[m] += reduction[r][m][w];
-		}
-		HyHcWeights<STREAMS,MIXES>(total, flat, base, scale, norm_epsilon, hc_epsilon, post_magnitude, weights[r],
-			MIXES > STREAMS ? post + (uint64_t)(first + r) * STREAMS : (float *)0);
-	}
-	__syncthreads();
-	for ( uint32_t r = 0u; r < HY_HC_ROWS; ++r )
-	{
-		if ( first + r >= rows )
-			break;
-		for ( uint32_t d = threadIdx.x; d < width; d += THREADS )
-		{
-			float total = 0.0f;
-			for ( uint32_t s = 0u; s < STREAMS; ++s )
-				total = fmaf(weights[r][s], LmBf16ToFloat(streams[(uint64_t)(first + r) * flat + s * width + d]), total);
-			mixed[(uint64_t)(first + r) * width + d] = LmFloatToBf16(total);
-		}
-	}
-}
-
-template<uint32_t STREAMS, uint32_t WIDTH>
-__global__ __launch_bounds__(HY_HC_LOADERS)
-void HyHcDotKernel(const uint16_t *streams, const float *fn, float *partial, uint32_t mixes)
-{
-	constexpr uint32_t FLAT = STREAMS * WIDTH, STEPS = FLAT / HY_HC_LANES;
-	static_assert(FLAT % HY_HC_LANES == 0u, "every lane walks the same number of columns");
-	__shared__ float coefficient[STEPS][HY_HC_SLICE];
-	__shared__ float value[STEPS][HY_HC_SLICE];
-	const uint32_t mix = blockIdx.x, lane_first = blockIdx.y * HY_HC_SLICE, row = blockIdx.z;
-	const uint16_t *source = streams + (uint64_t)row * FLAT;
-	for ( uint32_t index = threadIdx.x; index < STEPS * HY_HC_SLICE; index += HY_HC_LOADERS )
-	{
-		const uint32_t step = index / HY_HC_SLICE, lane = index % HY_HC_SLICE, k = step * HY_HC_LANES + lane_first + lane;
-		value[step][lane] = LmBf16ToFloat(source[k]);
-		coefficient[step][lane] = mix < mixes - 1u ? fn[(uint64_t)mix * FLAT + k] : 0.0f;
-	}
-	__syncthreads();
-	if ( threadIdx.x < HY_HC_SLICE )
-	{
-		float dot = 0.0f;
-		if ( mix < mixes - 1u )
-			for ( uint32_t step = 0u; step < STEPS; ++step )
-				dot = fmaf(value[step][threadIdx.x], coefficient[step][threadIdx.x], dot);
-		else
-			for ( uint32_t step = 0u; step < STEPS; ++step )
-				dot = fmaf(value[step][threadIdx.x], value[step][threadIdx.x], dot);
-		partial[((uint64_t)row * mixes + mix) * HY_HC_LANES + lane_first + threadIdx.x] = dot;
-	}
-}
-
-template<uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH>
-__global__ __launch_bounds__(HY_HC_LANES, 1)
-void HyHcMixKernel(const uint16_t *streams, const float *partial, const float *base, const float *scale, float *post, uint16_t *mixed,
-	float norm_epsilon, float hc_epsilon, float post_magnitude)
-{
-	constexpr uint32_t WARPS = HY_HC_LANES / 32u, FLAT = STREAMS * WIDTH;
-	__shared__ float reduction[MIXES + 1u][WARPS];
-	__shared__ float weights[STREAMS];
-	const uint32_t row = blockIdx.y, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
-	for ( uint32_t m = 0u; m <= MIXES; ++m )
-	{
-		float value = partial[((uint64_t)row * (MIXES + 1u) + m) * HY_HC_LANES + threadIdx.x];
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-			value += __shfl_xor_sync(0xffffffffu, value, offset);
-		if ( lane == 0u )
-			reduction[m][warp] = value;
-	}
-	__syncthreads();
-	if ( threadIdx.x == 0u )
-	{
-		float total[MIXES + 1u];
-		for ( uint32_t m = 0u; m <= MIXES; ++m )
-		{
-			total[m] = 0.0f;
-			for ( uint32_t w = 0u; w < WARPS; ++w )
-				total[m] += reduction[m][w];
-		}
-		HyHcWeights<STREAMS,MIXES>(total, FLAT, base, scale, norm_epsilon, hc_epsilon, post_magnitude, weights,
-			MIXES > STREAMS && blockIdx.x == 0u ? post + (uint64_t)row * STREAMS : (float *)0);
-	}
-	__syncthreads();
-	for ( uint32_t d = blockIdx.x * HY_HC_LANES + threadIdx.x; d < WIDTH; d += gridDim.x * HY_HC_LANES )
-	{
-		float total = 0.0f;
-		for ( uint32_t s = 0u; s < STREAMS; ++s )
-			total = fmaf(weights[s], LmBf16ToFloat(streams[(uint64_t)row * FLAT + s * WIDTH + d]), total);
-		mixed[(uint64_t)row * WIDTH + d] = LmFloatToBf16(total);
-	}
-}
-
-__global__ static void HyHcPostKernel(uint16_t *streams, const float *post, const uint16_t *output, uint32_t streams_count, uint32_t width)
-{
-	const uint32_t row = blockIdx.y;
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < streams_count * width; index += gridDim.x * blockDim.x )
-	{
-		const uint64_t at = (uint64_t)row * streams_count * width + index;
-		streams[at] = LmFloatToBf16(fmaf(post[(uint64_t)row * streams_count + index / width], LmBf16ToFloat(output[(uint64_t)row * width + index % width]),
-			LmBf16ToFloat(streams[at])));
-	}
-}
 
 template<uint32_t THREADS, uint32_t WIDTH>
 __global__ __launch_bounds__(THREADS, 1)
@@ -681,26 +510,10 @@ struct HyModel : CudaStage<HyModel<G>>
 		return CudaStageLaunched();
 	}
 
-	template<uint32_t MIXES>
-	static void HcPre(State *state, const float *fn, const float *base, const float *scale, float *post, uint16_t *mixed, uint32_t rows, float magnitude,
-		cudaStream_t stream)
-	{
-		if ( rows <= HY_HC_SPLIT_ROWS )
-		{
-			HyHcDotKernel<G::kStreams,G::kHidden><<<dim3(MIXES + 1u, HY_HC_LANES / HY_HC_SLICE, rows), HY_HC_LOADERS, 0, stream>>>(state->streams, fn,
-				state->hc_partial, MIXES + 1u);
-			HyHcMixKernel<G::kStreams,MIXES,G::kHidden><<<dim3((G::kHidden + HY_HC_LANES - 1u) / HY_HC_LANES, rows), HY_HC_LANES, 0, stream>>>(state->streams,
-				state->hc_partial, base, scale, post, mixed, G::kEpsilon, G::kHcEpsilon, magnitude);
-			return;
-		}
-		HyHcPreKernel<HY_THREADS,G::kStreams,MIXES><<<(rows + HY_HC_ROWS - 1u) / HY_HC_ROWS, HY_THREADS, 0, stream>>>(state->streams, fn, base, scale, post,
-			mixed, rows, G::kHidden, G::kEpsilon, G::kHcEpsilon, magnitude);
-	}
-
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
-		HyExpandStreamsKernel<<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->streams,
-			G::kStreams, G::kHidden);
+		LmHcExpandFlatKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16,
+			state->streams, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
 
@@ -708,8 +521,9 @@ struct HyModel : CudaStage<HyModel<G>>
 	{
 		const bool ffn = part == HY_FFN_PART;
 		const uint32_t rows = frame.step->rows;
-		HcPre<2u * G::kStreams>(state, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn, ffn ? layer.mlp_hc_base : layer.attn_hc_base,
-			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, state->hc_post, state->mixed, rows, G::kHcMagnitude, frame.stream);
+		LmHcMix<HY_THREADS,G::kStreams,2u * G::kStreams,G::kHidden>(state->streams, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn,
+			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, ffn ? layer.mlp_hc_base : layer.attn_hc_base, state->hc_partial, state->hc_post, state->mixed, rows,
+			G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude, frame.stream);
 		HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, frame.stream>>>(state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
 			G::kHidden, G::kHidden, G::kEpsilon);
 		return CudaStageLaunched();
@@ -717,15 +531,15 @@ struct HyModel : CudaStage<HyModel<G>>
 
 	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
-		HyHcPostKernel<<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(state->streams, state->hc_post, state->partial,
-			G::kStreams, G::kHidden);
+		LmHcPostKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(state->streams, state->hc_post,
+			state->partial, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus HyperEnd(State *state, const Frame &frame)
 	{
-		HcPre<G::kStreams>(state, state->head_hc_fn, state->head_hc_base, state->head_hc_scale, (float *)0, frame.step->hidden_bf16, frame.step->rows,
-			0.0f, frame.stream);
+		LmHcMix<HY_THREADS,G::kStreams,G::kStreams,G::kHidden>(state->streams, state->head_hc_fn, state->head_hc_scale, state->head_hc_base,
+			state->hc_partial, (float *)0, frame.step->hidden_bf16, frame.step->rows, G::kEpsilon, G::kHcEpsilon, 0.0f, frame.stream);
 		return CudaStageLaunched();
 	}
 
@@ -743,7 +557,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		{
 			{ (void **)&state->streams, rows * S::kResidual * sizeof(uint16_t) },
 			{ (void **)&state->hc_post, rows * G::kStreams * sizeof(float) },
-			{ (void **)&state->hc_partial, (rows < HY_HC_SPLIT_ROWS ? rows : HY_HC_SPLIT_ROWS) * (2u * G::kStreams + 1u) * HY_HC_LANES * sizeof(float) },
+			{ (void **)&state->hc_partial, LmHcMixPartialBytes(rows, 2u * G::kStreams) },
 			{ (void **)&state->mixed, width },
 			{ (void **)&state->normed, width },
 			{ (void **)&state->partial, width },

@@ -387,8 +387,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static SparkStatus HyperPost(State *state, Frame &frame, uint32_t layer, uint32_t part)
 	{
 		(void)part;
-		LmHcPostF32Kernel<<<dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream>>>(state->partial, state->snapshot, state->hc_post,
-			state->hc_comb, state->streams, frame.step->rows, LM_HC_SITE_STREAMS, MO_HIDDEN);
+		LmHcPostF32Kernel<LM_HC_SITE_STREAMS><<<dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream>>>(state->partial, state->snapshot,
+			state->hc_post, state->hc_comb, state->streams, frame.step->rows, LM_HC_SITE_STREAMS, MO_HIDDEN);
 		return Check(LM_LAUNCH_OK, "hc post", layer);
 	}
 

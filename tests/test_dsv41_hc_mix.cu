@@ -4,10 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include "inference/kernels/hc.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define WIDTH 5120u
 #define FLAT (D41K_HC * WIDTH)
+
+typedef LmHcSinkhornShape<D41K_HC> Shape;
 
 #define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
 #define CUDA(call) REQUIRE((call) == cudaSuccess)
@@ -30,12 +33,12 @@ static uint16_t Bf16(float value)
 static uint32_t RunCase(uint32_t rows, uint32_t perturb)
 {
 	std::vector<uint16_t> streams((size_t)rows * FLAT);
-	std::vector<float> fn((size_t)D41K_HC_MIX * FLAT);
+	std::vector<float> fn((size_t)Shape::kMix * FLAT);
 	for ( size_t index = 0u; index < streams.size(); ++index )
 		streams[index] = Bf16((float)((int32_t)((Mix(index ^ 0x77u) >> 40u) & 0xfffu) - 2048) / 256.0f);
 	for ( size_t index = 0u; index < fn.size(); ++index )
 		fn[index] = (float)((int32_t)((Mix(index ^ 0x1234u) >> 36u) & 0xfffffu) - 524288) / 4194304.0f;
-	const size_t partial_floats = (size_t)rows * D41K_HC_TASKS * D41K_HC_WARPS;
+	const size_t partial_floats = (size_t)rows * Shape::kPartials;
 	uint16_t *streams_d;
 	float *fn_d, *reference_d, *candidate_d;
 	CUDA(cudaMalloc((void **)&streams_d, streams.size() * sizeof(uint16_t)));
@@ -44,15 +47,15 @@ static uint32_t RunCase(uint32_t rows, uint32_t perturb)
 	CUDA(cudaMalloc((void **)&candidate_d, partial_floats * sizeof(float)));
 	CUDA(cudaMemcpy(streams_d, streams.data(), streams.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
 	CUDA(cudaMemcpy(fn_d, fn.data(), fn.size() * sizeof(float), cudaMemcpyHostToDevice));
-	D41HcMixPartialKernel<<<dim3(D41K_HC_TASKS, rows), D41K_THREADS>>>(streams_d, fn_d, reference_d, WIDTH);
+	LmHcSinkhornPartialKernel<D41K_HC><<<dim3(Shape::kTasks, rows), LM_HC_SINKHORN_THREADS>>>(streams_d, fn_d, reference_d, WIDTH);
 	CUDA(cudaGetLastError());
 	if ( perturb != 0u )
 	{
 		const uint16_t bumped = (uint16_t)(streams[(size_t)(rows - 1u) * FLAT + 777u] ^ 0x0040u);
 		CUDA(cudaMemcpy(streams_d + (size_t)(rows - 1u) * FLAT + 777u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
-	D41HcMixRowsKernel<D41K_HC_MIX_ROWS><<<(rows + D41K_HC_MIX_ROWS - 1u) / D41K_HC_MIX_ROWS, D41K_THREADS>>>(streams_d, fn_d, candidate_d, WIDTH,
-		rows);
+	LmHcSinkhornPartialRowsKernel<D41K_HC,LM_HC_SINKHORN_ROWS><<<(rows + LM_HC_SINKHORN_ROWS - 1u) / LM_HC_SINKHORN_ROWS, LM_HC_SINKHORN_THREADS>>>(streams_d,
+		fn_d, candidate_d, WIDTH, rows);
 	CUDA(cudaGetLastError());
 	CUDA(cudaDeviceSynchronize());
 	std::vector<float> reference(partial_floats), candidate(partial_floats);

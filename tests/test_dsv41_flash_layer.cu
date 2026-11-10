@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "model-families/dsv41_flash/source/dsv41_flash_kernels.cuh"
+#include "tests/cuda/dsv41_flash_hc_reference.cuh"
 
 #define CUDA(call) do { cudaError_t e = (call); if (e != cudaSuccess) { \
     fprintf(stderr, "FAIL line=%d cuda=%s call=%s\n", __LINE__, cudaGetErrorString(e), #call); \
