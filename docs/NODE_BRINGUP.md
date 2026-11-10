@@ -2,21 +2,22 @@
 
 This runbook takes a Spark from its factory DGX OS image to the point where
 [NODE_BASELINE.md](NODE_BASELINE.md) `apply` can take over. It exists because
-spark10 (2026-11-10, the second fleet's node 0) lost about two hours and a power
+spark10 (2026-11-10, node 0 of the `spark10`-`spark1f` fleet) lost about two hours and a power
 cycle to its first `apt full-upgrade` (see [What went wrong on spark10](#what-went-wrong-on-spark10)).
 
 `sparkN` is the node name and user, and `A` is its rail-2 host number (step 3).
 
 ## Fleets and staging
 
-- A node is named `spark` followed by its node number in hex. The first fleet
-  is `spark0`-`sparkf` (0-15); the second fleet is `spark10`-`spark1f`
-  (16-31), so `spark10` is its node 0; the third fleet starts at `spark20`.
-- Only the first fleet runs Ceph.
-- Until the new office (new switches, more power), nodes of later fleets are
-  staged: they go through this runbook and the network-independent part of the
-  baseline, then wait. Their fabric addresses, ranks in service and switch
-  ports are set at the new office.
+- A node is named `spark` followed by its node number in hex. Each fleet holds
+  16 consecutive numbers: `spark0`-`sparkf` (0-15), then `spark10`-`spark1f`
+  (16-31), so `spark10` is that fleet's node 0, and the next fleet starts at
+  `spark20`.
+- Only the `spark0`-`sparkf` fleet runs Ceph.
+- Nodes of later fleets are staged: they go through this runbook and the
+  network-independent part of the baseline, then wait. Their fabric addresses,
+  ranks in service and switch ports are set when their fleet's switch is
+  installed.
 
 ## Rules
 
@@ -93,7 +94,7 @@ ssh spark0 'ssh sparkN@<link-local>%enP2p1s0f0np0 "sudo nmcli dev set enP2p1s0f0
 Open the master from the workstation, then send every later command over it:
 
 ```bash
-ssh -o AddressFamily=inet -o ServerAliveInterval=20 -o ControlMaster=yes -o ControlPersist=yes -o ControlPath=~/.ssh/cm-sparkN-bringup -f -N -J rtx5090 sparkN@10.10.201.A
+ssh -o AddressFamily=inet -o ServerAliveInterval=20 -o ControlMaster=yes -o ControlPersist=yes -o ControlPath=~/.ssh/cm-sparkN-bringup -f -N -J hub sparkN@10.10.201.A
 ```
 
 ```bash
@@ -129,7 +130,7 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A "sudo apt-mark ma
   never start.
 - `nvidia-spark-run-apt-upgrade-once` runs apt at boot. It is a baseline mask,
   and the bring-up decides when apt runs.
-- The fleet 1 nodes still carry the snap transition debs, both snaps and the
+- The `spark0`-`sparkf` nodes still carry the snap transition debs, both snaps and the
   metapackages. They got the snaps while they had internet.
 
 ## 5. Internet
@@ -137,13 +138,13 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A "sudo apt-mark ma
 - **Wi-Fi (owner).** The node joins the fleet's primary Wi-Fi network with the
   fleet profile settings. The command is in the coordination store
   (`sparkpipe-coord/node-files/WIFI_FIRST_CONNECT.md`), because it names the
-  owner's networks. It asks for the network password. The full uplink failover
-  set comes with the private node files ([NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node), step 4).
+  owner's networks. It asks for the network password. The node's other network
+  profiles come with the private node files ([NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node), step 4).
 - **No Wi-Fi or LAN yet.** Give apt a SOCKS proxy through the workstation with
   a reverse dynamic forward, and keep it running for the whole upgrade:
 
   ```bash
-  ssh -o AddressFamily=inet -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -J rtx5090 -N -R 127.0.0.1:1080 sparkN@10.10.201.A
+  ssh -o AddressFamily=inet -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -J hub -N -R 127.0.0.1:1080 sparkN@10.10.201.A
   ```
 
   `AddressFamily=inet` is required: without it the workstation tries the
@@ -161,7 +162,7 @@ Only `snapd` itself may match `snap`. A `1snap` version is a snap transition
 package: purge it as in step 4 before upgrading. Then run the upgrade:
 
 ```bash
-ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'P="-o Acquire::http::Proxy=socks5h://127.0.0.1:1080 -o Acquire::https::Proxy=socks5h://127.0.0.1:1080"; sudo systemd-run --wait --unit=node-upgrade --setenv=DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -y $P -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade; sudo dpkg --audit | wc -l'
+ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'P="-o Acquire::http::Proxy=socks5h://127.0.0.1:1080 -o Acquire::https::Proxy=socks5h://127.0.0.1:1080"; sudo systemd-run --wait --collect --unit=node-upgrade --setenv=DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -y $P -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade; sudo dpkg --audit | wc -l'
 ```
 
 - Drop the `P` options when the node has Wi-Fi.
@@ -169,16 +170,23 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'P="-o Acquire::h
   `while systemctl is-active -q node-upgrade; do sleep 20; done`.
 - A factory image from 2026-11 takes about 650-690 packages, including the 7.0
   nvidia HWE kernel (7.0.0-1025 on 2026-11-10) and driver 580.178.04. That moves
-  the node off the 6.17 nvidia kernel, which is end of life and will not get
-  the CVE-2026-98432 fix.
+  the node off the 6.17 nvidia kernel.
 
 If dpkg failed, read the unit's journal and finish the half-installed packages
 before anything else, then run `apt-get -f install` and the upgrade again, each
-as a transient unit:
+as a transient unit. Every unit runs with `--collect`, so a failed unit is
+unloaded and its name can run again; the journal keeps its record
+(`journalctl -u node-upgrade`).
 
 ```bash
-ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'sudo systemd-run --wait --unit=node-configure --setenv=DEBIAN_FRONTEND=noninteractive /usr/bin/dpkg --force-confdef --force-confold --configure -a'
+ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'sudo systemd-run --wait --collect --unit=node-configure --setenv=DEBIAN_FRONTEND=noninteractive /usr/bin/dpkg --force-confdef --force-confold --configure -a'
 ```
+
+```bash
+ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'P="-o Acquire::http::Proxy=socks5h://127.0.0.1:1080 -o Acquire::https::Proxy=socks5h://127.0.0.1:1080"; sudo systemd-run --wait --collect --unit=node-fix --setenv=DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -y $P -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold -f install'
+```
+
+Then rerun the upgrade command above.
 
 `nvidia-persistenced` fails until the reboot, because the new driver libraries
 do not match the loaded kernel module.
