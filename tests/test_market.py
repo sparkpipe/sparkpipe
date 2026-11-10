@@ -1720,6 +1720,10 @@ def team_flows(failures, work):
         NOW[0] += timedelta(days=8)
         if sign_in(port, mailbox, "cat@example.com")[1] != 404 or sign_in(port, mailbox, "dan@example.com")[1] != 404 or cancelled != 200 or any(x["state"] == "invited" for x in owner("GET", "/v1/members")[1]["data"]):
             failures.append(f"an invitation works after 7 days or after it was cancelled: {late} {gone}")
+        flips = [owner("POST", "/v1/members", {"email": "eve@example.com", "role": role})[0] for role in ("admin", "member", "admin", "member")]
+        app.mails.join()
+        if flips != [200, 200, 200, 429] or sum(rcpt == ["eve@example.com"] for rcpt, _ in mailbox.mail) != 3:
+            failures.append(f"one email receives more than 3 invitations a day: {flips}")
         replay = sp.Book(app.cfg.path("ledger.jsonl"))
         if {k: (v["role"], v["removed"]) for k, v in replay.members.items()} != {k: (v["role"], v["removed"]) for k, v in app.book.members.items()} or {k: v["state"] for k, v in replay.invites.items()} != {k: v["state"] for k, v in app.book.invites.items()}:
             failures.append("a replayed ledger gives different members or invitations")

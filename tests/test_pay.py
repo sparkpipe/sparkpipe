@@ -1027,6 +1027,12 @@ def toss_flows(failures, cfg, app, fake, buyer, mailbox, port):
     if any(c[1] == "pay-cheap" and c[0] == "POST" for c in fake.calls) or shown["state"] != "failed" or shown["reason"] != "amount" or buyer("GET", "/account")[1]["hc"] != "5.000000":
         failures.append(f"a payment authorised for another amount is confirmed: {shown}")
     status, placed, request = order_toss(buyer, {"hc": 5})
+    toss_payment(fake, "pay-forged", request["orderId"], 143000)
+    succeed(port, request["orderId"], "pay-forged", "100")
+    shown = buyer("GET", "/order/" + request["orderId"])[1]
+    if any(c[1] == "pay-forged" and c[0] == "POST" for c in fake.calls) or shown["state"] != "created" or shown.get("reason") or buyer("GET", "/account")[1]["hc"] != "5.000000":
+        failures.append(f"a forged success redirect with another amount fails or confirms an order that Toss Payments reports at its own total: {shown}")
+    status, placed, request = order_toss(buyer, {"hc": 5})
     toss_payment(fake, "pay-odd", request["orderId"], 143000, total=1000)
     succeed(port, request["orderId"], "pay-odd", "143000")
     shown = buyer("GET", "/order/" + request["orderId"])[1]
