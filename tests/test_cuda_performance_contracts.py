@@ -11,6 +11,7 @@ CUDA_ROOTS = (
     ROOT / "inference",
     ROOT / "runtime",
     ROOT / "modules",
+    ROOT / "model-families",
 )
 
 

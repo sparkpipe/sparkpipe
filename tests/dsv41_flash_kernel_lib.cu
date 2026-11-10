@@ -1,7 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
-#include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_kernels.cuh"
 
 #define SPARK_TEST_EXPORT extern "C" __attribute__((visibility("default")))
 

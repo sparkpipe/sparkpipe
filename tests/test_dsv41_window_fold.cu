@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
-#include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define DEGREE 16u
 #define LATENT 512u

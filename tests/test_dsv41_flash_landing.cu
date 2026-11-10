@@ -8,7 +8,7 @@
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/kv_shard.cuh"
-#include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define DEGREE 16u
 #define LOCAL 4u

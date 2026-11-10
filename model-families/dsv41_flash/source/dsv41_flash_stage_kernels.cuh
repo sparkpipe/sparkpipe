@@ -9,7 +9,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/ngram_hash.cuh"
-#include "spark_dsv41_flash_kernels.cuh"
+#include "dsv41_flash_kernels.cuh"
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u

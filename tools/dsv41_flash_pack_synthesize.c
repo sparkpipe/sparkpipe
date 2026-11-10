@@ -6,7 +6,7 @@
 
 #include "sparkpipe/spark_weight_codec.h"
 
-#include "../source/spark_dsv41_flash_stagepack_format.h"
+#include "sparkpipe/spark_dsv41_flash_stagepack.h"
 
 #define SYNTH_ALIGN 256u
 #define SYNTH_MAX_TENSORS 8192u

@@ -41,7 +41,7 @@ template includes for tests that grep source text.
 | Template | Included by |
 | --- | --- |
 | `stagepack/spark_stagepack_glm.h`, `spark_stagepack_shape_bf16.h`, `spark_stagepack_tp_shards_cols.h` | `model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h` |
-| `stagepack/spark_stagepack_kind_is_hc.h`, `spark_stagepack_shape_f32.h` | `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h` |
+| `stagepack/spark_stagepack_kind_is_hc.h`, `spark_stagepack_shape_f32.h` | `model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_stagepack.h` |
 | `glm/spark_glm_head_maxloc.cuh` | `tests/host_cuda/head_sampling_host.cu`, `tests/host_cuda/glm5_next_expert_cover_host.cu`, `tests/test_working_set_rollback.cu` |
 | `module/spark_module_combine.h` | `tools/mesh_round_bench.cu` |
 

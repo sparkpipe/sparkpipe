@@ -12,7 +12,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 
-#include "../source/spark_dsv41_flash_stagepack_format.h"
+#include "sparkpipe/spark_dsv41_flash_stagepack.h"
 
 static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,uint32_t kind,uint64_t offset,uint64_t bytes)
 {
