@@ -238,11 +238,6 @@ class HashingWriter:
         return self.stream.fileno()
 
 
-def check_tp_rank(tp_degree: int, tp_rank: int) -> None:
-    if tp_degree < 1 or tp_rank < 0 or tp_rank >= tp_degree:
-        raise PackFailure(f"invalid tp rank {tp_rank}/{tp_degree}")
-
-
 def tp_shard_range(dimension: int, tp_degree: int, tp_rank: int, block: int = 1) -> Tuple[int, int]:
     if tp_degree < 1 or tp_rank < 0 or tp_rank >= tp_degree:
         raise PackFailure(f"invalid tp shard {tp_rank}/{tp_degree}")

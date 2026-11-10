@@ -455,14 +455,6 @@ class SourceReader:
             raise PackFailure(f"record {record.name} has scale bytes but span {span.name} names no scale tensor")
 
 
-def _fsync_path(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def stage_name(record: Record, plane: str) -> str:
     layer = "g" if record.layer == GLOBAL_LAYER else f"{record.layer:03d}"
     return f"r{layer}_{record.kind:02d}.{plane}"
