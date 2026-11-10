@@ -377,7 +377,7 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output);
 SparkStatus SparkDeviceAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
 	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
-	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output, const SparkDeviceAttentionSelection *selection);
+	const SparkDeviceAttentionScratch *scratch, const SparkDeviceAttentionSelection *selection, SparkTensor normed, SparkTensor output);
 
 SparkStatus SparkDeviceFfnBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer, uint32_t ffn,
 	SparkDeviceFfnWeights *bound);

@@ -149,7 +149,9 @@ struct QwenDevice
 		shape->hidden = G::kHidden;
 		shape->vocab = G::kVocab;
 		shape->layers = G::kLayers;
-		shape->kv_layers = L::kAttnLayers + (L::kIndexer ? 1u : 0u);
+		shape->kv_layers = L::kAttnLayers;
+		shape->index_layers = L::kIndexer ? L::kAttnLayers : 0u;
+		shape->index_page_bytes = L::kIndexer ? (uint64_t)(SPARK_DEVICE_RUNNER_PAGE_SLOTS / G::kIndexRatio) * G::kIndexDim * 2u : 0u;
 		shape->kv_heads = G::kKvHeads;
 		shape->kv_head_dimension = G::kHeadDim;
 		shape->pack_alignment = QH_PACK_ALIGNMENT;
@@ -556,13 +558,9 @@ struct QwenDevice
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "the n-gram embedding hashes chains of rows; tree frames are refused");
 		frame->sparse = 0u;
 		if constexpr ( L::kIndexer )
-		{
-			if ( status == SPARK_STATUS_OK && (state->stage.kv_attached == 0u || (uint64_t)L::kAttnLayers * IndexCacheBytes(state) > state->stage.kv_layer_stride) )
-				return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED, "the index keys of every attention layer exceed one KV layer");
 			for ( uint32_t row = 0u; row < frame->t.rows && status == SPARK_STATUS_OK; row++ )
 				if ( frame->t.host_positions[row] >= QD_DENSE_INDEX_POSITIONS(G) )
 					frame->sparse = 1u;
-		}
 		return status;
 	}
 
@@ -576,22 +574,10 @@ struct QwenDevice
 		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, &state->partial, weight, state->normed);
 	}
 
-	static uint64_t IndexCacheBytes(const State *state)
-	{
-		return SparkIndexerCacheBytes(&state->index_shape, state->stage.pool_pages, SPARK_DEVICE_RUNNER_PAGE_SLOTS / G::kIndexRatio);
-	}
-
 	static SparkIndexerCache IndexCache(const State *state, uint32_t kv_index)
 	{
-		const uint64_t bytes = IndexCacheBytes(state);
-		SparkIndexerCache cache;
-		memset(&cache, 0, sizeof(cache));
-		cache.pool = SparkTensorSlice(state->stage.kv_pool, (uint64_t)L::kAttnLayers * state->stage.kv_layer_stride + (uint64_t)kv_index * bytes, bytes);
-		cache.page_table = state->stage.page_table;
+		SparkIndexerCache cache = SparkDeviceStageIndexCache(&state->stage, kv_index);
 		cache.page_slots = SPARK_DEVICE_RUNNER_PAGE_SLOTS / G::kIndexRatio;
-		cache.pages_per_sequence = state->stage.pages_per_sequence;
-		cache.pool_pages = state->stage.pool_pages;
-		cache.sequences = state->stage.slots;
 		return cache;
 	}
 
@@ -654,7 +640,7 @@ struct QwenDevice
 				return status;
 			if ( frame.sparse != 0u )
 				return SparkDeviceAttentionSelected(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention,
-					layer.kv_index, &state->attention, state->normed, state->partial, &selection);
+					layer.kv_index, &state->attention, &selection, state->normed, state->partial);
 		}
 		return SparkDeviceAttention(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention, layer.kv_index,
 			&state->attention, state->normed, state->partial);

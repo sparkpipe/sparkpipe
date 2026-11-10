@@ -524,9 +524,10 @@ block of four positions pools its four raw keys, `bf16(sum / 4)` in position
 order, from the frame and a per-sequence window of the last raw keys that a
 committed step saves and a kept verify row replays; the pooled key is
 RMS-normed with `attn_index_k_norm`, roped at the block's first position and
-stored at the block's index. The index keys of all twelve attention layers
-share one extra KV layer, each layer's 16-block pages laid out back to back
-on the stage's page table. A frame whose rows all sit below position 2,051
+stored at the block's index. The index keys live in the stage's second KV
+pool (`SparkDeviceStageShape.index_layers`, one layer per attention layer,
+pages of 16 blocks on the main page table, `SparkDeviceStageIndexCache` with
+16 slots a page). A frame whose rows all sit below position 2,051
 attends densely, exactly as without the indexer: there each row sees at most
 512 complete blocks, all of which the indexer keeps. A frame with a row at
 or past 2,051 scores each complete block `sum over heads of ReLU(q . k) /
