@@ -140,6 +140,7 @@ current authority.
 
 - [`../TECHDEBT.md`](../TECHDEBT.md): unfinished implementation work only.
 - [`CODEBASE_AUDIT_2026-11-09.md`](CODEBASE_AUDIT_2026-11-09.md): production
+- [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md): the mega-PR against the product: what an engineer saves after it, what the site promises that is not built, and what to do first.
   codebase audit (DRY, footguns, performance architecture), the target
   architecture, the order of work and what has landed.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
