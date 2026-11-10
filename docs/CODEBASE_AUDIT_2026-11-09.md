@@ -377,6 +377,15 @@ Landed in the pull request that carries this page:
   round trace are read only in `DEBUG` builds, so a release build's
   execution shape does not depend on the environment.
 
+A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
+(`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
+line is bit-identical to `main` on the release kit's six prompts, the head
+keeps every token with the Metal line's publisher numerics in the logprobs,
+eight streams gain 9 to 12%, and **prefill lost about 12%**, which points at
+the two lanes interleaved on one host thread. That regression comes before
+anything below. The gate also found that the release kit did not ship the
+device library every adapter now loads (fixed).
+
 Still open, in the order above:
 
 - Step 2, the collective half: the wave-boundary IPC and chain key,
