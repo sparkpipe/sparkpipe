@@ -880,9 +880,9 @@ The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml
 generated from `deployment/hub/open_webui_models.json`, contexts checked
 against the chat layer). Each has an Open WebUI model entry from that file,
 applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
-description (context window and switch time), text-only input, web search
-and the code interpreter on by default, the GitHub tool, the trimmed
-built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
+description (context window and switch time), text-only input, the code
+interpreter on by default, web search and the GitHub tool offered but off
+until the user turns them on in a chat, the trimmed built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
 memory serves every model, and the memory program refuses a
 memory session once a compaction summary appears. The global "Full context"
 filter, one of the Open WebUI functions the memory program installs, is
@@ -1098,10 +1098,13 @@ rate-limited it and Google and the others answered.
 
 Open WebUI offers the two tools only when web search is on globally, the user
 has the `web_search` permission, the model has the `web_search` capability
-and the chat's Web Search toggle is on. The `kimi-k3` model entry (Admin
-Panel -> Settings -> Models) turns the toggle on by default
-(`defaultFeatureIds`), so K3 itself decides when to search or read a page;
-the entry also marks K3 as text-only, so image uploads are not offered.
+and the chat's Web Search toggle is on. The toggle starts off in every chat:
+the privacy policy sends search terms to public search engines only when
+the user turns web search on, so no model entry lists `web_search` in
+`defaultFeatureIds` (`tests/test_open_webui_models_opt_in.py`). Once the
+user turns it on, the model itself decides when to search or read a page.
+The entries also mark the models as text-only, so image uploads are not
+offered.
 `fetch_url` refuses private and loopback addresses
 (`ENABLE_RAG_LOCAL_WEB_FETCH=false`, checked against the swap controller,
 the hub, the LAN and 10/8), so a user cannot make the hub read internal
@@ -1140,8 +1143,9 @@ The owner asked for these four after K3 told a user it could not browse:
     ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
   ```
 - **GitHub.** `tools/serving/open_webui/tools/github.py`, installed as the
-  Open WebUI tool `github` with public read access and attached to K3
-  (`toolIds`): `github_search` (repositories, code, issues), `github_read`
+  Open WebUI tool `github` with public read access, which a user turns on
+  per chat; no model entry attaches it by default (`toolIds`), because the
+  privacy policy runs tools only when the user turns them on: `github_search` (repositories, code, issues), `github_read`
   (files and directories, the README with the top level), `github_list`
   (issues, pulls, commits, releases) and `github_item` (one issue or pull
   request with its comments and changed files). It only sends GET requests to
