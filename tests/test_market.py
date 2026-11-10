@@ -305,6 +305,8 @@ def opening(failures, app, m):
     early = person(app, "early", 50)
     if refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 11, 30, 23)), "hours": 1})) != (409, "not_open") or refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 12, 1)), "hours": 1})):
         failures.append("Hour Fleet hours open on hoursFrom and not before")
+    if refused(lambda: m.book_hours(early, {"fleet": "F4", "start": slot(kst(2026, 11, 29, 12)), "hours": 1})) != (409, "not_open"):
+        failures.append("Hours on a Fleet that is not an Hour Fleet are booked before hoursFrom")
     NOW[0] = kst(2026, 12, 25, 12)
     if refused(lambda: m.quote_weeks(early, {"fleet": "F3", "weeks": 1})) != (409, "not_open"):
         failures.append("a Week before weeksFrom is booked")
@@ -902,6 +904,54 @@ def pair_flows(failures, work):
         stopped = [n for n in notices(app, A2, "booking.deadline") if n["data"].get("reason") == "pair_not_held"]
         if app.book.market.extend.get((A2, "F2B"), {}).get("weeks", 0) != 0 or not stopped:
             failures.append("auto-extend on a pair does not stop when its partner's Weeks end")
+    finally:
+        server.shutdown()
+        mailbox.shutdown()
+
+
+def pair_deadline_flows(failures, work):
+    root = work / "pair-deadline"
+    site(root)
+    path = root / "site" / "pricing.js"
+    pricing = tp.read_pricing(path)
+    base = dict(pricing["fleets"][1])
+    pricing["fleets"] = [dict(base, id=f"F{n}{side}", name=f"Fleet {n}{side}", state="serving", hourFleet=side == "B", pair=f"F{n}{'B' if side == 'A' else 'A'}")
+                         for n in range(1, 5) for side in "AB"]
+    tp.write_pricing(path, pricing)
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    server, app, port = live(root, "data", mailbox)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 6, 12)
+        A1, A2, O = (person(app, name, credits) for name, credits in (("a1", 2000), ("a2", 288), ("o", 1000)))
+        for fleet in ("F1A", "F1B"):
+            m.book_weeks(A1, {"fleet": fleet, "weeks": 2})
+            m.auto_extend(A1, {"fleet": fleet, "weeks_ahead": 0})
+        NOW[0] = kst(2027, 1, 12, 9)
+        if refused(lambda: m.book_hours(A1, {"fleet": "F2B", "start": slot(kst(2027, 1, 12, 12)), "hours": 1})):
+            failures.append("the Hours cap on Hour Fleets counts the account's pinned pair Weeks")
+        NOW[0] = kst(2027, 1, 13, 12)
+        for fleet in ("F3A", "F3B"):
+            m.book_weeks(A2, {"fleet": fleet, "weeks": 1})
+        NOW[0] = kst(2027, 1, 19, 12)
+        m.tick()
+        strangers = [refused(lambda: m.book_hours(O, {"fleet": fleet, "start": slot(kst(2027, 1, 25)), "hours": 1})) for fleet in ("F1B", "F3B")]
+        if strangers != [(409, "pinned"), (409, "pinned")]:
+            failures.append("another customer books Hours on a pinned B half in the Week after its holder's last Week, before the holder's Sunday 00:00 deadline")
+        quote = m.quote_weeks(A1, {"fleet": "F1A", "weeks": 1})
+        m.book_weeks(A1, {"fleet": "F1A", "weeks": 1, "first": quote["first"]})
+        if refused(lambda: m.book_weeks(A1, {"fleet": "F1A", "weeks": 1, "first": quote["first"]})) != (409, "changed") or through(app, A1, "F1A") != kst(2027, 2, 1):
+            failures.append("a repeated Week booking with the quoted first Week books a second Week")
+        if refused(lambda: m.book_weeks(A1, {"fleet": "F1B", "weeks": 1})) or through(app, A1, "F1B") != kst(2027, 2, 1):
+            failures.append("the holder cannot extend its pinned B half before its Sunday 00:00 deadline")
+        app.market.credit(A2, Decimal(288), "top up")
+        m.tick()
+        if through(app, A2, "F3A") != kst(2027, 2, 1) or through(app, A2, "F3B") != kst(2027, 2, 1):
+            failures.append(f"auto-extend waiting on a short balance loses the pinned B half before the Sunday 00:00 deadline: {through(app, A2, 'F3B')}")
+        NOW[0] = kst(2027, 1, 31, 0, 30)
+        m.tick()
+        if refused(lambda: m.book_hours(O, {"fleet": "F1B", "start": slot(kst(2027, 2, 1, 1)), "hours": 1})):
+            failures.append("a B half whose holder did not book its next Week by the Sunday 00:00 deadline stays closed to Hours")
     finally:
         server.shutdown()
         mailbox.shutdown()
@@ -1829,6 +1879,7 @@ def main():
         live_flows(failures, work)
         discount_flows(failures, work)
         pair_flows(failures, work)
+        pair_deadline_flows(failures, work)
         allocation_flows(failures, work)
         extension_flows(failures, work)
         notice_flows(failures, work)

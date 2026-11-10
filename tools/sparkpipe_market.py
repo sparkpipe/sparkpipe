@@ -442,13 +442,10 @@ class Market:
 
     def check_hour_fleet(self, pricing, account, start, end, now):
         rules = pricing["bookings"]
-        gate = self.gate(pricing, "hoursFrom")
-        if gate and start < gate:
-            raise Refusal(f"Hour Fleets open on {pricing['hoursFrom']}.", 409, "not_open")
         if end > now + DAY * rules["hourFleetDaysAhead"]:
             raise Refusal(f"Hours on Hour Fleets can be booked at most {rules['hourFleetDaysAhead']} days ahead.", 409, "too_far")
         listed = {f["id"] for f in pricing["fleets"] if f["hourFleet"]}
-        mine = [b for b in self.st.bookings.values() if b["account"] == account and b["fleet"] in listed]
+        mine = [b for b in self.st.bookings.values() if b["account"] == account and b["fleet"] in listed and b["kind"] == "hour"]
         week = week_start(start)
         while week < end:
             used = sum((overlap(b["begins"], b["ends"], week, week + WEEK) for b in mine), timedelta(0))
@@ -461,6 +458,10 @@ class Market:
             raise Refusal(f"{fleet['name']} is not serving.", 409, "not_serving")
         if start <= now:
             raise Refusal("Choose an hour that has not started.", 409, "started")
+        gate = self.gate(pricing, "hoursFrom")
+        if gate and start < gate:
+            raise Refusal(f"Hours can be booked from {pricing['hoursFrom']}.", 409, "not_open")
+        self.check_deadline(fleet, account, start, end, now)
         if fleet["hourFleet"]:
             self.check_hour_fleet(pricing, account, start, end, now)
         elif end > week_start(now) + WEEK:
@@ -472,6 +473,14 @@ class Market:
             raise Refusal(f"{fleet['name']} is already booked at {kst_text(max(taken[0]['begins'], start))}.", 409, "taken")
         if self.maintained(fleet["id"], start, end):
             raise Refusal(f"{fleet['name']} is under maintenance in those hours.", 409, "maintenance")
+
+    def check_deadline(self, fleet, account, start, end, now):
+        week = week_start(start)
+        while week < end:
+            held = [b for b in self.busy(fleet["id"], week - WEEK, week) if b["kind"] == "week" and b["account"] != account]
+            if held and now < week - DAY:
+                raise Refusal(f"{fleet['name']} is pinned to a customer, who may book its next Week until {kst_text(week - DAY)}.", 409, "pinned")
+            week += WEEK
 
     def hour_plan(self, pricing, account, fleet, start, hours, now):
         end = start + HOUR * hours
@@ -609,10 +618,13 @@ class Market:
 
     def book_weeks(self, account, body):
         pricing, fleet, weeks = self.weeks_request(body)
+        quoted = slot_field(body["first"], "first") if body.get("first") is not None else None
         with self.book.lock:
             now = self.now()
             self.advance(now)
             plan = self.week_plan(pricing, account, fleet, weeks, now)
+            if quoted and slot_time(plan["first"]) != quoted:
+                raise Refusal(f"These Weeks would now start on {kst_text(slot_time(plan['first']))[:10]}, not on the quoted {kst_text(quoted)[:10]}: quote them again before booking.", 409, "changed")
             ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), now, {"weeks": weeks, "discount": plan["discount"]})
             self.confirmed(self.st.bookings[ident], now)
             return dict(plan, booking=ident)
