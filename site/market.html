@@ -74,7 +74,7 @@
         </ul>
         <p>The Customer Agreement governs, and its Korean text prevails.</p>
       </details>
-      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean text prevails.</span></label>
+      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a>, with the <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> it incorporates, for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts prevail.</span></label>
       <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
       <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as two customers.</p>
       <button class="btn solid" type="submit" id="signin-go">Sign in</button>
@@ -196,6 +196,7 @@
   <h2>Your ledger lines</h2>
   <p class="muted">Every payment, booking, lock and credit is a line in our append-only, hash-chained ledger. Download your own lines with their hashes.</p>
   <div class="row"><button class="btn small" type="button" id="ledger-load">Load</button><span class="num" id="ledger-head"></span></div>
+  <p class="muted" id="ledger-partial" hidden><b>Partial export.</b> As an admin you see the account's lines without its order, payment, refund and tax lines, and without the IP address and browser of the others. Every line keeps the hash of its full original, so a line with fields left out does not verify against the hash shown; the owner's export is complete.</p>
   <div class="scroll"><table><thead><tr><th>#</th><th>When (KST)</th><th>Type</th><th>Data</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
 </section>
 </div>
@@ -209,6 +210,6 @@
 </footer>
 <script src="pricing.js?v=3"></script>
 <script src="prices.js?v=4"></script>
-<script src="market.js?v=6"></script>
+<script src="market.js?v=7"></script>
 </body>
 </html>

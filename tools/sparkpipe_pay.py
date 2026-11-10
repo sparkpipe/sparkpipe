@@ -41,7 +41,7 @@ WON = Decimal("1")
 LEDGER_IDS = ("order", "invoice", "lot", "key", "ref", "booking", "job")
 OWNER_LINES = ("order", "invoice", "invoice_failed", "invoice_state", "toss_state", "toss_payment", "swift_state", "payment", "refund", "tax_invoice", "hc_issued")
 OWNER_FIELDS = ("ip", "agent")
-TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md"}
+TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "dpa_ko": "dpa-ko.md", "dpa_en": "dpa-en.md"}
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
@@ -1162,9 +1162,11 @@ def coin_field(value):
 
 
 def statement(cfg, company, terms):
-    return (f"For {company}, I accept the SparkPipe Customer Agreement and confirm that {company} buys and uses SparkPipe for business, professional, commercial or independent research and development purposes, not as a household consumer. "
+    return (f"For {company}, I accept the SparkPipe Customer Agreement, with the Data Processing Agreement it incorporates, and confirm that {company} buys and uses SparkPipe for business, professional, commercial or independent research and development purposes, not as a household consumer. "
             f"Customer Agreement, Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/agreement-ko.md). "
-            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md).")
+            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md). "
+            f"Data Processing Agreement, Korean text, which prevails: SHA-256 {terms['dpa_ko']} ({cfg.public}/terms/dpa-ko.md). "
+            f"English text: SHA-256 {terms['dpa_en']} ({cfg.public}/terms/dpa-en.md).")
 
 
 def invoice_body(cfg, quote):

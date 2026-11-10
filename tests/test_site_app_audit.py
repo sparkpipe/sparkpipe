@@ -164,6 +164,15 @@ def pages(failures):
     buy = (site / "buy.html").read_text()
     if "String(S.hc)" in buy or "S.me.role !== 'owner'" not in buy:
         failures.append("buy.html sends HC in exponent form or lets a non-owner reach payment")
+    for name, label in (("buy.html", 'id="accept"'), ("buy.html", 'id="accept-again"'), ("market.html", 'id="accept"')):
+        text = (site / name).read_text()
+        line = next((line for line in text.splitlines() if label in line), "")
+        if 'href="agreement.html"' not in line or 'href="dpa.html"' not in line:
+            failures.append(f"{name}: the acceptance box at {label} does not name the Data Processing Agreement next to the Customer Agreement")
+    if 'href="dpa.html"' not in account:
+        failures.append("account.html does not link the Data Processing Agreement next to the Customer Agreement")
+    if "data.complete === false" not in (site / "market.js").read_text() or 'id="ledger-partial"' not in (site / "market.html").read_text():
+        failures.append("the ledger panel does not say when an admin's export leaves lines and fields out")
     if "written order" in (site / "privacy.html").read_text() or "서면 주문서에서 제공" in (site / "privacy-ko.html").read_text():
         failures.append("the privacy pages say a USD transfer needs a written order though checkout offers SWIFT")
 
@@ -183,7 +192,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("site app: periods one good probe apart are one creditable period, marked so on the status page, and credited again as they grow; a third party cannot invalidate or exhaust a customer's codes; a refused sign-in keeps the code; order status is the owner's; an order over the per-order size says to place another; pages read published settings, stop non-owners before payment and do not name hubs")
+    print("site app: periods one good probe apart are one creditable period, marked so on the status page, and credited again as they grow; a third party cannot invalidate or exhaust a customer's codes; a refused sign-in keeps the code; order status is the owner's; an order over the per-order size says to place another; pages read published settings, stop non-owners before payment, name the Data Processing Agreement where the Agreement is accepted, mark a partial ledger export and do not name hubs")
     return 0
 
 

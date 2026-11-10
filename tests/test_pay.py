@@ -57,8 +57,9 @@ def check_units(failures):
     for bad in (None, "", "a.b", "ACX.x.y", "ACX.2000.00"):
         if sp.session_account(key, bad, 1999) is not None:
             failures.append(f"a malformed session token {bad!r} is accepted")
-    if set(sp.TERMS.values()) != {"agreement-ko.md", "agreement-en.md"} or "Market Rules" in sp.statement(type("C", (), {"public": "https://sparkpipe.ai"}), "Acme", {"ko": "k", "en": "e"}):
-        failures.append("the accepted terms are not just the Korean and English Customer Agreement")
+    quoted = sp.statement(type("C", (), {"public": "https://sparkpipe.ai"}), "Acme", {"ko": "k", "en": "e", "dpa_ko": "dk", "dpa_en": "de"})
+    if set(sp.TERMS.values()) != {"agreement-ko.md", "agreement-en.md", "dpa-ko.md", "dpa-en.md"} or "Market Rules" in quoted or not all(part in quoted for part in ("SHA-256 dk (https://sparkpipe.ai/terms/dpa-ko.md)", "SHA-256 de (https://sparkpipe.ai/terms/dpa-en.md)", "Data Processing Agreement")):
+        failures.append("the accepted terms are not just the Korean and English Customer Agreement with its Data Processing Agreement")
 
 
 SURFACE = [
@@ -592,7 +593,7 @@ def account_flow(failures, cfg, app, buyer, mailbox, port):
     if "HttpOnly" not in buyer.last_cookie or "SameSite=Lax" not in buyer.last_cookie or "Path=/pay/api" not in buyer.last_cookie:
         failures.append(f"session cookie attributes: {buyer.last_cookie}")
     record = lines_of(cfg, "acceptance")[-1]
-    if (record["ko"], record["en"]) != (cfg.terms("agreement-ko.md"), cfg.terms("agreement-en.md")) or "rules_ko" in record or "Market Rules" in record["statement"] or "Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
+    if (record["ko"], record["en"], record["dpa_ko"], record["dpa_en"]) != (cfg.terms("agreement-ko.md"), cfg.terms("agreement-en.md"), cfg.terms("dpa-ko.md"), cfg.terms("dpa-en.md")) or "rules_ko" in record or "Market Rules" in record["statement"] or "Korean text, which prevails" not in record["statement"] or "Acme 주식회사" not in record["statement"]:
         failures.append(f"acceptance record: {record}")
     if buyer("POST", "/verify", {"email": "ops@acme.example", "code": last_code(mailbox, "ops@acme.example")})[0] != 403:
         failures.append("a sign-in code works twice")
@@ -815,6 +816,13 @@ def credits_flow(failures, cfg, app, fake, buyer, mailbox):
         failures.append(f"an order after the Agreement changed does not ask to accept it again: {status} {refused}")
     if buyer("POST", "/order", dict(base, hc=1, accept=True))[0] != 200 or not buyer("GET", "/account")[1]["termsCurrent"]:
         failures.append("accepting the Agreement again is not recorded")
+    dpa = Path(cfg.site) / "terms" / "dpa-en.md"
+    dpa.write_text(dpa.read_text() + "\n")
+    status, refused = buyer("POST", "/order", dict(base, hc=1))
+    if status != 409 or refused.get("reason") != "terms" or buyer("GET", "/account")[1]["termsCurrent"]:
+        failures.append(f"an order after the Data Processing Agreement changed does not ask to accept it again: {status} {refused}")
+    if buyer("POST", "/order", dict(base, hc=1, accept=True))[0] != 200 or lines_of(cfg, "acceptance")[-1]["dpa_en"] != cfg.terms("dpa-en.md"):
+        failures.append("accepting the changed Data Processing Agreement is not recorded with its hash")
 
 
 def part_payment_flow(failures, cfg, app, fake, buyer, mailbox):
@@ -1279,7 +1287,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement only, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
+    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement and its Data Processing Agreement only, re-accepted when either changes, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
     return 0
 
 

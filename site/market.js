@@ -31,7 +31,7 @@
       return await call(method, path, body);
     } catch (error) {
       if (error.reason !== 'terms') throw error;
-      if (!confirm('The SparkPipe Customer Agreement has changed since you accepted it. Accept the current text (the Korean text prevails) and continue?')) throw error;
+      if (!confirm('The SparkPipe Customer Agreement or its Data Processing Agreement has changed since you accepted them. Accept the current texts (the Korean texts prevail) and continue?')) throw error;
       return call(method, path, Object.assign({}, body, { accept: true }));
     }
   };
@@ -111,7 +111,7 @@
   };
 
   const statusText = { 'hour-fleet': 'Hour Fleet', pinned: 'Pinned', free: 'Available' };
-  const waitingText = { terms: 'waiting for you to accept the current Customer Agreement', insufficient_hc: 'waiting for enough unlocked HC to book the next week' };
+  const waitingText = { terms: 'waiting for you to accept the current Customer Agreement and Data Processing Agreement', insufficient_hc: 'waiting for enough unlocked HC to book the next week' };
 
   const setAutoExtend = (fleet, weeks) => act('m-weeks', () => spend('/market/auto-extend', { fleet, weeks_ahead: weeks }, 'PUT'),
     (r) => (r.weeks_ahead ? `Auto-extend on ${fleet}: ${r.weeks_ahead} week${r.weeks_ahead === 1 ? '' : 's'} kept booked ahead${r.through ? `, booked through ${lastDay(r.through)}` : ''}.` : `Auto-extend on ${fleet} is off. Book the next week yourself to keep the fleet.`));
@@ -374,7 +374,8 @@
   $('ledger-load').addEventListener('click', async () => {
     try {
       const data = await call('GET', '/market/ledger');
-      $('ledger-head').textContent = `${data.count} lines · head ${data.head.slice(0, 16)}…`;
+      $('ledger-head').textContent = `${data.count} lines · head ${data.head.slice(0, 16)}…${data.complete === false ? ' · partial' : ''}`;
+      $('ledger-partial').hidden = data.complete !== false;
       fill('ledger', data.lines.slice().reverse().map((l) => row([String(l.seq), kst(l.at), l.type, JSON.stringify(l.data).slice(0, 120), l.hash.slice(0, 12) + '…'])), 'No lines yet.');
     } catch (error) {
       $('ledger-head').textContent = error.message;

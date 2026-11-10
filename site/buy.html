@@ -83,7 +83,7 @@
             </ul>
             <p>The Customer Agreement governs, and its Korean text prevails.</p>
           </div>
-          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The <a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">Korean text</a> prevails.</span></label>
+          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a>, with the <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> it incorporates, for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts (<a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">Agreement</a>, <a href="dpa-ko.html" target="_blank" rel="noopener" hreflang="ko">DPA</a>) prevail.</span></label>
           <p class="flash" id="m-2" hidden></p>
           <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
           <p class="hint">The code confirms your email. It becomes your account: receipts, your hours and sign-in all use it. Already have an account? Use the same email.</p>
@@ -113,7 +113,7 @@
             <label class="check"><input type="checkbox" id="declare"><span>My company has no place of business in the Republic of Korea and pays this order by bank transfer in US dollars from its own account outside the Republic of Korea (<a href="agreement.html" target="_blank" rel="noopener">Customer Agreement</a>, clause 3.3(b)).</span></label>
           </div>
         </div>
-        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement changed since you accepted it. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> (the Korean text prevails) on behalf of my company.</span></label>
+        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement or its Data Processing Agreement changed since you accepted them. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> (the Korean texts prevail) on behalf of my company.</span></label>
         <p class="flash" id="m-3" hidden></p>
         <button class="btn solid big" type="submit" id="pay">Pay</button>
         <p class="hint" id="hint-toss" hidden>Pay in won with a card issued in Korea or abroad (Visa, Mastercard, JCB), by bank transfer, into a virtual account, or with a Korean easy-pay wallet, all through Toss Payments. A card, transfer or wallet payment issues your HC as soon as Toss Payments confirms it; a virtual account issues it when your deposit arrives, and expires with the order if nothing arrives by its deadline. For a card, the card slip is your VAT document; for a bank transfer or virtual account we issue an electronic tax invoice to the business registration number above.</p>
@@ -317,7 +317,7 @@
     event.preventDefault();
     busy($('send'), $('m-2'), async () => {
       if (!$('company').value.trim()) throw new Error('Enter your company’s legal name, or your full name.');
-      if (!$('accept').checked) throw new Error('Accept the Customer Agreement to continue.');
+      if (!$('accept').checked) throw new Error('Accept the Customer Agreement and its Data Processing Agreement to continue.');
       await flow.send($('email').value.trim());
       $('f-2').hidden = true;
     });
@@ -350,7 +350,7 @@
       const coin = SP.chosen($('f-3'), 'coin');
       if (!toss && !bank && !coin) throw new Error('Choose USDC or USDT and its network.');
       if (bank && !$('declare').checked) throw new Error('A USD bank transfer (SWIFT) is for a company with no place of business in Korea, paying from its own account outside Korea. Confirm both, or choose another way to pay.');
-      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement to continue.');
+      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement and Data Processing Agreement to continue.');
       const brn = $('brn').value.trim();
       if (toss && brn && !/^\d{3}-\d{2}-\d{5}$/.test(brn)) throw new Error('Give the Korean business registration number as 123-45-67890, or leave it empty.');
       if (toss) SP.tossReady();
