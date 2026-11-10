@@ -307,8 +307,23 @@ failed gate.
   device runner, which takes the frame's anchor from its first row because
   the KV binding, not the runner, owns positions in serving, and keeps the
   accepted path. `tests/test_device_serving_runner.c` checks the forwarding
-  on the host; the served gate (greedy tokens with trees equal to the
-  greedy run, `tools/serving_greedy_check.py` on M5U0) has not run yet.
+  on the host. Served gate on M5U0 (2026-11-10, Qwen3.5-4B through
+  `sparkpipe_model_api` and `sparkpipe_model_residentd`, the six gate and
+  speculation prompts, 128 tokens): greedy tokens equal `metal_stage_run`'s
+  on all six (`tools/serving_greedy_check.py`), tokens served with drafts
+  equal the same requests served without them (a request for logprobs takes
+  no drafts) on all six, cold and from the prefix cache, and 8 of 94 verify
+  frames were trees with 1 to 11 branch rows; no branch row was accepted on
+  this run. The first served tree frame showed that the KV binding's
+  continuity check refused every tree row after the anchor; the check and
+  its test in `tests/test_stage_kv_binding.c` are fixed. A continuation that
+  resumes a prompt plus 64 reference tokens can still differ from the
+  uninterrupted reference at a near tie, with and without drafts alike (design
+  from the 1,099-token checkpoint: 0.009 nats at token 7; prose prefilled
+  cold: 0.02 nats at token 37), as the Metal serving receipt records for
+  prefill splits.
+  The Qwen3.8-27B served gate has not run: M5U0 was swapping under its live
+  deployments and a training job.
 - **P3, K3.** MLA ancestor keys and the KDA tree scan. Gate: the same path
   pin on K3 at TP16, and B1 and B2 tokens per second on the speculation
   receipts' workloads against the chain, in one hold. Serve only if the tree
