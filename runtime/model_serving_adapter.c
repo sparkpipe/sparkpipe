@@ -2,6 +2,7 @@
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
 #include <dlfcn.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -340,13 +341,16 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 	uint32_t resident_sequence_capacity,
 	uint32_t cache_block_token_count)
 {
-	uint8_t seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT];
-	uint8_t seen_slots[SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT];
-	uint32_t lane,row,slot,identities;
+	uint64_t seen[SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT / 64u];
+	uint64_t seen_slots[SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT / 64u];
+	uint32_t lane,row,slot,identities,slot_words;
 	uint32_t prefix_identity_present,publish_identity_present;
 	identities = 0u;
+	if ( resident_sequence_capacity > SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT )
+		resident_sequence_capacity = SPARK_MODEL_SERVING_ADAPTER_MAX_RESIDENT_SEQUENCE_COUNT;
+	slot_words = (resident_sequence_capacity + 63u) / 64u;
 	memset(seen,0,sizeof(seen));
-	memset(seen_slots,0,sizeof(seen_slots));
+	memset(seen_slots,0,(size_t)slot_words * sizeof(seen_slots[0]));
 	for (lane=0u; lane<submission->lane_count; lane++)
 	{
 		if ( (submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS) != 0u ||
@@ -362,7 +366,7 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 			continue;
 		}
 		slot = submission->lanes[lane].resident_sequence_slot;
-		if ( submission->lanes[lane].request_id == 0u || submission->lanes[lane].request_generation == 0u || submission->lanes[lane].step_generation == 0u || submission->lanes[lane].sequence_id == 0u || slot >= resident_sequence_capacity || seen_slots[slot] != 0u )
+		if ( submission->lanes[lane].request_id == 0u || submission->lanes[lane].request_generation == 0u || submission->lanes[lane].step_generation == 0u || submission->lanes[lane].sequence_id == 0u || slot >= resident_sequence_capacity || (seen_slots[slot / 64u] & (UINT64_C(1) << (slot % 64u))) != 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		prefix_identity_present = 0u;
 		publish_identity_present = 0u;
@@ -390,7 +394,7 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 				(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		identities += submission->lanes[lane].cache_block_identity_count;
-		seen_slots[slot] = 1u;
+		seen_slots[slot / 64u] |= UINT64_C(1) << (slot % 64u);
 	}
 	if ( identities != submission->cache_block_identity_count || (identities != 0u) != (submission->cache_block_identities != 0) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -399,10 +403,10 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 		lane = submission->row_lane_indices[row];
 		if ( lane >= submission->active_sequence_count || submission->row_sequence_ids[row] != submission->lanes[lane].sequence_id )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		seen[lane] = 1u;
+		seen[lane / 64u] |= UINT64_C(1) << (lane % 64u);
 	}
 	for (lane=0u; require_live_rows != 0u && lane<submission->active_sequence_count; lane++)
-		if ( seen[lane] == 0u )
+		if ( (seen[lane / 64u] & (UINT64_C(1) << (lane % 64u))) == 0u )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
@@ -590,16 +594,13 @@ static SparkStatus SparkModelServingAdapterValidateVerifyFlags(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelServingAdapterValidateSubmission(
+static SparkStatus SparkModelServingAdapterValidateSubmissionShape(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingSubmission *submission)
 {
 	uint32_t verify,tree;
 	SparkStatus status;
 	uint32_t total_output_tokens;
-	status = SparkModelServingAdapterValidateDescriptor(descriptor);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
 	if ( submission == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( submission->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || submission->descriptor_bytes != SPARK_MODEL_SERVING_SUBMISSION_BYTES )
@@ -660,24 +661,42 @@ SparkStatus SparkModelServingAdapterValidateSubmission(
 	return(SparkModelServingAdapterValidateRows(submission,1u,descriptor->max_resident_sequence_count,descriptor->cache_block_token_count));
 }
 
+SparkStatus SparkModelServingAdapterValidateSubmission(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingSubmission *submission)
+{
+	SparkStatus status;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkModelServingAdapterValidateSubmissionShape(descriptor,submission));
+}
+
+static SparkStatus SparkModelServingAdapterValidateRuntimeCapacity(
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	const SparkModelServingSubmission *submission)
+{
+	uint32_t lane;
+	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelServingAdapterValidateRuntimeSubmission(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingRuntimeLimits *runtime_limits,
 	const SparkModelServingSubmission *submission)
 {
 	SparkStatus status;
-	uint32_t lane;
 	status = SparkModelServingAdapterValidateRuntimeLimits(descriptor,runtime_limits);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateSubmission(descriptor,submission);
+		status = SparkModelServingAdapterValidateSubmissionShape(descriptor,submission);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkModelServingAdapterValidateRows(submission,SparkModelServingWorkKindUsesRows(submission->work_kind),runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
+	return(SparkModelServingAdapterValidateRuntimeCapacity(runtime_limits,submission));
 }
 
 SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
@@ -686,18 +705,12 @@ SparkStatus SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(
 	const SparkModelServingSubmission *submission)
 {
 	SparkStatus status;
-	uint32_t lane;
 	if ( descriptor == 0 || runtime_limits == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkModelServingAdapterValidateSubmission(descriptor,submission);
+	status = SparkModelServingAdapterValidateSubmissionShape(descriptor,submission);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( submission->lane_count > runtime_limits->max_active_sequence_count || submission->row_count > runtime_limits->max_input_row_count )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for (lane=0u; lane<submission->active_sequence_count; lane++)
-		if ( submission->lanes[lane].resident_sequence_slot >= runtime_limits->resident_sequence_capacity )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkModelServingAdapterValidateRows(submission,SparkModelServingWorkKindUsesRows(submission->work_kind),runtime_limits->resident_sequence_capacity,descriptor->cache_block_token_count));
+	return(SparkModelServingAdapterValidateRuntimeCapacity(runtime_limits,submission));
 }
 
 SparkStatus SparkModelServingAdapterPrepareSubmission(
@@ -796,15 +809,13 @@ SparkStatus SparkModelServingAdapterBuildDriverCacheLanes(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelServingAdapterValidateCompletion(
+static SparkStatus SparkModelServingAdapterValidateCompletionShape(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingCompletion *completion)
 {
-	SparkStatus status;
 	uint32_t has_tokens,has_extension;
-	status = SparkModelServingAdapterValidateDescriptor(descriptor);
-	if ( status != SPARK_STATUS_OK || completion == 0 )
-		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( completion == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
 	if ( completion->submission_id == 0u || completion->control_generation == 0u || completion->transaction_id == 0u || completion->dispatch_generation == 0u || completion->request_generation == 0u || completion->step_generation == 0u || completion->status > SPARK_STATUS_MAXIMUM || (completion->completion_flags & ~SPARK_MODEL_SERVING_COMPLETION_KNOWN_FLAGS) != 0u || completion->token_count > SparkModelServingAdapterCompletionTokenCapacity(descriptor) || completion->tokens_per_sequence > SparkModelServingAdapterTokensPerSequenceLimit(descriptor) || completion->model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
@@ -822,13 +833,24 @@ SparkStatus SparkModelServingAdapterValidateCompletion(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelServingAdapterValidateCompletionResidency(
+SparkStatus SparkModelServingAdapterValidateCompletion(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelServingCompletion *completion)
+{
+	SparkStatus status;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkModelServingAdapterValidateCompletionShape(descriptor,completion));
+}
+
+static SparkStatus SparkModelServingAdapterValidateResidencyShape(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion)
 {
 	SparkStatus status;
-	status = SparkModelServingAdapterValidateCompletion(descriptor,completion);
+	status = SparkModelServingAdapterValidateCompletionShape(descriptor,completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( expected_residency == 0 )
@@ -836,7 +858,19 @@ SparkStatus SparkModelServingAdapterValidateCompletionResidency(
 	return(memcmp(expected_residency,&completion->residency,sizeof(*expected_residency)) == 0 ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR);
 }
 
-SparkStatus SparkModelServingAdapterValidateStageCompletion(
+SparkStatus SparkModelServingAdapterValidateCompletionResidency(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion)
+{
+	SparkStatus status;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkModelServingAdapterValidateResidencyShape(descriptor,expected_residency,completion));
+}
+
+static SparkStatus SparkModelServingAdapterValidateStageCompletionShape(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	uint32_t stage_index,
 	uint32_t work_kind,
@@ -847,7 +881,7 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 {
 	SparkStatus status;
 	uint32_t final_stage,has_tokens,parallel,hybrid;
-	status = SparkModelServingAdapterValidateCompletionResidency(descriptor,expected_residency,completion);
+	status = SparkModelServingAdapterValidateResidencyShape(descriptor,expected_residency,completion);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( stage_index >= descriptor->stage_count || work_kind < SPARK_MODEL_SERVING_WORK_KIND_PREFILL || work_kind > SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH || active_sequence_count == 0u || active_sequence_count > descriptor->max_active_sequence_count || tokens_per_sequence > SparkModelServingAdapterTokensPerSequenceLimit(descriptor) || (SparkModelServingWorkKindUsesRows(work_kind) != 0u && tokens_per_sequence == 0u) )
@@ -878,6 +912,72 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 		completion->token_count == active_sequence_count * completion->tokens_per_sequence )
 		return(SPARK_STATUS_OK);
 	SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+}
+
+SparkStatus SparkModelServingAdapterValidateStageCompletion(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t stage_index,
+	uint32_t work_kind,
+	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion)
+{
+	SparkStatus status;
+	status = SparkModelServingAdapterValidateDescriptor(descriptor);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkModelServingAdapterValidateStageCompletionShape(descriptor,stage_index,work_kind,active_sequence_count,tokens_per_sequence,expected_residency,completion));
+}
+
+SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t stage_index,
+	uint32_t work_kind,
+	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion)
+{
+	if ( descriptor == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkModelServingAdapterValidateStageCompletionShape(descriptor,stage_index,work_kind,active_sequence_count,tokens_per_sequence,expected_residency,completion));
+}
+
+static uint32_t SparkModelServingCompletionBound(uint32_t count,uint32_t capacity)
+{
+	return(count < capacity ? count : capacity);
+}
+
+void SparkModelServingCompletionReset(SparkModelServingCompletion *completion)
+{
+	memset(completion->token_ids,0,(size_t)SparkModelServingCompletionBound(completion->token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(completion->token_ids[0]));
+	memset(completion->logprobs,0,(size_t)SparkModelServingCompletionBound(completion->logprob_entry_count,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES) * sizeof(completion->logprobs[0]));
+	memset(completion->model_extension,0,SparkModelServingCompletionBound(completion->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
+	memset(completion,0,offsetof(SparkModelServingCompletion,token_ids));
+	completion->logprob_stride = 0u;
+	completion->logprob_entry_count = 0u;
+	completion->model_extension_kind = 0u;
+	completion->model_extension_bytes = 0u;
+	memset(&completion->queue_delay_ns,0,sizeof(*completion) - offsetof(SparkModelServingCompletion,queue_delay_ns));
+}
+
+void SparkModelServingCompletionCopy(
+	SparkModelServingCompletion *destination,
+	const SparkModelServingCompletion *source)
+{
+	if ( destination == source )
+		return;
+	SparkModelServingCompletionReset(destination);
+	memcpy(destination,source,offsetof(SparkModelServingCompletion,token_ids));
+	memcpy(destination->token_ids,source->token_ids,(size_t)SparkModelServingCompletionBound(source->token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(source->token_ids[0]));
+	destination->logprob_stride = source->logprob_stride;
+	destination->logprob_entry_count = source->logprob_entry_count;
+	memcpy(destination->logprobs,source->logprobs,(size_t)SparkModelServingCompletionBound(source->logprob_entry_count,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES) * sizeof(source->logprobs[0]));
+	destination->model_extension_kind = source->model_extension_kind;
+	destination->model_extension_bytes = source->model_extension_bytes;
+	memcpy(destination->model_extension,source->model_extension,SparkModelServingCompletionBound(source->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
+	memcpy(&destination->queue_delay_ns,&source->queue_delay_ns,sizeof(*source) - offsetof(SparkModelServingCompletion,queue_delay_ns));
 }
 
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

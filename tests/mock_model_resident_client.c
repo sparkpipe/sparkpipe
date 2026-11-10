@@ -76,6 +76,7 @@ struct SparkModelResidentClient
 	uint32_t abort_calls;
 	uint32_t status_request_calls;
 	uint32_t cache_hint_calls;
+	uint32_t token_continuations;
 	uint32_t last_cache_hint_tokens;
 	uint32_t status_outstanding;
 	SparkModelResidentStatusReport status_report;
@@ -171,6 +172,12 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_CACHE_HINT: return(c->cache_hint_calls);
 	}
 	return(0u);
+}
+
+uint32_t MockResidentClientTokenContinuations(uint32_t stage_index)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	return( c != 0 ? c->token_continuations : 0u );
 }
 
 uint64_t MockResidentClientGeneration(uint32_t stage_index)
@@ -699,6 +706,35 @@ SparkStatus SparkModelResidentClientContinue(
 	return(MockResidentClientEnqueue(client,submission,"continue",MOCK_CALL_CONTINUE));
 }
 
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes)
+{
+	(void)message_bytes;
+	if ( client == 0 || submission_id <= client->last_submission_id )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(client->scripted_call_status[MOCK_CALL_CAN_CONTINUE]);
+}
+
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
+	if ( message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
+		return(SparkModelResidentClientPrepare(client,submission));
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS && client != 0 )
+		client->token_continuations++;
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE || header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS )
+		return(SparkModelResidentClientContinue(client,submission));
+	return(SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 SparkStatus SparkModelResidentClientCanQueueDecision(
 	const SparkModelResidentClient *client,
 	uint64_t submission_id,
@@ -1159,4 +1195,11 @@ uint64_t SparkModelResidentClientNextProgressNs(
 	const SparkModelResidentClient *client)
 {
 	return(client != 0 && client->connected == 0u ? 1u : 0u);
+}
+
+uint32_t SparkModelResidentClientNeedsProgress(
+	const SparkModelResidentClient *client)
+{
+	(void)client;
+	return(1u);
 }
