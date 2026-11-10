@@ -1502,8 +1502,10 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   14, 20, 24, 28, 32, 36) with a row that sees more than 512 compressed keys
   projects the index query (`idx_q_b`, all 32 index heads on every rank, on
   the FP8 query latent; rope at the row's position; the same FP4 rounding)
-  and the head weights (`idx_weights` on the normed input, scaled by
-  1/sqrt(32 x 128)) and keeps the top 512 compressed keys of the owner
+  and the head weights (`idx_weights` on the normed input in FP32, scaled
+  by 1/sqrt(32 x 128); the publisher rounds them to BF16 first, which the
+  shared selection's FP32 weights do not yet do) and keeps the top 512
+  compressed keys of the owner
   cache with `SparkIndexerSelect`; the layers up to the next index source
   reuse the selection, as the publisher's shared `topk_idxs` does. A step
   whose rows all see at most 512 compressed keys at a layer attends every

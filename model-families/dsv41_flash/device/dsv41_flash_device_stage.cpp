@@ -304,7 +304,7 @@ struct D41Device
 			{ rows * kHeadDim * 2u, &state->latent },
 			{ rows * kIndexDim * 2u, &state->index_key },
 			{ rows * kIndexWidth * 2u, &state->index_query },
-			{ rows * kIndexHeads * 2u, &state->index_weights },
+			{ rows * kIndexHeads * sizeof(float), &state->index_weights },
 			{ SparkIndexerScoreBytes(state->stage.max_rows, ScoreStride(state)), &state->index_scores },
 			{ SparkIndexerSelectedBytes(state->stage.max_rows, kDenseKeys), &state->selected },
 			{ table, &state->store[0] },
@@ -946,8 +946,7 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = Qdq(state, frame, state->index_query, state->index_query, kIndexWidth, SPARK_QDQ_FP4_POW2);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceLinear(&state->stage, frame.queue, state->normed, kHidden, layer.idx_weights, state->index_weights, kIndexHeads, frame.t.rows,
-				kHidden, kIndexHeads);
+			status = LinearF32(state, frame, state->normed, layer.idx_weights, state->index_weights, kIndexHeads);
 		if ( status == SPARK_STATUS_OK )
 			status = IndexCache(state, D41CacheIndex(index), shape, &cache);
 		if ( status == SPARK_STATUS_OK )
