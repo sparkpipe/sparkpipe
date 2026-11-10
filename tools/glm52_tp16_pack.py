@@ -3,8 +3,7 @@
 
 Output per rank: <out>/<model>.tp<N>.rank<NN>.pack (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts. The MTP layer
-and the sparse-attention indexer are not packed: the device stage refuses rows
-that would see more keys than the indexer selects, where attention is dense.
+is not packed.
 
 The checkpoint is read through tools/glm52_resident_stagepack.py's
 Fp8SourceReader. Projections keep their E4M3 codes with the 128x128 block
@@ -25,6 +24,13 @@ LoRA width, q the rows per query head: nope + rope (+ gate on A.X K2)):
                        f32 [rows, cols/128]; mla_q_norm f32 [Q], mla_kv_norm
                        f32 [512]; mla_uk bf16 [heads, 512, nope]; mla_uv bf16
                        [heads, value, 512]
+  indexer layers       (GLM 5.3: layers 0-2 and every fourth from 6, the
+                       others reuse the last selection; A.X K2: every layer)
+                       replicated: index_q fp8_e4m3 [IH*ID, Q] (wq_b on the
+                       normed query), index_k fp8_e4m3 [ID, H] (wk), each
+                       with a .scale f32 [rows, cols/128]; index_head bf16
+                       [IH, H] (weights_proj); index_norm and
+                       index_norm_bias f32 [ID] (k_norm's LayerNorm)
   dense layers         ffn_gate_up fp8_e4m3: gate then up rows [2*I/TP, H];
                        ffn_down [H, I/TP]; with .scale
   routed layers        router bf16 [256, H], router_bias f32 [256]
@@ -56,10 +62,13 @@ MODELS = {
                   "layers": GLM["layer_count"], "vocab": GLM["output_vocab_count"], "heads": GLM["head_count"], "nope": GLM["qk_nope_head_dimension"],
                   "rope": GLM["rope_dimension"], "value": 256, "latent": GLM["latent_dimension"], "query_lora": GLM["query_a_dimension"], "query_gate": 0,
                   "gate_rank": 0, "experts": GLM["moe_expert_count"], "top_k": GLM["moe_top_k"], "expert_inter": GLM["moe_intermediate_dimension"],
-                  "dense_inter": GLM["dense_intermediate_dimension"], "first_routed": GLM["first_routed_layer"]},
+                  "dense_inter": GLM["dense_intermediate_dimension"], "first_routed": GLM["first_routed_layer"],
+                  "index_heads": GLM["dsa_index_head_count"], "index_dim": GLM["dsa_index_head_dimension"], "index_topk": GLM["dsa_selected_token_count"],
+                  "index_share": GLM["dsa_index_share_group_layer_count"], "index_skip": GLM["dsa_index_skip_topk_offset"]},
     "axk2": {"name": "ax-k2", "revision": "d0805cfd1fc647b4078c0d9f232c80d34ee0c893", "hidden": 7168, "layers": 61, "vocab": 163840,
              "heads": 64, "nope": 128, "rope": 64, "value": 128, "latent": 512, "query_lora": 1536, "query_gate": 128, "gate_rank": 16,
-             "experts": 256, "top_k": 8, "expert_inter": 2048, "dense_inter": 18432, "first_routed": 1},
+             "experts": 256, "top_k": 8, "expert_inter": 2048, "dense_inter": 18432, "first_routed": 1,
+             "index_heads": 64, "index_dim": 128, "index_topk": 2048, "index_share": 1, "index_skip": 0},
 }
 TP = 16
 M = MODELS["glm53full"]
@@ -141,6 +150,21 @@ def pack_attention(source, packs, a, name):
         packs.add(rank, name + "mla_uv", kv_b[first:last, nope:, :], "bf16")
 
 
+def has_indexer(layer):
+    skip, share = M["index_skip"], M["index_share"]
+    return layer < skip or (layer >= 2 * skip and (layer - 2 * skip) % share == 0)
+
+
+def pack_indexer(source, packs, a, name):
+    query = M["index_heads"] * M["index_dim"]
+    packs.replicated(name + "index_head", source.spine_bf16(a + "indexer.weights_proj.weight"), "bf16")
+    packs.replicated(name + "index_norm", norm_f32(source, a + "indexer.k_norm.weight"), "f32")
+    packs.replicated(name + "index_norm_bias", norm_f32(source, a + "indexer.k_norm.bias"), "f32")
+    for rank in packs.ranks:
+        fp8_linear(source, packs, rank, name + "index_q", [(a + "indexer.wq_b.weight", 0, query, 0, M["query_lora"])], M["query_lora"])
+        fp8_linear(source, packs, rank, name + "index_k", [(a + "indexer.wk.weight", 0, M["index_dim"], 0, M["hidden"])], M["hidden"])
+
+
 def pack_gated(source, packs, m, name, gate_up, down, inter):
     for rank in packs.ranks:
         r0, r1 = window(inter, rank)
@@ -172,6 +196,8 @@ def pack_layer(source, packs, layer):
     pack_norm(source, packs, p + "input_layernorm", name + "input", gated)
     pack_norm(source, packs, p + "post_attention_layernorm", name + "post", gated and routed)
     pack_attention(source, packs, p + "self_attn.", name)
+    if has_indexer(layer):
+        pack_indexer(source, packs, p + "self_attn.", name)
     if not routed:
         pack_gated(source, packs, m, name, "ffn_gate_up", "ffn_down", M["dense_inter"])
         return
@@ -226,7 +252,8 @@ def main():
     expect = {"num_hidden_layers": M["layers"], "hidden_size": M["hidden"], "vocab_size": M["vocab"], "q_lora_rank": M["query_lora"],
               "kv_lora_rank": M["latent"], "qk_nope_head_dim": M["nope"], "qk_rope_head_dim": M["rope"], "v_head_dim": M["value"],
               "num_attention_heads": M["heads"], "n_routed_experts": M["experts"], "moe_intermediate_size": M["expert_inter"],
-              "intermediate_size": M["dense_inter"], "first_k_dense_replace": M["first_routed"], "n_shared_experts": 1}
+              "intermediate_size": M["dense_inter"], "first_k_dense_replace": M["first_routed"], "n_shared_experts": 1,
+              "index_n_heads": M["index_heads"], "index_head_dim": M["index_dim"], "index_topk": M["index_topk"]}
     for key, value in expect.items():
         if config.get(key) != value:
             raise PackFailure(f"config {key} is {config.get(key)!r}, the packer pins {value!r}")
