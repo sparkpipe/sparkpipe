@@ -657,6 +657,42 @@ static void TestVerifyCommitsKept(void)
 	printf("verify commits kept: a verified lane resumes exactly at its kept length, nowhere else: ok\n");
 }
 
+static SparkStatus TreeContinuity(atomic_uint *lane_states,const uint64_t *positions,uint64_t context,uint8_t *bound,uint64_t *sequence,uint64_t *next)
+{
+	const uint32_t row_slots[3] = { 0u, 0u, 0u };
+	const uint64_t row_sequences[3] = { 9u, 9u, 9u };
+	return(SparkStageKvBindingContinuity(&BINDING,lane_states,3u,1u,row_slots,row_sequences,positions,&context,bound,sequence,next));
+}
+
+static void TestTreeContinuity(void)
+{
+	const uint32_t slot = 0u;
+	atomic_uint lane_states[TEST_LANES];
+	uint64_t positions[3] = { 2u, 3u, 5u }, sequence = 0u, next = 0u;
+	uint8_t bound = 0u;
+	TestStep step;
+	Open();
+	StepInit(&step,9u,slot,0u,2u);
+	StepRun(&step);
+	assert(atomic_load(&BINDING.lane_next_positions[slot]) == 2u);
+	SparkStageModuleAtomicStateArrayInitialize(lane_states,TEST_LANES);
+	assert(SparkStageModuleIndexSetClaim(lane_states,TEST_LANES,&slot,1u) == SPARK_STATUS_OK);
+	assert(TreeContinuity(lane_states,positions,6u,&bound,&sequence,&next) == SPARK_STATUS_OK);
+	assert(bound == 1u && sequence == 9u && next == 6u);
+	positions[0] = 3u;
+	assert(TreeContinuity(lane_states,positions,6u,&bound,&sequence,&next) == SPARK_STATUS_SCHEMA_ERROR);
+	positions[0] = 2u;
+	positions[2] = 2u;
+	assert(TreeContinuity(lane_states,positions,6u,&bound,&sequence,&next) == SPARK_STATUS_SCHEMA_ERROR);
+	positions[2] = 5u;
+	assert(TreeContinuity(lane_states,positions,5u,&bound,&sequence,&next) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(TreeContinuity(lane_states,positions,TEST_POSITIONS,&bound,&sequence,&next) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(TreeContinuity(lane_states,positions,6u,&bound,&sequence,&next) == SPARK_STATUS_OK && next == 6u);
+	SparkStageModuleIndexSetRelease(lane_states,TEST_LANES,&slot,1u);
+	Close();
+	printf("tree continuity: a tree frame's anchor continues the lane, its other rows lie between the anchor and the frame's context, and the frame ends at that context: ok\n");
+}
+
 static void TestParkCopiesAreAsync(void)
 {
 	uint32_t blocks[TEST_PHYSICAL + 1u],index,parked;
@@ -1967,6 +2003,7 @@ static void RunScenarios(void)
 	TestCopyOnWriteDuringAPark();
 	TestFinishAndReleaseOnlyMark();
 	TestVerifyCommitsKept();
+	TestTreeContinuity();
 	TestParkCopiesAreAsync();
 	TestLockSitesMeasured();
 	TestQuiesceOrderStop();
