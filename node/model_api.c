@@ -148,6 +148,7 @@ static ApiState S;
 
 static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
+static uint32_t MaximumTokenId;
 static SparkQuantArm QuantArm;
 static int HaveQuantArm;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
@@ -979,7 +980,7 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	{
 		uint32_t v;
 		if (e < 0 || SparkJsonGetUInt32(doc, e, &v) != SPARK_STATUS_OK ||
-			v > Sidecar.tokenizer.maximum_token_id)
+			v > MaximumTokenId)
 		{
 			free(tokens);
 			return 0;
@@ -2214,6 +2215,7 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "
 			"will be rejected (prompt_token_ids accepted)\n");
+	MaximumTokenId = dep.runtime_limits.output_vocabulary - 1u;
 	if (dep.chat_template.declared != 0u)
 	{
 		const char *unresolved = 0;
