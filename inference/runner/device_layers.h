@@ -352,6 +352,17 @@ uint32_t SparkDeviceLatentAttentionSlot(const SparkDeviceLatentAttentionShape *s
 void SparkDeviceLatentAttentionRopePrepare(const SparkDeviceLatentAttentionShape *shape, uint32_t local_heads, SparkDeviceLatentAttentionRope *rope);
 SparkStatus SparkDeviceLatentAttentionBind(SparkDeviceStage *stage, const SparkStageRunnerDeviceWeights *weights, uint32_t layer,
 	const SparkDeviceLatentAttentionShape *shape, SparkDeviceLatentAttentionWeights *bound);
+SparkStatus SparkDeviceLatentAttentionProject(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed);
+void SparkDeviceLatentAttentionParams(const SparkDeviceStage *stage, const SparkDeviceLatentAttentionShape *shape, uint32_t rows,
+	SparkAttentionParams *attention);
+SparkStatus SparkDeviceLatentAttentionAttend(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, uint32_t first_row, uint32_t rows);
+SparkStatus SparkDeviceLatentAttentionOutput(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, const SparkDeviceLatentAttentionScratch *scratch,
+	SparkTensor output);
 SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
 	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
 	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed, SparkTensor output);
