@@ -1,25 +1,11 @@
-#!/usr/bin/env python3
-"""Shared packer core: neutral data-movement primitives for every stage packer.
+"""Shared packer core: checkpoint reading, tensor-parallel windows, hashing,
+receipts, publication and the command plumbing every stage packer repeats.
 
-This module is the single home for the primitives that were re-implemented
-across the six packers (see docs/PACKER_CORE_PLAN.md, DRY_CONSOLIDATION_PLAN
-items 3 and 5). It is deliberately model-agnostic: it imports nothing
-model-specific and holds no topology, geometry, kind, or sentinel policy. The
-per-model config tables (geometry, tensor kinds, sentinels, wire structs, and
-field order) stay in each packer.
-
-Collapsed here:
-
-  * PackFailure       - the one packer failure type (RuntimeError).
-  * sha256 helpers    - streamed file hexdigest + raw bytes digest.
-  * align_up          - round a byte offset up to an alignment.
-  * SafetensorsSource - header-only safetensors reader (index, config,
-                        per-shard headers, payload offsets) with no torch.
-  * make_directory / pack_entry / pack_header - offset and framing helpers;
-                        per-model structs and field order stay in the packer.
-  * write_receipt     - atomic JSON receipt write.
-  * tp_shard_range    - this rank's [start, count) slice of a dimension.
-  * spark_pack_replicated_draft_rows - the one replicated-draft rule (item 5).
+SafetensorsSource reads the index, the config and each shard header without
+torch; payloads are located by data_offsets and streamed by the caller.
+Tensor-parallel windows fail closed on any extent that does not divide. Packs
+and receipts are published atomically (a replace, or an exclusive link that
+never overwrites an existing artifact) and every digest is SHA-256.
 """
 
 from __future__ import annotations
@@ -28,91 +14,90 @@ import hashlib
 import json
 import os
 import struct
+import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
-# The reserved marker for tensors owned by the whole model rather than one
-# layer (embedding, head, norms, draft heads).
 GLOBAL_LAYER = 0xFFFFFFFF
-
-# Streaming chunk for sha256_file. The digest is identical for any chunk size;
-# 16 MiB keeps the read loop cheap for multi-hundred-GiB checkpoints.
-_SHA256_CHUNK = 16 * 1024 * 1024
+INDEX_NAME = "model.safetensors.index.json"
+CONFIG_NAME = "config.json"
+SHA256_CHUNK = 16 * 1024 * 1024
 
 
 class PackFailure(RuntimeError):
-    """A source or wire-contract error that must stop pack generation.
-
-    Standardizes a drift across the packers: qwen38_27b/qwen38 subclassed
-    Exception (so a bare except did not catch it the same way) and
-    glm52_stagepack raised plain ValueError until its 2026-08 migration onto
-    this core. The shared contract is always RuntimeError.
-    """
+    pass
 
 
 def sha256_file(path: Path) -> str:
-    """SHA-256 hex digest of a file, streamed in fixed-size chunks."""
     digest = hashlib.sha256()
-    with path.open("rb") as file:
+    with Path(path).open("rb") as file:
         while True:
-            chunk = file.read(_SHA256_CHUNK)
+            chunk = file.read(SHA256_CHUNK)
             if not chunk:
                 return digest.hexdigest()
             digest.update(chunk)
 
 
 def sha256_bytes(data: bytes) -> bytes:
-    """Raw SHA-256 digest of bytes (for binary header/receipt fields)."""
     return hashlib.sha256(data).digest()
 
 
 def align_up(value: int, alignment: int) -> int:
-    """Round value up to the next multiple of alignment."""
     return (value + alignment - 1) // alignment * alignment
 
 
+def read_safetensors_header(path: Path, label: str | None = None) -> Tuple[dict, int, int]:
+    path = Path(path)
+    label = path.name if label is None else label
+    if not path.is_file():
+        raise PackFailure(f"missing shard {label}")
+    file_bytes = path.stat().st_size
+    with path.open("rb") as file:
+        prefix = file.read(8)
+        if len(prefix) != 8:
+            raise PackFailure(f"shard {label} is shorter than a safetensors header")
+        header_bytes = struct.unpack("<Q", prefix)[0]
+        if header_bytes > file_bytes - 8:
+            raise PackFailure(f"shard {label} declares a {header_bytes}-byte header in a {file_bytes}-byte file")
+        header = json.loads(file.read(header_bytes))
+    return header, 8 + header_bytes, file_bytes
+
+
+def tensor_extent(meta: Mapping[str, Any], name: str, shard: str, payload_bytes: int) -> Tuple[int, int]:
+    offsets = meta.get("data_offsets")
+    if (not isinstance(offsets, list) or len(offsets) != 2
+            or not all(isinstance(value, int) and not isinstance(value, bool) for value in offsets)
+            or not 0 <= offsets[0] <= offsets[1] or offsets[1] > payload_bytes):
+        raise PackFailure(f"tensor {name} in shard {shard} has data_offsets {offsets!r} outside the shard's "
+                          f"{payload_bytes} payload bytes")
+    return offsets[0], offsets[1]
+
+
 class SafetensorsSource:
-    """Header-only safetensors reader: index + config + per-shard headers.
-
-    No torch: payload bytes are located by data_offsets and streamed by the
-    caller. check_config and check_shape take their expectations as arguments
-    so this class stays neutral; model-specific expectation tables live in the
-    packer (which may subclass and add its own checks).
-    """
-
-    def __init__(
-        self,
-        root: Path,
-        index_name: str = "model.safetensors.index.json",
-        config_name: str = "config.json",
-    ) -> None:
-        self.root = root
-        index_path = root / index_name
-        config_path = root / config_name
+    def __init__(self, root: Path, index_name: str = INDEX_NAME, config_name: str = CONFIG_NAME,
+                 config_required: bool = True) -> None:
+        self.root = Path(root)
+        index_path = self.root / index_name
+        config_path = self.root / config_name
         if not index_path.is_file():
             raise PackFailure(f"missing {index_path}")
-        if not config_path.is_file():
+        if config_required and not config_path.is_file():
             raise PackFailure(f"missing {config_path}")
         self.index_sha256 = sha256_file(index_path)
-        self.config_sha256 = sha256_file(config_path)
         self.weight_map = json.loads(index_path.read_text())["weight_map"]
-        self.config = json.loads(config_path.read_text())
+        if config_path.is_file():
+            self.config_sha256 = sha256_file(config_path)
+            self.config = json.loads(config_path.read_text())
+        else:
+            self.config_sha256 = None
+            self.config = {}
         self.headers: Dict[str, dict] = {}
         self.data_start: Dict[str, int] = {}
         self.shard_bytes: Dict[str, int] = {}
 
-    def check_config(
-        self,
-        expectations: Mapping[str, object],
-        *,
-        section: str | None = None,
-    ) -> None:
-        """Assert config values match expectations (optionally under a
-        top-level section key, e.g. qwen38_27b's text_config)."""
-        config: Mapping[str, object] = (
-            self.config.get(section, {}) if section is not None else self.config
-        )
+    def check_config(self, expectations: Mapping[str, object], *, section: str | None = None) -> None:
+        config: Mapping[str, object] = self.config.get(section, {}) if section is not None else self.config
         for key, expected in expectations.items():
             if config.get(key) != expected:
                 raise PackFailure(
@@ -120,27 +105,14 @@ class SafetensorsSource:
                     "- this is not the checkpoint this packer is for")
 
     def shard_header(self, shard: str) -> dict:
-        """Lazily parse (and cache) one shard's safetensors header."""
         if shard not in self.headers:
-            path = self.root / shard
-            if not path.is_file():
-                raise PackFailure(f"missing shard {shard}")
-            file_bytes = path.stat().st_size
-            with path.open("rb") as file:
-                prefix = file.read(8)
-                if len(prefix) != 8:
-                    raise PackFailure(f"shard {shard} is shorter than a safetensors header")
-                header_bytes = struct.unpack("<Q", prefix)[0]
-                if header_bytes > file_bytes - 8:
-                    raise PackFailure(f"shard {shard} declares a {header_bytes}-byte header in a {file_bytes}-byte file")
-                header = json.loads(file.read(header_bytes))
+            header, data_start, file_bytes = read_safetensors_header(self.root / shard, shard)
             self.headers[shard] = header
-            self.data_start[shard] = 8 + header_bytes
+            self.data_start[shard] = data_start
             self.shard_bytes[shard] = file_bytes
         return self.headers[shard]
 
     def resolve(self, name: str) -> Tuple[str, dict, int]:
-        """Return (shard, metadata, absolute payload offset) for a tensor."""
         if name not in self.weight_map:
             raise PackFailure(f"tensor not in checkpoint index: {name}")
         shard = self.weight_map[name]
@@ -148,24 +120,10 @@ class SafetensorsSource:
         if name not in header:
             raise PackFailure(f"tensor {name} not in shard {shard}")
         meta = header[name]
-        offsets = meta.get("data_offsets")
-        if (not isinstance(offsets, list) or len(offsets) != 2 or not all(isinstance(value, int) and not isinstance(value, bool) for value in offsets)
-                or not 0 <= offsets[0] <= offsets[1] or self.data_start[shard] + offsets[1] > self.shard_bytes[shard]):
-            raise PackFailure(f"tensor {name} in shard {shard} has data_offsets {offsets!r} outside the shard's "
-                              f"{self.shard_bytes[shard] - self.data_start[shard]} payload bytes")
-        return shard, meta, self.data_start[shard] + offsets[0]
+        begin, _ = tensor_extent(meta, name, shard, self.shard_bytes[shard] - self.data_start[shard])
+        return shard, meta, self.data_start[shard] + begin
 
-    def check_shape(
-        self,
-        name: str,
-        rows: int,
-        columns: int,
-        *,
-        dtype: str = "BF16",
-    ) -> Tuple[str, dict, int]:
-        """Standard dense 2-D shape check for one tensor (drops a singleton
-        middle dim, treats 1-D as a single row). Returns
-        (shard, metadata, payload offset) on success."""
+    def check_shape(self, name: str, rows: int, columns: int, *, dtype: str = "BF16") -> Tuple[str, dict, int]:
         shard, meta, offset = self.resolve(name)
         if meta["dtype"] != dtype:
             raise PackFailure(f"{name}: dtype {meta['dtype']}, expected {dtype}")
@@ -175,72 +133,14 @@ class SafetensorsSource:
         if len(shape) == 1:
             shape = [1, shape[0]]
         if shape != [rows, columns]:
-            raise PackFailure(
-                f"{name}: checkpoint shape {meta['shape']}, pack expects "
-                f"[{rows}, {columns}]")
+            raise PackFailure(f"{name}: checkpoint shape {meta['shape']}, pack expects [{rows}, {columns}]")
         return shard, meta, offset
 
 
-# -- pack header/directory framing (bytes in, bytes out - no policy) ----------
-
-def make_directory(
-    records: Sequence[Any],
-    header_bytes: int,
-    entry_bytes: int,
-) -> Tuple[List[Tuple[Any, int, int]], int]:
-    """Compute payload/scale offsets for records laid out directly after a
-    fixed header plus one entry per record.
-
-    Each record must expose payload_bytes and scale_bytes. Returns
-    (entries, file_bytes) where each entry is (record, payload_offset,
-    scale_offset). Pure offset arithmetic; header/entry sizes stay with the
-    packer.
-    """
-    cursor = header_bytes + entry_bytes * len(records)
-    entries: List[Tuple[Any, int, int]] = []
-    for record in records:
-        payload_offset = cursor
-        cursor += record.payload_bytes
-        scale_offset = 0
-        if record.scale_bytes:
-            scale_offset = cursor
-            cursor += record.scale_bytes
-        entries.append((record, payload_offset, scale_offset))
-    return entries, cursor
-
-
-def pack_entry(entry: Tuple[Any, int, int], entry_struct: "struct.Struct") -> bytes:
-    """Serialize one directory entry (record, payload_offset, scale_offset).
-
-    entry_struct packs (kind, layer, weight_format, rows, columns, reserved=0,
-    payload_offset, scale_offset); the per-model struct and field order stay
-    with the packer.
-    """
-    record, payload_offset, scale_offset = entry
-    return entry_struct.pack(
-        record.kind, record.layer, record.weight_format, record.rows,
-        record.columns, 0, payload_offset, scale_offset,
-    )
-
-
-def pack_header(fields: Sequence[Any], header_struct: "struct.Struct") -> bytes:
-    """Serialize a pack header from an ordered field sequence. The caller owns
-    the per-model field order and geometry; this only frames bytes out."""
-    return header_struct.pack(*fields)
-
-
-def write_receipt(receipt: Mapping[str, Any], output: Path, *,
-                  suffix: str | None = ".receipt.json") -> Path:
-    """Atomically write receipt as sorted, indented JSON.
-
-    suffix is appended to output to form the receipt path (the default
-    <pack>.receipt.json); pass suffix=None to write to output itself. Returns
-    the path written.
-    """
+def write_receipt(receipt: Mapping[str, Any], output: Path, *, suffix: str | None = ".receipt.json") -> Path:
     path = Path(output) if suffix is None else Path(str(output) + suffix)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as file:
             json.dump(receipt, file, indent=2, sort_keys=True)
@@ -257,60 +157,65 @@ def write_receipt(receipt: Mapping[str, Any], output: Path, *,
     return path
 
 
-def tp_shard_range(dimension: int, tp_degree: int, tp_rank: int,
-                   block: int = 1) -> Tuple[int, int]:
-    """This rank's [start, start + count) slice of a dimension split across a
-    TP group, with count required to be a whole number of quantization blocks
-    so scale tensors slice on block boundaries. Fails closed on any
-    misalignment rather than producing a shard whose scales cannot be
-    represented."""
+def write_sha256_sidecar(path: Path, digest: str | None = None) -> str:
+    path = Path(path)
+    digest = sha256_file(path) if digest is None else digest
+    (path.parent / (path.name + ".sha256")).write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+    return digest
+
+
+def fsync_directory(path: Path) -> None:
+    directory = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def publish_link(temporary: Path, path: Path) -> None:
+    with open(temporary, "rb") as source:
+        os.fsync(source.fileno())
+    os.link(temporary, path)
+    fsync_directory(Path(path).parent)
+
+
+class HashingWriter:
+    def __init__(self, stream) -> None:
+        self.stream = stream
+        self.digest = hashlib.sha256()
+
+    def write(self, data) -> int:
+        written = self.stream.write(data)
+        self.digest.update(data)
+        return written
+
+    def tell(self) -> int:
+        return self.stream.tell()
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def fileno(self) -> int:
+        return self.stream.fileno()
+
+
+def check_tp_rank(tp_degree: int, tp_rank: int) -> None:
+    if tp_degree < 1 or tp_rank < 0 or tp_rank >= tp_degree:
+        raise PackFailure(f"invalid tp rank {tp_rank}/{tp_degree}")
+
+
+def tp_shard_range(dimension: int, tp_degree: int, tp_rank: int, block: int = 1) -> Tuple[int, int]:
     if tp_degree < 1 or tp_rank < 0 or tp_rank >= tp_degree:
         raise PackFailure(f"invalid tp shard {tp_rank}/{tp_degree}")
     if dimension % tp_degree != 0:
         raise PackFailure(f"dimension {dimension} not divisible by tp degree {tp_degree}")
     count = dimension // tp_degree
     if block > 1 and count % block != 0:
-        raise PackFailure(
-            f"tp shard extent {count} not aligned to quantization block {block}")
+        raise PackFailure(f"tp shard extent {count} not aligned to quantization block {block}")
     return tp_rank * count, count
 
 
-# The replicated-draft rule must know whether a draft layer's own per-layer
-# kinds slice like main layers or replicate whole. Two tables:
-#   DSV4 - draft layers replicate whole (draft_layer_kinds_slice=False).
-#   qwen - the MTP decoder reuses per-layer kinds, which slice like main
-#          layers; only the MTP globals (fc + three norms) replicate
-#          (draft_layer_kinds_slice=True).
-def spark_pack_replicated_draft_rows(
-    kind: int,
-    layer: int,
-    *,
-    draft_layer_first: int,
-    draft_layer_count: int,
-    global_kinds: frozenset[int],
-    draft_layer_kinds_slice: bool = False,
-) -> bool:
-    """True => this tensor's rows replicate full-width on every rank (no shard).
-
-    The one replicated-draft rule (DRY_CONSOLIDATION_PLAN item 5):
-      * a GLOBAL_LAYER kind in global_kinds (draft heads/norms/fc at the
-        global marker) replicates;
-      * a draft-layer marker in [draft_layer_first, draft_layer_first +
-        draft_layer_count) replicates whole unless draft_layer_kinds_slice
-        (qwen MTP).
-    """
-    if layer == GLOBAL_LAYER:
-        return kind in global_kinds
-    if draft_layer_first <= layer < draft_layer_first + draft_layer_count:
-        return not draft_layer_kinds_slice
-    return False
-
-
-# -- topology plan primitives (promoted from qwen38_stagepack: the TP slice
-#    math and plan structure every TP packer shares; build_tp_plan stays
-#    family-side as the kind->plan plug-in) ------------------------------------
-
-def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
+def tp_window(total: int, degree: int, rank: int) -> Tuple[int, int]:
     if degree <= 0 or total % degree != 0:
         raise PackFailure(f"tp_window: {total} not divisible by {degree}")
     per = total // degree
@@ -318,30 +223,33 @@ def tp_window(total: int, degree: int, rank: int) -> tuple[int, int]:
 
 
 class TpPlan:
-    """RowWindow / ColWindow / ExpertRange / QkvSegments / None(replicated)."""
-    def __init__(self, kind: str, **kw):
+    def __init__(self, kind: str, **fields) -> None:
         self.kind = kind
-        self.__dict__.update(kw)
+        self.__dict__.update(fields)
 
 
-def packed_tp_shape(ref, plan):
+def packed_tp_shape(ref, plan) -> Tuple[int, int]:
     if plan is None:
         return ref.rows, ref.columns
-    if plan.kind == "rows":
+    if plan.kind in ("rows", "experts"):
         return plan.row_count, ref.columns
     if plan.kind == "cols":
         return ref.rows, plan.col_count
-    if plan.kind == "experts":
-        return plan.row_count, ref.columns
     if plan.kind == "qkv":
-        return sum(c for _, c in plan.segments), ref.columns
+        return sum(count for _, count in plan.segments), ref.columns
     raise PackFailure(f"unknown tp plan {plan.kind}")
 
 
-def pump(fd, offset: int, length: int, out) -> None:
-    """Stream fd[offset:offset+length) to out in small chunks, evicting
-    each chunk from the page cache (DONTNEED) so warm reads never pile up
-    resident memory on the 119G nodes."""
+def spark_pack_replicated_draft_rows(kind: int, layer: int, *, draft_layer_first: int, draft_layer_count: int,
+                                     global_kinds: frozenset, draft_layer_kinds_slice: bool = False) -> bool:
+    if layer == GLOBAL_LAYER:
+        return kind in global_kinds
+    if draft_layer_first <= layer < draft_layer_first + draft_layer_count:
+        return not draft_layer_kinds_slice
+    return False
+
+
+def pump(fd: int, offset: int, length: int, out) -> None:
     chunk_bytes = 1 << 20
     remaining = length
     while remaining > 0:
@@ -358,21 +266,58 @@ def pump(fd, offset: int, length: int, out) -> None:
         remaining -= step
 
 
-__all__ = [
-    "GLOBAL_LAYER",
-    "PackFailure",
-    "sha256_file",
-    "sha256_bytes",
-    "align_up",
-    "SafetensorsSource",
-    "make_directory",
-    "pack_entry",
-    "pack_header",
-    "write_receipt",
-    "tp_shard_range",
-    "spark_pack_replicated_draft_rows",
-    "tp_window",
-    "TpPlan",
-    "packed_tp_shape",
-    "pump",
-]
+def stream_range(file, offset: int, length: int, out, chunk_bytes: int, label: str, transform=None) -> None:
+    file.seek(offset)
+    remaining = length
+    while remaining > 0:
+        step = min(remaining, chunk_bytes)
+        chunk = file.read(step)
+        if len(chunk) != step:
+            raise PackFailure(f"short read on {label}")
+        out.write(chunk if transform is None else transform(chunk))
+        remaining -= step
+
+
+def window_chunks(read_at, base: int, row_bytes: int, row_start: int, row_count: int, column_offset: int,
+                  column_bytes: int, budget: int, label: str):
+    step_rows = max(1, budget // row_bytes) if row_bytes else 1
+    row = 0
+    while row < row_count:
+        block = min(step_rows, row_count - row)
+        data = read_at(base + (row_start + row) * row_bytes, block * row_bytes)
+        if len(data) != block * row_bytes:
+            raise PackFailure(f"short read {label}")
+        if column_offset == 0 and column_bytes == row_bytes:
+            yield data
+        else:
+            view = memoryview(data)
+            for index in range(block):
+                start = index * row_bytes + column_offset
+                yield view[start:start + column_bytes]
+        row += block
+
+
+def check_pipeline_stage(stage_count: int, stage_index: int, first_layer: int, layer_count: int,
+                         owns_embedding: bool, owns_tail: bool, total_layers: int) -> None:
+    if not 1 <= stage_count <= total_layers or not 0 <= stage_index < stage_count:
+        raise PackFailure("invalid pipeline stage count/index")
+    if first_layer < 0 or layer_count <= 0 or first_layer + layer_count > total_layers:
+        raise PackFailure("pipeline layer span is outside the model")
+    if owns_embedding and (stage_index != 0 or first_layer != 0):
+        raise PackFailure("embedding ownership requires the first stage and layer")
+    if owns_tail and (stage_index + 1 != stage_count or first_layer + layer_count != total_layers):
+        raise PackFailure("head/MTP ownership requires the final stage and layer")
+
+
+def stage_pack_name(prefix: str, suffix: str, tp_degree: int, tp_rank: int, stage_count: int, stage_index: int) -> str:
+    pipeline = f".pp{stage_count}.stage{stage_index}" if stage_count != 1 else ""
+    return f"{prefix}.tp{tp_degree}{pipeline}.rank{tp_rank}.{suffix}"
+
+
+def run_tool(main, label: str) -> None:
+    try:
+        code = main()
+    except PackFailure as failure:
+        print(f"{label}: {failure}", file=sys.stderr)
+        code = 1
+    sys.exit(code)

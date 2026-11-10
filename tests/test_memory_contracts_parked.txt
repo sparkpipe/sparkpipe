@@ -40,8 +40,6 @@
 3 tools/batch_invariance_bench.cu: memcpy uses a raw byte-width multiplier
 1 tools/devcycle/bw_probe.cu: cudaMalloc uses a direct size/count literal
 5 tools/glm52_experts_manifest.c: memcpy uses a direct size/count literal
-1 tools/glm52_resident_stagepack.py: GLM model literal 576 is outside the model contract
-1 tools/glm52_resident_stagepack.py: GLM model literal 6144 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 12288 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 154880 is outside the model contract
 1 tools/glm52_validate_pack.py: GLM model literal 6144 is outside the model contract
