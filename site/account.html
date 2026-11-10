@@ -82,7 +82,7 @@
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
-        <li><span>Each purchase of HC lapses 12 months after it is issued unless you book with it, and the HC that lapses first is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
+        <li><span>Each purchase of HC lapses <span data-hc="months">12</span> months after it is issued unless you book with it, and the HC that lapses first is spent first. <a href="market.html">Your account</a> shows every lot.</span></li>
         <li><span>In <a href="market.html">your account</a>, book hours on an Hour Fleet from <span data-start="hours">1 December 2026</span> and weeks on a fleet pinned to you from <span data-start="weeks">4 January 2027</span>, or join the waitlist. No booking is ever bumped.</span></li>
         <li><span>Auto-extend is on for every fleet pinned to you: at the start of your last booked week it books the next one from your unlocked HC, so a missed Sunday never costs you the fleet. Keep more weeks ahead, or turn it off with one click, under Fleets in <a href="market.html">your account</a>. We email you 72, 48, 6 and 2 hours before a deadline while the next week is not booked.</span></li>
         <li><span>Receipts go to <b class="email-here"></b>. A card payment's card slip is its VAT document; for a bank transfer or virtual account in won we issue an electronic tax invoice (세금계산서) to the Korean business registration number you gave; a USD bank transfer (SWIFT) carries 0% VAT, shown on the invoice we email. For anything else, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</span></li>
@@ -100,6 +100,7 @@
     <section class="card">
       <p class="label">Orders</p>
       <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first HC.</a></p>
+      <p class="flash" id="not-owner" hidden>Only the account owner buys HC and sees the account's orders. Ask the owner, or see your keys and usage in <a href="market.html">your account</a>.</p>
       <div class="table-wrap" id="orders-wrap"><table>
         <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Paid with</th><th>State</th><th></th></tr></thead>
         <tbody id="orders"></tbody>
@@ -173,7 +174,7 @@
       if (special.retry) actions.push(link((o.product === 'credits' ? 'buy.html' : 'account.html') + (SP.sandbox ? '?sandbox' : ''), o.product === 'credits' ? 'Buy HC' : 'Pay again', 'btn solid'));
     } else if (o.state === 'completed' && o.issued) {
       title = +o.issuedHC < +o.hc ? 'Paid in part. Your HC is in.' : 'Paid. Your HC is in.'; kind = 'ok';
-      text = hc(o.issuedHC) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', lapsing in 12 months unless you book with them' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
+      text = hc(o.issuedHC) + unit(o) + ' are in your account' + (o.product === 'credits' ? ', lapsing in ' + P.hc.validityMonths + ' months unless you book with them' : '') + (part ? ', for the ' + SP.usd(o.received) + ' that arrived' : '') + '. The receipt is on its way to your email.';
       if (o.product === 'credits') actions.push(link('market.html', 'Open your account', 'btn solid'));
     } else if (part && OPEN.has(o.state)) {
       title = 'Part of the payment arrived.'; kind = 'error';
@@ -213,10 +214,10 @@
       const o = await SP.call('/order/' + watching);
       renderStatus(o);
       if (OPEN.has(o.state) || (o.state === 'completed' && !o.issued)) timer = setTimeout(watch, 6000);
-      else if (me) load();
+      else if (me) load(false);
     } catch (error) {
       $('status').hidden = false;
-      $('st-title').textContent = 'We could not find that order.';
+      $('st-title').textContent = error.status === 401 ? 'Sign in to see this order.' : 'We could not find that order.';
       SP.say($('st-text'), error.message, 'error');
     }
   };
@@ -231,7 +232,8 @@
     $('since').textContent = nice(me.since);
     $('s-hc').textContent = hc(me.hc);
     $('s-open').textContent = me.orders.filter((o) => o.state === 'unpaid' || o.state === 'pending' || o.state === 'paid' || o.state === 'waiting').length;
-    $('no-orders').hidden = me.orders.length > 0;
+    $('no-orders').hidden = me.orders.length > 0 || me.role !== 'owner';
+    $('not-owner').hidden = me.role === 'owner';
     $('orders-wrap').hidden = me.orders.length === 0;
     const transfers = me.orders.filter((o) => o.processor === 'swift' && o.state === 'unpaid');
     $('transfers').hidden = transfers.length === 0;
@@ -247,9 +249,9 @@
     }));
   };
 
-  const load = async () => {
+  const load = async (follow) => {
     me = await SP.me();
-    if (me) renderHome();
+    if (me) { renderHome(); if (follow) watch(); }
     else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments.'; }
   };
 
@@ -271,18 +273,18 @@
       $('f-code').hidden = true;
       $('f-email').hidden = false;
       renderHome();
+      watch();
     } catch (error) {
       if (error.reason === 'new') { SP.say($('m-code'), 'No account uses this email yet. Buy HC to open one: it takes two minutes.', 'error'); }
       else SP.say($('m-code'), error.message, 'error');
     }
     button.disabled = false;
   });
-  $('resend').addEventListener('click', async () => { try { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); } catch (error) { SP.say($('m-code'), error.message, 'error'); } });
+  $('resend').addEventListener('click', async () => { try { await flow.send(flow.email()); SP.say($('m-code'), 'A code is on its way again. Any code we sent in the last 10 minutes still works.', 'ok'); } catch (error) { SP.say($('m-code'), error.message, 'error'); } });
   $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-email').hidden = false; $('email').focus(); });
-  $('signout').addEventListener('click', async () => { await SP.call('/signout', {}).catch(() => {}); me = null; load(); });
+  $('signout').addEventListener('click', async () => { await SP.call('/signout', {}).catch(() => {}); me = null; load(false); });
 
-  load().catch((error) => { $('signin').hidden = false; SP.say($('m-email'), error.message, 'error'); });
-  watch();
+  load(true).catch((error) => { $('signin').hidden = false; SP.say($('m-email'), error.message, 'error'); });
 })();
 </script>
 </body>

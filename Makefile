@@ -542,6 +542,7 @@ PYTHON_TESTS := \
 	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
 	tests/test_status_truth.py \
+	tests/test_site_app_audit.py \
 	tests/test_site.py \
 	tests/test_site_legal_audit.py \
 	tests/test_site_marketing_audit.py \

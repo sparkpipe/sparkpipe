@@ -91,8 +91,9 @@ AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start",
            "/market/buy": ("hc.bought", ("lot", "hc", "order")), "/market/keys": ("key.created", ("id", "member", "scopes", "fleet")), "/market/keys/revoke": ("key.revoked", ("id",)),
            "/market/keys/rotate": ("key.rotated", ("id", "replaces")), "/market/sessions/revoke": ("session.revoked", ("id",)), "key_create": ("key.created", ("id", "member", "scopes", "fleet")),
            "key_revoke": ("key.revoked", ("id",)), "key_rotate": ("key.rotated", ("id", "replaces")), "webhook_put": ("webhook.set", ("id", "events")), "webhook_delete": ("webhook.deleted", ("id",))}
-LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "read": (240, 600), "market": (240, 600), "gateway": (6000, 600)}
+LIMITS = {"code": (20, 600), "code-email-ip": (5, 3600), "code-email": (30, 3600), "verify": (30, 600), "order": (10, 600), "read": (240, 600), "market": (240, 600), "gateway": (6000, 600)}
 BODY_LIMIT = 32 * 1024 * 1024
+ORDER_HC_DIGITS = 9
 REPORT_LIMIT = 4 * 1024 * 1024
 ACCOUNT_LIMIT = 65536
 BEARER = "sps-"
@@ -1069,6 +1070,9 @@ class Uptime:
             closed = [span for span in self.recent if span["end"] >= market.stamp(since)]
             return closed + [dict(entry["open"], end=None) for entry in self.state.values() if entry.get("open")]
 
+    def periods(self, since):
+        return market.joined(self.spans(since), timedelta(seconds=self.app.cfg.health_seconds))
+
     def entry(self, fleet):
         return self.state.get(fleet)
 
@@ -1135,7 +1139,9 @@ def won_field(value):
 
 def quantity_field(value, least):
     text = str(value).strip() if isinstance(value, (int, float, str)) and not isinstance(value, bool) else ""
-    if not re.fullmatch(r"[0-9]{1,9}(\.[0-9]{1,6})?", text) or Decimal(text) < least:
+    if re.fullmatch(rf"[0-9]{{{ORDER_HC_DIGITS + 1},}}(\.[0-9]{{1,6}})?", text):
+        raise Refusal(f"One order buys up to {ORDER_HC_DIGITS * '9'} HC; place another order for more.")
+    if not re.fullmatch(rf"[0-9]{{1,{ORDER_HC_DIGITS}}}(\.[0-9]{{1,6}})?", text) or Decimal(text) < least:
         raise Refusal(f"Buy at least {least} HC, to at most six decimal places.")
     return Decimal(text)
 
@@ -1723,13 +1729,19 @@ class App:
     def send_code(self, body, ip):
         self.throttle("code", ip)
         email = email_field(body.get("email"))
+        self.throttle("code-email-ip", (email, ip))
         self.throttle("code-email", email)
-        code = f"{secrets.randbelow(1000000):06d}"
         with self.lock:
             now = time.monotonic()
             for key in [k for k, v in self.codes.items() if v["expires"] < now]:
                 del self.codes[key]
-            self.codes[email] = {"hash": code_digest(email, code), "expires": now + CODE_SECONDS, "tries": 0}
+            entry = self.codes.get(email)
+            if entry and entry["tries"] < CODE_TRIES:
+                code = entry["code"]
+                entry["expires"] = now + CODE_SECONDS
+            else:
+                code = f"{secrets.randbelow(1000000):06d}"
+                self.codes[email] = {"code": code, "hash": code_digest(email, code), "expires": now + CODE_SECONDS, "tries": 0}
         if self.cfg.sandbox:
             return {"sent": False, "code": code}
         try:
@@ -1765,13 +1777,21 @@ class App:
             good = bool(entry) and entry["expires"] >= time.monotonic() and entry["tries"] < CODE_TRIES and CODE.match(code) is not None and hmac.compare_digest(entry["hash"], code_digest(email, code))
             if entry and not good:
                 entry["tries"] += 1
-            if good:
-                del self.codes[email]
         if not good:
             raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
         with self.book.lock:
             account, member = self.book.emails.get(email), self.book.member_emails.get(email)
             invite = None if account or member else self.pending_invite(email)
+            if not account and not member and not invite:
+                if not body.get("company"):
+                    raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
+                company = text_field(body.get("company"), "company's legal name, or your full name", 200)
+                if body.get("accept") is not True:
+                    raise Refusal("Accept the Customer Agreement to open an account.", 409, "terms")
+            with self.lock:
+                if self.codes.get(email) is not entry:
+                    raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
+                del self.codes[email]
             if member:
                 return self.summary(self.resolve(member)), member
             if invite:
@@ -1781,11 +1801,6 @@ class App:
                 self.mail(self.book.accounts[invite["account"]]["email"], f"{email} joined your SparkPipe account", f"{email} accepted your invitation and joined {self.book.accounts[invite['account']]['company']} as {invite['role']}. Members and their roles: {self.cfg.public}/market.html")
                 return self.summary(self.resolve(member)), member
             if not account:
-                if not body.get("company"):
-                    raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
-                company = text_field(body.get("company"), "company's legal name, or your full name", 200)
-                if body.get("accept") is not True:
-                    raise Refusal("Accept the Customer Agreement to open an account.", 409, "terms")
                 account = new_id("AC")
                 self.book.append("account", {"account": account, "email": email, "company": company, "ip": ip, "agent": agent})
                 self.accept(account, ip, agent)
@@ -1874,10 +1889,11 @@ class App:
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
 
-    def status(self, order_id):
+    def status(self, order_id, headers):
+        account = self.need_owner(headers, ("owner",), "Payments")
         with self.book.lock:
             order = self.book.orders.get(order_id)
-            if not order:
+            if not order or order["account"] != account:
                 raise Refusal("No such order.", 404)
             return self.shown(order)
 
@@ -2482,7 +2498,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             match = ORDER_PATH.match(path)
             if not match:
                 return self.reply(404, {"error": "Not found."})
-            self.reply(200, app.status(match.group(1)))
+            self.reply(200, app.status(match.group(1), self.headers))
         except Refusal as error:
             self.refuse(error)
 

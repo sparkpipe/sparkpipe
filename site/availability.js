@@ -14,6 +14,9 @@
   const WEEK_W = 20;
   const $ = (id) => document.getElementById(id);
   const S = { state: null, view: 'hours', grid: null, drawn: null };
+  const PUBLISHED = window.SP_PRICING || { bookings: {}, fleets: [] };
+  const PUB = { days: PUBLISHED.bookings.hourFleetDaysAhead, hours: PUBLISHED.bookings.hourFleetHoursPerWeek };
+  const storageOf = (id) => (PUBLISHED.fleets.find((f) => f.id === id) || {}).storageTB;
 
   const days = KO ? ['일', '월', '화', '수', '목', '금', '토'] : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const months = KO ? null : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -64,13 +67,13 @@
       past: '지난 시간입니다.',
       building: '이 플릿은 아직 구축 중이며, 서비스를 시작하면 예약할 수 있습니다.',
       maint: '공지된 점검 시간입니다. 이 시간을 보유한 고객은 HC로 적립받습니다.',
-      pinned: (a, b, pair) => `${dayText(a)}부터 ${dayText(b - DAY)}까지 한 고객에게 고정되어 있습니다${pair ? ' (A 반쪽과 함께 4 TB 쌍으로)' : ''}. 다른 누구도 이 시간을 예약할 수 없습니다. 보유자는 ${dayText(b - DAY)} 00:00 KST 전에 다음 주를 예약하면 계속 보유합니다.`,
+      pinned: (a, b, pair) => `${dayText(a)}부터 ${dayText(b - DAY)}까지 한 고객에게 고정되어 있습니다${pair ? ' (A 반쪽과 함께 ${pair} TB 쌍으로)' : ''}. 다른 누구도 이 시간을 예약할 수 없습니다. 보유자는 ${dayText(b - DAY)} 00:00 KST 전에 다음 주를 예약하면 계속 보유합니다.`,
       booked: '다른 계정이 시간 단위로 예약한 시간입니다. 예약은 밀려나지 않습니다.',
-      open: (hour) => hour ? '지금 시간 단위로 예약할 수 있습니다. 계정당 1주에 시간 플릿 24시간까지, 7일 앞까지.' : '아무도 보유하지 않아 이번 주 끝까지 시간 단위로 예약할 수 있습니다.',
+      open: (hour) => hour ? `지금 시간 단위로 예약할 수 있습니다. 계정당 1주에 시간 플릿 ${PUB.hours}시간까지, ${PUB.days}일 앞까지.` : '아무도 보유하지 않아 이번 주 끝까지 시간 단위로 예약할 수 있습니다.',
       pin: (when) => `비어 있습니다. 먼저 예약하는 계정이 ${dayText(when)}부터 첫 주로 고정합니다.`,
       hold: (when, locks) => `현재 보유자가 ${dayText(when - DAY)} 00:00 KST까지 이 주를 예약할 우선권을 가집니다. 예약하지 않으면 ${locks ? `대기 명단(잠금 ${locks}개) 중 가장 큰 잠금에` : '먼저 예약하는 계정에'} 넘어갑니다.`,
       wait: (locks) => `비어 있지만 대기 명단에 잠금 ${locks}개가 있어, 일요일 00:00 KST에 가장 큰 잠금에 배정됩니다.`,
-      later: (hour) => hour ? '시간 예약은 7일 앞까지만 열립니다.' : '비어 있지만 아직 예약할 수 없습니다. 첫 주는 항상 다음 월요일부터 시작합니다.',
+      later: (hour) => hour ? `시간 예약은 ${PUB.days}일 앞까지만 열립니다.` : '비어 있지만 아직 예약할 수 없습니다. 첫 주는 항상 다음 월요일부터 시작합니다.',
     },
     summary: {
       building: '구축 중',
@@ -78,7 +81,7 @@
       pin: (when) => `비어 있음: ${dayText(when)}부터 고정 가능`,
       hold: '이번 주 고정, 다음 주는 아직 예약되지 않음',
       wait: '비어 있음: 일요일에 대기 명단에 배정',
-      hours: (n) => `시간 플릿: 앞으로 7일 중 ${n}시간 예약됨`,
+      hours: (n) => `시간 플릿: 앞으로 ${PUB.days}일 중 ${n}시간 예약됨`,
       free: '비어 있음',
     },
     textView: '보드를 글로 읽기',
@@ -103,13 +106,13 @@
       past: 'This hour has passed.',
       building: 'This fleet is being built. It can be booked once it serves.',
       maint: 'Announced maintenance. Whoever holds these hours is credited in HC.',
-      pinned: (a, b, pair) => `Pinned to one customer from ${dayText(a)} through ${dayText(b - DAY)}${pair ? ', with its A half as a 4 TB pair' : ''}. Nobody else can book these hours. The holder keeps it by booking the next week before ${dayText(b - DAY)} 00:00 KST.`,
+      pinned: (a, b, pair) => `Pinned to one customer from ${dayText(a)} through ${dayText(b - DAY)}${pair ? `, with its A half as a ${pair} TB pair` : ''}. Nobody else can book these hours. The holder keeps it by booking the next week before ${dayText(b - DAY)} 00:00 KST.`,
       booked: 'Booked by the hour by another account. No booking is ever bumped.',
-      open: (hour) => hour ? 'Open: book it by the hour now, up to 7 days ahead and 24 hours of Hour Fleets a week per account.' : 'Nobody holds it, so it can be booked by the hour until the end of this week.',
+      open: (hour) => hour ? `Open: book it by the hour now, up to ${PUB.days} days ahead and ${PUB.hours} hours of Hour Fleets a week per account.` : 'Nobody holds it, so it can be booked by the hour until the end of this week.',
       pin: (when) => `Free. The first account to book it pins it from ${dayText(when)} as its first week.`,
       hold: (when, locks) => `Its holder may book this week until ${dayText(when - DAY)} 00:00 KST. If they do not, it goes to ${locks ? `the biggest of the ${locks} waitlist lock${locks === 1 ? '' : 's'}` : 'whoever books it first'}.`,
       wait: (locks) => `Free, but ${locks} waitlist lock${locks === 1 ? ' is' : 's are'} waiting, so on Sunday at 00:00 KST it goes to the biggest lock.`,
-      later: (hour) => hour ? 'Hours open at most 7 days ahead.' : 'Free, but not bookable yet: a first week always starts on the next Monday.',
+      later: (hour) => hour ? `Hours open at most ${PUB.days} days ahead.` : 'Free, but not bookable yet: a first week always starts on the next Monday.',
     },
     summary: {
       building: 'being built',
@@ -117,7 +120,7 @@
       pin: (when) => `free: pin it from ${dayText(when)}`,
       hold: 'pinned this week; next week not booked yet',
       wait: 'free: goes to the waitlist on Sunday',
-      hours: (n) => `Hour Fleet: ${n} hour${n === 1 ? '' : 's'} booked in the next 7 days`,
+      hours: (n) => `Hour Fleet: ${n} hour${n === 1 ? '' : 's'} booked in the next ${PUB.days} days`,
       free: 'free',
     },
     textView: 'Read the board as text',
@@ -127,13 +130,14 @@
     const now = Date.parse(st.now);
     const weekStart = monday(now);
     const weekEnd = weekStart + WEEK;
+    if (st.bookings) Object.assign(PUB, { days: st.bookings.hourFleetDaysAhead || PUB.days, hours: st.bookings.hourFleetHoursPerWeek || PUB.hours });
     return {
       now,
       weekStart,
       weekEnd,
       decide: now < weekEnd - DAY ? weekEnd : weekEnd + WEEK,
       locks: (st.waitlist && st.waitlist.locks) || 0,
-      hourDays: (st.bookings && st.bookings.hourFleetDaysAhead) || 7,
+      hourDays: (st.bookings && st.bookings.hourFleetDaysAhead) || PUB.days,
       hoursFrom: st.sandbox || !st.hoursFrom ? 0 : Date.parse(st.hoursFrom + 'T00:00:00+09:00'),
     };
   };
@@ -385,7 +389,7 @@
     let text;
     if (s === 'pinned') {
       const span = within(d.pinned, t + (step === HOUR ? 0 : HOUR)) || [t, t + step];
-      text = T.detail.pinned(span[0], span[1], d.f.hourFleet);
+      text = T.detail.pinned(span[0], span[1], d.f.hourFleet && storageOf(d.f.id));
     } else if (s === 'open' || s === 'later') text = T.detail[s](d.f.hourFleet);
     else if (s === 'pin') text = T.detail.pin(d.first || c.weekEnd);
     else if (s === 'hold') text = T.detail.hold(c.decide, c.locks);
