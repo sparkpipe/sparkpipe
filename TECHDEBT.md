@@ -1176,9 +1176,10 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   pack format revision.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and
   model conversion dependencies.
-- Move the stage runner's `tools/*_tp16_pack.py` packers onto the common
-  packer core that the stage packers and `tools/k3_pack.py` use, and give all
-  packers one CLI
+- Merge the TP16 packers' core (`tools/spark_named_pack.py`) into the common
+  packer core the stage packers and `tools/k3_pack.py` use, move the
+  rank-pack, checkpoint and finish code each `tools/*_tp16_pack.py` repeats
+  onto it, and give all packers one CLI
   ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)),
   each step gated on byte identity with the existing packs.
 

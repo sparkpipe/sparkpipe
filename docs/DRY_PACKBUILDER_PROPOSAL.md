@@ -65,8 +65,13 @@ The tables below are measurements at `ce2f8d2`. Since then:
   runtime's C.
 * The dsv41 packer is on main: `tools/dsv41_flash_stagepack.py`.
 * The K3 TP sharder is `tools/k3_shard.py` (formerly `k3_tp16_shard.py`).
-* Still open: the stage runner's `tools/*_tp16_pack.py` packers carry their
-  own rank-pack, checkpoint and finish code, and there is no single CLI
+* Still open: most lanes in `tools/stage_lane.py` load TP16 packs written by
+  the stage runner's `tools/*_tp16_pack.py` packers. Those sit on a second
+  core, `tools/spark_named_pack.py`, and still repeat rank-pack, checkpoint
+  and finish code per family. The GLM 5.3 Full, GLM 5.3 Flash, AXK2, Kimi
+  K3, DeepSeek V4.1 Flash and Muse Glimmer lanes load packs or code from the
+  stage packers above; the other lanes' packs come from the TP16 packers
+  alone. The two cores are not yet one, and there is no single CLI
   (section 5).
 
 ## 1. What already exists (do not re-propose it)
