@@ -879,6 +879,8 @@ TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
     $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
+HOST_TURN_BENCH_ADAPTER_MODULE := \
+    build/test_modules/libhost_turn_bench_adapter.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
 TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
 .PHONY: all clean test tools hardware_tools hardware_cuda_tools hardware_handoff demo FORCE \
@@ -1353,6 +1355,12 @@ $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE): tests/fixtures/model_serving
 
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+$(HOST_TURN_BENCH_ADAPTER_MODULE): tests/fixtures/host_turn_bench_adapter.c include/sparkpipe/spark_model_serving_adapter.h | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/host_turn_bench: tests/host_turn_bench.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(HOST_TURN_BENCH_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CPPFLAGS) -DHOST_TURN_BENCH_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DHOST_TURN_BENCH_ADAPTER_PATH=\"$(HOST_TURN_BENCH_ADAPTER_MODULE)\" -DHOST_TURN_BENCH_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/host_turn_bench.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@

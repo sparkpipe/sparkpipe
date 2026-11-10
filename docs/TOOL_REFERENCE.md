@@ -1,7 +1,7 @@
 # Tool reference
 
-This file describes command-line tools under `tools/` and the libraries they
-link. For each tool it gives the purpose, the arguments as the tool's
+This file describes command-line tools under `tools/`, the host turn bench
+under `tests/`, and the libraries they link. For each tool it gives the purpose, the arguments as the tool's
 `main()` parses them, and the meaning of each exit code. Behaviour notes
 describe what the code does, including known gaps.
 
@@ -779,6 +779,64 @@ This tool's `check` has no non-finite test. A NaN difference compares false
 and the element passes.
 
 ## Other tools
+
+### host_turn_bench.c (tests/)
+
+Measures what the host spends per frame on the serving path, with no GPU. The
+batch engine, the pipeline client and the sixteen resident clients run on the
+bench's thread and drive sixteen `sparkpipe_model_residentd` ranks over
+loopback TCP. Every rank loads `tests/fixtures/host_turn_bench_adapter.c`, a
+parallel-fanout adapter that completes each submission at once, or after
+`FRAME_US` microseconds of sleep, and returns one token per output lane on the
+last rank. The engine is configured as `node/model_api.c` configures it (128
+requests, 8 messages per rank per progress, at most 4 new submissions per
+progress, the default inflight budget). The deployment allows 4 submissions in flight, 16 active
+sequences, 1,024 input rows and a 131,072-token context.
+
+```sh
+make build/host_turn_bench
+build/host_turn_bench decode LANES PROMPT_TOKENS FRAMES FRAME_US
+build/host_turn_bench prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US
+```
+
+Run it from the repository root. It writes the deployment, copies of the two
+modules and one log per rank into a new `build/host-turn-bench-XXXXXX` and
+removes that directory when the run succeeds. While the ranks start, the
+engine retries its connection every 20 ms for up to 300 attempts, and each
+refused attempt logs `client_connect_fail` on stderr.
+
+- `decode`: LANES requests (1 to 16), each with its own prompt and an output
+  budget that reaches the context. Once every lane has 64 tokens and 64 more
+  frames have completed, it measures the next FRAMES frames: the decode
+  continuations and the cache publications between them. A lane that finishes
+  inside the window fails the run.
+- `prefill`: ROUNDS rounds of REQUESTS requests (1 to 128), each with its own
+  prompt and one output token, measured from the first submission to the last
+  completion: the prefill waves and the release frames.
+- PROMPT_TOKENS is 1 to 65,536 and FRAME_US 0 to 1,000,000.
+
+Output: one line per run,
+`<scenario> frame_us= frames= prefill= decode= release= publish= continued= tokens= coordinator_us_per_frame= rank_us_per_frame_mean= rank_us_per_frame_max= wall_us_per_frame=`.
+The coordinator figure is the CPU time of the bench's thread per completed
+frame; the rank figures are each residentd process's CPU time (all of its
+threads) per frame, as the mean over the ranks and for the busiest rank; wall
+is the elapsed time per frame. One line per frame kind follows,
+`kind= frames= coordinator_us_per_frame= wall_us_per_frame= bubble_us_per_frame=`.
+It charges the time between two frames finishing on all sixteen ranks to the
+kind of the frame that finished, and the bubble subtracts the slowest rank's
+reported service time. The kind lines are exact only while one frame is in
+flight; when frames overlap, read the totals.
+
+These are host numbers. The ranks share the machine with the coordinator and
+talk over loopback, so their syscalls, copies and wakeups are real and the
+network hop is not. On macOS, timer slack and wakeups inflate the `FRAME_US`
+runs. To compare two revisions, build the bench in each tree, interleave their
+runs and take the median of at least three.
+
+Exit codes: 0 on success; 2 on a usage error, a setup failure (work
+directory, deployment, ranks, connection) or a request that fails or is
+cancelled, which keeps the work directory and prints its path. A run still
+going after 300 seconds is killed by `SIGALRM`, together with its ranks.
 
 ### hy4_wo_fleet_apply.c
 
