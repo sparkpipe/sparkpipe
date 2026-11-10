@@ -2195,6 +2195,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
 	uint32_t cache_prepared,decoded;
+	uint64_t decoded_ns;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 #ifdef DEBUG
 	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u\n",
@@ -2202,6 +2203,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		(unsigned)message_bytes);
 #endif
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
+	decoded_ns = SparkMonotonicNs();
 	decoded = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (runtime->client.hello_complete == 0u ||
 		runtime->client.pending_client_reset != 0u) )
@@ -2228,6 +2230,8 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
+		if ( submission.deadline_time_ns != 0u )
+			submission.deadline_time_ns += SparkMonotonicNs() - decoded_ns;
 		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,&submission,1u);
 		if ( status == SPARK_STATUS_OK )
 			route->prepared_cache = cache_prepared;

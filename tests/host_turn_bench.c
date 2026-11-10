@@ -311,6 +311,8 @@ static void HostTurnStartRanks(const char *deployment_path)
 	}
 }
 
+static uint32_t HostTurnMessagesPerProgress = 8u;
+
 static SparkModelBatchEngine *HostTurnConnect(const SparkModelResidentDeployment *deployment)
 {
 	char index_path[HOST_TURN_PATH_BYTES];
@@ -326,7 +328,7 @@ static SparkModelBatchEngine *HostTurnConnect(const SparkModelResidentDeployment
 	configuration.request_capacity = HOST_TURN_MAX_REQUESTS;
 	configuration.max_context_tokens = HOST_TURN_CONTEXT_TOKENS;
 	configuration.max_prefill_rows_per_submission = deployment->runtime_limits.max_input_row_count;
-	configuration.maximum_messages_per_rank_per_progress = 8u;
+	configuration.maximum_messages_per_rank_per_progress = HostTurnMessagesPerProgress;
 	configuration.inflight_budget_ns = SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS;
 	configuration.deployment = deployment;
 	configuration.runtime_root = HostTurnWork;
@@ -344,7 +346,14 @@ static SparkModelBatchEngine *HostTurnConnect(const SparkModelResidentDeployment
 	return(engine);
 }
 
-static void HostTurnTurn(SparkModelBatchEngine *engine)
+static void HostTurnProgress(SparkModelBatchEngine *engine)
+{
+	SparkStatus status = SparkModelBatchEngineProgress(engine,4u);
+	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_IO_ERROR )
+		HostTurnFail("engine progress failed",(uint32_t)status);
+}
+
+static void HostTurnWait(SparkModelBatchEngine *engine)
 {
 	SparkModelResidentClientPollDescriptor descriptors[HOST_TURN_RANKS];
 	struct pollfd fds[HOST_TURN_RANKS];
@@ -352,9 +361,6 @@ static void HostTurnTurn(SparkModelBatchEngine *engine)
 	uint64_t next_ns,now_ns;
 	int timeout_ms;
 	SparkStatus status;
-	status = SparkModelBatchEngineProgress(engine,4u);
-	if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_IO_ERROR )
-		HostTurnFail("engine progress failed",(uint32_t)status);
 	status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,HOST_TURN_RANKS,&count);
 	if ( status != SPARK_STATUS_OK )
 		HostTurnFail("engine poll descriptors failed",(uint32_t)status);
@@ -373,6 +379,12 @@ static void HostTurnTurn(SparkModelBatchEngine *engine)
 	else if ( next_ns != 0u && next_ns - now_ns < (uint64_t)HOST_TURN_POLL_MS * UINT64_C(1000000) )
 		timeout_ms = (int)((next_ns - now_ns + 999999u) / 1000000u);
 	(void)poll(fds,count,timeout_ms);
+}
+
+static void HostTurnTurn(SparkModelBatchEngine *engine)
+{
+	HostTurnProgress(engine);
+	HostTurnWait(engine);
 }
 
 static void HostTurnSubmit(SparkModelBatchEngine *engine,uint64_t request_id,const uint32_t *tokens,uint32_t token_count,uint32_t budget)
@@ -544,10 +556,13 @@ static void HostTurnPrefill(SparkModelBatchEngine *engine,uint32_t requests,uint
 			HostTurnPrompt(prompt,prompt_tokens,1000u + request + (uint64_t)round * 100000u);
 			HostTurnSubmit(engine,request + 1u,prompt,prompt_tokens,1u);
 		}
-		while ( HostTurn.completed_requests < (uint64_t)requests * (round + 1u) )
+		for (;;)
 		{
-			HostTurnTurn(engine);
+			HostTurnProgress(engine);
 			HostTurnCheck();
+			if ( HostTurn.completed_requests >= (uint64_t)requests * (round + 1u) )
+				break;
+			HostTurnWait(engine);
 		}
 	}
 	HostTurnTake(engine,&end);
@@ -572,8 +587,8 @@ static uint32_t HostTurnArgument(const char *text,uint32_t minimum,uint32_t maxi
 
 static void HostTurnUsage(const char *program)
 {
-	fprintf(stderr,"usage: %s decode LANES PROMPT_TOKENS FRAMES FRAME_US\n"
-		"       %s prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US\n",program,program);
+	fprintf(stderr,"usage: %s decode LANES PROMPT_TOKENS FRAMES FRAME_US [MESSAGES_PER_PROGRESS]\n"
+		"       %s prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US [MESSAGES_PER_PROGRESS]\n",program,program);
 	exit(2);
 }
 
@@ -584,7 +599,7 @@ int main(int argc,char **argv)
 	char deployment_path[HOST_TURN_PATH_BYTES];
 	uint32_t decode,count,prompt_tokens,repeat;
 	SparkStatus status;
-	if ( argc != 6 )
+	if ( argc != 6 && argc != 7 )
 		HostTurnUsage(argv[0]);
 	decode = strcmp(argv[1],"decode") == 0 ? 1u : 0u;
 	if ( decode == 0u && strcmp(argv[1],"prefill") != 0 )
@@ -593,6 +608,8 @@ int main(int argc,char **argv)
 	prompt_tokens = HostTurnArgument(argv[3],1u,HOST_TURN_CONTEXT_TOKENS / 2u,"PROMPT_TOKENS");
 	repeat = HostTurnArgument(argv[4],1u,UINT32_MAX / 2u,decode != 0u ? "FRAMES" : "ROUNDS");
 	HostTurnFrameUs = HostTurnArgument(argv[5],0u,HOST_TURN_MAX_FRAME_US,"FRAME_US");
+	if ( argc == 7 )
+		HostTurnMessagesPerProgress = HostTurnArgument(argv[6],1u,64u,"MESSAGES_PER_PROGRESS");
 	HostTurnMakeWork();
 	HostTurnWriteDeployment(deployment_path);
 	SparkModelResidentDeploymentReset(&deployment);

@@ -1226,7 +1226,9 @@ uint64_t SparkModelResidentClientNextProgressNs(
 	if ( client->connected != 0u )
 	{
 		message_bytes = SparkModelResidentClientBufferedMessageBytes(client);
-		return(message_bytes != 0u && client->input_bytes >= message_bytes ? 1u : 0u);
+		return(client->input_bytes >= SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES &&
+			(message_bytes < SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES || message_bytes > client->input_capacity ||
+			 client->input_bytes >= message_bytes) ? 1u : 0u);
 	}
 	return(client->reconnect_not_before_ns != 0u ? client->reconnect_not_before_ns : 1u);
 }

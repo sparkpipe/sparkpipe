@@ -787,16 +787,18 @@ batch engine, the pipeline client and the sixteen resident clients run on the
 bench's thread and drive sixteen `sparkpipe_model_residentd` ranks over
 loopback TCP. Every rank loads `tests/fixtures/host_turn_bench_adapter.c`, a
 parallel-fanout adapter that completes each submission at once, or after
-`FRAME_US` microseconds of sleep, and returns one token per output lane on the
-last rank. The engine is configured as `node/model_api.c` configures it (128
-requests, 8 messages per rank per progress, at most 4 new submissions per
-progress, the default inflight budget). The deployment allows 4 submissions in flight, 16 active
+`FRAME_US` microseconds of sleep, and returns on the last rank the tokens the
+frame asks for: one per lane for a prefill, and a decode chain of up to 8 per
+lane for a decode frame, so a decode frame is not a token. The engine is
+configured as `node/model_api.c` configures it (128 requests, 8 messages per
+rank per progress unless MESSAGES_PER_PROGRESS says otherwise, at most 4 new
+submissions per progress, the default inflight budget). The deployment allows 4 submissions in flight, 16 active
 sequences, 1,024 input rows and a 131,072-token context.
 
 ```sh
 make build/host_turn_bench
-build/host_turn_bench decode LANES PROMPT_TOKENS FRAMES FRAME_US
-build/host_turn_bench prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US
+build/host_turn_bench decode LANES PROMPT_TOKENS FRAMES FRAME_US [MESSAGES_PER_PROGRESS]
+build/host_turn_bench prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US [MESSAGES_PER_PROGRESS]
 ```
 
 Run it from the repository root. It writes the deployment, copies of the two
@@ -812,8 +814,12 @@ refused attempt logs `client_connect_fail` on stderr.
   inside the window fails the run.
 - `prefill`: ROUNDS rounds of REQUESTS requests (1 to 128), each with its own
   prompt and one output token, measured from the first submission to the last
-  completion: the prefill waves and the release frames.
-- PROMPT_TOKENS is 1 to 65,536 and FRAME_US 0 to 1,000,000.
+  completion: the prefill waves and the release frames. A round's next
+  submissions go out as soon as its last request completes.
+- PROMPT_TOKENS is 1 to 65,536, FRAME_US 0 to 1,000,000 and
+  MESSAGES_PER_PROGRESS 1 to 64; 1 is the limit
+  `SparkModelPipelineClientRecover` reads with, which leaves messages
+  buffered between progress calls.
 
 Output: one line per run,
 `<scenario> frame_us= frames= prefill= decode= release= publish= continued= tokens= coordinator_us_per_frame= rank_us_per_frame_mean= rank_us_per_frame_max= wall_us_per_frame=`.

@@ -361,7 +361,8 @@ static void TestModelResidentMalformedStreamDrops(
 
 static void TestModelResidentBufferedMessageStaysRunnable(
 	const SparkModelServingAdapterDescriptor *descriptor,
-	const SparkModelServingRuntimeLimits *limits)
+	const SparkModelServingRuntimeLimits *limits,
+	uint32_t bad_message_bytes)
 {
 	SparkModelResidentClientPollDescriptor poll_descriptor;
 	SparkModelResidentStatusReport report;
@@ -399,7 +400,7 @@ static void TestModelResidentBufferedMessageStaysRunnable(
 			SparkModelResidentIpcInitializeStatusReport(&reply,&request,SPARK_STATUS_OK,ack.client_generation,ack.rank_index,ack.stage_index,(uint32_t)getpid(),&snapshot) != SPARK_STATUS_OK )
 			_exit(4);
 		bad = reply.header;
-		bad.message_bytes = 1u;
+		bad.message_bytes = bad_message_bytes;
 		memcpy(burst,&reply,sizeof(reply));
 		memcpy(burst + sizeof(reply),&bad,sizeof(bad));
 		if ( write(peer,burst,sizeof(burst)) != (ssize_t)sizeof(burst) )
@@ -438,7 +439,7 @@ static void TestModelResidentBufferedMessageStaysRunnable(
 	assert(kill(server,SIGKILL) == 0 || errno == ESRCH);
 	assert(waitpid(server,&child_status,0) == server);
 	unlink(path);
-	printf("PASS a message that arrives behind another stays buffered, keeps the client runnable with its socket drained, and is processed next\n");
+	printf("PASS a message of %u bytes that arrives behind another stays buffered, keeps the client runnable with its socket drained, and is processed next\n",bad_message_bytes);
 }
 
 int main(void)
@@ -496,7 +497,9 @@ int main(void)
 	TestModelResidentWaitForSocket(socket_path);
 	assert(SparkModelServingAdapterLoadInterfaceFromSharedObject(TEST_MODEL_SERVING_ADAPTER_PATH,SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT,&adapter) == SPARK_STATUS_OK);
 	TestModelResidentMalformedStreamDrops(adapter.adapter_interface.descriptor,&deployment.runtime_limits);
-	TestModelResidentBufferedMessageStaysRunnable(adapter.adapter_interface.descriptor,&deployment.runtime_limits);
+	TestModelResidentBufferedMessageStaysRunnable(adapter.adapter_interface.descriptor,&deployment.runtime_limits,1u);
+	TestModelResidentBufferedMessageStaysRunnable(adapter.adapter_interface.descriptor,&deployment.runtime_limits,0u);
+	TestModelResidentBufferedMessageStaysRunnable(adapter.adapter_interface.descriptor,&deployment.runtime_limits,UINT32_MAX);
 	memset(&state,0,sizeof(state));
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;

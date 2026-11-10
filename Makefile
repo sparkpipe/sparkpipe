@@ -786,6 +786,7 @@ PYTHON_TESTS := \
 	tests/test_python_tests_registered.py \
 	tests/test_spark_pack_common_extents.py \
 	tests/test_spark_pack_core.py \
+	tests/test_host_turn_bench.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
@@ -833,6 +834,7 @@ PYTHON_TESTS := \
 	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/host_turn_bench \
 	build/logit_compare \
 	build/test_child_guard_thread \
 	build/weightd_lazy_consumer \
