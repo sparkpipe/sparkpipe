@@ -12,11 +12,9 @@
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 #include "sparkpipe/spark_quant_arm.h"
-#include "sparkpipe/spark_continuous_batch.h"
 
 #define SPARK_MODEL_BATCH_FILE_SCHEMA_VERSION 1u
 #define SPARK_MODEL_BATCH_STAGE_PROFILE_EVENT_CAPACITY_MAX 1048576u
-#define SPARK_MODEL_BATCH_CONTINUOUS_STARVATION_BOUND 4u
 
 typedef struct SparkModelBatchFileRequest
 {
@@ -46,8 +44,6 @@ typedef struct SparkModelBatchOutput
 	uint8_t *pending_output;
 	uint32_t pending_output_bytes;
 	uint32_t pending_output_capacity;
-	SparkContinuousBatch *admission;
-	uint64_t *released_ids;
 } SparkModelBatchOutput;
 
 static const char *const SparkModelBatchFileMembers[] =
@@ -417,8 +413,6 @@ static void SparkModelBatchWriteEvent(
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED || event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED || event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
 	{
 		output->terminal_count++;
-		if ( output->admission != 0 )
-			(void)SparkContinuousBatchRetire(output->admission,event->request_id);
 	}
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
 		output->error_count++;
@@ -543,113 +537,6 @@ static SparkStatus SparkModelBatchSubmitAll(
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkModelBatchContinuousInitialize(
-	const SparkModelResidentDeployment *deployment,
-	const SparkModelBatchFile *file,
-	SparkModelBatchOutput *output)
-{
-	SparkContinuousBatchConfiguration configuration;
-	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_CONTINUOUS_BATCH_ABI_VERSION;
-	configuration.descriptor_bytes = SPARK_CONTINUOUS_BATCH_CONFIGURATION_BYTES;
-	configuration.max_input_rows = deployment->runtime_limits.max_input_row_count;
-	configuration.max_active_lanes = deployment->runtime_limits.max_active_sequence_count;
-	configuration.lane_capacity = configuration.max_active_lanes;
-	configuration.queue_capacity = file->request_count;
-	configuration.starvation_bound = SPARK_MODEL_BATCH_CONTINUOUS_STARVATION_BOUND;
-	output->released_ids = (uint64_t *)calloc(file->request_count,sizeof(*output->released_ids));
-	if ( output->released_ids == 0 )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(SparkContinuousBatchInitialize(&configuration,&output->admission));
-}
-
-static SparkStatus SparkModelBatchSubmitOne(
-	SparkModelBatchEngine *engine,
-	SparkModelBatchFile *file,
-	uint32_t index,
-	uint32_t *submitted_count)
-{
-	SparkModelBatchRequestHandle handle;
-	SparkStatus status;
-	status = SparkModelBatchEngineSubmit(engine,&file->requests[index].request,&handle);
-	if ( status == SPARK_STATUS_OK )
-	{
-		file->requests[index].submitted = 1u;
-		*submitted_count += 1u;
-	}
-	SPARK_RETURN(status);
-}
-
-static SparkStatus SparkModelBatchContinuousRequest(
-	const SparkModelBatchSubmitRequest *request,
-	SparkContinuousBatchRequest *continuous)
-{
-	memset(continuous,0,sizeof(*continuous));
-	if ( request->request_id == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	continuous->abi_version = SPARK_CONTINUOUS_BATCH_ABI_VERSION;
-	continuous->descriptor_bytes = SPARK_CONTINUOUS_BATCH_REQUEST_BYTES;
-	continuous->request_id = request->request_id;
-	continuous->prompt_row_count = request->prompt_token_count;
-	continuous->output_token_budget = request->output_token_budget;
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkModelBatchOfferAll(
-	SparkModelBatchEngine *engine,
-	SparkModelBatchFile *file,
-	SparkModelBatchOutput *output,
-	uint32_t *submitted_count)
-{
-	SparkContinuousBatchDecision decision;
-	SparkContinuousBatchRequest continuous;
-	SparkStatus status;
-	uint32_t index;
-	status = SPARK_STATUS_OK;
-	for (index=0u; status==SPARK_STATUS_OK && index<file->request_count; index++)
-	{
-		status = SparkModelBatchContinuousRequest(&file->requests[index].request,&continuous);
-		if ( status != SPARK_STATUS_OK )
-			break;
-		status = SparkContinuousBatchOffer(output->admission,&continuous,&decision);
-		if ( status != SPARK_STATUS_OK )
-			break;
-		if ( decision.outcome == SPARK_CONTINUOUS_BATCH_ADMITTED )
-			status = SparkModelBatchSubmitOne(engine,file,index,submitted_count);
-		else if ( decision.queue_reason == SPARK_CONTINUOUS_BATCH_QUEUE_OVERSIZE )
-		{
-			fprintf(stderr,"sparkpipe_model_batch_continuous oversize request_id=%llu rows=%u submitted direct\n",(unsigned long long)file->requests[index].request.request_id,file->requests[index].request.prompt_token_count);
-			status = SparkModelBatchSubmitOne(engine,file,index,submitted_count);
-			if ( status == SPARK_STATUS_OK )
-				(void)SparkContinuousBatchWithdraw(output->admission,file->requests[index].request.request_id);
-		}
-	}
-	SPARK_RETURN(status);
-}
-
-static SparkStatus SparkModelBatchReleaseReady(
-	SparkModelBatchEngine *engine,
-	SparkModelBatchFile *file,
-	SparkModelBatchOutput *output,
-	uint32_t *submitted_count)
-{
-	uint32_t index,inner,released_count;
-	SparkStatus status;
-	status = SparkContinuousBatchBoundary(output->admission,output->released_ids,
-		file->request_count,&released_count);
-	for (inner=0u; status==SPARK_STATUS_OK && inner<released_count; inner++)
-	{
-		for (index=0u; index<file->request_count; index++)
-		{
-			if ( file->requests[index].submitted != 0u || file->requests[index].request.request_id != output->released_ids[inner] )
-				continue;
-			status = SparkModelBatchSubmitOne(engine,file,index,submitted_count);
-			break;
-		}
-	}
-	SPARK_RETURN(status);
-}
-
 static int32_t SparkModelBatchPoll(
 	const SparkModelResidentClientPollDescriptor *descriptors,
 	uint32_t descriptor_count,
@@ -720,19 +607,6 @@ static SparkStatus SparkModelBatchRun(
 		SparkModelBatchFlushOutput(output);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		if ( output->admission != 0 )
-		{
-			uint32_t before = submitted;
-			status = SparkModelBatchReleaseReady(engine,file,output,&submitted);
-			*submitted_count = submitted;
-			if ( status == SPARK_STATUS_OK && submitted == file->request_count && admission_closed == 0u )
-			{
-				status = SparkModelBatchEngineCloseAdmission(engine);
-				admission_closed = 1u;
-			}
-			if ( status == SPARK_STATUS_OK && submitted != before )
-				continue;
-		}
 		if ( status != SPARK_STATUS_OK || output->terminal_count == file->request_count || output->write_failed != 0u )
 			break;
 		if ( file->sequential_submissions != 0u && submitted < file->request_count && output->terminal_count == submitted )
@@ -794,7 +668,7 @@ int main(int argc,char **argv)
 	static char resolved_root[4096],index_path[4200];
 	char quant_arm_error[512];
 	uint32_t failed_stage_index,profile_stages,view_valid;
-	uint32_t continuous,admission_closed,submitted_count;
+	uint32_t admission_closed,submitted_count;
 	SparkStatus status,destroy_status;
 	if ( SparkModelBatchParseArguments(argc,argv,&deployment_path,&runtime_root,&batch_path,&quant_arm_path,&profile_stages) < 0 )
 	{
@@ -818,19 +692,13 @@ int main(int argc,char **argv)
 	failed_stage_index = SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX;
 	view_valid = 0u;
 	engine = 0;
-	continuous = 0u;
 	admission_closed = 0u;
 	submitted_count = 0u;
 	SparkModelResidentDeploymentReset(&deployment);
 	status = SparkModelResidentDeploymentLoad(deployment_path,&deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchLoadFile(batch_path,&file);
-	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_CONTINUOUS") != 0 )
-	{
-		continuous = 1u;
-		status = SparkModelBatchContinuousInitialize(&deployment,&file,&output);
-	}
-	if ( status == SPARK_STATUS_OK && continuous == 0u && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
+	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_SEQUENTIAL") != 0 )
 		file.sequential_submissions = 1u;
 #ifdef DEBUG
 	if ( status == SPARK_STATUS_OK && getenv("SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL") != 0 )
@@ -864,18 +732,9 @@ int main(int argc,char **argv)
 	descriptor = status == SPARK_STATUS_OK ? SparkModelBatchEngineGetAdapterDescriptor(engine) : 0;
 	if ( status == SPARK_STATUS_OK && (descriptor == 0 || SparkModelBatchWriteReady(descriptor,quant_arm_path != 0 ? &quant_arm : 0) < 0) )
 		status = SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && continuous != 0u )
-	{
-		status = SparkModelBatchOfferAll(engine,&file,&output,&submitted_count);
-		if ( status == SPARK_STATUS_OK && submitted_count == file.request_count )
-		{
-			status = SparkModelBatchEngineCloseAdmission(engine);
-			admission_closed = 1u;
-		}
-	}
-	else if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK )
 		status = SparkModelBatchSubmitAll(engine,&file,0u,file.sequential_submissions != 0u ? 0u : file.request_count);
-	if ( status == SPARK_STATUS_OK && continuous == 0u && file.sequential_submissions == 0u )
+	if ( status == SPARK_STATUS_OK && file.sequential_submissions == 0u )
 	{
 		status = SparkModelBatchEngineCloseAdmission(engine);
 		admission_closed = 1u;
@@ -905,8 +764,6 @@ int main(int argc,char **argv)
 	if ( view_valid != 0u )
 		fprintf(stderr,"sparkpipe_model_batch_pipeline submitted=%llu continued=%llu admitted=%llu rejected=%llu leases=%u\n",(unsigned long long)engine_view.pipeline.submitted_count,(unsigned long long)engine_view.pipeline.continued_count,(unsigned long long)engine_view.pipeline.admitted_count,(unsigned long long)engine_view.pipeline.rejected_count,engine_view.pipeline.active_continue_lease_count);
 	fprintf(stderr,"sparkpipe_model_batch_status=%u terminal=%u requests=%u\n",status,output.terminal_count,file.request_count);
-	(void)SparkContinuousBatchDestroy(output.admission);
-	free(output.released_ids);
 	SparkModelBatchFileDestroy(&file);
 	SparkModelResidentDeploymentDestroy(&deployment);
 	free(output.stage_completions);
