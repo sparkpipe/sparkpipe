@@ -903,7 +903,7 @@ struct D41Device
 		out->page_slots = paged.page_slots;
 		out->pages_per_sequence = paged.pages_per_sequence;
 		out->pool_pages = paged.pool_pages;
-		out->sequences = frame.t.sequences.sequences;
+		out->sequences = state->stage.slots;
 		if ( SparkIndexerCacheBytes(&shape, paged.pool_pages, paged.page_slots) > paged.pool.bytes )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED, "an index key cache does not fit the KV layer that holds it");
 		return SPARK_STATUS_OK;
