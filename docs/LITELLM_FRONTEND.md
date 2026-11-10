@@ -973,8 +973,9 @@ without asking, bounded by what their identity can do.
 - **Both paths** check the request first: a body that is not a JSON object,
   or a `timeout` that is not a finite number of seconds of at least 1, answers 400
   and is never audited as a run. Then the refusal rules in the config (a
-  global `sync` in any command position, such as `/bin/sync`, `env sync` or
-  `bash -c 'sync'`, while `grep sync log` or `echo 'sync done'` pass; killing flychess, power-off, deleting a root, home, workspace or
+  global `sync` as any separate word, such as `/bin/sync`, `env sync`,
+  `bash -c 'sync'`, `ssh spark2 sync` or `do sync`, so a search for the word
+  is written `grep '[s]ync'`; killing flychess, power-off, deleting a root, home, workspace or
   mount directory, raw disk writes, secret files; on sparks also anything
   that adds to the boot path). These are a best-effort backstop against
   mistakes, not a security boundary. Runs are written before and after to

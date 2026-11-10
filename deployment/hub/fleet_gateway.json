@@ -107,7 +107,7 @@
   "max_log_lines": 500,
   "refuse": [
     {
-      "pattern": "(?:^|[;&|(){}`\\n]|\\b(?:(?:ba|da|z|k)?sh|su)\\s+(?:-\\w+\\s+)*-\\w*c\\s+['\"])\\s*(?:(?:\\S*/)?(?:sudo|env|nice|nohup|time|exec|command|xargs|busybox|timeout|ionice|chrt|stdbuf|setsid)(?:\\s+(?:-\\S+(?:\\s+[^-\\s;&|]\\S*)?|[0-9][^\\s;&|]*|\\w+=\\S*))*\\s+)*(?:\\S*/)?sync(?=$|[\\s;&|(){}`'\"])",
+      "pattern": "(?:^|[\\s;&|(){}`'\"/])sync(?=$|[\\s;&|(){}`'\"])",
       "reason": "a global sync is banned on the fleet; it hung CephFS and rebooted spark0 three times on 2026-10-07"
     },
     {
