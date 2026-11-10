@@ -479,7 +479,7 @@ def check_status(failures, home, fake):
     fake.route("GET", "/market/state", lambda r: (200, {}, {"account": account if session_auth(r) else None}))
     fake.route("GET", "/v1/state", lambda r: (200, {}, state) if key_auth(r) else (401, {}, {"error": {"message": "bad key", "code": "invalid_key"}}))
     code, out, err = home.run("status", "--fleet", "F3")
-    for text in ("300.000000 HC", "Holding now: F3", "BK1", "book the next week by 2027-01-10T00:00Z", "position 2", "Customer Agreement has changed",
+    for text in ("300.000000 HC", "Holding now: F3", "BK1", "book the next week by 2027-01-10T00:00Z", "position 2", "Customer Agreement or its Data Processing Agreement has changed",
                  "Fleet F3", "kimi-k3", "500.0 GB of 4.0 TB", "pins: 1", "core@a41f09 (warm)", "run_1 review running", "2027-01-12T00:00Z"):
         expect(failures, text in out, f"status does not show {text!r}: {out} {err}")
     expect(failures, code == 0 and "BK0" not in out, "status lists ended bookings")
@@ -501,7 +501,7 @@ def check_book(failures, home, fake):
 
     def booked(request):
         if request["body"].get("accept") is not True and fake.terms:
-            return 409, {}, {"error": "The Customer Agreement has changed since you accepted it.", "reason": "terms"}
+            return 409, {}, {"error": "The Customer Agreement or its Data Processing Agreement has changed since you accepted them.", "reason": "terms"}
         return 200, {}, dict(plan, booking="BK9")
 
     fake.terms = False

@@ -475,9 +475,9 @@ def verify(client, email, code, args):
         summary = client.call("POST", "/verify", body, auth=None)
     except ApiError as error:
         if error.reason == "new":
-            raise Failure(f"No account uses {email} yet. To open one, read the Customer Agreement on sparkpipe.ai and run: sparkpipe login --email {email} --company 'Your legal name' --accept")
+            raise Failure(f"No account uses {email} yet. To open one, read the Customer Agreement and its Data Processing Agreement at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and run: sparkpipe login --email {email} --company 'Your legal name' --accept")
         if error.reason == "terms":
-            raise Failure("Opening an account needs the Customer Agreement accepted: read it on sparkpipe.ai and add --accept.")
+            raise Failure("Opening an account needs the Customer Agreement and its Data Processing Agreement accepted: read them at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and add --accept.")
         raise
     if not summary.get("session"):
         raise Failure("The sign-in answered without a session.")
@@ -537,7 +537,7 @@ def account_lines(account):
     if account.get("position"):
         lines.append(f"Waitlist: position {account['position']}, {account.get('locked')} HC locked")
     if account.get("termsCurrent") is False:
-        lines.append("The Customer Agreement has changed: read it on sparkpipe.ai and add --accept to your next booking.")
+        lines.append("The Customer Agreement or its Data Processing Agreement has changed: read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and add --accept to your next booking.")
     return lines
 
 
@@ -577,7 +577,7 @@ def spend(ctx, client, path, body):
         return client.call("POST", path, body, auth="session")
     except ApiError as error:
         if error.reason == "terms":
-            raise Failure("The Customer Agreement has changed since you accepted it. Read it on sparkpipe.ai, then run this again with --accept.")
+            raise Failure("The Customer Agreement or its Data Processing Agreement has changed since you accepted them. Read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html, then run this again with --accept.")
         raise
 
 
@@ -1642,14 +1642,14 @@ def leaf(group, name, run_, parents, text):
 
 def spending(command):
     command.add_argument("--yes", action="store_true", help="do not ask for confirmation")
-    command.add_argument("--accept", action="store_true", help="accept the current Customer Agreement")
+    command.add_argument("--accept", action="store_true", help="accept the current Customer Agreement and its Data Processing Agreement")
 
 
 def account_commands(commands, base):
     login_ = leaf(commands, "login", login, [base], "Sign in with an email code and create a key for this machine")
     login_.add_argument("--email")
     login_.add_argument("--company", help="open a new account under this legal name")
-    login_.add_argument("--accept", action="store_true", help="accept the Customer Agreement")
+    login_.add_argument("--accept", action="store_true", help="accept the Customer Agreement and its Data Processing Agreement")
     book = commands.add_parser("book", help="Book a fleet by the week or by the hour").add_subparsers(dest="action", metavar="ACTION")
     book.required = True
     week = leaf(book, "week", book_week, [base], "Book weeks of a fleet")

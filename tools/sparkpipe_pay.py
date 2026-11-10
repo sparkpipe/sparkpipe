@@ -1368,7 +1368,7 @@ class App:
     def require_terms(self, account, body, ip, agent):
         if not self.accepted(account, self.current_terms()):
             if body.get("accept") is not True:
-                raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
+                raise Refusal("The Customer Agreement or its Data Processing Agreement has changed since you accepted them. Read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html, and accept the current texts to continue.", 409, "terms")
             self.accept(account, ip, agent)
 
     def resolve(self, subject):
@@ -1833,7 +1833,7 @@ class App:
                     raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
                 company = text_field(body.get("company"), "company's legal name, or your full name", 200)
                 if body.get("accept") is not True:
-                    raise Refusal("Accept the Customer Agreement to open an account.", 409, "terms")
+                    raise Refusal("Accept the Customer Agreement and its Data Processing Agreement to open an account.", 409, "terms")
             with self.lock:
                 if self.codes.get(email) is not entry:
                     raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
