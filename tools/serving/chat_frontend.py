@@ -2604,14 +2604,7 @@ class Frontend:
         try:
             async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
                 if response.status != 200:
-                    text = await response.text()
-                    try:
-                        payload = json.loads(text)
-                    except json.JSONDecodeError:
-                        payload = error_body("engine_error", text.strip() or f"engine status {response.status}")
-                    if response.status == 503 and payload.get("status") == "starting":
-                        raise RequestError(503, "engine_starting", f"the {model.id} engine is starting: {text}")
-                    raise RequestError(response.status, payload.get("error", {}).get("code", "engine_error"), payload.get("error", {}).get("message", text))
+                    raise self.engine_refusal(model, response.status, await response.text())
                 async for raw in response.content:
                     line = raw.decode("utf-8", "replace").strip()
                     if not line.startswith("data:"):
@@ -2622,11 +2615,32 @@ class Frontend:
                     try:
                         event = json.loads(data)
                     except json.JSONDecodeError:
-                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                        self.engine_detail(model, "stream_event_not_json", 502, data[:120])
+                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON")
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
+            self.engine_detail(model, "unreachable", 503, f"{model.engine}: {type(error).__name__}: {error}")
+            raise RequestError(503, "engine_unavailable", f"the {model.id} engine is unreachable; try again")
+
+    @staticmethod
+    def engine_detail(model, what, status, detail):
+        print(json.dumps({"event": "engine_error", "model": model.id, "what": what, "status": status, "detail": str(detail)[:400]}), file=sys.stderr, flush=True)
+
+    def engine_refusal(self, model, status, text):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        payload = payload if isinstance(payload, dict) else {}
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        code = error.get("code") if isinstance(error.get("code"), str) and error.get("code") else "engine_error"
+        self.engine_detail(model, "refused", status, text)
+        if status == 503 and payload.get("status") == "starting":
+            return RequestError(503, "engine_starting", f"the {model.id} engine is starting; try again")
+        if status >= 500 or not isinstance(error.get("message"), str):
+            return RequestError(status, code, f"the {model.id} engine could not serve the request (status {status}); try again")
+        return RequestError(status, code, error["message"])
 
     async def engine_stream(self, model, engine_body, public):
         deadline = None
@@ -2682,7 +2696,8 @@ class Frontend:
             async for chunk in stream:
                 chunks += 1
                 if "error" in chunk:
-                    raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                    self.engine_detail(model, "stream_error", 502, json.dumps(chunk["error"]))
+                    raise RequestError(502, "engine_error", f"the {model.id} engine failed during the reply; try again")
                 if timing is not None and chunk.get("tokens"):
                     timing.setdefault("first", time.monotonic())
                     timing["last"] = time.monotonic()
