@@ -1,5 +1,7 @@
 # SparkPipe Data Processing Agreement
 
+Version of 10 November 2026
+
 ## Parties and scope
 
 This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809 ("**we**"), and the Customer under the SparkPipe Customer Agreement (the "**Agreement**"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in providing the Fleets, Functions and API ("**Customer personal data**"). Terms defined in the Agreement have the same meaning here.
@@ -42,7 +44,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 5. Sub-processors
 
-5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines (Customer Agreement clause 7.8) is not a sub-processor: its licensor receives no Customer personal data.
+5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines is not a sub-processor and sends Customer personal data nowhere (Customer Agreement clause 7.8).
 
 | Sub-processor | Task | Location |
 | --- | --- | --- |
