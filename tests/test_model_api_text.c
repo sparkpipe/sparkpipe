@@ -1365,9 +1365,11 @@ static void TestApiModelList(TestApiStack *stack)
 {
 	char response[4096];
 	TestApiHttpCall(stack->api_port,"GET","/v1/models",0,response,sizeof(response));
+	const char *length = strstr(response,"\"max_model_len\":");
 	assert(TestApiResponseStatus(response) == 200);
 	assert(strstr(response,"\"id\":\"test/model\"") != 0);
-	printf("test_model_api_text: /v1/models names the served adapter's model\n");
+	assert(length != 0 && strtoul(length + strlen("\"max_model_len\":"),0,10) > 0u);
+	printf("test_model_api_text: /v1/models names the served adapter's model and its context\n");
 }
 
 static void TestApiIdleWake(TestApiStack *stack)
