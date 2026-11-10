@@ -6,9 +6,10 @@ through this one renderer; a model is one MODELS entry (rank pack path,
 adapter library, program name, contract, chat template, tokenizer
 vocabulary, KV and recurrent bytes per rank). Rank r runs on spark<hex r>.
 
-Ports for lane L: control 23000+16L+r, transport 64000+16L (+15 listen),
-collective identifier L<<48, mesh session ports 18432 + 16a + b (one model
-is active at a time, so lanes share the session block).
+Ports for lane L: control 23000+16L+r and transport 64000+16L. The device
+collective runs on weightd mesh lane L with TP rank r on physical mesh rank
+r (device_collective.mesh_lane and mesh_ranks); an optional
+expert_pool_cap_bytes in the lane record caps the expert pool.
 
 --swap-entry also writes swap_entry.json: the model's entry for the hub swap
 controller (tools/serving/model_swap.py). Its node commands call the lane.sh
@@ -32,7 +33,6 @@ WORLD = 16
 CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
-SESSION_BLOCK_BASE = 18432
 MAX_ROWS = 4096
 MAX_SEQUENCES = 128
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
@@ -453,10 +453,6 @@ def text_prompt_prefix(directory: Path) -> list[int]:
         raise SystemExit(f"raw text prompt prefix of {directory}: {error}")
 
 
-def session_table() -> list[list[int]]:
-    return [[0 if a == b else SESSION_BLOCK_BASE + a * WORLD + b for b in range(WORLD)] for a in range(WORLD)]
-
-
 def rank_pack_path(model: dict, rank: int) -> str:
     return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank)
 
@@ -478,7 +474,6 @@ def streamed_config(streamed: dict, rank: int) -> dict:
 
 
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
-    host = HOSTS[rank]
     return {
         "stage_pack_path": rank_pack_path(model, rank),
         "tp_degree": WORLD,
@@ -494,17 +489,13 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         "hidden": model_hidden(model),
         **({"taps": args.taps} if args.taps else {}),
         **({"streamed_prefill": streamed_config(args.streamed_prefill, rank)} if args.streamed_prefill else {}),
+        **({"expert_pool_cap_bytes": args.expert_pool_cap_bytes} if args.expert_pool_cap_bytes else {}),
         "device_collective": {
-            "backend": "hidden_transport",
-            "backend_module_path": "lib/hidden_transport.so",
-            "local_host": host,
-            "collective_identifier": lane << 48,
-            "listen_port": 64000 + 16 * lane + 15,
+            "wait_mode": "hardware",
             "connect_timeout_milli": 300000,
             "operation_timeout_milli": 30000,
-            "peer_hosts": HOSTS,
-            "session_ports": session_table(),
-            "wait_mode": "hardware",
+            "mesh_lane": lane,
+            "mesh_ranks": list(range(WORLD)),
         },
     }
 
@@ -564,7 +555,7 @@ HUB_LOG_DIR = "/srv/workspace/sparkpipe/logs"
 ADAPTER_PACK = "$(python3 -c \"import json; print(json.load(open('config/adapter.json'))['stage_pack_path'])\")"
 
 
-def swap_entry(name: str, model: dict, lane: int) -> dict:
+def swap_entry(name: str, model: dict, lane: int, expert_pool_cap_bytes: int | None) -> dict:
     root = f"$HOME/stage-lanes/{name}/lane{lane}/root"
     api = f"$HOME/{name}-kv-api"
     unit = f"kv-{name.replace('_', '-')}-api"
@@ -582,18 +573,18 @@ def swap_entry(name: str, model: dict, lane: int) -> dict:
                       f"--port {model['api_port']} >> {HUB_LOG_DIR}/{name}-kv-api.log 2>&1' >/dev/null"),
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",
         "health": f"http://127.0.0.1:{model['api_port']}/health",
-        **expert_warm(model, root),
+        **expert_warm(model, root, expert_pool_cap_bytes),
     }
 
 
-def expert_warm(model: dict, root: str) -> dict:
+def expert_warm(model: dict, root: str, expert_pool_cap_bytes: int | None) -> dict:
     warm = model.get("expert_warm")
     if warm is None:
         return {}
     revision = warm.get("revision") or json.loads((ROOT / model["contract"]).read_text())["revision"]
-    return {"node_warm": (f"cd {root} && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) "
-                          f"./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
-                          f"--model {warm['model_tag']} --shared {warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
+    cap = f"--expert-pool-cap {expert_pool_cap_bytes} " if expert_pool_cap_bytes else ""
+    return {"node_warm": (f"cd {root} && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) {revision} {WORLD} "
+                          f"--model {warm['model_tag']} --shared {cap}{warm['layers']} {warm['experts']} {warm.get('timeout_s', 1800)} > warm.log 2>&1")}
 
 
 def hub_deployment(model: dict, lane: int, args) -> dict:
@@ -645,6 +636,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
         state_budget_bytes=record["state_budget_bytes"], state_memory_bytes=record.get("state_memory_bytes"),
         taps=record.get("taps"), streamed_prefill=record.get("streamed_prefill"), tokenizer_sha256=record["tokenizer_sha256"], tokenizer_dir=None,
+        expert_pool_cap_bytes=record.get("expert_pool_cap_bytes"),
         text_prompt_prefix=record["text_prompt_prefix_token_ids"],
         draft_server=record.get("draft_server"), swap_entry=True, output_dir=None)
 
@@ -686,6 +678,8 @@ def check_arguments(model: dict, args) -> None:
         raise SystemExit(f"state-memory-bytes {args.state_memory_bytes} cannot hold two recurrent checkpoints per sequence plus two; it needs {states}")
     if args.state_budget_bytes <= 0:
         raise SystemExit("state-budget-bytes must be positive")
+    if args.expert_pool_cap_bytes is not None and (not isinstance(args.expert_pool_cap_bytes, int) or args.expert_pool_cap_bytes <= 0):
+        raise SystemExit(f"expert_pool_cap_bytes {args.expert_pool_cap_bytes!r} must be a positive byte count; leave it out to size the pool from the pack")
 
 
 def write_lane(args, output_dir: Path) -> None:
@@ -698,7 +692,7 @@ def write_lane(args, output_dir: Path) -> None:
     if args.record:
         (output_dir / "model_resident.json").write_text(render(hub_deployment(model, args.lane, args)))
     if args.swap_entry:
-        (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane)))
+        (output_dir / "swap_entry.json").write_text(render(swap_entry(args.model, model, args.lane, args.expert_pool_cap_bytes)))
 
 
 def main() -> int:
@@ -718,6 +712,8 @@ def main() -> int:
                         help="keep the device KV pool below this many pages; by default it may grow to what the node budget leaves the model")
     parser.add_argument("--kv-logical-pages", type=int, default=None)
     parser.add_argument("--state-budget-bytes", type=int, default=DEFAULT_STATE_BUDGET_BYTES)
+    parser.add_argument("--expert-pool-cap-bytes", type=int, default=None,
+                        help="the lane's explicit expert pool cap; by default weightd sizes the pool from the pack")
     parser.add_argument("--state-memory-bytes", type=int, default=None,
                         help="per-rank memory for recurrent-state records; default twice the two per sequence plus two the KV binding needs")
     parser.add_argument("--tokenizer-sha256", default=None)

@@ -482,8 +482,6 @@ def main() -> int:
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
     values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],
               "STAGE_MEMORY_MAX": lane["memory_max"]}
-    if "expert_pool_cap_bytes" in lane:
-        values["STAGE_EXPERT_POOL_CAP_BYTES"] = lane["expert_pool_cap_bytes"]
     print("\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items()))
     return 0
 

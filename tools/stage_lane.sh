@@ -7,7 +7,6 @@ fi
 : "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry, or STAGE_RECORD names a deployment/lanes.json record}"
 : "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
-[ -z "${STAGE_EXPERT_POOL_BYTES:-}" ] || { echo "stage_lane: STAGE_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and STAGE_EXPERT_POOL_CAP_BYTES (the record's expert_pool_cap_bytes) is the optional explicit cap" >&2; exit 2; }
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
 LANE_TOOL=stage_lane
 LANE_RANKS=16
@@ -51,9 +50,8 @@ case "\${1:-}" in
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
     pack="\$(lane_pack)" || exit 2
     head -c 64 "\$pack.sha256" > packs/pack.sha256.tmp && mv -f packs/pack.sha256.tmp packs/pack.sha256 || exit 2
-    python3 bin/weightd_spine_budget.py "\$pack" > spine_budget.tmp && mv -f spine_budget.tmp spine_budget || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
-    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p TimeoutStopSec=75 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 ${STAGE_EXPERT_POOL_CAP_BYTES:+-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_CAP_BYTES }-E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
+    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p TimeoutStopSec=75 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
   ready)
     state="\$(systemctl --user is-active $UNIT)"
     if [ "\$state" = active ] && grep -q 'model_residentd ready' "\$(lane_log_file "\${2:?ready RUN_ID}")" 2>/dev/null; then echo READY
@@ -84,6 +82,7 @@ render() {
     ${STAGE_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$STAGE_KV_PHYSICAL_PAGES_CAP"} \
     ${STAGE_KV_LOGICAL_PAGES:+--kv-logical-pages "$STAGE_KV_LOGICAL_PAGES"} \
     ${STAGE_STATE_BUDGET_BYTES:+--state-budget-bytes "$STAGE_STATE_BUDGET_BYTES"} \
+    ${STAGE_EXPERT_POOL_CAP_BYTES:+--expert-pool-cap-bytes "$STAGE_EXPERT_POOL_CAP_BYTES"} \
     ${STAGE_TOKENIZER_SHA256:+--tokenizer-sha256 "$STAGE_TOKENIZER_SHA256"} \
     ${STAGE_TOKENIZER_DIR:+--tokenizer-dir "$STAGE_TOKENIZER_DIR"} \
     ${STAGE_SWAP_ENTRY:+--swap-entry} \
@@ -108,15 +107,15 @@ setup() {
     pack="$(pack_of "$rank")"
     (
       $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
+      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$host:$root/bin/"
       scp -q "$STAGE_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/$ADAPTER_FILE"
       scp -q "$STAGE_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
       scp -q "$STAGE_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
-      $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget" < /dev/null
-      echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
+      $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256" < /dev/null
+      echo "$host ready"
     ) &
     PIDS[$rank]=$!
   done

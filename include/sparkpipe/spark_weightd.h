@@ -95,8 +95,6 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
-#define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
-#define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
@@ -1464,7 +1462,6 @@ SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
     SparkWeightdLazyAttachResult *result,
     uint64_t timeout_nanoseconds);
 
-SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only);
 
 SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *client,
     const char *pack_sha256,

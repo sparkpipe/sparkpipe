@@ -12,7 +12,6 @@ extern "C" {
 #endif
 
 #define SPARK_WEIGHTD_ATTACH_ENV_SOCKET "SPARK_WEIGHTD_SOCKET"
-#define SPARK_WEIGHTD_ATTACH_ENV_SWITCH "SPARK_WEIGHTD_ATTACH"
 #define SPARK_WEIGHTD_ATTACH_ENV_MODEL "SPARK_WEIGHTD_IDENTITY_MODEL"
 #define SPARK_WEIGHTD_ATTACH_ENV_REVISION "SPARK_WEIGHTD_IDENTITY_REVISION"
 #define SPARK_WEIGHTD_ATTACH_ENV_SHA256 "SPARK_WEIGHTD_PACK_SHA256"
@@ -47,8 +46,6 @@ typedef struct SparkWeightdAttachOutcome
     uint32_t map_handle_count;
     uint32_t map_mapped_count;
 } SparkWeightdAttachOutcome;
-
-SparkStatus SparkWeightdAttachRequested(void);
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
     const char *pack_path,

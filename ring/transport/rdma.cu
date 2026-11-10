@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_weightd_attach.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,17 +27,18 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     state = (SparkHiddenSparkHostRdmaState *)calloc(1u,sizeof(*state));
     if ( state == 0 )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    socket = getenv("SPARK_WEIGHTD_SOCKET");
+    socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+    if ( socket == 0 || socket[0] == '\0' )
     {
-        char path[128];
-        snprintf(path,sizeof(path),"%s",
-            socket != 0 ? socket : "/tmp/spark_weightd.sock");
-        if ( SparkWeightdClientConnect(path,&state->client,0) !=
-                SPARK_STATUS_OK )
-        {
-            free(state);
-            return SPARK_STATUS_IO_ERROR;
-        }
+        fprintf(stderr,"host rdma transport refused: residentd hands it the weightd socket in %s and this process has none\n",
+            SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
+        free(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ( SparkWeightdClientConnect(socket,&state->client,0) != SPARK_STATUS_OK )
+    {
+        free(state);
+        return SPARK_STATUS_IO_ERROR;
     }
     *transport_state = state;
     return SPARK_STATUS_OK;

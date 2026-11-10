@@ -1124,7 +1124,7 @@ static SparkStatus SparkStageKvBindingAttachShared(SparkStageKvBinding *binding,
 	request.page_bytes = binding->page_bytes;
 	request.alignment_pages = (uint32_t)alignment;
 	request.label = binding->module_tag;
-	status = SparkWeightdKvSharedAttach(&request,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_shared);
+	status = SparkWeightdKvSharedAttach(binding->weightd_socket_path,&request,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_shared);
 	if ( status == SPARK_STATUS_UNSUPPORTED )
 	{
 		fprintf(stderr,"%s kv shared prefix off: weightd has no shared window, so every prefix stays private\n",binding->module_tag);
@@ -1327,7 +1327,7 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 	request.metadata_bytes = sizeof(SparkStageKvPoolSeal) + (uint64_t)binding->physical_page_count * sizeof(SparkKvPageCacheResidentRecord);
 	request.label = binding->module_tag;
 	attach_start_ns = SparkMonotonicNs();
-	status = SparkWeightdKvPoolMap(&request,offsets,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_pool);
+	status = SparkWeightdKvPoolMap(binding->weightd_socket_path,&request,offsets,SPARK_WEIGHTD_KV_POOL_ATTACH_TIMEOUT_NS,&binding->kv_pool);
 	attach_ms = (SparkMonotonicNs() - attach_start_ns) / 1000000ull;
 	free(offsets);
 	if ( status != SPARK_STATUS_OK )
@@ -1589,7 +1589,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 		configuration->physical_page_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (configuration->recurrent.lane_bytes == 0u) != (configuration->recurrent.copy == 0) || (configuration->recurrent.lane_bytes == 0u && configuration->recurrent.context != 0) ||
-		(configuration->pool_source != SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD && configuration->pool_source != SPARK_STAGE_KV_POOL_SOURCE_DEVICE) )
+		(configuration->pool_source != SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD && configuration->pool_source != SPARK_STAGE_KV_POOL_SOURCE_DEVICE) ||
+		((configuration->pool_source == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD) != (configuration->weightd_socket_path != 0 && configuration->weightd_socket_path[0] != '\0')) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageKvBindingRefuse(configuration);
 	if ( status != SPARK_STATUS_OK )
@@ -1605,6 +1606,7 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->max_sequence_positions = configuration->max_sequence_positions;
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
 	binding->pool_source = configuration->pool_source;
+	binding->weightd_socket_path = configuration->weightd_socket_path;
 	binding->context_shard = configuration->context_shard;
 	binding->backing_slot = SPARK_KV_LEDGER_NO_SLOT;
 	binding->ledger.descriptor = -1;

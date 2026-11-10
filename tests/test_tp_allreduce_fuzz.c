@@ -418,6 +418,14 @@ static void FuzzHoldShipper(uint32_t hold)
     }
 }
 
+static void FuzzMeshFixture(SparkTpDeviceCollectiveConfig *config)
+{
+    config->weightd_socket_path = "/tmp/tp_allreduce_fuzz.sock";
+    config->mesh_lane = SPARK_WEIGHTD_LANE_NONE;
+    for (uint32_t rank = 0u; rank < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++)
+        config->mesh_ranks[rank] = rank;
+}
+
 static SparkStatus FuzzCreateRank(uint32_t rank)
 {
 	SparkTpDeviceCollectiveConfig config;
@@ -425,6 +433,7 @@ static SparkStatus FuzzCreateRank(uint32_t rank)
 	uint32_t index;
 	memset(&config,0,sizeof(config));
 	config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+	FuzzMeshFixture(&config);
 	config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT;
 	config.tp_degree = g_rank_count;
 	config.tp_rank = rank;
@@ -1146,6 +1155,7 @@ static void FuzzConfiguration(void)
         memset(&config,0,sizeof(config));
         memset(&collective,0,sizeof(collective));
         config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+        FuzzMeshFixture(&config);
         config.tp_degree = g_rank_count;
         config.local_hidden_dimension = FUZZ_HIDDEN;
         config.max_active_sequence_count = FUZZ_MAX_ROWS;
@@ -1264,6 +1274,7 @@ static void FuzzRegistrationOwnership(void)
     memset(&config,0,sizeof(config));
     memset(owners,0,sizeof(owners));
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    FuzzMeshFixture(&config);
     config.tp_degree = g_rank_count;
     config.local_hidden_dimension = FUZZ_HIDDEN;
     config.max_active_sequence_count = 1u;
@@ -1403,6 +1414,7 @@ static void FuzzPayloadCapacity(void)
     memset(&config,0,sizeof(config));
     memset(&collective,0,sizeof(collective));
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    FuzzMeshFixture(&config);
     config.tp_degree = g_rank_count;
     config.local_hidden_dimension = SPARK_WEIGHTD_MESH_SLOT_BYTES / 2u;
     config.max_active_sequence_count = 1u;
@@ -1935,7 +1947,6 @@ int main(int argc, char **argv)
         return 2;
     }
     g_seed = seed;
-	(void)setenv("SPARK_WEIGHTD_SOCKET","/tmp/tp_allreduce_fuzz.sock",1);
 	g_rank_count = ranks;
 	for ( rank = 0u; rank < ranks; rank++ )
 	{
@@ -2113,6 +2124,7 @@ static void FuzzLaneNamespace(void)
     uint64_t stride = (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND;
     FuzzCase("shared-lane-namespace-ignores-colliding-logical-identifiers");
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    FuzzMeshFixture(&config);
     config.tp_degree = g_rank_count;
     config.local_hidden_dimension = FUZZ_HIDDEN;
     config.max_active_sequence_count = 1u;
@@ -2141,27 +2153,29 @@ static void FuzzMeshTopology(void)
     SparkTpDeviceCollectiveConfig config = {0};
     SparkTpDeviceCollective root = {0},peer = {0};
     SparkTpDeviceCollectiveImplementation *implementation;
-    const char *invalid[] = {"", "4,5,6", "4,5,6,7,8", "4,5,6,6", "4,5,6,16", "4,5,6,-1", "4,5,6, 7", "4,5,6,7x"};
+    const uint32_t identity[4] = {0u,1u,2u,3u},hosts4to7[4] = {4u,5u,6u,7u};
+    const uint32_t permuted[16] = {0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u,13u,14u,15u,1u};
+    const uint32_t invalid[][4] = {{4u,5u,6u,6u},{4u,5u,6u,16u},{0u,0u,1u,2u},{UINT32_MAX,1u,2u,3u}};
     FuzzCase("explicit-physical-rank-map-and-ordered-chain-metadata");
-    CHECK(unsetenv("SPARK_TP_MESH_RANKS") == 0 &&
-        SparkTpDeviceCollectiveMeshTopology(3u,4u,&topology) == SPARK_STATUS_OK &&
-        topology.physical_ranks[3] == 3u,"default topology is explicit identity");
+    CHECK(SparkTpDeviceCollectiveMeshTopology(3u,4u,identity,&topology) == SPARK_STATUS_OK &&
+        topology.physical_ranks[3] == 3u,"an identity map keeps every rank on its own host");
+    CHECK(SparkTpDeviceCollectiveMeshTopology(0u,4u,0,&topology) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a topology needs a rank map");
     for (uint32_t i=0u; i<sizeof(invalid)/sizeof(invalid[0]); i++)
-        CHECK(setenv("SPARK_TP_MESH_RANKS",invalid[i],1) == 0 &&
-            SparkTpDeviceCollectiveMeshTopology(0u,4u,&topology) == SPARK_STATUS_INVALID_ARGUMENT,
-            "malformed explicit rank map has no identity fallback");
-    CHECK(setenv("SPARK_TP_MESH_RANKS","4,5,6,7",1) == 0 &&
-        SparkTpDeviceCollectiveMeshTopology(2u,4u,&topology) == SPARK_STATUS_OK &&
+        CHECK(SparkTpDeviceCollectiveMeshTopology(0u,4u,invalid[i],&topology) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a rank map with a repeated or out-of-mesh physical rank is refused");
+    CHECK(SparkTpDeviceCollectiveMeshTopology(2u,4u,hosts4to7,&topology) == SPARK_STATUS_OK &&
         topology.rank_count == 4u && topology.local_rank == 2u &&
         topology.physical_ranks[0] == 4u && topology.physical_ranks[2] == 6u,
         "logical TP4 can explicitly use physical hosts4 through7");
-    CHECK(setenv("SPARK_TP_MESH_RANKS","0,2,3,4,5,6,7,8,9,10,11,12,13,14,15,1",1) == 0 &&
-        SparkTpDeviceCollectiveMeshTopology(15u,16u,&topology) == SPARK_STATUS_OK &&
+    CHECK(SparkTpDeviceCollectiveMeshTopology(15u,16u,permuted,&topology) == SPARK_STATUS_OK &&
         topology.physical_ranks[1] == 2u && topology.physical_ranks[15] == 1u,
         "full permuted TP16 retains the explicit rank order");
-    CHECK(setenv("SPARK_TP_MESH_RANKS","1,0",1) == 0 &&
-        setenv("SPARK_WEIGHTD_LANE","7",1) == 0,"select private control-test lane");
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    FuzzMeshFixture(&config);
+    config.mesh_ranks[0] = 1u;
+    config.mesh_ranks[1] = 0u;
+    config.mesh_lane = 7u;
     config.tp_degree = 2u;
     config.local_hidden_dimension = FUZZ_HIDDEN;
     config.max_active_sequence_count = 1u;
@@ -2182,8 +2196,8 @@ static void FuzzMeshTopology(void)
         SparkTpDeviceCollectiveChainKey(&peer,777u) == SPARK_STATUS_OK,
         "ordered map payload and chain key reach physical peer");
     SparkTpDeviceCollectiveDestroy(&peer);
-    CHECK(setenv("SPARK_TP_MESH_RANKS","2,0",1) == 0 &&
-        SparkTpDeviceCollectiveCreate(&config,&peer) == SPARK_STATUS_OK &&
+    config.mesh_ranks[0] = 2u;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&peer) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectivePrepareReceiveBf16(&peer,g_regions[0],1u,FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
         "construct mismatched peer shape for cross-rank gate");
     CHECK(SparkTpDeviceCollectiveChainKey(&root,778u) == SPARK_STATUS_OK &&
@@ -2191,8 +2205,6 @@ static void FuzzMeshTopology(void)
         "matching request key cannot admit a different root or membership map");
     SparkTpDeviceCollectiveDestroy(&peer);
     SparkTpDeviceCollectiveDestroy(&root);
-    CHECK(unsetenv("SPARK_TP_MESH_RANKS") == 0 && unsetenv("SPARK_WEIGHTD_LANE") == 0,
-        "clear explicit topology fixture");
 }
 
 static void FuzzCellInitialization(void)
@@ -2202,6 +2214,7 @@ static void FuzzCellInitialization(void)
     uint64_t empty_arrival[256] = {0u};
     memset(&config,0,sizeof(config));
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
+    FuzzMeshFixture(&config);
     config.tp_degree = g_rank_count;
     config.local_hidden_dimension = FUZZ_HIDDEN;
     config.max_active_sequence_count = 1u;

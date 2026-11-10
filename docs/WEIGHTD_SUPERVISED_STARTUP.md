@@ -3,7 +3,7 @@
 A deployment containing `weightd.socket_path` requires that daemon. Residentd
 fails before loading the adapter if the socket is unavailable, the runtime root
 has no digest sidecar, a digest is malformed, or multiple sidecars are present.
-`SPARK_WEIGHTD_ATTACH=0` conflicts with this deployment and is rejected.
+No environment variable turns the daemon off.
 
 The current identity convention is exactly one `packs/*.sha256` in each rank's
 runtime root. It contains a lowercase SHA-256, optionally followed by the usual
@@ -38,12 +38,11 @@ build/test_model_resident_deadline
 
 `model_residentd` calls `SparkModelResidentdPrepareWeightd`
 (`node/weightd_spawn.c`) when the deployment has a non-empty
-`weightd.socket_path`, before `SparkModelResidentdInitialize`. It checks
-`SPARK_WEIGHTD_ATTACH`, reads the digest sidecar, probes the socket and sets
-two environment variables.
+`weightd.socket_path`, before `SparkModelResidentdInitialize`. It reads the digest sidecar, probes the
+socket and sets two environment variables, `SPARK_WEIGHTD_SOCKET` and
+`SPARK_WEIGHTD_PACK_SHA256`: its handoff to the adapter, which reads them once
+and passes the socket on in configurations.
 
-- `SPARK_WEIGHTD_ATTACH`, when set, must be exactly `1`. Any other value,
-  the empty string included, fails.
 - The sidecar must be a regular file. Its first 64 bytes must be lowercase
   hex, followed by end of file, a space, a tab or a newline. Nothing after
   that is read.
@@ -51,9 +50,7 @@ two environment variables.
   at once. It sends no `HELLO`.
 - On success it sets `SPARK_WEIGHTD_SOCKET` to the deployment socket and
   `SPARK_WEIGHTD_PACK_SHA256` to the digest, replacing any existing values.
-  `SparkWeightdAttachRequested` reads the socket from there, and
-  `SparkWeightdAttachPack` falls back to the digest when the slice carries
-  none.
+  The stage serving adapter reads both once at configure.
 - On failure it returns a negative code. Residentd logs a line starting
   `model_residentd weightd-required status=<code> root=<root> socket=<socket>`
   and exits 1.

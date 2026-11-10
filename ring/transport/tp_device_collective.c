@@ -4,7 +4,6 @@
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_tp_mesh_round_control.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -422,31 +421,22 @@ static volatile uint64_t *SparkTpDeviceCollectiveCancelCell(const SparkTpDeviceC
 }
 
 SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,
-    SparkWeightdMeshTopology *topology)
+    const uint32_t *mesh_ranks,SparkWeightdMeshTopology *topology)
 {
-    const char *text = getenv("SPARK_TP_MESH_RANKS");
     uint32_t seen = 0u;
-    if (topology == 0 || degree == 0u || degree > 16u || rank >= degree)
+    if (topology == 0 || mesh_ranks == 0 || degree == 0u ||
+        degree > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE || rank >= degree)
         return SPARK_STATUS_INVALID_ARGUMENT;
     memset(topology,0,sizeof(*topology));
     topology->rank_count = degree;
     topology->local_rank = rank;
     for (uint32_t i=0u; i<degree; i++)
     {
-        unsigned long physical = i;
-        if (text != 0)
-        {
-            char *end;
-            errno = 0;
-            physical = strtoul(text,&end,10);
-            if (text[0] < '0' || text[0] > '9' || errno != 0 ||
-                physical >= 16u || (i+1u == degree ? *end != '\0' : *end != ','))
-                return SPARK_STATUS_INVALID_ARGUMENT;
-            text = end + (i+1u != degree);
-        }
-        if ((seen & (1u << physical)) != 0u) return SPARK_STATUS_INVALID_ARGUMENT;
+        uint32_t physical = mesh_ranks[i];
+        if (physical >= SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE || (seen & (1u << physical)) != 0u)
+            return SPARK_STATUS_INVALID_ARGUMENT;
         seen |= 1u << physical;
-        topology->physical_ranks[i] = (uint32_t)physical;
+        topology->physical_ranks[i] = physical;
     }
     return SPARK_STATUS_OK;
 }
@@ -1428,7 +1418,7 @@ static SparkStatus SparkTpDeviceCollectiveAcquireLane(
     uint32_t lane,requested = SPARK_WEIGHTD_LANE_NONE;
     SparkWeightdClient *owner = config->mesh_lane_client;
     status = SparkTpDeviceCollectiveMeshTopology(config->tp_rank,config->tp_degree,
-        &implementation->mesh_topology);
+        config->mesh_ranks,&implementation->mesh_topology);
     if (status != SPARK_STATUS_OK) return status;
     for (uint32_t i=0u; i<config->tp_degree; i++)
     {
@@ -1438,18 +1428,9 @@ static SparkStatus SparkTpDeviceCollectiveAcquireLane(
     }
     if ( owner == 0 )
     {
-        const char *text = getenv("SPARK_WEIGHTD_LANE");
-        if ( text != 0 )
-        {
-            char *end;
-            unsigned long value;
-            errno = 0;
-            value = strtoul(text,&end,10);
-            if ( text[0] < '0' || text[0] > '9' || *end != '\0' ||
-                 errno != 0 || value >= SPARK_WEIGHTD_MESH_MAX_LANES )
-                return SPARK_STATUS_INVALID_ARGUMENT;
-            requested = (uint32_t)value;
-        }
+        if ( config->mesh_lane != SPARK_WEIGHTD_LANE_NONE && config->mesh_lane >= SPARK_WEIGHTD_MESH_MAX_LANES )
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        requested = config->mesh_lane;
         owner = implementation->client;
         status = SparkWeightdClientLaneAcquire(owner,requested,&implementation->mesh_topology,&lane,
             implementation->round_timeout_ns);
@@ -1510,9 +1491,12 @@ SparkStatus SparkTpDeviceCollectiveCreate(
     collective_out->operation_timeout_milli = config->operation_timeout_milli;
     collective_out->memory_mode =
         SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST;
-    socket = getenv("SPARK_WEIGHTD_SOCKET");
+    socket = config->weightd_socket_path;
     if ( socket == 0 || socket[0] == '\0' )
-        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    {
+        fprintf(stderr,"tp device collective refused: the configuration names no weightd socket\n");
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
     if ( config->wait_mode != SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN && config->wait_mode != SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE )
     {
         fprintf(stderr,"MESH-WAIT-CONFIG-FAIL value=%u expected=spin|hardware\n",config->wait_mode);

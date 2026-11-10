@@ -21,7 +21,7 @@ whether the fleet still matches.
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
 | `memory_max` | the residentd unit's MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes it (and the socket, state budget and expert pool cap) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry the record's values |
-| `expert_pool_cap_bytes` | optional, and set by no production record: an explicit cap for a lane that streams experts on purpose, a positive whole number of 2 MiB chunks no larger than the pack's exact expert pool (larger is refused at startup). It renders as `SPARK_WEIGHTD_EXPERT_POOL_BYTES` into `lane.sh` (stage lanes, whose warm command reads it from there) or through `K3_EXPERT_POOL_CAP_BYTES` (`tools/k3_lane.sh`). Without it the variable is not set and every engine and warm sizes the pool from the pack's `PACK.experts` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)). `tests/test_lane_records.py` refuses the old hand-set `expert_pool_bytes` |
+| `expert_pool_cap_bytes` | optional, and set by no production record: an explicit cap for a lane that streams experts on purpose, a positive whole number of 2 MiB chunks no larger than the pack's exact expert pool (larger is refused at startup). It renders as `expert_pool_cap_bytes` into every rank's stage config and as `--expert-pool-cap` into the swap entry's warm command. Without it the member is absent and every engine and warm sizes the pool from the pack's `PACK.experts` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)). `tests/test_lane_records.py` refuses the old hand-set `expert_pool_bytes` |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
@@ -89,7 +89,7 @@ and the engram hash tables under the names the engine opens:
 `engram_tables.bin`.
 
 The lane root holds only small real files: binaries, the rendered
-configuration, `lane.sh`, `spine_budget`, `packs/pack.sha256` (the one digest
+configuration, `lane.sh`, `packs/pack.sha256` (the one digest
 residentd reads from `packs/`), the KV directories and the run logs.
 `stage_lane.sh setup` and `k3_lane.sh setup` check on every node, before
 touching the root, that each weight file of the rank is a regular file and
@@ -150,9 +150,9 @@ every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
 not touch binaries, packs or KV, so a lane restart picks the change up. That
 includes a pack switch, such as a precision change: `lane.sh start` takes the
 expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
-from the `.sha256` beside the pack `config/adapter.json` names, and the spine
-budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
-describe the pack the lane was first staged with. A configured pack without
+from the `.sha256` beside the pack `config/adapter.json` names, so it cannot
+still describe the pack the lane was first staged with; the runtime derives
+the spine allocation from that pack's manifest. A configured pack without
 its sidecar refuses to start. A dense lane (DeepSeek V4.1 Flash) names a pack
 link inside its own `packs/`; residentd reads exactly one `packs/*.sha256`,
 so that lane keeps the `packs/pack.sha256` setup writes from the pack, and

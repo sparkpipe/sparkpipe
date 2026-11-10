@@ -113,8 +113,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   and a 7,168-element all-reduce takes about 38 us direct or 33.1 us as
   reduce-scatter plus all-gather.
 - Left out on purpose (2026-10-02): The wait mode picks the algorithm, against
-  I36. With `SPARK_TP_WAIT_MODE=hardware`
-  (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
+  I36. With the stage config's `device_collective.wait_mode` `hardware`
+  (`ring/transport/tp_device_collective.c`) every payload runs chunked
   direct rounds through `SparkTpLaunchMeshHardware`, always called with one
   logical row (`:972-983`), and BF16 sums of at least
   `SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE` (10,240) elements at degree 16 or
@@ -1456,14 +1456,6 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- `tools/glm5_next_driver_compare.py` and
-  `tests/test_glm5_next_driver_probe.c` outlived the glm5_next module and
-  probe that `82e63a909` deleted: the compare tool launches a probe binary
-  nothing builds, and the test `#include`s the deleted
-  `tools/glm5_next_driver_probe.c`, so neither can run. Delete both, with
-  `docs/GLM_REAL_DRIVER_PROBE.md`, the probe paragraph of
-  `docs/DRIVER_ACCEPTANCE.md` and the `glm5_next_driver_probe` entry in
-  `tools/test_serving_reliability_host.py`.
 - The GLM 5.3 Full and Flash weight warms in `deployment/hub/model_swap.json`
   are written by hand with the checkpoint revision as a literal, not rendered
   from the lane records like A.X K2's (`expert_warm` in `tools/stage_lane.py`),
@@ -1493,11 +1485,7 @@ Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBO
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
-- The lane pin reaches residentd only as the environment variable
-  `SPARK_WEIGHTD_LANE`, which the `lane.sh` rendered by `tools/stage_lane.sh`
-  sets and `inference/runner/stage_serving_adapter.c` and
-  `ring/transport/tp_device_collective.c` read with `getenv`. Move it into the
-  deployment contract beside `wait_mode`. `sparkpipe-hub-route.service` stays
+- `sparkpipe-hub-route.service` stays
   a runtime step, but only `docs/FLEET_RELEASE_RUNBOOK.md` (section 1)
   describes it: `docs/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
   `tools/fleet_post_reboot.sh` does not check the route.
@@ -1535,9 +1523,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `lag_t1_launch.sh` refuse a rank whose node names anything else or a
   linked file, and delete an older `config/stage.json` link before a
   start; `fleet_serve.sh` now sees a refused start (the check and the run
-  log guard ran in the background before). The family job template, the
-  GLM cold-launch A/B, `inference_smoke.py` and the K3 run family name the
-  real pack and copy one digest; the A/B `root-check` refuses any link
+  log guard ran in the background before). The A/B `root-check` refuses any link
   under an arm root and a pack named any other way. The dead DSV4 dev cycle
   (`tools/devcycle.sh`, `bbench.sh`), the GLM 5.2 `r3flash_exact_cell.sh`
   and the one-off `glm5_next_pack_swap.sh` are gone. Fleet step before the

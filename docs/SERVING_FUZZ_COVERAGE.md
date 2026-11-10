@@ -107,9 +107,9 @@ Configuration these rules depend on:
   Pinning every expert contradicts the lazy-residency invariants I28-I30.
 - weightd sizes the expert pool from `PACK.experts`; without a cap that is
   the whole arena, which holds every pinned expert.
-  `SPARK_WEIGHTD_EXPERT_POOL_BYTES` is only an explicit cap, and the fleet
-  agent passes one only from `G5_EXPERT_POOL_CAP_BYTES`
-  (`tools/fleet_node_agent.sh`).
+  A cap is only ever explicit, the stage config's `expert_pool_cap_bytes`;
+  the fleet agent refuses to start a root while `G5_EXPERT_POOL_CAP_BYTES`
+  or `G5_EXPERT_POOL_BYTES` is set (`tools/fleet_node_agent.sh`).
 - `SPARK_GLM5_NEXT_PREFETCH` set to anything but `0` makes the module refuse
   to start; warm the daemon with `build/weightd_warm` instead.
 
