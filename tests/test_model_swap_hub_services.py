@@ -91,6 +91,13 @@ def lane_records_match_the_swap():
     assert checked >= 2, "the records with a draft server were not found"
 
 
+def production_drafters_record_nothing():
+    for spec in json.loads((ROOT / "deployment/hub/model_swap.json").read_text())["models"]:
+        for key, command in spec.items():
+            if isinstance(command, str):
+                assert "DRAFTD_RECORD_DIR" not in command and "--record-dir" not in command, f"{spec['id']}: {key} records users' tap streams; record only hold corpora, outside the production swap"
+
+
 def main():
     status, error, order = asyncio.run(scenario(None))
     assert status == "idle", error
@@ -99,7 +106,8 @@ def main():
     status, error, order = asyncio.run(scenario("echo refused; exit 7"))
     assert status == "failed" and "target hub service start exit 7: refused" in error, error
     lane_records_match_the_swap()
-    print("PASS test_model_swap_hub_services: a model's drafter stops with the model, starts with its engines, and a start that fails fails the swap")
+    production_drafters_record_nothing()
+    print("PASS test_model_swap_hub_services: a model's drafter stops with the model, starts with its engines, a start that fails fails the swap, and no production drafter records users' tap streams")
 
 
 if __name__ == "__main__":

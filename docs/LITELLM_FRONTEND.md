@@ -142,7 +142,7 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}` (400 when `model` is not a name string, 404 when it is not configured), `POST /force` (the same checks when it names a model), `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
 | Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
@@ -886,9 +886,9 @@ The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml
 generated from `deployment/hub/open_webui_models.json`, contexts checked
 against the chat layer). Each has an Open WebUI model entry from that file,
 applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
-description (context window and switch time), text-only input, web search
-and the code interpreter on by default, the GitHub tool, the trimmed
-built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
+description (context window and switch time), text-only input, the code
+interpreter on by default, web search and the GitHub tool offered but off
+until the user turns them on in a chat, the trimmed built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
 memory serves every model, and the memory program refuses a
 memory session once a compaction summary appears. The global "Full context"
 filter, one of the Open WebUI functions the memory program installs, is
@@ -1107,10 +1107,13 @@ rate-limited it and Google and the others answered.
 
 Open WebUI offers the two tools only when web search is on globally, the user
 has the `web_search` permission, the model has the `web_search` capability
-and the chat's Web Search toggle is on. The `kimi-k3` model entry (Admin
-Panel -> Settings -> Models) turns the toggle on by default
-(`defaultFeatureIds`), so K3 itself decides when to search or read a page;
-the entry also marks K3 as text-only, so image uploads are not offered.
+and the chat's Web Search toggle is on. The toggle starts off in every chat:
+the privacy policy sends search terms to public search engines only when
+the user turns web search on, so no model entry lists `web_search` in
+`defaultFeatureIds` (`tests/test_open_webui_models_opt_in.py`). Once the
+user turns it on, the model itself decides when to search or read a page.
+The entries also mark the models as text-only, so image uploads are not
+offered.
 `fetch_url` refuses private and loopback addresses
 (`ENABLE_RAG_LOCAL_WEB_FETCH=false`, checked against the swap controller,
 the hub, the LAN and 10/8), so a user cannot make the hub read internal
@@ -1149,8 +1152,9 @@ The owner asked for these four after K3 told a user it could not browse:
     ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
   ```
 - **GitHub.** `tools/serving/open_webui/tools/github.py`, installed as the
-  Open WebUI tool `github` with public read access and attached to K3
-  (`toolIds`): `github_search` (repositories, code, issues), `github_read`
+  Open WebUI tool `github` with public read access, which a user turns on
+  per chat; no model entry attaches it by default (`toolIds`), because the
+  privacy policy runs tools only when the user turns them on: `github_search` (repositories, code, issues), `github_read`
   (files and directories, the README with the top level), `github_list`
   (issues, pulls, commits, releases) and `github_item` (one issue or pull
   request with its comments and changed files). It only sends GET requests to
@@ -1204,29 +1208,25 @@ repository.
 
 ## Config
 
-`config/litellm-config.yaml` is generated, never edited by hand:
+`config/litellm-config.yaml` is maintained by hand. Every served model has a
+`hosted_vllm/<name>` route to the chat layer (`api_base`
+`http://127.0.0.1:8433/v1`, `api_key: none`) with `model_info.max_input_tokens`
+equal to its lane record's `context_tokens`, and a `<name>-bulk` twin to the
+same chat layer; `*` routes to `glm-5.3`. `litellm_settings` keeps
+`drop_params: true`, `num_retries: 0` (a retry would run a generation twice)
+and `request_timeout: 604800` (a request may wait a week in the queue), and
+`general_settings.cancel_on_disconnect: true` cancels the upstream call when
+the client leaves. `tests/test_litellm_queue_settings.py` checks all of this
+for this door and the chat door. To require a key, add
+`general_settings.master_key: os.environ/LITELLM_MASTER_KEY`, as
+`deployment/hub/litellm-chatui.yaml` has.
 
-```sh
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://127.0.0.1:8433 \
-  --master-key --out config/litellm-config.yaml
-```
-
-The generator writes one `openai/<name>` deployment per `--pair` (or per
-`--registry models.json` entry, `[{"name": ..., "base_url": ...}]`), with
-`api_base` ending in `/v1`, `drop_params: true`, `num_retries: 1` and
-`request_timeout: 600`. `--master-key` adds bearer auth through
-`SPARK_LITELLM_MASTER_KEY`; the generator omits it by default, so always pass
-it for the door. Upstream calls send `SPARK_API_KEY`, which `model_api`
-ignores; set it to any value. Older setups named these `LITELLM_MASTER_KEY`
-and `SPARKPIPE_UPSTREAM_KEY`.
-
-Keep both secrets in their own mode-600 file outside the repository, not in
+Keep the key in its own mode-600 file outside the repository, not in
 the repository's `.env`, which also holds the GitHub PAT:
 
 ```sh
 mkdir -p ~/.config/sparkpipe
-( umask 077; printf 'SPARK_LITELLM_MASTER_KEY="sk-sparkpipe-%s"\nSPARK_API_KEY="unused"\n' \
+( umask 077; printf 'LITELLM_MASTER_KEY="sk-sparkpipe-%s"\n' \
     "$(openssl rand -hex 16)" > ~/.config/sparkpipe/litellm.env )
 ```
 
@@ -1259,7 +1259,7 @@ completions per listed model and requires identical output:
 
 ```sh
 python3 tools/model_api_smoke.py --endpoint http://127.0.0.1:4000 \
-  --token "$SPARK_LITELLM_MASTER_KEY"
+  --token "$LITELLM_MASTER_KEY"
 ```
 
 ## Postgres (virtual keys and spend logs)
@@ -1272,11 +1272,10 @@ Spark:
 brew install postgresql@16
 /opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 start
 /opt/homebrew/opt/postgresql@16/bin/createdb litellm
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://127.0.0.1:8433 --master-key \
-  --database-url postgresql://mac@localhost:5432/litellm \
-  --out config/litellm-config.yaml
 ```
+
+and add `database_url: os.environ/DATABASE_URL` to `general_settings` in
+`config/litellm-config.yaml`.
 
 LiteLLM ships a prisma schema; generate the client and push the schema once:
 
@@ -1287,7 +1286,7 @@ PATH=~/litellm-venv/bin:$PATH DATABASE_URL=postgresql://mac@localhost:5432/litel
 ```
 
 Then start the proxy with `DATABASE_URL` exported next to
-`SPARK_LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
+`LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
 served the admin page, routed completions by name and wrote one
 `LiteLLM_SpendLogs` row per request.
 
@@ -1295,8 +1294,9 @@ served the admin page, routed completions by name and wrote one
 
 1. Bring the deployment's `model_api` up on a known host and port and record
    them with the deployment.
-2. Regenerate `config/litellm-config.yaml` with one `--pair` per route, the
-   existing ones included.
+2. Add the model's route and its `-bulk` twin to `config/litellm-config.yaml`
+   by hand, as described under Config, and run
+   `tests/test_litellm_queue_settings.py`.
 3. Restart the proxy.
 4. Prove routing: `GET /v1/models` through the door lists the name, and
    `tools/model_api_smoke.py` through the door passes.
