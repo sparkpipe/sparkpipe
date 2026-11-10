@@ -698,7 +698,7 @@ Deliveries run in parallel and are retried when a receiver fails, so they can ar
 | --- | --- |
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
-| `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16). A booking shows the market's quote and sends back the quoted first week and price; if either has changed by then, the market books nothing and answers `409 quote_changed` with the new quote |
+| `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16). A booking shows the market's quote and sends back the quoted first week and price; if either has changed by then, the market books nothing and answers `409 quote_changed`, stating the new first week and price |
 | `sparkpipe setup claude-code`, `setup codex`, `setup opencode`, `setup [<harness>] --undo` | Writes the client settings and installs the plugins of §3.8; `--undo` restores the keys setup owns (§3.8). With `--fleet F1A` (or `SPARKPIPE_FLEET`), every model and MCP request the harness sends names that fleet in `X-SparkPipe-Fleet`: `ANTHROPIC_CUSTOM_HEADERS` and the MCP entry's headers for Claude Code, `http_headers` in the provider and MCP tables for Codex, the provider's `options.headers` and the MCP headers for OpenCode. Without a fleet, setup removes a fleet an earlier run wrote. Codex and OpenCode read the key from `SPARKPIPE_API_KEY`, and setup prints `export SPARKPIPE_API_KEY="$(sparkpipe keys show)"` for the shell profile, never the key itself |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
 | `sparkpipe models resident [names]`, `aliases` | §4.5 |
