@@ -68,9 +68,9 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     text/tokenizer.c \
     text/tokenizer_sidecar.c \
     runtime/stage_module_common.c \
+    runtime/stage_module_claims.c \
     runtime/stage_kv_binding.c \
-    runtime/kv_device_copy.c \
-    runtime/memory_buffer.c
+    runtime/kv_device_copy.c
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c

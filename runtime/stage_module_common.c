@@ -32,9 +32,9 @@ SparkStatus SparkStageModuleCudaWaitInitialize(SparkStageModuleCudaWait *wait,cu
     pthread_condattr_t attributes;
     int result;
     if ( wait == 0 || stream == 0 || wait->initialized != 0u )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if ( pthread_mutex_init(&wait->mutex,0) != 0 )
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     result = pthread_condattr_init(&attributes);
     if ( result == 0 )
     {
@@ -48,7 +48,7 @@ SparkStatus SparkStageModuleCudaWaitInitialize(SparkStageModuleCudaWait *wait,cu
     if ( result != 0 )
     {
         pthread_mutex_destroy(&wait->mutex);
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     wait->stream = stream;
     wait->generation = wait->completed_generation = 0u;
@@ -64,9 +64,9 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
     cudaError_t error;
     int result = 0;
     if ( wait == 0 || wait->initialized == 0u || timeout_ns == 0u || timeout_ns > UINT64_C(3600000000000) )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     if ( clock_gettime(CLOCK_MONOTONIC,&deadline) != 0 )
-        return(SPARK_STATUS_INTERNAL_ERROR);
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     deadline.tv_sec += (time_t)(timeout_ns / UINT64_C(1000000000));
     deadline.tv_nsec += (long)(timeout_ns % UINT64_C(1000000000));
     if ( deadline.tv_nsec >= 1000000000L )
@@ -78,7 +78,7 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
     if ( wait->waiting != 0u )
     {
         pthread_mutex_unlock(&wait->mutex);
-        return(SPARK_STATUS_BUSY);
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     wait->waiting = 1u;
     if ( wait->terminal_pending == 0u )
@@ -101,7 +101,7 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
             wait->terminal_pending = 0u;
             wait->waiting = 0u;
             pthread_mutex_unlock(&wait->mutex);
-            return(SPARK_STATUS_IO_ERROR);
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
         }
     }
     while ( wait->generation != wait->completed_generation && result == 0 )
@@ -165,12 +165,12 @@ SparkStatus SparkStageModuleCudaWaitFor(SparkStageModuleCudaWait *wait,uint64_t 
 SparkStatus SparkStageModuleCudaWaitDestroy(SparkStageModuleCudaWait *wait)
 {
     if ( wait == 0 || wait->initialized == 0u )
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     pthread_mutex_lock(&wait->mutex);
     if ( wait->waiting != 0u || wait->terminal_pending != 0u || wait->generation != wait->completed_generation )
     {
         pthread_mutex_unlock(&wait->mutex);
-        return(SPARK_STATUS_BUSY);
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
     pthread_mutex_unlock(&wait->mutex);
     pthread_cond_destroy(&wait->changed);
@@ -974,7 +974,7 @@ static SparkStatus SparkStageModulePackArenaPath(SparkStageModulePackArena *aren
 	}
 #endif
 	if (path_bytes <= 0 || (uint64_t)path_bytes >= sizeof(arena->pack_path))
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	arena->pack_path[path_bytes] = '\0';
 	return(SPARK_STATUS_OK);
 }
@@ -985,7 +985,7 @@ static SparkStatus SparkStageModulePackArenaSidecarDigest(SparkStageModulePackAr
 	FILE *sidecar;
 	size_t bytes = 0u,index;
 	if (snprintf(path,sizeof(path),"%s.sha256",arena->pack_path) >= (int)sizeof(path))
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	sidecar = fopen(path,"rb");
 	if (sidecar == 0)
 	{
@@ -1040,19 +1040,19 @@ static SparkStatus SparkStageModulePackArenaEnsure(SparkStageModuleLedger *ledge
 	SparkStatus status;
 	uint32_t first_pack;
 	if (ledger == 0 || file == 0 || selected == 0)
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*selected = 0;
 	status = SparkWeightdAttachRequested();
 	if (status != SPARK_STATUS_OK)
 		SPARK_RETURN(status);
 	if (fstat(fileno(file),&pack_stat) != 0 || pack_stat.st_size <= 0)
-		return(SPARK_STATUS_IO_ERROR);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	arena = SparkStageModulePackArenaFind(ledger,&pack_stat);
 	if (arena == 0)
 	{
 		arena = (SparkStageModulePackArena *)calloc(1u,sizeof(*arena));
 		if (arena == 0)
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		first_pack = ledger->pack_arena == 0 ? 1u : 0u;
 		arena->next = (SparkStageModulePackArena *)ledger->pack_arena;
 		ledger->pack_arena = arena;
@@ -1077,12 +1077,12 @@ static SparkStatus SparkStageModulePackArenaSlice(
 	SparkStageModulePackArena *arena;
 	SparkStatus status;
 	if ( (offset & UINT64_C(0xff)) != 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkStageModulePackArenaEnsure(ledger,file,&arena);
 	if (status != SPARK_STATUS_OK)
 		SPARK_RETURN(status);
 	if (offset > arena->pack_bytes || bytes > arena->pack_bytes - offset)
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*pointer = (uint8_t *)arena->outcome.map_base + offset;
 	return(SPARK_STATUS_OK);
 }
@@ -1476,7 +1476,7 @@ SparkStatus SparkStageModuleLoadDeviceRegion(
     SparkStatus status;
 
     if (ledger == 0 || file == 0 || pointer == 0 || bytes == 0u)
-        return(SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     *pointer = 0;
     status = SparkWeightdAttachRequested();
     if (status == SPARK_STATUS_OK)
@@ -1619,229 +1619,6 @@ void SparkStageModuleRuntimeSnapshotInitialize(
     snapshot->active_submission_count = slot_count - available_slot_count;
 }
 
-SparkStatus SparkStageModuleSlotClaim(
-    atomic_uint *slot_states,
-    uint32_t slot_count,
-    uint32_t *slot_index)
-{
-    uint32_t index;
-
-    if (slot_states == 0 || slot_index == 0 || slot_count == 0u)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    *slot_index = SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
-    for (index = 0u; index < slot_count; index++)
-    {
-        unsigned int expected = SPARK_STAGE_MODULE_SLOT_FREE;
-        if (atomic_compare_exchange_strong_explicit(
-                &slot_states[index],
-                &expected,
-                SPARK_STAGE_MODULE_SLOT_CLAIMED,
-                memory_order_acquire,
-                memory_order_relaxed))
-        {
-            *slot_index = index;
-            return SPARK_STATUS_OK;
-        }
-    }
-    SPARK_FAIL(SPARK_STATUS_BUSY);
-}
-
-SparkStatus SparkStageModuleIndexSetClaim(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count)
-{
-    uint32_t claimed_count;
-
-    if (index_states == 0 || indices == 0 || index_capacity == 0u ||
-        index_count == 0u || index_count > index_capacity)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-
-    for (claimed_count = 0u; claimed_count < index_count; claimed_count++)
-    {
-        unsigned int expected_state;
-        uint32_t index;
-        uint32_t previous_index;
-        SparkStatus status;
-
-        index = indices[claimed_count];
-        if (index >= index_capacity)
-        {
-            SparkStageModuleIndexSetRelease(
-                index_states,
-                index_capacity,
-                indices,
-                claimed_count);
-            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-        }
-        expected_state = SPARK_STAGE_MODULE_SLOT_FREE;
-        if (!atomic_compare_exchange_strong_explicit(
-                &index_states[index],
-                &expected_state,
-                claimed_count + 1u,
-                memory_order_acquire,
-                memory_order_relaxed))
-        {
-            status = SPARK_STATUS_BUSY;
-            for (previous_index = 0u; previous_index < claimed_count; previous_index++)
-            {
-                if (indices[previous_index] == index)
-                {
-                    status = SPARK_STATUS_INVALID_ARGUMENT;
-                    break;
-                }
-            }
-            SparkStageModuleIndexSetRelease(
-                index_states,
-                index_capacity,
-                indices,
-                claimed_count);
-            SPARK_RETURN(status);
-        }
-    }
-    return SPARK_STATUS_OK;
-}
-
-SparkStatus SparkStageModuleIndexClaimOrdinal(
-    const atomic_uint *index_states,
-    uint32_t index_capacity,
-    uint32_t index,
-    uint32_t *ordinal_out)
-{
-    unsigned int claim;
-
-    if (index_states == 0 || ordinal_out == 0 || index >= index_capacity)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    *ordinal_out = UINT32_MAX;
-    claim = atomic_load_explicit(&index_states[index], memory_order_acquire);
-    if (claim == SPARK_STAGE_MODULE_SLOT_FREE)
-    {
-        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-    }
-    if (claim > index_capacity)
-    {
-        SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-    }
-    *ordinal_out = claim - 1u;
-    return SPARK_STATUS_OK;
-}
-
-SparkStatus SparkStageModuleIndexSetClaimAndPrepare(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count,
-    SparkStageModuleClaimedIndexPrepareFunction prepare_function,
-    void *prepare_context)
-{
-    SparkStatus status;
-
-    if (prepare_function == 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    status = SparkStageModuleIndexSetClaim(
-        index_states,
-        index_capacity,
-        indices,
-        index_count);
-    if (status != SPARK_STATUS_OK)
-    {
-        SPARK_RETURN(status);
-    }
-    status = prepare_function(prepare_context);
-    if (status != SPARK_STATUS_OK)
-    {
-        SparkStageModuleIndexSetRelease(
-            index_states,
-            index_capacity,
-            indices,
-            index_count);
-    }
-    SPARK_RETURN(status);
-}
-
-void SparkStageModuleIndexSetRelease(
-    atomic_uint *index_states,
-    uint32_t index_capacity,
-    const uint32_t *indices,
-    uint32_t index_count)
-{
-    uint32_t index_offset;
-
-    if (index_states == 0 || indices == 0)
-    {
-        return;
-    }
-    for (index_offset = 0u; index_offset < index_count; index_offset++)
-    {
-        uint32_t index;
-
-        index = indices[index_offset];
-        if (index < index_capacity)
-        {
-            atomic_store_explicit(
-                &index_states[index],
-                SPARK_STAGE_MODULE_SLOT_FREE,
-                memory_order_release);
-        }
-    }
-}
-
-void SparkStageModuleAtomicStateArrayInitialize(
-    atomic_uint *states,
-    uint32_t state_count)
-{
-    uint32_t state_index;
-
-    if (states == 0)
-    {
-        return;
-    }
-    for (state_index = 0u; state_index < state_count; state_index++)
-    {
-        atomic_init(&states[state_index], SPARK_STAGE_MODULE_SLOT_FREE);
-    }
-}
-
-uint32_t SparkStageModuleSlotAvailableCount(
-    const atomic_uint *slot_states,
-    uint32_t slot_count)
-{
-    uint32_t available_count;
-    uint32_t index;
-
-    if (slot_states == 0)
-    {
-        return 0u;
-    }
-
-    available_count = 0u;
-    for (index = 0u; index < slot_count; index++)
-    {
-        if (atomic_load_explicit(&slot_states[index], memory_order_relaxed) ==
-            SPARK_STAGE_MODULE_SLOT_FREE)
-        {
-            available_count++;
-        }
-    }
-    return available_count;
-}
-
-uint32_t SparkStageModuleSlotCountFree(
-    const atomic_uint *slot_states,
-    uint32_t slot_count)
-{
-    return SparkStageModuleSlotAvailableCount(slot_states, slot_count);
-}
-
 SparkStatus SparkStageModuleWaitForSlots(
     const char *module_tag,
     const atomic_uint *slot_states,
@@ -1880,20 +1657,6 @@ SparkStatus SparkStageModuleWaitForSlots(
         (void)nanosleep(&sleep_interval, 0);
     }
     return SPARK_STATUS_OK;
-}
-
-void SparkStageModuleSlotRelease(
-    atomic_uint *slot_states,
-    uint32_t slot_index)
-{
-    if (slot_states == 0 || slot_index == SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT)
-    {
-        return;
-    }
-    atomic_store_explicit(
-        &slot_states[slot_index],
-        SPARK_STAGE_MODULE_SLOT_FREE,
-        memory_order_release);
 }
 
 void SparkStageModuleCompleteAndReleaseClaims(

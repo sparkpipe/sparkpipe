@@ -1,0 +1,111 @@
+test_attn_prefill_cuda	main-fded9e032-src	0	3	PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches 
+test_attn_prefill_cuda	pr1901-ce30c377b-src	0	3	PASS latent prefill attention on the device: one sequence of 9..1024 causal rows after 0..1024 cached positions matches 
+test_attn_prefill_sparse_cuda	main-fded9e032-src	0	5	PASS sparse latent prefill attention on the device: blocks of 32 and of 16 queries (8 and 4 rows of 4 heads) match the f
+test_attn_prefill_sparse_cuda	pr1901-ce30c377b-src	0	6	PASS sparse latent prefill attention on the device: blocks of 32 and of 16 queries (8 and 4 rows of 4 heads) match the f
+test_bf16_convert_cuda	main-fded9e032-src	0	1	PASS bf16_convert_cuda: SparkMathE4m3ToFloat, SparkMathUe4m3ToFloat, SparkMathUe8m0ToFloat and SparkMathE2m1ToFloat equa
+test_bf16_convert_cuda	pr1901-ce30c377b-src	0	1	PASS bf16_convert_cuda: SparkMathE4m3ToFloat, SparkMathUe4m3ToFloat, SparkMathUe8m0ToFloat and SparkMathE2m1ToFloat equa
+test_causal_conv_tiled_cuda	main-fded9e032-src	0	3	PASS causal conv tiled: outputs and committed windows equal the serial kernel bit for bit
+test_causal_conv_tiled_cuda	pr1901-ce30c377b-src	0	2	PASS causal conv tiled: outputs and committed windows equal the serial kernel bit for bit
+test_delta_rule_column_cuda	main-fded9e032-src	0	1	PASS delta rule column kernel equals the block kernel bit for bit
+test_delta_rule_column_cuda	pr1901-ce30c377b-src	0	2	PASS delta rule column kernel equals the block kernel bit for bit
+test_device_contract_cuda	main-fded9e032-src	0	1	PASS device contract (cuda backend)
+test_device_contract_cuda	pr1901-ce30c377b-src	0	1	PASS device contract (cuda backend)
+test_expanded_gather_prefill_cuda	main-fded9e032-src	0	17	expanded gather prefill: PASS
+test_expanded_gather_prefill_cuda	pr1901-ce30c377b-src	0	17	expanded gather prefill: PASS
+test_expanded_mha_shard_cuda	main-fded9e032-src	0	14	PASS expanded-MHA shard attention: latent keys expanded per head into the tiled kernel's slots reproduce the reference M
+test_expanded_mha_shard_cuda	pr1901-ce30c377b-src	0	15	PASS expanded-MHA shard attention: latent keys expanded per head into the tiled kernel's slots reproduce the reference M
+test_glm5_next_hc_site_cuda	main-fded9e032-src	0	13	PASS glm5_next hc site: 8-row clusters equal one-row clusters bit for bit at every row count
+test_glm5_next_hc_site_cuda	pr1901-ce30c377b-src	0	14	PASS glm5_next hc site: 8-row clusters equal one-row clusters bit for bit at every row count
+test_glm5_next_pool_score_cuda	main-fded9e032-src	0	13	PASS glm5_next pool score: the multi-row kernel equals the one-pool kernel bit for bit
+test_glm5_next_pool_score_cuda	pr1901-ce30c377b-src	0	14	PASS glm5_next pool score: the multi-row kernel equals the one-pool kernel bit for bit
+test_glm5_next_verify_cuda	main-fded9e032-src	0	31	PASS glm5_next verify: frames of 1, 2, 7, 16 and 256 rows, and a 16-row frame entering the top-k regime, equal one-row d
+test_glm5_next_verify_cuda	pr1901-ce30c377b-src	0	31	PASS glm5_next verify: frames of 1, 2, 7, 16 and 256 rows, and a 16-row frame entering the top-k regime, equal one-row d
+test_glm_attach_kv_cuda	main-fded9e032-src	0	6	PASS glm_attach_kv_cuda: GLM attaches KV only when index layers span every pool page at this rank's share of a page and 
+test_glm_attach_kv_cuda	pr1901-ce30c377b-src	0	6	PASS glm_attach_kv_cuda: GLM attaches KV only when index layers span every pool page at this rank's share of a page and 
+test_gqa_shard_cuda	main-fded9e032-src	0	19	PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grain
+test_gqa_shard_cuda	pr1901-ce30c377b-src	0	19	PASS context-split GQA attention on the device: decode and causal prefill rows, 2/4/8/16 KV heads, degrees 4/8/16, grain
+test_head_certified_cuda	main-fded9e032-src	0	7	PASS head_certified_cuda
+test_head_certified_cuda	pr1901-ce30c377b-src	0	6	PASS head_certified_cuda
+test_hyper_inject_cuda	main-fded9e032-src	0	3	PASS hyper-connection inject weights and group norm on the device: 1..10 rows, bitwise equal to the reference kernels
+test_hyper_inject_cuda	pr1901-ce30c377b-src	0	2	PASS hyper-connection inject weights and group norm on the device: 1..10 rows, bitwise equal to the reference kernels
+test_index_select_bound_cuda	main-fded9e032-src	0	2	PASS index_select_bound_cuda: a context inside the bitmap selects in range and leaves the next words alone; one past it 
+test_index_select_bound_cuda	pr1901-ce30c377b-src	0	3	PASS index_select_bound_cuda: a context inside the bitmap selects in range and leaves the next words alone; one past it 
+test_index_shard_cuda	main-fded9e032-src	0	3	PASS index shard cuda: sharded index scores equal the replicated scores bit for bit and the merged per-rank candidates s
+test_index_shard_cuda	pr1901-ce30c377b-src	0	4	PASS index shard cuda: sharded index scores equal the replicated scores bit for bit and the merged per-rank candidates s
+test_k3_index_exchange_cuda	main-fded9e032-src	0	65	PASS k3_index_exchange_cuda: chunks with a row per rank exchange candidates by row owner, merge only their own rows and 
+test_k3_index_exchange_cuda	pr1901-ce30c377b-src	0	65	PASS k3_index_exchange_cuda: chunks with a row per rank exchange candidates by row owner, merge only their own rows and 
+test_k3_shard_weights_cuda	main-fded9e032-src	0	13	PASS K3 shard weights from the window: 24 KDA tensors and the MLA layer's three ranges placed, unbound fields empty, ref
+test_k3_shard_weights_cuda	pr1901-ce30c377b-src	0	12	PASS K3 shard weights from the window: 24 KDA tensors and the MLA layer's three ranges placed, unbound fields empty, ref
+test_k3_streamed_kda_cuda	main-fded9e032-src	0	14	PASS streamed KDA vs TP16: worst |diff| 0, largest attention contribution 3.312, recurrent states identical 16 of 16, no
+test_k3_streamed_kda_cuda	pr1901-ce30c377b-src	0	15	PASS streamed KDA vs TP16: worst |diff| 0, largest attention contribution 3.312, recurrent states identical 16 of 16, no
+test_k3_streamed_kda_nodes_cuda	main-fded9e032-src	0	60	PASS KDA on 4 nodes x 2 passes, 130 real tokens, vs one node: relative RMS 0.000274; vs TP16-equivalent sequential: 0.00
+test_k3_streamed_kda_nodes_cuda	pr1901-ce30c377b-src	0	59	PASS KDA on 4 nodes x 2 passes, 130 real tokens, vs one node: relative RMS 0.000274; vs TP16-equivalent sequential: 0.00
+test_k3_streamed_kda_segments_cuda	main-fded9e032-src	0	15	PASS KDA as 4 chunks vs 1 chunk: relative RMS 0.000229; vs TP16-equivalent sequential: 0.00287 (worst 0.0625), end state
+test_k3_streamed_kda_segments_cuda	pr1901-ce30c377b-src	0	15	PASS KDA as 4 chunks vs 1 chunk: relative RMS 0.000229; vs TP16-equivalent sequential: 0.00287 (worst 0.0625), end state
+test_k3_streamed_mla_cuda	main-fded9e032-src	0	16	PASS streamed MLA vs TP16 latent attention: worst |diff| 0.03125, largest attention contribution 4.191, relative RMS 0.0
+test_k3_streamed_mla_cuda	pr1901-ce30c377b-src	0	15	PASS streamed MLA vs TP16 latent attention: worst |diff| 0.03125, largest attention contribution 4.191, relative RMS 0.0
+test_k3_streamed_mla_index_cuda	main-fded9e032-src	0	17	PASS streamed MLA indexer: 4 nodes vs 1 0; rows < 2048 sparse vs dense 0.0093, rows >= 2048 0.563; selection overlap wit
+test_k3_streamed_mla_index_cuda	pr1901-ce30c377b-src	0	17	PASS streamed MLA indexer: 4 nodes vs 1 0; rows < 2048 sparse vs dense 0.0093, rows >= 2048 0.563; selection overlap wit
+test_k3_streamed_mla_nodes_cuda	main-fded9e032-src	0	54	PASS MLA on 4 nodes x 2 passes vs one node: relative RMS 0; vs one-device streamed MLA: 0.00389 (worst 0.03125), nonfini
+test_k3_streamed_mla_nodes_cuda	pr1901-ce30c377b-src	0	52	PASS MLA on 4 nodes x 2 passes vs one node: relative RMS 0; vs one-device streamed MLA: 0.00389 (worst 0.03125), nonfini
+test_k3_streamed_moe_cuda	main-fded9e032-src	0	18	PASS streamed MoE vs TP16, 16 shards per down projection: worst |diff| 0.125, largest MoE contribution 10.17, largest ou
+test_k3_streamed_moe_cuda	pr1901-ce30c377b-src	0	17	PASS streamed MoE vs TP16, 16 shards per down projection: worst |diff| 0.125, largest MoE contribution 10.17, largest ou
+test_k3_streamed_slice_cuda	main-fded9e032-src	0	24	PASS streamed two-layer slice on 4 nodes x 2 passes vs one node: worst |diff| 0, relative RMS 0, nonfinite 0
+test_k3_streamed_slice_cuda	pr1901-ce30c377b-src	0	24	PASS streamed two-layer slice on 4 nodes x 2 passes vs one node: worst |diff| 0, relative RMS 0, nonfinite 0
+test_k3_tp_context_cuda	main-fded9e032-src	0	65	PASS k3_tp_context_cuda: K3 never skips a collective round it owes, fails loudly when it cannot apply one, and a new ste
+test_k3_tp_context_cuda	pr1901-ce30c377b-src	0	66	PASS k3_tp_context_cuda: K3 never skips a collective round it owes, fails loudly when it cannot apply one, and a new ste
+test_kv_shard_cuda	main-fded9e032-src	0	9	PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, grains 1 and 4, 4 and 6 heads per rank, sharded store and at
+test_kv_shard_cuda	pr1901-ce30c377b-src	0	8	PASS latent KV shard on the device: B1/B8/B64 at 1k and 8k, grains 1 and 4, 4 and 6 heads per rank, sharded store and at
+test_kv_snapshot_cuda	main-fded9e032-src	0	0	test_kv_snapshot_cuda: prompt_tokens=1000 pages=16 snapshot_bytes_per_page=131072 logits=4096 bitwise_differences=0 pref
+test_kv_snapshot_cuda	pr1901-ce30c377b-src	0	1	test_kv_snapshot_cuda: prompt_tokens=1000 pages=16 snapshot_bytes_per_page=131072 logits=4096 bitwise_differences=0 pref
+test_latent_attention_kernel_cuda	main-fded9e032-src	0	3	OK
+test_latent_attention_kernel_cuda	pr1901-ce30c377b-src	0	2	OK
+test_latent_gather_prefill_cuda	main-fded9e032-src	0	6	latent gather prefill: PASS
+test_latent_gather_prefill_cuda	pr1901-ce30c377b-src	0	6	latent gather prefill: PASS
+test_latent_rope_heads_cuda	main-fded9e032-src	0	3	PASS latent all-heads split attention on the device: B1/B4/B8 at 100/1k/2k dense and 8k selected, 1/2/4/8 heads, matches
+test_latent_rope_heads_cuda	pr1901-ce30c377b-src	0	3	PASS latent all-heads split attention on the device: B1/B4/B8 at 100/1k/2k dense and 8k selected, 1/2/4/8 heads, matches
+test_latent_shard_decode_cuda	main-fded9e032-src	0	5	latent shard decode: PASS
+test_latent_shard_decode_cuda	pr1901-ce30c377b-src	0	5	latent shard decode: PASS
+test_latent_shard_prefill_bits_cuda	main-fded9e032-src	0	18	latent shard prefill bits: PASS
+test_latent_shard_prefill_bits_cuda	pr1901-ce30c377b-src	0	18	latent shard prefill bits: PASS
+test_latent_shard_sparse_cuda	main-fded9e032-src	0	24	PASS latent_shard_sparse_cuda: the tensor-core shard attention is the flash form on one rank, stays within the flash for
+test_latent_shard_sparse_cuda	pr1901-ce30c377b-src	0	22	PASS latent_shard_sparse_cuda: the tensor-core shard attention is the flash form on one rank, stays within the flash for
+test_layer_norm_cuda	main-fded9e032-src	0	2	PASS layer norm: every row matches the reference and repeated launches are bit-identical
+test_layer_norm_cuda	pr1901-ce30c377b-src	0	2	PASS layer norm: every row matches the reference and repeated launches are bit-identical
+test_mesh_copy_down_cuda	main-fded9e032-src	0	2	PASS mesh_copy_down_cuda: copy-down copies a shipped round, reports cancel and timeout, and keeps an earlier error code
+test_mesh_copy_down_cuda	pr1901-ce30c377b-src	0	3	PASS mesh_copy_down_cuda: copy-down copies a shipped round, reports cancel and timeout, and keeps an earlier error code
+test_moe_finalize_add_cuda	main-fded9e032-src	0	3	PASS the fused expert combine adds the shared expert in the same pass and is bit-equal to finalize then add
+test_moe_finalize_add_cuda	pr1901-ce30c377b-src	0	2	PASS the fused expert combine adds the shared expert in the same pass and is bit-equal to finalize then add
+test_poly_norm_diff_cuda	main-fded9e032-src	0	1	PASS poly_norm_diff_cuda
+test_poly_norm_diff_cuda	pr1901-ce30c377b-src	0	2	PASS poly_norm_diff_cuda
+test_project_chain_cuda	main-fded9e032-src	0	22	PASS per-head chain projection on the device: rows 1..8 are bit-equal to the tile kernel; above 8 rows the tensor-core k
+test_project_chain_cuda	pr1901-ce30c377b-src	0	23	PASS per-head chain projection on the device: rows 1..8 are bit-equal to the tile kernel; above 8 rows the tensor-core k
+test_quantise_rows_cuda	main-fded9e032-src	0	2	PASS quantise_rows_cuda
+test_quantise_rows_cuda	pr1901-ce30c377b-src	0	2	PASS quantise_rows_cuda
+test_rms_norm_cuda	main-fded9e032-src	0	1	PASS fused residual RMS norm on the device: 1..16 rows, strided and in-place rows, bitwise equal to the single-pass kern
+test_rms_norm_cuda	pr1901-ce30c377b-src	0	2	PASS fused residual RMS norm on the device: 1..16 rows, strided and in-place rows, bitwise equal to the single-pass kern
+test_route_nan_cuda	main-fded9e032-src	0	2	PASS route nan: NaN and infinite router rows never yield an out-of-range or repeated expert, rank below every finite sco
+test_route_nan_cuda	pr1901-ce30c377b-src	0	2	PASS route nan: NaN and infinite router rows never yield an out-of-range or repeated expert, rank below every finite sco
+test_runner_capture_flags_cuda	main-fded9e032-src	0	9	STAGE-GRAPH-CAPTURE-FAILED key=1 rows=2 status=1 cuda=no error: this row count runs eager
+test_runner_capture_flags_cuda	pr1901-ce30c377b-src	0	8	STAGE-GRAPH-CAPTURE-FAILED key=1 rows=2 status=1 cuda=no error: this row count runs eager
+test_runner_verify_step_cuda	main-fded9e032-src	0	9	PASS runner_verify_step_cuda: every verify dispatch reaches the model as a step that does not commit, whatever state the
+test_runner_verify_step_cuda	pr1901-ce30c377b-src	0	8	PASS runner_verify_step_cuda: every verify dispatch reaches the model as a step that does not commit, whatever state the
+test_sample_threads_cuda	main-fded9e032-src	0	17	PASS sampling threads: 252 rows over 7 logit shapes (ties, flat, bf16 levels, -inf, twin peaks, wide, one spike) and 6 r
+test_sample_threads_cuda	pr1901-ce30c377b-src	0	17	PASS sampling threads: 252 rows over 7 logit shapes (ties, flat, bf16 levels, -inf, twin peaks, wide, one spike) and 6 r
+test_score_dump_cuda	main-fded9e032-src	0	18	PASS tp1_flash_head {'rows': 24, 'tp': 1, 'lanes': 32, 'log_z_max_error': 0.0, 'fp32_accumulation_vs_float64': 6.1573693
+test_score_dump_cuda	pr1901-ce30c377b-src	0	18	PASS tp1_flash_head {'rows': 24, 'tp': 1, 'lanes': 32, 'log_z_max_error': 0.0, 'fp32_accumulation_vs_float64': 6.1573693
+test_skinny_dependent_cuda	main-fded9e032-src	0	11	PASS skinny early dependent launch and grouped experts on the device: rows 1..8 bitwise equal to the serialized and per-
+test_skinny_dependent_cuda	pr1901-ce30c377b-src	0	10	PASS skinny early dependent launch and grouped experts on the device: rows 1..8 bitwise equal to the serialized and per-
+test_skinny_mxfp4_cuda	main-fded9e032-src	0	11	PASS skinny mxfp4 on device: 4096x2048 expert shapes match an f64 dequantised reference
+test_skinny_mxfp4_cuda	pr1901-ce30c377b-src	0	12	PASS skinny mxfp4 on device: 4096x2048 expert shapes match an f64 dequantised reference
+test_stage_runner_sum_rule_cuda	main-fded9e032-src	0	9	PASS stage_runner_sum_rule_cuda: prefill waves sum pair-first; prefill-verify, decode, verify, small and unpaired waves 
+test_stage_runner_sum_rule_cuda	pr1901-ce30c377b-src	0	8	PASS stage_runner_sum_rule_cuda: prefill waves sum pair-first; prefill-verify, decode, verify, small and unpaired waves 
+test_stream_gemm_cuda	main-fded9e032-src	0	14	PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within 1.0 bf16 ulp of the fp64 reference at every
+test_stream_gemm_cuda	pr1901-ce30c377b-src	0	14	PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within 1.0 bf16 ulp of the fp64 reference at every
+test_topk_exact_cuda	main-fded9e032-src	0	2	PASS exact top-k on the device: the cluster selection returns the single-block indices in order, ties and -inf included
+test_topk_exact_cuda	pr1901-ce30c377b-src	0	3	PASS exact top-k on the device: the cluster selection returns the single-block indices in order, ties and -inf included
+test_topk_small_cuda	main-fded9e032-src	0	2	PASS topk small cuda: grouped 256/8 top 8, ungrouped 384 top 8 (round selection) and 256 top 22 (sort) each select the r
+test_topk_small_cuda	pr1901-ce30c377b-src	0	2	PASS topk small cuda: grouped 256/8 top 8, ungrouped 384 top 8 (round selection) and 256 top 22 (sort) each select the r
+test_topk_warp_cuda	main-fded9e032-src	0	2	PASS warp router top-8 on the device: 1..64 rows, 8..512 experts, ties and bias, bitwise equal to the shuffle-reduction 
+test_topk_warp_cuda	pr1901-ce30c377b-src	0	1	PASS warp router top-8 on the device: 1..64 rows, 8..512 experts, ties and bias, bitwise equal to the shuffle-reduction 
+sweep finished 21:51:37

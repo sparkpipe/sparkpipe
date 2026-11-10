@@ -318,6 +318,7 @@ typedef struct SparkStageRunnerState
 	uint32_t stray_head_keys;
 	uint64_t stray_bit_bytes;
 	cudaStream_t stream;
+	SparkDeviceQueue *queue;
 	uint32_t max_rows;
 	uint32_t max_context;
 	uint32_t multiprocessors;
@@ -1120,6 +1121,19 @@ static void StageRunnerMemoryMark(SparkStageRunnerState *state, const char *phas
 	state->memory_mark_available = available;
 }
 
+static SparkStatus StageRunnerAdoptQueue(SparkStageRunnerState *state)
+{
+	SparkStatus status = SparkDeviceInitialize(0);
+	if ( status == SPARK_STATUS_DUPLICATE )
+		status = SPARK_STATUS_OK;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceQueueAdopt(&state->queue, (void *)state->stream, "stage runner");
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr, "sparkpipe_stage_runner: the device API cannot adopt the execution stream: %s %s\n",
+			SparkDeviceLastError()->operation, SparkDeviceLastError()->text);
+	return status;
+}
+
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration,
 	const SparkStageRunnerModelInterface *model)
 {
@@ -1141,7 +1155,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	state->tap_final_entry = UINT32_MAX;
 	runner->abi_version = SPARK_STAGE_RUNNER_ABI_VERSION;
 	runner->descriptor_bytes = SPARK_STAGE_RUNNER_BYTES;
-	runner->flags = configuration->flags;
+	runner->flags = (configuration->flags & ~SPARK_STAGE_RUNNER_FLAG_OWN_PACK) | SparkStageRunnerImplementationFlags();
 	runner->stage_index = configuration->stage_index;
 	runner->stage_count = configuration->stage_count;
 	runner->tp_degree = configuration->tp_degree;
@@ -1252,6 +1266,8 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 		StageRunnerMemoryMark(state, "buffers", 0u);
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLanes(state);
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerAdoptQueue(state);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkStageRunnerDestroy(runner);
@@ -3038,15 +3054,15 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 	return state->model_interface->check != 0 ? state->model_interface->check(state->model) : SPARK_STATUS_OK;
 }
 
-SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue)
 {
 	SparkStageRunnerState *state;
 	if ( runner == 0 || runner->private_state == 0 || buffer == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	state = (SparkStageRunnerState *)runner->private_state;
-	if ( state->model_interface->recurrent_copy == 0 || bytes != state->geometry.recurrent_bytes )
+	if ( state->model_interface->recurrent_copy == 0 || bytes != state->geometry.recurrent_bytes || (queue != 0 && queue != state->queue) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	return state->model_interface->recurrent_copy(state->model, to_buffer, slot, buffer, bytes, stream);
+	return state->model_interface->recurrent_copy(state->model, to_buffer, slot, buffer, bytes, queue != 0 ? (void *)state->stream : 0);
 }
 
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes)
@@ -3077,12 +3093,27 @@ void *SparkStageRunnerModel(const SparkStageRunner *runner)
 	return ((const SparkStageRunnerState *)runner->private_state)->model;
 }
 
+SparkDeviceQueue *SparkStageRunnerQueue(const SparkStageRunner *runner)
+{
+	if ( runner == 0 || runner->private_state == 0 )
+		return 0;
+	return ((const SparkStageRunnerState *)runner->private_state)->queue;
+}
+
+uint32_t SparkStageRunnerImplementationFlags(void)
+{
+	return 0u;
+}
+
 void SparkStageRunnerDestroy(SparkStageRunner *runner)
 {
 	SparkStageRunnerState *state;
 	if ( runner == 0 || runner->private_state == 0 )
 		return;
 	state = (SparkStageRunnerState *)runner->private_state;
+	if ( state->queue != 0 )
+		(void)SparkDeviceQueueDestroy(state->queue);
+	state->queue = 0;
 	StageRunnerDestroyLanes(state);
 	StageRunnerGraphDrop(state);
 	StageRunnerGraphPrefetchFree(state);

@@ -1,14 +1,13 @@
 #pragma once
 
 #include "inference/kernels/head.cuh"
+#include "inference/kernels/kernel_math.cuh"
 #include "include/sparkpipe/spark_sampling.h"
 #include <stdint.h>
 
 #define LM_SAMPLE_DIGIT_BITS 8u
 #define LM_SAMPLE_DIGITS (1u << LM_SAMPLE_DIGIT_BITS)
 #define LM_SAMPLE_PASSES (64u / LM_SAMPLE_DIGIT_BITS)
-#define LM_SAMPLE_MASS_ONE 4294967296.0f
-#define LM_SAMPLE_MASS_FLOOR (-30.0f)
 #define LM_SAMPLE_HISTOGRAM_COPIES(threads) ((threads) >= 64u ? 16u : 1u)
 
 typedef struct LmSampleVocab
@@ -34,25 +33,6 @@ typedef struct LmSampleRows
 	uint32_t rows;
 }
 LmSampleRows;
-
-static __host__ __device__ __forceinline__ uint32_t LmSampleOrdered(float value)
-{
-	union { float f; uint32_t u; } bits;
-	if ( value != value )
-		return(0u);
-	bits.f = value;
-	return(bits.u ^ ((bits.u & 0x80000000u) != 0u ? 0xffffffffu : 0x80000000u));
-}
-
-static __host__ __device__ __forceinline__ uint64_t LmSampleKey(float value, uint32_t token)
-{
-	return(((uint64_t)LmSampleOrdered(value) << 32u) | (uint64_t)(0xffffffffu - token));
-}
-
-static __host__ __device__ __forceinline__ uint32_t LmSampleKeyToken(uint64_t key)
-{
-	return(0xffffffffu - (uint32_t)key);
-}
 
 static __device__ __forceinline__ float LmSampleLogit(const LmSampleVocab &vocab, uint32_t row, uint32_t token)
 {
@@ -179,14 +159,6 @@ static __device__ __forceinline__ uint64_t LmSampleBlockSumU64(LmSampleShared<TH
 	return(result);
 }
 
-static __device__ __forceinline__ uint64_t LmSampleMass(float logit, float maximum, float inverse_temperature)
-{
-	const float scaled = (logit - maximum) * inverse_temperature;
-	if ( scaled < LM_SAMPLE_MASS_FLOOR )
-		return(0u);
-	return((uint64_t)(expf(scaled) * LM_SAMPLE_MASS_ONE));
-}
-
 template<uint32_t THREADS>
 static __device__ __forceinline__ uint64_t LmSampleSelect(LmSampleShared<THREADS> &shared, const LmSampleVocab &vocab, uint32_t row,
 	uint64_t floor_key, uint64_t target, uint32_t by_mass, float maximum, float inverse_temperature)
@@ -208,10 +180,10 @@ static __device__ __forceinline__ uint64_t LmSampleSelect(LmSampleShared<THREADS
 		for (cursor = LmSampleCursorStart(vocab, threadIdx.x); cursor.token < vocab.vocabulary; LmSampleCursorAdvance(vocab, cursor, THREADS))
 		{
 			const float logit = LmSampleCursorLogit(vocab, row, cursor);
-			key = LmSampleKey(logit, cursor.token);
+			key = SparkMathSampleKey(logit, cursor.token);
 			if ( key < floor_key || (pass != 0u && (key >> (shift + LM_SAMPLE_DIGIT_BITS)) != (prefix >> (shift + LM_SAMPLE_DIGIT_BITS))) )
 				continue;
-			weight = by_mass != 0u ? LmSampleMass(logit, maximum, inverse_temperature) : 1u;
+			weight = by_mass != 0u ? SparkMathSampleMass(logit, maximum, inverse_temperature) : 1u;
 			matches++;
 			match_key = key;
 			match_weighted = weight != 0u ? 1u : 0u;
@@ -289,7 +261,7 @@ static __device__ __forceinline__ void LmSampleTopLogprobs(LmSampleShared<THREAD
 	__syncthreads();
 	for (cursor = LmSampleCursorStart(vocab, threadIdx.x); cursor.token < vocab.vocabulary; LmSampleCursorAdvance(vocab, cursor, THREADS))
 	{
-		key = LmSampleKey(LmSampleCursorLogit(vocab, row, cursor), cursor.token);
+		key = SparkMathSampleKey(LmSampleCursorLogit(vocab, row, cursor), cursor.token);
 		if ( key >= threshold )
 		{
 			slot = atomicAdd(&shared.picked_count, 1u);
@@ -312,7 +284,7 @@ static __device__ __forceinline__ void LmSampleTopLogprobs(LmSampleShared<THREAD
 		{
 			if ( index < picked )
 			{
-				token = LmSampleKeyToken(shared.picked[index]);
+				token = SparkMathSampleKeyToken(shared.picked[index]);
 				out[index].token = token;
 				out[index].logprob = LmSampleLogit(vocab, row, token) - lse;
 			}
@@ -352,12 +324,12 @@ void LmSampleRowsKernel(const LmSampleVocab vocab, const LmSampleRows rows)
 	}
 	best = 0u;
 	if ( rule.inverse_temperature == 0.0f && rows.greedy_tokens != 0 )
-		best = LmSampleKey(0.0f, rows.greedy_tokens[rows.source_rows != 0 ? rows.source_rows[row] : row]);
+		best = SparkMathSampleKey(0.0f, rows.greedy_tokens[rows.source_rows != 0 ? rows.source_rows[row] : row]);
 	else if ( rule.inverse_temperature == 0.0f )
 	{
 		for (cursor = LmSampleCursorStart(vocab, threadIdx.x); cursor.token < vocab.vocabulary; LmSampleCursorAdvance(vocab, cursor, THREADS))
 		{
-			key = LmSampleKey(LmSampleCursorLogit(vocab, row, cursor), cursor.token);
+			key = SparkMathSampleKey(LmSampleCursorLogit(vocab, row, cursor), cursor.token);
 			best = key > best ? key : best;
 		}
 	}
@@ -372,8 +344,8 @@ void LmSampleRowsKernel(const LmSampleVocab vocab, const LmSampleRows rows)
 			for (cursor = LmSampleCursorStart(vocab, threadIdx.x); cursor.token < vocab.vocabulary; LmSampleCursorAdvance(vocab, cursor, THREADS))
 			{
 				logit = LmSampleCursorLogit(vocab, row, cursor);
-				if ( LmSampleKey(logit, cursor.token) >= floor_key )
-					total += LmSampleMass(logit, maximum, rule.inverse_temperature);
+				if ( SparkMathSampleKey(logit, cursor.token) >= floor_key )
+					total += SparkMathSampleMass(logit, maximum, rule.inverse_temperature);
 			}
 			total = LmSampleBlockSumU64<THREADS>(shared, total);
 			target = (uint64_t)((double)total * (double)rule.nucleus);
@@ -384,14 +356,14 @@ void LmSampleRowsKernel(const LmSampleVocab vocab, const LmSampleRows rows)
 		for (cursor = LmSampleCursorStart(vocab, threadIdx.x); cursor.token < vocab.vocabulary; LmSampleCursorAdvance(vocab, cursor, THREADS))
 		{
 			logit = LmSampleCursorLogit(vocab, row, cursor);
-			if ( LmSampleKey(logit, cursor.token) < floor_key )
+			if ( SparkMathSampleKey(logit, cursor.token) < floor_key )
 				continue;
-			key = LmSampleKey(fmaf(logit, rule.inverse_temperature, LmGumbelNoise(rule.seed, rows.positions[row], cursor.token)), cursor.token);
+			key = SparkMathSampleKey(fmaf(logit, rule.inverse_temperature, SparkMathGumbelNoise(rule.seed, rows.positions[row], cursor.token)), cursor.token);
 			best = key > best ? key : best;
 		}
 	}
 	best = LmSampleBlockMaxKey<THREADS>(shared, best);
-	chosen = LmSampleKeyToken(best);
+	chosen = SparkMathSampleKeyToken(best);
 	const uint64_t logprob_base = (uint64_t)(rows.logprob_rows != 0 ? rows.logprob_rows[row] : row) * SPARK_SAMPLING_MAX_LOGPROBS;
 	if ( threadIdx.x == 0u )
 	{

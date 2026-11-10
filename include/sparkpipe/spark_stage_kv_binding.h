@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_device_copy.h"
 #include "sparkpipe/spark_kv_model_table.h"
@@ -14,7 +15,6 @@
 #include "sparkpipe/spark_kv_snapshot.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_driver.h"
-#include "sparkpipe/spark_stage_module_common.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd_kv_pool.h"
 
@@ -34,6 +34,8 @@
 #define SPARK_STAGE_KV_LOCK_SITE_RESTORE 7u
 #define SPARK_STAGE_KV_LOCK_SITE_COUNT 8u
 
+#define SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD 1u
+#define SPARK_STAGE_KV_POOL_SOURCE_DEVICE 2u
 #define SPARK_STAGE_KV_POOL_TARGET_CHUNKS 1024u
 #define SPARK_STAGE_KV_POOL_TICK_NS 50000000ull
 #define SPARK_STAGE_KV_POOL_IDLE_TICKS 4u
@@ -128,7 +130,7 @@ typedef struct SparkStageKvLayoutIdentity
 #define SPARK_STAGE_KV_LANE_STATE_CAPTURED 0x2u
 #define SPARK_STAGE_KV_LANE_STATE_LOADING 0x4u
 
-typedef SparkStatus (*SparkStageKvRecurrentCopyFunction)(void *context,uint32_t direction,uint32_t resident_slot,void *buffer,uint64_t bytes,void *stream);
+typedef SparkStatus (*SparkStageKvRecurrentCopyFunction)(void *context,uint32_t direction,uint32_t resident_slot,void *buffer,uint64_t bytes,SparkDeviceQueue *queue);
 
 typedef struct SparkStageKvRecurrent
 {
@@ -197,6 +199,7 @@ typedef struct SparkStageKvConfiguration
 	uint32_t physical_page_count;
 	uint32_t pipeline_slot_count;
 	SparkKvShard context_shard;
+	uint32_t pool_source;
 	const char *backing_directory;
 	uint64_t backing_maximum_bytes;
 	const char *snapshot_directory;
@@ -220,12 +223,14 @@ struct SparkStageKvBinding
 	uint32_t resident_sequence_capacity;
 	uint32_t max_sequence_positions;
 	uint32_t pipeline_slot_count;
+	uint32_t pool_source;
 	SparkKvShard context_shard;
 	SparkStageKvRegion regions[SPARK_STAGE_KV_MAX_REGIONS];
 	uint8_t *region_base[SPARK_STAGE_KV_MAX_REGIONS];
 	uint64_t region_packed_page_bytes[SPARK_STAGE_KV_MAX_REGIONS];
 	uint64_t region_layer_stride_bytes[SPARK_STAGE_KV_MAX_REGIONS];
 	uint64_t page_bytes;
+	SparkDeviceBuffer pool;
 	uint32_t *page_table;
 	uint32_t *page_table_shadow;
 	SparkKvCacheArena arena;
@@ -235,13 +240,17 @@ struct SparkStageKvBinding
 	SparkKvLaneTransaction *lanes;
 	uint32_t *logical_pages;
 	uint32_t *physical_pages;
+	SparkDeviceBuffer physical_page_buffer;
 	SparkKvCacheBlock *blocks;
 	uint32_t *resident_slot_logical_block_indices;
 	SparkKvPageCacheEntry *entries;
 	SparkKvPageCacheSequence *sequences;
 	uint32_t *hash_bucket_heads;
 	uint32_t *entry_indices_by_logical_page;
-	uint8_t *staging;
+	SparkDeviceBuffer staging;
+	SparkDeviceBuffer bounce;
+	pthread_mutex_t bounce_mutex;
+	uint32_t bounce_initialized;
 	atomic_uchar *lane_bound;
 	atomic_ullong *lane_sequence_ids;
 	atomic_ullong *lane_next_positions;
@@ -249,7 +258,7 @@ struct SparkStageKvBinding
 	uint32_t mutex_initialized;
 	uint64_t control_generation;
 	uint64_t reset_generation;
-	void *copy_stream;
+	SparkDeviceQueue *copy_queue;
 	SparkKvDeviceCopier copier;
 	uint32_t copier_initialized;
 	SparkStageKvBindingCompletionRecord *completion_records;
@@ -275,6 +284,7 @@ struct SparkStageKvBinding
 	uint32_t reserved_restore;
 	SparkStageKvRestoreSlot restores[SPARK_STAGE_KV_RESTORE_SLOTS];
 	SparkKvPageCacheRestoreJob restore_job;
+	SparkDeviceBuffer restore_page;
 	uint64_t restore_jobs;
 	uint64_t restore_pending_answers;
 	uint64_t restore_hints;
@@ -328,13 +338,13 @@ struct SparkStageKvBinding
 	uint32_t kv_pool_seal_cleared;
 	SparkKvPageCacheSnapshot snapshot;
 	SparkKvPageCacheSnapshotLink *snapshot_links;
-	uint8_t *snapshot_page;
+	SparkDeviceBuffer snapshot_page;
 	uint32_t *snapshot_pending;
 	SparkKvPageCacheSaveOrder *save_order;
 	SparkStageKvRecurrent recurrent;
 	SparkKvPageStore state_store;
 	uint8_t *state_staging;
-	uint8_t *lane_state;
+	SparkDeviceBuffer lane_state;
 	uint8_t *lane_state_flags;
 	uint32_t *lane_staged_pages;
 	uint64_t *lane_staged_generations;
@@ -362,20 +372,20 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation);
-SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision,atomic_uint *slot_states,atomic_uint *lane_states,void *stream);
+SparkStatus SparkStageKvBindingAdmitReset(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision,atomic_uint *slot_states,atomic_uint *lane_states,SparkDeviceQueue *queue);
 uint64_t SparkStageKvBindingLaneSequence(const SparkStageKvBinding *binding,uint32_t slot);
 SparkStatus SparkStageKvBindingContinuity(SparkStageKvBinding *binding,const atomic_uint *lane_states,uint32_t row_count,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *lane_contexts,uint8_t *bound,uint64_t *sequence_ids,uint64_t *next_positions);
 SparkStatus SparkStageKvBindingClaim(SparkStageKvBinding *binding,const SparkModelDriverFrame *frame,uint32_t active_count,const uint32_t *row_resident_slots,const uint64_t *row_sequence_ids,const uint64_t *row_positions,const uint64_t *next_positions);
-SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
+SparkStatus SparkStageKvBindingUploadPageTables(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkDeviceQueue *queue);
 SparkStatus SparkStageKvBindingFinishAsync(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion);
 SparkStatus SparkStageKvBindingFinishWait(SparkStageKvBinding *binding,uint32_t dispatch_slot,const SparkStageKvBindingCompletion *completion);
-SparkStatus SparkStageKvBindingRecurrentRestore(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
-SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,void *stream);
+SparkStatus SparkStageKvBindingRecurrentRestore(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkDeviceQueue *queue);
+SparkStatus SparkStageKvBindingRecurrentCapture(SparkStageKvBinding *binding,const uint32_t *resident_slots,uint32_t lane_count,SparkDeviceQueue *queue);
 SparkStatus SparkStageKvBindingCopyPage(const SparkStageKvBinding *binding,uint32_t direction,uintptr_t device_address,void *host,uint64_t bytes);
 SparkStatus SparkStageKvBindingInspect(SparkStageKvBinding *binding,SparkStageKvInspectFunction inspect,void *context);
 uint32_t SparkStageKvBindingResetIsNew(SparkStageKvBinding *binding,uint64_t generation);
 void SparkStageKvBindingTakeRecurrentCounters(SparkStageKvBinding *binding,SparkStageKvRecurrentCounters *counters);
-SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,void *stream);
+SparkStatus SparkStageKvBindingFenceExecution(SparkStageKvBinding *binding,SparkDeviceQueue *queue);
 SparkStatus SparkStageKvBindingQuiesce(SparkStageKvBinding *binding,uint64_t timeout_ns);
 void SparkStageKvBindingStop(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingSampleCounters(SparkStageKvBinding *binding,SparkStageKvBindingCounters *counters);

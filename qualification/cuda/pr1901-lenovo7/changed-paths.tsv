@@ -1,0 +1,14 @@
+test_sample_threads_cuda	main-fded9e032-src	identical	PASS sampling threads: 252 rows over 7 logit shapes (ties, flat, bf16 levels, -inf, twin peaks, wide, one spike) and 6 rules choose the same
+test_sample_threads_cuda	pr1901-ce30c377b-src	identical	PASS sampling threads: 252 rows over 7 logit shapes (ties, flat, bf16 levels, -inf, twin peaks, wide, one spike) and 6 rules choose the same
+test_sample_host	main-fded9e032-src	identical	PASS sampling kernel: greedy ties, temperature, top-k, top-p and both match the renormalized distribution over 4000 draws, chosen and top lo
+test_sample_host	pr1901-ce30c377b-src	identical	PASS sampling kernel: greedy ties, temperature, top-k, top-p and both match the renormalized distribution over 4000 draws, chosen and top lo
+test_kv_snapshot_cuda	main-fded9e032-src	differs	test_kv_snapshot_cuda: prompt_tokens=1000 pages=16 snapshot_bytes_per_page=131072 logits=4096 bitwise_differences=0 prefill_with_save_us=709
+test_kv_snapshot_cuda	pr1901-ce30c377b-src	differs	test_kv_snapshot_cuda: prompt_tokens=1000 pages=16 snapshot_bytes_per_page=131072 logits=4096 bitwise_differences=0 prefill_with_save_us=160
+test_kv_shard_host	main-fded9e032-src	identical	PASS latent KV shard: per-rank bytes are total / degree, sharded store and attention equal the replicated oracle bit for bit, partials over 
+test_kv_shard_host	pr1901-ce30c377b-src	identical	PASS latent KV shard: per-rank bytes are total / degree, sharded store and attention equal the replicated oracle bit for bit, partials over 
+test_kv_failure_host	main-fded9e032-src	identical	PASS (0 failures)
+test_kv_failure_host	pr1901-ce30c377b-src	identical	PASS (0 failures)
+test_device_contract_cuda	main-fded9e032-src	identical	PASS device contract (cuda backend)
+test_device_contract_cuda	pr1901-ce30c377b-src	identical	PASS device contract (cuda backend)
+test_head_certified_cuda	main-fded9e032-src	identical	PASS head_certified_cuda
+test_head_certified_cuda	pr1901-ce30c377b-src	identical	PASS head_certified_cuda

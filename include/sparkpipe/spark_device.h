@@ -129,6 +129,7 @@ SparkStatus SparkDeviceSynchronize(uint64_t timeout_ns);
 
 SparkStatus SparkDeviceAllocate(SparkDeviceBuffer *buffer, SparkDeviceSpace space, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t bytes, uint32_t access, const char *owner);
+SparkStatus SparkDeviceAdopt(SparkDeviceBuffer *buffer, SparkDeviceAddress device, void *host, uint64_t bytes, SparkDeviceSpace space, const char *owner);
 SparkStatus SparkDeviceMapFile(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceMapFileSegments(SparkDeviceBuffer *buffer, int fd, uint64_t offset, uint64_t bytes, uint64_t segment_stride, const char *owner);
 SparkStatus SparkDeviceFree(SparkDeviceBuffer *buffer);
@@ -142,6 +143,7 @@ SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destinatio
 SparkStatus SparkDeviceCopySync(SparkDeviceRange destination, SparkDeviceRange source, uint64_t bytes);
 
 SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner);
+SparkStatus SparkDeviceQueueAdopt(SparkDeviceQueue **queue, void *native, const char *owner);
 SparkStatus SparkDeviceQueueDestroy(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceQueueQuery(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceQueueWait(SparkDeviceQueue *queue, uint64_t timeout_ns);

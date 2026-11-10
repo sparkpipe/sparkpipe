@@ -178,9 +178,9 @@ static int32_t TestK3SharedRows(void)
 	return(failures);
 }
 
-static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
+static const uint32_t *TestK3Host(const SparkDeviceBuffer *buffer)
 {
-	return((const uint32_t *)buffer->pointer);
+	return((const uint32_t *)buffer->host);
 }
 
 static int32_t TestK3Grouping(void)
@@ -192,7 +192,7 @@ static int32_t TestK3Grouping(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
 	SparkStatus status = SPARK_STATUS_OK;
-	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+	SparkDeviceBuffer *host[] = { &state.positions_host, &state.context_host,
 		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
 	uint32_t row_slots[8], index, active = 0u;
 	uint64_t row_sequences[8], row_positions[8];
@@ -201,7 +201,7 @@ static int32_t TestK3Grouping(void)
 	state.max_rows = 8u;
 	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
-		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+		status = SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows");
 	if ( TestK3Check(status == SPARK_STATUS_OK, "the grouping buffers allocate") != 0 )
 		return(1);
 	memset(&submission, 0, sizeof(submission));
@@ -283,7 +283,7 @@ static int32_t TestK3Grouping(void)
 			"a decode whose rows are not in lane order gives each slot its own context and each lane its own row");
 	}
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
-		SparkMemoryBufferFree(host[index]);
+		(void)SparkDeviceFree(host[index]);
 	return(failures);
 }
 
@@ -311,7 +311,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lane;
 	SparkStatus status = SPARK_STATUS_OK;
-	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+	SparkDeviceBuffer *host[] = { &state.positions_host, &state.context_host,
 		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
 	uint32_t index, untouched = 1u;
 	int32_t failures = 0;
@@ -321,7 +321,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	state.max_shared_rows = 8u;
 	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
-		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+		status = SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows");
 	if ( TestK3Check(status == SPARK_STATUS_OK, "the verify buffers allocate") != 0 )
 		return(1);
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
@@ -350,7 +350,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	failures += TestK3Check(status == SPARK_STATUS_INVALID_ARGUMENT && untouched != 0u,
 		"a verify frame with a publishing lane is refused before any row reaches the runner, so no recurrent state is captured ahead of keep_rows");
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
-		SparkMemoryBufferFree(host[index]);
+		(void)SparkDeviceFree(host[index]);
 	return(failures);
 }
 
@@ -526,7 +526,8 @@ static int32_t TestK3ResetAfterStreamedFailure(void)
 
 int main(int argc, char **argv)
 {
-	int32_t failures = TestK3Descriptor();
+	int32_t failures = TestK3Check(SparkDeviceInitialize(0) == SPARK_STATUS_OK, "the device API opens");
+	failures += TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
 	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
