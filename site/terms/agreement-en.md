@@ -80,7 +80,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 6.3. **Working state is temporary.** Customer must treat its working state as temporary, also while it holds a Fleet for many Weeks ahead, and keep its own copies of anything it wants to keep. We recommend exporting Customer storage at least daily (clause 7.5). Working state may be lost to a failure of the Fleet, an event under clause 8.7, maintenance or any other cause, and nothing is returned when a Booking or this Agreement ends. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. Before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image.
 
-6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data as our published privacy policy states, and personal data in Customer data as the DPA states.
+6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data, and Customer data, as our published privacy policy states, and personal data in Customer data also as the DPA states.
 
 6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad. This does not apply to a transfer that Customer itself asks for, to or from a host it names, such as a download into its Customer storage, or an export or backup to its own storage.
 
