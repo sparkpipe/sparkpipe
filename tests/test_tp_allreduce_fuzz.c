@@ -450,6 +450,14 @@ static SparkStatus FuzzCreateRank(uint32_t rank)
 	return(SPARK_STATUS_OK);
 }
 
+static void FuzzSessionReset(void)
+{
+	uint32_t rank;
+	for ( rank = 0u; rank < g_rank_count; rank++ )
+		if ( g_ranks[rank].collective.implementation != 0 )
+			SparkTpDeviceCollectiveUnkey(&g_ranks[rank].collective);
+}
+
 static void FuzzResetRank(uint32_t rank)
 {
 	SparkStatus status;
@@ -457,6 +465,7 @@ static void FuzzResetRank(uint32_t rank)
 	memset(&g_ranks[rank].collective,0,sizeof(SparkTpDeviceCollective));
 	status = FuzzCreateRank(rank);
 	CHECK( status == SPARK_STATUS_OK, "reset recreates the rank" );
+	FuzzSessionReset();
 }
 
 typedef struct FuzzTask
@@ -1159,7 +1168,7 @@ static void FuzzConfiguration(void)
             case 4u: config.local_hidden_dimension = 0u; break;
             case 5u: config.max_active_sequence_count = 0u; break;
             case 6u: config.operation_timeout_milli = 0u; break;
-            case 7u: config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL;
+            case 7u: config.backend_kind = SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT + 1u;
                 expected = SPARK_STATUS_UNSUPPORTED; break;
         }
         status = SparkTpDeviceCollectiveCreate(&config,&collective);
@@ -1508,7 +1517,8 @@ static void FuzzActivityLifetime(void)
     broadcasts = g_broadcast_count;
     cuda_stub_stream_query_result = 600;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_BUSY,"pending GPU work cannot end mesh activity");
+        SPARK_STATUS_BUSY && SparkTpDeviceCollectiveIdle(&g_ranks[0].collective) == SPARK_STATUS_BUSY,
+        "pending GPU work can neither end a chain nor end mesh activity");
     CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400000u) ==
         SPARK_STATUS_BUSY,"pending GPU work cannot rearm cancellation");
     CHECK(SparkTpDeviceCollectiveGraphPreLaunch(&g_ranks[0].collective,(void *)0x2) ==
@@ -1531,7 +1541,8 @@ static void FuzzActivityLifetime(void)
         SPARK_STATUS_INVALID_ARGUMENT,"unrelated terminal stream cannot release ownership");
     g_activity_fail = 1u;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_IO_ERROR,"failed end acknowledgement retains ownership");
+        SPARK_STATUS_OK && SparkTpDeviceCollectiveIdle(&g_ranks[0].collective) == SPARK_STATUS_IO_ERROR,
+        "a chain ends without ending mesh activity, and a failed end acknowledgement retains ownership");
     {
         void *owned = g_ranks[0].collective.implementation;
         SparkTpDeviceCollectiveDestroy(&g_ranks[0].collective);
@@ -1542,16 +1553,18 @@ static void FuzzActivityLifetime(void)
     ends = g_activity_ends;
     for ( rank = 0u; rank < count; rank++ )
         CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[rank].collective,(void *)0x1) ==
-            SPARK_STATUS_OK,"terminal stream ends exact active generation");
+            SPARK_STATUS_OK && SparkTpDeviceCollectiveIdle(&g_ranks[rank].collective) == SPARK_STATUS_OK,
+            "an idle lane on a terminal stream ends its exact active generation");
     CHECK(g_activity_ends == ends + count,"all rank activity intervals end once");
     calls = g_activity_calls;
-    CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_OK && g_activity_calls == calls,"repeated local end sends no duplicate RPC");
+    CHECK(SparkTpDeviceCollectiveIdle(&g_ranks[0].collective) == SPARK_STATUS_OK && g_activity_calls == calls,
+        "repeated idle sends no duplicate RPC");
     g_activity_fail = 1u;
     CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400000u) ==
         SPARK_STATUS_IO_ERROR && g_broadcast_count == broadcasts,
         "failed start acknowledgement cannot publish a chain");
     g_activity_fail = 0u;
+    FuzzSessionReset();
     begins = g_activity_begins;
     CHECK(FuzzRunSet(FuzzChainMain,2400001u,run,count,"activity-chain",0u,-1),
         "next activity generation starts on every rank");
@@ -1590,6 +1603,7 @@ static void FuzzMandatoryFaults(void)
     FuzzCompletionCapacity();
     FuzzPayloadCapacity();
     FuzzCase("chain-broadcast-failure");
+    SparkTpDeviceCollectiveUnkey(&g_ranks[0].collective);
     g_broadcast_fail = 1u;
     CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,request++) ==
         SPARK_STATUS_IO_ERROR,"failed generation broadcast cannot report ready");
@@ -1636,6 +1650,7 @@ static void FuzzMandatoryFaults(void)
         else if ( scenario == 3u )
         {
             FuzzCase("consumed-request-generation");
+            FuzzSessionReset();
             for ( rank = 1u; rank < count; rank++ ) peers[peer_count++] = rank;
             CHECK(FuzzRunSet(FuzzChainMain,request - 1u,peers,peer_count,"stale-chain",scenario,-1),
                 "replayed chain identity does not wait indefinitely");
@@ -1648,6 +1663,7 @@ static void FuzzMandatoryFaults(void)
             FuzzCase("retire-recreate-reuse");
             FuzzResetRank(victim);
         }
+        FuzzSessionReset();
         CHECK(FuzzRunSet(FuzzChainMain,request++,run,count,"recovery-chain",scenario,-1),
             "fresh coordinated generation follows every failure");
         CHECK(FuzzRunSet(FuzzRoundMain,ordinal + 1u,run,count,"recovery-round",scenario,-1),
@@ -1694,6 +1710,7 @@ static void FuzzTreeCases(void)
     CHECK(FuzzRunSet(FuzzRoundMain,1800003u,peers,n,"tree-missing",0u,-1),"missing tree peer terminates bounded");
     for ( rank = 0u; rank < n; rank++ )
         CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_IO_ERROR,"missing tree contribution is terminal, never success");
+    FuzzSessionReset();
     CHECK(FuzzRunSet(FuzzChainMain,1800004u,run,count,"tree-loop-chain",0u,-1),"tree round-loop generation aligns");
     CHECK(FuzzLaunchRounds(1800005u,3u,1u,"tree-loop"),"tree round-loop completes");
     for ( rank = 0u; rank < count; rank++ )
@@ -2186,6 +2203,7 @@ static void FuzzMeshTopology(void)
         SparkTpDeviceCollectiveCreate(&config,&peer) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectivePrepareReceiveBf16(&peer,g_regions[0],1u,FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
         "construct mismatched peer shape for cross-rank gate");
+    SparkTpDeviceCollectiveUnkey(&root);
     CHECK(SparkTpDeviceCollectiveChainKey(&root,778u) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectiveChainKey(&peer,778u) == SPARK_STATUS_INVALID_ARGUMENT,
         "matching request key cannot admit a different root or membership map");

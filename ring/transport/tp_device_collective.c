@@ -129,6 +129,8 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t round_wave_limit;
     uint64_t chain_key;
     uint64_t chain_epoch;
+    uint32_t session_keyed;
+    uint64_t keyed_cancel;
     uint64_t consumed_cell;
     uint64_t round_index;
         uint64_t cancel_epoch;
@@ -393,6 +395,7 @@ static void SparkTpDeviceCollectiveInvokeCompletion(
 #define SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE \
     (1ull << SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS)
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS (120ull * 1000000000ull)
+#define SPARK_TP_DEVICE_COLLECTIVE_SESSION_SEQ_LIMIT (1ull << 31)
 
 static uint64_t SparkTpDeviceCollectiveBaseCellOffset(uint32_t band_index)
 {
@@ -654,8 +657,41 @@ SparkStatus SparkTpDeviceCollectiveEndChain(
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkTpDeviceCollectiveStreamTerminal(stream);
     if ( status != SPARK_STATUS_OK )
+        implementation->session_keyed = 0u;
+    return status;
+}
+
+SparkStatus SparkTpDeviceCollectiveIdle(
+    SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    SparkStatus status;
+    if ( collective == 0 || collective->implementation == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    implementation = collective->implementation;
+    if ( implementation->mesh_activity_active == 0u )
+        return SPARK_STATUS_OK;
+    status = implementation->active_stream_valid != 0u ?
+        SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
+    if ( status != SPARK_STATUS_OK )
         return status;
     return SparkTpDeviceCollectiveEndActivity(implementation);
+}
+
+void SparkTpDeviceCollectiveUnkey(
+    SparkTpDeviceCollective *collective)
+{
+    if ( collective != 0 && collective->implementation != 0 )
+        ((SparkTpDeviceCollectiveImplementation *)collective->implementation)->session_keyed = 0u;
+}
+
+static uint32_t SparkTpDeviceCollectiveKeyCurrent(
+    const SparkTpDeviceCollectiveImplementation *implementation)
+{
+    return implementation->session_keyed != 0u && implementation->chain_epoch != 0ull &&
+        implementation->cell_mirror < SPARK_TP_DEVICE_COLLECTIVE_SESSION_SEQ_LIMIT &&
+        *SparkTpDeviceCollectiveCancelCell(implementation,SparkTpDeviceCollectiveBandIndex(implementation)) ==
+            implementation->keyed_cancel ? 1u : 0u;
 }
 
 SparkStatus SparkTpDeviceCollectiveChainKey(
@@ -672,6 +708,23 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     if ( implementation->mesh_buffer == 0 ||
          implementation->capture_armed != 0u )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    if ( SparkTpDeviceCollectiveKeyCurrent(implementation) != 0u )
+    {
+        SparkStatus status = implementation->active_stream_valid != 0u ?
+            SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
+        if ( status == SPARK_STATUS_OK )
+            status = SparkTpDeviceCollectiveBeginActivity(implementation);
+        if ( status != SPARK_STATUS_OK )
+        {
+            implementation->session_keyed = 0u;
+            return status;
+        }
+        implementation->round_index = 0ull;
+        implementation->chain_key =
+            (implementation->chain_epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
+        return SPARK_STATUS_OK;
+    }
+    implementation->session_keyed = 0u;
     {
         SparkStatus status = implementation->active_stream_valid != 0u ?
             SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
@@ -833,8 +886,11 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         else
             SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    implementation->round_index = 0ull;
     implementation->chain_key =
         (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
+    implementation->keyed_cancel = implementation->cancel_seen;
+    implementation->session_keyed = 1u;
     return SPARK_STATUS_OK;
 }
 
@@ -1079,6 +1135,7 @@ static SparkStatus SparkTpDeviceCollectiveRunDeviceRounds(
     if ( implementation->round_control_host.error_word != 0u ||
          implementation->round_control_host.rounds_done != rounds )
     {
+        implementation->session_keyed = 0u;
         fprintf(stderr,"MESH-DEVICE-ROUND-FAILED rank=%u band=%u operation=%u rows=%u seq=%llu error=%llu diag=%llu done=%llu expected=%u\n",
             implementation->tp_rank,band,operation,submission->logical_sequence_count,
             (unsigned long long)implementation->round_control_host.seq,
@@ -1969,6 +2026,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
              sizeof(implementation->round_control_host),
              SPARK_TP_CUDA_MEMCPY_DEVICE_TO_HOST) != 0 )
     {
+        implementation->session_keyed = 0u;
         fprintf(stderr,"MESH-ROUNDLOOP-FAIL rank=%u cuda=%s\n",
             implementation->tp_rank,cudaGetErrorString(cudaGetLastError()));
         return SPARK_STATUS_IO_ERROR;
@@ -1988,6 +2046,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
         status = SPARK_STATUS_OK;
     else if ( *cancel_cell != implementation->cancel_seen )
     {
+        implementation->session_keyed = 0u;
         implementation->cancel_seen = *cancel_cell;
         fprintf(stderr,
             "MESH-ROUNDLOOP-CANCEL rank=%u rounds_done=%llu rounds_total=%u slot=%llu\n",
@@ -1999,6 +2058,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
     }
     else
     {
+        implementation->session_keyed = 0u;
         fprintf(stderr,
             "MESH-ROUNDLOOP-INCOMPLETE rank=%u rounds_done=%llu rounds_total=%u error=%llu diag=%llu\n",
             implementation->tp_rank,
@@ -2516,6 +2576,8 @@ SparkStatus SparkTpDeviceCollectiveGraphSettle(
     if ( cell != 0ull )
         implementation->round_seq = cell;
     *error_out = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR];
+    if ( *error_out != 0ull )
+        implementation->session_keyed = 0u;
     return(SPARK_STATUS_OK);
 }
 
@@ -2549,6 +2611,7 @@ void SparkTpDeviceCollectiveBroadcastCancel(
         return;
     cancel_cell = (volatile uint64_t *)(implementation->mesh_buffer +
         SparkTpDeviceCollectiveCancelCellOffset(SparkTpDeviceCollectiveBandIndex(implementation)));
+    implementation->session_keyed = 0u;
     implementation->cancel_epoch++;
     *cancel_cell = implementation->cancel_epoch |
         ((uint64_t)implementation->tp_rank << 56);
@@ -2855,6 +2918,7 @@ SparkStatus SparkTpDeviceCollectiveVerifyDeferred(SparkTpDeviceCollective *colle
         return status;
     if ( implementation->round_control_host.error_word == 0u && implementation->round_control_host.rounds_done == expected )
         return SPARK_STATUS_OK;
+    implementation->session_keyed = 0u;
     fprintf(stderr,"MESH-DEFERRED-ROUNDS-FAILED rank=%u band=%u rounds=%llu done=%llu seq=%llu error=%llu diag=%llu\n",implementation->tp_rank,SparkTpDeviceCollectiveBandIndex(implementation),(unsigned long long)expected,(unsigned long long)implementation->round_control_host.rounds_done,(unsigned long long)implementation->round_control_host.seq,(unsigned long long)implementation->round_control_host.error_word,(unsigned long long)implementation->round_control_host.diag_word);
     return SPARK_STATUS_IO_ERROR;
 }

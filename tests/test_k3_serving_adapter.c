@@ -136,6 +136,30 @@ static int32_t TestK3ReleaseValidation(void)
 	return(failures);
 }
 
+static int32_t TestK3IdleAfterRelease(void)
+{
+	SparkStageServingState state;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	const uint32_t first[1] = { 3u }, second[1] = { 70u };
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	memset(&submission, 0, sizeof(submission));
+	memset(lanes, 0, sizeof(lanes));
+	submission.lanes = lanes;
+	submission.lane_count = 2u;
+	submission.active_sequence_count = 2u;
+	lanes[0].resident_sequence_slot = 3u;
+	lanes[1].resident_sequence_slot = 70u;
+	test_idle_calls = 0u;
+	StageServingMarkBusy(&state, &submission);
+	failures += TestK3Check(StageServingReleaseBusy(&state, first, 1u) == SPARK_STATUS_OK && test_idle_calls == 0u,
+		"a release that leaves a slot bound keeps the lane serving");
+	failures += TestK3Check(StageServingReleaseBusy(&state, second, 1u) == SPARK_STATUS_OK && test_idle_calls == 1u,
+		"releasing the last bound slot idles the runner once");
+	return(failures);
+}
+
 static int32_t TestK3SharedRows(void)
 {
 	static const uint64_t sequences[8] = { 7u, 7u, 7u, 9u, 9u, 9u, 11u, 11u };
@@ -529,6 +553,7 @@ int main(int argc, char **argv)
 	int32_t failures = TestK3Check(SparkDeviceInitialize(0) == SPARK_STATUS_OK, "the device API opens");
 	failures += TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
+	failures += TestK3IdleAfterRelease();
 	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
 	failures += TestK3VerifyPublishRefused();

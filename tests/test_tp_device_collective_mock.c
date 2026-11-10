@@ -155,11 +155,15 @@ uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client)
 	return((uint32_t)mock_client_alive);
 }
 
+static uint32_t mock_activity_calls;
+static uint32_t mock_broadcast_calls;
+
 SparkStatus SparkWeightdClientMeshActivity(SparkWeightdClient *client,
     uint64_t generation,uint32_t active,uint64_t timeout_nanoseconds)
 {
     uint64_t *state = (uint64_t *)client;
     (void)timeout_nanoseconds;
+    mock_activity_calls++;
     if ( active != 0u )
     {
         if ( state[1] != 0u || generation <= state[0] )
@@ -180,6 +184,7 @@ SparkStatus SparkWeightdClientMeshBroadcast(SparkWeightdClient *client, uint32_t
 {
 	(void)client; (void)peer_mask; (void)source_offset; (void)remote_offset;
 	(void)length; (void)seq_value; (void)seq_remote_offset; (void)timeout_nanoseconds;
+	mock_broadcast_calls++;
 	return(SPARK_STATUS_OK);
 }
 
@@ -1246,6 +1251,27 @@ static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
     CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_DUPLICATE,"duplicate mapping is rejected");
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK,"fresh dense mesh can start a chain");
     CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends");
+    {
+        const uint32_t activity = mock_activity_calls,broadcast = mock_broadcast_calls;
+        const uint64_t epoch = SparkTpDeviceCollectiveChainEpoch(&collective);
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,43u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK &&
+            mock_activity_calls == activity && mock_broadcast_calls == broadcast && SparkTpDeviceCollectiveChainEpoch(&collective) == epoch,
+            "a keyed session starts the next chain with no weightd call, no broadcast and the same epoch");
+        SparkTpDeviceCollectiveUnkey(&collective);
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,44u) == SPARK_STATUS_OK && mock_broadcast_calls == broadcast + 1u &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == epoch + 1u,
+            "an unkeyed session keys the next chain again with a new epoch");
+        SparkTpDeviceCollectiveBroadcastCancel(&collective);
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,45u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveChainEpoch(&collective) == epoch + 2u,
+            "a cancel after keying makes the next chain key again");
+        CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK && SparkTpDeviceCollectiveIdle(&collective) == SPARK_STATUS_OK &&
+            mock_activity_calls == activity + 1u, "an idle lane ends its mesh activity once");
+        CHECK(SparkTpDeviceCollectiveIdle(&collective) == SPARK_STATUS_OK && mock_activity_calls == activity + 1u,
+            "an idle lane without activity calls weightd no more");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,46u) == SPARK_STATUS_OK && mock_activity_calls == activity + 2u &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == epoch + 2u,
+            "the first chain after idle raises activity again and keeps the session's epoch");
+    }
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0 && mock_clients_live == before,"mapping owner and lane released");
     errno = 0;
