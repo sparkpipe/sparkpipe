@@ -73,6 +73,31 @@ static void ProbeReference(const char *label, const uint16_t *input_device, cons
 }
 
 template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
+static void ProbeRowExact(const char *label, const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, const std::vector<uint16_t> &tile)
+{
+	const uint64_t row_outputs = (uint64_t)PROBE_HEADS * OUT_DIM,output_count = (uint64_t)rows * row_outputs;
+	std::vector<uint16_t> exact(output_count),alone(output_count);
+	uint64_t index;
+	uint32_t row;
+	PROBE_CUDA(cudaMemset(output,0xff,output_count * 2u));
+	PROBE_CUDA((LmPerHeadProjectChainLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input,weight,output,PROBE_HEADS,rows,0,1u)));
+	PROBE_CUDA(cudaMemcpy(exact.data(),output,output_count * 2u,cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemset(output,0xff,output_count * 2u));
+	for (row=0u; row<rows; row++)
+		PROBE_CUDA((LmPerHeadProjectChainLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input + (uint64_t)row * PROBE_HEADS * INPUT_HEAD_DIM,weight,
+			output + (uint64_t)row * row_outputs,PROBE_HEADS,1u,0)));
+	PROBE_CUDA(cudaMemcpy(alone.data(),output,output_count * 2u,cudaMemcpyDeviceToHost));
+	for (index=0u; index<output_count && exact[index] == alone[index] && exact[index] == tile[index]; index++)
+		;
+	if ( index != output_count )
+	{
+		printf("FAIL %s: the row-exact launch differs at row %llu from that row launched alone or from the tile kernel (%04x, alone %04x, tile %04x)\n",label,
+			(unsigned long long)(index / row_outputs),exact[index],alone[index],tile[index]);
+		probe_failures++;
+	}
+}
+
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
 static void ProbeShape(uint32_t rows)
 {
 	const uint64_t input_count = (uint64_t)rows * PROBE_HEADS * INPUT_HEAD_DIM,weight_count = (uint64_t)PROBE_HEADS * OUT_DIM * IN_DIM,output_count = (uint64_t)rows * PROBE_HEADS * OUT_DIM;
@@ -105,6 +130,7 @@ static void ProbeShape(uint32_t rows)
 	}
 	if ( rows > LM_PROJECT_CHAIN_ROWS )
 		ProbeReference<IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(label,input,weight,rows,tile,chain);
+	ProbeRowExact<IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(label,input,weight,output,rows,tile);
 	PROBE_CUDA(cudaEventRecord(begin));
 	for (index=0u; index<PROBE_REPEATS; index++)
 		PROBE_CUDA((LmPerHeadProjectRowsLaunch<256u,IN_DIM,OUT_DIM,INPUT_HEAD_DIM,INPUT_OFFSET>(input,weight,output,PROBE_HEADS,rows,0)));
@@ -117,8 +143,9 @@ static void ProbeShape(uint32_t rows)
 	PROBE_CUDA(cudaEventRecord(end));
 	PROBE_CUDA(cudaEventSynchronize(end));
 	PROBE_CUDA(cudaEventElapsedTime(&chain_ms,begin,end));
-	printf("%s %s: %s, us tile %.1f chain %.1f\n",probe_failures == 0 ? "PASS" : "FAIL",label,rows <= LM_PROJECT_CHAIN_ROWS ? "bit-equal to the tile kernel" :
-		"tensor cores within bf16 rounding of the exact product",tile_ms * 1000.0f / PROBE_REPEATS,chain_ms * 1000.0f / PROBE_REPEATS);
+	printf("%s %s: %s, row-exact rows equal each row alone, us tile %.1f chain %.1f\n",probe_failures == 0 ? "PASS" : "FAIL",label,
+		rows <= LM_PROJECT_CHAIN_ROWS ? "bit-equal to the tile kernel" : "tensor cores within bf16 rounding of the exact product",tile_ms * 1000.0f / PROBE_REPEATS,
+		chain_ms * 1000.0f / PROBE_REPEATS);
 	cudaFree(input); cudaFree(weight); cudaFree(output);
 	cudaEventDestroy(begin);
 	cudaEventDestroy(end);
@@ -147,6 +174,7 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS per-head chain projection on the device: rows 1..8 are bit-equal to the tile kernel; above 8 rows the tensor-core kernel is within bf16 rounding of the exact product\n");
+	printf("PASS per-head chain projection on the device: rows 1..8 are bit-equal to the tile kernel; above 8 rows the tensor-core kernel is within bf16 rounding of the exact product, "
+		"and a row-exact launch of any rows gives every row the bits of that row launched alone\n");
 	return 0;
 }

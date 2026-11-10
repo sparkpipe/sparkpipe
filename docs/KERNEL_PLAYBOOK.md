@@ -503,6 +503,15 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   - On GB10, absorbing the value half would grow the output projection
     from 8.30 GB to 19.55 GB across 24 layers. That costs about 55 ms per
     token to save a 302 MFLOP kernel that takes 46 µs.
+- **Per-head projections in a row-exact step** (`project_chain.cuh`).
+  `LmPerHeadProjectChainLaunch` runs 1 to 8 rows on the chain kernel and
+  more rows on the tensor-core kernel (`LmPerHeadProjectMmaKernel`), whose
+  summation order differs from the chain kernel's. A row-exact step (a
+  verify frame, `commit = 0`) passes `row_exact`, and above 8 rows it then
+  runs the CUDA-core tile kernel (`LmPerHeadProjectRowsLaunch`), which adds
+  each output's products in the chain kernel's order. Every row of a verify
+  frame so has the bits of its one-row decode
+  (`tests/test_project_chain_cuda.py`, `tests/test_glm52_verify_frames.py`).
 
 ## 2.5 Norm and linear attention (`norm.cuh`, `linear_attn.cuh`)
 

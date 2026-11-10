@@ -407,6 +407,28 @@ Landed in the pull request that carries this page:
   converted or moved kernel compiles to the same machine code, except HY4's
   stream expansion and post update and DeepSeek V4.1 Flash's stream
   expansion, whose outputs are bit-identical on the device.
+- The host turn around each frame, on 2026-11-10 (2.9, 2.10, 2.11 and the
+  fan-out cost of 2.5). A submission is validated once per check and a rank
+  decodes it once. Completions are cleared and copied over their used range
+  instead of 37.5 KB at a time. The pipeline encodes a submission once and
+  sends the same bytes to every rank, stamping only each rank's message id
+  and client generation. A decode continuation whose lanes only advance
+  carries each lane's token and slot (40 bytes) instead of its 168-byte
+  lane, and the rank rebuilds the continuation from the lanes it kept
+  (`CONTINUE_TOKENS`, IPC ABI 27). The coordinator reads each rank with one
+  receive and runs progress only on the ranks with something to read or
+  do. The engine visits only live request slots, a prefix lookup hashes
+  each candidate length once and digests only candidates, and a publication
+  commits only the blocks past the sequence's committed prefix. Tokens,
+  admission, expiry, cancellation, stop and error results are unchanged.
+  `build/host_turn_bench` (`docs/TOOL_REFERENCE.md`) measures the turn
+  against sixteen loopback ranks. On the workstation Mac, as medians of
+  three interleaved runs, the coordinator's CPU per frame went from 166,
+  186 and 211 us to 100, 111 and 103 us in decode at 1, 8 and 16 lanes,
+  from 403 to 232 us in a 64K-token prefill and from 636 to 237 us in a
+  wave of 96 short prompts, and a rank's went from 24-30 us to 20-25 us in
+  decode. Counted with strace at one lane on Linux, the coordinator makes
+  about 18 receives per frame instead of 99, and 5 polls instead of 2.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
@@ -425,8 +447,12 @@ The second fleet run, Gemma 4 26B-A4B at 16 sequences, is in the same receipt: t
 Still open, in the order above:
 
 - Step 2, the collective half: the wave-boundary IPC and chain key,
-  `FinishAsync` for publish frames, the two-phase commit and validation
-  inflation (2.5, 2.8, 2.9).
+  `FinishAsync` for publish frames, 2.8, the two-phase commit's round trips
+  (2.5), the stage serving adapter's own check, which runs again in
+  `submit` on every rank (the rest of 2.9), and the hub drafter's
+  synchronous call (2.11), which needs the draft bridge split into a
+  request and a reply without changing when, and with which limits,
+  drafts are asked for.
 - Step 3, the second half: the runner's sequence-boundary split of a
   multi-sequence wave, GLM 5.3 Full's wave chunking and DSV4.1's tail rows in
   the runner, K3's dispatch loop; then the collective plan from the

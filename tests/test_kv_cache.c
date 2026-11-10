@@ -1646,6 +1646,83 @@ static void SparkTestPrefixCachePartialPublication(void)
 
 }
 
+typedef struct SparkTestPrefixCacheTwin
+{
+	SparkPrefixCache cache;
+	SparkPrefixCacheEntry entries[64];
+	SparkPrefixCacheSequenceBinding bindings[128];
+	uint32_t entry_heads[64];
+	uint32_t lookup_heads[128];
+	uint32_t sequence_heads[128];
+} SparkTestPrefixCacheTwin;
+
+static void SparkTestPrefixCacheTwinOpen(SparkTestPrefixCacheTwin *twin)
+{
+	SparkPrefixCacheConfiguration config = {0};
+	memset(twin,0,sizeof(*twin));
+	config.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	config.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	config.block_token_count = 16u;
+	config.entry_count = config.logical_block_count = 64u;
+	config.sequence_binding_count = 128u;
+	config.entries = twin->entries;
+	config.sequence_bindings = twin->bindings;
+	config.entry_hash_bucket_count = 64u;
+	config.binding_hash_bucket_count = 128u;
+	config.entry_hash_bucket_heads = twin->entry_heads;
+	config.binding_lookup_hash_bucket_heads = twin->lookup_heads;
+	config.binding_sequence_hash_bucket_heads = twin->sequence_heads;
+	assert(SparkPrefixCacheInitialize(&twin->cache,&config) == SPARK_STATUS_OK);
+}
+
+static void SparkTestPrefixCacheTwinsMatch(SparkTestPrefixCacheTwin *full,SparkTestPrefixCacheTwin *after)
+{
+	for (uint32_t index=0u; index<64u; index++)
+	{
+		full->entries[index].used_seconds = 0u;
+		after->entries[index].used_seconds = 0u;
+	}
+	assert(memcmp(full->entries,after->entries,sizeof(full->entries)) == 0);
+	assert(memcmp(full->bindings,after->bindings,sizeof(full->bindings)) == 0);
+	assert(memcmp(full->entry_heads,after->entry_heads,sizeof(full->entry_heads)) == 0);
+	assert(memcmp(full->lookup_heads,after->lookup_heads,sizeof(full->lookup_heads)) == 0);
+	assert(memcmp(full->sequence_heads,after->sequence_heads,sizeof(full->sequence_heads)) == 0);
+	assert(full->cache.tick == after->cache.tick && full->cache.operation_epoch == after->cache.operation_epoch);
+}
+
+static void SparkTestPrefixCacheCommitAfterMatchesFullCommit(void)
+{
+	static SparkTestPrefixCacheTwin full,after;
+	static const uint32_t steps[] = {21u,40u,48u,77u,160u,161u,200u};
+	SparkPrefixCacheLookup full_lookup,after_lookup;
+	uint32_t tokens[256],other[256],committed = 0u,matched;
+	for (uint32_t index=0u; index<256u; index++)
+		tokens[index] = other[index] = 500u + index * 7u;
+	other[90] += 1u;
+	SparkTestPrefixCacheTwinOpen(&full);
+	SparkTestPrefixCacheTwinOpen(&after);
+	for (uint32_t step=0u; step<sizeof(steps) / sizeof(steps[0]); step++)
+	{
+		assert(SparkPrefixCacheCommitPrompt(&full.cache,1u,tokens,steps[step],&full_lookup) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheCommitPromptAfter(&after.cache,1u,tokens,committed,steps[step],&after_lookup) == SPARK_STATUS_OK);
+		assert(memcmp(&full_lookup,&after_lookup,sizeof(full_lookup)) == 0);
+		committed = after_lookup.matched_token_count;
+		SparkTestPrefixCacheTwinsMatch(&full,&after);
+	}
+	assert(SparkPrefixCacheLookupPrompt(&full.cache,2u,other,120u,&full_lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheLookupPrompt(&after.cache,2u,other,120u,&after_lookup) == SPARK_STATUS_OK);
+	assert(memcmp(&full_lookup,&after_lookup,sizeof(full_lookup)) == 0);
+	matched = after_lookup.matched_token_count;
+	assert(matched == 80u);
+	assert(SparkPrefixCacheCommitPrompt(&full.cache,2u,other,150u,&full_lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPromptAfter(&after.cache,2u,other,matched,150u,&after_lookup) == SPARK_STATUS_OK);
+	assert(memcmp(&full_lookup,&after_lookup,sizeof(full_lookup)) == 0);
+	SparkTestPrefixCacheTwinsMatch(&full,&after);
+	assert(SparkPrefixCacheCommitPromptAfter(&after.cache,1u,other,80u,210u,&after_lookup) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkPrefixCacheCommitPrompt(&full.cache,1u,other,210u,&full_lookup) == SPARK_STATUS_SCHEMA_ERROR);
+	SparkTestPrefixCacheTwinsMatch(&full,&after);
+}
+
 static uint32_t SparkTestPrefixCacheValidEntries(const SparkPrefixCacheEntry *entries,uint32_t count)
 {
 	uint32_t index,valid = 0u;
@@ -3513,6 +3590,7 @@ int main(void)
 	SparkTestPrefixCacheRetention();
 	SparkTestPrefixCacheResumeSuperseded();
 	SparkTestPrefixCachePartialPublication();
+	SparkTestPrefixCacheCommitAfterMatchesFullCommit();
 	SparkTestPrefixCacheTombstone(0u);
 	SparkTestPrefixCacheTombstone(1u);
 	SparkTestKvPageCacheSharesImmutableChains();

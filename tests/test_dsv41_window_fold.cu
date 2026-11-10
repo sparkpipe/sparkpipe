@@ -53,7 +53,7 @@ static __global__ void ReferenceWindowFoldKernel(float *__restrict__ records, ui
 		const float keep = running_max == -INFINITY ? 0.0f : __expf(running_max - top), add = __expf(score - top);
 		running_sum = running_sum * keep + add;
 		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
-			accumulator[e] = accumulator[e] * keep + add * value[e];
+			accumulator[e] = accumulator[e] * keep + SparkMathAttentionValueWeight(add) * value[e];
 		running_max = top;
 	}
 	__syncthreads();

@@ -25,6 +25,16 @@ backoff, circuit delay and actual inflight timeout remain timed operations.
 Readiness inspection never extends a deadline. Successful dispatch resets the
 per-submission timeout and clears its rejected-work retry deadline.
 
+A resident client reads its socket with one receive per read and keeps every
+whole message it has not processed yet in its input buffer, so a buffered
+message no longer makes the socket readable: while one is buffered,
+`SparkModelResidentClientNextProgressNs` returns one.
+`SparkModelResidentClientNeedsProgress` is true for a client that is
+disconnected, has output queued or has a message buffered. A pipeline
+progress polls the other ranks' sockets once with a zero timeout and runs
+progress only on the ranks that are readable or need it; a connected client
+has no timer, so a rank skipped this way has nothing to do.
+
 Validation: real API text/token-ID and system-loopback tests pass. The added
 API test waits for an idle worker, queues a request and asserts both exact fixture
 tokens and a response within two seconds. Removing its enqueue wake fails the
