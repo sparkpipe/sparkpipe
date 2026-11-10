@@ -24,11 +24,9 @@
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
 #include "inference/kernels/topk_group.cuh"
+#include "inference/runner/stage_model_cuda.cuh"
 #include "sparkpipe/spark_motif_family.h"
-#include "sparkpipe/spark_named_pack.h"
-#include "sparkpipe/spark_named_pack_bind.h"
 #include "sparkpipe/spark_rope_plan.h"
-#include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_weightd.h"
 
 #define MO_HIDDEN SPARK_MOTIF_MODEL_HIDDEN_DIMENSION
@@ -139,33 +137,38 @@ struct MotifLayer
 };
 
 template<class G>
-struct MotifState
+struct MotifState : CudaStagePackState
 {
 	static constexpr uint32_t kGroups = MO_GROUPS / G::kTpDegree;
 	static constexpr uint32_t kHeads = kGroups * MO_GROUP;
 	static constexpr uint32_t kSignal = kGroups * MO_SIGNAL;
 	static constexpr uint32_t kLocalExperts = MO_EXPERTS / G::kTpDegree;
-	const SparkStageRunnerServices *services;
-	SparkNamedPack pack;
-	uint32_t pack_open, tp_degree, tp_rank, max_rows, slots, expert_first, kv_attached, collective_capacity;
-	uint64_t arena_bytes, lane_bytes, steps, prefill_rows;
+	uint32_t expert_first, collective_capacity;
+	uint64_t steps, prefill_rows;
 	MotifLayer layers[MO_LAYERS];
-	void *arena, *lane_arena;
-	MotifState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *streams, *snapshot, *collapsed, *normed, *q_c, *q, *q_latent, *query, *gathered, *slot, *merged, *values, *lambda, *gate, *diff, *partial;
 	float *hc_mixes, *hc_pre, *hc_post, *hc_comb, *partials, *received, *router_logits, *route_weight, *full_inv_freq;
 	uint32_t *windows, *route_expert, *route_global, *group_row_offset, *route_packed_row, *route_source_token, *tile_prefix_up, *tile_prefix_down;
 	uint32_t *param_of_row;
 	uint16_t *expert_gate_up, *expert_act, *expert_out, *mlp_gate_up, *mlp_act, *shared_out;
-	LmKvAccessError *kv_error;
 	LmKvShardView views[MO_LAYERS];
 };
 
 template<class G>
-struct MotifStage
+struct MotifStage : CudaStage<MotifStage<G>>
 {
 	using State = MotifState<G>;
+	using Schedule = MotifSchedule<G, MotifStage>;
+	using Kv = CudaStageKv<CudaStageKvViews<MotifKv, &State::views, 0u, MO_LAYERS>>;
+	using LaneShared = CudaStageFields<&State::full_inv_freq, &State::kv_error>;
 	static constexpr uint32_t kGroups = State::kGroups, kHeads = State::kHeads, kSignal = State::kSignal, kLocalExperts = State::kLocalExperts;
+	static constexpr bool kLanes = true;
+	static constexpr uint32_t kTpDegree = G::kTpDegree;
+	static constexpr uint32_t kHidden = MO_HIDDEN;
+	static constexpr uint32_t kVocab = MO_VOCAB;
+	static constexpr uint32_t kLayers = MO_LAYERS;
+	static constexpr float kEpsilon = MO_EPS;
+	static constexpr uint32_t kPackAlignment = G::kPackAlignment;
 
 	struct Frame
 	{
@@ -174,6 +177,26 @@ struct MotifStage
 		const MotifLayer *layer;
 		uint32_t index;
 	};
+
+	static const char *Tag(void)
+	{
+		return G::Tag();
+	}
+
+	static const char *ReportTag(void)
+	{
+		return G::ReportTag();
+	}
+
+	static const char *WeightdModel(void)
+	{
+		return G::WeightdModel();
+	}
+
+	static const char *WeightdRevision(void)
+	{
+		return G::WeightdRevision();
+	}
 
 	static uint32_t QuerySequences(uint32_t rows)
 	{
@@ -185,28 +208,12 @@ struct MotifStage
 		return (uint32_t)(((uint64_t)rows * kHeads * MO_RECORD * 2u + MO_HIDDEN - 1u) / MO_HIDDEN);
 	}
 
-	static SparkStatus Launched(void)
-	{
-		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-	}
-
 	static SparkStatus Check(int32_t status, const char *site, uint32_t layer)
 	{
 		if ( status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess )
 			return SPARK_STATUS_OK;
 		fprintf(stderr, "%s: %s failed at layer %u status=%d cuda=%s\n", G::Tag(), site, layer, (int)status, cudaGetErrorString(cudaPeekAtLastError()));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	}
-
-	static SparkStatus Round(State *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *local, void *full)
-	{
-		return state->services->round(state->services->context, (void *)stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL, rows, row_elements, local, full);
-	}
-
-	static void RowState(const State *state, uint32_t layer, uint32_t phase)
-	{
-		if ( state->services->row_state != 0 )
-			state->services->row_state(state->services->context, layer, phase);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
@@ -282,7 +289,7 @@ struct MotifStage
 	{
 		LmHcExpandStreamsKernel<MO_HIDDEN><<<dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, frame.step->rows), MO_THREADS, 0, frame.stream>>>(
 			frame.step->hidden_bf16, state->streams, frame.step->rows);
-		return Launched();
+		return CudaStageLaunched();
 	}
 
 	static void BindLayer(State *state, Frame &frame, uint32_t layer)
@@ -313,7 +320,7 @@ struct MotifStage
 		const float theta = window ? SPARK_MOTIF_MODEL_WINDOW_ROPE_THETA : SPARK_MOTIF_MODEL_ROPE_THETA;
 		const uint64_t query_stride = (uint64_t)QuerySequences(rows) * MO_HIDDEN, record_stride = (uint64_t)RecordSequences(rows) * MO_HIDDEN / 2u;
 		SparkStatus status;
-		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		status = Check(Linear(w->q_a, state->normed, state->q_c, rows, MO_HIDDEN, MO_QA, sms, stream), "q_a", layer);
 		if ( status == SPARK_STATUS_OK )
 			status = Check(Norm<false>(state->q_c, w->q_norm, state->q_c, rows, MO_QA, MO_QA, stream), "q norm", layer);
@@ -341,9 +348,9 @@ struct MotifStage
 		if ( window )
 			MotifWindowListKernel<<<rows, MO_THREADS, 0, stream>>>(step->positions, state->windows, rows);
 		status = Check(LM_LAUNCH_OK, "kv store", layer);
-		RowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
-			status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, QuerySequences(rows), 0u, state->query, state->gathered);
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, QuerySequences(rows), 0u, state->query, state->gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmLatentShardPartialLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride, kHeads,
@@ -351,7 +358,7 @@ struct MotifStage
 				window ? MO_WINDOW : 0u, window ? SPARK_MOTIF_MODEL_WINDOW_SOFTMAX_SCALE : SPARK_MOTIF_MODEL_FULL_SOFTMAX_SCALE, state->partials, record_stride,
 				rows, stream) != cudaSuccess )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "attention partial", layer);
-		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, RecordSequences(rows), 0u, state->partials, state->received);
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, RecordSequences(rows), 0u, state->partials, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmLatentShardMergeLaunch<MO_LATENT>(state->received, record_stride, degree, kHeads, state->merged, rows, stream) != cudaSuccess ||
@@ -374,7 +381,7 @@ struct MotifStage
 
 	static SparkStatus AllReduce(State *state, Frame &frame)
 	{
-		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
 	}
 
 	static SparkStatus HyperPost(State *state, Frame &frame, uint32_t layer, uint32_t part)
@@ -477,32 +484,10 @@ struct MotifStage
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
-	{
-		return MotifSchedule<G, MotifStage>::Step((State *)model, step, stream);
-	}
-
-	static SparkStatus StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
-	{
-		return MotifSchedule<G, MotifStage>::Begin((State *)model, step, queue, (Frame *)frame);
-	}
-
-	static SparkStatus StepLayer(void *model, void *frame, uint32_t index, void *queue)
-	{
-		(void)queue;
-		return MotifSchedule<G, MotifStage>::Layer((State *)model, *(Frame *)frame, index);
-	}
-
-	static SparkStatus StepEnd(void *model, void *frame, SparkStatus status, void *queue)
-	{
-		(void)queue;
-		return MotifSchedule<G, MotifStage>::End((State *)model, *(Frame *)frame, status);
-	}
-
-	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
+	static uint64_t Plan(State *state, uint8_t *base, uint32_t lane)
 	{
 		const uint64_t rows = state->max_rows, routes = rows * MO_TOP_K, groups = kLocalExperts + 2u, degree = state->tp_degree, b = sizeof(uint16_t);
-		struct { void **target; uint64_t bytes; } plan[] =
+		const CudaStageSlice plan[] =
 		{
 			{ (void **)&state->streams, rows * LM_HC_SITE_STREAMS * MO_HIDDEN * b },
 			{ (void **)&state->snapshot, rows * LM_HC_SITE_STREAMS * MO_HIDDEN * b },
@@ -546,67 +531,24 @@ struct MotifStage
 			{ (void **)&state->full_inv_freq, lane == 0u ? (MO_ROPE / 2u) * sizeof(float) : 0u },
 			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
-		uint64_t cursor = 0u;
-		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
+		return CudaStagePlace(plan, base);
+	}
+
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
+	{
+		return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u;
+	}
+
+	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
+	{
+		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, groups = 0u, group_first = 0u, experts = 0u, local = 0u;
+		const CudaStagePackValue values[] =
 		{
-			cursor = (cursor + 255u) & ~255ull;
-			if ( base != 0 )
-				*plan[index].target = plan[index].bytes != 0u ? base + cursor : 0;
-			cursor += plan[index].bytes;
-		}
-		*bytes = cursor;
-		return SPARK_STATUS_OK;
-	}
-
-	static void Close(void *model)
-	{
-		State *state = (State *)model;
-		if ( state == 0 )
-			return;
-		if ( state->arena != 0 )
-			(void)cudaFree(state->arena);
-		if ( state->lane_arena != 0 )
-			(void)cudaFree(state->lane_arena);
-		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
-			free(state->lane_states[lane]);
-		if ( state->pack_open != 0u )
-			SparkNamedPackClose(&state->pack);
-		free(state);
-	}
-
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **model, SparkStageRunnerModelGeometry *geometry)
-	{
-		const SparkStageRunnerConfiguration *configuration = request->configuration;
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, groups = 0u, group_first = 0u, experts = 0u, local = 0u, embed_rows = 0u;
-		State *state;
-		SparkStatus status;
-		if ( configuration->stage_count != 1u || configuration->tp_degree != G::kTpDegree || configuration->max_input_row_count == 0u ||
-			configuration->state_budget_bytes == 0u || configuration->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		state = (State *)calloc(1u, sizeof(*state));
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		*model = state;
-		state->services = request->services;
-		state->tp_degree = configuration->tp_degree;
-		state->tp_rank = configuration->tp_rank;
-		state->max_rows = configuration->max_input_row_count;
-		state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
-			configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
-		status = SparkNamedPackOpen(configuration->rank_pack_path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, G::kPackAlignment, &state->pack);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		state->pack_open = 1u;
-		if ( SparkNamedPackConfigU32(&state->pack, "tp_degree", &degree) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "tp_rank", &rank) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "hidden", &hidden) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "layers", &layers) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "vocab_rows", &vocab_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "head_groups", &groups) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "head_group_first", &group_first) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "experts", &experts) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "local_experts", &local) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "expert_first", &state->expert_first) != SPARK_STATUS_OK )
+			{ "tp_degree", &degree }, { "tp_rank", &rank }, { "hidden", &hidden }, { "layers", &layers }, { "vocab_rows", &vocab_rows },
+			{ "head_groups", &groups }, { "head_group_first", &group_first }, { "experts", &experts }, { "local_experts", &local },
+			{ "expert_first", &state->expert_first }
+		};
+		if ( CudaStagePackValues(&state->pack, values) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != MO_HIDDEN || layers != MO_LAYERS ||
 			vocab_rows * degree != MO_VOCAB || groups != kGroups || group_first != rank * kGroups || experts != MO_EXPERTS || local != kLocalExperts ||
@@ -625,135 +567,76 @@ struct MotifStage
 				QuerySequences(state->max_rows), RecordSequences(state->max_rows), state->collective_capacity);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		status = Plan(state, &state->arena_bytes, 0, 0u);
-		if ( status == SPARK_STATUS_OK )
-			status = Plan(state, &state->lane_bytes, 0, 1u);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if ( state->arena_bytes + state->lane_bytes > configuration->state_budget_bytes )
-		{
-			fprintf(stderr, "%s: rank state %llu bytes (%llu for the second prefill lane) is over the %llu-byte budget\n", G::Tag(),
-				(unsigned long long)(state->arena_bytes + state->lane_bytes), (unsigned long long)state->lane_bytes,
-				(unsigned long long)configuration->state_budget_bytes);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		memset(geometry, 0, sizeof(*geometry));
-		geometry->hidden = MO_HIDDEN;
-		geometry->vocab = MO_VOCAB;
-		geometry->total_layers = MO_LAYERS;
-		geometry->layer_count = MO_LAYERS;
-		geometry->rms_epsilon = MO_EPS;
-		geometry->pack_bytes = state->pack.file_bytes;
-		geometry->kv_layer_count = MO_LAYERS;
-		geometry->kv_layer_page_bytes = MotifKv::kPageBytes;
-		geometry->kv_shard.degree = state->tp_degree;
-		geometry->kv_shard.rank = state->tp_rank;
-		geometry->kv_shard.grain = 1u;
-		geometry->head_norm_f32 = 1u;
+		return SPARK_STATUS_OK;
+	}
+
+	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
+	{
 		geometry->head_norm_round_first = 1u;
-		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
+		if ( CudaStage<MotifStage>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		geometry->embed_rows = embed_rows;
-		if ( geometry->embed_bytes != (uint64_t)embed_rows * MO_HIDDEN * sizeof(uint16_t) ||
+		if ( geometry->embed_bytes != (uint64_t)geometry->embed_rows * MO_HIDDEN * sizeof(uint16_t) ||
 			geometry->head_bytes != (uint64_t)geometry->head_rows * MO_HIDDEN * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)MO_HIDDEN * sizeof(float) )
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ManifestCheck(void *model, const struct SparkWeightdManifest *manifest)
+	template<class T>
+	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes)
 	{
-		(void)model;
-		if ( manifest == 0 || manifest->range_count != 0u )
+		tensors->Add(name, kind, bytes, field);
+	}
+
+	static SparkStatus LayerTensors(State *state, uint32_t index, CudaStageTensors *t)
+	{
+		const uint64_t h = MO_HIDDEN, b = sizeof(uint16_t), f = sizeof(float), mix = LM_HC_SITE_MIX * LM_HC_SITE_STREAMS * h;
+		MotifLayer *w = &state->layers[index];
+		w->window = MotifLayout::Window(index) ? 1u : 0u;
+		w->owner = index % state->tp_degree == state->tp_rank ? 1u : 0u;
+		Tensor(t, "attn_norm", "f32", &w->attn_norm, h * f);
+		Tensor(t, "ffn_norm", "f32", &w->ffn_norm, h * f);
+		Tensor(t, "hc_attn_fn", "f32", &w->hc_attn_fn, mix * f);
+		Tensor(t, "hc_attn_scale", "f32", &w->hc_attn_scale, 3u * f);
+		Tensor(t, "hc_attn_base", "f32", &w->hc_attn_base, LM_HC_SITE_MIX * f);
+		Tensor(t, "hc_ffn_fn", "f32", &w->hc_ffn_fn, mix * f);
+		Tensor(t, "hc_ffn_scale", "f32", &w->hc_ffn_scale, 3u * f);
+		Tensor(t, "hc_ffn_base", "f32", &w->hc_ffn_base, LM_HC_SITE_MIX * f);
+		Tensor(t, "attn_q_a", "bf16", &w->q_a, (uint64_t)MO_QA * h * b);
+		Tensor(t, "attn_q_norm", "f32", &w->q_norm, (uint64_t)MO_QA * f);
+		Tensor(t, "attn_kv_a", "bf16", &w->kv_a, (uint64_t)MO_SLOT * h * b);
+		Tensor(t, "attn_kv_norm", "f32", &w->kv_norm, (uint64_t)MO_LATENT * f);
+		Tensor(t, "attn_lambda", "bf16", &w->lambda, (uint64_t)MO_GROUPS * MO_SIGNAL * h * b);
+		Tensor(t, "attn_q_b", "bf16", &w->q_b, (uint64_t)kHeads * MO_HEAD * MO_QA * b);
+		Tensor(t, "attn_gate", "bf16", &w->gate, (uint64_t)kSignal * MO_VALUE * MO_QA * b);
+		Tensor(t, "attn_out", "bf16", &w->out, h * kSignal * MO_VALUE * b);
+		Tensor(t, "attn_uk", "bf16", &w->uk, (uint64_t)kHeads * MO_LATENT * MO_NOPE * b);
+		Tensor(t, "attn_uv", "bf16", &w->uv, (uint64_t)kHeads * MO_VALUE * MO_LATENT * b);
+		if ( !MotifLayout::Routed(index) && w->owner != 0u )
 		{
-			fprintf(stderr, "%s: the rank's experts are resident tensors; its weightd manifest carries no expert ranges\n", G::Tag());
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+			Tensor(t, "ffn_gate_up", "bf16", &w->ffn_gate_up, 2ull * MO_DENSE_INTER * h * b);
+			Tensor(t, "ffn_down", "bf16", &w->ffn_down, h * MO_DENSE_INTER * b);
+			Tensor(t, "ffn_poly", "f32", &w->ffn_poly, LM_POLY_NORM_PARAMS * f);
+		}
+		if ( MotifLayout::Routed(index) )
+		{
+			Tensor(t, "router_proj", "bf16", &w->router, (uint64_t)MO_EXPERTS * h * b);
+			Tensor(t, "expert_bias", "f32", &w->expert_bias, (uint64_t)MO_EXPERTS * f);
+			Tensor(t, "moe_w13", "bf16", &w->moe_w13, (uint64_t)kLocalExperts * 2u * MO_EXPERT_INTER * h * b);
+			Tensor(t, "moe_w2", "bf16", &w->moe_w2, (uint64_t)kLocalExperts * h * MO_EXPERT_INTER * b);
+			Tensor(t, "moe_poly", "f32", &w->moe_poly, (uint64_t)kLocalExperts * LM_POLY_NORM_PARAMS * f);
+			if ( w->owner != 0u )
+			{
+				Tensor(t, "shared_gate_up", "bf16", &w->shared_gate_up, 2ull * MO_EXPERT_INTER * h * b);
+				Tensor(t, "shared_down", "bf16", &w->shared_down, h * MO_EXPERT_INTER * b);
+				Tensor(t, "shared_poly", "f32", &w->shared_poly, LM_POLY_NORM_PARAMS * f);
+			}
 		}
 		return SPARK_STATUS_OK;
 	}
 
-	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field, uint64_t bytes)
+	static SparkStatus Upload(State *state)
 	{
-		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		const void *bound = 0;
-		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		const SparkStatus status = SparkNamedPackBindSized(&state->pack, lazy_pack, G::Tag(), key, kind, bytes, &bound);
-		*field = (T *)bound;
-		return status;
-	}
-
-	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
-	{
-		State *state = (State *)model;
-		const uint64_t h = MO_HIDDEN, b = sizeof(uint16_t), f = sizeof(float), mix = LM_HC_SITE_MIX * LM_HC_SITE_STREAMS * h;
 		float inv_freq[MO_ROPE / 2u];
-		(void)geometry;
-		for ( uint32_t index = 0u; index < MO_LAYERS; ++index )
-		{
-			MotifLayer *w = &state->layers[index];
-			SparkStatus s = SPARK_STATUS_OK;
-			w->window = MotifLayout::Window(index) ? 1u : 0u;
-			w->owner = index % state->tp_degree == state->tp_rank ? 1u : 0u;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_norm", "f32", &w->attn_norm, h * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "ffn_norm", "f32", &w->ffn_norm, h * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_attn_fn", "f32", &w->hc_attn_fn, mix * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_attn_scale", "f32", &w->hc_attn_scale, 3u * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_attn_base", "f32", &w->hc_attn_base, LM_HC_SITE_MIX * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_ffn_fn", "f32", &w->hc_ffn_fn, mix * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_ffn_scale", "f32", &w->hc_ffn_scale, 3u * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "hc_ffn_base", "f32", &w->hc_ffn_base, LM_HC_SITE_MIX * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_q_a", "bf16", &w->q_a, (uint64_t)MO_QA * h * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_q_norm", "f32", &w->q_norm, (uint64_t)MO_QA * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_kv_a", "bf16", &w->kv_a, (uint64_t)MO_SLOT * h * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_kv_norm", "f32", &w->kv_norm, (uint64_t)MO_LATENT * f) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_lambda", "bf16", &w->lambda, (uint64_t)MO_GROUPS * MO_SIGNAL * h * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_q_b", "bf16", &w->q_b, (uint64_t)kHeads * MO_HEAD * MO_QA * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_gate", "bf16", &w->gate, (uint64_t)kSignal * MO_VALUE * MO_QA * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_out", "bf16", &w->out, h * kSignal * MO_VALUE * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_uk", "bf16", &w->uk, (uint64_t)kHeads * MO_LATENT * MO_NOPE * b) : s;
-			s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "attn_uv", "bf16", &w->uv, (uint64_t)kHeads * MO_VALUE * MO_LATENT * b) : s;
-			if ( !MotifLayout::Routed(index) && w->owner != 0u )
-			{
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "ffn_gate_up", "bf16", &w->ffn_gate_up, 2ull * MO_DENSE_INTER * h * b) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "ffn_down", "bf16", &w->ffn_down, h * MO_DENSE_INTER * b) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "ffn_poly", "f32", &w->ffn_poly, LM_POLY_NORM_PARAMS * f) : s;
-			}
-			if ( MotifLayout::Routed(index) )
-			{
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "router_proj", "bf16", &w->router, (uint64_t)MO_EXPERTS * h * b) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "expert_bias", "f32", &w->expert_bias, (uint64_t)MO_EXPERTS * f) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "moe_w13", "bf16", &w->moe_w13, (uint64_t)kLocalExperts * 2u * MO_EXPERT_INTER * h * b) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "moe_w2", "bf16", &w->moe_w2, (uint64_t)kLocalExperts * h * MO_EXPERT_INTER * b) : s;
-				s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "moe_poly", "f32", &w->moe_poly, (uint64_t)kLocalExperts * LM_POLY_NORM_PARAMS * f) : s;
-				if ( w->owner != 0u )
-				{
-					s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "shared_gate_up", "bf16", &w->shared_gate_up, 2ull * MO_EXPERT_INTER * h * b) : s;
-					s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "shared_down", "bf16", &w->shared_down, h * MO_EXPERT_INTER * b) : s;
-					s = s == SPARK_STATUS_OK ? Bind(state, lazy_pack, index, "shared_poly", "f32", &w->shared_poly, LM_POLY_NORM_PARAMS * f) : s;
-				}
-			}
-			if ( s != SPARK_STATUS_OK )
-				return SPARK_STATUS_PARSE_ERROR;
-		}
-		if ( cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
-		{
-			state->arena = 0;
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena, 0u) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
-		{
-			state->lane_arena = 0;
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
-			if ( (state->lane_states[lane] = (State *)calloc(1u, sizeof(State))) == 0 )
-				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		SparkRopeYarnRampTable(inv_freq, MO_ROPE, SPARK_MOTIF_MODEL_ROPE_THETA, SPARK_MOTIF_MODEL_YARN_FACTOR, SPARK_MOTIF_MODEL_YARN_BETA_FAST,
 			SPARK_MOTIF_MODEL_YARN_BETA_SLOW, SPARK_MOTIF_MODEL_YARN_ORIGINAL_CONTEXT);
 		if ( cudaMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), cudaMemcpyHostToDevice) != cudaSuccess )
@@ -761,106 +644,13 @@ struct MotifStage
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus AttachKv(void *model, const SparkStageRunnerKv *kv)
+	static uint32_t ReportFields(const State *state, CudaStageReportField *fields)
 	{
-		State *state = (State *)model;
-		if ( kv == 0 || kv->layer_count != MO_LAYERS || kv->layer_page_bytes != MotifKv::kPageBytes || kv->sequence_count > state->slots )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t layer = 0u; layer < MO_LAYERS; ++layer )
-			if ( LmKvShardViewInitialize<MotifKv>(&state->views[layer], kv->pool + (uint64_t)layer * kv->layer_stride_bytes, kv->page_table,
-				kv->page_table_stride, kv->sequence_count, kv->pool_page_count, state->kv_error, kv->context_shard) != 0 )
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		state->kv_attached = 1u;
-		return SPARK_STATUS_OK;
-	}
-
-	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
-	{
-		(void)model; (void)to_buffer; (void)slot; (void)buffer; (void)bytes; (void)stream;
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
-
-	static SparkStatus ResetSlot(void *model, uint32_t slot, void *stream)
-	{
-		(void)model; (void)slot; (void)stream;
-		return SPARK_STATUS_OK;
-	}
-
-	static SparkStatus Sideband(void *model, uint32_t to_buffer, const void *hidden, void *buffer, uint64_t bytes, uint32_t rows, void *stream)
-	{
-		(void)model; (void)to_buffer; (void)hidden; (void)buffer; (void)bytes; (void)rows; (void)stream;
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
-
-	static const void *ProbeBuffers(void *model)
-	{
-		return model;
-	}
-
-	static void Report(void *model, uint32_t rank)
-	{
-		const State *state = (const State *)model;
-		fprintf(stderr, "%s rank=%u arena_bytes=%llu lane_bytes=%llu slots=%u rows=%u expert_first=%u steps=%llu prefill_rows=%llu\n", G::ReportTag(),
-			rank, (unsigned long long)state->arena_bytes, (unsigned long long)state->lane_bytes, state->slots, state->max_rows, state->expert_first,
-			(unsigned long long)state->steps, (unsigned long long)state->prefill_rows);
-	}
-
-	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
-	{
-		State *state = (State *)model;
-		uint64_t bytes = 0u;
-		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 || state->lane_arena == 0 )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		if ( step->commit == 0u )
-			return SPARK_STATUS_UNSUPPORTED;
-		State *copy = state->lane_states[lane];
-		memcpy(copy, state, sizeof(*copy));
-		copy->services = services;
-		if ( lane != 0u )
+		const CudaStageReportField report[] =
 		{
-			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena, lane) != SPARK_STATUS_OK || bytes != state->lane_bytes )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			copy->full_inv_freq = state->full_inv_freq;
-			copy->kv_error = state->kv_error;
-		}
-		*lane_model = copy;
-		return SPARK_STATUS_OK;
-	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			G::Tag(),
-			G::WeightdModel(),
-			G::WeightdRevision(),
-			Open,
-			ManifestCheck,
-			BindModel,
-			Close,
-			Step,
-			Sideband,
-			AttachKv,
-			RecurrentCopy,
-			ResetSlot,
-			ProbeBuffers,
-			Report,
-			0,
-			Lane,
-			0,
-			0,
-			0,
-			0,
-			0,
-			StepBegin,
-			0,
-			StepLayer,
-			0,
-			StepEnd,
-			(uint32_t)sizeof(Frame),
-			0u
+			{ "arena_bytes", state->arena_bytes }, { "lane_bytes", state->lane_bytes }, { "slots", state->slots }, { "rows", state->max_rows },
+			{ "expert_first", state->expert_first }, { "steps", state->steps }, { "prefill_rows", state->prefill_rows }
 		};
-		return &interface_table;
+		return CudaStageReportOut(fields, report);
 	}
 };
