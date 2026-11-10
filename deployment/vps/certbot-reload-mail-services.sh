@@ -1,5 +1,7 @@
 #!/bin/sh
-set -eu
+set -u
 
-systemctl reload postfix
-systemctl reload dovecot
+status=0
+systemctl reload postfix || status=1
+systemctl reload dovecot || status=1
+exit "$status"
