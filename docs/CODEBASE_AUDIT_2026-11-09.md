@@ -381,6 +381,18 @@ pools (#1837); verify frames of 2-16 rows read each dense weight once
 headroom is the measured 2.5 GiB and GLM 5.3 Full BF16 serves 1M positions
 (#1753, confirmed by the first 1M run).
 
+The Metal line merged on 2026-11-10 as well, on the owner's call, in
+dependency order: numerics that follow the publisher with FlashAttention-2's
+prefill form (#1739, #1865), Qwen 3.8 Max on the Qwen Metal backend (#1760),
+Metal serving through the common stack (#1901: the stage serving adapter, KV
+binding and copier on the device API, Qwen 3.8 27B served on one M5 Ultra),
+Qwen3.5-4B and 2B on the Qwen device stage (#1900) and declared cache points
+(#1905). The adapter keeps the module facts, the tree frames and the required
+wait mode across the device API; the Qwen3.5 geometries take the 27B's
+rounded rope terms until their reference run says otherwise. The merged
+Metal kernels were not compiled here (no Metal toolchain on this Mac), which
+the Metal session does on M5U0.
+
 Carried in from the open pull requests on 2026-11-10, each as its own
 commit on this branch: the all-reduce switch to reduce-scatter plus
 all-gather from 10,240 elements at 16 ranks on dual rail (#1863); a failed
