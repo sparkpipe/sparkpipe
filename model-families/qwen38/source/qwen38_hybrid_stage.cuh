@@ -1296,6 +1296,7 @@ struct QwenHybridModel
 		state->tp_degree = configuration->tp_degree;
 		state->tp_rank = configuration->tp_rank;
 		state->max_rows = configuration->max_input_row_count;
+#ifdef DEBUG
 		if ( getenv(G::DumpEnv()) != 0 )
 		{
 			state->dump = fopen(getenv(G::DumpEnv()), "wb");
@@ -1306,6 +1307,7 @@ struct QwenHybridModel
 			fprintf(stderr, "%s: this rank dumps every layer's residual and sublayer output to %s (debug; graphs off)\n",
 				G::Tag(), getenv(G::DumpEnv()));
 		}
+#endif
 		if ( configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_FP8_E4M3 && !G::kMoe )
 		{
 			state->linear_bytes = 1u;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check one Qwen3.8 layer of a SPARK_QWEN38_*_LAYER_DUMP against numpy.
+"""Check one Qwen3.8 layer of a SPARK_QWEN38_*_LAYER_DUMP (written by a DEBUG build) against numpy.
 
 The dump (model-families/qwen38/source/qwen38_hybrid_stage.cuh) holds, per
 step, the embedding rows and, after every layer, the residual with the

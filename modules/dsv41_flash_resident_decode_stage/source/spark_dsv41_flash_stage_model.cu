@@ -1658,6 +1658,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
 	state->context_slots = configuration->max_active_sequence_count;
 	state->max_positions = configuration->kv_pages_per_sequence * D41_PAGE_TOKENS;
+#ifdef DEBUG
 	if ( getenv("SPARK_DSV41_FLASH_LAYER_DUMP") != 0 )
 	{
 		state->dump = fopen(getenv("SPARK_DSV41_FLASH_LAYER_DUMP"), "wb");
@@ -1669,6 +1670,7 @@ static SparkStatus D41Open(const SparkStageRunnerModelOpen *request, void **mode
 		fprintf(stderr, "sparkpipe_dsv41_flash: this rank dumps every layer's streams and routes to %s (debug; graphs off)\n",
 			getenv("SPARK_DSV41_FLASH_LAYER_DUMP"));
 	}
+#endif
 	pack_bytes = D41FileBytes(configuration->rank_pack_path);
 	status = D41ReadFile(configuration->rank_pack_path, 0u, &state->header, sizeof(state->header));
 	if ( status != SPARK_STATUS_OK || state->header.magic != SPARK_DSV41_FLASH_STAGEPACK_MAGIC ||

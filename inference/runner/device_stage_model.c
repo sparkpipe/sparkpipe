@@ -641,6 +641,7 @@ SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *
 	const uint64_t bytes = (uint64_t)tensors->rows * width * sizeof(uint16_t);
 	const uint32_t header[4] = { 0x4c445344u, layer, tensors->rows, width };
 	SparkStatus status;
+#ifdef DEBUG
 	if ( stage->dump_checked == 0u && stage->tp_rank == 0u )
 	{
 		const char *path = getenv("SPARK_DEVICE_LAYER_DUMP");
@@ -648,6 +649,7 @@ SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *
 		if ( path != 0 && path[0] != 0 && (stage->dump = fopen(path,"wb")) == 0 )
 			return(SparkDeviceStageRefuse(stage,SPARK_STATUS_IO_ERROR,"cannot open SPARK_DEVICE_LAYER_DUMP"));
 	}
+#endif
 	if ( stage->dump == 0 )
 		return(SPARK_STATUS_OK);
 	if ( rows.bytes < bytes || tensors->host_positions == 0 )
