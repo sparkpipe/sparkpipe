@@ -40,6 +40,7 @@ def load_module(path: Path, name: str):
 
 packer = load_module(TOOLS / "glm52_resident_stagepack.py", "sparkpipe_glm52_resident_stagepack")
 validator = load_module(TOOLS / "glm52_validate_pack.py", "sparkpipe_glm52_validate_pack")
+codecs = load_module(TOOLS / "spark_pack_codecs.py", "sparkpipe_spark_pack_codecs")
 
 
 def check_lut():
@@ -89,7 +90,7 @@ def check_bf16_rounding():
     # (NaN canonicalizes to quiet by design)
     all_u16 = np.arange(65536, dtype=np.uint16)
     non_nan = (all_u16 & 0x7F80) != 0x7F80
-    back = packer.f32_to_bf16_u16(packer.bf16_u16_to_f32(all_u16))
+    back = packer.f32_to_bf16_u16(codecs.bf16_to_f32(all_u16))
     assert np.array_equal(back[non_nan], all_u16[non_nan]), \
         "bf16->f32->bf16 not identity away from NaN"
     print("PASS f32->bf16 round-to-nearest-even (10 bit cases, 65536 round trips)")

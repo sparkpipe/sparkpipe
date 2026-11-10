@@ -65,7 +65,9 @@ A new model family provides:
   under `model-families/<family>/source/`;
 - a module directory with its serving glue (KV region layout, adapter
   descriptor) and the stage-model instantiation;
-- a stage packer built on `tools/spark_pack_common.py`;
+- a stage packer that keeps only its tensor-name map, layout and family
+  transforms, built on the common packer core (`tools/spark_pack_common.py`,
+  `spark_pack_codecs.py`, `spark_pack_wire.py`, `spark_pack_plan.py`);
 - a `tools/stage_lane.py` model entry, a production lane record in
   `deployment/lanes.json` (docs/LANES.md) and a chat-layer model entry.
 
