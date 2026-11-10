@@ -8,6 +8,10 @@ import tempfile
 import time
 from pathlib import Path
 
+import tokenizers
+import tokenizers.models
+import tokenizers.pre_tokenizers
+
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("chat_harness_fixture", ROOT / "tests" / "chat_harness_fixture.py")
 fixture = importlib.util.module_from_spec(SPEC)
@@ -390,6 +394,17 @@ async def run(tmp, check):
         await harness.post("/v1/chat/completions", body)
         check(status == 200 and counted["tokens"] == engine.requests[-1]["prompt_token_ids"] and counted["count"] == len(counted["tokens"]),
               "tokenize renders messages with the model's template to exactly the engine's prompt")
+        sample = "hello world\n\n    indented\tline  "
+        status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "text": sample})
+        check(status == 200 and json.loads(text)["tokens"] == harness.frontend.models["alpha"].vocabulary.encode(sample, False),
+              f"tokenize off the event loop gives the same tokens as the in-loop encode: {text[:200]}")
+        spaced = tokenizers.Tokenizer(tokenizers.models.WordLevel({"a": 0, "b": 1, "[UNK]": 2}, unk_token="[UNK]"))
+        spaced.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+        spaced.add_tokens([tokenizers.AddedToken("  ", normalized=False), tokenizers.AddedToken("\n\n", normalized=False)])
+        vocabulary = chat_frontend.TokenizersVocabulary.from_tokenizer(spaced)
+        check(vocabulary.spacing_pattern is not None and all(vocabulary.encode_released(piece) == vocabulary.encode(piece, False)
+                                                              for piece in ("a  b\n\na", "  a", "b\n\n", "", "a b c")),
+              "the released encode splits on spacing tokens exactly as the in-loop encode does")
         status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "text": "hello world"})
         tokens = json.loads(text)["tokens"]
         status, _, text = await harness.post("/v1/detokenize", {"model": "alpha", "tokens": tokens})

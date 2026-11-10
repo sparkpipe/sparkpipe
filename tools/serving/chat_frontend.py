@@ -629,6 +629,17 @@ class TokenizersVocabulary:
                 ids.extend(self.plain.encode(piece, add_special_tokens=False).ids)
         return ids
 
+    def encode_released(self, text):
+        pieces = self.spacing_pattern.split(text) if self.spacing_pattern is not None else [text]
+        plain = iter(self.plain.encode_batch([piece for index, piece in enumerate(pieces) if index % 2 == 0 and piece], add_special_tokens=False))
+        ids = []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 1:
+                ids.append(self.spacing[piece])
+            elif piece:
+                ids.extend(next(plain).ids)
+        return ids
+
     def control_strings(self):
         return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.content not in self.spacing]
 
@@ -659,6 +670,9 @@ class TiktokenVocabulary:
 
     def encode(self, text, special):
         return self.encoding.encode(text, allowed_special="all") if special else self.encoding.encode_ordinary(text)
+
+    def encode_released(self, text):
+        return self.encoding.encode_ordinary(text)
 
     def control_strings(self):
         return list(self.specials)
@@ -3403,7 +3417,7 @@ class Frontend:
             body = await self.read_body(request)
             model, _, _ = await self.resolve_model(body.get("model"), key, scope)
             if isinstance(body.get("text"), str):
-                ids = model.vocabulary.encode(body["text"], False)
+                ids = await asyncio.to_thread(model.vocabulary.encode_released, body["text"])
             elif isinstance(body.get("messages"), list):
                 messages = normalize_messages(body["messages"])
                 tools = body.get("tools") or None
