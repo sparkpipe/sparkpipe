@@ -24,6 +24,12 @@ static inline bool SparkIndexerSlot(constant SparkIndexerParams &p, device const
 	return true;
 }
 
+static inline float SparkIndexerWeight(constant SparkIndexerParams &p, device const ushort *weights, uint row, uint head)
+{
+	const ulong at = (ulong)row * p.weight_stride + head;
+	return p.weight_f32 != 0u ? ((device const float *)weights)[at] : SparkMathBf16ToFloat(weights[at]);
+}
+
 static inline uint SparkIndexerVisible(constant SparkIndexerParams &p, uint position)
 {
 	return (position + 1u) / max(p.key_ratio, 1u);
@@ -109,7 +115,7 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 	for ( uint i = tid; i < width; i += SPARK_INDEXER_SCORE_THREADS )
 		shared_query[i] = query[(ulong)row * p.query_stride + i];
 	for ( uint h = tid; h < p.heads; h += SPARK_INDEXER_SCORE_THREADS )
-		shared_weight[h] = SparkMathBf16ToFloat(head_weight[(ulong)row * p.weight_stride + h]);
+		shared_weight[h] = SparkIndexerWeight(p, head_weight, row, h);
 	threadgroup_barrier(mem_flags::mem_threadgroup);
 	for ( uint offset = simd; offset < SPARK_INDEXER_SCORE_BLOCK_POSITIONS; offset += SPARK_INDEXER_SCORE_SIMDS )
 	{
@@ -141,6 +147,13 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 					total += fmax(shared_relu[simd][h] * p.score_scale, 0.0f) * shared_weight[h] * p.weight_scale;
 				score = total;
 			}
+			else if ( p.heads_in_order != 0u )
+			{
+				float total = 0.0f;
+				for ( uint h = 0u; h < p.heads; h++ )
+					total += shared_weight[h] * shared_relu[simd][h];
+				score = total * p.score_scale;
+			}
 			const uint g = lane % groups;
 			float sum = shared_weight[g] * shared_relu[simd][g];
 			sum = fma(shared_weight[g + groups], shared_relu[simd][g + groups], sum);
@@ -152,7 +165,7 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 			sum += simd_shuffle_xor(sum, ushort(1));
 			sum += simd_shuffle_xor(sum, ushort(2));
 			sum += simd_shuffle_xor(sum, ushort(4));
-			if ( p.weight_scale == 0.0f )
+			if ( p.weight_scale == 0.0f && p.heads_in_order == 0u )
 				score = sum * p.score_scale;
 		}
 		if ( lane == 0u )
@@ -225,7 +238,7 @@ kernel void spark_indexer_score_pooled(constant SparkIndexerParams &p [[buffer(0
 		dot = SparkGroupSum(dot, scratch, lane, simd, simds) * p.score_scale;
 		if ( dot < 0.0f )
 			dot = 0.0f;
-		total += dot * SparkMathBf16ToFloat(head_weight[(ulong)row * p.weight_stride + h]) * p.weight_scale;
+		total += dot * SparkIndexerWeight(p, head_weight, row, h) * p.weight_scale;
 	}
 	if ( tid == 0u )
 		*score = total;
@@ -346,5 +359,35 @@ kernel void spark_indexer_topk(constant SparkIndexerParams &p [[buffer(0)]], dev
 			state[SPARK_INDEXER_TOPK_SEEN] = seen + equal_total;
 		}
 		threadgroup_barrier(mem_flags::mem_threadgroup);
+	}
+}
+
+kernel void spark_indexer_pool_keys(constant SparkIndexerParams &p [[buffer(0)]], device ushort *window [[buffer(1)]],
+	device const uint *state_index [[buffer(2)]], device const uint *row_begin [[buffer(3)]], device const ushort *keys [[buffer(4)]],
+	device ushort *pooled [[buffer(5)]], uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]],
+	uint2 group_size [[threads_per_threadgroup]])
+{
+	const uint d = group.x * group_size.x + tid, sequence = group.y, ratio = max(p.key_ratio, 1u), span = ratio - 1u;
+	if ( d >= p.head_dimension || sequence >= p.sequences || ratio > SPARK_INDEXER_KERNEL_MAX_RATIO )
+		return;
+	device ushort *slot = window + (ulong)state_index[sequence] * span * p.head_dimension;
+	float carried[SPARK_INDEXER_KERNEL_MAX_RATIO];
+	for ( uint e = 0u; e < span; e++ )
+		carried[e] = SparkMathBf16ToFloat(slot[(ulong)e * p.head_dimension + d]);
+	const uint begin = row_begin[sequence], count = row_begin[sequence + 1u] - begin;
+	for ( uint i = 0u; i < count; i++ )
+	{
+		float sum = 0.0f;
+		for ( uint k = 0u; k < ratio; k++ )
+			sum += i + k >= span ? SparkMathBf16ToFloat(keys[(ulong)(begin + i + k - span) * p.key_stride + d]) : carried[i + k];
+		pooled[(ulong)(begin + i) * p.head_dimension + d] = SparkMathFloatToBf16(sum / float(ratio));
+	}
+	if ( p.commit == 0u )
+		return;
+	for ( uint e = 0u; e < span; e++ )
+	{
+		const uint combined = count + e;
+		slot[(ulong)e * p.head_dimension + d] = combined >= span ? keys[(ulong)(begin + combined - span) * p.key_stride + d] :
+			SparkMathFloatToBf16(carried[combined]);
 	}
 }

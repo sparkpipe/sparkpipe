@@ -36,6 +36,9 @@ typedef struct SparkIndexerShape
 	uint32_t key_stride;
 	float weight_scale;
 	uint32_t gate_stride;
+	uint32_t weight_f32;
+	uint32_t weight_shared;
+	uint32_t heads_in_order;
 } SparkIndexerShape;
 
 typedef struct SparkIndexerCache
@@ -81,6 +84,9 @@ SparkStatus SparkIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	SparkTensor selected, const SparkIndexerShape *shape, uint32_t rows, uint32_t width);
 uint32_t SparkIndexerExpandWidth(const SparkIndexerShape *shape);
 uint32_t SparkIndexerSlotPitch(const SparkIndexerShape *shape, uint32_t gated);
+uint64_t SparkIndexerPoolWindowBytes(const SparkIndexerShape *shape);
+SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
+	SparkTensor pooled, const SparkIndexerShape *shape, uint32_t rows);
 
 #ifdef __cplusplus
 }

@@ -161,7 +161,8 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_attention_combine_gather_d192v128",
 	"spark_attention_combine_gather_d576v512",
 	"spark_indexer_score_pooled",
-	"spark_indexer_expand_pools"
+	"spark_indexer_expand_pools",
+	"spark_indexer_pool_keys"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1195,6 +1196,12 @@ static uint32_t OpsIndexerPagesKnown(const SparkIndexerParams *params, uint32_t 
 		(uint64_t)params->page_pitch >= (uint64_t)(params->page_slots - 1u) * params->slot_pitch + width ? 1u : 0u);
 }
 
+static uint64_t OpsIndexerWeightBytes(const SparkIndexerParams *params)
+{
+	const uint32_t element = params->weight_f32 != 0u ? 4u : 2u;
+	return(params->weight_stride == 0u ? (uint64_t)params->heads * element : OpsRowsBytes(params->rows,params->weight_stride,params->heads,element));
+}
+
 static uint64_t OpsIndexerPoolBytes(const SparkIndexerParams *params)
 {
 	return((uint64_t)params->pool_pages * params->page_pitch * sizeof(uint16_t));
@@ -1255,13 +1262,13 @@ SparkStatus SparkOpsIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	if ( params->rows == 0u || params->heads < 16u || params->heads % 16u != 0u || params->heads > SPARK_INDEXER_KERNEL_MAX_HEADS ||
 		params->head_dimension == 0u || params->head_dimension > SPARK_INDEXER_KERNEL_MAX_DIM ||
 		(uint64_t)params->heads * params->head_dimension > SPARK_INDEXER_KERNEL_MAX_QUERY || params->score_stride == 0u ||
-		params->query_stride < params->heads * params->head_dimension || params->weight_stride < params->heads ||
+		params->query_stride < params->heads * params->head_dimension || (params->weight_stride != 0u && params->weight_stride < params->heads) ||
 		OpsIndexerPagesKnown(params,params->head_dimension) == 0u )
 		return(OpsRefuse("indexer_score","whole 16-head groups up to 128 heads, keys up to 256 wide with at most 8192 query values per row, "
 			"a score stride and a configured page geometry"));
 	status = OpsNeed("indexer_score","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("indexer_score","head_weight",head_weight,OpsRowsBytes(params->rows,params->weight_stride,params->heads,2u));
+		status = OpsNeed("indexer_score","head_weight",head_weight,OpsIndexerWeightBytes(params));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("indexer_score","pool",pool,OpsIndexerPoolBytes(params));
 	if ( status == SPARK_STATUS_OK )
@@ -1294,12 +1301,12 @@ SparkStatus SparkOpsIndexerScorePooled(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	if ( params->rows == 0u || params->heads == 0u || params->heads > SPARK_INDEXER_KERNEL_MAX_HEADS || params->head_dimension == 0u ||
 		params->head_dimension > SPARK_INDEXER_KERNEL_MAX_DIM || params->key_ratio < 2u || params->key_ratio > SPARK_INDEXER_KERNEL_MAX_RATIO ||
 		params->score_stride == 0u || params->weight_scale == 0.0f || params->query_stride < params->heads * params->head_dimension ||
-		params->weight_stride < params->heads || OpsIndexerPagesKnown(params,2u * params->head_dimension) == 0u )
+		(params->weight_stride != 0u && params->weight_stride < params->heads) || OpsIndexerPagesKnown(params,2u * params->head_dimension) == 0u )
 		return(OpsRefuse("indexer_score_pooled","heads up to 128, keys up to 256 wide stored with their gates, 2 to 16 positions per pool, a head-weight scale, "
 			"a score stride and a configured page geometry"));
 	status = OpsNeed("indexer_score_pooled","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )
-		status = OpsNeed("indexer_score_pooled","head_weight",head_weight,OpsRowsBytes(params->rows,params->weight_stride,params->heads,2u));
+		status = OpsNeed("indexer_score_pooled","head_weight",head_weight,OpsIndexerWeightBytes(params));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("indexer_score_pooled","ape",ape,(uint64_t)params->key_ratio * params->head_dimension * sizeof(float));
 	if ( status == SPARK_STATUS_OK )
@@ -1346,6 +1353,37 @@ SparkStatus SparkOpsIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	bindings[1] = OpsBind(row_positions,SPARK_DEVICE_BIND_READ);
 	bindings[2] = OpsBind(selected,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_EXPAND_POOLS,params->rows,1u,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
+	SparkTensor pooled, const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[5];
+	SparkIndexerParams launch = *params;
+	SparkStatus status;
+	if ( sequences == 0 || sequences->sequences == 0u || sequences->tree != 0u || params->rows == 0u || params->head_dimension == 0u ||
+		params->key_ratio < 2u || params->key_ratio > SPARK_INDEXER_KERNEL_MAX_RATIO || params->key_stride < params->head_dimension )
+		return(OpsRefuse("indexer_pool_keys","sequences without a tree frame, rows, a key width and 2 to 16 keys per pool"));
+	launch.sequences = sequences->sequences;
+	launch.commit = sequences->commit;
+	status = OpsNeed("indexer_pool_keys","window",window,(uint64_t)(params->key_ratio - 1u) * params->head_dimension * sizeof(uint16_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_pool_keys","state_index",sequences->state_index,(uint64_t)sequences->sequences * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_pool_keys","row_begin",sequences->row_begin,((uint64_t)sequences->sequences + 1u) * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_pool_keys","keys",keys,OpsRowsBytes(params->rows,params->key_stride,params->head_dimension,2u));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_pool_keys","pooled",pooled,(uint64_t)params->rows * params->head_dimension * sizeof(uint16_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(window,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(sequences->state_index,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(sequences->row_begin,SPARK_DEVICE_BIND_READ);
+	bindings[3] = OpsBind(keys,SPARK_DEVICE_BIND_READ);
+	bindings[4] = OpsBind(pooled,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_POOL_KEYS,(params->head_dimension + 255u) / 256u,sequences->sequences,1u,OpsThreads(params->head_dimension,256u),
+		&launch,sizeof(launch),bindings,5u));
 }
 
 SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params)

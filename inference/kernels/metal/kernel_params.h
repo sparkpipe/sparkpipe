@@ -506,6 +506,10 @@ typedef struct SparkIndexerParams
 	uint32_t gate_stride;
 	float weight_scale;
 	uint32_t expand_width;
+	uint32_t sequences;
+	uint32_t commit;
+	uint32_t weight_f32;
+	uint32_t heads_in_order;
 	uint32_t pad[3];
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkIndexerParams;

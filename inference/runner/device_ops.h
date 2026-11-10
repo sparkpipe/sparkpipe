@@ -174,6 +174,7 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_ATTENTION_COMBINE_GATHER_LATENT,
 	SPARK_OPS_INDEXER_SCORE_POOLED,
 	SPARK_OPS_INDEXER_EXPAND_POOLS,
+	SPARK_OPS_INDEXER_POOL_KEYS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -380,6 +381,8 @@ SparkStatus SparkOpsIndexerScorePooled(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	SparkTensor pool, SparkTensor page_table, SparkTensor sequence_of_row, SparkTensor row_positions, SparkTensor scores, const SparkIndexerParams *params);
 SparkStatus SparkOpsIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor selected_pools, SparkTensor row_positions,
 	SparkTensor selected, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
+	SparkTensor pooled, const SparkIndexerParams *params);
 SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params);
 SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params);

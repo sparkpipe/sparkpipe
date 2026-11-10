@@ -48,7 +48,9 @@ static void IndexerParams(const SparkIndexerShape *shape, const SparkIndexerCach
 	params->topk = shape->topk;
 	params->key_ratio = IndexerRatio(shape);
 	params->query_stride = shape->query_stride != 0u ? shape->query_stride : shape->heads * shape->head_dimension;
-	params->weight_stride = shape->weight_stride != 0u ? shape->weight_stride : shape->heads;
+	params->weight_stride = shape->weight_shared != 0u ? 0u : shape->weight_stride != 0u ? shape->weight_stride : shape->heads;
+	params->weight_f32 = shape->weight_f32 != 0u ? 1u : 0u;
+	params->heads_in_order = shape->heads_in_order != 0u ? 1u : 0u;
 	params->key_stride = shape->key_stride != 0u ? shape->key_stride : shape->head_dimension;
 	params->score_stride = score_stride;
 	params->weight_scale = shape->weight_scale;
@@ -205,4 +207,21 @@ SparkStatus SparkIndexerAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 	launch.gather_keys = topk;
 	launch.gather_ratio = key_ratio != 0u ? key_ratio : 1u;
 	return(SparkOpsAttentionGather(ops,queue,paged,query,gate,sinks,selected,partial,output,&launch));
+}
+
+uint64_t SparkIndexerPoolWindowBytes(const SparkIndexerShape *shape)
+{
+	if ( IndexerShapeKnown(shape) == 0u || IndexerRatio(shape) < 2u )
+		return(0u);
+	return((uint64_t)(IndexerRatio(shape) - 1u) * shape->head_dimension * sizeof(uint16_t));
+}
+
+SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
+	SparkTensor pooled, const SparkIndexerShape *shape, uint32_t rows)
+{
+	SparkIndexerParams params;
+	if ( IndexerShapeKnown(shape) == 0u || IndexerRatio(shape) < 2u || rows == 0u )
+		return(IndexerRefuse("pool_keys","a known index shape with at least two keys per pool and rows"));
+	IndexerParams(shape,0,rows,0u,0u,&params);
+	return(SparkOpsIndexerPoolKeys(ops,queue,window,sequences,keys,pooled,&params));
 }
