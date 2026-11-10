@@ -148,6 +148,7 @@ static ApiState S;
 
 static SparkTokenizerSidecar Sidecar;
 static int HaveSidecar;
+static uint32_t ApiOutputVocabulary;
 static SparkQuantArm QuantArm;
 static int HaveQuantArm;
 static uint32_t EngineStopTokens[SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT];
@@ -979,7 +980,7 @@ static uint32_t parse_token_array(SparkJsonDocument *doc, int32_t root,
 	{
 		uint32_t v;
 		if (e < 0 || SparkJsonGetUInt32(doc, e, &v) != SPARK_STATUS_OK ||
-			v > Sidecar.tokenizer.maximum_token_id)
+			v >= ApiOutputVocabulary)
 		{
 			free(tokens);
 			return 0;
@@ -2134,6 +2135,7 @@ int main(int argc, char **argv)
 	S.context_limit = cfg.max_context_tokens;
 	api_logf("api_context_limit max_context_tokens=%u deployment_max_sequence_positions=%u", cfg.max_context_tokens, dep.max_sequence_positions);
 	cfg.max_prefill_rows_per_submission = dep.runtime_limits.max_input_row_count;
+	ApiOutputVocabulary = dep.runtime_limits.output_vocabulary;
 	api_logf("api_prefill_rows max_prefill_rows_per_submission=%u deployment_max_input_row_count=%u max_shared_input_row_count=%u", cfg.max_prefill_rows_per_submission, dep.runtime_limits.max_input_row_count, dep.max_shared_input_row_count != 0u ? dep.max_shared_input_row_count : dep.runtime_limits.max_input_row_count);
 	cfg.connect_timeout_ms = 30000;
 	cfg.maximum_messages_per_rank_per_progress = 8;

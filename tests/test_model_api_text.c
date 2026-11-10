@@ -636,6 +636,15 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
+	{
+		char request[160];
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[11,%u],\"max_tokens\":1}",(unsigned)TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[11,%u],\"max_tokens\":1}",(unsigned)TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY - 1u);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+	}
 	body = TestApiResponseJsonBody(response);
 	assert(TestApiBodyContains(body,"\"object\":\"text_completion\""));
 	assert(TestApiBodyContains(body,"\"status\":0"));
