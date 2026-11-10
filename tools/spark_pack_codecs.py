@@ -1,15 +1,3 @@
-"""Weight codecs shared by every stage packer.
-
-The codec ABI numbers mirror include/sparkpipe/spark_weight_codec.h and the
-stage-pack weight formats mirror include/sparkpipe/spark_stagepack_format.h.
-The conversions are the exact bit recipes the packers ship: bf16 widening and
-round-to-nearest-even narrowing, the F8_E4M3 and E2M1 decode tables, the
-128 x 128 block FP8 dequantisation, the NVFP4 decode, the E8M0 scale check and
-the encoders that requantise BF16 masters to the integer, FP8, NVFP4 and MXFP4
-codecs. numpy is optional for the scalar helpers and required for the array
-ones; torch is imported only by the requantising encoders.
-"""
-
 from __future__ import annotations
 
 import math

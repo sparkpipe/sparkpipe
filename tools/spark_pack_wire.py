@@ -1,22 +1,3 @@
-"""Stage-pack wire framing shared by every packer.
-
-Two directory wires exist. The common stage-pack wire
-(include/sparkpipe/spark_stagepack_format.h) is a 120-byte header of 26 u32
-and 2 u64 and 56-byte entries of 6 u32 and 4 u64. The codec-ABI wire is a
-header of 20 u32, the directory offset and file size, a 65-byte NUL-padded
-model revision and three 32-byte digests (contract, source config, pack
-recipe), padded to the family's header size, then 64-byte entries of 8 u32
-and 4 u64 at the 256-byte aligned directory offset.
-
-region_offsets places every payload and scale region by the family's
-alignment policy. emit_region streams a producer into its planned region and
-fails on any byte count other than the plan. The weightd lazy-expert
-manifest (.experts, version 2) carries one 48-byte record per expert plane
-with its ck128 digest, a bit-exact port of src/spark_ck128.c. A region
-journal records each finished region's ck128 so an interrupted emission
-resumes after the last region whose bytes still match.
-"""
-
 from __future__ import annotations
 
 import json

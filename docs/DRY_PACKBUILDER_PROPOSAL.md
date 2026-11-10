@@ -13,27 +13,48 @@ Baseline: main `ce2f8d2`; the dsv5 packer was read from
 
 The tables below are measurements at `ce2f8d2`. Since then:
 
-* The common packer core is four modules (1,340 LOC):
+* The common packer core is four modules:
   * `tools/spark_pack_common.py`: failures, alignment, sha256 and sidecars,
     receipts, the safetensors header and tensor walk (`SafetensorsSource`,
-    indexed or single-file), atomic and no-clobber output
-    (`replaced_output`, `publish_new`), tensor-parallel windows and plans,
-    pipeline-stage checks, pack names and chunked copies (`stream_range`,
-    `window_chunks`). `make_directory`, `pack_entry` and `pack_header`
+    indexed or single-file, no torch; every tensor's data_offsets must lie
+    inside its shard), tensor-parallel windows and plans that fail closed on
+    any extent that does not divide, pipeline-stage checks, pack names and
+    chunked copies (`stream_range`, `window_chunks`). Output is published
+    atomically: `replaced_output` replaces the old file and leaves nothing
+    behind on failure, `publish_new` links a finished file into a path that
+    must not exist yet. `make_directory`, `pack_entry` and `pack_header`
     (section 1) are gone.
-  * `tools/spark_pack_codecs.py`: payload, codec and scale ids, the weight
-    codec table, BF16 and F32 conversions, the E4M3 and E2M1 tables, FP8
-    block and NVFP4 decoding, the E8M0 check, sub-byte packing and the
-    requantizers.
-  * `tools/spark_pack_wire.py`: the 120-byte stage-pack header, the 264-byte
-    codec-ABI header and its 64-byte entries, payload and scale placement
-    policies, ck128, the expert manifest and the resume journal.
-  * `tools/spark_pack_plan.py`: the mapped checkpoint and the plan builder
-    of the codec-ABI packers (spine tensors, routed experts, TP windows,
-    scale planes).
+  * `tools/spark_pack_codecs.py`: payload, codec and scale ids
+    (`include/sparkpipe/spark_weight_codec.h`), the weight codec table, BF16
+    widening and round-to-nearest-even narrowing (with an optional quiet-NaN
+    rule), the E4M3 and E2M1 tables, 128 x 128 block FP8 and NVFP4 decoding,
+    the E8M0 check, sub-byte packing and the encoders that requantize BF16
+    masters to the integer, FP8, NVFP4 and MXFP4 codecs. The scalar helpers
+    need no numpy; only the requantizing encoders import torch.
+  * `tools/spark_pack_wire.py`: the two directory wires. The stage-pack wire
+    (`include/sparkpipe/spark_stagepack_format.h`) is a 120-byte header of 26
+    u32 and 2 u64 with 56-byte entries. The codec-ABI wire is 20 u32, the
+    directory offset and file size, a 65-byte NUL-padded model revision and
+    three 32-byte digests (contract, source config, pack recipe), padded to
+    the family's header size, then 64-byte entries at the 256-byte aligned
+    directory offset. It also holds the payload and scale placement policies,
+    size-checked region emission, ck128 (a port of `src/spark_ck128.c`), the
+    weightd expert manifest (version 2, one 48-byte record per expert plane)
+    and the region journal that lets an interrupted pack resume after the
+    last region whose bytes still match.
+  * `tools/spark_pack_plan.py`: `MappedCheckpoint` reads payloads through
+    memory maps and decodes spine tensors to BF16 once, behind a byte-capped
+    LRU, so an all-rank writer decodes each tensor a single time; routed
+    experts are copied byte for byte, never decoded. `PlanBuilder` turns
+    tensors into directory entries with lazy producers: a rank takes whole
+    rows or whole columns, fused tensors shard each row section so every rank
+    keeps whole heads, the latent kv_b projection splits into per-head
+    transposed keys and values, and routed experts take one row window (gate
+    and up) or column window (down) of every expert.
+  * Together they are 1,281 LOC.
 * The twelve `tools/*_stagepack.py` packers and `tools/k3_pack.py` keep only
   their tensor-name maps, layouts and family transforms. With the core they
-  are 8,138 LOC, down from 12,622. Each migration was gated on byte identity
+  are 8,079 LOC, down from 12,622. Each migration was gated on byte identity
   with the previous packer: synthetic checkpoints with real tensor names,
   every codec path and several TP degrees and stages, comparing every output
   file, exit code and dry-run listing.

@@ -1,21 +1,3 @@
-"""Plan builder for codec-ABI stage packs cut from memory-mapped checkpoints.
-
-MappedCheckpoint reads safetensors payloads through np.memmap views and
-decodes spine tensors to bf16 once, keeping a byte-capped LRU so a lockstep
-all-rank writer decodes each tensor a single time: BF16 passes through, F32
-narrows round-to-nearest-even, F8_E4M3 dequantises through its 128 x 128 F32
-weight_scale_inv blocks and packed NVFP4 decodes through its per-16 E4M3 block
-scales and F32 global. Routed experts are never decoded: their payload and
-scale windows are copied byte for byte.
-
-PlanBuilder turns tensors into directory entries with lazy producers. A
-tensor-parallel rank takes whole rows or whole columns of a sharded tensor;
-fused tensors shard every row section separately so each rank keeps whole
-heads of every projection; the latent kv_b projection splits into per-head
-transposed keys and values; routed experts take one row window (gate and up)
-or column window (down) of every expert.
-"""
-
 from __future__ import annotations
 
 from collections import OrderedDict

@@ -1,13 +1,3 @@
-"""Shared packer core: checkpoint reading, tensor-parallel windows, hashing,
-receipts, publication and the command plumbing every stage packer repeats.
-
-SafetensorsSource reads the index, the config and each shard header without
-torch; payloads are located by data_offsets and streamed by the caller.
-Tensor-parallel windows fail closed on any extent that does not divide. Packs
-and receipts are published atomically (a replace, or an exclusive link that
-never overwrites an existing artifact) and every digest is SHA-256.
-"""
-
 from __future__ import annotations
 
 import hashlib
