@@ -953,8 +953,9 @@ without asking, bounded by what their identity can do.
   sockets plus `IPAddressDeny=any` (no TCP or UDP, so none of the fleet's
   services: the swap controller, the chat layer, LiteLLM, the engine APIs),
   the owner's `.ssh`, `.env`, `.config`, the known secret files and both
-  token directories hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
-  `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
+  token directories hidden, the `sync` and `syncfs` system calls and the
+  `@reboot` set refused with `EPERM` (`SystemCallFilter`), `CPUQuota=200%`,
+  `MemoryMax=4G`, `TasksMax=128` and `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
   SparkPipe trees, logs and configs, list processes and read interface and
   RDMA counters; it cannot change anything. Checked live on the hub and
   spark3 on 2026-10-14. Nothing is created on the hosts; there is no account
@@ -963,8 +964,11 @@ without asking, bounded by what their identity can do.
   spark under `timeout -k 5`) after the admin approves that exact command.
   This is the path for anything that changes state or needs the network or
   the GPU.
-- **Both paths** pass the refusal rules in the config first (a global
-  `sync`, killing flychess, power-off, deleting a root, home, workspace or
+- **Both paths** check the request first: a body that is not a JSON object,
+  or a `timeout` that is not a finite number of seconds above 0, answers 400
+  and is never audited as a run. Then the refusal rules in the config (a
+  global `sync` as any command word, such as `/bin/sync`, `env sync` or
+  `bash -c 'sync'`, killing flychess, power-off, deleting a root, home, workspace or
   mount directory, raw disk writes, secret files; on sparks also anything
   that adds to the boot path). These are a best-effort backstop against
   mistakes, not a security boundary. Runs are written before and after to
