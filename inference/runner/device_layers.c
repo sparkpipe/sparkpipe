@@ -452,9 +452,9 @@ SparkStatus SparkDeviceAttentionBind(SparkDeviceStage *stage, const SparkStageRu
 	return(status);
 }
 
-SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
+static SparkStatus AttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
 	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
-	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output)
+	const SparkDeviceAttentionScratch *scratch, const SparkDeviceAttentionSelection *selection, SparkTensor normed, SparkTensor output)
 {
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, fused = SparkDeviceAttentionFusedWidth(shape);
 	const uint32_t q = SparkDeviceAttentionQueryWidth(shape), kv = SparkDeviceAttentionKvWidth(shape), values = SparkDeviceAttentionValueWidth(shape);
@@ -521,7 +521,11 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	attention.output_gate = shape->output_gate;
 	if ( shape->sinks != 0u )
 		sinks = SparkTensorSlice(weights->sinks,(uint64_t)first_head * sizeof(float),(uint64_t)local_heads * sizeof(float));
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && selection != 0 )
+		status = SparkIndexerAttention(stage->ops,queue,&paged,SparkTensorSlice(scratch->query,(uint64_t)first_head * shape->head_dimension * sizeof(uint16_t),
+			scratch->query.bytes - (uint64_t)first_head * shape->head_dimension * sizeof(uint16_t)),shape->gate_projection != 0u ? scratch->gate : scratch->qkv,
+			shape->sinks != 0u ? &sinks : 0,selection->selected,selection->topk,selection->key_ratio,scratch->records,scratch->gated,&attention);
+	else if ( status == SPARK_STATUS_OK )
 		status = SparkOpsAttention(stage->ops,queue,&paged,SparkTensorSlice(scratch->query,(uint64_t)first_head * shape->head_dimension * sizeof(uint16_t),
 			scratch->query.bytes - (uint64_t)first_head * shape->head_dimension * sizeof(uint16_t)),shape->gate_projection != 0u ? scratch->gate : scratch->qkv,
 			shape->sinks != 0u ? &sinks : 0,scratch->records,scratch->gated,&attention,tensors->host_positions,tensors->host_sequence_of_row);
@@ -541,6 +545,23 @@ SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queu
 	if ( status == SPARK_STATUS_OK )
 		status = LinearOut(stage,queue,scratch->gated,heads_out,&weights->out,output,hidden,rows,heads_out,hidden,shape->output_f32);
 	return(status);
+}
+
+SparkStatus SparkDeviceAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
+	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceAttentionScratch *scratch, SparkTensor normed, SparkTensor output)
+{
+	return(AttentionSelected(stage,queue,shape,rope,tensors,weights,kv_layer,scratch,0,normed,output));
+}
+
+SparkStatus SparkDeviceAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceAttentionShape *shape,
+	const SparkDeviceAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceAttentionScratch *scratch, const SparkDeviceAttentionSelection *selection, SparkTensor normed, SparkTensor output)
+{
+	if ( selection == 0 || selection->topk == 0u || selection->topk > SPARK_INDEXER_MAX_TOPK || selection->key_ratio == 0u || shape->window != 0u )
+		return(SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,
+			"selected-key attention needs a selection of at most the indexer's keys in blocks of at least one key, and no sliding window"));
+	return(AttentionSelected(stage,queue,shape,rope,tensors,weights,kv_layer,scratch,selection,normed,output));
 }
 
 uint32_t SparkDeviceLatentAttentionSlot(const SparkDeviceLatentAttentionShape *shape)

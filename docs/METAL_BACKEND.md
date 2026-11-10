@@ -514,6 +514,26 @@ gives them an output vocabulary of 248,070 against the 27B's 248,077. Text
 tokenizes the same, so `tools/metal_gates.sh qwen3.5-4b` and `qwen3.5-2b` run
 on the 27B's gate prompts.
 
+Qwen 3.8 Flash runs on the same stage at TP 1 with its sparse-attention
+indexer, the CUDA stage's (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`)
+through the shared indexer API (`inference/runner/device_indexer.h`). Every
+attention layer projects `attn_index_qk` (640 rows) from the attention input:
+four 128-wide query heads, RMS-normed with `attn_index_q_norm` and roped at
+the row's position like the attention query, and one raw key. Each closed
+block of four positions pools its four raw keys, `bf16(sum / 4)` in position
+order, from the frame and a per-sequence window of the last raw keys that a
+committed step saves and a kept verify row replays; the pooled key is
+RMS-normed with `attn_index_k_norm`, roped at the block's first position and
+stored at the block's index. The index keys live in the stage's second KV
+pool (`SparkDeviceStageShape.index_layers`, one layer per attention layer,
+pages of 16 blocks on the main page table, `SparkDeviceStageIndexCache` with
+16 slots a page). A frame whose rows all sit below position 2,051
+attends densely, exactly as without the indexer: there each row sees at most
+512 complete blocks, all of which the indexer keeps. A frame with a row at
+or past 2,051 scores each complete block `sum over heads of ReLU(q . k) /
+sqrt(128)`, keeps the 512 best and attends their positions plus the row's
+open block (`SparkDeviceAttentionSelected`).
+
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
