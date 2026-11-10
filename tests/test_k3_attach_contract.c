@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_stage_runner.h"
 #include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_k3_pack_load.h"
+#include "sparkpipe/spark_k3_stage_model.h"
 #include "sparkpipe/spark_status.h"
 
 #include <dlfcn.h>
@@ -115,7 +116,7 @@ static SparkStatus SparkK3ProbeInitialize(InitFunction init, ModelFunction model
 	config.stage_count = 1u;
 	config.tp_degree = 1u;
 	config.max_active_sequence_count = 1u;
-	config.max_input_row_count = 1u;
+	config.max_input_row_count = SPARK_K3_SERVING_VERIFY_ROWS;
 	config.resident_sequence_capacity = 1u;
 	config.kv_pages_per_sequence = 1u;
 	config.multiprocessors = 1u;
@@ -166,7 +167,7 @@ int main(void)
 	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_CAPACITY_EXCEEDED && runner.private_state == 0,
 		"a rank state plan over the budget is refused before any allocation");
-	settings.budget = 1073741824u;
+	settings.budget = UINT64_C(34359738368);
 	failures += expect(SparkK3ProbeInitialize(init, model, pack_path, &settings, &runner) ==
 		SPARK_STATUS_INVALID_ARGUMENT,
 		"a configuration that names no weightd socket fails closed (no direct load)");
