@@ -1179,6 +1179,13 @@ layers serve them:
   `spark_head_gate` with one-wide heads), `sinks` (the attention's per-head
   sinks, sliced to the rank's heads) and `tensor_prefix` (`mla_` by default,
   none for HY4's names).
+  `SparkDeviceLatentAttentionSelected` takes a sparse-attention selection:
+  its callback runs after the slot is stored and before attention with the
+  normed query LoRA (or the branch input without one), so a family's indexer
+  projects, stores and selects there; with `sparse` set the heads attend the
+  `selected` positions through `SparkIndexerAttention` with the same sinks,
+  otherwise through `spark_attention` exactly as `SparkDeviceLatentAttention`,
+  which is the selected form without a selection.
 
 The experts are `SparkDeviceSigmoidExperts` with the router named `router`,
 8 groups of 64 experts of which 4 stay open (`spark_route_sigmoid_topk`),
@@ -1326,9 +1333,23 @@ times 2.827 over the bias-corrected scores (`spark_route_sigmoid_topk`),
 10 and the route weight before the down projection, and the shared expert
 joined in route order (`spark_route_combine_shared`); `spark_hc_post` adds
 the branch to each stream with its post weight, and `spark_hc_mix4` collapses
-the streams before the head norm and the head. The sparse-attention indexer is
-not built: a row that sees more than the indexer's 2,048 keys is refused,
-and below that the indexer keeps every key, so attention is exactly dense. The
+the streams before the head norm and the head. The sparse-attention indexer
+runs through the shared Metal indexer (`inference/runner/device_indexer.h`)
+on the 21 indexer layers (0 and every fourth from 1): the index query is
+`index_q` (MXFP8) of the normed query LoRA, the index key `index_k` of the
+branch input, LayerNormed with its FP32 weight and bias (epsilon 1e-6), and
+the last 64 of each 128 are roped as the attention's rope (interleaved pairs,
+rounded terms, theta 1e7); the head weights are the BF16 `index_weights` in
+FP32 and the score scale is `1/64`. `SparkIndexerStoreKeys` keeps every
+row's key in a second paged KV region (`SparkDeviceStageShape.index_layers`,
+`index_page_bytes`; the device runner allocates it and the stage attaches it
+as `index_pool`), so later rows score every earlier key. A step with a row
+that sees more than 2,048 keys selects in 64-row chunks
+(`SparkIndexerSelect`) and attends only the selection with the sinks
+(`SparkIndexerAttention` through `SparkDeviceLatentAttentionSelected`); the
+layers between indexer layers reuse the last selection, as the reference's
+"shared" layers do. A step whose rows all see at most 2,048 keys attends
+exactly as before, and a tree frame with a longer row is refused. The
 FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
 (`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
 `gate-prompts` and `teacher` modes (variant b sums every product in
