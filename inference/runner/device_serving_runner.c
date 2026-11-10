@@ -376,6 +376,28 @@ SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *k
 	return(serving != 0 ? SparkDeviceStageRunnerKeepRows(serving->device,kept,sequences) : SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
+{
+	(void)runner;
+	(void)path_rows;
+	(void)path_begin;
+	(void)kept;
+	(void)sequences;
+	return(ServingRefuse(SPARK_STATUS_UNSUPPORTED,"a device stage serves chain verify frames; tree frames are not served"));
+}
+
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 {
 	return(ServingOf(runner) != 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
