@@ -33,7 +33,17 @@ There are two finish paths, and the audit's bytes are on the second.
   worker, which the caller waits for), finishes the lanes and calls the
   completion inline. All of it runs on residentd's only thread, with no
   completion record, so `FinishAsync` does not reach it.
-  `STAGE-PUBLISH-HOST` (`ef8536924`) reports its cost per frame and per lane.
+  `STAGE-PUBLISH-HOST` reports its cost per frame and per lane.
+
+Measured on 2026-11-10 on the Qwen3.8-27B lane at TP16 through the release
+kit (`9170998ff`, outputs equal to the previous head on every path): a cache
+publication held residentd's thread 0.26-0.30 ms per frame and 0.25-0.26 ms per
+publishing lane, with 1.0-1.2 lanes per publication; the row-frame finish took
+0.17-0.36 ms per decode chain and 0.2-1.5 ms per prefill wave. Against frames
+of 27-178 ms that is under 1%, so on this lane the asynchronous finish would
+buy little for the ten rules below. The audit's 9.3 MB (GLM 5 Next) and 28 MB
+(K3) per lane are larger states; measure them on those lanes before building
+this.
 
 ## What residentd already supports
 
@@ -128,7 +138,8 @@ The stage serving adapter does not declare `ASYNC_COMPLETION`
 
 1. Measure: `STAGE-PUBLISH-HOST` on a recurrent lane under publishing traffic
    gives the cost per publication and per lane, next to `finish_ms` for row
-   frames. Rank the two paths by the time they hold residentd's thread.
+   frames. Rank the two paths by the time they hold residentd's thread. Done
+   for Qwen3.8-27B (above); still to do for GLM 5 Next and K3.
 2. Cache publications first if they carry the bytes: the event-ordered copy,
    the completion-thread write and finish, the BUSY rule and the completion
    storage (rules 1-5, 9).

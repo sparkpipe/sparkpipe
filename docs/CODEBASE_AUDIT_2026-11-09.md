@@ -496,7 +496,10 @@ Still open, in the order above:
 - Step 2, the collective half: `FinishAsync` for publish frames (mapped in
   `docs/ASYNC_KV_FINISH_DESIGN.md`: the bytes are on the `CACHE_PUBLISH`
   path, which has no asynchronous form yet, and ten rules keep every result
-  unchanged), 2.8, the two-phase commit's round trips
+  unchanged; on the Qwen3.8-27B lane a publication costs 0.26 ms per lane and
+  the row-frame finish 0.2-0.4 ms per chain, under 1% of a frame, so it waits
+  for the GLM 5 Next and K3 measurements), 2.8, the two-phase commit's round
+  trips
   (2.5), the stage serving adapter's own check, which runs again in
   `submit` on every rank (the rest of 2.9), and the hub drafter's
   synchronous call (2.11), which needs the draft bridge split into a
