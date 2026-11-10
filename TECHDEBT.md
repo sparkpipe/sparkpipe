@@ -287,14 +287,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `ring/transport/tp_device_collective.c`). Working-set graphs (Model
   residency and storage) remove the unpinned case without pinning every
   expert.
-- Between two waves every rank ends and restarts mesh activity, with one
-  weightd mesh-activity round trip each way
-  (`SparkTpDeviceCollectiveEndChain`, `SparkTpDeviceCollectiveChainKey`,
-  `ring/transport/tp_device_collective.c`). Rank 0 also broadcasts a new chain
-  epoch that the other ranks spin on (`StageRunnerChainBegin`,
-  `inference/runner/stage_runner.cu`). Resident decode chains pay this once
-  per chain of K steps; prefill waves and single-step waves still pay it every
-  time. Keep the activity and the epoch across the waves of a session.
 - A resident decode chain feeds each step's tokens to the next step on the
   device (`StageRunnerChainAdvanceKernel`,
   `inference/runner/stage_runner.cu`). But after every step the runner still

@@ -129,7 +129,6 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint64_t round_wave_limit;
     uint64_t chain_key;
     uint64_t chain_epoch;
-    uint64_t consumed_cell;
     uint64_t round_index;
         uint64_t cancel_epoch;
         uint64_t publish_ack_prev;
@@ -382,6 +381,7 @@ static void SparkTpDeviceCollectiveInvokeCompletion(
 }
 
 #define SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS 10u
+#define SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN UINT64_C(0xffffffff)
 #define SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE \
     (1ull << SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS)
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS (120ull * 1000000000ull)
@@ -631,22 +631,63 @@ SparkStatus SparkTpDeviceCollectiveEndChain(
     if ( collective == 0 || collective->implementation == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
     implementation = collective->implementation;
-    if ( implementation->mesh_activity_active == 0u )
+    if ( implementation->active_stream_valid == 0u )
         return SPARK_STATUS_OK;
-    if ( implementation->active_stream_valid != 0u && implementation->active_stream != stream )
+    if ( implementation->active_stream != stream )
         return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkTpDeviceCollectiveStreamTerminal(stream);
     if ( status != SPARK_STATUS_OK )
         return status;
-    return SparkTpDeviceCollectiveEndActivity(implementation);
+    implementation->active_stream = 0;
+    implementation->active_stream_valid = 0u;
+    return SPARK_STATUS_OK;
+}
+
+static uint64_t SparkTpDeviceCollectiveWaveEpoch(
+    const SparkTpDeviceCollectiveImplementation *implementation,uint64_t request_id)
+{
+    uint64_t mix = implementation->packed_rank_map ^ ((uint64_t)implementation->tp_degree << 59u);
+    mix ^= mix >> 33u;
+    mix *= UINT64_C(0xff51afd7ed558ccd);
+    mix ^= mix >> 33u;
+    return 1ull + (mix % SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN + request_id) % SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN;
+}
+
+static SparkStatus SparkTpDeviceCollectiveSeedEpoch(
+    SparkTpDeviceCollectiveImplementation *implementation,uint64_t epoch)
+{
+    uint64_t *seed = (uint64_t *)(uintptr_t)(implementation->published_host_cell +
+        SPARK_TP_MESH_ROUND_CONTROL_WORDS);
+    uint8_t *control = (uint8_t *)implementation->round_control;
+    implementation->cancel_seen = *SparkTpDeviceCollectiveCancelCell(implementation,
+        SparkTpDeviceCollectiveBandIndex(implementation));
+    seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED] = implementation->cancel_seen;
+    seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ] = 0ull;
+    seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_EPOCH] = epoch;
+    seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR] = 0ull;
+    if ( cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED * sizeof(uint64_t),
+            seed + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED,sizeof(uint64_t),
+            SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
+         cudaMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ * sizeof(uint64_t),
+            seed + SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ,
+            (SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR + 1u - SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ) * sizeof(uint64_t),
+            SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
+         cudaMemset(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t),0,
+            (SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL - SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS) * sizeof(uint64_t)) != 0 )
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    implementation->chain_epoch = epoch;
+    implementation->round_index = 0ull;
+    implementation->cell_mirror = 0ull;
+    implementation->capture_rounds = 0u;
+    implementation->deferred_rounds = 0u;
+    return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,uint64_t request_id)
 {
     SparkTpDeviceCollectiveImplementation *implementation;
-    uint32_t band_index;
-    volatile uint64_t *base_cell;
+    SparkStatus status;
     uint64_t epoch;
     if ( collective == 0 || collective->implementation == 0 ||
          request_id > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
@@ -655,166 +696,22 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     if ( implementation->mesh_buffer == 0 ||
          implementation->capture_armed != 0u )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    {
-        SparkStatus status = implementation->active_stream_valid != 0u ?
-            SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
-        if ( status == SPARK_STATUS_OK && implementation->hardware_wait != 0u )
-            status = SparkTpDeviceCollectivePrepareHardware(implementation);
-        if ( status == SPARK_STATUS_OK )
-            status = SparkTpDeviceCollectiveBeginActivity(implementation);
-        if ( status != SPARK_STATUS_OK )
-            return status;
-    }
-    band_index = SparkTpDeviceCollectiveBandIndex(implementation);
-    base_cell = (volatile uint64_t *)
-        (implementation->mesh_buffer +
-        SparkTpDeviceCollectiveBaseCellOffset(band_index));
-    if ( implementation->tp_rank == 0u )
-    {
-        uint64_t cell_epoch = *base_cell >>
-            SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS;
-        implementation->cancel_seen = *(volatile uint64_t *)
-            (implementation->mesh_buffer +
-            SparkTpDeviceCollectiveCancelCellOffset(band_index));
-        if ( cell_epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
-            cell_epoch = 0ull;
-        if ( implementation->chain_epoch > cell_epoch )
-            cell_epoch = implementation->chain_epoch;
-        epoch = cell_epoch + 1ull;
-        implementation->base_seen = epoch <<
-            SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS;
-        implementation->round_seq = implementation->base_seen - 1ull;
-        implementation->round_wave_limit = implementation->base_seen +
-            SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
-        implementation->round_rebased = 1u;
-        *base_cell = (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) |
-            request_id;
-        fprintf(stderr,
-            "CKEY-WRITE rank=0 epoch=%llu cell=%llu req=%llu\n",
-            (unsigned long long)epoch,
-            (unsigned long long)*base_cell,
-            (unsigned long long)request_id);
-        __sync_synchronize();
-        {
-            SparkStatus bcast = SparkTpDeviceCollectivePublishBase(implementation,
-                SparkTpDeviceCollectiveBaseCellOffset(band_index),*base_cell);
-            if ( bcast != SPARK_STATUS_OK )
-            {
-                fprintf(stderr,"CKEY-BCAST-FAIL rank=0 epoch=%llu status=%d\n",
-                    (unsigned long long)epoch,(int)bcast);
-                return bcast;
-            }
-        }
-    }
-    else
-    {
-        volatile uint64_t *cancel_cell = (volatile uint64_t *)
-            (implementation->mesh_buffer +
-            SparkTpDeviceCollectiveCancelCellOffset(band_index));
-        uint64_t cell = *base_cell;
-        uint64_t cell_epoch = cell >> SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS;
-        uint64_t deadline = SparkMonotonicNs() +
-            SparkTpDeviceCollectiveSpinBudgetNs(implementation);
-        implementation->cancel_seen = *cancel_cell;
-        while ( cell_epoch == 0ull ||
-                cell_epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK ||
-                cell == implementation->consumed_cell ||
-                (cell & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK) !=
-                    request_id )
-        {
-            if ( *cancel_cell != implementation->cancel_seen )
-            {
-                fprintf(stderr,
-                    "CKEY-CANCEL rank=%u cell=%llu req=%llu\n",
-                    implementation->tp_rank,
-                    (unsigned long long)*base_cell,
-                    (unsigned long long)request_id);
-                return SPARK_STATUS_BUSY;
-            }
-            if ( SparkMonotonicNs() >= deadline )
-            {
-                fprintf(stderr,
-                    "CKEY-CELL-TIMEOUT rank=%u cell=%llu req=%llu\n",
-                    implementation->tp_rank,
-                    (unsigned long long)*base_cell,
-                    (unsigned long long)request_id);
-                return SPARK_STATUS_BUSY;
-            }
-            ;
-            cell = *base_cell;
-            cell_epoch = cell >> SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS;
-        }
-        SparkStatus map_status = SparkTpDeviceCollectiveValidateBase(implementation,base_cell);
-        if (map_status != SPARK_STATUS_OK) return map_status;
-        epoch = cell_epoch;
-        implementation->consumed_cell = cell;
-        if ( epoch != implementation->chain_epoch ||
-             implementation->round_rebased == 0u )
-        {
-            fprintf(stderr,
-                "CKEY-CELL-ADOPT rank=%u epoch=%llu had=%llu req=%llu\n",
-                implementation->tp_rank,
-                (unsigned long long)epoch,
-                (unsigned long long)implementation->chain_epoch,
-                (unsigned long long)request_id);
-            implementation->base_seen = epoch <<
-                SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS;
-            implementation->round_seq = implementation->base_seen - 1ull;
-            implementation->round_wave_limit = implementation->base_seen +
-                SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE;
-            implementation->round_rebased = 1u;
-        }
-    }
-    if ( epoch == 0ull ||
-         epoch > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
-    {
-        fprintf(stderr,
-            "CKEY-BAD-CELL rank=%u cell=%llu rebased=%u band=%u base_seen=%llu round_seq=%llu limit=%llu chain_key=%llu req=%llu\n",
-            implementation->tp_rank,
-            (unsigned long long)*base_cell,
-            implementation->round_rebased,
-            band_index,
-            (unsigned long long)implementation->base_seen,
-            (unsigned long long)implementation->round_seq,
-            (unsigned long long)implementation->round_wave_limit,
-            (unsigned long long)implementation->chain_key,
-            (unsigned long long)request_id);
-        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    }
+    status = implementation->active_stream_valid != 0u ?
+        SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
+    if ( status == SPARK_STATUS_OK && implementation->hardware_wait != 0u )
+        status = SparkTpDeviceCollectivePrepareHardware(implementation);
+    if ( status == SPARK_STATUS_OK )
+        status = SparkTpDeviceCollectiveBeginActivity(implementation);
+    if ( status == SPARK_STATUS_OK )
+        status = SparkTpDeviceCollectiveEnsureCells(implementation);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    epoch = SparkTpDeviceCollectiveWaveEpoch(implementation,request_id);
     if ( epoch != implementation->chain_epoch )
     {
-        fprintf(stderr,
-            "CKEY-ADOPT rank=%u epoch=%llu had=%llu\n",
-            implementation->tp_rank,
-            (unsigned long long)epoch,
-            (unsigned long long)implementation->chain_epoch);
-        implementation->chain_epoch = epoch;
-        implementation->round_index = 0ull;
-        if ( SparkTpDeviceCollectiveEnsureCells(implementation) ==
-                SPARK_STATUS_OK )
-        {
-            uint64_t zero = 0ull;
-            if ( cudaMemcpy(implementation->epoch_cell,&epoch,
-                    sizeof(uint64_t),
-                    SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
-                 cudaMemcpy(implementation->seq_cell,&zero,
-                    sizeof(uint64_t),
-                    SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
-                 cudaMemcpy(implementation->cancel_expected,&implementation->cancel_seen,
-                    sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
-                 cudaMemcpy(implementation->error_word,&zero,
-                    sizeof(uint64_t),SPARK_TP_CUDA_MEMCPY_HOST_TO_DEVICE) != 0 ||
-                 cudaMemset((uint8_t *)implementation->round_control +
-                    SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t),0,
-                    (SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL -
-                    SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS) * sizeof(uint64_t)) != 0 )
-                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-            implementation->cell_mirror = 0ull;
-            implementation->capture_rounds = 0u;
-            implementation->deferred_rounds = 0u;
-        }
-        else
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+        status = SparkTpDeviceCollectiveSeedEpoch(implementation,epoch);
+        if ( status != SPARK_STATUS_OK )
+            return status;
     }
     implementation->chain_key =
         (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
@@ -2207,12 +2104,15 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
             if ( peer_entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS] > implementation->round_seq )
                 implementation->round_seq = peer_entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS];
         }
+        for ( peer_rank = 0u; peer_rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer_rank++ )
+            for ( uint64_t parity = 0u; parity < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK; parity++ )
+                *(volatile uint64_t *)(SparkTpDeviceCollectivePeerSlot(implementation,peer_rank,parity) +
+                    implementation->slot_bytes - 8u) = 0ull;
         __sync_synchronize();
         implementation->publish_ack_prev = entry[0] > entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS] ?
             entry[0] : entry[SPARK_WEIGHTD_MESH_DOORBELL_ALT_WORDS];
         implementation->base_seen = *(volatile uint64_t *)(implementation->mesh_buffer +
             SparkTpDeviceCollectiveBaseCellOffset(band_index));
-        implementation->consumed_cell = implementation->base_seen;
     }
     return SparkTpDeviceCollectivePrepareHardware(implementation);
 }
@@ -2301,7 +2201,7 @@ static SparkStatus SparkTpDeviceCollectiveEnsureCells(
     if ( result != 0 ) goto failed;
     phase = "alloc-readback";
     result = cudaHostAlloc((void **)&implementation->published_host_cell,
-        SPARK_TP_MESH_ROUND_CONTROL_BYTES,0u);
+        2u * SPARK_TP_MESH_ROUND_CONTROL_BYTES,0u);
     if ( result != 0 ) goto failed;
     implementation->round_seq_device = control +
         SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ * sizeof(uint64_t);

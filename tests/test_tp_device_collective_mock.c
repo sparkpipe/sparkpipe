@@ -211,29 +211,12 @@ static void TestComplete(void *context, const SparkTpDeviceCollectiveCompletion 
 	(void)context; (void)completion;
 }
 
-typedef struct PeerWaitArgs
-{
-	SparkTpDeviceCollective *collective;
-	uint64_t request_id;
-	SparkStatus status;
-	uint64_t waited_ns;
-} PeerWaitArgs;
-
 static uint64_t TestNowNs(void)
 {
 	struct timespec now;
 	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
 		return(0ull);
 	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
-
-static void *PeerWaitMain(void *data)
-{
-	PeerWaitArgs *args = (PeerWaitArgs *)data;
-	uint64_t start = TestNowNs();
-	args->status = SparkTpDeviceCollectiveChainKey(args->collective,args->request_id);
-	args->waited_ns = TestNowNs() - start;
-	return(0);
 }
 
 typedef struct TestEpochPublish
@@ -1406,11 +1389,6 @@ int main(void)
 
 	(void)peer_tails;
 
-	/* The reset cascade: rank 1 waits on rank 0's chain cell; rank 0
-	 * cancels (its engine's session reset kills the chain locally).
-	 * Rank 1 must fail fast on the cancel cell, not spin out the whole
-	 * round timeout — the fleet symptom was peers wedging 30s per chain
-	 * behind a reset rank. */
 	{
 		SparkTpDeviceCollective peer;
 		SparkTpDeviceCollectiveConfig peer_config = config;
@@ -1423,31 +1401,19 @@ int main(void)
 		CHECK(status == SPARK_STATUS_OK, "peer create");
 		if ( status == SPARK_STATUS_OK )
 		{
-			pthread_t peer_thread;
-			PeerWaitArgs wait_args;
-			peer_config.operation_timeout_milli = 10000u;
+			uint64_t started;
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(&peer, mesh_buffer, 2u, 64u, 0u, 0);
 			CHECK(status == SPARK_STATUS_OK, "peer prepare receive");
-			/* negative control: without a cancel the wait burns the full
-			 * timeout */
-			{
-				uint64_t t0 = TestNowNs();
-				SparkStatus wait_status = SparkTpDeviceCollectiveChainKey(&peer, 4242u);
-				uint64_t waited_ms = (TestNowNs() - t0) / 1000000ull;
-				CHECK( wait_status == SPARK_STATUS_BUSY, "uncancelled wait ends BUSY at the timeout");
-				CHECK( waited_ms >= 8000u, "uncancelled wait really spans the timeout");
-			}
-			/* the fix: rank 0's cancel must cut the wait to milliseconds */
-			wait_args.collective = &peer;
-			wait_args.request_id = 4243u;
-			wait_args.status = SPARK_STATUS_OK;
-			wait_args.waited_ns = 0u;
-			pthread_create(&peer_thread,0,PeerWaitMain,&wait_args);
-			usleep(200000);
-			SparkTpDeviceCollectiveBroadcastCancel(&collective);
-			pthread_join(peer_thread,0);
-			CHECK( wait_args.status == SPARK_STATUS_BUSY, "cancelled wait ends BUSY");
-			CHECK( wait_args.waited_ns < 3000000000ull, "cancelled wait fails fast (<3s, not the 10s timeout)");
+			started = TestNowNs();
+			CHECK(SparkTpDeviceCollectiveChainKey(&peer, 4242u) == SPARK_STATUS_OK &&
+				TestNowNs() - started < 1000000000ull,
+				"a peer keys its chain at once, without waiting for rank 0");
+			CHECK(SparkTpDeviceCollectiveChainKey(&collective, 4242u) == SPARK_STATUS_OK &&
+				SparkTpDeviceCollectiveChainEpoch(&peer) == SparkTpDeviceCollectiveChainEpoch(&collective),
+				"rank 0 and a peer derive one epoch from one request");
+			CHECK(SparkTpDeviceCollectiveChainKey(&peer, 4243u) == SPARK_STATUS_OK &&
+				SparkTpDeviceCollectiveChainEpoch(&peer) != SparkTpDeviceCollectiveChainEpoch(&collective),
+				"the next request derives a new epoch");
 			SparkTpDeviceCollectiveDestroy(&peer);
 		}
 	}

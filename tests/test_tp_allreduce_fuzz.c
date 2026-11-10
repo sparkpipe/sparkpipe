@@ -1236,6 +1236,7 @@ static void FuzzRejections(void)
 
 static void FuzzSourceLifetime(void);
 static void FuzzCellInitialization(void);
+static void FuzzSessionClearsTails(void);
 static void FuzzLaneNamespace(void);
 static void FuzzMeshTopology(void);
 
@@ -1520,7 +1521,7 @@ static void FuzzActivityLifetime(void)
     broadcasts = g_broadcast_count;
     cuda_stub_stream_query_result = 600;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_BUSY,"pending GPU work cannot end mesh activity");
+        SPARK_STATUS_BUSY,"pending GPU work cannot release the stream");
     CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400000u) ==
         SPARK_STATUS_BUSY,"pending GPU work cannot rearm cancellation");
     CHECK(SparkTpDeviceCollectiveGraphPreLaunch(&g_ranks[0].collective,(void *)0x2) ==
@@ -1537,13 +1538,41 @@ static void FuzzActivityLifetime(void)
         "pending GPU work retains its CUDA host registration");
     cuda_stub_stream_query_result = 719;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_IO_ERROR,"failed GPU stream retains mesh activity");
+        SPARK_STATUS_IO_ERROR,"a failed GPU stream keeps its ownership");
     cuda_stub_stream_query_result = 0;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x2) ==
         SPARK_STATUS_INVALID_ARGUMENT,"unrelated terminal stream cannot release ownership");
-    g_activity_fail = 1u;
+    ends = g_activity_ends;
+    for ( rank = 0u; rank < count; rank++ )
+        CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[rank].collective,(void *)0x1) ==
+            SPARK_STATUS_OK,"a terminal stream ends its chain");
+    CHECK(g_activity_calls == calls && g_activity_ends == ends,
+        "a chain's end sends no mesh RPC and the session keeps its mesh activity");
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_IO_ERROR,"failed end acknowledgement retains ownership");
+        SPARK_STATUS_OK && g_activity_calls == calls,"repeated local end sends no RPC");
+    begins = g_activity_begins;
+    CHECK(FuzzRunSet(FuzzChainMain,2400001u,run,count,"activity-chain",0u,-1),
+        "the next chain starts on every rank");
+    CHECK(g_activity_begins == begins && g_activity_calls == calls && g_broadcast_count == broadcasts,
+        "a chain key sends no mesh RPC and no broadcast while the session's activity is up");
+    CHECK(FuzzRunSet(FuzzRoundMain,2400002u,run,count,"activity-round",0u,-1),
+        "numerical work completes in the session's activity");
+    for ( rank = 0u; rank < count; rank++ )
+    {
+        CHECK(g_tasks[rank].status == SPARK_STATUS_OK && FuzzSumOk(rank,0u),
+            "activity lifecycle preserves all rank contributions");
+        if ( rank != 0u )
+            CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[rank].collective,(void *)0x1) ==
+                SPARK_STATUS_OK,"a chain ends only after its numerical work");
+    }
+    CHECK(g_activity_begins == begins,"round submission does not start the activity again");
+    CHECK(SparkTpDeviceCollectiveGraphPreLaunch(&g_ranks[0].collective,0) ==
+        SPARK_STATUS_OK,"terminal ownership may transfer explicitly to default CUDA stream");
+    cuda_stub_stream_query_result = 600;
+    CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,0) ==
+        SPARK_STATUS_BUSY,"default CUDA stream also requires terminal query");
+    cuda_stub_stream_query_result = 0;
+    g_activity_fail = 1u;
     {
         void *owned = g_ranks[0].collective.implementation;
         SparkTpDeviceCollectiveDestroy(&g_ranks[0].collective);
@@ -1552,44 +1581,15 @@ static void FuzzActivityLifetime(void)
     }
     g_activity_fail = 0u;
     ends = g_activity_ends;
-    for ( rank = 0u; rank < count; rank++ )
-        CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[rank].collective,(void *)0x1) ==
-            SPARK_STATUS_OK,"terminal stream ends exact active generation");
-    CHECK(g_activity_ends == ends + count,"all rank activity intervals end once");
-    calls = g_activity_calls;
-    CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
-        SPARK_STATUS_OK && g_activity_calls == calls,"repeated local end sends no duplicate RPC");
-    g_activity_fail = 1u;
-    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400000u) ==
-        SPARK_STATUS_IO_ERROR && g_broadcast_count == broadcasts,
-        "failed start acknowledgement cannot publish a chain");
-    g_activity_fail = 0u;
-    begins = g_activity_begins;
-    CHECK(FuzzRunSet(FuzzChainMain,2400001u,run,count,"activity-chain",0u,-1),
-        "next activity generation starts on every rank");
-    CHECK(g_activity_begins == begins + count,"each rank acknowledges one start");
-    CHECK(FuzzRunSet(FuzzRoundMain,2400002u,run,count,"activity-round",0u,-1),
-        "numerical work completes in acknowledged interval");
-    for ( rank = 0u; rank < count; rank++ )
-    {
-        CHECK(g_tasks[rank].status == SPARK_STATUS_OK && FuzzSumOk(rank,0u),
-            "activity lifecycle preserves all rank contributions");
-        if ( rank != 0u )
-            CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[rank].collective,(void *)0x1) ==
-                SPARK_STATUS_OK,"reused generation ends only after numerical work");
-    }
-    CHECK(g_activity_begins == begins + count,"round submission does not duplicate acknowledged start");
-    CHECK(SparkTpDeviceCollectiveGraphPreLaunch(&g_ranks[0].collective,0) ==
-        SPARK_STATUS_OK,"terminal ownership may transfer explicitly to default CUDA stream");
-    cuda_stub_stream_query_result = 600;
-    CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,0) ==
-        SPARK_STATUS_BUSY,"default CUDA stream also requires terminal query");
-    cuda_stub_stream_query_result = 0;
-    ends = g_activity_ends;
     SparkTpDeviceCollectiveDestroy(&g_ranks[0].collective);
     CHECK(g_ranks[0].collective.implementation == 0 && g_activity_ends == ends + 1u,
-        "terminal standalone caller destruction acknowledges end before closing connection");
+        "destruction ends the session's activity before closing connection");
     FuzzResetRank(0u);
+    g_activity_fail = 1u;
+    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400003u) ==
+        SPARK_STATUS_IO_ERROR && g_broadcast_count == broadcasts,
+        "a failed activity start cannot key a chain");
+    g_activity_fail = 0u;
 }
 
 static void FuzzMandatoryFaults(void)
@@ -1601,10 +1601,10 @@ static void FuzzMandatoryFaults(void)
     FuzzRejections();
     FuzzCompletionCapacity();
     FuzzPayloadCapacity();
-    FuzzCase("chain-broadcast-failure");
+    FuzzCase("chain-key-without-broadcast");
     g_broadcast_fail = 1u;
     CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,request++) ==
-        SPARK_STATUS_IO_ERROR,"failed generation broadcast cannot report ready");
+        SPARK_STATUS_OK,"a chain key needs no broadcast");
     g_broadcast_fail = 0u;
     for ( scenario = 0u; scenario < 5u; scenario++ )
     {
@@ -1647,13 +1647,16 @@ static void FuzzMandatoryFaults(void)
         }
         else if ( scenario == 3u )
         {
-            FuzzCase("consumed-request-generation");
+            uint64_t held;
+            FuzzCase("replayed-request-generation");
             for ( rank = 1u; rank < count; rank++ ) peers[peer_count++] = rank;
-            CHECK(FuzzRunSet(FuzzChainMain,request - 1u,peers,peer_count,"stale-chain",scenario,-1),
-                "replayed chain identity does not wait indefinitely");
+            held = SparkTpDeviceCollectiveChainEpoch(&g_ranks[peers[0]].collective);
+            CHECK(FuzzRunSet(FuzzChainMain,request - 1u,peers,peer_count,"replayed-chain",scenario,-1),
+                "a replayed chain identity returns at once");
             for ( rank = 0u; rank < peer_count; rank++ )
-                CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_BUSY,
-                    "consumed generation requires a new leader epoch");
+                CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_OK &&
+                    SparkTpDeviceCollectiveChainEpoch(&g_ranks[peers[rank]].collective) == held,
+                    "a replayed request keys the epoch it already holds");
         }
         else
         {
@@ -1992,6 +1995,7 @@ int main(int argc, char **argv)
         FuzzSourceLifetime();
         FuzzMandatoryFaults();
         FuzzActivityLifetime();
+        FuzzSessionClearsTails();
         FuzzTreeCases();
         FuzzTreeLargePayloads();
         for ( schedule = 0u; schedule < seeds; schedule++ )
@@ -2097,6 +2101,32 @@ static int FuzzCudaHostAlloc(void **pointer,size_t bytes,unsigned int flags)
 #define cudaMemcpy FuzzCudaMemcpy
 #define cudaHostAlloc FuzzCudaHostAlloc
 #include "../ring/transport/tp_device_collective.c"
+
+static void FuzzSessionClearsTails(void)
+{
+    SparkTpDeviceCollectiveImplementation *implementation = g_ranks[0].collective.implementation;
+    uint64_t band_base,slot_bytes;
+    uint32_t peer,parity,stale = 0u;
+    FuzzCase("session-start-clears-slot-tails");
+    if ( implementation == 0 ) _Exit(2);
+    band_base = implementation->band_base;
+    slot_bytes = implementation->slot_bytes;
+    for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++ )
+        for ( parity = 0u; parity < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK; parity++ )
+            *(volatile uint64_t *)((uint8_t *)g_regions[0] + band_base +
+                ((uint64_t)peer * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + parity) * slot_bytes +
+                slot_bytes - 8u) = (UINT64_C(7) << 32u) | (parity + 1u);
+    FuzzResetRank(0u);
+    implementation = g_ranks[0].collective.implementation;
+    for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; peer++ )
+        for ( parity = 0u; parity < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK; parity++ )
+            if ( *(volatile uint64_t *)((uint8_t *)g_regions[0] + band_base +
+                    ((uint64_t)peer * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK + parity) * slot_bytes +
+                    slot_bytes - 8u) != 0u )
+                stale++;
+    CHECK(implementation != 0 && implementation->band_base == band_base && stale == 0u,
+        "a new session clears every slot tail of its band before its first round, so no tag of an earlier session can pass a wait");
+}
 #undef calloc
 #undef cudaMalloc
 #undef cudaFree
@@ -2193,16 +2223,18 @@ static void FuzzMeshTopology(void)
         SparkTpDeviceCollectivePrepareReceiveBf16(&peer,g_regions[0],1u,FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
         "logical peer binds physical peer0");
     CHECK(SparkTpDeviceCollectiveChainKey(&root,777u) == SPARK_STATUS_OK &&
-        SparkTpDeviceCollectiveChainKey(&peer,777u) == SPARK_STATUS_OK,
-        "ordered map payload and chain key reach physical peer");
+        SparkTpDeviceCollectiveChainKey(&peer,777u) == SPARK_STATUS_OK &&
+        SparkTpDeviceCollectiveChainEpoch(&root) == SparkTpDeviceCollectiveChainEpoch(&peer),
+        "ranks with one membership map derive one round tag from the request");
     SparkTpDeviceCollectiveDestroy(&peer);
     config.mesh_ranks[0] = 2u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&peer) == SPARK_STATUS_OK &&
         SparkTpDeviceCollectivePrepareReceiveBf16(&peer,g_regions[0],1u,FUZZ_HIDDEN,0u,0) == SPARK_STATUS_OK,
         "construct mismatched peer shape for cross-rank gate");
     CHECK(SparkTpDeviceCollectiveChainKey(&root,778u) == SPARK_STATUS_OK &&
-        SparkTpDeviceCollectiveChainKey(&peer,778u) == SPARK_STATUS_INVALID_ARGUMENT,
-        "matching request key cannot admit a different root or membership map");
+        SparkTpDeviceCollectiveChainKey(&peer,778u) == SPARK_STATUS_OK &&
+        SparkTpDeviceCollectiveChainEpoch(&root) != SparkTpDeviceCollectiveChainEpoch(&peer),
+        "a different membership map derives a different round tag, so its rounds cannot pair");
     SparkTpDeviceCollectiveDestroy(&peer);
     SparkTpDeviceCollectiveDestroy(&root);
 }
