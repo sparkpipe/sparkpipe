@@ -1409,9 +1409,20 @@ gate-limited SwiGLU at 10 and no route weight, `spark_route_combine_weighted`,
 and the shared expert added (`spark_add_rows`), as CUDA's finalize and add;
 every rank holds all 288 experts split by intermediate width. After each
 all-reduce `spark_hc_post_comb` updates the streams, and `spark_stream_mean`
-and the final BF16 norm feed the prenormed head. The indexer is not built:
-a row that sees more than 2,048 keys is refused, and below that every pool
-is selected and attention is dense. The FP8 checkpoint is 309 GB, so it runs
+and the final BF16 norm feed the prenormed head. Each latent layer binds
+its indexer (`index_q`, `index_k`, `index_gate`, `index_head`, `index_norm`,
+`index_norm_bias`, `index_ape`) and every step stores the layer-normed index
+keys with their compression gates (`SparkIndexerStoreGatedKeys`) in the
+stage's second KV region, one index layer per latent layer, as HY4 and
+GLM 5.3 Full do. A step whose rows all see at most 2,048 keys attends
+densely, exactly as before; in a longer step dense rows keep the dense
+kernel over their runs (`SparkDeviceLatentAttentionAttend`) and the rest
+attend the indexer's selection (`SparkDeviceLatentAttentionAttendSelected`).
+The selection scores keys pooled by softmax(gate + ape) over four positions
+(`SparkIndexerScorePooled`, with the head-weight scale as `weight_scale`),
+keeps the top 512 pools and expands them with the open tail into 2,051
+positions (`SparkIndexerExpandPools`), which attention gathers with a key
+ratio of one. The FP8 checkpoint is 309 GB, so it runs
 as eight ranks paged from the SSD (`tools/glm53flash_tp16_pack.py
 --tp-degree 8`, which reads the checkpoint through the CUDA stagepack's
 reader, so the BF16 projections are its `bf16(e4m3 x scale)`); the reference

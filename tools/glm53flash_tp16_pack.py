@@ -3,8 +3,8 @@
 
 Output per rank: <out>/glm53flash.tp<N>.rank<NN>.pack (tools/spark_named_pack.py
 container) plus <pack>.sha256 and the empty-range <pack>.experts. The MTP layer
-and the sparse-attention indexer are not packed: the device stage refuses rows
-that would see more keys than the indexer selects, where attention is dense.
+is not packed. Every rank holds the whole sparse-attention indexer of each MLA
+layer, as the CUDA stagepack does, so every rank selects the same keys.
 
 The checkpoint is read through tools/glm5_next_resident_stagepack.py's
 SourceReader, so every BF16 projection is the CUDA pack's bf16(e4m3 x block
@@ -24,6 +24,11 @@ Rank r holds, bf16 unless noted (H hidden, R = 1/TP of a sharded dimension):
                        mla_kv_norm [512] (replicated); mla_q_b [heads*256,
                        1536]; mla_uk [heads, 512, 256]; mla_uv [heads, 256,
                        512]; mla_out [H, heads*256]
+  MLA indexer          index_q [32*128, 1536], index_k [128, H],
+                       index_norm, index_norm_bias [128], index_head [32, H],
+                       index_gate [128, H], index_ape f32 [4, 128]
+                       (replicated: wq_b, wk, k_norm, weights_proj,
+                       index_kpool_compress_gate, index_kpool_compress_ape)
   dense layers 0-2     ffn_gate_up: gate then up rows [2*I/TP, H];
                        ffn_down [H, I/TP] (I the dense intermediate width)
   routed layers        router [288, H], router_bias f32 [288] (replicated);
@@ -114,6 +119,16 @@ def pack_kda(source, packs, a, name):
         packs.add(rank, name + "kda_out", projections["o"][:, rows], "bf16")
 
 
+def pack_indexer(source, packs, i, name):
+    packs.replicated(name + "index_q", source.spine_bf16(f"{i}wq_b.weight"), "bf16")
+    packs.replicated(name + "index_k", source.spine_bf16(f"{i}wk.weight"), "bf16")
+    packs.replicated(name + "index_norm", source.spine_bf16(f"{i}k_norm.weight").reshape(-1), "bf16")
+    packs.replicated(name + "index_norm_bias", source.spine_bf16(f"{i}k_norm.bias").reshape(-1), "bf16")
+    packs.replicated(name + "index_head", source.spine_bf16(f"{i}weights_proj.weight"), "bf16")
+    packs.replicated(name + "index_gate", source.spine_bf16(f"{i}index_kpool_compress_gate"), "bf16")
+    packs.replicated(name + "index_ape", source.spine_f32(f"{i}index_kpool_compress_ape"), "f32")
+
+
 def pack_mla(source, packs, a, name):
     q_b = source.spine_bf16(f"{a}q_b_proj.weight")
     kv_b = source.spine_bf16(f"{a}kv_b_proj.weight").reshape(MLA_HEADS, NOPE + VDIM, LATENT)
@@ -122,6 +137,7 @@ def pack_mla(source, packs, a, name):
     packs.replicated(name + "mla_q_norm", source.spine_bf16(f"{a}q_a_layernorm.weight").reshape(-1), "bf16")
     packs.replicated(name + "mla_kv_a", source.spine_bf16(f"{a}kv_a_proj_with_mqa.weight"), "bf16")
     packs.replicated(name + "mla_kv_norm", source.spine_bf16(f"{a}kv_a_layernorm.weight").reshape(-1), "bf16")
+    pack_indexer(source, packs, a + "indexer.", name)
     for rank in packs.ranks:
         heads = window(MLA_HEADS, rank)
         packs.add(rank, name + "mla_q_b", q_b[window(MLA_HEADS * NOPE, rank)], "bf16")

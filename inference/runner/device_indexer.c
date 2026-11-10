@@ -201,8 +201,8 @@ SparkStatus SparkIndexerAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, 
 	const SparkAttentionParams *params)
 {
 	SparkAttentionParams launch;
-	if ( paged == 0 || params == 0 || topk == 0u || topk > SPARK_INDEXER_MAX_TOPK )
-		return(IndexerRefuse("attention","a paged cache, attention parameters and between 1 and 2048 selected keys"));
+	if ( paged == 0 || params == 0 || topk == 0u || topk > SPARK_INDEXER_MAX_TOPK + SPARK_INDEXER_MAX_RATIO )
+		return(IndexerRefuse("attention","a paged cache, attention parameters and between 1 and 2048 selected keys, plus an expanded open pool"));
 	launch = *params;
 	launch.gather_keys = topk;
 	launch.gather_ratio = key_ratio != 0u ? key_ratio : 1u;
