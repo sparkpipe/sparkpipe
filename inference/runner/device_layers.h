@@ -162,6 +162,18 @@ typedef struct SparkDeviceLatentAttentionScratch
 	SparkTensor differential;
 } SparkDeviceLatentAttentionScratch;
 
+typedef SparkStatus (*SparkDeviceLatentSelect)(void *context, SparkDeviceQueue *queue, SparkTensor query_input, uint32_t query_input_stride);
+
+typedef struct SparkDeviceLatentSelection
+{
+	SparkDeviceLatentSelect select;
+	void *context;
+	uint32_t sparse;
+	SparkTensor selected;
+	uint32_t topk;
+	uint32_t key_ratio;
+} SparkDeviceLatentSelection;
+
 typedef struct SparkDeviceAttentionShape
 {
 	uint32_t heads;
@@ -355,6 +367,9 @@ SparkStatus SparkDeviceLatentAttentionBind(SparkDeviceStage *stage, const SparkS
 SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
 	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
 	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed, SparkTensor output);
+SparkStatus SparkDeviceLatentAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, const SparkDeviceLatentSelection *selection, SparkTensor normed, SparkTensor output);
 
 uint32_t SparkDeviceAttentionQueryWidth(const SparkDeviceAttentionShape *shape);
 uint32_t SparkDeviceAttentionKvWidth(const SparkDeviceAttentionShape *shape);
