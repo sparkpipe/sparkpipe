@@ -17,12 +17,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def main() -> int:
     failures = 0
-    models = sorted(p for p in (ROOT / "inference/llms").iterdir() if p.is_dir())
+    models = sorted({p.parent for name in ("config.h", "unity.cu") for p in (ROOT / "model-families").glob("*/source/" + name)})
     if not models:
-        print("  FAIL no models in llms/")
+        print("  FAIL no model family source is a config header and a unity build")
         return 1
     for model in models:
-        name = model.name
+        name = model.parent.name
         config = model / "config.h"
         unity = model / "unity.cu"
         if not config.exists() or not unity.exists():

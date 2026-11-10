@@ -1,4 +1,4 @@
-#include "inference/llms/kimi_k3/config.h"
+#include "model-families/k3/source/config.h"
 #include "sparkpipe/spark_k3_model.h"
 #include "sparkpipe/spark_k3_resident_decode_stage_module.h"
 #include "sparkpipe/spark_error_site.h"

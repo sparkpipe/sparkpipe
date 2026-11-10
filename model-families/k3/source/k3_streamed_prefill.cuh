@@ -7,8 +7,8 @@
 
 #include "sparkpipe/spark_k3_bind.h"
 #include "inference/runner/pass_prefill.cuh"
-#include "inference/llms/kimi_k3/streamed.cuh"
-#include "spark_k3_weight_binds.h"
+#include "model-families/k3/source/streamed.cuh"
+#include "k3_weight_binds.h"
 
 #define K3_STREAMED_SHARDS LM_PASS_RANKS
 #define K3_STREAMED_HEADS (K3_MLA_HEADS / K3_STREAMED_SHARDS)

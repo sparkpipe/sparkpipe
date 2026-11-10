@@ -1,7 +1,7 @@
 
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/spec_verify.cuh"
-#include "inference/llms/kimi_k3/slice.cuh"
+#include "model-families/k3/source/slice.cuh"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {

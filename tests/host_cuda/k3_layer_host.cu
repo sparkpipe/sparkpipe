@@ -38,7 +38,7 @@ struct LmHostRecorderFormat
 		return((uint8_t)(((int)clamped) & 15));
 	}
 };
-#include "inference/llms/kimi_k3/layer.cuh"
+#include "model-families/k3/source/layer.cuh"
 
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)

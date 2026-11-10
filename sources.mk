@@ -76,9 +76,9 @@ SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c
 
 SPARKPIPE_K3_SOURCES := \
-    modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \
-    modules/k3_resident_decode_stage/source/spark_k3_bind.c \
-    modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+    model-families/k3/src/spark_k3_pack_load.c \
+    model-families/k3/src/spark_k3_bind.c \
+    model-families/k3/src/spark_k3_resident_decode_stage_module.c
 
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c

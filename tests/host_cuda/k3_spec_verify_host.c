@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "inference/llms/kimi_k3/engine.h"
+#include "model-families/k3/source/engine.h"
 
 static uint32_t test_failures;
 

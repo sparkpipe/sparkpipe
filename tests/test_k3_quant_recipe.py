@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LAYER = ROOT / "inference" / "llms" / "kimi_k3" / "layer.cuh"
-BIND = ROOT / "inference" / "llms" / "kimi_k3" / "bind.cu"
+LAYER = ROOT / "model-families" / "k3" / "source" / "layer.cuh"
+BIND = ROOT / "model-families" / "k3" / "source" / "bind.cu"
 # the only tensors the checkpoint quantises
 QUANTISED = ("expert_w1", "expert_w2")
 

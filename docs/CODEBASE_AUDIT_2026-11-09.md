@@ -393,6 +393,20 @@ Landed in the pull request that carries this page:
   seven release prompts (the seventh ran on a different source file); the
   K3 lane's start command changed the same way and waits for a production
   window.
+- Step 4 in full, on 2026-11-10. `inference/runner/stage_model_cuda.cuh`
+  holds the CUDA stage-model plumbing: the named-pack bind over a tensor list,
+  the arena plan, KV attach over declared pools, recurrent copy and reset over
+  declared state, lane state as a shallow clone with declared counters folded
+  back, the report and the interface table. Gemma 4, HY4, MiMo 2.6, Ling 3,
+  Motif 3, the Qwen 3.8 hybrid, GLM 5.3 Full, GLM 5.3 Flash and DeepSeek V4.1
+  Flash now declare their parts on it. DeepSeek V4.1 Flash's backend and
+  kernels live in `model-families/dsv41_flash/source/`, and its module keeps
+  identity and serving wiring. The CUDA hyper-connection kernels live once,
+  in `inference/kernels/hc.cuh` and `hc_site.cuh`. K3's device code and pack
+  binding live in `model-families/k3/`, and K3 keeps its own `step`. Every
+  converted or moved kernel compiles to the same machine code, except HY4's
+  stream expansion and post update and DeepSeek V4.1 Flash's stream
+  expansion, whose outputs are bit-identical on the device.
 - The host turn around each frame, on 2026-11-10 (2.9, 2.10, 2.11 and the
   fan-out cost of 2.5). A submission is validated once per check and a rank
   decodes it once. Completions are cleared and copied over their used range
@@ -443,7 +457,6 @@ Still open, in the order above:
   multi-sequence wave, GLM 5.3 Full's wave chunking and DSV4.1's tail rows in
   the runner, K3's dispatch loop; then the collective plan from the
   schedule.
-- Step 4: the shared CUDA stage-model plumbing.
 - Step 5: streamed prefill as a schedule backend.
 - Step 6: placement as deployment data.
 

@@ -735,6 +735,55 @@ the arrival's programmatic dependent, and it waits on the tails itself
 - **Larger combines are released after the wait**, so a resident dependent
   never holds more than four blocks while it waits.
 
+## 2.8 Hyper-connections (`hc.cuh`, `hc_site.cuh`)
+
+Every CUDA hyper-connection kernel lives in these two headers. A family
+selects its variant by name and template arguments and defines none of its
+own. The variants stay separate because their arithmetic differs: merging
+any two would change a served model's bits.
+
+- **Expansion copies the residual into the streams.**
+  - `LmHcExpandStreamsKernel<HIDDEN>`: one element per thread, stored to all
+    four streams (GLM 5.3 Flash, Motif 3, DeepSeek V4.1 Flash).
+  - `LmHcExpandFlatKernel<STREAMS>`: one element of the flattened streams
+    per thread (HY4). Its launch covers `STREAMS * width` threads.
+- **Mixes.**
+  - `LmHcSite<HIDDEN, P>`: an eight-block cluster splits the flattened
+    streams. The family's policy `P` declares the gates and the combination
+    (`Glm5NextHcPolicy`, `MotifHcPolicy`). The same kernel collapses the
+    streams with the new pre weights and snapshots them for the post update.
+  - `LmHcSinkhornMixes<STREAMS>` (DeepSeek V4.1 Flash): eight per-warp
+    partial dot products a row, from `LmHcSinkhornPartialKernel` below 32
+    rows or `LmHcSinkhornPartialRowsKernel` (four rows a block) from 32 on.
+    The two give the same bits (`tests/test_dsv41_hc_mix.cu`).
+    `LmHcSinkhornKernel` then sums the partials in warp order and writes
+    `pre = 1 / (1 + exp(-u)) + eps`, `post = 2 / (1 + exp(-u))` and a
+    source-major combination: a softmax over each row from its maximum plus
+    eps, a column normalisation, then `iterations - 1` row and column
+    normalisations, each `+ eps`. The collapse runs separately, in
+    `LmHcCollapseKernel` or fused into the consumer through
+    `LmHcCollapseElement`.
+  - `LmHcMix<THREADS, STREAMS, MIXES, WIDTH>` (HY4): no combination. It
+    writes the pre weights `sigmoid(u) + eps` and, with `2 * STREAMS` mixes,
+    the post weights `magnitude * sigmoid(u) + eps`, and it collapses the
+    streams in the same pass. Up to `LM_HC_MIX_SPLIT_ROWS` (16) rows it
+    splits each dot product over 256 lanes (`LmHcMixDotKernel`, then
+    `LmHcMixRowKernel`). Above that it runs four rows a block
+    (`LmHcMixKernel`). `LmHcMixPartialBytes` sizes the split's buffer.
+- **Post updates.**
+  - `LmHcPostKernel<STREAMS>` (HY4): `bf16(fma(post_s, out, x_s))`, with no
+    combination.
+  - `LmHcPostBf16Kernel<STREAMS>` (GLM 5.3 Flash): post weights and a
+    source-major combination rounded to BF16, and each term rounded.
+  - `LmHcPostF32Kernel<STREAMS>` (Motif 3): a target-major combination in
+    FP32 with one rounding, one row per `blockIdx.x`.
+  - `LmHcPostF32SourceMajorKernel<STREAMS>` (DeepSeek V4.1 Flash): the same
+    FP32 formula over a source-major combination, one row per `blockIdx.y`.
+- **The reference set is test code.** The single-block kernels used by the
+  DeepSeek V4.1 Flash layer test and `build/libdsv41_flash_kernels.so` live
+  in `tests/cuda/dsv41_flash_hc_reference.cuh`. Their block sums differ from
+  every production variant, and no production stage launches them.
+
 # Part 3 — Finding kernels and their numbers
 
 - **Kernel inventory.** Generate it instead of keeping a list by hand:

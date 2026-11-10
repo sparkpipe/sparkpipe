@@ -15,7 +15,7 @@
  "engine_law": {
   "max_draft_tokens": 7,
   "verify_rows_per_sequence": 8,
-  "policy_core": "inference/llms/kimi_k3/spec_verify.h K3AdaptiveDepth",
+  "policy_core": "model-families/k3/source/spec_verify.h K3AdaptiveDepth",
   "rule": "target = floor(mean accepted + 1.5) clamped [floor, ceiling]; step down direct, step up one observation at a time"
  },
  "transport": {

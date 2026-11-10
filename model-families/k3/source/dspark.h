@@ -4,7 +4,7 @@
 #include <assert.h>
 #include <stdint.h>
 
-#include "inference/llms/kimi_k3/config.h"
+#include "model-families/k3/source/config.h"
 
 #define K3_DSPARK_BLOCK_SIZE 7u
 #define K3_DSPARK_DRAFT_LAYER_COUNT 5u

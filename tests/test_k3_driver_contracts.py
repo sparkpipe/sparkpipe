@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """K3's driver-side contracts, gated as source.
 
-Three contracts live in inference/llms/kimi_k3 and nowhere else, and all are
+Three contracts live in model-families/k3/source and nowhere else, and all are
 the kind that compiles while it rots:
 
   1. THE BF16 KDA STATE OPTION FAILS CLOSED. The slot is 6 MiB of fp32 per
@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-K3 = ROOT / "inference" / "llms" / "kimi_k3"
+K3 = ROOT / "model-families" / "k3" / "source"
 
 
 def defines(path):

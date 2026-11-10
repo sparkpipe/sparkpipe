@@ -35,6 +35,8 @@ EXPECTED = {
     "kimi_k3": (None, "NoPE - no rotation on any layer"),
 }
 
+SOURCES = {"kimi_k3": ROOT / "model-families" / "k3" / "source"}
+
 ROPE_CALL = re.compile(r"LmRope(?:PerHead|Yarn)?Kernel\s*<([^>]*)>")
 
 
@@ -44,7 +46,7 @@ def pairings_used(model):
     declares."""
     found = set()
     for name in ("unity.cu", "layer.cuh"):
-        path = ROOT / "inference" / "llms" / model / name
+        path = SOURCES.get(model, ROOT / "inference" / "llms" / model) / name
         if not path.exists():
             continue
         for arguments in ROPE_CALL.findall(path.read_text()):

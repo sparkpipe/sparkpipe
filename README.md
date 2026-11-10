@@ -298,7 +298,7 @@ does not depend on the class.
     the embedding and the per-layer health checks.
   - A model supplies its buffers, weight binding, layer math and recurrent
     states through hooks (Kimi K3's are in
-    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+    `model-families/k3/source/k3_streamed_prefill.cuh`).
   - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
   - Storing a pass's keys into the decode shards and gathering older keys back
     is in `inference/runner/pass_keys.cuh`.

@@ -8,7 +8,7 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/spec_verify.cuh"
-#include "inference/llms/kimi_k3/layer.cuh"
+#include "model-families/k3/source/layer.cuh"
 
 using K3LinearState = LmKvState<K3_KDA_STATE_SLOT_BYTES>;
 

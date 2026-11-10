@@ -202,7 +202,7 @@ That test is the plan form's only user. No compositor exists.
 | dsv4 | `SPARK_DSV4_SPECULATORS` | DSPARK; tap-free remote with a bridge (adapter.c:196-200, 859-864) | all available | DSpark sets the module's `NODE_CONTEXT_FLAG_DSPARK` (:917); acceptance through the policy resolver (module.c:3366); no remote call site |
 | glm5_next | `SPARK_GLM5_NEXT_SPECULATORS` / `SPARK_GLM5_NEXT_MTP` | MTP; tap-free remote with a bridge (adapter.c:62-64, 427-429) | none (:104, :440) | MTP at TP1 only; no remote call site; no DFLASH2 source since `f301e1c` |
 | glm52 | `SPARK_GLM52_SPECULATORS` | none (adapter.c:351) | none | seam initialized, no source |
-| k3 | `SPARK_K3_SPECULATORS` | none (adapter.c:438) | none | engine verify commit and `K3AdaptiveDepth` (`inference/llms/kimi_k3/spec_verify.h`) run only in `tests/host_cuda/k3_*` |
+| k3 | `SPARK_K3_SPECULATORS` | none (adapter.c:438) | none | engine verify commit and `K3AdaptiveDepth` (`model-families/k3/source/spec_verify.h`) run only in `tests/host_cuda/k3_*` |
 | qwen38_27b | `SPARK_QWEN38_27B_SPECULATORS` | MTP, DSPARK, DFLASH2; tap-free remote with a bridge (adapter.c:88-94, 564-566) | MTP (:568-569, :591) | one local method, or remote tap-free only; mixing or two local methods refused (:531, :542); the only remote consumer (:1549) |
 | qwen38_max | `SPARK_QWEN38_MAX_SPECULATORS` | none (adapter.c:72) | none | provider-slot shim, above |
 | qwen4_flash | `SPARK_QWEN4_FLASH_SPECULATORS` | none (adapter.c:58) | none | seam initialized, empty |

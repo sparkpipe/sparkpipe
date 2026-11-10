@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "inference/llms/kimi_k3/spec_verify.h"
+#include "model-families/k3/source/spec_verify.h"
 
 #define K3_ENGINE_OK               0
 #define K3_ENGINE_ERR_NULL       -70

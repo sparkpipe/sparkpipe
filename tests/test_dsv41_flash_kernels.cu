@@ -9,7 +9,7 @@
 #include "runtime/launch.h"
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/index_shard.cuh"
-#include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_kernels.cuh"
 
 #define CUDA(call) do { cudaError_t e = (call); if (e != cudaSuccess) { \
     fprintf(stderr, "FAIL line=%d cuda=%s call=%s\n", __LINE__, cudaGetErrorString(e), #call); \

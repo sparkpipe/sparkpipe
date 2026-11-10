@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#include "inference/llms/kimi_k3/config.h"
-#include "inference/llms/kimi_k3/dspark.h"
+#include "model-families/k3/source/config.h"
+#include "model-families/k3/source/dspark.h"
 
 #define K3_VERIFY_MAX_DRAFT 7u
 #define K3_VERIFY_MAX_ROWS (K3_VERIFY_MAX_DRAFT + 1u)
