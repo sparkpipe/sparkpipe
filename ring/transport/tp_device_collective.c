@@ -1408,8 +1408,10 @@ static SparkStatus SparkTpDeviceCollectiveRunRound(SparkTpDeviceCollectiveImplem
     if ( SparkTpDeviceCollectiveHostRound(implementation,submission,operation_kind) == 0u )
         return SparkTpDeviceCollectiveRunDeviceRounds(implementation,submission,operation_kind,1u,SPARK_TP_MESH_STAGE_ALL);
     SparkTpDeviceCollectiveLogPath(implementation,operation_kind,1u,1u,bytes / 2u,submission->logical_sequence_count);
+#ifdef DEBUG
     if ( getenv("SPARK_TP_ROUND_TRACE") != 0 )
         fprintf(stderr,"ROUND-TRACE rank=%u armed=%u mirror=%llu cap_rounds=%u cap_parity=%u ordinal=%llu\n",implementation->tp_rank,implementation->capture_armed,(unsigned long long)implementation->cell_mirror,implementation->capture_rounds,implementation->capture_parity,(unsigned long long)submission->ordinal);
+#endif
     parity = (implementation->capture_armed != 0u ? implementation->cell_mirror + implementation->capture_rounds : implementation->cell_mirror) & (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u);
     if ( implementation->capture_armed != 0u )
         status = SparkTpDeviceCollectiveRoundCaptured(implementation,submission,bytes,parity);
