@@ -729,7 +729,7 @@ SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *he
 
 static SparkStatus SparkWeightdStatusFromWire(uint32_t wire_status)
 {
-    if (wire_status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
+    if (wire_status > (uint32_t)SPARK_STATUS_MAXIMUM)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
@@ -5475,7 +5475,7 @@ SparkStatus SparkWeightdClientMeshStatus(SparkWeightdClient *client,
     {
         SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
-    if (result->status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
+    if (result->status > (uint32_t)SPARK_STATUS_MAXIMUM)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
@@ -6711,7 +6711,7 @@ SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_
 		expected = SPARK_WEIGHTD_EXPORT_BATCH_MAX;
 	if ( status == SPARK_STATUS_OK &&
 	     (response.header.request_id != request.header.request_id || response.arena_generation != arena_generation ||
-	      response.slot_offset != slot_offset || response.batch_count != received || response.status > (uint32_t)SPARK_STATUS_EVICT_DENIED ||
+	      response.slot_offset != slot_offset || response.batch_count != received || response.status > (uint32_t)SPARK_STATUS_MAXIMUM ||
 	      response.slot_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
 	      (response.status == (uint32_t)SPARK_STATUS_OK ? response.batch_count != expected : response.batch_count != 0u)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -6758,7 +6758,7 @@ SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_
 	if ( status == SPARK_STATUS_OK &&
 	     (response.header.request_id != request.header.request_id || response.arena_generation != arena_generation ||
 	      response.lease_identifier != lease_identifier || response.batch_offset != batch_offset ||
-	      response.status > (uint32_t)SPARK_STATUS_EVICT_DENIED || response.lease_chunk_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
+	      response.status > (uint32_t)SPARK_STATUS_MAXIMUM || response.lease_chunk_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
 	      (response.status == (uint32_t)SPARK_STATUS_OK ? response.batch_count != expected || expected == 0u : response.batch_count != 0u)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	for (i=1u; status == SPARK_STATUS_OK && i<response.batch_count; i++)

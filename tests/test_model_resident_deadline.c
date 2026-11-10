@@ -248,6 +248,16 @@ static void TestRejectedCompletionFailsRouteWithItsStatus(uint32_t completion_st
 	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
 }
 
+static void TestFailedCompletionKeepsItsStatus(SparkStatus status)
+{
+	TestCompletionFixture fixture;
+	TestCompletionInitialize(&fixture,(uint32_t)status);
+	SparkModelResidentdCompletion(&fixture.runtime,&fixture.completion);
+	assert(fixture.route.active != 0u && fixture.route.state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION &&
+		fixture.route.completion.status == (uint32_t)status && fixture.route.completion.accepted_token_count == 0u);
+	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
+}
+
 static uint32_t TestSnapshotFlags;
 
 static SparkStatus TestFlaggedSnapshot(void *adapter_state,SparkModelServingAdapterSnapshot *snapshot)
@@ -261,7 +271,7 @@ static SparkStatus TestFlaggedSnapshot(void *adapter_state,SparkModelServingAdap
 static void TestLaneFatalAdapterStopsTheRank(uint32_t flags,SparkStatus expected)
 {
 	TestCompletionFixture fixture;
-	TestCompletionInitialize(&fixture,SPARK_STATUS_NO_LANE);
+	TestCompletionInitialize(&fixture,(uint32_t)SPARK_STATUS_MAXIMUM + 1u);
 	TestSnapshotFlags = flags;
 	fixture.runtime.adapter_state = &fixture;
 	fixture.runtime.adapter_library.adapter_interface.snapshot = TestFlaggedSnapshot;
@@ -349,7 +359,9 @@ static void TestStuckRoutesRepeatWithFifoPosition(void)
 
 int main(void)
 {
-	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_NO_LANE,0u,SPARK_STATUS_INVALID_ARGUMENT);
+	TestRejectedCompletionFailsRouteWithItsStatus((uint32_t)SPARK_STATUS_MAXIMUM + 1u,0u,SPARK_STATUS_INVALID_ARGUMENT);
+	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_NO_LANE);
+	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_EVICT_DENIED);
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_OK,1u,SPARK_STATUS_SCHEMA_ERROR);
 	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH,SPARK_STATUS_OK);
 	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL,SPARK_STATUS_INTERNAL_ERROR);

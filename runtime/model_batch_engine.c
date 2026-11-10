@@ -64,7 +64,7 @@
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_FAILURE_TOKENS 8u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_BACKOFF_MAX_TOKENS 1024u
 
-_Static_assert(SPARK_STATUS_EVICT_DENIED < SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT,"every status must have its own rejection counter");
+_Static_assert(SPARK_STATUS_MAXIMUM < SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT,"every status must have its own rejection counter");
 
 typedef struct SparkModelBatchRequestState
 {
@@ -1275,7 +1275,7 @@ static void SparkModelBatchHandleRejected(
 			SparkModelBatchAdmittedResidency(request,submission);
 			SparkModelBatchRestoreOrCancel(engine,request,submission);
 		}
-		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
+		else if ( (status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || status == SPARK_STATUS_EVICT_DENIED || (status == SPARK_STATUS_IO_ERROR && fleet_connected == 0u)) &&
 			(request->busy_since_ns == 0u || SparkModelBatchNowNs() - request->busy_since_ns < engine->inflight_budget_ns) )
 		{
 			uint64_t now = SparkModelBatchNowNs();
@@ -1296,7 +1296,7 @@ static void SparkModelBatchHandleRejected(
 		}
 		else
 		{
-			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
+			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || status == SPARK_STATUS_EVICT_DENIED )
 				fprintf(stderr,"batch_retry_deadline request=%llu restores=%u waited_ns=%llu budget_ns=%llu; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count,

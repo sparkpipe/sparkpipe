@@ -33,6 +33,8 @@ typedef enum SparkStatus
     SPARK_STATUS_EVICT_DENIED
 } SparkStatus;
 
+#define SPARK_STATUS_MAXIMUM SPARK_STATUS_EVICT_DENIED
+
 const char *SparkStatusToString(SparkStatus status);
 
 #ifdef __cplusplus

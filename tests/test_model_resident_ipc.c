@@ -95,6 +95,13 @@ static void TestSubmitResult(void)
 	assert(SparkModelResidentIpcValidateSubmitResult(&result,sizeof(result),19u,88u) == SPARK_STATUS_OK);
 	assert(result.status == SPARK_STATUS_BUSY);
 	assert(SparkModelResidentIpcValidateSubmitResult(&result,sizeof(result),19u,89u) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcInitializeSubmitResult(&result,20u,90u,SPARK_STATUS_NO_LANE) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateSubmitResult(&result,sizeof(result),20u,90u) == SPARK_STATUS_OK && result.status == SPARK_STATUS_NO_LANE);
+	assert(SparkModelResidentIpcInitializeSubmitResult(&result,21u,91u,SPARK_STATUS_EVICT_DENIED) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateSubmitResult(&result,sizeof(result),21u,91u) == SPARK_STATUS_OK && result.status == SPARK_STATUS_EVICT_DENIED);
+	assert(SparkModelResidentIpcInitializeSubmitResult(&result,22u,92u,(SparkStatus)(SPARK_STATUS_MAXIMUM + 1)) != SPARK_STATUS_OK);
+	result.status = (uint32_t)SPARK_STATUS_MAXIMUM + 1u;
+	assert(SparkModelResidentIpcValidateSubmitResult(&result,sizeof(result),21u,91u) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
 static void TestDecision(void)

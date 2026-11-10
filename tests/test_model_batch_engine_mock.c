@@ -1610,6 +1610,13 @@ static void TestScenarioMeasurements(const SparkModelResidentDeployment *deploym
 	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] != 0u && view.rejected_lane_count == view.rejected_submission_count_by_status[SPARK_STATUS_BUSY] && view.stale_prefix_recompute_count == 0u,"measure: a BUSY rank counts its rejected waves by status");
 	CHECK(state.completed_events[3] == 1u && view.prefix_miss_count == 2u && view.first_token_count == 3u,"measure: retried waves count the prefix outcome once");
 	CHECK(state.first_dispatch_ns[3] >= state.accepted_ns[3] + UINT64_C(10000000),"measure: BUSY retry time before admission is booked as queue, not prefill");
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_EVICT_DENIED);
+	TestSubmitPrompt(engine,4u,803u,1u,prompt,3u);
+	TestDrive(engine,20u);
+	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_OK);
+	TestDriveUntilTerminal(engine,&state,4u,400u);
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.rejected_submission_count_by_status[SPARK_STATUS_EVICT_DENIED] != 0u &&
+		state.completed_events[4] == 1u,"measure: a wave a rank's weightd could not make room for is retried like BUSY and completes");
 	SparkModelBatchEngineDestroy(engine);
 }
 

@@ -224,7 +224,7 @@ SparkStatus SparkModelResidentIpcValidateHelloAck(
 		SPARK_RETURN(status);
 	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->output_vocabulary != runtime_limits->output_vocabulary || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
+	if ( ack->status > SPARK_STATUS_MAXIMUM || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->output_vocabulary != runtime_limits->output_vocabulary || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	if ( ack->input_sideband_kind != (stage_index != 0u ? descriptor->boundary_sideband_kinds[stage_index - 1u] : 0u) || ack->input_sideband_bytes_per_sequence != (stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u] : 0u) || ack->output_sideband_kind != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_kinds[stage_index] : 0u) || ack->output_sideband_bytes_per_sequence != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[stage_index] : 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
@@ -239,7 +239,7 @@ SparkStatus SparkModelResidentIpcInitializeSubmitResult(
 	uint64_t submission_id,
 	SparkStatus status)
 {
-	if ( result == 0 || message_id == 0u || submission_id == 0u || status > SPARK_STATUS_UNSUPPORTED )
+	if ( result == 0 || message_id == 0u || submission_id == 0u || status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result,0,sizeof(*result));
 	SparkModelResidentIpcInitializeHeader(&result->header,SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES,message_id);
@@ -258,7 +258,7 @@ SparkStatus SparkModelResidentIpcValidateSubmitResult(
 	status = SparkModelResidentIpcValidateHeader(result != 0 ? &result->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( result->header.message_id != message_id || result->submission_id != submission_id || result->status > SPARK_STATUS_UNSUPPORTED || result->reserved0 != 0u )
+	if ( result->header.message_id != message_id || result->submission_id != submission_id || result->status > SPARK_STATUS_MAXIMUM || result->reserved0 != 0u )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -313,7 +313,7 @@ SparkStatus SparkModelResidentIpcInitializeStatusReport(
 	uint32_t residentd_pid,
 	const SparkModelServingAdapterSnapshot *adapter_snapshot)
 {
-	if ( report == 0 || request == 0 || request->header.message_id == 0u || adapter_snapshot == 0 || status > SPARK_STATUS_UNSUPPORTED )
+	if ( report == 0 || request == 0 || request->header.message_id == 0u || adapter_snapshot == 0 || status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(report,0,sizeof(*report));
 	SparkModelResidentIpcInitializeHeader(&report->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,request->header.message_id);
@@ -337,7 +337,7 @@ SparkStatus SparkModelResidentIpcValidateStatusReport(
 	status = SparkModelResidentIpcValidateHeader(report != 0 ? &report->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->stage_index != stage_index || report->status > SPARK_STATUS_UNSUPPORTED )
+	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->stage_index != stage_index || report->status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( report->status == (uint32_t)SPARK_STATUS_OK && (report->adapter_snapshot.abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || report->adapter_snapshot.descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
@@ -382,7 +382,7 @@ SparkStatus SparkModelResidentIpcInitializeDecisionResult(
 {
 	SparkStatus validation_status;
 	validation_status = SparkModelResidentIpcValidateDecision(decision,SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES);
-	if ( result == 0 || validation_status != SPARK_STATUS_OK || status > SPARK_STATUS_UNSUPPORTED )
+	if ( result == 0 || validation_status != SPARK_STATUS_OK || status > SPARK_STATUS_MAXIMUM )
 		return(validation_status != SPARK_STATUS_OK ? validation_status : SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result,0,sizeof(*result));
 	SparkModelResidentIpcInitializeHeader(&result->header,SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES,decision->header.message_id);
@@ -406,7 +406,7 @@ SparkStatus SparkModelResidentIpcValidateDecisionResult(
 	status = SparkModelResidentIpcValidateHeader(result != 0 ? &result->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( submission == 0 || result->header.message_id != message_id || result->decision != decision_kind || result->status > SPARK_STATUS_UNSUPPORTED || result->submission_id != submission->submission_id || result->control_generation != submission->control_generation || result->transaction_id != submission->transaction_id || result->dispatch_generation != submission->dispatch_generation )
+	if ( submission == 0 || result->header.message_id != message_id || result->decision != decision_kind || result->status > SPARK_STATUS_MAXIMUM || result->submission_id != submission->submission_id || result->control_generation != submission->control_generation || result->transaction_id != submission->transaction_id || result->dispatch_generation != submission->dispatch_generation )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
