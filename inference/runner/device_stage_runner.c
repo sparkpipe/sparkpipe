@@ -72,6 +72,7 @@ struct SparkDeviceStageRunner
 	SparkDeviceBuffer logprob;
 	SparkDeviceBuffer argmax;
 	SparkDeviceBuffer kv_pool;
+	SparkDeviceBuffer second_pool;
 	SparkDeviceBuffer page_table;
 	SparkDeviceBuffer sample_rows;
 	SparkDeviceBuffer sample_tokens;
@@ -305,10 +306,13 @@ static SparkStatus RunnerKvCreate(SparkDeviceStageRunner *runner, uint64_t *tota
 	SparkStageRunnerKv kv;
 	uint32_t *table, index;
 	SparkStatus status;
-	if ( g->kv_layer_count == 0u || g->kv_layer_page_bytes == 0u || g->kv_second_layer_count != 0u )
-		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"the device runner holds one paged KV pool; the model's cache layout needs another"));
+	if ( g->kv_layer_count == 0u || g->kv_layer_page_bytes == 0u || (g->kv_second_layer_count != 0u) != (g->kv_second_layer_page_bytes != 0u) )
+		return(RunnerFail(SPARK_STATUS_UNSUPPORTED,"the device runner's KV pools need layers of nonzero pages"));
 	status = RunnerAllocate(&runner->kv_pool,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,(uint64_t)g->kv_layer_count * pool_pages * g->kv_layer_page_bytes,
 		"runner KV pool",total);
+	if ( status == SPARK_STATUS_OK && g->kv_second_layer_count != 0u )
+		status = RunnerAllocate(&runner->second_pool,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,
+			(uint64_t)g->kv_second_layer_count * pool_pages * g->kv_second_layer_page_bytes,"runner second KV pool",total);
 	if ( status == SPARK_STATUS_OK )
 		status = RunnerAllocate(&runner->page_table,SPARK_DEVICE_SPACE_SHARED_COHERENT,(uint64_t)pool_pages * sizeof(uint32_t),"runner page table",total);
 	if ( status != SPARK_STATUS_OK )
@@ -321,6 +325,10 @@ static SparkStatus RunnerKvCreate(SparkDeviceStageRunner *runner, uint64_t *tota
 	kv.layer_stride_bytes = (uint64_t)pool_pages * g->kv_layer_page_bytes;
 	kv.layer_page_bytes = g->kv_layer_page_bytes;
 	kv.layer_count = g->kv_layer_count;
+	kv.second_pool = g->kv_second_layer_count != 0u ? (uint8_t *)(uintptr_t)runner->second_pool.device : 0;
+	kv.second_layer_stride_bytes = (uint64_t)pool_pages * g->kv_second_layer_page_bytes;
+	kv.second_layer_page_bytes = g->kv_second_layer_page_bytes;
+	kv.second_layer_count = g->kv_second_layer_count;
 	kv.page_table = (const uint32_t *)(uintptr_t)runner->page_table.device;
 	kv.page_table_stride = runner->pages_per_sequence;
 	kv.pool_page_count = pool_pages;
@@ -1098,7 +1106,7 @@ void *SparkDeviceStageRunnerModel(const SparkDeviceStageRunner *runner)
 void SparkDeviceStageRunnerClose(SparkDeviceStageRunner *runner)
 {
 	SparkDeviceBuffer *buffers[] = { &runner->tables, &runner->hidden, &runner->head_hidden, &runner->head_normed, &runner->logits, &runner->logprob,
-		&runner->argmax, &runner->kv_pool, &runner->page_table, &runner->lanes, &runner->logits_local, &runner->logits_gathered,
+		&runner->argmax, &runner->kv_pool, &runner->second_pool, &runner->page_table, &runner->lanes, &runner->logits_local, &runner->logits_gathered,
 		&runner->sample_rows, &runner->sample_tokens, &runner->sample_logits, &runner->sample_logprobs };
 	uint32_t index;
 	if ( runner == 0 )

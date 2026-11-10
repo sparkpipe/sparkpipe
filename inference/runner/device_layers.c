@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "inference/runner/device_layers.h"
+#include "inference/runner/device_indexer.h"
 #include "sparkpipe/spark_rope_plan.h"
 #include "inference/runner/device_stage_runner.h"
 
@@ -670,6 +671,13 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
 	const SparkDeviceLatentAttentionScratch *scratch, SparkTensor normed, SparkTensor output)
 {
+	return(SparkDeviceLatentAttentionSelected(stage,queue,shape,rope,tensors,weights,kv_layer,scratch,0,normed,output));
+}
+
+SparkStatus SparkDeviceLatentAttentionSelected(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceLatentAttentionShape *shape,
+	const SparkDeviceLatentAttentionRope *rope, const SparkDeviceStepTensors *tensors, const SparkDeviceLatentAttentionWeights *weights, uint32_t kv_layer,
+	const SparkDeviceLatentAttentionScratch *scratch, const SparkDeviceLatentSelection *selection, SparkTensor normed, SparkTensor output)
+{
 	const uint32_t hidden = stage->shape->hidden, rows = tensors->rows, degree = stage->tp_degree, heads = shape->heads / degree;
 	const uint32_t qk = shape->nope + shape->rope, slot = SparkDeviceLatentAttentionSlot(shape), values = heads * shape->value_dimension;
 	const uint32_t qhead = qk + shape->query_gate, query_input = shape->query_concat != 0u ? 2u * shape->query_lora : shape->query_lora;
@@ -763,7 +771,14 @@ SparkStatus SparkDeviceLatentAttention(SparkDeviceStage *stage, SparkDeviceQueue
 	attention.window = shape->window;
 	if ( shape->sinks != 0u )
 		sinks = SparkTensorSlice(weights->sinks,(uint64_t)attention.first_head * sizeof(float),(uint64_t)heads * sizeof(float));
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && selection != 0 && (shape->window != 0u || selection->topk == 0u || selection->key_ratio == 0u) )
+		status = SparkDeviceStageRefuse(stage,SPARK_STATUS_UNSUPPORTED,"selected latent attention needs a top-k, a key ratio and no window");
+	if ( status == SPARK_STATUS_OK && selection != 0 && selection->select != 0 )
+		status = selection->select(selection->context,queue,shape->query_lora != 0u ? scratch->query_lora : normed,shape->query_lora != 0u ? query_input : hidden);
+	if ( status == SPARK_STATUS_OK && selection != 0 && selection->sparse != 0u )
+		status = SparkIndexerAttention(stage->ops,queue,&paged,scratch->packed,scratch->packed,shape->sinks != 0u ? &sinks : 0,selection->selected,selection->topk,
+			selection->key_ratio,scratch->records,scratch->latent,&attention);
+	else if ( status == SPARK_STATUS_OK )
 		status = SparkOpsAttention(stage->ops,queue,&paged,scratch->packed,scratch->packed,shape->sinks != 0u ? &sinks : 0,scratch->records,scratch->latent,
 			&attention,tensors->host_positions,tensors->host_sequence_of_row);
 	if ( status == SPARK_STATUS_OK )
