@@ -182,7 +182,7 @@ static void TestSubmissionRoundTrip(void)
 	submission.row_positions = positions;
 	submission.row_sequence_ids = sequences;
 	submission.model_extension = extension;
-	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
 	assert(decoded.submission_id == 44u);
 	assert(decoded.lane_count == 2u);
@@ -200,7 +200,7 @@ static void TestSubmissionRoundTrip(void)
 		assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
 		before = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 		submission.deadline_time_ns = before + UINT64_C(5000000000);
-		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns != 0u && ((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns <= UINT64_C(5000000000));
 		((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns = UINT64_C(2000000000);
 		assert(SparkModelResidentIpcDecodeSubmission(buffer,message_bytes,&decoded) == SPARK_STATUS_OK);
@@ -208,10 +208,10 @@ static void TestSubmissionRoundTrip(void)
 		after = (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 		assert(decoded.deadline_time_ns >= before + UINT64_C(2000000000) && decoded.deadline_time_ns <= after + UINT64_C(2000000000));
 		submission.deadline_time_ns = before - 1u;
-		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 		assert(((SparkModelResidentIpcSubmit *)buffer)->deadline_remaining_ns == 1u);
 		submission.deadline_time_ns = 0u;
-		assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+		assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
 	}
 	wire = (SparkModelResidentIpcSubmit *)buffer;
 	wire->header.abi_version--;
@@ -234,12 +234,12 @@ static void TestSubmissionRoundTrip(void)
 		sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.hidden_input_address = buffer;
 	submission.hidden_input_bytes = sizeof(buffer);
-	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.hidden_input_address = 0;
 	submission.hidden_input_bytes = 0u;
 	submission.boundary_sideband_input_address = buffer;
 	submission.boundary_sideband_input_bytes = sizeof(buffer);
-	assert(SparkModelResidentIpcEncodeSubmission(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcEncodePreparation(&submission,5u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 	submission.boundary_sideband_input_address = 0;
 	submission.boundary_sideband_input_bytes = 0u;
 	wire = (SparkModelResidentIpcSubmit *)buffer;
@@ -361,31 +361,6 @@ static void TestIndependentPrefillMessageCapacity(void)
 	assert(SparkModelResidentIpcCalculateSubmitBytes(SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT + 1u,0u,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,0u,&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void TestDirectSubmitDescriptorGuard(void)
-{
-	SparkModelServingAdapterDescriptor descriptor;
-	TestBuildDescriptor(&descriptor);
-	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
-		SPARK_STATUS_UNSUPPORTED);
-	descriptor.stage_count = 1u;
-	descriptor.stage_layer_counts[0] = descriptor.layer_count;
-	descriptor.stage_layer_counts[1] = 0u;
-	descriptor.boundary_sideband_kinds[0] = 0u;
-	descriptor.boundary_sideband_bytes_per_sequence[0] = 0u;
-	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
-		SPARK_STATUS_OK);
-	descriptor.capability_flags |=
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
-	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
-		SPARK_STATUS_UNSUPPORTED);
-	descriptor.capability_flags &=
-		~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT;
-	descriptor.capability_flags |=
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT;
-	assert(SparkModelResidentIpcValidateDirectSubmitDescriptor(&descriptor) ==
-		SPARK_STATUS_UNSUPPORTED);
-}
-
 int main(void)
 {
 	TestHello();
@@ -394,7 +369,6 @@ int main(void)
 	TestSubmissionRoundTrip();
 	TestCompletionRoundTrip();
 	TestIndependentPrefillMessageCapacity();
-	TestDirectSubmitDescriptorGuard();
 	TestContinuationLease();
 	return(0);
 }

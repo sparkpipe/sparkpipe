@@ -105,9 +105,6 @@ SparkStatus SparkModelResidentClientConnect(
 	SparkModelResidentClient **client_out);
 void SparkModelResidentClientDestroy(SparkModelResidentClient *client);
 void SparkModelResidentClientFailStop(SparkModelResidentClient *client);
-SparkStatus SparkModelResidentClientSubmit(
-	SparkModelResidentClient *client,
-	const SparkModelServingSubmission *submission);
 SparkStatus SparkModelResidentClientPrepare(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);

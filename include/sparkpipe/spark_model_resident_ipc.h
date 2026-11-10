@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 25u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 26u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -17,7 +17,6 @@ extern "C" {
 
 #define SPARK_MODEL_RESIDENT_IPC_KIND_HELLO 1u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK 2u
-#define SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT 3u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT 4u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION 5u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE 6u
@@ -31,8 +30,6 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
 
-SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
-	const SparkModelServingAdapterDescriptor *descriptor);
 
 typedef struct SparkModelResidentIpcHeader
 {
@@ -335,12 +332,6 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t cache_block_identity_count,
 	uint32_t model_extension_bytes,
 	uint32_t tree_row_count,
-	uint32_t *message_bytes_out);
-SparkStatus SparkModelResidentIpcEncodeSubmission(
-	const SparkModelServingSubmission *submission,
-	uint64_t message_id,
-	void *message_buffer,
-	uint32_t message_capacity,
 	uint32_t *message_bytes_out);
 SparkStatus SparkModelResidentIpcEncodePreparation(
 	const SparkModelServingSubmission *submission,

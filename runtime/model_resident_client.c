@@ -677,14 +677,10 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 		status = SparkModelResidentIpcEncodePreparation(submission,
 			pending->message_id,message,client->output_message_capacity,
 			&message_bytes);
-	else if ( message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	else
 		status = SparkModelResidentIpcEncodeContinuation(submission,
 			pending->message_id,client->client_generation,message,
 			client->output_message_capacity,&message_bytes);
-	else
-		status = SparkModelResidentIpcEncodeSubmission(submission,
-			pending->message_id,message,client->output_message_capacity,
-			&message_bytes);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkModelResidentClientReleasePending(client,pending);
@@ -699,14 +695,6 @@ static SparkStatus SparkModelResidentClientSubmitKind(
 	client->last_submission_id = submission->submission_id;
 	(void)SparkModelResidentClientFlush(client);
 	return(SPARK_STATUS_OK);
-}
-
-SparkStatus SparkModelResidentClientSubmit(
-	SparkModelResidentClient *client,
-	const SparkModelServingSubmission *submission)
-{
-	return(SparkModelResidentClientSubmitKind(client,submission,
-		SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT));
 }
 
 SparkStatus SparkModelResidentClientPrepare(

@@ -670,16 +670,6 @@ static SparkStatus MockResidentClientEnqueue(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelResidentClientSubmit(
-	SparkModelResidentClient *client,
-	const SparkModelServingSubmission *submission)
-{
-	if ( client == 0 || submission == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	client->submit_calls++;
-	return(MockResidentClientEnqueue(client,submission,"submit",MOCK_CALL_SUBMIT));
-}
-
 SparkStatus SparkModelResidentClientPrepare(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission)

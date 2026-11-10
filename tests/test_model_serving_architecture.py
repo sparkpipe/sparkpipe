@@ -136,15 +136,13 @@ def main() -> int:
         "static SparkStatus SparkModelResidentdProcessSubmission", 1
     )[1].split("static SparkStatus SparkModelResidentdProcessDecision", 1)[0]
     require(
-        "SparkModelResidentIpcValidateDirectSubmitDescriptor" in submission_path
+        "SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT " not in resident
+        and "SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT\n" not in resident
         and submission_path.index(
-            "SparkModelResidentIpcValidateDirectSubmitDescriptor"
-        )
-        < submission_path.index(
             "SparkModelServingAdapterValidateRuntimeSubmission"
         )
         < submission_path.index("SparkModelServingAdapterPrepareSubmission"),
-        "distributed direct SUBMIT reaches adapter/cache admission",
+        "a one-phase SUBMIT is back, or cache admission runs before validation",
     )
     decision_path = resident.split(
         "static SparkStatus SparkModelResidentdProcessDecision", 1

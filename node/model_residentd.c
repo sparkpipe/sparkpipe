@@ -186,8 +186,8 @@ typedef struct SparkModelResidentdRoute
 	uint32_t slot_index;
 	uint32_t message_bytes;
 	uint32_t ready_state;
-	uint32_t decision_required;
 	uint32_t resident_slots_claimed;
+	uint32_t decision_required;
 	uint32_t prepared_cache;
 	uint32_t committed_fifo_queued;
 	uint32_t committed_fifo_next;
@@ -2152,38 +2152,33 @@ static void SparkModelResidentdLogSubmission(const char *tag,const SparkModelSer
 static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
-	uint32_t message_bytes,
-	uint32_t decision_required)
+	uint32_t message_bytes)
 {
 	const SparkModelResidentIpcSubmit *wire;
 	SparkModelServingSubmission submission;
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
-	uint32_t cache_committed,cache_prepared,decoded;
+	uint32_t cache_prepared,decoded;
 	wire = (const SparkModelResidentIpcSubmit *)message;
-	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u decision=%u\n",
+	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u\n",
 		(unsigned long long)(message_bytes >= 24u ? wire->submission_id : 0ull),
-		(unsigned)message_bytes,(unsigned)decision_required);
+		(unsigned)message_bytes);
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
 	decoded = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (runtime->client.hello_complete == 0u ||
 		runtime->client.pending_client_reset != 0u) )
 		status = SPARK_STATUS_BUSY;
-	if ( status == SPARK_STATUS_OK && decision_required == 0u )
-		status = SparkModelResidentIpcValidateDirectSubmitDescriptor(
-			runtime->adapter_library.adapter_interface.descriptor);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&submission);
 	if ( status == SPARK_STATUS_OK && submission.submission_id <= runtime->client.last_submission_id )
 		status = submission.submission_id == runtime->client.last_submission_id ? SPARK_STATUS_DUPLICATE : SPARK_STATUS_INVALID_ARGUMENT;
 	if ( status != SPARK_STATUS_OK )
-		fprintf(stderr,"ADMIT9-RESIDENTD submission=%llu status=%u last_submission=%llu decision_required=%u\n",
+		fprintf(stderr,"ADMIT9-RESIDENTD submission=%llu status=%u last_submission=%llu\n",
 			(unsigned long long)submission.submission_id,(unsigned)status,
-			(unsigned long long)runtime->client.last_submission_id,(unsigned)decision_required);
+			(unsigned long long)runtime->client.last_submission_id);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelServingAdapterPrepareSubmission(&runtime->adapter_library.adapter_interface,runtime->adapter_state,&submission);
 	cache_prepared = status == SPARK_STATUS_OK ? 1u : 0u;
-	cache_committed = 0u;
 	route = 0;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -2195,28 +2190,11 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,
-			decision_required);
+		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,1u);
 		if ( status == SPARK_STATUS_OK )
 			route->prepared_cache = cache_prepared;
 	}
 	resolution_status = SPARK_STATUS_OK;
-	if ( status == SPARK_STATUS_OK && cache_prepared != 0u &&
-		decision_required == 0u )
-	{
-		cache_prepared = 0u;
-		resolution_status = SparkModelServingAdapterResolvePrefetch(
-			&runtime->adapter_library.adapter_interface,runtime->adapter_state,
-			&route->submission,
-			SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT);
-		if ( resolution_status == SPARK_STATUS_OK )
-		{
-			cache_committed = 1u;
-			route->prepared_cache = 0u;
-		}
-		else
-			status = resolution_status;
-	}
 	if ( status != SPARK_STATUS_OK && cache_prepared != 0u )
 	{
 		resolution_status = SparkModelServingAdapterResolvePrefetch(
@@ -2235,12 +2213,9 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	if ( decoded != 0u && status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY && status != SPARK_STATUS_PENDING && status != SPARK_STATUS_DUPLICATE )
 		SparkModelResidentdLogSubmission("SUBMISSION-REJECTED",&submission,status);
 	pthread_mutex_lock(&runtime->mutex);
-	if ( route != 0 && status == SPARK_STATUS_OK && cache_committed != 0u &&
-		decision_required == 0u )
-		status = SparkModelResidentdEnqueueCommittedLocked(runtime,route);
 	if ( route != 0 && status != SPARK_STATUS_OK )
 	{
-		if ( resolution_status == SPARK_STATUS_OK && cache_committed == 0u )
+		if ( resolution_status == SPARK_STATUS_OK )
 			cleanup_status = SparkModelResidentdDeactivateRouteLocked(runtime,
 				route);
 		else
@@ -2266,7 +2241,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 				runtime->adapter_state,&route->submission,
 				SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT);
 		pthread_mutex_lock(&runtime->mutex);
-		if ( resolution_status == SPARK_STATUS_OK && cache_committed == 0u )
+		if ( resolution_status == SPARK_STATUS_OK )
 			cleanup_status = SparkModelResidentdDeactivateRouteLocked(runtime,
 				route);
 		else
@@ -2519,8 +2494,7 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	}
 	if ( runtime->client.hello_complete == 0u || header->message_id <= runtime->client.last_message_id )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT ||
-		header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
 		header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
 	{
 		status = SparkModelResidentIpcValidateHeader(header,message_bytes,header->kind,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
@@ -2531,8 +2505,7 @@ static SparkStatus SparkModelResidentdProcessMessage(
 				message_bytes);
 		else
 			status = SparkModelResidentdProcessSubmission(runtime,message,
-				message_bytes,header->kind ==
-				SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ? 1u : 0u);
+				message_bytes);
 	}
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_DECISION )
 		status = SparkModelResidentdProcessDecision(runtime,(const SparkModelResidentIpcDecision *)message,message_bytes);
@@ -2582,8 +2555,7 @@ static SparkStatus SparkModelResidentdReadClient(
 			header = (SparkModelResidentIpcHeader *)runtime->client.input;
 			status = SparkModelResidentdProcessMessage(runtime,runtime->client.input,runtime->client.target_bytes);
 			if ( status == SPARK_STATUS_OK &&
-				(header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT ||
-				 header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
+				(header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
 				 header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) )
 				*submission_processed_out = 1u;
 			runtime->client.input_bytes = 0u;

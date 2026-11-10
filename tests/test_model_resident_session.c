@@ -243,7 +243,7 @@ static void TestResetWaitsForOwnedRoute(void)
 	assert(SparkModelResidentdProgressReset(&test.runtime) == SPARK_STATUS_OK);
 	assert(test.reset_calls == 0u && test.runtime.client.output_count == 0u);
 	SparkModelResidentIpcHeader submit = {0};
-	submit.kind = SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT;
+	submit.kind = SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE;
 	submit.message_id = 2u;
 	assert(SparkModelResidentdProcessMessage(&test.runtime,&submit,sizeof(submit)) == SPARK_STATUS_SCHEMA_ERROR);
 	test.route.state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
