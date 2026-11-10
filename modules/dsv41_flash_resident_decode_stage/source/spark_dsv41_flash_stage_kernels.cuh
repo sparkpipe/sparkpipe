@@ -289,9 +289,7 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 		const float kv0 = ordinal > 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
 		const float score0 = ordinal > 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
 		const float kv1 = kv[(uint64_t)row * width + c], score1 = score[(uint64_t)row * width + c];
-		const float top = fmaxf(score0, score1);
-		const float e0 = expf(score0 - top), e1 = expf(score1 - top);
-		pooled[(uint64_t)row * width + c] = LmFloatToBf16((kv0 * e0 + kv1 * e1) / (e0 + e1));
+		pooled[(uint64_t)row * width + c] = LmFloatToBf16(SparkMathSoftmaxPool2(kv0, score0, kv1, score1));
 	}
 	if ( threadIdx.x == 0u )
 		emit_row[row] = position / ratio;
@@ -378,18 +376,18 @@ static __global__ void D41RingPackKernel(const uint16_t *__restrict__ rings, con
 		target[element] = ring[element];
 }
 
-static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination,
-	uint32_t destinations)
+static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t span, uint32_t destinations)
 {
-	const uint64_t pair = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if ( pair >= (uint64_t)rows * heads_per_destination * destinations )
-		return;
-	const uint32_t destination = (uint32_t)(pair / ((uint64_t)rows * heads_per_destination));
-	float *record = records + destination * destination_stride + (pair % ((uint64_t)rows * heads_per_destination)) * D41K_RECORD;
-	record[0] = -INFINITY;
-	record[1] = 0.0f;
-	for ( uint32_t element = 0u; element < D41K_LATENT; ++element )
-		record[2u + element] = 0.0f;
+	for ( uint32_t destination = 0u; destination < destinations; ++destination )
+		for ( uint32_t offset = blockIdx.x * blockDim.x + threadIdx.x; offset < span; offset += gridDim.x * blockDim.x )
+			records[(uint64_t)destination * destination_stride + offset] = offset % D41K_RECORD == 0u ? -INFINITY : 0.0f;
+}
+
+static inline void D41InitRecords(float *records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination, uint32_t destinations,
+	cudaStream_t stream)
+{
+	const uint32_t span = rows * heads_per_destination * D41K_RECORD, blocks = (span + D41K_THREADS - 1u) / D41K_THREADS;
+	D41InitRecordsKernel<<<blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream>>>(records, destination_stride, span, destinations);
 }
 
 static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,

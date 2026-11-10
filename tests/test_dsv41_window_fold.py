@@ -4,7 +4,9 @@
 Builds build/test_dsv41_window_fold and runs it on an sm_121 device. The fold scores a batch of
 window keys before updating the online softmax; every record it writes must be the same bits as
 the key-by-key fold, for decode rows, verify frames, prefill waves, local-head landings, early
-positions and partial records. Perturbing one key must change the result.
+positions and partial records. Perturbing one key must change the result. Record
+initialization must set every record to -inf/0 for waves past 262,144 records at TP16 (4100
+rows x 4 heads x 16 destinations) and must not touch padding between destinations.
 """
 
 import subprocess

@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_kv_ledger.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_status.h"
 
@@ -9,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_KV_SNAPSHOT_ABI_VERSION 6u
+#define SPARK_KV_SNAPSHOT_ABI_VERSION 7u
 #define SPARK_KV_SNAPSHOT_FORMAT_VERSION 2u
 #define SPARK_KV_SNAPSHOT_MAGIC UINT64_C(0x31504e534b565053)
 #define SPARK_KV_SNAPSHOT_MAX_SEGMENTS 4u
@@ -39,7 +40,7 @@ typedef struct SparkKvSnapshotPurgeResult
 	uint32_t stores;
 	uint32_t busy_stores;
 	uint32_t failed_unlinks;
-	uint32_t reserved0;
+	uint32_t uncounted_stores;
 } SparkKvSnapshotPurgeResult;
 
 typedef struct SparkKvSnapshotKey
@@ -86,9 +87,11 @@ typedef struct SparkKvSnapshotStore
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	char directory[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	uint64_t maximum_bytes;
+	SparkKvLedger *ledger;
+	uint32_t ledger_slot;
+	uint32_t reserved1;
+	uint64_t quota_bytes;
 	uint64_t queue_maximum_bytes;
-	uint64_t reserve_bytes;
 	uint64_t used_bytes;
 	uint64_t file_count;
 	uint64_t write_count;
@@ -103,8 +106,8 @@ typedef struct SparkKvSnapshotStore
 	uint64_t duplicate_count;
 	uint64_t eviction_count;
 	uint64_t evicted_bytes;
-	uint64_t reserve_eviction_count;
-	uint64_t reserve_refusal_count;
+	uint64_t quota_refusal_count;
+	uint64_t quota_honored_bytes;
 	uint64_t pruned_count;
 	uint64_t read_count;
 	uint64_t read_bytes;
@@ -139,7 +142,7 @@ typedef struct SparkKvSnapshotWriteTicket
 #define SPARK_KV_SNAPSHOT_STORE_BYTES ((uint32_t)sizeof(SparkKvSnapshotStore))
 #define SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS UINT64_C(10000000000)
 
-SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes,uint64_t reserve_bytes);
+SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,SparkKvLedger *ledger,uint64_t queue_maximum_bytes);
 void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store);
 SparkStatus SparkKvSnapshotStoreSample(SparkKvSnapshotStore *store,SparkKvSnapshotStore *sample);
 SparkStatus SparkKvSnapshotExpire(SparkKvSnapshotStore *store,uint64_t now_seconds);
@@ -155,14 +158,16 @@ SparkStatus SparkKvSnapshotWriteCommit(SparkKvSnapshotStore *store,SparkKvSnapsh
 uint32_t SparkKvSnapshotTakeFailedWrites(SparkKvSnapshotStore *store,SparkKvSnapshotKey *keys,SparkStatus *statuses,uint32_t capacity,uint32_t *lost_out);
 void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
 SparkStatus SparkKvSnapshotFlush(SparkKvSnapshotStore *store);
+SparkStatus SparkKvSnapshotSyncDisk(SparkKvSnapshotStore *store);
 SparkStatus SparkKvSnapshotStat(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotFileHeader *header);
 SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotSegment *segments,uint32_t segment_count);
 SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,uint32_t segment_index,uint32_t kind,void *data,uint64_t capacity,uint64_t *bytes_out);
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
 uint32_t SparkKvSnapshotIsCacheFileName(const char *name);
 uint32_t SparkKvSnapshotIsShardName(const char *name);
-SparkStatus SparkKvSnapshotPurgeDirectory(const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
-SparkStatus SparkKvSnapshotPurgeTree(const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result);
+SparkStatus SparkKvSnapshotPurgeOldest(SparkKvLedger *ledger,const char *directory,uint64_t needed_bytes,uint64_t *freed_bytes);
 
 #ifdef __cplusplus
 }

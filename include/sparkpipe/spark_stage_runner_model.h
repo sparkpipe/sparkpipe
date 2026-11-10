@@ -32,6 +32,7 @@ typedef struct SparkStageRunnerServices
 	void (*fail)(void *context, SparkStatus status);
 	SparkStatus (*expert_weights)(void *context, uint32_t layer, const uint32_t *group_row_offset_device,
 		uint32_t routed_rows, const void **w1, const void **w2);
+	SparkStatus (*expert_weights_ahead)(void *context, uint32_t layer, uint32_t routed_rows, const void **w1, const void **w2);
 	void (*layer_done)(void *context, uint32_t layer);
 	void (*row_state)(void *context, uint32_t layer, uint32_t phase);
 } SparkStageRunnerServices;
@@ -61,6 +62,8 @@ typedef struct SparkStageRunnerStep
 	uint32_t graph_key;
 	const uint32_t *route_override;
 	uint32_t route_override_width;
+	uint32_t *route_fault;
+	uint32_t dispatch_row_offset;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry
@@ -125,6 +128,7 @@ typedef struct SparkStageRunnerStreamedPrefill
 	uint32_t state_target;
 	uint32_t multiprocessors;
 	uint32_t reserved0;
+	uint32_t *route_fault;
 } SparkStageRunnerStreamedPrefill;
 
 struct SparkStageRunnerModelInterface

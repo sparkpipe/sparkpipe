@@ -26,6 +26,7 @@ typedef struct SparkK3StepInput
 	const uint32_t *sequence_row_indices;
 	const uint32_t *kda_state_index;
 	uint32_t *route_expert;
+	uint32_t *route_fault;
 	uint32_t *route_packed_row;
 	uint32_t *route_source_token;
 	float *route_weight;
@@ -108,6 +109,11 @@ typedef struct SparkK3Dispatch
 	uint8_t *replay_pool;
 	uint64_t replay_bytes;
 	uint32_t replay_rows;
+	uint32_t indexed;
+	LmKvView *index_cache;
+	LmKvAccessError *index_access_error;
+	uint8_t *index_scratch;
+	uint64_t index_scratch_bytes;
 	int device;
 } SparkK3Dispatch;
 
@@ -117,8 +123,9 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 int32_t SparkK3DispatchScratchWidths(SparkK3Pack *pack, uint32_t first_layer, uint32_t layer_count,
 	uint32_t tp_degree, SparkK3ScratchWidths *widths);
 void SparkK3DispatchDestroy(SparkK3Dispatch *d);
-int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes,
+int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t layer_stride_bytes, uint8_t *index_pool, uint64_t index_layer_stride_bytes,
 	const uint32_t *page_table, uint32_t page_table_stride, uint32_t pool_page_count, uint32_t sequence_count);
+int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d);
 int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
 	uint32_t tp_degree, cudaStream_t stream);
 

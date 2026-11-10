@@ -38,7 +38,7 @@ class Node:
         self.commands = {
             "sysctl -n vm.swappiness":"10","sysctl -n kernel.panic":"60","sysctl -n kernel.softlockup_panic":"1",
             "sysctl -n kernel.hung_task_panic":"1","sysctl -n net.core.default_qdisc":"fq_codel",
-            "pgrep -af earlyoom":"812 /usr/bin/earlyoom -m 3 -s 100 -r 5 --avoid sshd|systemd|init",
+            "pgrep -af earlyoom":"812 /usr/bin/earlyoom -m 2 -s 100 -r 5 --avoid sshd|systemd|init",
             "modinfo -F filename sch_fq_codel":"/lib/modules/x/sch_fq_codel.ko","readlink -f /boot/initrd.img":"/boot/initrd.img-x",
             "efibootmgr -v":EFI,"ss -ltn":"LISTEN 0 128 0.0.0.0:2222 0.0.0.0:*","findmnt -n -o OPTIONS /":"rw,relatime",
             "hostname -s":node,"uname -r":"6.17.0-1026-nvidia","systemctl is-system-running":"running",
@@ -56,11 +56,11 @@ class Node:
             self.commands[f"findmnt -rn -T /home/{node}/{root} -o TARGET,SOURCE,FSTYPE,OPTIONS"] = "/ /dev/nvme0n1p2 ext4 rw,relatime"
         self.unit_states = {unit:"masked" for unit in MODULE.OPTIONAL_BOOT_UNITS}
         self.unit_states.update({unit:"enabled" for unit in (
-            "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer",
+            "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-rail2-fabric.timer",
             "ssh.service","spark-dma-guard.timer","spark-osd-guard-scan.timer","restart-resolved.service","ds4-ceph-warm-mount.service",
             "sparkpipe-hub-route.service","spark-firewall.service","sparkpipe-roce-qos.service",f"ceph-{FSID}@osd.3.service",
         )})
-        self.unit_states.update({"fstrim.service":"static","fstrim.timer":"enabled","ds4-switched-fabric.service":"static","ds4-direct-pair-fabric.service":"static","sparkpipe-fsck-health.service":"static"})
+        self.unit_states.update({"fstrim.service":"static","fstrim.timer":"enabled","ds4-switched-fabric.service":"static","ds4-rail2-fabric.service":"static","sparkpipe-fsck-health.service":"static"})
         self.memtotal = 127600808
         self.drift: list[str] = []
         self.enabled_instances = ["osd.3"]

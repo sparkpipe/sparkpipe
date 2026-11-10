@@ -105,8 +105,10 @@ Configuration these rules depend on:
   fleet runs with both set (`fleet-agent` drop-in `20-serving.conf`,
   `qualification/ds4_eval/runs/glm5-next-tp16-20260928-dd3526b-thinkoff/REPORT.md`).
   Pinning every expert contradicts the lazy-residency invariants I28-I30.
-- The GLM module refuses to start without an explicit finite
-  `SPARK_WEIGHTD_EXPERT_POOL_BYTES`. The fleet agent's default is 32 GiB
+- weightd sizes the expert pool from `PACK.experts`; without a cap that is
+  the whole arena, which holds every pinned expert.
+  `SPARK_WEIGHTD_EXPERT_POOL_BYTES` is only an explicit cap, and the fleet
+  agent passes one only from `G5_EXPERT_POOL_CAP_BYTES`
   (`tools/fleet_node_agent.sh`).
 - `SPARK_GLM5_NEXT_PREFETCH` set to anything but `0` makes the module refuse
   to start; warm the daemon with `build/weightd_warm` instead.
@@ -274,8 +276,8 @@ status; that ownership boundary remains a concrete item for the deeper review.
 ## HC site and skinny GEMV GPU regressions
 
 `tests/test_glm5_next_hc_site_cuda.py` runs the fused HC site kernel
-(`Glm5NextHcSiteKernel`: mix, Sinkhorn and pre-reduce in one eight-CTA cluster
-launch) on an sm_121 device. A cluster takes eight rows for prefill and one
+(`LmHcSiteKernel` on `Glm5NextHcPolicy`: mix, Sinkhorn and pre-reduce in one
+eight-CTA cluster launch) on an sm_121 device. A cluster takes eight rows for prefill and one
 row for decode. Every output (mixes, pre, post, comb, collapsed and snapshot
 rows) must be bitwise equal between the two, at 1 to 2,049 rows including
 partial clusters. The f64 reference and the frozen pre-fusion comparison of

@@ -69,9 +69,16 @@ static uint32_t Differ(const void *a, const void *b, uint64_t bytes)
 }
 
 template<uint32_t ROWS>
+static cudaError_t Launch(const uint16_t *streams, const float *fn, const float *scale, const float *base, Outputs *o, uint32_t rows)
+{
+	return LmHcSiteLaunch<G5N_HIDDEN, Glm5NextHcPolicy, ROWS>(streams, fn, scale, base, o->mixes, o->pre, o->post, o->comb, o->collapsed, o->snapshot,
+		rows, 0);
+}
+
+template<uint32_t ROWS>
 static void Run(const uint16_t *streams, const float *fn, const float *scale, const float *base, Outputs *o, uint32_t rows)
 {
-	CUDA(Glm5NextHcSiteLaunch<ROWS>(streams, fn, scale, base, o->mixes, o->pre, o->post, o->comb, o->collapsed, o->snapshot, rows, 0));
+	CUDA(Launch<ROWS>(streams, fn, scale, base, o, rows));
 	CUDA(cudaDeviceSynchronize());
 }
 
@@ -85,7 +92,7 @@ static float Time(const uint16_t *streams, const float *fn, const float *scale, 
 	Run<ROWS>(streams, fn, scale, base, o, rows);
 	CUDA(cudaEventRecord(start));
 	for ( uint32_t i = 0u; i < 20u; i++ )
-		CUDA(Glm5NextHcSiteLaunch<ROWS>(streams, fn, scale, base, o->mixes, o->pre, o->post, o->comb, o->collapsed, o->snapshot, rows, 0));
+		CUDA(Launch<ROWS>(streams, fn, scale, base, o, rows));
 	CUDA(cudaEventRecord(stop));
 	CUDA(cudaEventSynchronize(stop));
 	CUDA(cudaEventElapsedTime(&ms, start, stop));
@@ -139,13 +146,13 @@ int main(int argc, char **argv)
 		Allocate(&single, rows);
 		Allocate(&grouped, rows);
 		Run<1u>(streams, fn, scale, base, &single, rows);
-		Run<G5N_HC_ROWS>(streams, fn, scale, base, &grouped, rows);
+		Run<LM_HC_SITE_ROWS>(streams, fn, scale, base, &grouped, rows);
 		const uint32_t differ = Differ(single.mixes, grouped.mixes, (uint64_t)rows * G5N_HC_MIX * 4u) +
 			Differ(single.pre, grouped.pre, (uint64_t)rows * G5N_HC * 4u) + Differ(single.post, grouped.post, (uint64_t)rows * G5N_HC * 4u) +
 			Differ(single.comb, grouped.comb, (uint64_t)rows * G5N_HC * G5N_HC * 4u) +
 			Differ(single.collapsed, grouped.collapsed, (uint64_t)rows * G5N_HIDDEN * 2u) +
 			Differ(single.snapshot, grouped.snapshot, (uint64_t)rows * G5N_HC_FLAT * 2u);
-		printf("rows %4u: %u of 6 outputs differ between %u-row and one-row clusters\n", rows, differ, G5N_HC_ROWS);
+		printf("rows %4u: %u of 6 outputs differ between %u-row and one-row clusters\n", rows, differ, LM_HC_SITE_ROWS);
 		failures += differ;
 		Release(&single);
 		Release(&grouped);
@@ -153,8 +160,8 @@ int main(int argc, char **argv)
 	{
 		Outputs timing;
 		Allocate(&timing, 2048u);
-		const float one = Time<1u>(streams, fn, scale, base, &timing, 2048u), grouped = Time<G5N_HC_ROWS>(streams, fn, scale, base, &timing, 2048u);
-		printf("2048 rows: one-row clusters %.1f us, %u-row clusters %.1f us\n", one, G5N_HC_ROWS, grouped);
+		const float one = Time<1u>(streams, fn, scale, base, &timing, 2048u), grouped = Time<LM_HC_SITE_ROWS>(streams, fn, scale, base, &timing, 2048u);
+		printf("2048 rows: one-row clusters %.1f us, %u-row clusters %.1f us\n", one, LM_HC_SITE_ROWS, grouped);
 		Release(&timing);
 	}
 	if ( failures != 0u )
@@ -162,6 +169,6 @@ int main(int argc, char **argv)
 		printf("FAIL glm5_next hc site: %u outputs differ\n", failures);
 		return 1;
 	}
-	printf("PASS glm5_next hc site: %u-row clusters equal one-row clusters bit for bit at every row count\n", G5N_HC_ROWS);
+	printf("PASS glm5_next hc site: %u-row clusters equal one-row clusters bit for bit at every row count\n", LM_HC_SITE_ROWS);
 	return 0;
 }

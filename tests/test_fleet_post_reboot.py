@@ -44,7 +44,7 @@ if "ds4-speculation-link" in command:
 if ":2222" in command:
     out("0\n" if "emergency" in fail else "1\n")
 if "-C earlyoom" in command:
-    out("/usr/bin/earlyoom -m 7 -s 25 -r 5 --avoid sshd|systemd|init\n" if "earlyoom" in fail else "/usr/bin/earlyoom -m 3 -s 100 -r 5 --avoid sshd|systemd|init\n")
+    out("/usr/bin/earlyoom -m 7 -s 25 -r 5 --avoid sshd|systemd|init\n" if "earlyoom" in fail else "/usr/bin/earlyoom -m 2 -s 100 -r 5 --avoid sshd|systemd|init\n")
 if "Linger" in command:
     out("yes\n")
 if "is-active fleet-agent" in command:

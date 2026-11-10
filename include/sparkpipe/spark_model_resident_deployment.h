@@ -11,7 +11,7 @@ extern "C" {
 
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ABI_VERSION 4u
 #define SPARK_MODEL_RESIDENT_DRAFT_TARGET_BYTES 32u
-#define SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH 8u
+#define SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH 16u
 #define SPARK_MODEL_RESIDENT_DRAFT_MAX_WAIT_MS 1000u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_EOS_TOKEN_COUNT 16u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT 4u
@@ -60,8 +60,6 @@ typedef struct SparkModelResidentDeploymentNode
 	char *kv_partition;
 	uint64_t kv_backing_maximum_bytes;
 	char *kv_snapshot_directory;
-	uint64_t kv_partition_reserve_bytes;
-	uint64_t kv_snapshot_maximum_bytes;
 	SparkModelResidentEndpoint control_endpoint;
 } SparkModelResidentDeploymentNode;
 

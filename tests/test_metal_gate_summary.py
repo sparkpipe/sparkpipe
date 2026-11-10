@@ -56,17 +56,17 @@ def main():
         (work / "prompts.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "prompt_token_ids": tokens}]}))
         reference_a = noisy(base, 0.01, 11)
         write_logits(work / "a.logits", reference_a)
-        write_logits(work / "b.logits", noisy(base, 0.01, 2))
+        write_logits(work / "h.logits", noisy(base, 0.01, 2))
         write_logits(work / "exact.logits", reference_a)
         write_logits(work / "floorlike.logits", noisy(base, 0.01, 3))
         write_logits(work / "control.logits", noisy(reference_a, 0.5, 4))
-        rows = [compare(work, "a", "b", "floor", "a")]
+        rows = [compare(work, "a", "h", "floor", "a")]
         for name in ("exact", "floorlike", "control"):
-            rows.append(compare(work, "a", name, name, "b"))
-            rows.append(compare(work, "b", name, f"{name}_vs_b", "a"))
+            rows.append(compare(work, "a", name, name, "h"))
+            rows.append(compare(work, "h", name, f"{name}_vs_h", "a"))
         floor = summary.aggregate(rows, "floor")
         check("the synthetic floor agrees on every top-1, so the top-1 ratio divides by a zero floor", floor["top1_agreement"] == 1.0)
-        verdicts = {name: summary.verdict(summary.aggregate(rows, name), summary.aggregate(rows, f"{name}_vs_b"), floor)
+        verdicts = {name: summary.verdict(summary.aggregate(rows, name), summary.aggregate(rows, f"{name}_vs_h"), floor)
                     for name in ("exact", "floorlike", "control")}
         exact = verdicts["exact"]["reference_a"]
         check("a candidate identical to reference A passes both legs (paired -inf, ratios 0)",
@@ -75,7 +75,7 @@ def main():
         check("a candidate with floor-like noise passes both legs", verdicts["floorlike"]["pass"])
         control = verdicts["control"]["reference_a"]
         check("a corrupted control fails both legs (KL, top-1 and paired)",
-              not verdicts["control"]["pass"] and not verdicts["control"]["reference_b"]["pass"] and not control["kl_within_factor"] and
+              not verdicts["control"]["pass"] and not verdicts["control"]["reference_h"]["pass"] and not control["kl_within_factor"] and
               not control["top1_within_factor"] and not control["paired_within_sigma"])
         worse = dict(summary.aggregate(rows, "control"))
         worse["above_floor_blocks"] = [[128, 128] for _ in range(4)]
@@ -86,10 +86,45 @@ def main():
         (work / "metal").mkdir()
         (work / "metal" / "greedy.metal.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "generated": [1, 2, 3]}]}))
         (reference / "greedy.ref.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "variant": variant, "generated": generated}
-                                                                         for variant, generated in (("a", [1, 2, 4]), ("b", [1, 2, 3]))]}))
+                                                                         for variant, generated in (("a", [1, 2, 4]), ("h", [1, 2, 3]))]}))
         table = summary.greedy_table(work, reference)["synthetic"]
         check("the greedy table reads the reference directory it is given, never a link under the output",
-              not (work / "ref").exists() and table["metal_matches_reference_a_tokens"] == 2 and table["metal_matches_reference_b_tokens"] == 3)
+              not (work / "ref").exists() and table["metal_matches_reference_a_tokens"] == 2 and table["metal_matches_reference_h_tokens"] == 3)
+    with tempfile.TemporaryDirectory() as directory:
+        out = Path(directory)
+        (out / "compare" / "kl").mkdir(parents=True)
+        tokens = [generator.randrange(VOCAB) for _ in range(POSITIONS + 1)]
+        (out / "prompts.json").write_text(json.dumps({"prompts": [{"name": "synthetic", "prompt_token_ids": tokens}]}))
+        logits = {"a": noisy(base, 0.01, 21), "b": noisy(base, 0.01, 22), "h": noisy(base, 0.01, 23), "metal": noisy(base, 0.01, 24),
+                  "control_layers": noisy(base, 0.5, 25), "control_rotate": noisy(base, 0.5, 26)}
+        for name, rows in logits.items():
+            write_logits(out / f"{name}.logits", rows)
+
+        def mf(reference, other):
+            result = subprocess.run([str(COMPARE), str(out / "prompts.json"), "synthetic", str(VOCAB), str(out / f"{reference}.logits"),
+                                     str(out / f"{other}.logits"), f"mf:{reference}:{other}", "0", "-",
+                                     str(out / "compare" / "kl" / f"synthetic.{reference}.{other}.f64")], capture_output=True, text=True, check=True)
+            return json.loads(result.stdout)
+
+        rows = [mf(reference, other) for reference in "abh" for other in ("a", "b", "h", "metal", "control_layers", "control_rotate")
+                if other != reference]
+        check("the per-position KL file holds one double per position",
+              (out / "compare" / "kl" / "synthetic.a.metal.f64").stat().st_size == POSITIONS * 8)
+        floors = summary.multi_floor(rows, out, ["synthetic"])
+        check("three reference variants give the multi-floor test", floors is not None and floors["variants"] == ["a", "b", "h"])
+        check("a candidate with the variants' own noise passes the multi-floor test",
+              floors["metal"]["pass"] and abs(floors["metal"]["paired"]["sigma"]) < 3.0)
+        check("corrupted controls fail the multi-floor test on KL and on the paired excess",
+              all(not floors[name]["pass"] and floors[name]["paired"]["sigma"] > 3.0 for name in ("control_layers", "control_rotate")))
+        check("two reference variants give no multi-floor test",
+              summary.multi_floor([row for row in rows if not row["label"].startswith("mf:b:") and ":b" not in row["label"]], out, ["synthetic"]) is None)
+        short = out / "compare" / "kl" / "synthetic.a.metal.f64"
+        short.write_bytes(short.read_bytes()[:-8])
+        try:
+            summary.multi_floor(rows, out, ["synthetic"])
+            check("per-position KL files of different lengths are refused", False)
+        except SystemExit:
+            check("per-position KL files of different lengths are refused", True)
     for what, candidate in (("one block of positions", {"above_floor_blocks": [[3, 100]], "positions": 100, "above_floor_positions": 3}),):
         try:
             summary.paired(candidate)

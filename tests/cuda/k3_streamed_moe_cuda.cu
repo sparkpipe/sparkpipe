@@ -85,6 +85,7 @@ static void MoeBuffers(K3LayerBuffers *b,uint32_t rank)
 	b->latent_full_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_ROUTED_EXPERT_HIDDEN);
 	b->router_logits = MoeAlloc<float>((uint64_t)MOE_ROWS * K3_EXPERTS);
 	b->route_expert = MoeAlloc<uint32_t>(MOE_PACKED);
+	b->route_fault = MoeAlloc<uint32_t>(1u);
 	b->route_weight = MoeAlloc<float>(MOE_PACKED);
 	b->route_packed_row = MoeAlloc<uint32_t>(MOE_PACKED);
 	b->route_source_token = MoeAlloc<uint32_t>(MOE_PACKED);
@@ -171,7 +172,10 @@ static void MoeCollective(void *context,void *stream_word,uint32_t layer,uint32_
 static void *MoeRankThread(void *argument)
 {
 	MoeRank *self = (MoeRank *)argument;
-	self->status = K3LaunchCellsMoe<LmMxfp4>(&self->state,&self->buffers,K3_FIRST_ROUTED_LAYER,MOE_ROWS,MOE_PACKED,48u,self->stream);
+	K3Cuda<LmMxfp4,K3GlobalKv>::Context context;
+	K3CudaContext<LmMxfp4,K3GlobalKv>(&context,(const K3LayerWeights *)0,&self->state,&self->buffers,(K3LayerBuffers *)0,MOE_ROWS,0u,1u,0u,MOE_PACKED,0u,48u,
+		self->stream);
+	self->status = K3Schedule<K3Cuda<LmMxfp4,K3GlobalKv>>::CellsMoe(context,K3_FIRST_ROUTED_LAYER);
 	MOE_CUDA(cudaStreamSynchronize(self->stream));
 	return 0;
 }

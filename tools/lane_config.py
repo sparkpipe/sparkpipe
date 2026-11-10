@@ -43,9 +43,10 @@ HUB_FILES = (
     ("config/litellm-config.yaml", "sparkpipe-chat/litellm.yaml"),
 )
 SSH = ("ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10")
-INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
+CONTROLLER = {"token": "/srv/workspace/sparkpipe/swap-controller/token", "url": "http://127.0.0.1:8440/status"}
+INFERENCE_ROOTS = stage_lane.INFERENCE_ROOTS
 READ = r'''
-import glob, json, os, re, subprocess, sys
+import glob, json, os, re, subprocess, sys, urllib.request
 request = json.load(sys.stdin)
 home = os.path.expanduser("~")
 files = {}
@@ -65,6 +66,14 @@ if request["weightd"]:
     line = subprocess.run("grep 'spark_weightd ready' ~/weightd.log | tail -1", shell=True, capture_output=True, text=True).stdout
     match = re.search(r"ceiling=(\d+) kv_reserve=(\d+)", line)
     weightd = {"device_bytes_max": int(match.group(1)), "kv_reserve_bytes": int(match.group(2))} if match else None
+active = None
+if request.get("controller"):
+    try:
+        token = open(request["controller"]["token"]).read().strip()
+        status = urllib.request.Request(request["controller"]["url"], headers={"Authorization": "Bearer " + token})
+        active = json.load(urllib.request.urlopen(status, timeout=5)).get("active")
+    except Exception as error:
+        active = {"unreachable": "%s: %s" % (type(error).__name__, error)}
 units = {}
 for unit in request.get("units", []):
     shown = subprocess.run(["systemctl", "--user", "show", unit, "-p", "ActiveState", "-p", "ExecStart", "--value"], capture_output=True, text=True).stdout
@@ -78,7 +87,7 @@ if request.get("prefix"):
             prefixes[record_id] = namespace["directory_prefix"](namespace["Path"](directory))
         except Exception as error:
             prefixes[record_id] = "%s: %s" % (type(error).__name__, error)
-print(json.dumps({"files": files, "roots": roots, "apis": apis, "links": links, "weightd": weightd, "prefixes": prefixes, "units": units}))
+print(json.dumps({"files": files, "roots": roots, "apis": apis, "links": links, "weightd": weightd, "prefixes": prefixes, "units": units, "active": active}))
 '''
 WRITE = r'''
 import json, os, sys
@@ -120,6 +129,9 @@ print(json.dumps(restored))
 '''
 
 
+OPTIONAL_FIELDS = ("expert_pool_cap_bytes",)
+
+
 def records() -> dict:
     return stage_lane.lane_records()["lanes"]
 
@@ -142,6 +154,9 @@ def render(record_id: str, directory: Path) -> None:
                        env=dict(environment, STAGE_RECORD=record_id), check=True)
 
 
+TARGET_NAMES = ("embed", "head", "norm")
+
+
 def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     lane = record(record_id)
     spec, server = lane.get("draftd"), lane.get("draft_server")
@@ -161,6 +176,13 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
                    "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
                    "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+    names = spec.get("target_names")
+    if names is not None:
+        if not isinstance(names, dict) or set(names) != set(TARGET_NAMES) or not all(isinstance(value, str) and value for value in names.values()):
+            raise SystemExit(f"{record_id}: draftd target_names names the target shard's {', '.join(TARGET_NAMES)} tensors, each a non-empty string")
+        if not spec.get("target_shard"):
+            raise SystemExit(f"{record_id}: draftd target_names name tensors in the target shard, and the record has none")
+        environment.update({f"DRAFTD_TARGET_{key.upper()}": names[key] for key in TARGET_NAMES})
     return spec["source"], environment
 
 
@@ -169,6 +191,7 @@ def draftd_flags(environment: dict[str, str]) -> list[str]:
              f"--draft-port {environment['DRAFTD_DRAFT_PORT']}", f"--window {environment['DRAFTD_WINDOW']}", f"--context-bytes {environment['DRAFTD_CONTEXT_BYTES']}"]
     if environment["DRAFTD_TARGET_SHARD"]:
         flags.append(f"--target-shard {environment['DRAFTD_TARGET_SHARD']}")
+    flags += [f"--{key} {environment[f'DRAFTD_TARGET_{key.upper()}']}" for key in TARGET_NAMES if f"DRAFTD_TARGET_{key.upper()}" in environment]
     return flags
 
 
@@ -274,8 +297,10 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                            for record_id in selected if stage_lane.MODELS[lanes[record_id]["model"]].get("tokenizer_json")}
             prefix = {"source": (HERE / "tokenizer_text_prefix.py").read_text(), "directories": directories}
             drafters = {record_id: draftd_environment(record_id)[1] for record_id in selected if lanes[record_id].get("draftd")}
+            scoped = {record_id for record_id in drafters if lanes[record_id]["draftd"].get("lifecycle") == "model"}
             hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix,
-                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values())})
+                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values()),
+                                                         "controller": CONTROLLER if scoped else None})
             for future in futures:
                 try:
                     host, live = future.result()
@@ -300,10 +325,17 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 for record_id, prefix in sorted(live.get("prefixes", {}).items()):
                     if prefix != lanes[record_id]["text_prompt_prefix_token_ids"]:
                         drift.append(f"DRIFT {record_id} text_prompt_prefix_token_ids {lanes[record_id]['text_prompt_prefix_token_ids']}, the publisher tokenizer gives {prefix}")
+                active = live.get("active")
+                if scoped and isinstance(active, dict):
+                    drift.append(f"UNREACHABLE the swap controller, so the model-scoped draft servers {sorted(scoped)} cannot be checked: {active['unreachable']}")
                 for record_id, environment in sorted(drafters.items()):
                     unit = environment["DRAFTD_UNIT"]
                     shown = live.get("units", {}).get(unit, "").replace("'", "")
                     missing = [flag for flag in draftd_flags(environment) if flag not in shown]
+                    if record_id in scoped and active != record_id:
+                        if shown.startswith("active") and not isinstance(active, dict):
+                            drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} runs while {active} is the active model; its lifecycle is the model's")
+                        continue
                     if not shown.startswith("active"):
                         drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} is not active")
                     elif missing or "/mnt/" in shown:
@@ -444,7 +476,8 @@ def main() -> int:
     if args.command == "draftd":
         return draftd_start(args.record)
     if args.command == "field":
-        print(record(args.record)[args.field])
+        lane = record(args.record)
+        print(lane.get(args.field, "") if args.field in OPTIONAL_FIELDS else lane[args.field])
         return 0
     lane = record(args.record)
     if args.command == "release-row":
@@ -458,7 +491,9 @@ def main() -> int:
     if lane["launcher"] != "stage_lane":
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
     values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],
-              "STAGE_EXPERT_POOL_BYTES": lane["expert_pool_bytes"], "STAGE_MEMORY_MAX": lane["memory_max"]}
+              "STAGE_MEMORY_MAX": lane["memory_max"]}
+    if "expert_pool_cap_bytes" in lane:
+        values["STAGE_EXPERT_POOL_CAP_BYTES"] = lane["expert_pool_cap_bytes"]
     print("\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items()))
     return 0
 

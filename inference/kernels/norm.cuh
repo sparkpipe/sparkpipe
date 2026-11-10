@@ -73,7 +73,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	#pragma unroll 8
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
@@ -113,7 +113,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 				total += value * value;
 		}
 		total = LmBlockSum<THREADS>(total,reduction);
-		scale = rsqrtf((total / (float)dimension) + epsilon);
+		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 		#pragma unroll
 		for (slot=0u; slot<LM_RMS_NORM_STAGED; slot++)
 		{
@@ -132,7 +132,7 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(LmFloatToBf16(row[index] * scale));
@@ -194,9 +194,7 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
 		float up = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? dimension + index : index)]);
-		float activated = fminf(SparkMathSiluFast(gate), limit);
-		output_bf16[out_base + index] =
-			LmFloatToBf16(activated * fminf(fmaxf(up, -limit), limit));
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathClampedGlu(SparkMathSiluFast(gate), up, limit));
 	}
 }
 
@@ -236,7 +234,7 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * scale;
@@ -263,7 +261,7 @@ static __device__ __forceinline__ void LmHeadRmsNormGateBody(const uint16_t *__r
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)head_dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(input_bf16[base + index]) * scale));
@@ -320,7 +318,7 @@ void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const ui
 		value = LmBf16ToFloat(input_bf16[base + index]);
 		total += value * value;
 	}
-	inverse = rsqrtf(LmBlockSum<THREADS>(total,reduction) / (float)dimension + epsilon);
+	inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total,reduction), (float)dimension, epsilon);
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]) * inverse * weight[index];
@@ -355,13 +353,9 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	uint32_t index;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
-		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
-		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
-		float activated = beta * tanhf(gate / beta) *
-			SparkMathSigmoidFast(gate);
-		if (linear_beta > 0.0f)
-			up = linear_beta * tanhf(up / linear_beta);
-		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
+		const float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
+		const float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
+		output_bf16[out_base + index] = LmFloatToBf16(SparkMathSitu(gate, up, beta, linear_beta));
 	}
 }
 
@@ -560,6 +554,44 @@ void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_
 	}
 }
 
+#define LM_MOE_FINALIZE_ADD_ELEMENTS 8u
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmMoeFinalizeAddKernel(const uint16_t *__restrict__ packed_bf16, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight,
+	const uint16_t *__restrict__ addend_bf16, uint16_t *__restrict__ output_bf16, uint32_t tokens, uint32_t top_k, uint32_t dimension)
+{
+	const uint32_t element = ((blockIdx.x * THREADS) + threadIdx.x) * LM_MOE_FINALIZE_ADD_ELEMENTS;
+	uint32_t token, route, index, words[4];
+	if ( element >= dimension )
+		return;
+	for (token = blockIdx.y; token < tokens; token += gridDim.y)
+	{
+		float total[LM_MOE_FINALIZE_ADD_ELEMENTS];
+		uint4 value;
+		for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; ++index)
+			total[index] = 0.0f;
+		for (route = 0u; route < top_k; ++route)
+		{
+			const uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+			const float weight = route_weight[((uint64_t)token * top_k) + route];
+			value = *(const uint4 *)(packed_bf16 + ((uint64_t)packed_row * dimension) + element);
+			words[0] = value.x; words[1] = value.y; words[2] = value.z; words[3] = value.w;
+			for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; ++index)
+				total[index] += LmBf16ToFloat((uint16_t)(words[index / 2u] >> (16u * (index % 2u)))) * weight;
+		}
+		value = *(const uint4 *)(addend_bf16 + ((uint64_t)token * dimension) + element);
+		words[0] = value.x; words[1] = value.y; words[2] = value.z; words[3] = value.w;
+		for (index = 0u; index < LM_MOE_FINALIZE_ADD_ELEMENTS; index += 2u)
+		{
+			const float low = LmBf16ToFloat(LmFloatToBf16(total[index])) + LmBf16ToFloat((uint16_t)words[index / 2u]);
+			const float high = LmBf16ToFloat(LmFloatToBf16(total[index + 1u])) + LmBf16ToFloat((uint16_t)(words[index / 2u] >> 16u));
+			words[index / 2u] = (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+		}
+		*(uint4 *)(output_bf16 + ((uint64_t)token * dimension) + element) = make_uint4(words[0], words[1], words[2], words[3]);
+	}
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__restrict__ b_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t dimension)
@@ -624,6 +656,22 @@ void LmCopyRowsStridedKernel(const uint16_t *__restrict__ source_bf16, uint16_t 
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmAddRowsStridedKernel(const uint16_t *__restrict__ source_bf16, const uint16_t *__restrict__ addend_bf16, uint16_t *__restrict__ destination_bf16,
+	uint32_t rows, uint32_t dimension, uint64_t destination_stride)
+{
+	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint64_t source;
+	if ( element >= dimension )
+		return;
+	for (row = blockIdx.y; row < rows; row += gridDim.y)
+	{
+		source = ((uint64_t)row * dimension) + element;
+		destination_bf16[((uint64_t)row * destination_stride) + element] = LmFloatToBf16(LmBf16ToFloat(source_bf16[source]) + LmBf16ToFloat(addend_bf16[source]));
+	}
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmStreamMeanRowsKernel(const uint16_t *__restrict__ streams_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t streams,
 	uint32_t dimension, uint64_t destination_stride)
 {
@@ -659,7 +707,7 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 			square += value * value;
 		}
 		square = LmBlockSum<THREADS>(square,reduction);
-		inverse = rsqrtf((square / (float)dimension) + epsilon);
+		inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
 		for (index = threadIdx.x; index < dimension; index += THREADS)
 			dot += LmBf16ToFloat(values[index]) * inverse
 				* LmBf16ToFloat(score_weight_bf16[index]);
@@ -711,7 +759,7 @@ __global__ __launch_bounds__(THREADS) void LmAttnResScoreKernel(const uint16_t *
 		square += value * value;
 	}
 	square = LmBlockSum<THREADS>(square,reduction);
-	inverse = rsqrtf((square / (float)dimension) + epsilon);
+	inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 		dot += LmBf16ToFloat(values[index]) * inverse
 			* LmBf16ToFloat(score_weight_bf16[index]);
@@ -784,7 +832,7 @@ void LmCenteredRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 		total += value * value;
 	}
 	total = LmBlockSum<THREADS>(total,reduction);
-	scale = rsqrtf((total / (float)dimension) + epsilon);
+	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 		output_bf16[base + index] =
 			LmFloatToBf16(row[index] * scale * (1.0f + LmBf16ToFloat(weight_bf16[index])));

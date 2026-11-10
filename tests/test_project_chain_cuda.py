@@ -1,4 +1,4 @@
-"""Run the per-head chain projection on an sm_121 device against the per-head tile kernel, bit for bit."""
+"""Run the per-head chain projection on an sm_121 device: rows 1..8 against the per-head tile kernel bit for bit, more rows on tensor cores against the exact product."""
 import os
 import pathlib
 import shutil

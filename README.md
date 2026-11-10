@@ -118,14 +118,23 @@ names, their companions and a short reasoned keep list of staged packs;
 `tools/node_pack_prune.py` lists everything else and deletes it on the
 owner's order.
 
-SparkPipe never quantizes a model itself. Packs carry a publisher's release
-or a vetted community release with pinned provenance. A model at or near the
-frontier serves at its publisher's full precision whenever it fits one fleet:
-BF16, or the format it was trained or released in (A.X K2's FP8, Kimi K3's
-MXFP4 experts). A vetted 4-bit build serves only a model that does not fit one
-fleet at full precision (Qwen 3.8 Max), because that is better than not
-serving it. The packer only converts formats, slices by topology and lays out
-scale planes; its codecs come from one shared table.
+Every model serves at its publisher's full precision by default whenever it
+fits one fleet: BF16, or the format it was trained or released in (A.X K2's
+FP8, Kimi K3's MXFP4 experts). Each model is also offered at 8 bits (FP8) and
+4 bits (NVFP4 or MXFP4), and in EXL3 where good builds exist, as variants with
+their own served names (`glm-5.3-fp8`, `glm-5.3-nvfp4`), so the user chooses
+between speed, cache capacity and full precision. A variant is the
+publisher's or a vetted community release with pinned provenance where one
+exists, and otherwise the output of the shared quantizing packer; every
+variant passes the accuracy gate against the full-precision model before it
+is offered, and the Fleet List gives its measured speed, accuracy and cache
+capacity. A model that does not fit one fleet at full precision (Qwen 3.8
+Max) serves the best variant that does. Formats live in one codec layer per
+backend (`inference/kernels/weight_codec.cuh` on CUDA,
+`inference/runner/device_layers.c` on Metal): no model stage names a format,
+so a variant is a pack and a build flag, not new code. The packer converts
+formats, quantizes, slices by topology and lays out scale planes; its codecs
+come from one shared table.
 
 **weightd.** One persistent daemon per node, `weightd`, owns the weight
 arenas:
@@ -139,13 +148,20 @@ arenas:
   process and re-attaches in milliseconds, with the weights untouched.
 - It loads routed experts lazily. The arena reserves the full expert address
   space; experts are acquired on demand under leases and reclaimed within a
-  declared budget. A missing or corrupt expert manifest is an error, never a
-  reason to load the whole pack eagerly.
+  pool every client sizes from the pack's expert manifest, so no lane sets a
+  number by hand. Without a cap the pool holds every expert chunk; a lane
+  that streams experts on purpose names an explicit cap below that, and a cap
+  above it is refused. A missing or corrupt expert manifest is an error, never
+  a reason to load the whole pack eagerly.
 - Captured decode graphs work with lazy residency. A graph records which
   kernel arguments are expert pointers and has them patched when leases
   move, so a graph never forces the whole expert set to stay resident.
   Pinning every expert is a separate resident mode, selected explicitly and
   reported with its memory cost.
+- A wide prefill wave does not wait for its router to lease experts: when
+  two layers fit the pool it leases each layer's experts whole, ahead of the
+  router, while the GPU is at most two layers behind; narrower waves lease the
+  experts their router picked.
 
 **Storage tiers.** Each node has a 4 TB internal NVMe and at least 4 TB
 external:
@@ -191,8 +207,13 @@ call from degree, datatype, payload bytes and a measured crossover profile:
 | Bandwidth-bound sums | reduce-scatter + all-gather over slice routes | 1.875 × payload |
 | Prefill, large batches | pair sum over the direct link, then an 8-way switched exchange | 3.5 × payload |
 
-**Invariants.** Every algorithm sums peers in the same fixed order, so
-switching algorithm never changes a result bit. A collective carries its
+**Invariants.** Decode and verify sums add the peers in one fixed order, so
+switching algorithm never changes a decode result bit. A prefill wave large
+enough for the pair-first all-reduce keeps each pair's sum in fp32 and rounds
+once, as the plain sum does, but adds pairs first, so a few elements can
+differ in their last bit; it is judged by accuracy rather than by token
+identity. The stage runner, not the model, picks it, from
+the dispatch that issued the round. A collective carries its
 full logical batch count separately from its execution rows, so splitting a
 batch cannot select the wrong algorithm.
 
@@ -221,8 +242,37 @@ decode step time it has measured at that context. A lane whose steps are slow
 (one that leases experts every step, for example) then wastes at most that
 second of steps after a stop token.
 
+**Interactive first.** Every request is interactive or background. The
+class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
+and above is interactive, which is what a request gets when it names
+nothing; below is background. The chat layer maps `x-sparkpipe-priority:
+interactive|background` (a header, or the same key in the request's
+`metadata`), Claude Code's compaction and auxiliary calls, a background
+key, `<model>-bulk` and chat-memory jobs onto these priorities. Greedy output
+does not depend on the class.
+
+- While background work runs, `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES`
+  (2) resident sequences stay free for interactive requests: background
+  requests bind at most the rest, and at least one on an engine of two or
+  fewer. The chat layer's sequence gate keeps the same two.
+- While an interactive request has work queued or in flight, the engine
+  dispatches no submission that carries only background work. Background
+  decode lanes may ride in an interactive decode step; a background prefill
+  waits for its next wave. So an interactive arrival waits at most for the
+  submissions already in flight.
+- A background prompt never takes the streamed prefill, which cannot yield;
+  it runs as waves.
+- Within a class, higher priority runs first, then the earliest deadline,
+  with aging. Background work runs whenever no interactive work is queued
+  or in flight.
+- A caller cancels its own request by closing the connection or with
+  `DELETE /v1/requests/{id}`, where the id is the reply's
+  `X-SparkPipe-Request`. The cancel takes effect at the end of the
+  submission in flight: one decode step, a chain, or one prefill wave.
+  Committed KV follows the retention rules.
+
 **Streamed prefill for long prompts.** On a lane whose stage config names
-`streamed_prefill` (Kimi K3 today), a prompt of at least
+`streamed_prefill` (Kimi K3 today), an interactive prompt of at least
 `streamed_prefill_min_tokens` tokens takes a different path:
 - Every token but the last runs through the streamed prefill. The last token
   then runs as a one-row wave that samples. On a model with recurrent state
@@ -310,7 +360,17 @@ KV. Publication is transactional: prepare, commit and abort, with
 generations checked at every transition.
 
 **Tiers.** KV device memory belongs to weightd, which keeps each engine's
-pool across an engine restart. Pages leaving the device park in a per-engine
+pool across an engine restart. KV and weights share weightd's per-node
+ceiling: KV always has its reserve and may borrow what the attached weights
+leave of the ceiling, reclaiming cold weights for it, so a model with small
+weights can hold a longer sequence than the reserve alone; new weights take
+back only pools no engine owns
+([`docs/WEIGHTD_DESIGN.md`](docs/WEIGHTD_DESIGN.md#kv-pools-and-the-shared-budget)).
+An engine's device KV pool attaches with one full-length sequence and grows
+on demand into what the resident model leaves of the node, stopping where
+`MemAvailable` would cross a margin above earlyoom's line; `/health`
+reports `kv_capacity_tokens` (what the smallest rank's pool holds now) and
+`kv_capacity_max_tokens` (the most it may grow to). Pages leaving the device park in a per-engine
 spill file on the KV NVMe, and published prefixes are saved to a persistent
 snapshot store on the same drive, which serves restores after eviction or a
 restart; restores run on a worker off the admission path. There is no host
@@ -320,14 +380,21 @@ The snapshot store spreads its files over 256 subdirectories by prefix
 identity, so one store holds tens of millions of page files; a single ext4
 directory without `large_dir` stops near 1.8 million. Linking a page to its
 parent and its orphans costs one hash chain, not a scan of the index, and the
-startup scan reads the shards on eight threads. Each store has a byte budget
-(`kv_snapshot_bytes` in [`deployment/lanes.json`](deployment/lanes.json):
-256 GiB per rank for K3, GLM-5.3 Full, GLM-5.3 Flash and DeepSeek V4.1 Flash,
-64 GiB for the other models). Every store also keeps the node's
-`kv_partition_reserve_bytes` (512 GiB) free on the KV partition: before a
-write it evicts its oldest files until the partition holds the reserve plus
-the new file, and refuses the write when nothing is left to evict, so KV never
-fills the system drive. A write the store cannot complete is logged with the step
+startup scan reads the shards on eight threads. The node's own KV on disk,
+every lane's snapshot store and every lane's spill backing, shares one
+node-wide quota of 500 GB (`SPARK_KV_NODE_QUOTA_BYTES`) kept in a ledger file
+in the user's home, `~/.sparkpipe-kv-ledger`. No lane has a maximum of its
+own. A write that would take the node past the quota evicts the node's oldest
+snapshot file first, whichever lane holds it: the lane's own, another running
+lane's (asked through the ledger, freed within a second), or a stopped lane's
+(deleted directly). A write is refused only when nothing evictable is left,
+for example while spill backings hold the quota. A running lane's backing
+holds every logical page past the one sequence its pool's minimum keeps
+resident (15 to 96 GiB per lane at today's lane records), because a pool that
+other lanes hold at its minimum parks everything else. weightd's purge records
+stopped lanes' stores in the ledger every minute and deletes files unused for
+24 hours. The pair partner's working-state mirror is not counted
+([`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#includesparkpipespark_kv_ledgerh)). A write the store cannot complete is logged with the step
 that failed and its errno. The cache then drops that entry's saved mark and,
 after an I/O error, saves the entry again, so one failed write never leaves a
 chain that cannot restore.
@@ -425,6 +492,22 @@ speculative run emits the same tokens as a B1 run without speculation.
 Every built speculation path can be selected individually, and none can be
 compiled out.
 
+**Verify frames.** The stage runner hands every verify frame to the model as
+a step with `commit == 0`. Such a step runs each row through the arithmetic a
+one-row decode uses: one skinny launch per projection for the whole frame, in
+16-row blocks that read each weight once per frame and keep the decode's
+per-row sums; the decode attention path; and one grouped expert launch per
+frame that reads each touched expert's weights once per batch of up to 16 of
+its routes and matches the decode's expert kernel bit for bit. Recurrent state is left for `keep_rows` to fold
+over the kept rows; paged and sliding-window KV is addressed by position, so
+rows past the accepted ones are never read and the next decode overwrites
+them.
+
+**Rejected rows.** A verify frame never publishes cache blocks: the
+validator and the stage adapter refuse a verify submission whose lanes
+publish, because rows past the accepted ones are not part of the sequence
+and the stage captures recurrent state before `keep_rows` rolls it back.
+
 ## Determinism and evidence
 
 **Determinism.** Greedy decoding is bitwise reproducible from run to run:
@@ -440,6 +523,12 @@ sample, so sampling adds no collective. The noise does not depend on which
 rank or batch row computes it, so a sampled completion replays like a greedy
 one and can be audited off-node against logged (driver, contract, request)
 identities.
+
+**Routing.** Every routing top-k kernel ranks a NaN or infinite router
+score below every finite one and never returns an out-of-range or repeated
+expert. A row with fewer finite scores than the experts it routes to raises
+the runner's route-fault word, and the runner fails that step with an
+error instead of serving its output.
 
 Greedy, sampled and logprob tokens come only from ids the tokenizer can
 decode. Several models pad their logits past their tokenizer: GLM-5.3 Full
@@ -552,35 +641,44 @@ A request names its model; if that model is not loaded, the request waits
 while the swap controller (`tools/serving/model_swap.py`) loads it, and the
 model's cached prefixes come back from the KV snapshot store.
 
-| Served name | Model | Family | Context |
-| --- | --- | --- | ---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M |
-| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K |
-| `kimi-k3` | Kimi K3 | `k3` | 1M |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M |
-| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K |
-| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K |
-| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K |
-| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K |
-| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K |
-| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K |
-| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K |
-| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K |
-| `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K |
-| `a.x-k2` | A.X K2 | `axk2` | 256K |
-| `solar-open-2` | Solar Open 2 | `solar_open2` | 256K |
-| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K |
-| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K |
-| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K |
-| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K |
+| Served name | Model | Family | Context | Speculation |
+| --- | --- | --- | ---: | :---: |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 768K | yes |
+| `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
+| `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
+| `kimi-k3.1-pro` | Kimi K3.1 Pro | `k3` | 1M | yes |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | `dsv41_flash` | 1M | yes |
+| `mimo-v2.6-pro` | MiMo V2.6 Pro | `mimo26` | 32K | yes |
+| `mimo-v2.6-flash` | MiMo V2.6 Flash | `mimo26` | 32K | yes |
+| `hy4-preview` | Hunyuan HY4 preview | `hy4` | 32K | yes |
+| `gemma-4-31b` | Gemma 4 31B | `gemma4` | 32K | yes |
+| `gemma-4-26b-a4b` | Gemma 4 26B A4B | `gemma4` | 256K | yes |
+| `ling-3.0-flash` | Ling 3.0 Flash | `ling` | 256K | yes |
+| `ling-3.0-flash-fin` | Ling 3.0 Flash, finance fine-tune | `ling` | 256K | yes |
+| `laguna-s-2.1` | Laguna S 2.1 | `laguna` | 32K | yes |
+| `k-exaone-2.0` | K-EXAONE 2.0 | `kexaone2` | 256K | yes |
+| `a.x-k2` | A.X K2 | `axk2` | 256K | yes |
+| `solar-open-2` | Solar Open 2 | `solar_open2` | 256K | yes |
+| `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
+| `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
+| `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
   (`deployment/hub/chat_frontend.json`), from the lane records in
   `deployment/lanes.json`; `tests/test_lane_records.py` keeps this column equal
   to them.
+- **Speculation** is yes where the serving adapter verifies drafts
+  (`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`): drafts copied
+  from the request's own context, up to 255 per frame, and on Kimi K3 also the
+  DFlash2 drafter on the hub. Every row of a verify frame is bit-identical to
+  decoding that row alone.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
+- **Precision variants:** every row is the publisher's precision; the 8-bit
+  and 4-bit variants of a model serve under its name with `-fp8`, `-nvfp4` or
+  `-mxfp4` appended (Packs, above).
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.
@@ -598,9 +696,28 @@ The API is OpenAI-compatible:
 - a native tokenizer with no Python in the serving process;
 - streamed responses.
 
+The hub's chat layer (`tools/serving/chat_frontend.py`) also speaks
+Anthropic Messages for Claude Code and OpenAI Responses for Codex, over
+HTTP and WebSocket, with stored responses, the Codex model catalogue and
+usage taken from the engine's own prompt and cache counts
+([`docs/FLEET_API.md`](docs/FLEET_API.md) §3). A full fleet answers each
+client's native 429, and long prefills keep every client's connection open.
+
 Callers name a model, a priority and a deadline. SparkPipe chooses
 placement, batch width, microbatch geometry, speculation and collective
 algorithm.
+
+**Repositories and context packs.** A customer pushes its repository to the
+fleet with `git push`, authenticated with its SparkPipe key, into a bare copy
+only its account can read. A context pack renders one commit of that
+repository into the same tokens every time, least-changed files first. Each
+push builds and warms the new version in the background, and only the
+tokens after the first changed file are computed again. A request for
+`<model>+<pack>` starts with the pack ahead of the client's own system
+prompt. A session keeps the version it started on, new sessions get a new
+version once it is warm, and the response's `sparkpipe.pack` names the
+version ([`docs/FLEET_API.md`](docs/FLEET_API.md) §5,
+[`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)).
 
 A LiteLLM front door routes several islands behind one endpoint
 ([`docs/LITELLM_FRONTEND.md`](docs/LITELLM_FRONTEND.md)). Memory, tools,

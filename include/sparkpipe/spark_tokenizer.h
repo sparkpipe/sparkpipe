@@ -66,6 +66,7 @@ typedef struct SparkTokenizerSpecialToken
     uint32_t text_bytes;
     uint32_t token_id;
     uint32_t is_special;
+    uint32_t strip_left;
 } SparkTokenizerSpecialToken;
 
 typedef struct SparkTokenizerFastMergePair

@@ -39,9 +39,14 @@ SWITCHED_ADDRESS_BASE = 10
 SWITCHED_PREFIX = "10.10.100"
 SWITCHED_INTERFACE = "enp1s0f1np1"
 SWITCHED_SPEED_MBIT = "100000"
-DIRECT_INTERFACE = "enp1s0f0np0"
-DIRECT_SPEED_MBIT = "200000"
-MESH_LINK_MAP = "0-1:200,2-3:200,4-5:200,6-7:200,8-9:200,10-11:200,12-13:200,14-15:200"
+RAIL2_INTERFACE = "enP2p1s0f0np0"
+RAIL2_IDLE_INTERFACE = "enp1s0f0np0"
+RAIL2_PREFIX = "10.10.201"
+RAIL2_PREFIX_LENGTH = 24
+RAIL2_SPEED_MBIT = "100000"
+RAIL2_PRIO_BUFFER = "0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1"
+RAIL2_LOSSLESS_PRIORITIES = ("3","6")
+RETIRED_FABRIC_UNITS = ("ds4-direct-pair-fabric.timer","ds4-direct-pair-fabric.service")
 HOSTS_BLOCK_BEGIN = "# SparkPipe fleet aliases BEGIN"
 HOSTS_BLOCK_END = "# SparkPipe fleet aliases END"
 LEGACY_CEPH_WARM_STORAGE_MARKER = Path("/etc/sparkpipe/enable-ceph-warm-storage")
@@ -112,10 +117,10 @@ ASSET_SOURCES.update({
     "/etc/logrotate.d/00-sparkpipe-cephadm": ("tools/devcycle/fleet/00-sparkpipe-cephadm",0o644),
     "/etc/systemd/system/ds4-switched-fabric.service": ("tools/devcycle/fleet/ds4-switched-fabric.service",0o644),
     "/etc/systemd/system/ds4-switched-fabric.timer": ("tools/devcycle/fleet/ds4-switched-fabric.timer",0o644),
-    "/etc/systemd/system/ds4-direct-pair-fabric.service": ("tools/devcycle/fleet/ds4-direct-pair-fabric.service",0o644),
-    "/etc/systemd/system/ds4-direct-pair-fabric.timer": ("tools/devcycle/fleet/ds4-direct-pair-fabric.timer",0o644),
+    "/etc/systemd/system/ds4-rail2-fabric.service": ("tools/devcycle/fleet/ds4-rail2-fabric.service",0o644),
+    "/etc/systemd/system/ds4-rail2-fabric.timer": ("tools/devcycle/fleet/ds4-rail2-fabric.timer",0o644),
     "/usr/local/sbin/ds4-switched-fabric-apply": ("tools/devcycle/fleet/ds4_switched_fabric_apply.sh",0o755),
-    "/usr/local/sbin/ds4-direct-pair-fabric-apply": ("tools/devcycle/fleet/ds4_direct_pair_fabric_apply.sh",0o755),
+    "/usr/local/sbin/ds4-rail2-fabric-apply": ("tools/devcycle/fleet/ds4_rail2_fabric_apply.sh",0o755),
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf": ("tools/devcycle/fleet/spark-firewall-timeout.conf",0o644),
     "/etc/systemd/system/spark-firewall.service": ("tools/devcycle/fleet/spark-firewall.service",0o644),
@@ -144,7 +149,7 @@ MemoryHigh=100G
 MemoryMax=108G
 MemorySwapMax=0
 """
-EARLYOOM_ARGS = "-m 3 -s 100 -r 5 --avoid sshd|systemd|init"
+EARLYOOM_ARGS = "-m 2 -s 100 -r 5 --avoid sshd|systemd|init"
 EARLYOOM_DEFAULT = f'EARLYOOM_ARGS="{EARLYOOM_ARGS}"\n'
 NO_THRASH_SYSCTL = "vm.swappiness=10\n"
 RECOVERY_SYSCTL = """kernel.panic=60
@@ -481,16 +486,6 @@ def canonical_hosts(text: str,removed_aliases: set[str]) -> str:
     return(f"{rendered}\n\n{block}\n" if rendered else f"{block}\n")
 
 
-def direct_pair_linked(rank: int) -> bool:
-    linked = False
-    for link in MESH_LINK_MAP.split(","):
-        match = re.fullmatch(r"([0-9]+)-([0-9]+):([0-9]+)",link)
-        if match is None or int(match.group(1)) ^ 1 != int(match.group(2)) or int(match.group(1)) > int(match.group(2)):
-            raise BrickproofError(f"mesh link {link!r} does not join a rank with its rank^1 partner")
-        linked = linked or rank in (int(match.group(1)),int(match.group(2)))
-    return(linked)
-
-
 def spark_rank(node: str) -> int:
     match = re.fullmatch(r"spark([0-9a-f])",node.casefold())
     if match is None:
@@ -726,7 +721,12 @@ def reset_vanished_failed_units() -> list[str]:
 
 
 def retired_paths(systemd_root: Path = Path("/etc/systemd/system")) -> list[Path]:
-    return([systemd_root / "ceph-osd-retry.service",Path("/usr/local/sbin/ceph-osd-retry-start")])
+    return([
+        systemd_root / "ceph-osd-retry.service",Path("/usr/local/sbin/ceph-osd-retry-start"),
+        *(systemd_root / unit for unit in RETIRED_FABRIC_UNITS),systemd_root / "ds4-direct-pair-fabric.service.d",
+        systemd_root / "ds4-direct-pair-fabric-p2.service",
+        Path("/usr/local/sbin/ds4-direct-pair-fabric-apply"),
+    ])
 
 
 def backup_directory() -> Path:
@@ -783,12 +783,12 @@ def enable_policy_services(rank: int,node_id: str = "") -> None:
     run(["systemctl","enable","--now","sparkpipe-fsck-health.timer"])
     run(["systemctl","enable","serial-getty@ttyS0.service"])
     disable_persistent_unit("ds4-switched-fabric.service")
-    disable_persistent_unit("ds4-direct-pair-fabric.service")
+    disable_persistent_unit("ds4-rail2-fabric.service")
+    for unit in RETIRED_FABRIC_UNITS:
+        run(["systemctl","disable","--now",unit],check=False)
+        disable_persistent_unit(unit)
     run(["systemctl","enable","--now","ds4-switched-fabric.timer"])
-    if direct_pair_linked(rank):
-        run(["systemctl","enable","--now","ds4-direct-pair-fabric.timer"])
-    else:
-        run(["systemctl","disable","--now","ds4-direct-pair-fabric.timer"])
+    run(["systemctl","enable","--now","ds4-rail2-fabric.timer"])
     if rank == HUB_GATEWAY_RANK:
         disable_persistent_unit("sparkpipe-hub-route.service")
     else:
@@ -863,7 +863,7 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     atomic_write(Path("/etc/systemd/system.conf.d/90-ds4-recovery.conf"),SYSTEMD_RECOVERY,0o644)
     install_sshd_config()
     atomic_write(Path("/etc/systemd/system/ssh-emergency.service"),EMERGENCY_SSH_SERVICE,0o644)
-    for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service"):
+    for unit in ("ds4-switched-fabric.service","ds4-rail2-fabric.service"):
         legacy_timeout = Path(f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf")
         if legacy_timeout.exists():
             legacy_timeout.unlink()
@@ -895,12 +895,32 @@ def is_enabled(unit: str) -> str:
     return(command(["systemctl","is-enabled",unit],check=False))
 
 
+def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
+    failures = []
+    expected_address = f"{RAIL2_PREFIX}.{rank}/{RAIL2_PREFIX_LENGTH}"
+    addresses = [row.split()[3] for row in command(["ip","-4","-o","addr","show","dev",RAIL2_INTERFACE,"scope","global"],check=False).splitlines() if len(row.split()) > 3]
+    idle_state = read_optional(Path("/sys/class/net") / RAIL2_IDLE_INTERFACE / "operstate").strip()
+    trust = command(["mlnx_qos","-i",RAIL2_INTERFACE],check=False)
+    pfc = command(["dcb","pfc","show","dev",RAIL2_INTERFACE,"prio-pfc"],check=False)
+    buffers = command(["dcb","buffer","show","dev",RAIL2_INTERFACE,"prio-buffer"],check=False)
+    observations = {"rail2:addresses":addresses,"rail2:idle_operstate":idle_state,"rail2:prio_pfc":pfc,"rail2:prio_buffer":buffers}
+    if addresses != [expected_address]:
+        failures.append(f"rail2-address:{','.join(addresses) or 'none'}")
+    if idle_state != "down":
+        failures.append(f"rail2-idle-function:{idle_state or 'missing'}")
+    if "Priority trust state: dscp" not in trust:
+        failures.append("rail2-trust")
+    if re.findall(r"\b([0-7]):on\b",pfc) != list(RAIL2_LOSSLESS_PRIORITIES):
+        failures.append("rail2-pfc")
+    if RAIL2_PRIO_BUFFER not in buffers:
+        failures.append("rail2-prio-buffer")
+    return(failures,observations)
+
+
 def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     failures = []
     observations: dict[str,object] = {}
-    links = [(SWITCHED_INTERFACE,SWITCHED_SPEED_MBIT)]
-    if direct_pair_linked(spark_rank(node_id)):
-        links.append((DIRECT_INTERFACE,DIRECT_SPEED_MBIT))
+    links = [(SWITCHED_INTERFACE,SWITCHED_SPEED_MBIT),(RAIL2_INTERFACE,RAIL2_SPEED_MBIT)]
     for interface,expected_speed in links:
         root = Path("/sys/class/net") / interface
         link = {
@@ -911,6 +931,9 @@ def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
         observations[f"link:{interface}"] = link
         if link != {"carrier":"1","duplex":"full","speed_mbit":expected_speed}:
             failures.append(f"fabric-link:{interface}")
+    rail2_failures,rail2_observations = audit_rail2(spark_rank(node_id))
+    failures.extend(rail2_failures)
+    observations.update(rail2_observations)
     gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
     observations["gpu"] = gpu.stdout.decode("utf-8",errors="replace").strip()
     if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
@@ -1063,12 +1086,10 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         if state != "active":
             failures.append(f"{unit}:{state}")
     expected_unit_states = {unit:"enabled" for unit in (
-        "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-direct-pair-fabric.timer",
+        "serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ds4-switched-fabric.timer","ds4-rail2-fabric.timer",
         "ssh.service","spark-dma-guard.timer","spark-osd-guard-scan.timer","restart-resolved.service","ds4-ceph-warm-mount.service",
         "sparkpipe-hub-route.service",
     )}
-    if not direct_pair_linked(rank):
-        expected_unit_states["ds4-direct-pair-fabric.timer"] = "disabled"
     if rank == HUB_GATEWAY_RANK:
         del expected_unit_states["sparkpipe-hub-route.service"]
     for unit,expected in expected_unit_states.items():
@@ -1086,7 +1107,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         failures.append(f"fstrim.timer:{fstrim_timer}")
     cmdline_tokens = shlex.split(read_optional(Path("/proc/cmdline")))
     runtime_masks = {token.split("=",1)[1] for token in cmdline_tokens if token.startswith("systemd.mask=")}
-    for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service","sparkpipe-fsck-health.service"):
+    for unit in ("ds4-switched-fabric.service","ds4-rail2-fabric.service","sparkpipe-fsck-health.service"):
         state = is_enabled(unit)
         links = [str(path) for path in persistent_unit_links(unit)]
         observations[f"{unit}.enabled"] = state
@@ -1101,7 +1122,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         observations[f"{unit}.enabled"] = state
         if state != "masked":
             failures.append(f"optional-boot-unit:{unit}={state}")
-    for unit in ("ds4-switched-fabric.service","ds4-direct-pair-fabric.service"):
+    for unit in ("ds4-switched-fabric.service","ds4-rail2-fabric.service"):
         before = service_value(unit,"Before")
         timeout = service_value(unit,"TimeoutStartUSec")
         installed = read_optional(Path("/etc/systemd/system") / unit)

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Security</title>
+<meta name="description" content="How a SparkPipe fleet is kept yours: a fleet that serves only you, deletion and a fresh image at every handover, sandboxed Functions, what we record, who can reach the machines, and an engine whose source you can read.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/security.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/security-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/security.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 76ch; }
+.policy p, .policy li { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul { display: grid; gap: 8px; padding-left: 20px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy table { border-collapse: collapse; width: 100%; font: 400 15px/1.5 var(--text); }
+.policy th, .policy td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--rule); color: var(--steel); }
+.policy th { color: var(--ink); font-weight: 650; }
+.policy .scroll { overflow-x: auto; max-width: 76ch; }
+.policy .scroll table { min-width: 520px; }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">security</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="dpa.html">Data processing</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="security.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="security-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Security</h1>
+    <p class="effective">Published 5 November 2026</p>
+    <p>A fleet you hold serves only you. This page explains how we keep it that way: what runs on it, what happens when it changes hands, what we record, and who can reach the machines. The <a href="agreement.html">Customer Agreement</a>, our <a href="dpa.html">data processing agreement</a> and our <a href="privacy.html">privacy policy</a> are the binding texts; where this page and they differ, they govern.</p>
+  </section>
+
+  <section id="tenancy">
+    <h2>1. One customer per fleet</h2>
+    <ul>
+      <li><b>A fleet you hold runs only your requests.</b> While your booking lasts you have the exclusive use of the whole fleet (Agreement clause 5.1): no other customer's requests, cache or code run on it, and there is no shared queue.</li>
+      <li><b>Your cache and storage stay on that fleet,</b> isolated from other customers, from one booking of yours to the next (clause 6.2). We keep no copy of them anywhere else, make no backup of them and use them for nothing but serving you (clause 6.3).</li>
+      <li><b>Nothing goes to another AI service.</b> Requests and data are processed only on machines we operate in Korea, and no request, prompt, output or other data of yours is sent to any other computing or AI service (clause 6.5). The only exceptions are transfers you ask for yourself, such as a download into your storage or a backup to your own bucket.</li>
+      <li><b>We never train on your data.</b> We access it only as needed to run and secure the service, or where the law requires (clause 6.1).</li>
+    </ul>
+  </section>
+
+  <section id="handover">
+    <h2>2. When a fleet changes hands</h2>
+    <ul>
+      <li>Your working state, the cache and your storage on the fleet, is deleted when another customer's booking of that fleet starts, or 24 hours after your last hour on it, whichever comes first, or sooner when you ask (clause 6.2).</li>
+      <li>Before another customer's booking starts, the fleet's software is restored to our own image (clause 6.3), so nothing you ran, including a driver for your own model, can reach the next customer.</li>
+      <li>The sandbox host that runs code for your Functions is wiped at every change of customer as well.</li>
+    </ul>
+  </section>
+
+  <section id="sandbox">
+    <h2>3. Functions and the sandbox</h2>
+    <ul>
+      <li>Functions, and the tools your agent calls, that build, run or browse your code do it on a sandbox host attached to your fleet, never on the machines that serve the model.</li>
+      <li>The tools' indexes, build caches and dependency mirror are working state: kept while you hold the fleet, and deleted with the rest of it.</li>
+      <li>Each run gets a fresh virtual machine with no network access unless you allow it, and the virtual machine is destroyed when the run ends.</li>
+      <li>Fetch downloads only from the public internet over HTTPS. It refuses private, loopback and link-local addresses and our own hosts, and pins the address it checked. What it downloads is data and is never run; model weights are accepted as safetensors or GGUF, never in pickle formats.</li>
+      <li>A Function runs only when you start or schedule it, and what it produces is yours.</li>
+    </ul>
+  </section>
+
+  <section id="credentials">
+    <h2>4. Keys and credentials</h2>
+    <ul>
+      <li><b>API keys</b> are stored only as SHA-256 hashes, never the key itself. Each key can be limited by scope, fleet, expiry and IP address, and revoked at any time.</li>
+      <li><b>A token for another service,</b> such as Hugging Face, comes with each download request, is used only with the host it is for, is held in memory only while that download runs, and is never stored, logged or shown (clause 6.7).</li>
+      <li><b>Your repository</b> is pushed to the fleet as a git remote, so we never hold a token for your git host. <b>Daily backups</b> are pulled by a scheduled command on your own machine with your own credentials, so we never hold those either.</li>
+    </ul>
+  </section>
+
+  <section id="records">
+    <h2>5. What we record</h2>
+    <p>The payment service that carries your API requests passes requests and replies between your tools and your fleet without storing them. Apart from your working state, we keep only the records below. The <a href="privacy.html#data">privacy policy</a> lists every kind of data and its legal basis.</p>
+    <div class="scroll">
+    <table>
+      <tr><th>Record</th><th>What it holds</th><th>Kept</th></tr>
+      <tr><td>Operational record of each request</td><td>Model, token counts, timings, and the identifiers of the request, session and key. No prompt or reply text and no token numbers</td><td>1 year, or deleted within 30 days when you ask in writing</td></tr>
+      <tr><td>Working state on your fleet</td><td>The computed cache of your requests; the token numbers of replies, so that a reply sent back is processed with exactly the same tokens; conversations stored for Responses requests that do not set "store" to false; your files</td><td>Until another customer's booking starts, 24 hours after your last hour, or sooner when you ask</td></tr>
+      <tr><td>Access logs</td><td>IP address, time, requested address, response code and size, referring page, browser</td><td>3 months, as Korean law requires</td></tr>
+      <tr><td>Account, payments and bookings</td><td>The account, orders, hour-credits, bookings and the acceptance of our terms</td><td>5 years, as Korean tax law requires</td></tr>
+      <tr><td>Notices to your account</td><td>Each event and its delivery</td><td>30 days</td></tr>
+    </table>
+    </div>
+  </section>
+
+  <section id="access">
+    <h2>6. Who can reach the machines</h2>
+    <ul>
+      <li>Only the people who operate SparkPipe can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins.</li>
+      <li>They access stored data only to run the service, give support, keep it secure or meet a legal obligation.</li>
+      <li>The fleets are in premises we control in Korea. Our public server, which ends HTTPS and forwards traffic to the fleets through an encrypted tunnel, is in a data centre in Seoul.</li>
+      <li>All traffic to sparkpipe.ai is encrypted with HTTPS, and traffic between our servers runs through encrypted tunnels.</li>
+      <li>We keep access records for our systems and review them after any incident.</li>
+    </ul>
+  </section>
+
+  <section id="incidents">
+    <h2>7. Incidents and outages</h2>
+    <ul>
+      <li>We tell you without delay of any intrusion, any leak of your information and any unannounced interruption of the service (clause 6.4).</li>
+      <li>Each node's cache and storage is mirrored to its pair partner, so a failed node loses neither. If an event destroys both copies of part of your working state, we tell you what was lost and credit 24 hours of the fleet (clause 6.6).</li>
+      <li>A booked hour with more than 15 minutes of downtime is credited automatically, from our own records (clause 4.4). If your fleet cannot serve, we serve you on another free fleet without its working state, or credit the hours (clause 15.7).</li>
+    </ul>
+  </section>
+
+  <section id="source">
+    <h2>8. Read what runs</h2>
+    <ul>
+      <li>The engine that serves your fleet is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the Functional Source License with an added permission. You can read it, build it and run it on your own hardware.</li>
+      <li>Some parts of the service run as separately licensed modules, which are not public. They run only on our machines in Korea and send nothing elsewhere (Agreement clause 7.8). Today there is one: memory, which keeps long conversations within reach for SparkPipe Chat and for API sessions that turn it on.</li>
+      <li>You can always leave with your data: export your storage, cache snapshots, draft model and adapters, and restore them to any fleet you hold, or take them home.</li>
+    </ul>
+  </section>
+
+  <section id="report">
+    <h2>9. Reporting a vulnerability</h2>
+    <p>Write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> with what you found and how to reproduce it. We reply, and tell you when it is fixed. Please do not test against fleets other customers hold.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="terms.html">Terms</a><a href="dpa.html">Data processing</a><a href="privacy.html">Privacy</a><a href="security-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>

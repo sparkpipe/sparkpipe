@@ -18,17 +18,30 @@
   handles, and production build rules take nothing from `tests/`.
   `tests/test_device_neutral.py` enforces this; its `PENDING` and
   `PENDING_BUILD` debt may only shrink.
+- A failure returns through `SPARK_FAIL` (`include/sparkpipe/spark_error_site.h`),
+  so every error names its site. A bare error return is converted when its
+  file is next changed. A cancelled collective round is terminal and returns
+  `SPARK_STATUS_IO_ERROR`, never `BUSY`: the caller aborts the wave rather
+  than retrying the round.
 
 ## Workflow
 
-- Claude is the lead developer. The user merges pull requests by hand, after
-  Claude reports a PR ready. A PR may stack on another open PR; say so in
-  its description.
+- Claude is the lead developer. Claude reports a PR ready once it works, then
+  merges it after the user gives permission. A PR may stack on another open PR;
+  say so in its description.
+- Copy files between machines with `sparkcp SRC... DST`, never scp or rsync by
+  hand: `sparkcp spark3:packs/a.sp lenovo7:packs/`. It runs from the Mac, the
+  hub or any node and picks the fastest path; see
+  [`docs/FLEET_COPY.md`](docs/FLEET_COPY.md).
 - Fleet host roles (the hub, the build host, the Sparks), releases and
   operations are in [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
   Read it before touching a fleet host. Deploy only by publishing a release
   root; never kill and reload daemons by hand, and never kill anything on
   the hub.
+- Never write the shared Git configuration (`git config user.name` and the
+  like): every worktree shares `.git/config`, so one session's change stamps
+  every other session's commits. Set an identity for one command with
+  `GIT_AUTHOR_*` and `GIT_COMMITTER_*` when one is needed.
 
 ## Source package manifests
 

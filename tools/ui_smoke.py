@@ -55,7 +55,9 @@ def advertised_efforts(endpoint: str, model: str, timeout: int) -> list[str]:
         listing = json.loads(resp.read())
     for entry in listing.get("data", []):
         if entry.get("id") == model:
-            return list(entry.get("reasoning_efforts", []))
+            if "reasoning_efforts" not in entry:
+                raise SystemExit(f"{endpoint}/v1/models lists {model} without reasoning_efforts; pass --models-endpoint the chat layer, which lists them")
+            return list(entry["reasoning_efforts"])
     raise SystemExit(f"{model} is not in {endpoint}/v1/models")
 
 
@@ -158,6 +160,7 @@ def judge(name: str, reply: dict) -> list:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--endpoint", required=True)
+    ap.add_argument("--models-endpoint", default=None)
     ap.add_argument("--model", required=True)
     ap.add_argument("--reasoning", required=True, choices=("both", "none"))
     ap.add_argument("--off-effort", default="minimal")
@@ -186,7 +189,7 @@ def main() -> int:
         elif name == "tool":
             results.append({"check": "tool_result", "request": None, "reply": None, "problems": ["skipped: no tool call to answer"]})
     if args.reasoning == "both":
-        efforts = advertised_efforts(args.endpoint, args.model, args.timeout)
+        efforts = advertised_efforts(args.models_endpoint or args.endpoint, args.model, args.timeout)
         for name, effort in (("reasoning_off", args.off_effort), ("reasoning_on", args.on_effort)):
             body = dict(base, messages=PRODUCT, reasoning_effort=effort, max_tokens=args.reasoning_max_tokens)
             if effort not in efforts:

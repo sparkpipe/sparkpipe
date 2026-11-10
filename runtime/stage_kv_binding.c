@@ -221,12 +221,12 @@ static SparkStatus SparkStageKvBindingGeometry(SparkStageKvBinding *binding,cons
 		binding->region_layer_stride_bytes[region] = declared->layout == SPARK_STAGE_KV_REGION_PAGE_MAJOR ? layer_page : (uint64_t)configuration->physical_page_count * layer_page;
 		binding->page_bytes += packed;
 	}
-	missing = (uint64_t)(configuration->logical_page_count - configuration->physical_page_count);
+	missing = (uint64_t)(configuration->logical_page_count - binding->pages_per_sequence);
 	in_flight = configuration->logical_page_count < 2u ? configuration->logical_page_count : 2u;
 	if ( missing != 0u && (configuration->backing_maximum_bytes == 0u || missing + in_flight > configuration->backing_maximum_bytes / binding->page_bytes) )
 	{
-		fprintf(stderr,"%s kv binding refused: %llu spill pages and %u in flight of %llu bytes need backing, %llu bytes configured\n",
-			configuration->module_tag,(unsigned long long)missing,in_flight,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
+		fprintf(stderr,"%s kv binding refused: %llu spill pages (logical pages beyond the %u of one sequence the pool minimum keeps resident) and %u in flight of %llu bytes need backing, %llu bytes configured\n",
+			configuration->module_tag,(unsigned long long)missing,binding->pages_per_sequence,in_flight,(unsigned long long)binding->page_bytes,(unsigned long long)configuration->backing_maximum_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return(SparkStageKvBindingStateBudget(binding,configuration,missing + in_flight));
@@ -727,14 +727,14 @@ static SparkStatus SparkStageKvBindingLayout(SparkStageKvBinding *binding,const 
 static SparkStatus SparkStageKvBindingOpenStore(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
 {
 	SparkStatus status;
-	if ( binding->snapshot_page_file_bytes > configuration->snapshot_maximum_bytes )
+	if ( binding->snapshot_page_file_bytes > binding->ledger.file->quota_bytes )
 	{
-		fprintf(stderr,"%s kv binding refused: kv_snapshot_maximum_bytes %llu cannot hold one %llu-byte page file\n",binding->module_tag,
-			(unsigned long long)configuration->snapshot_maximum_bytes,(unsigned long long)binding->snapshot_page_file_bytes);
+		fprintf(stderr,"%s kv binding refused: the node KV quota of %llu bytes (%s) cannot hold one %llu-byte page file\n",binding->module_tag,
+			(unsigned long long)binding->ledger.file->quota_bytes,binding->ledger.path,(unsigned long long)binding->snapshot_page_file_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	status = SparkKvSnapshotStoreOpen(&binding->snapshot_store,configuration->snapshot_directory,configuration->snapshot_maximum_bytes,
-		binding->snapshot_page_file_bytes * SPARK_STAGE_KV_SNAPSHOT_QUEUE_PAGES,configuration->partition_reserve_bytes);
+	status = SparkKvSnapshotStoreOpen(&binding->snapshot_store,configuration->snapshot_directory,&binding->ledger,
+		binding->snapshot_page_file_bytes * SPARK_STAGE_KV_SNAPSHOT_QUEUE_PAGES);
 	if ( status != SPARK_STATUS_OK )
 		memset(&binding->snapshot_store,0,sizeof(binding->snapshot_store));
 	if ( status == SPARK_STATUS_BUSY )
@@ -783,11 +783,19 @@ static SparkStatus SparkStageKvBindingAttachSnapshot(SparkStageKvBinding *bindin
 		SPARK_RETURN(status);
 	}
 	(void)SparkKvSnapshotCountLayout(&binding->snapshot_store,binding->layout_sha256,&matching,&foreign);
-	fprintf(stderr,"%s kv snapshot store directory=%s maximum_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu reserve_bytes=%llu reserve_evicted_at_open=%llu expired_at_open=%llu expired_bytes_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
-		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.maximum_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
+	{
+		SparkKvLedgerUsage usage;
+		memset(&usage,0,sizeof(usage));
+		(void)SparkKvLedgerSample(&binding->ledger,&usage);
+		fprintf(stderr,"%s kv node quota ledger=%s quota_bytes=%llu used_bytes=%llu snapshot_bytes=%llu snapshot_stores=%u backing_bytes=%llu backing_stores=%u\n",binding->module_tag,
+			binding->ledger.path,(unsigned long long)usage.quota_bytes,(unsigned long long)usage.used_bytes,(unsigned long long)usage.snapshot_bytes,usage.snapshot_slots,
+			(unsigned long long)usage.backing_bytes,usage.backing_slots);
+	}
+	fprintf(stderr,"%s kv snapshot store directory=%s node_quota_bytes=%llu queue_bytes=%llu file_bytes=%llu used_bytes=%llu files=%llu matching_files=%llu foreign_layout_files=%llu orphans=%llu evicted_at_open=%llu expired_at_open=%llu expired_bytes_at_open=%llu removed_temporaries=%llu removed_legacy=%llu driver=%s identity_us=%llu layout=%s\n",
+		binding->module_tag,configuration->snapshot_directory,(unsigned long long)binding->snapshot_store.quota_bytes,(unsigned long long)binding->snapshot_store.queue_maximum_bytes,
 		(unsigned long long)binding->snapshot_page_file_bytes,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
 		(unsigned long long)matching,(unsigned long long)foreign,(unsigned long long)binding->snapshot_store.orphan_count,(unsigned long long)binding->snapshot_store.eviction_count,
-		(unsigned long long)binding->snapshot_store.reserve_bytes,(unsigned long long)binding->snapshot_store.reserve_eviction_count,(unsigned long long)binding->snapshot_store.expired_count,(unsigned long long)binding->snapshot_store.expired_bytes,
+		(unsigned long long)binding->snapshot_store.expired_count,(unsigned long long)binding->snapshot_store.expired_bytes,
 		(unsigned long long)binding->snapshot_store.removed_temporary_count,(unsigned long long)binding->snapshot_store.removed_legacy_count,binding->driver_path,
 		(unsigned long long)((SparkStageKvNowNs() - start_ns) / 1000u),binding->layout_hex);
 	return(SPARK_STATUS_OK);
@@ -895,6 +903,15 @@ static uint32_t SparkStageKvPoolSlotNeed(const SparkStageKvBinding *binding,uint
 	if ( local + chunk > (layer + 1u) * layer_span && layer + 1u < binding->regions[region].layer_count )
 		return(1u);
 	return((uint32_t)((local - layer * layer_span) / layer_page) + 1u);
+}
+
+static uint32_t SparkStageKvBindingPoolPageLimit(const SparkStageKvBinding *binding,uint32_t chunks);
+
+static void SparkStageKvBindingLogCapacity(const SparkStageKvBinding *binding,const char *event)
+{
+	fprintf(stderr,"%s kv capacity pages=%u/%u tokens=%llu margin_bytes=%llu event=%s resident_tokens=%llu chunks=%u/%u\n",binding->module_tag,binding->arena.resident_block_capacity,
+		binding->physical_page_count,(unsigned long long)binding->physical_page_count * binding->block_token_count,(unsigned long long)binding->kv_margin_bytes,event,
+		(unsigned long long)binding->arena.resident_block_capacity * binding->block_token_count,binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity);
 }
 
 static uint32_t SparkStageKvBindingPoolPageLimit(const SparkStageKvBinding *binding,uint32_t chunks)
@@ -1231,6 +1248,10 @@ static SparkStatus SparkStageKvBindingAttachPool(SparkStageKvBinding *binding,co
 		binding->region_base[region] = (uint8_t *)binding->kv_pool.device_base + region_offsets[region];
 	binding->page_table = (uint32_t *)binding->kv_pool.device_base;
 	binding->pool_mapped_bytes = (uint64_t)binding->kv_pool.mapped_count * binding->kv_pool.chunk_bytes;
+	{
+		uint64_t total = 0u,available = 0u;
+		binding->kv_margin_bytes = SparkWeightdMemInfoRead(SPARK_WEIGHTD_MEMINFO_PATH,&total,&available) == SPARK_STATUS_OK ? SparkWeightdKvMemoryMargin(total) : UINT64_MAX;
+	}
 	fprintf(stderr,"%s kv pool weightd generation=%llu reattached=%u attach_ms=%llu chunks=%u/%u minimum_chunks=%u chunk_bytes=%llu pages=%u/%u kv_committed=%llu kv_reserve=%llu private_kv_bytes=0\n",binding->module_tag,
 		(unsigned long long)binding->kv_pool.pool_generation,binding->kv_pool.reattached,(unsigned long long)attach_ms,binding->kv_pool.mapped_count,binding->kv_pool.chunk_capacity,binding->kv_pool_minimum_chunks,
 		(unsigned long long)binding->kv_pool.chunk_bytes,SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count),binding->physical_page_count,
@@ -1384,20 +1405,52 @@ static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *co
 		fprintf(stderr,"%s kv binding refused: the deployment names no kv_snapshot_directory\n",configuration->module_tag);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( configuration->snapshot_maximum_bytes == 0u )
+	if ( configuration->ledger_path == 0 || configuration->ledger_path[0] != '/' )
 	{
-		fprintf(stderr,"%s kv binding refused: kv_snapshot_maximum_bytes is zero\n",configuration->module_tag);
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	}
-	if ( configuration->partition_reserve_bytes == 0u )
-	{
-		fprintf(stderr,"%s kv binding refused: kv_partition_reserve_bytes is zero\n",configuration->module_tag);
+		fprintf(stderr,"%s kv binding refused: no node KV ledger path, so its disk KV has no node quota\n",configuration->module_tag);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkStageKvBindingStartPool(SparkStageKvBinding *binding);
+
+static uint64_t SparkStageKvBindingNoBytes(void *context)
+{
+	(void)context;
+	return(0u);
+}
+
+static uint64_t SparkStageKvBindingNoOldest(void *context)
+{
+	(void)context;
+	return(SPARK_KV_LEDGER_NO_OLDEST);
+}
+
+static SparkStatus SparkStageKvBindingReserveBacking(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration)
+{
+	SparkKvLedgerUsage usage;
+	SparkStatus status = SparkKvLedgerJoin(&binding->ledger,SPARK_KV_LEDGER_KIND_BACKING,configuration->backing_directory,&binding->backing_slot);
+	if ( status != SPARK_STATUS_OK )
+	{
+		binding->backing_slot = SPARK_KV_LEDGER_NO_SLOT;
+		fprintf(stderr,"%s kv binding refused: backing %s cannot join the node KV ledger %s, status=%s\n",binding->module_tag,configuration->backing_directory,binding->ledger.path,
+			SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
+	status = SparkKvLedgerMakeRoom(&binding->ledger,binding->backing_slot,binding->page_store_backing_bytes,SPARK_KV_SNAPSHOT_OPEN_WAIT_NS,0,binding,SparkStageKvBindingNoBytes,
+		SparkStageKvBindingNoOldest);
+	memset(&usage,0,sizeof(usage));
+	(void)SparkKvLedgerSample(&binding->ledger,&usage);
+	fprintf(stderr,"%s kv backing %s bytes=%llu pages=%llu node_quota=%llu node_used=%llu snapshot_bytes=%llu backing_bytes=%llu status=%s\n",binding->module_tag,
+		configuration->backing_directory,(unsigned long long)binding->page_store_backing_bytes,(unsigned long long)(binding->page_store_backing_bytes / binding->page_bytes),
+		(unsigned long long)usage.quota_bytes,(unsigned long long)usage.used_bytes,(unsigned long long)usage.snapshot_bytes,(unsigned long long)usage.backing_bytes,
+		SparkStatusToString(status));
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s kv binding refused: the node KV quota cannot hold the %llu-byte backing; the snapshot stores holding the oldest files freed too little within %llu s\n",
+			binding->module_tag,(unsigned long long)binding->page_store_backing_bytes,(unsigned long long)(SPARK_KV_SNAPSHOT_OPEN_WAIT_NS / 1000000000u));
+	SPARK_RETURN(status);
+}
 
 static SparkStatus SparkStageKvBindingAttachSharedCache(SparkStageKvBinding *binding)
 {
@@ -1443,6 +1496,14 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->max_sequence_positions = configuration->max_sequence_positions;
 	binding->pipeline_slot_count = configuration->pipeline_slot_count;
 	binding->context_shard = configuration->context_shard;
+	binding->backing_slot = SPARK_KV_LEDGER_NO_SLOT;
+	binding->ledger.descriptor = -1;
+	status = SparkKvLedgerOpen(&binding->ledger,configuration->ledger_path,0u);
+	if ( status != SPARK_STATUS_OK )
+	{
+		fprintf(stderr,"%s kv binding refused: the node KV ledger %s does not open, status=%s\n",binding->module_tag,configuration->ledger_path,SparkStatusToString(status));
+		SPARK_RETURN(status);
+	}
 	status = SparkStageKvBindingGeometry(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageKvBindingAttachShared(binding,configuration);
@@ -1474,9 +1535,14 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 	binding->transactions.physical_pages = binding->physical_pages;
 	binding->transactions.page_capacity = binding->pages_per_sequence;
 	SparkStageKvBindingFillTable(binding,configuration,&table);
-	status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
+	status = SparkStageKvBindingReserveBacking(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkKvBackendInitialize(&table,&binding->arena,&binding->page_cache,&binding->page_store);
+	if ( status == SPARK_STATUS_OK )
+	{
 		binding->arena.resident_block_capacity = SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count);
+		SparkStageKvBindingLogCapacity(binding,"attach");
+	}
 	if ( status == SPARK_STATUS_OK && binding->shared_page_count != 0u )
 		status = SparkStageKvBindingAttachSharedCache(binding);
 	if ( status == SPARK_STATUS_OK && binding->recurrent.lane_bytes != 0u )
@@ -1541,12 +1607,12 @@ static void SparkStageKvBindingSaveAtDestroy(SparkStageKvBinding *binding)
 	if ( binding->mutex_initialized == 0u || binding->page_cache.snapshot == 0 || binding->save_started == 0u )
 		return;
 	status = SparkStageKvBindingSaveAll(binding,SparkStageKvNowNs() + SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS,&saved,&unsaved,&ineligible);
-	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu write_failures=%llu resaved=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu reserve_evictions=%llu reserve_refusals=%llu status=%s\n",
+	fprintf(stderr,"%s kv snapshot store close saved_entries=%u unsaved_entries=%u ineligible_entries=%u used_bytes=%llu files=%llu save_failures=%llu write_failures=%llu resaved=%llu save_deferred=%llu evicted_unsaved=%llu demotions_queued=%llu park_saves_queued=%llu evictions=%llu quota_refusals=%llu quota_honored_bytes=%llu status=%s\n",
 		binding->module_tag,saved,unsaved,ineligible,(unsigned long long)binding->snapshot_store.used_bytes,(unsigned long long)binding->snapshot_store.file_count,
 		(unsigned long long)binding->snapshot.save_failure_count,(unsigned long long)binding->snapshot.write_failed_count,(unsigned long long)binding->snapshot.write_resaved_count,
 		(unsigned long long)binding->snapshot.save_deferred_count,
 		(unsigned long long)binding->snapshot.evicted_unsaved_count,(unsigned long long)binding->snapshot.demote_queued_count,(unsigned long long)binding->snapshot.park_save_queued_count,
-		(unsigned long long)binding->snapshot_store.eviction_count,(unsigned long long)binding->snapshot_store.reserve_eviction_count,(unsigned long long)binding->snapshot_store.reserve_refusal_count,
+		(unsigned long long)binding->snapshot_store.eviction_count,(unsigned long long)binding->snapshot_store.quota_refusal_count,(unsigned long long)binding->snapshot_store.quota_honored_bytes,
 		SparkStatusToString(status));
 }
 
@@ -1594,6 +1660,9 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		SparkKvPageStoreDestroy(&binding->page_store);
+	if ( binding->backing_slot != SPARK_KV_LEDGER_NO_SLOT )
+		SparkKvLedgerLeave(&binding->ledger,binding->backing_slot);
+	binding->backing_slot = SPARK_KV_LEDGER_NO_SLOT;
 	if ( binding->copier_initialized != 0u )
 	{
 		(void)SparkKvDeviceCopierDrain(&binding->copier);
@@ -1616,6 +1685,7 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->kv_pool_chunk_need);
 	if ( binding->snapshot_store.runtime != 0 )
 		SparkKvSnapshotStoreClose(&binding->snapshot_store);
+	SparkKvLedgerClose(&binding->ledger);
 	free(binding->snapshot_links);
 	free(binding->snapshot_pending);
 	free(binding->snapshot_state);
@@ -2912,11 +2982,18 @@ static void SparkStageKvBindingPoolGrow(SparkStageKvBinding *binding)
 	if ( status == SPARK_STATUS_OK )
 		binding->kv_pool_wanted_chunks = state.wanted_chunks;
 	if ( binding->kv_pool.mapped_count == before )
+	{
+		if ( binding->pool_grow_refused == 0u )
+			SparkStageKvBindingLogCapacity(binding,"refused");
+		binding->pool_grow_refused = 1u;
 		return;
+	}
+	binding->pool_grow_refused = 0u;
 	binding->pool_grow_count++;
 	fprintf(stderr,"%s kv pool grew chunks=%u->%u of %u pages=%u->%u of %u wanted_chunks=%u kv_committed=%llu kv_reserve=%llu\n",binding->module_tag,before,binding->kv_pool.mapped_count,
 		binding->kv_pool.chunk_capacity,pages,binding->arena.resident_block_capacity,binding->physical_page_count,binding->kv_pool_wanted_chunks,
 		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
+	SparkStageKvBindingLogCapacity(binding,"grew");
 }
 
 static void SparkStageKvBindingPoolShrink(SparkStageKvBinding *binding,uint64_t reclaim_bytes)
@@ -3105,6 +3182,8 @@ SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t dea
 			break;
 	}
 	(void)SparkKvSnapshotFlush(&binding->snapshot_store);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvSnapshotSyncDisk(&binding->snapshot_store);
 	*saved_out = unsaved_start >= unsaved ? unsaved_start - unsaved : 0u;
 	*unsaved_out = unsaved;
 	*ineligible_out = ineligible;
@@ -3171,7 +3250,7 @@ void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelD
 	{
 		counters->store_failed_status = (uint32_t)sample.failed_status;
 		counters->store_used_bytes = sample.used_bytes;
-		counters->store_maximum_bytes = sample.maximum_bytes;
+		counters->store_maximum_bytes = sample.quota_bytes;
 		counters->store_file_count = sample.file_count;
 		counters->store_checksum_failure_count = sample.checksum_failure_count;
 		counters->store_removed_temporary_count = sample.removed_temporary_count;

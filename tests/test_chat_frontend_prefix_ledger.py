@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """The chat layer's prefix ledger reports, for each request, the longest block-aligned token prefix an earlier engine request to the same model already carried (seen_tokens) and the length of that earlier sequence (seen_of), so a log reader can tell a client that changed its history (seen_of far above seen) from an engine that lost KV it had (cached_tokens below seen) and from a new conversation (seen near zero). Memory is bounded: the oldest blocks leave first."""
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -69,11 +70,11 @@ class FakeModel(chat_frontend.Model):
 frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)
 model = FakeModel()
 body = {"messages": [{"role": "user", "content": "hi"}]}
-first = frontend.plan(model, body, None)
+first = asyncio.run(frontend.plan(model, body, None))
 check(first["trace"]["seen_tokens"] == 0 and first["trace"]["seen_of"] == 0, "the first request's trace reports nothing seen")
 frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(model).record(first["engine_body"]["prompt_token_ids"] + [9, 9])
-second = frontend.plan(model, body, None)
+second = asyncio.run(frontend.plan(model, body, None))
 check(second["trace"]["seen_tokens"] == 3 and second["trace"]["seen_of"] == 5, "a repeated prompt's trace reports the earlier request's prefix and length")
 
 for failure in failures:

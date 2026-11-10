@@ -12,5 +12,6 @@ cd "$ROOT"
     -gencode arch=compute_121a,code=sm_121a \
     -I. -Iinclude -Imodules/k3_resident_decode_stage/include \
     -Imodel-families/common/include -Imodel-families/k3/include \
+    -DSPARK_K3_SERVING_TOPOLOGY=16 -DSPARK_K3_SERVING_INDEXER=1 \
     -Xcompiler -Wall,-Wextra,-fPIC -c modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu -o /tmp/k3_stage_model_gate.o
 echo "stage runner and k3 stage model sm_121a compile gate PASS"

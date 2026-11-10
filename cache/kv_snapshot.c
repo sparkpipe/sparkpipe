@@ -65,6 +65,8 @@ typedef struct SparkKvSnapshotRuntime
 	uint32_t stopping;
 	uint32_t writing;
 	int lock_descriptor;
+	uint64_t ledger_seconds;
+	pthread_mutex_t quota_mutex;
 	uint64_t recency;
 	uint64_t sequence;
 	SparkKvSnapshotIndexEntry *entries;
@@ -103,7 +105,7 @@ static uint64_t SparkKvSnapshotWallSeconds(void)
 
 static uint32_t SparkKvSnapshotStoreIsValid(const SparkKvSnapshotStore *store)
 {
-	return(store != 0 && store->abi_version == SPARK_KV_SNAPSHOT_ABI_VERSION && store->descriptor_bytes == SPARK_KV_SNAPSHOT_STORE_BYTES && store->directory[0] != '\0' && store->maximum_bytes != 0u && store->runtime != 0 ? 1u : 0u);
+	return(store != 0 && store->abi_version == SPARK_KV_SNAPSHOT_ABI_VERSION && store->descriptor_bytes == SPARK_KV_SNAPSHOT_STORE_BYTES && store->directory[0] != '\0' && store->ledger != 0 && store->runtime != 0 ? 1u : 0u);
 }
 
 static SparkKvSnapshotRuntime *SparkKvSnapshotRuntimeOf(SparkKvSnapshotStore *store)
@@ -602,51 +604,98 @@ static uint32_t SparkKvSnapshotExpireLocked(SparkKvSnapshotStore *store,uint64_t
 	return(files >= file_limit ? 1u : 0u);
 }
 
-static SparkStatus SparkKvSnapshotEvictLocked(SparkKvSnapshotStore *store,uint64_t incoming_bytes)
+static uint64_t SparkKvSnapshotOldestLocked(SparkKvSnapshotStore *store)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	uint32_t victim;
-	while ( store->used_bytes > store->maximum_bytes - incoming_bytes )
-	{
-		for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && runtime->entries[victim].pins != 0u; victim=runtime->entries[victim].lru_next)
-			;
-		if ( victim == SPARK_KV_SNAPSHOT_NO_ENTRY )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		store->eviction_count++;
-		store->evicted_bytes += runtime->entries[victim].bytes;
-		SparkKvSnapshotUnlinkEntryLocked(store,victim);
-	}
-	return(SPARK_STATUS_OK);
+	for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && runtime->entries[victim].pins != 0u; victim=runtime->entries[victim].lru_next)
+		;
+	return(victim == SPARK_KV_SNAPSHOT_NO_ENTRY ? SPARK_KV_LEDGER_NO_OLDEST : runtime->entries[victim].used_seconds);
 }
 
-static SparkStatus SparkKvSnapshotReserveLocked(SparkKvSnapshotStore *store,uint64_t incoming_bytes)
+static uint64_t SparkKvSnapshotEvictOneLocked(SparkKvSnapshotStore *store,uint64_t older_than_seconds)
 {
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
-	struct statvfs partition;
-	uint64_t available,freed = 0u;
+	uint64_t bytes;
 	uint32_t victim;
-	if ( statvfs(store->directory,&partition) != 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	available = (uint64_t)partition.f_bavail * (uint64_t)partition.f_frsize;
-	while ( available + freed < store->reserve_bytes + incoming_bytes )
-	{
-		for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && runtime->entries[victim].pins != 0u; victim=runtime->entries[victim].lru_next)
-			;
-		if ( victim == SPARK_KV_SNAPSHOT_NO_ENTRY )
-		{
-			store->reserve_refusal_count++;
-			if ( (store->reserve_refusal_count & (store->reserve_refusal_count - 1u)) == 0u )
-				fprintf(stderr,"kv snapshot store %s keeps the partition reserve: %llu bytes free, reserve %llu, file %llu, nothing left to evict (refusal %llu)\n",store->directory,
-					(unsigned long long)(available + freed),(unsigned long long)store->reserve_bytes,(unsigned long long)incoming_bytes,(unsigned long long)store->reserve_refusal_count);
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		freed += runtime->entries[victim].bytes;
-		store->reserve_eviction_count++;
-		store->eviction_count++;
-		store->evicted_bytes += runtime->entries[victim].bytes;
-		SparkKvSnapshotUnlinkEntryLocked(store,victim);
-	}
-	return(SPARK_STATUS_OK);
+	for (victim=runtime->lru_head; victim != SPARK_KV_SNAPSHOT_NO_ENTRY && runtime->entries[victim].pins != 0u; victim=runtime->entries[victim].lru_next)
+		;
+	if ( victim == SPARK_KV_SNAPSHOT_NO_ENTRY || runtime->entries[victim].used_seconds > older_than_seconds )
+		return(0u);
+	bytes = runtime->entries[victim].bytes;
+	store->eviction_count++;
+	store->evicted_bytes += bytes;
+	SparkKvSnapshotUnlinkEntryLocked(store,victim);
+	return(bytes);
+}
+
+static void SparkKvSnapshotPublishLocked(SparkKvSnapshotStore *store)
+{
+	SparkKvLedgerPublish(store->ledger,store->ledger_slot,store->used_bytes,SparkKvSnapshotOldestLocked(store));
+}
+
+static uint64_t SparkKvSnapshotOwnBytes(void *context)
+{
+	SparkKvSnapshotStore *store = (SparkKvSnapshotStore *)context;
+	uint64_t bytes;
+	pthread_mutex_lock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	bytes = store->used_bytes;
+	pthread_mutex_unlock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	return(bytes);
+}
+
+static uint64_t SparkKvSnapshotOwnOldest(void *context)
+{
+	SparkKvSnapshotStore *store = (SparkKvSnapshotStore *)context;
+	uint64_t oldest;
+	pthread_mutex_lock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	oldest = SparkKvSnapshotOldestLocked(store);
+	pthread_mutex_unlock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	return(oldest);
+}
+
+static uint64_t SparkKvSnapshotEvictOwn(void *context,uint64_t older_than_seconds)
+{
+	SparkKvSnapshotStore *store = (SparkKvSnapshotStore *)context;
+	uint64_t bytes;
+	pthread_mutex_lock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	bytes = SparkKvSnapshotEvictOneLocked(store,older_than_seconds);
+	pthread_mutex_unlock(&SparkKvSnapshotRuntimeOf(store)->mutex);
+	return(bytes);
+}
+
+static SparkStatus SparkKvSnapshotQuota(SparkKvSnapshotStore *store,uint64_t incoming_bytes,uint64_t wait_ns)
+{
+	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
+	SparkKvLedgerUsage usage;
+	SparkStatus status = SparkKvLedgerMakeRoom(store->ledger,store->ledger_slot,incoming_bytes,wait_ns,SparkKvSnapshotEvictOwn,store,SparkKvSnapshotOwnBytes,SparkKvSnapshotOwnOldest);
+	if ( status != SPARK_STATUS_CAPACITY_EXCEEDED )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	store->quota_refusal_count++;
+	if ( (store->quota_refusal_count & (store->quota_refusal_count - 1u)) == 0u && SparkKvLedgerSample(store->ledger,&usage) == SPARK_STATUS_OK )
+		fprintf(stderr,"kv snapshot store %s refused a %llu-byte file for the node KV quota: %llu of %llu bytes used (snapshots %llu in %u stores, backing %llu in %u), and the store holding the oldest files freed nothing in %llu ms (refusal %llu)\n",
+			store->directory,(unsigned long long)incoming_bytes,(unsigned long long)usage.used_bytes,(unsigned long long)usage.quota_bytes,(unsigned long long)usage.snapshot_bytes,
+			usage.snapshot_slots,(unsigned long long)usage.backing_bytes,usage.backing_slots,(unsigned long long)(wait_ns / 1000000u),(unsigned long long)store->quota_refusal_count);
+	pthread_mutex_unlock(&runtime->mutex);
+	return(SPARK_STATUS_CAPACITY_EXCEEDED);
+}
+
+static void SparkKvSnapshotHonorLocked(SparkKvSnapshotStore *store)
+{
+	uint64_t others = SPARK_KV_LEDGER_NO_OLDEST,request = SparkKvLedgerTakeRequest(store->ledger,store->ledger_slot,&others),freed = 0u,bytes;
+	while ( freed < request && (bytes = SparkKvSnapshotEvictOneLocked(store,others)) != 0u )
+		freed += bytes;
+	store->quota_honored_bytes += freed;
+	if ( request != 0u )
+		fprintf(stderr,"kv snapshot store %s freed %llu of the %llu bytes the node KV quota asked of its oldest files\n",store->directory,(unsigned long long)freed,
+			(unsigned long long)request);
+	SparkKvSnapshotPublishLocked(store);
+}
+
+static uint64_t SparkKvSnapshotQuotaBytes(const SparkKvSnapshotStore *store)
+{
+	return(store->ledger->file->quota_bytes);
 }
 
 static SparkStatus SparkKvSnapshotWriteExact(int descriptor,const void *data,uint64_t bytes,uint64_t offset)
@@ -687,22 +736,6 @@ static SparkStatus SparkKvSnapshotReadExact(int descriptor,void *data,uint64_t b
 		bytes -= (uint64_t)received;
 	}
 	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkKvSnapshotSyncDirectory(const SparkKvSnapshotStore *store,uint32_t shard)
-{
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	SparkStatus status = SPARK_STATUS_OK;
-	int descriptor;
-	if ( (size_t)snprintf(path,sizeof(path),"%s/%02x",store->directory,shard) >= sizeof(path) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	descriptor = open(path,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if ( descriptor < 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( fsync(descriptor) != 0 )
-		status = SPARK_STATUS_IO_ERROR;
-	(void)close(descriptor);
-	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkKvSnapshotFileBytes(const uint64_t *bytes,uint32_t segment_count,uint64_t *file_bytes)
@@ -779,12 +812,6 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 		status = failure == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR;
 		step = "truncate";
 	}
-	if ( status == SPARK_STATUS_OK && fsync(descriptor) != 0 )
-	{
-		failure = errno;
-		status = SPARK_STATUS_IO_ERROR;
-		step = "fsync";
-	}
 	if ( close(descriptor) != 0 && status == SPARK_STATUS_OK )
 	{
 		failure = errno;
@@ -803,13 +830,7 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 		(void)unlink(temporary);
 		SPARK_RETURN(status);
 	}
-	status = SparkKvSnapshotSyncDirectory(store,header->key.identity_sha256[0]);
-	if ( status != SPARK_STATUS_OK )
-	{
-		failure = errno;
-		fprintf(stderr,"KV-SNAPSHOT write %s failed at directory sync errno=%d (%s)\n",path,failure,strerror(failure));
-	}
-	SPARK_RETURN(status);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
@@ -845,14 +866,20 @@ static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const Sp
 		SparkKvSnapshotPinLocked(runtime,parent,1);
 	if ( parented != 0u && SparkKvSnapshotIndexFind(runtime,parent) != SPARK_KV_SNAPSHOT_NO_ENTRY )
 		SparkKvSnapshotStampUseLocked(store,SparkKvSnapshotIndexFind(runtime,parent),used_seconds);
-	status = SparkKvSnapshotEvictLocked(store,header.file_bytes);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkKvSnapshotReserveLocked(store,header.file_bytes);
+	pthread_mutex_unlock(&runtime->mutex);
+	pthread_mutex_lock(&runtime->quota_mutex);
+	status = SparkKvSnapshotQuota(store,header.file_bytes,SPARK_KV_LEDGER_WAIT_NS);
+	pthread_mutex_lock(&runtime->mutex);
 	if ( status == SPARK_STATUS_OK )
 		store->used_bytes += header.file_bytes;
-	else if ( parented != 0u )
-		SparkKvSnapshotPinLocked(runtime,parent,-1);
+	else
+	{
+		if ( parented != 0u )
+			SparkKvSnapshotPinLocked(runtime,parent,-1);
+		SparkKvSnapshotPublishLocked(store);
+	}
 	pthread_mutex_unlock(&runtime->mutex);
+	pthread_mutex_unlock(&runtime->quota_mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = SparkKvSnapshotWriteFile(store,path,&header,segments,segment_count);
@@ -887,6 +914,7 @@ static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const Sp
 				store->directory,(unsigned)status,(unsigned long long)(store->failure_retry_ns / 1000000u));
 		}
 	}
+	SparkKvSnapshotPublishLocked(store);
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
 }
@@ -976,6 +1004,11 @@ static void *SparkKvSnapshotWriterMain(void *context)
 		if ( now >= store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS &&
 			SparkKvSnapshotExpireLocked(store,now,SPARK_KV_SNAPSHOT_EXPIRY_BATCH_FILES) != 0u )
 			store->expiry_sweep_seconds = now - SPARK_KV_EXPIRY_SWEEP_SECONDS;
+		if ( now != runtime->ledger_seconds )
+		{
+			runtime->ledger_seconds = now;
+			SparkKvSnapshotHonorLocked(store);
+		}
 		job = SparkKvSnapshotNextReadyJob(runtime);
 		if ( job == 0 )
 		{
@@ -988,7 +1021,8 @@ static void *SparkKvSnapshotWriterMain(void *context)
 				pthread_cond_wait(&runtime->wake,&runtime->mutex);
 				continue;
 			}
-			deadline.tv_sec = (time_t)(store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS);
+			deadline.tv_sec = (time_t)(store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS < now + SPARK_KV_LEDGER_POLL_SECONDS ?
+				store->expiry_sweep_seconds + SPARK_KV_EXPIRY_SWEEP_SECONDS : now + SPARK_KV_LEDGER_POLL_SECONDS);
 			deadline.tv_nsec = 0;
 			(void)pthread_cond_timedwait(&runtime->wake,&runtime->mutex,&deadline);
 			continue;
@@ -1183,10 +1217,7 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 			SparkKvSnapshotLruPush(runtime,(uint32_t)(order[index] - runtime->entries),1u);
 	free(order);
 	runtime->recency = count;
-	status = SparkKvSnapshotEvictLocked(store,0u);
-	if ( status == SPARK_STATUS_OK )
-		(void)SparkKvSnapshotReserveLocked(store,0u);
-	SPARK_RETURN(status);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkKvSnapshotLockWithin(int descriptor,uint64_t wait_ns)
@@ -1212,13 +1243,13 @@ static void SparkKvSnapshotRuntimeFree(SparkKvSnapshotRuntime *runtime)
 	free(runtime);
 }
 
-SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,uint64_t maximum_bytes,uint64_t queue_maximum_bytes,uint64_t reserve_bytes)
+SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *directory,SparkKvLedger *ledger,uint64_t queue_maximum_bytes)
 {
 	SparkKvSnapshotRuntime *runtime;
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct stat info;
 	SparkStatus status;
-	if ( store == 0 || directory == 0 || directory[0] != '/' || maximum_bytes == 0u || queue_maximum_bytes == 0u || reserve_bytes == 0u || reserve_bytes > UINT64_MAX / 4u ||
+	if ( store == 0 || directory == 0 || directory[0] != '/' || ledger == 0 || ledger->open == 0u || queue_maximum_bytes == 0u ||
 		strlen(directory) >= SPARK_KV_SNAPSHOT_PATH_BYTES / 2u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( stat(directory,&info) != 0 || !S_ISDIR(info.st_mode) )
@@ -1243,20 +1274,31 @@ SparkStatus SparkKvSnapshotStoreOpen(SparkKvSnapshotStore *store,const char *dir
 	}
 	store->abi_version = SPARK_KV_SNAPSHOT_ABI_VERSION;
 	store->descriptor_bytes = SPARK_KV_SNAPSHOT_STORE_BYTES;
-	store->maximum_bytes = maximum_bytes;
+	store->ledger = ledger;
+	store->ledger_slot = SPARK_KV_LEDGER_NO_SLOT;
+	store->quota_bytes = ledger->file->quota_bytes;
 	store->queue_maximum_bytes = queue_maximum_bytes;
-	store->reserve_bytes = reserve_bytes;
 	store->spare_maximum_bytes = queue_maximum_bytes / SPARK_KV_SNAPSHOT_SPARE_SHARE;
 	store->failure_retry_ns = SPARK_KV_SNAPSHOT_FAILURE_RETRY_NS;
 	memcpy(store->directory,directory,strlen(directory) + 1u);
 	store->runtime = runtime;
-	status = pthread_mutex_init(&runtime->mutex,0) == 0 ? SparkKvSnapshotMakeShards(directory) : SPARK_STATUS_INTERNAL_ERROR;
+	status = pthread_mutex_init(&runtime->mutex,0) == 0 && pthread_mutex_init(&runtime->quota_mutex,0) == 0 ? SparkKvSnapshotMakeShards(directory) : SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkKvSnapshotScan(store);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvLedgerJoin(ledger,SPARK_KV_LEDGER_KIND_SNAPSHOT,directory,&store->ledger_slot);
+	if ( status == SPARK_STATUS_OK )
+	{
+		pthread_mutex_lock(&runtime->mutex);
+		SparkKvSnapshotPublishLocked(store);
+		pthread_mutex_unlock(&runtime->mutex);
+		(void)SparkKvLedgerMakeRoom(ledger,store->ledger_slot,0u,0u,SparkKvSnapshotEvictOwn,store,SparkKvSnapshotOwnBytes,SparkKvSnapshotOwnOldest);
+	}
 	if ( status == SPARK_STATUS_OK && (pthread_cond_init(&runtime->wake,0) != 0 || pthread_cond_init(&runtime->idle,0) != 0 || pthread_create(&runtime->writer,0,SparkKvSnapshotWriterMain,store) != 0) )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
 	{
+		SparkKvLedgerLeave(ledger,store->ledger_slot);
 		SparkKvSnapshotRuntimeFree(runtime);
 		memset(store,0,sizeof(*store));
 		SPARK_RETURN(status);
@@ -1286,9 +1328,14 @@ void SparkKvSnapshotStoreClose(SparkKvSnapshotStore *store)
 		runtime->spare_jobs = job->next;
 		free(job);
 	}
+	pthread_mutex_lock(&runtime->mutex);
+	SparkKvSnapshotPublishLocked(store);
+	pthread_mutex_unlock(&runtime->mutex);
+	SparkKvLedgerLeave(store->ledger,store->ledger_slot);
 	pthread_cond_destroy(&runtime->wake);
 	pthread_cond_destroy(&runtime->idle);
 	pthread_mutex_destroy(&runtime->mutex);
+	pthread_mutex_destroy(&runtime->quota_mutex);
 	SparkKvSnapshotRuntimeFree(runtime);
 	memset(store,0,sizeof(*store));
 }
@@ -1588,7 +1635,7 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 		SparkKvSnapshotIndexTouch(store,key,SparkKvSnapshotWallSeconds());
 		status = SPARK_STATUS_DUPLICATE;
 	}
-	else if ( file_bytes > store->maximum_bytes )
+	else if ( file_bytes > SparkKvSnapshotQuotaBytes(store) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( status == SPARK_STATUS_DUPLICATE )
@@ -1640,7 +1687,7 @@ SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvS
 		SparkKvSnapshotIndexTouch(store,key,used_seconds);
 		status = SPARK_STATUS_DUPLICATE;
 	}
-	else if ( file_bytes > store->maximum_bytes )
+	else if ( file_bytes > SparkKvSnapshotQuotaBytes(store) )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	else if ( store->queued_bytes > store->queue_maximum_bytes || file_bytes > store->queue_maximum_bytes - store->queued_bytes )
 	{
@@ -1756,6 +1803,28 @@ SparkStatus SparkKvSnapshotFlush(SparkKvSnapshotStore *store)
 		pthread_cond_wait(&runtime->idle,&runtime->mutex);
 	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotSyncDisk(SparkKvSnapshotStore *store)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	int descriptor;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor = open(store->directory,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if ( descriptor < 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+#if defined(__linux__)
+	if ( syncfs(descriptor) != 0 )
+	{
+		fprintf(stderr,"KV-SNAPSHOT disk sync of %s failed errno=%d (%s)\n",store->directory,errno,strerror(errno));
+		status = SPARK_STATUS_IO_ERROR;
+	}
+#else
+	sync();
+#endif
+	(void)close(descriptor);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotSegment *segments,uint32_t segment_count)

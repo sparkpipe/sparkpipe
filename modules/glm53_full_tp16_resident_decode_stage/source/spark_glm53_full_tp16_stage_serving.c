@@ -11,9 +11,18 @@
 #ifndef GLM53_FULL_MODEL_REVISION
 #error "GLM53_FULL_MODEL_REVISION must name the checkpoint revision"
 #endif
+#ifndef GLM53_FULL_LINEAR_CODEC
+#error "GLM53_FULL_LINEAR_CODEC must name the linear weight codec of the packs this build serves"
+#endif
+#ifndef GLM53_FULL_EXPERT_CODEC
+#error "GLM53_FULL_EXPERT_CODEC must name the routed-expert weight codec of the packs this build serves"
+#endif
+#if !defined(GLM53_FULL_ADAPTER_ID) || !defined(GLM53_FULL_MODEL_ID) || !defined(GLM53_FULL_MODULE_TAG)
+#error "GLM53_FULL_ADAPTER_ID, GLM53_FULL_MODEL_ID and GLM53_FULL_MODULE_TAG must name this build's adapter, served model and KV label"
+#endif
 
-#define SPARK_GLM53_FULL_TP16_ADAPTER_ID "glm53-full-tp16"
-#define SPARK_GLM53_FULL_TP16_MODEL_ID "zai-org/GLM-5.3"
+#define SPARK_GLM53_FULL_TP16_ADAPTER_ID GLM53_FULL_ADAPTER_ID
+#define SPARK_GLM53_FULL_TP16_MODEL_ID GLM53_FULL_MODEL_ID
 #define SPARK_GLM53_FULL_TP16_MAX_ROWS 4096u
 #define SPARK_GLM53_FULL_TP16_CHAIN_TOKENS 16u
 #define Q SPARK_GLM53_FULL_TP16_STAGE_LAYERS
@@ -74,8 +83,8 @@ static const SparkModelServingAdapterDescriptor Glm53FullTp16ServingDescriptor =
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
 	.boundary_element_count = SPARK_GLM53_FULL_TP16_STAGE_HIDDEN,
 	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.linear_weight_codec = GLM53_FULL_LINEAR_CODEC,
+	.expert_weight_codec = GLM53_FULL_EXPERT_CODEC,
 	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
 	.max_inflight_submission_count = 16u,
 	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
@@ -97,7 +106,7 @@ static const SparkStageServingModel Glm53FullTp16StageServing =
 {
 	.descriptor = &Glm53FullTp16ServingDescriptor,
 	.runner_model = SparkGlm53FullTp16StageModel,
-	.module_tag = "glm53_full_tp16_stage",
+	.module_tag = GLM53_FULL_MODULE_TAG,
 	.tp_degree = SPARK_GLM53_FULL_TP16_STAGE_TP_DEGREE,
 	.program_id = 1u,
 	.kv_layout = Glm53FullTp16ServingKvLayout,
