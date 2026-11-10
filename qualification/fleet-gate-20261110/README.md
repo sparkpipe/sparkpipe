@@ -106,8 +106,9 @@ publisher's output is not settled by this run.
 
 ### Open defect: a short prompt's first token depends on its batch
 
-Seen on H, on C and on `b57f1e375` (the numerics merge alone on top of B);
-not on A or B. A 6-token prompt that is prefilled while other short prompts
+Seen on H, on C, on `b57f1e375` (the numerics merge alone on top of B) and
+on `main` with the numerics branch merged and none of this pull request's
+work (33 of 96 in `gate7.py`); not on A or B. A 6-token prompt that is prefilled while other short prompts
 are being prefilled takes a second value for about one prompt in five.
 
 - The second value is one per prompt: the same top-4 candidates reweighted
@@ -127,11 +128,15 @@ are being prefilled takes a second value for about one prompt in five.
   without it behaves the same), the second prefill lane's worker thread (C
   has both lanes on one thread and behaves the same) and the lane split
   (it starts at 256 rows).
-- What the numerics merge changes for this family is row-local, and Gemma
-  takes the tiled GQA shard kernel, which did not get the value-weight
-  rounding of the scalar one. So either a batch-dependent path in those
-  changes is still unfound, or the merge makes visible a difference that B's
-  output hides. The cause is open.
+- What the numerics merge changes for this family is row-local (rope with
+  rounded terms, the rounded residual sum), and Gemma takes the tiled GQA
+  shard kernel, which did not get the value-weight rounding of the scalar
+  one. Taking out either change alone leaves the defect (rope with plain
+  terms: 21 of 96; residual sum unrounded: 13 of 96).
+- So the defect does not come from this pull request's audit and runner
+  work. It belongs to the numerics line (#1739, #1865), or to a batch
+  dependence already on `main` that `main`'s Gemma output hides. The cause is
+  open.
 
 To reproduce: the lane above, then on the hub under
 `/srv/workspace/sparkpipe/audit-lane/`: `gate7.py <port>` (three rounds of
