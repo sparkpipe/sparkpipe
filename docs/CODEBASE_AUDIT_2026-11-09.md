@@ -377,6 +377,22 @@ Landed in the pull request that carries this page:
 - Step 7's diagnostics: the three layer-dump switches and the collective's
   round trace are read only in `DEBUG` builds, so a release build's
   execution shape does not depend on the environment.
+- Step 7's inputs and finding 4.3, on 2026-11-10: a lane's mesh lane, rank
+  map, expert pool cap and read-only arena share are stage config members
+  (`device_collective.mesh_lane` and `mesh_ranks` required, every member
+  parsed strictly); the serving process reads only residentd's own socket
+  and digest handoff, which the adapter passes on in configurations; the
+  spine budget input, the `SPARK_WEIGHTD_ATTACH` switch and the RDMA
+  transport's silent socket default are gone; weightd takes flags first
+  under one rule and the fleet agent passes it explicit flags pinned to
+  `deployment/lanes.json` instead of forwarding the node's environment;
+  `docs/ENVIRONMENT.md` lists every variable still read. Twenty launchers
+  that existed to set the retired variables are deleted. A Qwen3.8-27B
+  test lane booted from the stage config alone and matched the previous
+  head token for token and logprob for logprob on every path of six of the
+  seven release prompts (the seventh ran on a different source file); the
+  K3 lane's start command changed the same way and waits for a production
+  window.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
@@ -404,12 +420,6 @@ Still open, in the order above:
 - Step 4: the shared CUDA stage-model plumbing.
 - Step 5: streamed prefill as a schedule backend.
 - Step 6: placement as deployment data.
-- Step 7, the inputs: a lane's weightd socket, lane number, mesh ranks,
-  expert pool cap and spine budget still reach the adapter and the
-  collective through the unit's environment (`lane.sh`), not the stage
-  JSON. Moving them changes the contract between the renderer, the lane
-  script and residentd on every lane at once, so it goes with a release
-  that can boot a lane before it is rolled.
 
 Each of these changes the serving path's behaviour and none can be proven
 by a host test or a compile: they need a lane on the fleet, which the
@@ -417,11 +427,12 @@ budget of 2026-11-10 did not allow.
 
 Found while deleting, and left: the committed static deployments
 `deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry
-stage configs in the `tp_collective` schema the adapter refuses (two tests
-and the cold-launch script use them as fixtures); `tools/k3_multidev_lane.py`
-still knows the dropped TP4xPP4 topology and defaults to it, though
-`tools/k3_lane.sh` passes `tp16` and refuses anything else; the hardware
-characterisation tools keep their `gpudirect` candidate.
+stage configs in the `tp_collective` schema the adapter refuses (the
+deployment loader test and the launcher test use them as fixtures); the
+hardware characterisation tools keep a `gpudirect` candidate, which measures
+the hardware rather than selecting a serving mode. `tools/k3_multidev_lane.py`
+and its TP4xPP4 default went with step 7's inputs: K3 test lanes render
+through `tools/stage_lane.py`.
 
 Merged on 2026-11-10: the tree verification of #1902 (trunk plus single-level
 branches in a verify frame, on Metal for Qwen3.8-27B and on CUDA for Solar
