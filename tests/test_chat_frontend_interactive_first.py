@@ -86,7 +86,8 @@ async def cancel_rules(harness, check):
         check(response.status == 200 and identifier is not None and identifier in frontend.live,
               f"a streamed reply carries its request id in X-SparkPipe-Request once the stream opens: {response.status} {dict(response.headers)}")
         await until(lambda: engine.open == 1, 2)
-        for headers, label in ((dict(account="bob"), "another account"), (dict(Authorization="Bearer " + harness.key), "a key of another scope")):
+        for headers, label in ((dict(account="bob"), "another account"), (dict(Authorization="Bearer " + harness.key), "a key of another scope"),
+                               ({"account": "acme", "X-SparkPipe-Member": "MBOTHER"}, "another member of the account")):
             async with harness.session.delete(f"{harness.base}/v1/requests/{identifier}", headers=harness.headers(**headers)) as refused:
                 body = await refused.json()
             check(refused.status == 404 and body["error"]["code"] == "request_not_found" and identifier in frontend.live,

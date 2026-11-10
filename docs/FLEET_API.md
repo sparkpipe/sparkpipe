@@ -78,10 +78,10 @@ Everything here ships for 4 January 2027. §18 orders the work into parallel com
   - While background work runs, two sequences stay free for interactive requests. A freed sequence goes to a waiting interactive request first.
   - A background request never delays an interactive one by more than the engine submission already in flight. Background prefill yields between waves, background decode rides only in interactive decode steps while interactive work runs, and a background prompt never takes the streamed prefill.
   - Background work runs whenever no interactive work is queued or running, so it completes when interactive load stops. The class changes timing only, never the tokens.
-- **Cancel.** `DELETE /v1/requests/{id}` cancels the account's own queued or running request. The id is the `X-SparkPipe-Request` header of the reply, sent when a stream opens.
+- **Cancel.** `DELETE /v1/requests/{id}` cancels the caller's own queued or running request: the same account and, behind the gateway, the same member. The id is the `X-SparkPipe-Request` header of the reply, sent when a stream opens.
   - It answers `{"id", "object": "request", "cancelled": true, "released"}` once the request's sequence is free (`released`), within 5 s.
   - The cancelled request ends with 409 `request_cancelled` in its own shape: an error response, or an error event on a stream.
-  - Another account's id, or one that is not queued or running, answers 404 `request_not_found`.
+  - Another account's or another member's id, or one that is not queued or running, answers 404 `request_not_found`.
   - Closing the connection cancels the same way. Either way the engine frees the sequence at the end of the submission in flight: a decode step, a chain or one prefill wave. KV already committed follows the retention rules.
 
 ### 3.2 Token-exact replay
@@ -106,7 +106,7 @@ Anthropic Messages, streaming and non-streaming. What Claude Code sends and how 
 - **Content blocks.** `text` and `tool_use`. `tool_result`, whose content is a string or blocks. `thinking` with `signature`, replayed per §3.2. `image` only on models that take images; otherwise 400 `image_not_supported`.
 - **Tools.** `tools` with `input_schema`, and `tool_choice` set to `auto`, `any`, `tool` or `none`, mapped to the model's tool-call format by the chat layer's parsers. `defer_loading` and `tool_reference` (MCP tool search) are not supported; the setup turns that beta off.
 - **Reasoning.** `thinking` (`enabled` with `budget_tokens`, or `adaptive`) and `output_config.effort` map to the model's reasoning switch and, where the model has one, its budget. Otherwise they are ignored.
-- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read only for the session id in `user_id` (§3.8).
+- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read for the session id in `user_id` (§3.8) and for the class key `x-sparkpipe-priority`.
 - **Response.** `id`, `content` blocks, and `stop_reason`: `end_turn`, `tool_use`, `max_tokens` or `stop_sequence`.
   - **Usage:**
     - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key's account itself sent, in 64-token blocks);
@@ -151,7 +151,7 @@ OpenAI Responses, which is the only wire format Codex supports for custom provid
   - `instructions` and function `tools`;
   - `tool_choice`, `parallel_tool_calls`, `max_output_tokens`, `temperature`, `top_p`, `stream`, `store` and `previous_response_id`.
 - **Previous responses.** `previous_response_id` works for responses stored as working state, which is the default here. `store: false` stores no response for later reference, but the replay store of §3.2 still keeps the generated tokens. `prompt_cache_key` is the session: it reaches the telemetry record as `session` and drives affinity (§3.8).
-- **Stored responses.** `GET /v1/responses/{id}` returns a stored response as it was answered, and `DELETE /v1/responses/{id}` deletes it. Both answer 404 for another account's id. Stored responses are working state (§4): `DELETE /v1/cache`, a wipe at a change of user and the 24-hour retention remove them.
+- **Stored responses.** `GET /v1/responses/{id}` returns a stored response as it was answered, and `DELETE /v1/responses/{id}` deletes it. Both answer 404 for an id of another account or of another member of the same account, as `previous_response_id` does. Stored responses are working state (§4): `DELETE /v1/cache`, a wipe at a change of user and the 24-hour retention remove them.
 - **WebSocket.** `GET /v1/responses` with a WebSocket upgrade is Codex's transport for `supports_websockets`. Each `response.create` message carries the request body and gets the same events as the SSE stream, one JSON text message each.
   - A `previous_response_id` that names the connection's last response works even with `store: false`.
   - `generate: false` keeps the input on the connection without generating.
@@ -215,8 +215,8 @@ Every response carries what it cost in time:
 - **Log probabilities.** `logprobs` and `top_logprobs` up to 20, for evals and confidence checks.
 - **Tokens.** `POST /v1/tokenize` and `POST /v1/detokenize` with the model's tokenizer and chat template, so tools can count and place context exactly.
 - **Cancellation.** A client disconnect, or `DELETE /v1/requests/{id}`, stops generation within one decode step and frees the sequence. Agents interrupt often; an abandoned generation must not hold a sequence.
-- **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`; LiteLLM drops it today (`TECHDEBT.md:1121`).
-  - **One name, two places.** A client that can set headers sends the `X-SparkPipe-Priority` header. One that can only set body fields sends the same name as a key of the request's `metadata` object, `"metadata": {"x-sparkpipe-priority": "background"}`, on any of the three shapes. The header wins when both are present. The chat layer reads the header today; reading the `metadata` key lands with the priority classes (E8, #1794).
+- **Priority.** `X-SparkPipe-Priority: interactive | background` (and a default per key). Background requests yield sequences and prefill to interactive ones, and Functions and batches always run as background. The chat layer passes priority to `sparkpipe_model_api`.
+  - **One name, two places.** A client that can set headers sends the `X-SparkPipe-Priority` header. One that can only set body fields sends the same name as a key of the request's `metadata` object, `"metadata": {"x-sparkpipe-priority": "background"}`, on any of the three shapes. The header wins when both are present, and any other value is a 400 `invalid_request`.
   - **Harness hints.** Without either, the harness's own marks decide: Claude Code's `x-claude-code-request-class` `compaction` and `auxiliary`, and Codex's `x-openai-subagent: compact`, run at background priority; everything else is interactive.
 - **Context memory.** `X-SparkPipe-Memory: on` gives a long session the context memory SparkPipe Chat uses: earlier exchanges are summarized, the newest are kept in full, and the model can read older detail through memory's own tools, whose calls the chat layer routes to the memory program, so the client never sees them ([MEMORY_PROTOCOL.md](MEMORY_PROTOCOL.md)). The session is the key's account and member plus the client's session id: `X-Claude-Code-Session-Id`, `X-Session-Id`, the Responses `prompt_cache_key` or the Messages `metadata` session; each Claude Code subagent has its own. Opting in without a session id answers 400, and the harness's own compaction requests stay raw. The client keeps sending its whole history and nothing in it is lost; usage counts the tokens the model read. While memory is unavailable, the request is served on its raw history.
 - **Images** on models that take them, in all three API shapes.

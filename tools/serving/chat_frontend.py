@@ -453,8 +453,8 @@ async def heartbeat(events, interval):
 
 
 class LiveRequest:
-    def __init__(self, scope):
-        self.scope = scope
+    def __init__(self, scope, member):
+        self.scope, self.member = scope, member
         self.cancelled = asyncio.Event()
         self.finished = asyncio.Event()
         self.queue = None
@@ -3027,7 +3027,7 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
-        live = self.track(plan, scope)
+        live = self.track(plan, scope, member)
         if self.memory is not None:
             self.memory_foreground(model, 1)
         try:
@@ -3047,8 +3047,8 @@ class Frontend:
             if self.memory is not None:
                 self.memory_foreground(model, -1)
 
-    def track(self, plan, scope):
-        live = LiveRequest(scope)
+    def track(self, plan, scope, member):
+        live = LiveRequest(scope, member)
         self.live[plan["request_id"]] = live
         return live
 
@@ -3065,7 +3065,7 @@ class Frontend:
         except RequestError as error:
             return error_response(error)
         live = self.live.get(identifier)
-        if live is None or live.scope != scope:
+        if live is None or (live.scope, live.member) != (scope, self.member_of(key, request.headers)):
             return error_response(RequestError(404, "request_not_found", f"this account has no queued or running request {identifier}"))
         live.cancel()
         try:
@@ -3354,11 +3354,11 @@ class Frontend:
         key = request.get("public_key")
         identifier = request.match_info["response_id"]
         try:
-            scope = self.scope_of(key, request.headers)
+            scope, member = self.scope_of(key, request.headers), self.member_of(key, request.headers)
             if request.method == "DELETE":
-                found = self.replay.delete_response(scope, identifier) or None
+                found = self.replay.delete_response(scope, member, identifier) or None
             else:
-                found = self.replay.response_body(scope, identifier)
+                found = self.replay.response_body(scope, member, identifier)
         except RequestError as error:
             return responses_error_response(error)
         except chat_replay.STORE_ERRORS as error:
