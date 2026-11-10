@@ -52,7 +52,7 @@ def seconds_of(value, default, ceiling):
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ValueError(value)
     number = float(value)
-    if not math.isfinite(number) or number <= 0:
+    if not math.isfinite(number) or number < 1:
         raise ValueError(value)
     return min(number, ceiling)
 
@@ -145,7 +145,7 @@ class Gateway:
         return self.grants.get(chat_id)
 
     def sandbox_argv(self, host, command, timeout):
-        seconds = str(int(timeout) + 5)
+        seconds = str(math.ceil(timeout) + 5)
         if host == self.hub:
             home, group = str(Path.home()), grp.getgrgid(os.getgid()).gr_name
             props = [prop.replace("{home}", home).replace("{group}", group).replace("{timeout}", seconds) for prop in self.sandbox_properties]
@@ -159,7 +159,7 @@ class Gateway:
     def plain_argv(self, host, command, timeout):
         if host == self.hub:
             return ["bash", "-lc", command]
-        return self.ssh + [host, f"exec timeout -k 5 {int(timeout)} bash -lc {shlex.quote(command)}"]
+        return self.ssh + [host, f"exec timeout -k 5 {math.ceil(timeout)} bash -lc {shlex.quote(command)}"]
 
     async def execute(self, argv, timeout):
         started = time.time()
@@ -298,7 +298,7 @@ class Gateway:
         try:
             timeout = seconds_of(body.get("timeout"), self.default_timeout, self.max_timeout)
         except (TypeError, ValueError):
-            return web.json_response({"error": "timeout must be a finite number of seconds greater than 0"}, status=400)
+            return web.json_response({"error": "timeout must be a finite number of seconds, at least 1"}, status=400)
         rules = self.refuse + (self.refuse_on_nodes if host != self.hub else [])
         for pattern, reason in rules:
             if pattern.search(command):

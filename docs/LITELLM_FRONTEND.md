@@ -971,10 +971,10 @@ without asking, bounded by what their identity can do.
   This is the path for anything that changes state or needs the network or
   the GPU.
 - **Both paths** check the request first: a body that is not a JSON object,
-  or a `timeout` that is not a finite number of seconds above 0, answers 400
+  or a `timeout` that is not a finite number of seconds of at least 1, answers 400
   and is never audited as a run. Then the refusal rules in the config (a
-  global `sync` as any command word, such as `/bin/sync`, `env sync` or
-  `bash -c 'sync'`, killing flychess, power-off, deleting a root, home, workspace or
+  global `sync` in any command position, such as `/bin/sync`, `env sync` or
+  `bash -c 'sync'`, while `grep sync log` or `echo 'sync done'` pass; killing flychess, power-off, deleting a root, home, workspace or
   mount directory, raw disk writes, secret files; on sparks also anything
   that adds to the boot path). These are a best-effort backstop against
   mistakes, not a security boundary. Runs are written before and after to
