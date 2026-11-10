@@ -16,6 +16,8 @@ MESH_TRAFFIC_CLASS=106
 MESH_FABRIC_PREFIX="${SPARK_MESH_FABRIC_PREFIX:-10.10.}"
 WEIGHTD_ADDRESSES=""
 WEIGHTD_UNIT=sparkpipe-weightd
+WEIGHTD_DEVICE_BYTES_MAX=118111600640
+WEIGHTD_KV_RESERVE_BYTES=8589934592
 WEIGHTD_LEGACY_NOTED=""
 WEIGHTD_UPDATE_NOTED=""
 HEARTBEAT_PERIOD=60
@@ -954,10 +956,8 @@ ensure_weightd() {
     [ -s "$HOME/weightd.log" ] && mv "$HOME/weightd.log" "$HOME/weightd-$(date +%Y%m%d-%H%M%S).log" 2>/dev/null
     local -a command=(systemd-run --user --quiet --collect --unit="$WEIGHTD_UNIT" --working-directory="$home"
         -p LimitCORE=infinity -p StandardOutput=append:"$HOME/weightd.log" -p StandardError=append:"$HOME/weightd.log")
-    for variable in $(compgen -e); do
-        case "$variable" in SPARK_WEIGHTD_*) command+=(--setenv="$variable=${!variable}") ;; esac
-    done
     command+=("$home/sparkpipe_weightd" --socket /tmp/spark_weightd.sock
+        --device-bytes-max "$WEIGHTD_DEVICE_BYTES_MAX" --kv-reserve-bytes "$WEIGHTD_KV_RESERVE_BYTES"
         --mesh-rank "$RANK" --mesh-rank-mask 0xffff --mesh-interface "$MESH_INTERFACE"
         --mesh-sgid-index "$MESH_SGID_INDEX")
     [ -z "$MESH_PAIRED" ] || command+=(--mesh-pair-interface "$MESH_PAIR_INTERFACE" --mesh-pair-sgid-index "$MESH_PAIR_SGID_INDEX")

@@ -57,6 +57,7 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
 __attribute__((weak)) int SparkWeightdMeshStagingFd(void) { return -1; }
 
+#ifdef DEBUG
 extern void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     uint64_t bytes);
 __attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
@@ -64,6 +65,7 @@ __attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
 {
     (void)tag; (void)device_pointer; (void)bytes;
 }
+#endif
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
 {
@@ -1885,7 +1887,9 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 		arena->chunk_handles[index] = (void *)handle;
 	arena->pool_committed_bytes += span_bytes;
 	server->resident_bytes += span_bytes;
+#ifdef DEBUG
 	SparkWeightdMeshDeviceProbe("pool",arena->device_base,span_bytes);
+#endif
 	printf("pool single-alloc chunks=%u span=%llu seconds=%.3f (one allocation for the whole arena; pooled chunks never evicted)\n",
 	    arena->chunk_count,(unsigned long long)span_bytes,(double)(SparkMonotonicNs() - started_ns) / 1e9);
 	fflush(stdout);

@@ -1864,6 +1864,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     return SPARK_STATUS_BUSY;
 }
 
+#ifdef DEBUG
 void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     uint64_t bytes)
 {
@@ -1916,6 +1917,7 @@ void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     }
     fflush(stderr);
 }
+#endif
 
 uint32_t SparkWeightdMeshReady(void)
 {

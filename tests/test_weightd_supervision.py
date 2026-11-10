@@ -79,6 +79,8 @@ int main(void) {
         source = (ROOT / "tools/fleet_node_agent.sh").read_text()
         cls.ensure = "ensure_weightd() {" + source.split("ensure_weightd() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.ensure = cls.ensure.replace("$HOME", "$TEST_AGENT_HOME").replace("/tmp/weightd-mesh/", "$TEST_MESH_DIR/")
+        cls.weightd_settings = "".join(line + "\n" for line in source.splitlines()
+                                       if line.startswith(("WEIGHTD_DEVICE_BYTES_MAX=", "WEIGHTD_KV_RESERVE_BYTES=")))
         cls.loop = source[source.rindex("\nwhile true; do"):]
         cls.warmup = "warmup_hook() {" + source.split("warmup_hook() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         cls.identity = source.split("\nHOST=$(hostname)\n", 1)[1].split("\nPID_FILE=", 1)[0]
@@ -300,7 +302,7 @@ mesh_addresses() { if [ -n "$TEST_ADDRESS" ]; then echo "$TEST_ADDRESS"; else ec
 WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
 mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TRUST"; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
-''' + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
+''' + self.weightd_settings + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
         env = dict(os.environ, TEST_DISK_SHA="changed" if changed else "running",
                    TEST_PROBE_STATUS="0" if ready else "1", TEST_OWNER=owner,
                    TEST_BINARY_STATUS="0" if binary else "1",
@@ -408,7 +410,8 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         home = str(self.directory)
         self.assertEqual(self.units(), "UNIT --user --quiet --collect --unit=sparkpipe-weightd --working-directory=%s/sparkdata/weightd"
                          " -p LimitCORE=infinity -p StandardOutput=append:%s/weightd.log -p StandardError=append:%s/weightd.log"
-                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --mesh-rank 0"
+                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --device-bytes-max 118111600640"
+                         " --kv-reserve-bytes 8589934592 --mesh-rank 0"
                          " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-pair-interface test-pair"
                          " --mesh-pair-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
 
@@ -419,7 +422,8 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
         home = str(self.directory)
         self.assertEqual(self.units(), "UNIT --user --quiet --collect --unit=sparkpipe-weightd --working-directory=%s/sparkdata/weightd"
                          " -p LimitCORE=infinity -p StandardOutput=append:%s/weightd.log -p StandardError=append:%s/weightd.log"
-                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --mesh-rank 0"
+                         " %s/sparkdata/weightd/sparkpipe_weightd --socket /tmp/spark_weightd.sock --device-bytes-max 118111600640"
+                         " --kv-reserve-bytes 8589934592 --mesh-rank 0"
                          " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
 
     def test_mesh_addresses_need_the_pair_port_only_on_linked_ranks(self):
@@ -435,11 +439,12 @@ mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TR
                                         capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stdout), expected, result.stderr)
 
-    def test_weightd_runs_in_its_own_unit_with_its_environment(self):
-        result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "G5_WARMUP": "0"})
+    def test_weightd_runs_in_its_own_unit_with_flags_not_the_node_environment(self):
+        result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "SPARK_WEIGHTD_KV_RESERVE_BYTES": "1", "G5_WARMUP": "0"})
         self.assertEqual(result.returncode, 1, result.stderr)
         unit = self.units()
-        self.assertIn(" --setenv=SPARK_WEIGHTD_DEVICE_BYTES_MAX=123 /", unit)
+        self.assertNotIn("--setenv", unit)
+        self.assertIn(" --device-bytes-max 118111600640 --kv-reserve-bytes 8589934592 ", unit)
         self.assertNotIn("G5_WARMUP", unit)
         self.assertNotIn("FORBIDDEN_SETSID", result.stdout)
 

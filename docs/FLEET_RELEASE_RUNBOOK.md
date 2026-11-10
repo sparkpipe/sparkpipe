@@ -103,6 +103,16 @@ Environment=SPARK_TP_WAIT_MODE=hardware
 | `G5_API_DISABLED=1` | No longer read. Since #1261 the agent has no `ensure_api` and never starts an API; the model APIs run on the hub (section 6). The line is inert and can leave the drop-in. |
 | `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:529`, `:550`). |
 
+The nodes' drop-ins also set `SPARK_WEIGHTD_KV_RESERVE_BYTES` and
+`SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY`. The agent passes weightd no
+environment: it starts weightd with `--device-bytes-max` and
+`--kv-reserve-bytes` from its own `WEIGHTD_DEVICE_BYTES_MAX` and
+`WEIGHTD_KV_RESERVE_BYTES`, which `tests/test_lane_records.py` holds equal to
+`deployment/lanes.json`'s `weightd` block (8 GiB, the reserve every node ran
+with on 2026-11-10). Both lines are inert from the next weightd restart under
+an agent that carries this; [ENVIRONMENT.md](ENVIRONMENT.md) lists every
+variable still read.
+
 With this drop-in, GLM 5.3 Flash measured 36 tok/s at B1: 23-24.5 ms/token,
 8-step graph chains, all 12096 experts pinned (lead-dev measurement,
 2026-09-28). A node rebuilt without it runs a different configuration. Check

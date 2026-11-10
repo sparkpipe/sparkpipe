@@ -26,6 +26,9 @@ current authority.
 - [`MODEL_SUPPORT.md`](MODEL_SUPPORT.md): product model set: checkpoint
   contracts, owner direction, qualification contract.
 - [`MODULE_MAP.md`](MODULE_MAP.md): source ownership boundaries.
+- [`ENVIRONMENT.md`](ENVIRONMENT.md): every environment variable a process
+  reads: the serving path's two-variable handoff, weightd's flag fallbacks,
+  tool variables and DEBUG diagnostics.
 - [`INFERENCE_OS_DESIGN.md`](INFERENCE_OS_DESIGN.md): device-layer memory
   model for hardware independence.
 - [`METAL_BACKEND.md`](METAL_BACKEND.md): kernel launch in the device API,

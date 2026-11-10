@@ -1997,18 +1997,6 @@ int main(int argc, char **argv)
 	}
 	(void)snprintf(ApiBootTag, sizeof(ApiBootTag), "%d", (int)getpid());
 	{
-		const char *log_path = getenv("SPARK_MODEL_API_LOG");
-		if (log_path != 0 && log_path[0] != '\0')
-		{
-			int log_fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-			if (log_fd >= 0)
-			{
-				(void)dup2(log_fd, 2);
-				(void)close(log_fd);
-			}
-		}
-	}
-	{
 		static char resolved_root[4096];
 		static char index_path[4200];
 		if (realpath(root, resolved_root) == 0)

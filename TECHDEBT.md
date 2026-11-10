@@ -113,8 +113,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   and a 7,168-element all-reduce takes about 38 us direct or 33.1 us as
   reduce-scatter plus all-gather.
 - Left out on purpose (2026-10-02): The wait mode picks the algorithm, against
-  I36. With `SPARK_TP_WAIT_MODE=hardware`
-  (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
+  I36. With the stage config's `device_collective.wait_mode` `hardware`
+  (`ring/transport/tp_device_collective.c`) every payload runs chunked
   direct rounds through `SparkTpLaunchMeshHardware`, always called with one
   logical row (`:972-983`), and BF16 sums of at least
   `SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE` (10,240) elements at degree 16 or
