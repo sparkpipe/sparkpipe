@@ -75,7 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_named_pack import PayloadWriter, assemble, source_identity  # noqa: E402
 from spark_pack_codecs import (bf16_bytes_to_floats, bf16_to_f32, check_e8m0_scales as check_scales,  # noqa: E402
                                f32_round, f32_to_bf16, floats_to_bf16_bytes, np)
-from spark_pack_common import PackFailure, read_safetensors_header  # noqa: E402
+from spark_pack_common import INDEX_NAME, PackFailure, SafetensorsSource  # noqa: E402
 
 MAGIC = 0x4B33504B
 VERSION = 2
@@ -217,43 +217,24 @@ def interleave(payload, scales, geom):
 
 
 
-class SafetensorDir:
+class SafetensorDir(SafetensorsSource):
 
     def __init__(self, model_dir):
-        self.model_dir = Path(model_dir)
-        index = self.model_dir / "model.safetensors.index.json"
-        if index.is_file():
-            self.weight_map = json.loads(index.read_text())["weight_map"]
-        else:
-            single = self.model_dir / "model.safetensors"
-            if not single.is_file():
-                raise PackFailure(f"no safetensors index or file in {model_dir}")
-            self.weight_map = None
-            self.single = single.name
-        self.headers = {}
-
-    def _header(self, shard):
-        if shard not in self.headers:
-            header, data_start, _ = read_safetensors_header(self.model_dir / shard)
-            header.pop("__metadata__", None)
-            self.headers[shard] = (header, data_start)
-        return self.headers[shard]
+        root = Path(model_dir)
+        if not (root / INDEX_NAME).is_file() and not (root / "model.safetensors").is_file():
+            raise PackFailure(f"no safetensors index or file in {model_dir}")
+        super().__init__(root, config_required=False, single_name="model.safetensors")
 
     def names(self):
-        if self.weight_map is not None:
-            return set(self.weight_map)
-        return set(self._header(self.single)[0])
+        return set(self.weight_map)
 
     def tensor(self, name):
-        shard = self.weight_map.get(name) if self.weight_map is not None \
-            else (self.single if name in self._header(self.single)[0] else None)
-        if shard is None:
+        if name not in self.weight_map:
             raise PackFailure(f"missing tensor: {name}")
-        header, base = self._header(shard)
-        entry = header[name]
+        shard, entry, offset = self.resolve(name)
         begin, end = entry["data_offsets"]
-        with open(self.model_dir / shard, "rb") as handle:
-            handle.seek(base + begin)
+        with open(self.root / shard, "rb") as handle:
+            handle.seek(offset)
             raw = handle.read(end - begin)
         return entry["dtype"], tuple(entry["shape"]), raw
 

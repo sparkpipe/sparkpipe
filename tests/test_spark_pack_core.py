@@ -226,6 +226,16 @@ def check_common(failures):
             failures.append("a finished write replaces the output and the hashing writer digests what it wrote")
         if (Path(scratch) / "pack.sha256").read_text() != f"{digest}  pack\n":
             failures.append("the sha256 sidecar names the file in sha256sum format")
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        header = b'{"__metadata__":{"format":"pt"},"a":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]},' \
+                 b'"b":{"dtype":"F32","shape":[1],"data_offsets":[4,8]}}'
+        (root / "model.safetensors").write_bytes(struct.pack("<Q", len(header)) + header + bytes(range(8)))
+        if not refuses(lambda: common.SafetensorsSource(root, config_required=False)):
+            failures.append("a checkpoint without an index is refused unless a single file is named")
+        single = common.SafetensorsSource(root, config_required=False, single_name="model.safetensors")
+        if single.weight_map != {"a": "model.safetensors", "b": "model.safetensors"} or single.resolve("b")[2] != 8 + len(header) + 4:
+            failures.append("a single-file checkpoint maps every tensor to that file and resolves its payload")
 
 
 def check_native(failures):

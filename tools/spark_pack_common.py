@@ -77,25 +77,30 @@ def tensor_extent(meta: Mapping[str, Any], name: str, shard: str, payload_bytes:
 
 class SafetensorsSource:
     def __init__(self, root: Path, index_name: str = INDEX_NAME, config_name: str = CONFIG_NAME,
-                 config_required: bool = True) -> None:
+                 config_required: bool = True, single_name: str | None = None) -> None:
         self.root = Path(root)
         index_path = self.root / index_name
         config_path = self.root / config_name
-        if not index_path.is_file():
+        single = index_path.is_file() is False and single_name is not None and (self.root / single_name).is_file()
+        if not index_path.is_file() and not single:
             raise PackFailure(f"missing {index_path}")
         if config_required and not config_path.is_file():
             raise PackFailure(f"missing {config_path}")
-        self.index_sha256 = sha256_file(index_path)
-        self.weight_map = json.loads(index_path.read_text())["weight_map"]
+        self.headers: Dict[str, dict] = {}
+        self.data_start: Dict[str, int] = {}
+        self.shard_bytes: Dict[str, int] = {}
+        if single:
+            self.index_sha256 = None
+            self.weight_map = {name: single_name for name in self.shard_header(single_name) if name != "__metadata__"}
+        else:
+            self.index_sha256 = sha256_file(index_path)
+            self.weight_map = json.loads(index_path.read_text())["weight_map"]
         if config_path.is_file():
             self.config_sha256 = sha256_file(config_path)
             self.config = json.loads(config_path.read_text())
         else:
             self.config_sha256 = None
             self.config = {}
-        self.headers: Dict[str, dict] = {}
-        self.data_start: Dict[str, int] = {}
-        self.shard_bytes: Dict[str, int] = {}
 
     def check_config(self, expectations: Mapping[str, object], *, section: str | None = None) -> None:
         config: Mapping[str, object] = self.config.get(section, {}) if section is not None else self.config
