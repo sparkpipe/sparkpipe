@@ -1,7 +1,7 @@
 # LiteLLM front end — one door for the SparkPipe fleet
 
 Status, 2026-10-02: GLM-5.3 Full (TP16, 65,536 positions per sequence) serves
-through this stack on the rtx5090 hub:
+through this stack on the hub:
 
 | Port | Process | Protocol |
 | --- | --- | --- |
@@ -1233,7 +1233,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 
 | model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3` and `*` | the chat layer on the rtx5090, `http://127.0.0.1:8433/v1` (LiteLLM runs on the hub) | smoke receipts above, 2026-10-02 |
+| `glm-5.3` and `*` | the chat layer on the hub, `http://127.0.0.1:8433/v1` (LiteLLM runs there too) | smoke receipts above, 2026-10-02 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
 (`docs/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).

@@ -2,7 +2,7 @@
   "token_file": "/srv/workspace/sparkpipe/fleet-gateway/token",
   "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
   "audit_log": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl",
-  "hub": "rtx5090",
+  "hub": "hub",
   "nodes": [
     "spark0",
     "spark1",
