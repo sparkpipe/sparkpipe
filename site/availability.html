@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Availability</title>
+<meta name="description" content="Live availability of every SparkPipe fleet by the hour and by the week, and how fleets are won, kept and lost against other renters: pinning, the waitlist, pairs and Hour Fleets.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/availability.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/availability-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/availability.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<link rel="stylesheet" href="availability.css?v=2">
+</head>
+<body>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">availability</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#board">Board</a>
+      <a href="#rules">How it works</a>
+      <a href="#game">Strategy</a>
+      <a href="fleets.html">Fleet List</a>
+      <a href="market.html">Your account</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="availability.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="availability-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap policy">
+  <section>
+    <h1>Availability</h1>
+    <p class="effective" id="av-now" aria-live="polite">Loading the bookings…</p>
+    <p>Eight fleets in four pairs, live from our booking system. Each row is a fleet; each column is an hour or a week, in Korea Standard Time. You see what is taken and until when, never by whom. Fleets still being built are striped, and open when they start serving.</p>
+    <nav class="av-modes" aria-label="Data"><a id="av-mode-live" href="availability.html">Live</a><a id="av-mode-sandbox" href="availability.html?sandbox">Sandbox</a></nav>
+    <p class="av-note av-sandbox-only" id="av-sandbox"></p>
+    <ul class="av-chips" id="av-chips" aria-live="polite"></ul>
+  </section>
+
+  <section id="board" class="av-wide">
+    <div class="av-bar">
+      <h2>The board</h2>
+      <div class="av-views" role="group" aria-label="View"><button type="button" data-av-view="hours" aria-pressed="true">Next 14 days, by the hour</button><button type="button" data-av-view="weeks" aria-pressed="false">Next 52 weeks</button></div>
+    </div>
+    <div class="av-frame"><div class="av-rows" id="av-rows"></div><div class="av-scroll" id="av-board"></div></div>
+    <p class="av-detail" id="av-detail" aria-live="polite">Point at or tap any hour to see what it means for you.</p>
+    <ul class="av-legend" id="av-legend"></ul>
+    <details>
+      <summary>Read the board as text</summary>
+      <ul id="av-text"></ul>
+    </details>
+    <p class="av-note">The dashed vertical line is the next Sunday 00:00 KST: every holder's deadline for the next week, and the moment the waitlist is allocated. The same facts are at <span class="mono">https://sparkpipe.ai/availability.txt</span> and, as JSON, at <span class="mono">https://sparkpipe.ai/pay/api/market/state</span>.</p>
+  </section>
+
+  <section id="rules">
+    <h2>How fleets are won, kept and lost</h2>
+    <ol class="av-steps">
+      <li><h3>Two halves to every pair</h3><p>Fleets come in pairs of 16 Sparks each, on one 32-port 100 Gb/s switch. The <b>A half</b> is rented by the week. The <b>B half</b> is an <b>Hour Fleet</b>: anyone can book it by the hour, up to <span data-hourfleet="days">7</span> days ahead and <span data-hourfleet="hours">24</span> hours a week per account.</p></li>
+      <li><h3>Winning an A fleet</h3><p>If an A fleet is free next week, the first account to book it pins it from Monday. If every A fleet is held, you join the <b>waitlist</b> by locking at least <span data-week="hc">144</span> HC. Every Sunday at 00:00 KST, each A fleet whose holder did not book the next week goes to the <b>biggest lock</b>, and at equal locks to whoever joined first. That whole lock then books as many weeks as it pays for.</p></li>
+      <li><h3>Keeping it</h3><p>A pinned fleet is yours alone: nobody can book its hours or its future weeks. You keep it by booking the next week before 00:00 KST on the Sunday of your last booked week, and auto-extend does that for you. No booking is ever bumped, by another customer or by us.</p></li>
+      <li><h3>Losing it</h3><p>Miss that Sunday deadline and the fleet goes to the waitlist that night, or to the first account that books it. Your cache and storage stay until the next customer's first hour starts, and are then wiped.</p></li>
+      <li><h3>Adding the pair</h3><p>Holding an A fleet lets you also pin its B half for the same weeks: one cluster of 32 Sparks with 4 TB of memory. At least a quarter of the fleets must stay open for hours, so only half of the B halves can be pinned at a time. The first holder to pin one gets it, and keeps it by extending, like any fleet.</p></li>
+      <li><h3>Discounts for commitment</h3><p>The more weeks you hold on one fleet, the less every new week and every hour costs: <span data-off="list">5% from 4, 10% from 13, 15% from 26 and 20% at 52</span>. On the waitlist, your hours get the discount your lock would get, repaid from your lock if you leave before it wins a fleet.</p></li>
+    </ol>
+  </section>
+
+  <section id="game">
+    <h2>What it means when fleets are scarce</h2>
+    <p>Every renter plays by the same rules on the same board. These are the consequences worth planning for.</p>
+    <ul>
+      <li><b>Fleets do not come back by themselves.</b> A holder who keeps booking keeps the fleet for as long as they like. Once every A fleet is held, the only way in is the waitlist, and the waitlist goes to the biggest lock, not the earliest.</li>
+      <li><b>A bigger lock wins sooner and pays less per week.</b> When you win, your whole lock books weeks at the discount for that many weeks, so a 26-week lock both outranks a 4-week lock and buys 15% off every week.</li>
+      <li><b>Booking ahead is your protection.</b> Nobody can take a week you have booked. The only way to lose a fleet is to let a Sunday deadline pass, so keep several weeks booked ahead with auto-extend, and keep enough HC for it.</li>
+      <li><b>Pairs are the scarcest thing on the board.</b> Only half of the B halves can be pinned at once. If you will need 4 TB, pin your pair while one is open; once you hold it, nobody can take it while you extend.</li>
+      <li><b>Hours are first come, first served.</b> They open <span data-hourfleet="days">7</span> days ahead and are capped at <span data-hourfleet="hours">24</span> a week per account, so no team can take them all, and at least a quarter of the fleets always stay open for hours.</li>
+      <li><b>Everyone sees the same board.</b> It shows what is held and until when, how many locks are waiting and how many pairs are open, never who. Your own place on the waitlist is on <a href="market.html">your account page</a>.</li>
+    </ul>
+    <p>The <a href="agreement.html">SparkPipe Customer Agreement</a> sets these rules (clauses 14 to 16), and the <a href="fleets.html">Fleet List</a> lists the fleets.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="market.html">Your account</a><a href="fleets.html">Fleet List</a><a href="status.html">Status</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
+<script src="availability.js?v=5"></script>
+</body>
+</html>

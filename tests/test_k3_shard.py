@@ -299,12 +299,33 @@ def main():
             if "32-element" not in str(failure):
                 print(f"  FAIL 32-tile refusal does not name the tile size: {failure}")
                 failures += 1
+        dsa = {"index_topk": 8, "index_num_heads": 4, "index_head_dim": 16, "index_rope_dim": 0, "index_k_norm_type": "layernorm",
+               "index_topk_freq": 1, "index_skip_topk_offset": 1}
+        for name in list(root.iterdir()):
+            if name.suffix == ".pack" or name.name.endswith(".payload"):
+                name.unlink()
+        mini_checkpoint(root, latent=256, inter=256, dsa=dsa)
+        pack31 = root / "mini31.pack"
+        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"), str(root), str(pack31)], capture_output=True, text=True)
+        run = run if run.returncode != 0 else subprocess.run([sys.executable, str(ROOT / "tools" / "k3_shard.py"), str(pack31), str(root / "mini31"), "2"],
+                                                             capture_output=True, text=True)
+        if run.returncode != 0:
+            print("  FAIL the K3.1 pack did not pack and shard:", (run.stdout + run.stderr)[-300:])
+            failures += 1
+        else:
+            _, full31 = read_pack(pack31)
+            ranks31 = [read_pack(root / f"mini31.rank{r:02d}.pack")[1] for r in range(2)]
+            for field in ("mla_index_query_weight", "mla_index_key_weight", "mla_index_head_weight", "mla_index_norm_weight", "mla_index_norm_bias"):
+                name = "model.layers.1." + field
+                if not (ranks31[0](name) == ranks31[1](name) == full31(name)):
+                    print(f"  FAIL {name}: every rank scores its own key shard with all index heads, so the indexer weights replicate whole")
+                    failures += 1
     print(f"tensors sharded {len(full_manifest['tensors'])} x 2 ranks")
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
     print("\nevery V2 class reassembles to the pack, and a degree the "
-          "geometry cannot honour is refused")
+          "geometry cannot honour is refused; the K3.1 indexer weights replicate whole on every rank")
     return 0
 
 

@@ -6,11 +6,25 @@ SRC="$ROOT/tools/telemetry"
 DEPLOY="$ROOT/deployment/telemetry"
 DEST=${SPARKPIPE_TELEMETRY_DIR:-$HOME/.local/share/ds4_telemetry}
 NODES=${SPARKPIPE_TELEMETRY_NODES:-"spark0 spark1 spark2 spark3 spark4 spark5 spark6 spark7 spark8 spark9 sparka sparkb sparkc sparkd sparke sparkf"}
+HUB=${SPARKPIPE_TELEMETRY_HUB:-rtx5090}
+HUB_DIR=${SPARKPIPE_TELEMETRY_HUB_DIR:-/srv/workspace/sparkpipe/telemetry-alert}
 MODE=${1:-all}
+
+bootstrap_agent() {
+	tries=0
+	until launchctl bootstrap "gui/$(id -u)" "$1" 2> /dev/null; do
+		tries=$((tries + 1))
+		if [ "$tries" -ge 10 ]; then
+			echo "launchctl bootstrap failed: $1" >&2
+			return 1
+		fi
+		sleep 1
+	done
+}
 
 install_mac() {
 	mkdir -p "$DEST" /tmp/ds4_telemetry/mac
-	for file in spark_telemetry_common.py spark_telemetry_collect.py spark_telemetry_dashboard.py; do
+	for file in spark_telemetry_common.py spark_telemetry_alert.py spark_telemetry_collect.py spark_telemetry_dashboard.py; do
 		install -m 0644 "$SRC/$file" "$DEST/$file"
 	done
 	install -m 0600 "$DEPLOY/telemetry_ssh_config" "$DEST/ssh_config"
@@ -20,7 +34,7 @@ install_mac() {
 		plutil -lint "$target.tmp" > /dev/null
 		mv "$target.tmp" "$target"
 		launchctl bootout "gui/$(id -u)/$label" 2> /dev/null || true
-		launchctl bootstrap "gui/$(id -u)" "$target"
+		bootstrap_agent "$target"
 	done
 	echo "mac: collector and dashboard installed from $SRC"
 }
@@ -34,9 +48,16 @@ install_nodes() {
 	done
 }
 
+install_hub() {
+	ssh -o BatchMode=yes "$HUB" "mkdir -p $HUB_DIR" < /dev/null
+	scp -q "$SRC/spark_telemetry_mail.py" "$HUB:$HUB_DIR/spark_telemetry_mail.py"
+	echo "hub: mail sender installed in $HUB_DIR"
+}
+
 case "$MODE" in
 	mac) install_mac ;;
 	nodes) install_nodes ;;
-	all) install_nodes; install_mac ;;
-	*) echo "usage: $0 [mac|nodes|all]" >&2; exit 2 ;;
+	hub) install_hub ;;
+	all) install_nodes; install_hub; install_mac ;;
+	*) echo "usage: $0 [mac|nodes|hub|all]" >&2; exit 2 ;;
 esac

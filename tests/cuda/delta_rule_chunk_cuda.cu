@@ -66,6 +66,9 @@ int main(void)
 	Case("strong-decay",2u,300u,6u,-5.0f);
 	Case("long-slice",8u,4096u,6u,-0.3f);
 	Case("long-slice-strong-decay",8u,4096u,6u,-5.0f);
+	Case("vanishing-gates",2u,300u,6u,-60.0f);
+	Case("zero-gates",2u,300u,6u,-400.0f);
+	Case("long-slice-zero-gates",8u,4096u,6u,-400.0f);
 	printf("%s chunked delta rule matches the column kernel\n",failures == 0 ? "PASS" : "FAIL");
 	return failures != 0;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "runtime/launch.h"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/mma.cuh"
@@ -13,6 +14,13 @@
 #define LM_INDEX_SCORE_BLOCK_POSITIONS (LM_INDEX_SCORE_BLOCK_TILES * LM_INDEX_SCORE_TILE_POSITIONS)
 #define LM_INDEX_SCORE_SHARED_ROWS 8u
 #define LM_INDEX_SCORE_SHARED_MIN_ROWS 64u
+
+struct LmIndexScorePackedView
+{
+	LmKvView pages;
+	SparkKvShard shard;
+	const uint8_t *keys;
+};
 
 static __host__ __device__ __forceinline__ uint32_t LmIndexScoreBlocks(uint32_t positions)
 {
@@ -34,6 +42,11 @@ static __host__ __device__ __forceinline__ const LmKvView &LmIndexScorePages(con
 	return(view.pages);
 }
 
+static __host__ __device__ __forceinline__ const LmKvView &LmIndexScorePages(const LmIndexScorePackedView &view)
+{
+	return(view.pages);
+}
+
 static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvView &view, uint32_t bound)
 {
 	(void)view;
@@ -43,6 +56,19 @@ static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvView &view
 static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmKvShardView &view, uint32_t bound)
 {
 	return(SparkKvShardLocalKeys(view.shard, bound));
+}
+
+static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmIndexScorePackedView &view, uint32_t bound)
+{
+	return(SparkKvShardLocalKeys(view.shard, bound));
+}
+
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmIndexScorePackedView &view, uint32_t sequence, uint32_t key, uint32_t row)
+{
+	(void)sequence;
+	(void)row;
+	return(view.keys + (uint64_t)key * Geometry::kSlotBytes);
 }
 
 template<class Geometry>
@@ -162,8 +188,10 @@ template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages>
 static inline cudaError_t LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const uint16_t *head_weight_bf16, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, cudaStream_t stream)
 {
 	if ( LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
-		LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,LM_INDEX_SCORE_SHARED_ROWS><<<dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS),LM_INDEX_SCORE_THREADS,0,stream>>>(index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,LM_INDEX_SCORE_SHARED_ROWS>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
+			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	else
-		LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u><<<dim3(LmIndexScoreBlocks(score_stride),rows),LM_INDEX_SCORE_THREADS,0,stream>>>(index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	return(cudaPeekAtLastError());
 }

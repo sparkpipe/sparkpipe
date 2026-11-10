@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Your account · SparkPipe</title>
-<meta name="description" content="Your SparkPipe account: book demo hours and weeks on a fleet pinned to you, keep it by booking the next week, join the waitlist, and manage API keys, live or in a sandbox with no money.">
+<meta name="description" content="Your SparkPipe account: book hours on an Hour Fleet and weeks on a fleet pinned to you, keep it by booking the next week, join the waitlist, and manage API keys, live or in a sandbox with no money.">
 <meta name="theme-color" content="#0a0c10">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -21,6 +21,7 @@
     <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
     <nav class="nav-links" aria-label="Sections">
       <a href="fleets.html">Fleet List</a>
+      <a href="availability.html">Availability</a>
       <a href="index.html#prices">Prices</a>
       <a href="account.html">Payments</a>
       <a href="agreement.html">Agreement</a>
@@ -33,7 +34,7 @@
 <section class="co-head">
   <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
   <h1>Your fleets.</h1>
-  <p class="lead">Book the whole demo fleet by the hour, pin a fleet to yourself week by week, or join the waitlist when every fleet is taken. Keep a pinned fleet by booking the next week before 00:00 on the Sunday of your last booked week. A week is <span data-week="hc">144</span> HC, and the more weeks you hold ahead, the bigger the discount on every week you book, up to <span data-off="max">20%</span>. The <a href="agreement.html">SparkPipe Customer Agreement</a> applies.</p>
+  <p class="lead">Book an Hour Fleet by the hour, pin a fleet to yourself week by week, or join the waitlist when every fleet is taken. Keep a pinned fleet by booking the next week before 00:00 on the Sunday of your last booked week. A week is <span data-week="hc">144</span> HC, and the more weeks you hold ahead, the bigger the discount on every week and every hour you book, up to <span data-off="max">20%</span>. The <a href="agreement.html">SparkPipe Customer Agreement</a> applies.</p>
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
@@ -42,7 +43,7 @@
 </section>
 
 <div class="sandbox-bar">
-  <span class="live-only muted">Times are Korea Standard Time. Demo hours from <span data-start="demo">1 December 2026</span>; weeks, Monday to Sunday, from <span data-start="weeks">4 January 2027</span>.</span>
+  <span class="live-only muted">Times are Korea Standard Time. Hours from <span data-start="hours">1 December 2026</span>; weeks, Monday to Sunday, from <span data-start="weeks">4 January 2027</span>.</span>
   <div><span class="muted">Service time</span> <span class="num" id="now">-</span></div>
   <div class="row sandbox-only">
     <button class="btn small" type="button" data-clock="1">+1 hour</button>
@@ -64,7 +65,7 @@
         <ul>
           <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
           <li>Prepaid HC, at the price shown for the quantity you buy: now <span data-hc="small-usd">$20</span> each below <span data-hc="bulk-from">144</span> HC and <span data-hc="bulk-usd">$15</span> each from <span data-hc="bulk-from">144</span> HC, plus VAT. Each purchase lapses 12 months after issue unless you book with it.</li>
-          <li>HC books whole-fleet hours on the demo fleet and weeks on a fleet pinned to you, up to 52 weeks ahead. A booking is final.</li>
+          <li>HC books whole-fleet hours on an Hour Fleet and weeks on a fleet pinned to you, up to 52 weeks ahead. A booking is final.</li>
           <li>A pinned fleet stays yours while you book the next week before 00:00 on the Sunday of your last booked week; otherwise it goes to the waitlist, ordered by locked HC.</li>
           <li>HC has no cash value and is not refunded, unless we stop offering service for HC, close your account other than for your breach, HC locked in the waitlist would lapse, or the law requires a refund.</li>
           <li>Requests and data are processed only on machines we operate in Korea and go to no other AI service. Your cache and files are deleted when another customer's booking of your fleet starts or 24 hours after your last hour on it.</li>
@@ -99,7 +100,7 @@
 
 <nav class="tabs" role="tablist" aria-label="Account" id="tabs">
   <button type="button" role="tab" data-tab="fleets">Fleets</button>
-  <button type="button" role="tab" data-tab="demo">Demo hours</button>
+  <button type="button" role="tab" data-tab="hours">Hours</button>
   <button type="button" role="tab" data-tab="waitlist">Waitlist</button>
   <button type="button" role="tab" data-tab="api">API</button>
   <button type="button" role="tab" data-tab="records">Records</button>
@@ -108,12 +109,13 @@
 <div class="tab-panel" role="tabpanel" data-panel="fleets">
 <section class="card">
   <h2>Fleets</h2>
-  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday.</p>
+  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday. Fleets come in pairs on a shared switch: hold an A fleet and you can also pin its B fleet for the weeks you hold the A fleet, so the two run as one 32-Spark, 4 TB cluster. At least a quarter of the serving fleets always stay open for hours.</p>
+  <p class="num muted" id="pairs-open"></p>
   <div class="scroll"><table><thead><tr><th>Fleet</th><th>Machines</th><th>Rate</th><th>Status</th><th>Yours</th></tr></thead><tbody id="fleets"></tbody></table></div>
 </section>
 <section class="card">
   <h2>Book weeks</h2>
-  <p class="muted">Pin an available fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking.</p>
+  <p class="muted">Pin an available fleet from the next Monday, or extend a fleet pinned to you from the end of your last booked week. Each week runs Monday 00:00 to Sunday 24:00 KST, and Sunday is the free day. The discount counts the weeks you hold on that fleet, including the current week and the ones you are booking. To pin your fleet's pair, choose it here: it runs for weeks you hold your fleet, at your fleet's discount.</p>
   <form class="form" id="weeks" novalidate>
     <div class="row">
       <label>Fleet<select id="weeks-fleet"></select></label>
@@ -123,20 +125,22 @@
     <button class="btn solid" type="submit" id="weeks-go">Book</button>
     <p class="flash" id="m-weeks" hidden></p>
   </form>
-  <div class="scroll"><table><thead><tr><th>Weeks held</th><th>Discount on new weeks</th></tr></thead><tbody id="discounts"></tbody></table></div>
+  <div class="scroll"><table><thead><tr><th>Weeks held</th><th>Discount on new weeks and on hours</th></tr></thead><tbody id="discounts"></tbody></table></div>
 </section>
 </div>
 
-<div class="tab-panel" role="tabpanel" data-panel="demo" hidden>
+<div class="tab-panel" role="tabpanel" data-panel="hours" hidden>
 <section class="card">
-  <h2>Book demo hours</h2>
-  <p class="muted">The demo fleet can be booked by the hour up to <span data-demo="days">7</span> days ahead, up to <span data-demo="hours">24</span> hours each week per account. An available fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate.</p>
+  <h2>Book hours</h2>
+  <p class="muted">Hour Fleets are never pinned. Book them by the hour up to <span data-hourfleet="days">7</span> days ahead, up to <span data-hourfleet="hours">24</span> hours each week per account across all Hour Fleets. Any other available fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate, less your discount: the one for the most weeks you hold on one fleet, or, while you are on the waitlist, for the weeks your lock would book.</p>
+  <p class="num" id="hour-discount"></p>
   <form class="form" id="hours-form" novalidate>
     <div class="row">
       <label>Fleet<select id="hours-fleet"></select></label>
       <label>Start (KST)<input id="hours-start" type="datetime-local" step="3600"></label>
       <label>Hours<input id="hours-count" type="number" min="1" step="1" value="1"></label>
     </div>
+    <p class="num" id="hours-quote"></p>
     <button class="btn solid" type="submit">Book</button>
     <p class="flash" id="m-hours" hidden></p>
   </form>
@@ -150,7 +154,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="waitlist" hidden>
 <section class="card">
   <h2>Waitlist</h2>
-  <p class="muted">Lock at least <span data-week="hc">144</span> HC to join. Every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and at equal locks to whoever joined first. The whole lock then books consecutive weeks on that fleet from the next Monday, at the discount for that many weeks, and any HC left over is unlocked. Locked HC cannot be spent; add to your lock or leave whenever you like. You see your own position and how many locks are waiting, nothing more. Locked HC that would lapse while you wait is refunded.</p>
+  <p class="muted">Lock at least <span data-week="hc">144</span> HC to join. Every Sunday at 00:00 KST, each fleet that comes free goes to the biggest lock, and at equal locks to whoever joined first. The whole lock then books consecutive weeks on that fleet from the next Monday, at the discount for that many weeks, and any HC left over is unlocked. Locked HC cannot be spent; add to your lock or leave whenever you like. You see your own position and how many locks are waiting, nothing more. Locked HC that would lapse while you wait is refunded. While you wait, every hour you book costs less by the discount for the weeks your lock would book. If you leave before the waitlist gives you a fleet, that saving is repaid from your lock.</p>
   <p class="num" id="waitlist-status">Not on the waitlist.</p>
   <p class="num muted" id="waitlist-count"></p>
   <form class="form" id="waitlist" novalidate>
@@ -164,7 +168,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="api" hidden>
 <section class="card">
   <h2>Use your fleet</h2>
-  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F3"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F1A"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="mk-grid">
     <div class="form">
@@ -202,8 +206,8 @@
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Payments</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js"></script>
-<script src="prices.js"></script>
-<script src="market.js?v=5"></script>
+<script src="pricing.js?v=2"></script>
+<script src="prices.js?v=3"></script>
+<script src="market.js?v=6"></script>
 </body>
 </html>

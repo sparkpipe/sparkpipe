@@ -48,6 +48,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank,const char *interface_name,
     puts("MESH-INIT");
     return getenv("TEST_MESH_INIT_OK") != 0 ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR;
 }
+void SparkWeightdMeshUseSecondRail(void) { puts("MESH-SECOND-RAIL"); }
 void SparkWeightdMeshStop(void) { puts("MESH-STOP"); }
 void SparkWeightdMeshDoorbellLoop(int32_t cpu) { (void)cpu; }
 SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *config,
@@ -97,9 +98,16 @@ SparkStatus SparkKvLedgerSample(SparkKvLedger *ledger,SparkKvLedgerUsage *usage)
         partial = arguments[:flag] + arguments[flag + 2:]
         result = subprocess.run(partial, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
         assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, (arguments[flag], result)
-    for extra in (["--mesh-pair-interface", "pair0"], ["--mesh-traffic-class", "106"]):
+    for extra in (["--mesh-pair-interface", "pair0"], ["--mesh-traffic-class", "106"], ["--mesh-second-rail"],
+                  arguments[1:] + ["--mesh-second-rail"]):
         result = subprocess.run([str(binary)] + extra, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
         assert result.returncode == 2 and "SERVER-UNBOUND" not in result.stdout, (extra, result)
+    railed = arguments + ["--mesh-pair-interface", "pair0", "--mesh-pair-sgid-index", "3", "--mesh-second-rail"]
+    result = subprocess.run(railed, env={"TEST_MESH_INIT_OK": "1", "TEST_THREAD_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 0 and markers(result.stdout)[:3] == ["MESH-SECOND-RAIL", "SERVER-UNBOUND", "MESH-INIT"], result
+    result = subprocess.run(arguments + ["--mesh-pair-interface", "pair0", "--mesh-pair-sgid-index", "3"],
+                            env={"TEST_MESH_INIT_OK": "1", "TEST_THREAD_OK": "1"}, capture_output=True, text=True)
+    assert result.returncode == 0 and "MESH-SECOND-RAIL" not in result.stdout, result
     outside = arguments[:2] + ["4"] + arguments[3:]
     result = subprocess.run(outside, env={"TEST_MESH_INIT_OK": "1"}, capture_output=True, text=True)
     assert result.returncode == 2 and "SERVER-RUN" not in result.stdout, result

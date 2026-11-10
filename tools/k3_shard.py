@@ -65,6 +65,8 @@ REPLICATED = {
     "kda_head_log_scale", "kda_out_norm_weight",
     "mla_q_down_weight", "mla_q_norm_weight", "mla_kv_a_weight",
     "mla_kv_a_norm_weight", "routed_norm_weight",
+    "mla_index_query_weight", "mla_index_key_weight", "mla_index_head_weight",
+    "mla_index_norm_weight", "mla_index_norm_bias",
 }
 MODEL_REPLICATED = {"model.norm.weight", "model.attnres_out_weight"}
 # output-dimension, sliced on whole head blocks: (head elements, row bytes)

@@ -167,6 +167,28 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	return differing != 0u ? 1u : 0u;
 }
 
+static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, uint32_t pad)
+{
+	const uint64_t span = (uint64_t)rows * heads * D41K_RECORD, stride = span + pad, total = stride * destinations;
+	std::vector<uint32_t> host(total);
+	float *device = 0;
+	uint32_t wrong = 0u;
+	CUDA(cudaMalloc(&device, total * sizeof(float)));
+	CUDA(cudaMemset(device, 0x7f, total * sizeof(float)));
+	D41InitRecords(device, stride, rows, heads, destinations, 0);
+	CUDA(cudaGetLastError());
+	CUDA(cudaDeviceSynchronize());
+	CUDA(cudaMemcpy(host.data(), device, total * sizeof(float), cudaMemcpyDeviceToHost));
+	CUDA(cudaFree(device));
+	for ( uint64_t index = 0u; index < total; ++index )
+	{
+		const uint64_t offset = index % stride;
+		const uint32_t expected = offset >= span ? 0x7f7f7f7fu : offset % D41K_RECORD == 0u ? 0xff800000u : 0u;
+		wrong += host[index] != expected ? 1u : 0u;
+	}
+	return wrong;
+}
+
 int main(void)
 {
 	const Case cases[] = {
@@ -182,11 +204,13 @@ int main(void)
 	for ( const Case &c : cases )
 		failures += RunCase(c, 0u);
 	const uint32_t sensitive = RunCase(cases[1], 1u);
-	if ( failures != 0u || sensitive == 0u )
+	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
+	if ( failures != 0u || sensitive == 0u || unset != 0u )
 	{
-		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s\n", failures, sensitive != 0u ? "detected" : "not detected");
+		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten\n",
+			failures, sensitive != 0u ? "detected" : "not detected", unset);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }

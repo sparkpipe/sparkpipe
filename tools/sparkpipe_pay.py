@@ -84,7 +84,7 @@ RECONCILE_DAYS = 14
 SKEW_SECONDS = 300
 SPENDING = ("/market/book-hours", "/market/book-weeks", "/market/waitlist", "/market/auto-extend")
 OWNER_ACTIONS = SPENDING + ("/market/buy", "/market/waitlist/leave")
-ACCOUNT_ROLES = {"webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
+ACCOUNT_ROLES = {"requests_erase": (("owner",), "Deleting the records of the account's requests"), "webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
                  "member_delete": (("owner",), "Removing members"), "audit": (("owner", "admin"), "The audit log")}
 AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start", "hours", "hc")), "/market/book-weeks": ("booking.weeks", ("booking", "fleet", "first", "weeks", "price")),
            "/market/waitlist": ("waitlist.lock", ("locked",)), "/market/waitlist/leave": ("waitlist.leave", ()), "/market/auto-extend": ("auto_extend.set", ("fleet", "weeks_ahead")),
@@ -106,6 +106,7 @@ TUNNEL_CHECK = 30
 GUARD_STEP = 1
 WEBHOOK_SECONDS = 20
 WEBHOOK_WORKERS = 4
+LISTEN_QUEUE = 1024
 CHUNK = re.compile(rb"[0-9A-Fa-f]{1,8}")
 WEBHOOK_SCHEMES = ("https",)
 WEBHOOKS_PER_ACCOUNT = 10
@@ -149,6 +150,7 @@ HUB_ROUTES = tuple((re.compile(pattern), scope, read) for pattern, scope, read i
 ))
 ACCOUNT_ROUTES = (
     ("GET", r"/v1/requests", "read", "requests"),
+    ("DELETE", r"/v1/requests", "write", "requests_erase"),
     ("GET", r"/v1/keys", "read", "keys"),
     ("POST", r"/v1/keys", "write", "key_create"),
     ("DELETE", r"/v1/keys/(KY[A-Z2-7]{16})", "write", "key_revoke"),
@@ -394,10 +396,15 @@ class Config:
         for item in re.split(r"[\s,]+", env.get("SPARKPIPE_FLEET_UPSTREAMS", "").strip()):
             fleet, _, url = item.partition("=")
             if item and not (re.fullmatch(r"[A-Za-z0-9_-]{1,32}", fleet) and url):
-                raise ValueError("SPARKPIPE_FLEET_UPSTREAMS lists FLEET=URL pairs, such as F1=http://127.0.0.1:18081/v1 F3=http://127.0.0.1:18083/v1")
+                raise ValueError("SPARKPIPE_FLEET_UPSTREAMS lists FLEET=URL pairs, such as F1B=http://127.0.0.1:18081/v1 F1A=http://127.0.0.1:18083/v1")
             if item:
                 self.upstreams[fleet] = upstream_field(url.rstrip("/"), "SPARKPIPE_FLEET_UPSTREAMS")
         self.hub = bool(self.pool or self.upstreams)
+        capacity = env.get("SPARKPIPE_GATEWAY_CAPACITY", "").strip()
+        if not re.fullmatch(r"[0-9]{1,12}", capacity) or int(capacity) < 1:
+            raise ValueError("SPARKPIPE_GATEWAY_CAPACITY is required: the requests the gateway serves in 10 minutes, measured with tools/gateway_capacity_check.py "
+                             "(capacity_per_window), a whole number of at least 1. Holders of an active rental share it equally per rented Fleet")
+        self.gateway_capacity = int(capacity)
         self.health_seconds = float(env.get("SPARKPIPE_PAY_HEALTH_SECONDS", "30"))
         self.reconcile_seconds = int(env.get("SPARKPIPE_PAY_RECONCILE_SECONDS", "300"))
         self.smtp = env.get("SPARKPIPE_PAY_SMTP", "127.0.0.1:25")
@@ -517,6 +524,7 @@ class Book:
         self.members = {}
         self.member_emails = {}
         self.invites = {}
+        self.erased = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -566,6 +574,8 @@ class Book:
             self.emails[data["email"]] = data["account"]
         elif kind == "acceptance":
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
+        elif kind == "records_erased":
+            self.erased[data["account"]] = data["through"]
         elif kind == "member_invite":
             self.invites[data["invite"]] = dict(data, created=line["at"], state="invited")
             for other in self.invites.values():
@@ -822,6 +832,17 @@ class Usage:
                 seen.update(record[self.ident] for record in unique)
                 added += len(unique)
         return added
+
+    def erase(self, account):
+        folder, count = os.path.join(self.folder, account), 0
+        with self.lock:
+            for name in os.listdir(folder) if os.path.isdir(folder) else []:
+                count += len(complete_lines(os.path.join(folder, name)))
+                os.remove(os.path.join(folder, name))
+                self.ids.pop((account, name[:-6]), None)
+            if os.path.isdir(folder):
+                os.rmdir(folder)
+        return count
 
     def prune(self, now):
         cutoff = (now - timedelta(days=RECORD_DAYS)).strftime("%Y-%m-%d")
@@ -1257,14 +1278,28 @@ class App:
 
     def throttle(self, kind, who):
         count, window = LIMITS[kind]
+        self.limit((kind, who), count, window, "Too many requests. Wait a few minutes and try again.")
+
+    def limit(self, key, count, window, text):
         now = time.monotonic()
         with self.lock:
-            hits = self.hits[(kind, who)]
+            hits = self.hits[key]
             while hits and hits[0] < now - window:
                 hits.popleft()
             if len(hits) >= count:
-                raise Refusal("Too many requests. Wait a few minutes and try again.", 429, "busy")
+                raise Refusal(text, 429, "busy")
             hits.append(now)
+
+    def throttle_gateway(self, account):
+        holder, rented = self.market.gateway_share(account)
+        if not holder:
+            return self.throttle("gateway", account)
+        window = LIMITS["gateway"][1]
+        rented = max(1, rented)
+        share = max(1, self.cfg.gateway_capacity // rented)
+        fleets = "1 Fleet is" if rented == 1 else f"{rented} Fleets are"
+        self.limit(("gateway-holder", account), share, window,
+                   f"This account used its share of the gateway: {share} requests per {window // 60} minutes while {fleets} rented. Wait a minute and try again.")
 
     def mail(self, to, subject, text):
         if not self.cfg.sandbox:
@@ -1481,6 +1516,8 @@ class App:
         if any(name not in found for name in ("request", "account", "fleet", "at")) or found["account"] not in self.book.accounts:
             raise Refusal("Every record names its request, a known account, its fleet and when it ran (at).", 400, "invalid_request")
         moment = market.stamp_field(found["at"], "time the request ran")
+        if found["at"] <= self.book.erased.get(found["account"], ""):
+            raise Refusal("The account had the records of its requests up to this time deleted (DPA clause 9.3).", 409, "erased")
         if not now - timedelta(days=RECORD_DAYS) <= moment <= now + timedelta(minutes=5):
             raise Refusal("A record is kept for a year: it must be from the last year, and not from the future.", 400, "invalid_request")
         owner = self.book.market.keys.get(found.get("key"))
@@ -1576,6 +1613,7 @@ class App:
         account, member, role = actor
         calls = {
             "requests": lambda: self.requests(actor, query),
+            "requests_erase": lambda: self.erase_records(account, member, "the owner's request through the API"),
             "keys": lambda: {"object": "list", "data": [self.market.key_view(r) for r in self.book.market.keys.values() if r["account"] == account and (role != "member" or r["member"] == member)]},
             "key_create": lambda: self.market.create_key(account, body, member, role),
             "key_revoke": lambda: self.market.revoke_key(account, match.group(1), member, role),
@@ -1605,6 +1643,20 @@ class App:
         found = self.need_actor(headers)
         self.require_role(found, roles, what)
         return found[0]
+
+    def erase_records(self, account, by, note):
+        now = self.market.now()
+        with self.book.lock:
+            count = self.usage.erase(account)
+            line = self.book.append("records_erased", {"account": account, "through": market.stamp(now), "records": count, "by": by, "note": note[:200], "now": market.stamp(now)})
+        self.audit(account, by, "records.erased", {"records": count, "through": line["data"]["through"]})
+        self.mail(self.cfg.notify, f"Erase the hub's request records of {account} within 30 days",
+                  f"{self.who(account)} had the records of its requests deleted on the VPS ({note[:200]}): {count} records up to {line['data']['through']}. "
+                  f"DPA clause 9.3 gives us 30 days for the hub's records too. On each hub, as the chat layer's user: python3 chat_frontend.py --config chat_frontend.json --erase-records {account} --note \"{note[:100]}\"")
+        self.mail(self.book.accounts[account]["email"], "SparkPipe deleted the records of your requests",
+                  f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)} (Data Processing Agreement clause 9.3). "
+                  f"Your bookings, payments and HC, which the law has us keep, are unchanged. Records of requests made from now on are kept for a year as before.{FOOTER}")
+        return {"erased": count, "through": line["data"]["through"]}
 
     def members(self, account):
         record, now = self.book.accounts[account], market.stamp(self.market.now())
@@ -1858,6 +1910,7 @@ class App:
         actions = {
             "/market/buy": lambda: self.buy(body, account, ip, agent),
             "/market/quote-weeks": lambda: self.market.quote_weeks(account, body),
+            "/market/quote-hours": lambda: self.market.quote_hours(account, body),
             "/market/book-hours": lambda: self.market.book_hours(account, body),
             "/market/book-weeks": lambda: self.market.book_weeks(account, body),
             "/market/waitlist": lambda: self.market.join(account, body),
@@ -2620,7 +2673,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             account, record, via, member, role = app.principal(self.headers, self.client_ip(), scope)
             if via == "cookie" and method not in ("GET", "HEAD") and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
-            app.throttle("gateway", account)
+            app.throttle_gateway(account)
             fleet, body = self.admitted(method, path, account, record)
             served, origin = app.market.route(account, fleet) if app.cfg.hub or app.cfg.sandbox else (fleet, None)
         except Refusal as error:
@@ -2828,6 +2881,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.reply(200, {"id": ident, "object": "chat.completion", "created": made, "model": ticket["model"], "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}], "usage": usage, "sparkpipe": note})
 
 
+class Server(http.server.ThreadingHTTPServer):
+    request_queue_size = LISTEN_QUEUE
+    daemon_threads = True
+
+
 def start(cfg, port=None):
     os.makedirs(cfg.data, exist_ok=True)
     app = App(cfg, Book(cfg.path("ledger.jsonl")))
@@ -2844,8 +2902,7 @@ def start(cfg, port=None):
     app.notices.prune(app.market.now())
     app.notifier.deliveries.prune(clock())
     app.notifier.sweep(app.market.now())
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", cfg.port if port is None else port), Handler)
-    server.daemon_threads = True
+    server = Server(("127.0.0.1", cfg.port if port is None else port), Handler)
     server.app = app
     return server
 
@@ -2914,6 +2971,17 @@ def uptime(app, argv):
     return 0
 
 
+def erase_records(app, argv):
+    account = app.book.emails.get(argv[2].lower())
+    if not account or not argv[3].strip():
+        print("usage: sparkpipe_pay.py erase-records EMAIL NOTE, for an existing account's owner email, with the written request as NOTE", file=sys.stderr)
+        return 2
+    found = app.erase_records(account, "operator", argv[3].strip())
+    flush(app)
+    print(f"deleted {found['erased']} request records of {argv[2]} up to {found['through']} (DPA clause 9.3); the customer is emailed, and the hub's records are deleted on the hub")
+    return 0
+
+
 def refund(app, argv):
     account = {"bank": argv[6], "accountNumber": argv[7], "holderName": argv[8]} if len(argv) == 9 else None
     try:
@@ -2978,6 +3046,7 @@ COMMANDS = {
     ("credit", 5): lambda cfg, app, argv: credit(app, argv),
     ("refund", 6): lambda cfg, app, argv: refund(app, argv),
     ("uptime", 5): lambda cfg, app, argv: uptime(app, argv),
+    ("erase-records", 4): lambda cfg, app, argv: erase_records(app, argv),
     ("refund", 9): lambda cfg, app, argv: refund(app, argv),
     ("tax-invoices", 2): lambda cfg, app, argv: tax_invoices(app, argv),
     ("tax-invoice", 4): lambda cfg, app, argv: tax_invoice(app, argv),
@@ -2997,7 +3066,7 @@ def main(argv):
     if command:
         return command(cfg, App(cfg, Book(cfg.path("ledger.jsonl"))), argv)
     if argv[1:] not in ([], ["serve"]):
-        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON|uptime FLEET FROM TO]", file=sys.stderr)
+        print("usage: sparkpipe_pay.py [serve|verify|maintenance FLEET YYYY-MM-DD [HOURS]|credit EMAIL HC NOTE|release ORDER|refund ORDER CLAUSE KRW|USD|all REASON [BANK ACCOUNT HOLDER]|tax-invoices|tax-invoice ORDER NUMBER|swift-confirm ORDER|REFERENCE USD [NOTE]|swift-cancel ORDER|REFERENCE REASON|uptime FLEET FROM TO|erase-records EMAIL NOTE]", file=sys.stderr)
         return 2
     server = start(cfg)
     app = server.app

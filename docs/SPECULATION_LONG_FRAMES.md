@@ -72,6 +72,14 @@ document is the contract for that path. Measured results are in
   the KDA state and conv windows with the forward's own conv, normalisation
   and delta-rule kernels through the wave's row indices, so the folded state
   equals a committed pass over the kept rows.
+- The shared delta-rule launcher (`LmDeltaRuleLaunch`) takes the chunked
+  recurrence only for a committed span that the step's row ranges bound, 16 or
+  more rows per sequence. A `keep_rows` replay passes the per-sequence kept
+  counts and always runs the sequential recurrence that the verify frame and a
+  one-row decode run, so keeping k rows of any frame leaves the state of k
+  one-row decodes bit for bit (`tests/test_glm5_next_verify_cuda.py`,
+  `tests/test_qwen38_verify_frames.py`). The chunked kernel's summation order
+  differs, so a chunked fold would change numerics and needs an accuracy gate.
 - A recurrent model without `keep_rows` refuses VERIFY.
 - A verify frame drops the lane's staged checkpoint page: verify sealing does
   not stage, so a staged page from an earlier publish would otherwise receive

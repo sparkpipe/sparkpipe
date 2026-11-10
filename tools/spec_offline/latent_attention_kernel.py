@@ -53,7 +53,7 @@ def split_rows_for(total_rows, tiles, block_n):
     return max(block_n, triton.cdiv(triton.cdiv(total_rows * tiles, TARGET_PROGRAMS), block_n) * block_n)
 
 
-def fused_latent_attention(absorbed, query_rope, rows, kv_rank, scale, config=None):
+def fused_latent_partials(absorbed, query_rope, rows, kv_rank, scale, config=None):
     config = config or CONFIG
     block_m, block_n = config["BLOCK_M"], config["BLOCK_N"]
     parts = [p if p.stride(1) == 1 and p.stride(0) == p.shape[1] else p.contiguous()
@@ -75,6 +75,11 @@ def fused_latent_attention(absorbed, query_rope, rows, kv_rank, scale, config=No
                                                    LATENT=kv_rank, ROPE=rope, BLOCK_M=block_m, BLOCK_N=block_n,
                                                    num_warps=config["num_warps"], num_stages=config["num_stages"])
     peak = stats[..., 0]
-    weight = torch.exp2(peak - peak.amax(0))
-    total = (weight * stats[..., 1]).sum(0)
-    return (torch.einsum("sm,smr->mr", weight, partial) / total[:, None]).view(blocks, heads, kv_rank)
+    best = peak.amax(0)
+    weight = torch.exp2(peak - best)
+    return torch.einsum("sm,smr->mr", weight, partial), best, (weight * stats[..., 1]).sum(0)
+
+
+def fused_latent_attention(absorbed, query_rope, rows, kv_rank, scale, config=None):
+    accumulated, _, total = fused_latent_partials(absorbed, query_rope, rows, kv_rank, scale, config)
+    return (accumulated / total[:, None]).view(absorbed.shape[0], absorbed.shape[1], kv_rank)

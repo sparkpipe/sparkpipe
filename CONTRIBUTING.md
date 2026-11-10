@@ -1,6 +1,6 @@
 # Contributing to SparkPipe
 
-Thank you for helping. Three things to know before you open a pull request:
+Thank you for helping. Four things to know before you open a pull request:
 
 1. **Contributor License Agreement.** We merge outside contributions only from contributors who have agreed to the [SparkPipe Contributor License Agreement](CLA.md).
    - You agree by posting the sentence at the end of that file in your first pull request, under the GitHub account you contribute from.
@@ -10,5 +10,6 @@ Thank you for helping. Three things to know before you open a pull request:
    - Shared code stays model-neutral and device-neutral.
    - Tests check behaviour, not wording.
 3. **Third-party code.** Anything you copy or adapt from elsewhere needs an entry in [`NOTICE`](NOTICE), with its upstream, commit and license. `tests/test_third_party_notices.py` checks this.
+4. **Separately licensed modules.** SparkPipe can use separately licensed modules, such as its memory program, which [`NOTICE`](NOTICE) describes. SparkPipe reaches a module only through its interface, and we don't accept contributions that implement a module's patented methods.
 
 Use your real name and a working email address in your commits.

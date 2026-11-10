@@ -33,7 +33,9 @@ MANIFEST written last. Bare line references (`:NNN`) are to
 A node's rank is its position in `FLEET_HOSTS` (`:8-23`). Pack names use hex
 ranks.
 
-Network (lead-dev facts and read-only checks, 2026-09-28):
+Network: the two switched rails, their boot configuration and the rules for
+RDMA traffic are in [FLEET_FABRIC.md](FLEET_FABRIC.md). The hub's 10 GbE path
+(facts from 2026-09-28):
 
 - The hub's `eno1` (`10.10.250.2/30`) is cabled to sparkf's `enP7s7`
   (`10.10.250.1`) at 10 GbE. `enP7s7` was sparkf's management port
@@ -163,7 +165,9 @@ the agent, `~/sparkdata/weightd/sparkpipe_weightd` and
      `config/model_resident.json` restarts the root: TERM, 15 s grace,
      `kill -9` fallback, memory gate, start;
    - a changed `bin/sparkpipe_model_api` only drains the API;
-   - a changed `config/stage_*.json` only relinks `config/stage.json`.
+   - a changed `config/stage_*.json` restarts nothing; the deployment names
+     each rank's own stage file, so the next start reads it (no
+     `config/stage.json` link).
 
    The root's deployment file is `model_resident.json` at the top of the root
    (`:186`, `:201`, and the hub MANIFEST), which matches none of these patterns.
@@ -405,8 +409,9 @@ Since 2026-10-08 one model holds the fleet at a time. The hub runs:
   `deployment/hub/model_swap.json`, unit `sparkpipe-swap` from
   `~/sparkpipe-swap`, `127.0.0.1:8440`, every call with the token in
   `/srv/workspace/sparkpipe/swap-controller/token`). It stops the other
-  models, starts the requested model's engines on every node, then its
-  engine API;
+  models with their hub services, starts the requested model's hub
+  services (`hub_start`, the draft server, which the hub's one GPU cannot
+  hold for two models), its engines on every node, then its engine API;
 - one engine API at a time: `sparkpipe_model_api` from the model's
   `~/<model>-kv-api` (`bin/`, `runtime/lib/<adapter>.so`,
   `model_resident.json`), started by the controller as the transient unit
@@ -521,6 +526,20 @@ To bootstrap one node:
   unlimited`, `:3`). Get a backtrace with `sudo -n gdb -p PID -batch -ex bt`.
   The engine runs with `CUDA_ENABLE_COREDUMP_ON_EXCEPTION=0` (`:195`), because
   the in-process GPU dump wedged engines past TERM on 09-18.
+- **Mail `SparkPipe: <node> dead`.** The Mac telemetry collector got no fresh
+  sample from that node for 5 minutes: ssh failed, or the node's monitor
+  stopped. It mails once per death and nothing on recovery, and nodes that die
+  together share one mail. A node already failing when the collector first
+  sees it mails nothing.
+  - It covers the 19 dashboard nodes, not the hub. It runs on the Mac and sends
+    through the hub, so a dead Mac sends nothing, and a dead hub holds the mail
+    (retried each minute) only while the node stays dead.
+  - Code: `tools/telemetry/spark_telemetry_alert.py`, with the sender in
+    `spark_telemetry_mail.py`. State:
+    `~/.local/share/ds4_telemetry/alert_state.json` on the Mac. The recipient
+    (`telemetry-alert-to`) and the SMTP password are in
+    `/srv/workspace/sparkpipe/secrets/` on the hub. Deploy with
+    `tools/telemetry/install.sh hub` and `tools/telemetry/install.sh mac`.
 - **Logs.** The engine logs to `~/sparkdata/<root>/residentd.log`, rotated at
   each start with 20 kept (`:473-477`). weightd logs to `~/weightd.log`. Each
   model's API logs to `/srv/workspace/sparkpipe/logs/<model>-kv-api.log` on the

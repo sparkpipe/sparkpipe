@@ -738,22 +738,6 @@ static SparkStatus SparkKvSnapshotReadExact(int descriptor,void *data,uint64_t b
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SparkKvSnapshotSyncDirectory(const SparkKvSnapshotStore *store,uint32_t shard)
-{
-	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	SparkStatus status = SPARK_STATUS_OK;
-	int descriptor;
-	if ( (size_t)snprintf(path,sizeof(path),"%s/%02x",store->directory,shard) >= sizeof(path) )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	descriptor = open(path,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if ( descriptor < 0 )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( fsync(descriptor) != 0 )
-		status = SPARK_STATUS_IO_ERROR;
-	(void)close(descriptor);
-	SPARK_RETURN(status);
-}
-
 static SparkStatus SparkKvSnapshotFileBytes(const uint64_t *bytes,uint32_t segment_count,uint64_t *file_bytes)
 {
 	uint64_t cursor = SparkKvSnapshotAlign(sizeof(SparkKvSnapshotFileHeader));
@@ -828,12 +812,6 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 		status = failure == ENOSPC ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_IO_ERROR;
 		step = "truncate";
 	}
-	if ( status == SPARK_STATUS_OK && fsync(descriptor) != 0 )
-	{
-		failure = errno;
-		status = SPARK_STATUS_IO_ERROR;
-		step = "fsync";
-	}
 	if ( close(descriptor) != 0 && status == SPARK_STATUS_OK )
 	{
 		failure = errno;
@@ -852,13 +830,7 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 		(void)unlink(temporary);
 		SPARK_RETURN(status);
 	}
-	status = SparkKvSnapshotSyncDirectory(store,header->key.identity_sha256[0]);
-	if ( status != SPARK_STATUS_OK )
-	{
-		failure = errno;
-		fprintf(stderr,"KV-SNAPSHOT write %s failed at directory sync errno=%d (%s)\n",path,failure,strerror(failure));
-	}
-	SPARK_RETURN(status);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
@@ -1831,6 +1803,28 @@ SparkStatus SparkKvSnapshotFlush(SparkKvSnapshotStore *store)
 		pthread_cond_wait(&runtime->idle,&runtime->mutex);
 	pthread_mutex_unlock(&runtime->mutex);
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkKvSnapshotSyncDisk(SparkKvSnapshotStore *store)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	int descriptor;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor = open(store->directory,O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if ( descriptor < 0 )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+#if defined(__linux__)
+	if ( syncfs(descriptor) != 0 )
+	{
+		fprintf(stderr,"KV-SNAPSHOT disk sync of %s failed errno=%d (%s)\n",store->directory,errno,strerror(errno));
+		status = SPARK_STATUS_IO_ERROR;
+	}
+#else
+	sync();
+#endif
+	(void)close(descriptor);
+	SPARK_RETURN(status);
 }
 
 SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotSegment *segments,uint32_t segment_count)

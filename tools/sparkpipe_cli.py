@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 try:
@@ -39,6 +39,7 @@ UPSTREAM_TIMEOUT = 900
 BODY_LIMIT = 32 * 1024 * 1024
 CHUNK = 65536
 PROXY_PORT = 8790
+STREAM_IDLE_MS = 1800000
 PLATFORM = sys.platform
 TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -57,9 +58,14 @@ CLAUDE_MODELS = {"claude-opus-5-5": "main", "claude-sonnet-5-5": "main", "claude
 CODEX_ROOT = ("model", "model_provider")
 CODEX_TABLES = (("model_providers", "sparkpipe"), ("mcp_servers", "sparkpipe"))
 CODEX_PROFILE = "sparkpipe"
+CLAUDE_MCP = ("mcpServers", "sparkpipe")
 OPENCODE_AGENTS = {"general": "main", "explore": "main", "compaction": "main", "title": "small", "summary": "small"}
+OPENCODE_OWNED = (("$schema",), ("provider", "sparkpipe"), ("model",), ("small_model",), *(("agent", name, "model") for name in OPENCODE_AGENTS),
+                  ("mcp", "sparkpipe"), ("compaction", "prune"), ("share",))
+SETUP_RECORD = "setup.json"
+MISSING = object()
 MODEL_FIELDS = ("context_window", "max_output_tokens", "sequences")
-PROXY_PATHS = frozenset(("/v1/messages", "/v1/messages/count_tokens", "/v1/responses", "/v1/chat/completions", "/v1/models", "/v1/codex/models",
+PROXY_PATHS = frozenset(("/v1/messages", "/v1/messages/count_tokens", "/v1/responses", "/v1/chat/completions", "/v1/models", "/v1/models/aliases", "/v1/codex/models",
                          "/v1/tokenize", "/v1/detokenize", "/api/hello", "/mcp"))
 PROXY_HOSTS = ("127.0.0.1", "localhost")
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "proxy-connection", "te", "trailer", "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
@@ -155,16 +161,129 @@ def backup(path):
     return found
 
 
-def save_config(path, text, mode):
+def record_path():
+    return config_path().with_name(SETUP_RECORD)
+
+
+def setup_files(record):
+    files = record.get("files")
+    return {real: entry for real, entry in files.items() if isinstance(entry, dict)} if isinstance(files, dict) else {}
+
+
+def commit(harness, kind, path, text, mode, owned):
     path = Path(path)
-    if not path.exists():
-        write_file(path, text, mode)
-        return f"Wrote {path}."
-    if path.read_text(encoding="utf-8") == text:
+    real = os.path.realpath(path)
+    where = record_path()
+    record = read_json(where)
+    files = setup_files(record)
+    before = path.read_text(encoding="utf-8") if path.exists() else None
+    kept = None
+    entry = files.get(real)
+    if entry is None:
+        kept = backup(path) if before is not None else None
+        entry = {"harness": harness, "kind": kind, "original": str(kept) if kept else None, "owned": []}
+    paths = {tuple(keys) for keys in entry.get("owned", []) if isinstance(keys, list)} | {tuple(keys) for keys in owned}
+    entry["owned"] = [list(keys) for keys in sorted(paths)]
+    files[real] = entry
+    write_file(where, json_text(dict(record, files=files)), 0o600)
+    if before == text:
         return f"{path} already holds these settings."
-    kept = backup(path)
+    if before is not None and kept is None:
+        kept = backup(path)
     write_file(path, text, mode)
-    return f"Wrote {path}; the previous version is {kept}."
+    return f"Wrote {path}; the previous version is {kept}." if kept else f"Wrote {path}."
+
+
+def lookup(doc, keys):
+    for key in keys:
+        if not isinstance(doc, dict) or key not in doc:
+            return MISSING
+        doc = doc[key]
+    return doc
+
+
+def restore(current, original, keys, path):
+    value = lookup(original, keys)
+    parent = current
+    for key in keys[:-1]:
+        found = parent.get(key, MISSING)
+        if found is MISSING:
+            if value is MISSING:
+                return
+            found = parent[key] = {}
+        elif not isinstance(found, dict):
+            raise Failure(f"{path}: {'.'.join(keys[:-1])} is no longer a JSON object, so sparkpipe setup --undo cannot restore it. Nothing was changed.")
+        parent = found
+    if value is MISSING:
+        parent.pop(keys[-1], None)
+    else:
+        parent[keys[-1]] = value
+    for depth in range(len(keys) - 1, 0, -1):
+        if lookup(current, keys[:depth]) == {} and lookup(original, keys[:depth]) is MISSING:
+            del lookup(current, keys[:depth - 1])[keys[depth - 1]]
+
+
+def codex_values(doc):
+    return [doc.get(name) for name in CODEX_ROOT] + [dig(doc, (top,)).get(name) for top, name in CODEX_TABLES]
+
+
+def undo_codex(path, current, original):
+    _, root, owned = split_codex(original)
+    text = codex_text(root, split_codex(current)[0], [owned])
+    if tomllib is None:
+        raise Failure(f"Undoing the SparkPipe settings in {path} safely needs Python 3.11 or later: run this again with Python 3.11 or later. Nothing was changed.")
+    try:
+        new, now, old = (tomllib.loads(source) for source in (text, current, original))
+    except tomllib.TOMLDecodeError as error:
+        raise Failure(f"{path}: undoing the SparkPipe settings would not leave valid TOML ({error}); nothing was changed.")
+    if codex_others(new) != codex_others(now) or codex_values(new) != codex_values(old):
+        raise Failure(f"{path}: the SparkPipe settings could not be undone without changing others; nothing was changed.")
+    return text
+
+
+def undone_text(path, entry, before):
+    original = entry.get("original")
+    if entry.get("kind") == "whole":
+        return read_text(original) if original else None
+    if entry.get("kind") == "codex":
+        text = undo_codex(path, before, read_text(original) if original else "")
+        return text if text.strip() or original else None
+    current, old = read_json(path), read_json(original) if original else {}
+    for keys in entry.get("owned", []):
+        restore(current, old, keys, path)
+    return json_text(current) if current or original else None
+
+
+def undo_file(real, entry):
+    path, original = Path(real), entry.get("original")
+    if not path.exists():
+        return f"{path} is gone; there is nothing to restore."
+    if original is not None and not Path(original).is_file():
+        raise Failure(f"{path}: its backup {original} is gone, so sparkpipe setup --undo cannot restore it. Nothing was changed.")
+    before = path.read_text(encoding="utf-8")
+    text = undone_text(path, entry, before)
+    if text == before:
+        return f"{path} already holds the settings it had before sparkpipe setup."
+    kept = backup(path)
+    if text is None:
+        path.unlink()
+        return f"Removed {path}, which sparkpipe setup created; its last version is {kept}."
+    write_file(path, text, file_mode(path, 0o600))
+    return f"Restored {path} as it was before sparkpipe setup, keeping every setting it does not own; the version before this undo is {kept}."
+
+
+def setup_undo(harness):
+    where = record_path()
+    record = read_json(where)
+    files = setup_files(record)
+    chosen = [real for real, entry in files.items() if harness in (None, entry.get("harness"))]
+    if not chosen:
+        print(f"sparkpipe setup has changed no {harness or 'harness'} settings on this machine; there is nothing to undo.")
+        return 0
+    for real in chosen:
+        print(undo_file(real, files.pop(real)))
+        write_file(where, json_text(dict(record, files=files)), 0o600)
+    return 0
 
 
 def credential(value, where):
@@ -468,17 +587,6 @@ def slot(text):
     return f"{found.group(1)}T{found.group(2)}:00Z"
 
 
-def hour_price(state, fleet, hours):
-    found = next((f for f in state.get("fleets") or [] if isinstance(f, dict) and f.get("id") == fleet), None)
-    if not found:
-        raise Failure(f"{fleet} is not on the Fleet List.")
-    try:
-        price = Decimal(hours) * Decimal(str((state.get("bookings") or {})["hourHC"])) * Decimal(str(found["rate"]))
-    except (KeyError, TypeError, InvalidOperation):
-        raise Failure("The market did not give the price of an hour and the fleet's Rate.")
-    return price.quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
-
-
 def book_week(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "weeks": ctx.args.weeks}
@@ -494,8 +602,10 @@ def book_week(ctx):
 def book_hours(ctx):
     client = ctx.client()
     request = {"fleet": ctx.args.fleet_id, "start": slot(ctx.args.start), "hours": ctx.args.hours}
-    price = hour_price(client.call("GET", "/market/state", auth="session"), request["fleet"], request["hours"])
-    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {price} HC?")
+    plan = client.call("POST", "/market/quote-hours", request, auth="session")
+    off = percent(plan.get("discount"))
+    discount = f" ({off} off)" if off else ""
+    confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {plan.get('price')} HC{discount}?")
     booked = spend(ctx, client, "/market/book-hours", request)
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('start')} to {booked.get('end')} for {booked.get('hc')} HC."])
     return 0
@@ -517,9 +627,14 @@ def waitlist_lock(ctx):
 
 def waitlist_leave(ctx):
     client = ctx.client()
-    confirm(ctx, "Leave the waitlist and unlock your HC? You lose your position.")
+    confirm(ctx, "Leave the waitlist and unlock your HC? You lose your position, and what the waitlist discount saved on hours booked while waiting is repaid from your lock.")
     found = client.call("POST", "/market/waitlist/leave", {}, auth="session")
-    emit(ctx, found, ["Left the waitlist; your HC is unlocked."])
+    repaid = found.get("repaid")
+    try:
+        owed = Decimal(str(repaid)) if repaid is not None else Decimal(0)
+    except InvalidOperation:
+        owed = Decimal(0)
+    emit(ctx, found, [f"Left the waitlist; {repaid} HC of waitlist discount was repaid from your lock and the rest of your HC is unlocked." if owed > 0 else "Left the waitlist; your HC is unlocked."])
     return 0
 
 
@@ -1013,6 +1128,7 @@ def claude_env(api, key, main, haiku, context):
         "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
         "CLAUDE_CODE_SUBAGENT_MODEL": main,
         "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
+        "CLAUDE_STREAM_IDLE_TIMEOUT_MS": str(STREAM_IDLE_MS),
     }
 
 
@@ -1022,17 +1138,54 @@ def object_fields(path, data, names):
             raise Failure(f"{path}: {name} is not a JSON object; fix it and run this again. Nothing was changed.")
 
 
+def undoing(ctx):
+    return getattr(ctx.args, "undo", False) or getattr(ctx.args, "undo_all", False)
+
+
+def claude_home():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def claude_state():
+    modern = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home()) / ".claude.json"
+    legacy = claude_home() / ".config.json"
+    with contextlib.suppress(OSError):
+        found = legacy.stat()
+        if stat.S_ISREG(found.st_mode) and (found.st_size > 0 or (found.st_mode & 0o222 and not modern.exists())):
+            return legacy
+    return modern
+
+
+def claude_mcp(api, key):
+    return {"type": "http", "url": api + "/mcp", "headers": {"Authorization": "Bearer " + key}}
+
+
+def setup_all(ctx):
+    if not ctx.args.undo_all:
+        raise Failure("Name a harness: sparkpipe setup claude-code, codex or opencode. sparkpipe setup --undo restores what setup changed.")
+    return setup_undo(None)
+
+
 def setup_claude_code(ctx):
+    if undoing(ctx):
+        return setup_undo("claude-code")
     client, main, haiku, listing = fleet_models(ctx, "claude-*")
     context = limits(listing, main, ("context_window",))["context_window"]
-    path = Path(ctx.args.settings or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json")
+    path = Path(ctx.args.settings or claude_home() / "settings.json")
     settings = read_json(path)
     object_fields(path, settings, ("env", "modelOverrides"))
-    settings["env"] = dict(settings.get("env", {}), **claude_env(ctx.api, client.key, main, haiku, context))
+    state_path = claude_state()
+    state = read_json(state_path)
+    object_fields(state_path, state, (CLAUDE_MCP[0],))
+    env = claude_env(ctx.api, client.key, main, haiku, context)
+    settings["env"] = dict(settings.get("env", {}), **env)
     settings["modelOverrides"] = dict(settings.get("modelOverrides", {}), **{name: main if role == "main" else haiku for name, role in CLAUDE_MODELS.items()})
-    print(save_config(path, json_text(settings), 0o600))
+    state.setdefault(CLAUDE_MCP[0], {})[CLAUDE_MCP[1]] = claude_mcp(ctx.api, client.key)
+    owned = [("env", name) for name in env] + [("modelOverrides", name) for name in CLAUDE_MODELS]
+    print(commit("claude-code", "json", path, json_text(settings), 0o600, owned))
+    print(commit("claude-code", "json", state_path, json_text(state), 0o600, [CLAUDE_MCP]))
     background = f", and {haiku} for background calls" if haiku != main else ""
-    print(f"Claude Code uses {main} on {ctx.api}{background}.")
+    print(f"Claude Code uses {main} on {ctx.api}{background}, with the fleet's MCP server as sparkpipe. sparkpipe setup claude-code --undo restores the previous settings.")
     if "ANTHROPIC_API_KEY" in settings["env"] or os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is also set: Claude Code would send it to SparkPipe as X-Api-Key. Remove it from your settings and shell.")
     return 0
@@ -1086,23 +1239,36 @@ def codex_owned(table):
     return any(table[:2] == owned for owned in CODEX_TABLES)
 
 
-def merge_codex(text, root, tables):
-    kept, table = [], ()
+def trimmed(lines):
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
+
+
+def split_codex(text):
+    kept, root, owned, table = [], [], [], ()
     for line in text.splitlines():
         header = toml_header(line)
         if header is not None:
             table = header
-        if (table and codex_owned(table)) or (not table and toml_key(line) in CODEX_ROOT):
-            continue
-        kept.append(line)
-    while kept and not kept[0].strip():
-        kept.pop(0)
-    while kept and not kept[-1].strip():
-        kept.pop()
-    parts = ["\n".join(toml_pairs(root))]
-    parts += ["\n".join(kept)] if kept else []
-    parts += [toml_block(path, pairs) for path, pairs in tables]
-    return "\n\n".join(parts) + "\n"
+        if table and codex_owned(table):
+            owned.append(line)
+        elif not table and toml_key(line) in CODEX_ROOT:
+            root.append(line)
+        else:
+            kept.append(line)
+    return trimmed(kept), trimmed(root), trimmed(owned)
+
+
+def codex_text(root, kept, blocks):
+    parts = [part for part in (root, kept, *blocks) if part]
+    return "\n\n".join(parts) + "\n" if parts else ""
+
+
+def merge_codex(text, root, tables):
+    return codex_text("\n".join(toml_pairs(root)), split_codex(text)[0], [toml_block(path, pairs) for path, pairs in tables])
 
 
 def codex_tables(api):
@@ -1155,6 +1321,8 @@ def check_codex(path, before, after, root, tables):
 
 
 def setup_codex(ctx):
+    if undoing(ctx):
+        return setup_undo("codex")
     client, main, _, listing = fleet_models(ctx, "gpt-*")
     found = limits(listing, main)
     path = Path(ctx.args.config or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
@@ -1163,9 +1331,10 @@ def setup_codex(ctx):
     root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api)
     after = merge_codex(before, root, tables)
     check_codex(path, before, after, root, tables)
-    print(save_config(path, after, file_mode(path, 0o600)))
-    print(save_config(profile, codex_profile(main, found), file_mode(profile, 0o600)))
-    print(f"Codex uses {main} on {ctx.api}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents.")
+    print(commit("codex", "codex", path, after, file_mode(path, 0o600), ()))
+    print(commit("codex", "whole", profile, codex_profile(main, found), file_mode(profile, 0o600), ()))
+    print(f"Codex uses {main} on {ctx.api}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents. "
+          "sparkpipe setup codex --undo restores the previous settings.")
     key_reminder(client, "Codex")
     return 0
 
@@ -1179,6 +1348,8 @@ def opencode_provider(api, main, small, listing):
 
 
 def setup_opencode(ctx):
+    if undoing(ctx):
+        return setup_undo("opencode")
     client, main, small, listing = fleet_models(ctx, "claude-*")
     path = Path(ctx.args.config or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode" / "opencode.json")
     settings = read_json(path)
@@ -1194,8 +1365,8 @@ def setup_opencode(ctx):
     if settings.get("compaction", {}).get("prune"):
         settings["compaction"]["prune"] = False
     settings["share"] = "disabled"
-    print(save_config(path, json_text(settings), file_mode(path, 0o600)))
-    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}, and sparkpipe/{small} for titles and summaries.")
+    print(commit("opencode", "json", path, json_text(settings), file_mode(path, 0o600), OPENCODE_OWNED))
+    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}, and sparkpipe/{small} for titles and summaries. sparkpipe setup opencode --undo restores the previous settings.")
     key_reminder(client, "OpenCode")
     return 0
 
@@ -1380,8 +1551,8 @@ class ProxyServer(http.server.ThreadingHTTPServer):
         sys.stderr.write(f"sparkpipe proxy: a request from {client_address[0]} failed ({sys.exc_info()[0].__name__}).\n")
 
 
-def proxy_server(api, key, fleet, port, retries, max_wait, token, log=True):
-    server = ProxyServer(("127.0.0.1", port), ProxyHandler)
+def proxy_server(api, key, fleet, port, retries, max_wait, token, log=True, handler=ProxyHandler):
+    server = ProxyServer(("127.0.0.1", port), handler)
     server.settings = {"api": api, "base": urllib.parse.urlsplit(api).path, "key": key, "fleet": fleet, "retries": retries, "max_wait": max_wait, "token": token, "log": log}
     return server
 
@@ -1454,8 +1625,10 @@ def account_commands(commands, base):
 
 def fleet_commands(commands, base, fleet):
     leaf(commands, "status", status, [base, fleet], "Holdings, deadlines and the fleet's working state")
-    setup = commands.add_parser("setup", help="Configure a coding agent for the fleet").add_subparsers(dest="action", metavar="HARNESS")
-    setup.required = True
+    harnesses = commands.add_parser("setup", help="Configure a coding agent for the fleet", description="Configure a coding agent for the fleet, or undo what setup changed")
+    harnesses.add_argument("--undo", dest="undo_all", action="store_true", help="restore every file sparkpipe setup changed, keeping the settings it does not own")
+    harnesses.set_defaults(run=setup_all)
+    setup = harnesses.add_subparsers(dest="action", metavar="HARNESS")
     claude = leaf(setup, "claude-code", setup_claude_code, [base, fleet], "Configure Claude Code")
     claude.add_argument("--settings", help="the settings file (default ~/.claude/settings.json)")
     codex = leaf(setup, "codex", setup_codex, [base, fleet], "Configure Codex")
@@ -1464,6 +1637,7 @@ def fleet_commands(commands, base, fleet):
     opencode.add_argument("--config", help="the config file (default ~/.config/opencode/opencode.json)")
     for command in (claude, codex, opencode):
         command.add_argument("--model", help="the model to use (default: the fleet's alias table)")
+        command.add_argument("--undo", action="store_true", help="restore the files this setup changed, keeping the settings it does not own")
     for command in (claude, opencode):
         command.add_argument("--haiku", help="the model for background calls")
     fetch_ = leaf(commands, "fetch", fetch, [base, fleet], "Fetch from a source into the fleet's storage: fetch SOURCE PATH, fetch ls, fetch resume ID, fetch cancel ID")
