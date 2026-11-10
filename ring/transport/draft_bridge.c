@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_draft_bridge.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <arpa/inet.h>
@@ -23,11 +24,6 @@
 #define SPARK_DRAFT_BRIDGE_US_PER_MS 1000u
 #define SPARK_DRAFT_BRIDGE_DISCONNECTED_FD (-1)
 
-#ifdef MSG_NOSIGNAL
-#define SPARK_DRAFT_BRIDGE_SEND_FLAGS MSG_NOSIGNAL
-#else
-#define SPARK_DRAFT_BRIDGE_SEND_FLAGS 0
-#endif
 
 struct SparkDraftBridge
 {
@@ -300,64 +296,6 @@ static SparkStatus SparkDraftBridgeConnect(
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     bridge->socket_fd = socket_fd;
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkDraftBridgeWriteAll(
-    int socket_fd,
-    const uint8_t *data,
-    uint64_t data_bytes)
-{
-    uint64_t offset;
-    ssize_t written;
-
-    offset = 0u;
-    while (offset < data_bytes)
-    {
-        written = send(
-            socket_fd,
-            data + offset,
-            (size_t)(data_bytes - offset),
-            SPARK_DRAFT_BRIDGE_SEND_FLAGS);
-        if (written < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (written <= 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        offset += (uint64_t)written;
-    }
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkDraftBridgeReadAll(
-    int socket_fd,
-    uint8_t *data,
-    uint64_t data_bytes)
-{
-    uint64_t offset;
-    ssize_t received;
-
-    offset = 0u;
-    while (offset < data_bytes)
-    {
-        received = recv(
-            socket_fd,
-            data + offset,
-            (size_t)(data_bytes - offset),
-            0);
-        if (received < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (received <= 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        offset += (uint64_t)received;
-    }
     return SPARK_STATUS_OK;
 }
 
@@ -640,7 +578,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     }
     request_bytes = (uint64_t)(cursor - bridge->request_buffer);
 
-    status = SparkDraftBridgeWriteAll(
+    status = SparkIoSendAll(
         bridge->socket_fd,
         bridge->request_buffer,
         request_bytes);
@@ -648,7 +586,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     {
         return SparkDraftBridgeFailTransport(bridge);
     }
-    status = SparkDraftBridgeReadAll(
+    status = SparkIoRecvAll(
         bridge->socket_fd,
         bridge->response_buffer,
         SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES);
@@ -678,7 +616,7 @@ SparkStatus SparkDraftBridgeProposeTree(
     }
     response_node_bytes =
         (uint64_t)node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES;
-    status = SparkDraftBridgeReadAll(
+    status = SparkIoRecvAll(
         bridge->socket_fd,
         bridge->response_buffer + SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES,
         response_node_bytes + SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES);

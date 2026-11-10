@@ -3,6 +3,7 @@
 #endif
 
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_worker.h"
@@ -5145,85 +5146,6 @@ static SparkStatus SparkWeightdDeadlineRemaining(uint64_t deadline_ns,
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkWeightdClientWriteAll(SparkWeightdClient *client,
-    const uint8_t *buffer,
-    uint32_t bytes,
-    uint64_t deadline_ns)
-{
-    uint32_t written = 0u;
-    while (written < bytes)
-    {
-        ssize_t chunk = send(client->fd, buffer + written, bytes - written,
-            MSG_NOSIGNAL);
-        int timeout_ms;
-        if (chunk < 0)
-        {
-            struct pollfd poll_fd;
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-            {
-                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-            }
-            poll_fd.fd = client->fd;
-            poll_fd.events = POLLOUT;
-            poll_fd.revents = 0;
-            if (SparkWeightdDeadlineRemaining(deadline_ns, &timeout_ms) !=
-                SPARK_STATUS_OK)
-            {
-                SPARK_FAIL(SPARK_STATUS_BUSY);
-            }
-            if (poll(&poll_fd, 1u, timeout_ms) <= 0)
-            {
-                SPARK_FAIL(SPARK_STATUS_BUSY);
-            }
-            continue;
-        }
-        written += (uint32_t)chunk;
-    }
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkWeightdClientReadAll(SparkWeightdClient *client,
-    uint8_t *buffer,
-    uint32_t bytes,
-    uint64_t deadline_ns)
-{
-    uint32_t received = 0u;
-    while (received < bytes)
-    {
-        ssize_t chunk;
-        struct pollfd poll_fd;
-        int timeout_ms;
-        SparkStatus deadline_status = SparkWeightdDeadlineRemaining(
-            deadline_ns, &timeout_ms);
-        if (deadline_status != SPARK_STATUS_OK)
-        {
-            SPARK_RETURN(deadline_status);
-        }
-        poll_fd.fd = client->fd;
-        poll_fd.events = POLLIN;
-        poll_fd.revents = 0;
-        if (poll(&poll_fd, 1u, timeout_ms) <= 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_BUSY);
-        }
-        chunk = recv(client->fd, buffer + received, bytes - received, 0);
-        if (chunk <= 0)
-        {
-            if (chunk < 0 && errno == EINTR)
-            {
-                continue;
-            }
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        received += (uint32_t)chunk;
-    }
-    return SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
     const void *request,
     uint32_t request_bytes,
@@ -5243,9 +5165,9 @@ static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
     if (now == 0ull || timeout > UINT64_MAX - now)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     deadline = now + timeout;
-    status = SparkWeightdClientWriteAll(client,request,request_bytes,deadline);
+    status = SparkIoSendAllBefore(client->fd,request,request_bytes,deadline);
     if (status == SPARK_STATUS_OK)
-        status = SparkWeightdClientReadAll(client,response,response_bytes,deadline);
+        status = SparkIoRecvAllBefore(client->fd,response,response_bytes,deadline);
     if (status == SPARK_STATUS_OK)
         status = SparkWeightdIpcValidateHeader(response_header,response_bytes,
             SparkWeightdKindResultKind(request_header->kind));
@@ -5697,7 +5619,7 @@ static SparkStatus SparkWeightdClientAttachLazyKind(SparkWeightdClient *client,
         deadline = now + (timeout_nanoseconds != 0ull
             ? timeout_nanoseconds
             : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
-        status = SparkWeightdClientWriteAll(client,
+        status = SparkIoSendAllBefore(client->fd,
             (const uint8_t *)&wire, SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES,
             deadline);
         if (status == SPARK_STATUS_OK)
@@ -6279,7 +6201,7 @@ static SparkStatus SparkWeightdClientExportExchange(SparkWeightdClient *client,c
 	if ( now == 0u || timeout > (UINT64_MAX - now) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	deadline = (now + timeout);
-	status = SparkWeightdClientWriteAll(client,request,request_bytes,deadline);
+	status = SparkIoSendAllBefore(client->fd,request,request_bytes,deadline);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdClientReadFrameWithFds(client,response,response_bytes,deadline,fds,SPARK_WEIGHTD_EXPORT_BATCH_MAX,received);
 	if ( status != SPARK_STATUS_OK )

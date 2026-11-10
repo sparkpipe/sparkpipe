@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_error_site.h"
 #include <fcntl.h>
 #include <netdb.h>
@@ -2026,7 +2027,7 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 			runtime->client.generation,hello->session_epoch,
 			runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,
 			runtime->adapter_max_sequence_positions);
-		if ( status == SPARK_STATUS_OK && SparkModelResidentSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
+		if ( status == SPARK_STATUS_OK && SparkIoSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
 			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
 		close(fd);
 		return(SPARK_STATUS_BUSY);
@@ -2608,7 +2609,7 @@ static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *ru
 	while ( runtime->client.fd >= 0 && runtime->client.output_count != 0u )
 	{
 		output = &runtime->client.output[runtime->client.output_head];
-		bytes_written = SparkModelResidentSend(runtime->client.fd,output->message + output->sent_bytes,output->message_bytes - output->sent_bytes);
+		bytes_written = SparkIoSend(runtime->client.fd,output->message + output->sent_bytes,output->message_bytes - output->sent_bytes);
 		if ( bytes_written <= 0 )
 		{
 			pthread_mutex_unlock(&runtime->mutex);

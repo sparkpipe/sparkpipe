@@ -978,6 +978,7 @@ static void TestLoopbackBoot(TestLoopbackStack *stack)
 	TestLoopbackStartApi(stack);
 }
 
+#if defined(__linux__)
 static void TestLoopbackExpectResidentRefused(TestLoopbackStack *stack,const char *expected)
 {
 	char log_path[SPARK_MODEL_RESIDENT_DEPLOYMENT_PATH_BYTES],text[8192];
@@ -1009,6 +1010,7 @@ static void TestLoopbackExpectResidentRefused(TestLoopbackStack *stack,const cha
 	(void)fclose(log);
 	assert(strstr(text,expected) != 0);
 }
+#endif
 
 static void TestLoopbackKvPartitionRefusals(TestLoopbackStack *stack)
 {

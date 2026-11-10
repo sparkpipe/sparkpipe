@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_prefix_index_file.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
@@ -43,36 +44,6 @@ static void SparkPrefixIndexHeaderDigest(const SparkPrefixIndexFileHeader *heade
 	SparkSha256Finalize(&context,digest);
 }
 
-static SparkStatus SparkPrefixIndexReadAll(int descriptor,void *data,size_t bytes)
-{
-	size_t done = 0u;
-	while ( done < bytes )
-	{
-		ssize_t got = read(descriptor,(uint8_t *)data + done,bytes - done);
-		if ( got < 0 && errno == EINTR )
-			continue;
-		if ( got <= 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		done += (size_t)got;
-	}
-	return(SPARK_STATUS_OK);
-}
-
-static SparkStatus SparkPrefixIndexWriteAll(int descriptor,const void *data,size_t bytes)
-{
-	size_t done = 0u;
-	while ( done < bytes )
-	{
-		ssize_t put = write(descriptor,(const uint8_t *)data + done,bytes - done);
-		if ( put < 0 && errno == EINTR )
-			continue;
-		if ( put <= 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		done += (size_t)put;
-	}
-	return(SPARK_STATUS_OK);
-}
-
 static const char *SparkPrefixIndexCheckHeader(const SparkPrefixIndexFileHeader *header,const uint8_t model_sha256[SPARK_SHA256_DIGEST_BYTES],uint32_t block_token_count,uint32_t record_capacity,uint64_t file_bytes)
 {
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
@@ -113,10 +84,10 @@ SparkStatus SparkPrefixIndexFileRead(const char *path,const uint8_t model_sha256
 		*reason_out = "io";
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	status = fstat(descriptor,&info) == 0 && (uint64_t)info.st_size >= sizeof(header) ? SparkPrefixIndexReadAll(descriptor,&header,sizeof(header)) : SPARK_STATUS_VALIDATION_FAILED;
+	status = fstat(descriptor,&info) == 0 && (uint64_t)info.st_size >= sizeof(header) ? SparkIoReadAll(descriptor,&header,sizeof(header)) : SPARK_STATUS_VALIDATION_FAILED;
 	reason = status == SPARK_STATUS_OK ? SparkPrefixIndexCheckHeader(&header,model_sha256,block_token_count,record_capacity,(uint64_t)info.st_size) : (status == SPARK_STATUS_VALIDATION_FAILED ? "size" : "io");
 	if ( reason == 0 && header.record_count != 0u )
-		status = SparkPrefixIndexReadAll(descriptor,records,(size_t)header.record_count * sizeof(records[0]));
+		status = SparkIoReadAll(descriptor,records,(size_t)header.record_count * sizeof(records[0]));
 	(void)close(descriptor);
 	if ( reason == 0 && status != SPARK_STATUS_OK )
 		reason = "io";
@@ -215,9 +186,9 @@ SparkStatus SparkPrefixIndexFileWrite(const char *path,const uint8_t model_sha25
 	descriptor = open(temporary,O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,0600);
 	if ( descriptor < 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	status = SparkPrefixIndexWriteAll(descriptor,&header,sizeof(header));
+	status = SparkIoWriteAll(descriptor,&header,sizeof(header));
 	if ( status == SPARK_STATUS_OK && record_count != 0u )
-		status = SparkPrefixIndexWriteAll(descriptor,records,(size_t)record_count * sizeof(records[0]));
+		status = SparkIoWriteAll(descriptor,records,(size_t)record_count * sizeof(records[0]));
 	if ( status == SPARK_STATUS_OK && fsync(descriptor) != 0 )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( close(descriptor) != 0 && status == SPARK_STATUS_OK )

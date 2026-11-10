@@ -1,4 +1,6 @@
 #include "sparkpipe/spark_model_resident_client.h"
+#include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_error_site.h"
 #include "model_resident_socket.h"
 
@@ -105,14 +107,6 @@ static SparkStatus SparkModelResidentClientSetNonblocking(int32_t fd)
 	return(flags < 0 || fcntl(fd,F_SETFL,flags | O_NONBLOCK) != 0 ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK);
 }
 
-static ssize_t SparkModelResidentClientSend(
-	int32_t fd,
-	const void *bytes,
-	uint32_t byte_count)
-{
-	return(SparkModelResidentSend(fd,bytes,byte_count));
-}
-
 static SparkStatus SparkModelResidentClientWait(
 	int32_t fd,
 	int16_t events,
@@ -135,23 +129,8 @@ static SparkStatus SparkModelResidentClientWriteFull(
 	uint32_t message_bytes,
 	uint32_t timeout_ms)
 {
-	const uint8_t *bytes;
-	uint32_t offset;
-	ssize_t written;
-	SparkStatus status;
-	bytes = (const uint8_t *)message;
-	offset = 0u;
-	while ( offset < message_bytes )
-	{
-		status = SparkModelResidentClientWait(fd,POLLOUT,timeout_ms);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-		written = SparkModelResidentClientSend(fd,bytes + offset,message_bytes - offset);
-		if ( written <= 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		offset += (uint32_t)written;
-	}
-	return(SPARK_STATUS_OK);
+	const SparkStatus status = SparkIoSendAllBefore(fd,message,message_bytes,SparkMonotonicNs() + (uint64_t)timeout_ms * UINT64_C(1000000));
+	return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_IO_ERROR : status);
 }
 
 static SparkStatus SparkModelResidentClientReadFull(
@@ -160,23 +139,8 @@ static SparkStatus SparkModelResidentClientReadFull(
 	uint32_t message_bytes,
 	uint32_t timeout_ms)
 {
-	uint8_t *bytes;
-	uint32_t offset;
-	ssize_t received;
-	SparkStatus status;
-	bytes = (uint8_t *)message;
-	offset = 0u;
-	while ( offset < message_bytes )
-	{
-		status = SparkModelResidentClientWait(fd,POLLIN,timeout_ms);
-		if ( status != SPARK_STATUS_OK )
-			SPARK_RETURN(status);
-		received = recv(fd,bytes + offset,message_bytes - offset,0);
-		if ( received <= 0 )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		offset += (uint32_t)received;
-	}
-	return(SPARK_STATUS_OK);
+	const SparkStatus status = SparkIoRecvAllBefore(fd,message,message_bytes,SparkMonotonicNs() + (uint64_t)timeout_ms * UINT64_C(1000000));
+	return(status == SPARK_STATUS_BUSY ? SPARK_STATUS_IO_ERROR : status);
 }
 
 static SparkStatus SparkModelResidentClientValidateConfiguration(
@@ -856,7 +820,7 @@ static SparkStatus SparkModelResidentClientFlush(SparkModelResidentClient *clien
 	{
 		output = &client->outputs[client->output_head];
 		message = client->output_storage + ((uint64_t)client->output_head * client->output_message_capacity);
-		written = SparkModelResidentClientSend(client->fd,message + output->sent_bytes,output->message_bytes - output->sent_bytes);
+		written = SparkIoSend(client->fd,message + output->sent_bytes,output->message_bytes - output->sent_bytes);
 		if ( written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
 			return(SPARK_STATUS_OK);
 		if ( written <= 0 )
