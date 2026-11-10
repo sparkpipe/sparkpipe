@@ -360,16 +360,53 @@ Landed in the pull request that carries this page:
   graph relocation, memlink and its tools, the NCCL enum and parser branch,
   and the K3 TP4xPP4 adapter variant are deleted.
 
-Still open, in the order above: the wave-boundary IPC and chain key
-(2, the collective half), `FinishAsync` for publish frames, the two-phase
-commit and validation inflation (2.5, 2.8, 2.9); runner-chosen row chunks for every
-wave and K3's conversion (3), the shared CUDA stage-model plumbing (4); the
-collective plan from the schedule (4); streamed prefill as a backend (5);
-placement as deployment data (6); and the rest of the deletions (8): the dead
-exports of `runtime/stage_module_common.c`, `spark_lm_kernels.cuh` beyond the
-certified head, the one-phase `SUBMIT` kind, the unused transport modes, the
-range kernels, and the five stale deployment generators that still emit the
-`tp_collective` schema.
+- Step 8 in full, on 2026-11-10: `runtime/stage_module_common.c` is deleted
+  (one of its 45 exports had a caller, the CUDA status helper of the mesh
+  round bench, which the bench now owns; the slot and index-set claims keep
+  their own test); `spark_lm_kernels.cuh` is the certified head's closure,
+  599 lines of 5,192, and the probes that included the rest are gone; the
+  one-phase `SUBMIT` message, its encoder, guard and residentd branch are
+  gone (IPC ABI 26); `host-rdma` is the one transport mode, with the
+  gpudirect variant and the host-staged TCP module deleted; the K3 range
+  kernels and their context-split plan are deleted; the batch tool's second
+  admission scheduler (`scheduler/continuous_batch.c`) is deleted; the five
+  generators that wrote the `tp_collective` schema, the TP4xPP4 tools and
+  the MiniMax deployment are deleted; `SPARK_BATCH_BUCKET` left the build;
+  K3 builds for one topology. About 12,900 lines in this pass.
+- Step 7's diagnostics: the three layer-dump switches and the collective's
+  round trace are read only in `DEBUG` builds, so a release build's
+  execution shape does not depend on the environment.
+
+Still open, in the order above:
+
+- Step 2, the collective half: the wave-boundary IPC and chain key,
+  `FinishAsync` for publish frames, the two-phase commit and validation
+  inflation (2.5, 2.8, 2.9).
+- Step 3, the second half: the runner's sequence-boundary split of a
+  multi-sequence wave, GLM 5.3 Full's wave chunking and DSV4.1's tail rows in
+  the runner, K3's dispatch loop; then the collective plan from the
+  schedule.
+- Step 4: the shared CUDA stage-model plumbing.
+- Step 5: streamed prefill as a schedule backend.
+- Step 6: placement as deployment data.
+- Step 7, the inputs: a lane's weightd socket, lane number, mesh ranks,
+  expert pool cap and spine budget still reach the adapter and the
+  collective through the unit's environment (`lane.sh`), not the stage
+  JSON. Moving them changes the contract between the renderer, the lane
+  script and residentd on every lane at once, so it goes with a release
+  that can boot a lane before it is rolled.
+
+Each of these changes the serving path's behaviour and none can be proven
+by a host test or a compile: they need a lane on the fleet, which the
+budget of 2026-11-10 did not allow.
+
+Found while deleting, and left: the committed static deployments
+`deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry
+stage configs in the `tp_collective` schema the adapter refuses (two tests
+and the cold-launch script use them as fixtures); `tools/k3_multidev_lane.py`
+still knows the dropped TP4xPP4 topology and defaults to it, though
+`tools/k3_lane.sh` passes `tp16` and refuses anything else; the hardware
+characterisation tools keep their `gpudirect` candidate.
 
 Merged on 2026-11-10: the tree verification of #1902 (trunk plus single-level
 branches in a verify frame, on Metal for Qwen3.8-27B and on CUDA for Solar
