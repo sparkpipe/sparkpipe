@@ -1757,7 +1757,7 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	uint32_t *distribution_lanes = state != 0 ? state->distribution_lanes : 0;
 	SparkRowSampling *distribution_rules = state != 0 ? state->distribution_rules : 0;
 	SparkSamplingLogprob distribution_logprobs[SPARK_STAGE_SERVING_MAX_LANES * SPARK_SAMPLING_MAX_LOGPROBS];
-	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES];
+	uint32_t rows, active = 0u, distribution_count = 0u, logprob_stride = 0u, steps = 1u, kept[SPARK_STAGE_SERVING_MAX_LANES] = { 0u };
 	const uint32_t verify = submission != 0 && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ? 1u : 0u;
 	uint64_t marks[6], keep_ns = 0u;
 	SparkStatus status, finished;

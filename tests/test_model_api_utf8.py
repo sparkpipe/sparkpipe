@@ -40,7 +40,7 @@ int main(void)
 		escaped[0] = '\0';
 		if (*cuts == '\n' || *cuts == '\0')
 		{
-			assert(append_json_escaped(escaped,sizeof(escaped),&escaped_length,raw,length));
+			assert(SparkJsonAppendEscaped(escaped,sizeof(escaped),&escaped_length,raw,length));
 			TestPrintHex(escaped,escaped_length);
 			continue;
 		}
@@ -52,7 +52,7 @@ int main(void)
 			start = cut;
 			ready = flush != 0u ? pending_bytes : api_utf8_complete(pending,pending_bytes);
 			part_length = 0u;
-			assert(append_json_escaped(part,sizeof(part),&part_length,pending,ready));
+			assert(SparkJsonAppendEscaped(part,sizeof(part),&part_length,pending,ready));
 			memcpy(escaped + escaped_length,part,part_length);
 			escaped_length += part_length;
 			memmove(pending,pending + ready,pending_bytes - ready);

@@ -322,6 +322,53 @@ static int SparkWeightdMeshLaunchCheck(const char *program, uint32_t mesh_fields
     return 0;
 }
 
+static int SparkWeightdDoorbellCpu(const char *flag_value)
+{
+    const char *text = flag_value != 0 ? flag_value : getenv("SPARK_WEIGHTD_MESH_DOORBELL_CPU");
+    char *parse_end = 0;
+    long cpus;
+    unsigned long parsed;
+    weightd_mesh_launch.doorbell_cpu = -1;
+    if (text == 0)
+        return 0;
+    cpus = sysconf(_SC_NPROCESSORS_CONF);
+    parsed = strtoul(text, &parse_end, 10);
+    if (parse_end == text || *parse_end != '\0' || text[0] == '-' || cpus <= 0 || parsed >= (unsigned long)cpus)
+    {
+        fprintf(stderr, "weightd: bad mesh doorbell cpu '%s' (--mesh-doorbell-cpu or SPARK_WEIGHTD_MESH_DOORBELL_CPU, 0..%ld)\n",
+            text, cpus - 1);
+        return 2;
+    }
+    weightd_mesh_launch.doorbell_cpu = (int32_t)parsed;
+    return 0;
+}
+
+static int SparkWeightdFallbacks(const char *doorbell_cpu_flag, int socket_set_by_flag, int ceiling_set_by_flag,
+    const char **socket_path, uint64_t *device_bytes_max)
+{
+    const char *env_socket = getenv("SPARK_WEIGHTD_SOCKET");
+    const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
+    const char *env_mesh_dir = getenv("SPARK_WEIGHTD_MESH_DIR");
+    if (SparkWeightdDoorbellCpu(doorbell_cpu_flag) != 0)
+        return 2;
+    if (weightd_mesh_launch.mesh_dir == 0 && env_mesh_dir != 0 && env_mesh_dir[0] != '\0')
+        weightd_mesh_launch.mesh_dir = env_mesh_dir;
+    if (!socket_set_by_flag && env_socket != 0 && env_socket[0] != '\0')
+        *socket_path = env_socket;
+    if (env_ceiling != 0 && env_ceiling[0] != '\0')
+    {
+        uint64_t parsed = 0ull;
+        if (SparkWeightdParseCount(env_ceiling, &parsed) == 0 || parsed == 0ull)
+        {
+            fprintf(stderr, "weightd: bad SPARK_WEIGHTD_DEVICE_BYTES_MAX '%s'\n", env_ceiling);
+            return 2;
+        }
+        if (!ceiling_set_by_flag)
+            *device_bytes_max = parsed;
+    }
+    return 0;
+}
+
 int main(int argument_count, char **arguments)
 {
     const char *socket_path = "/tmp/spark_weightd.sock";
@@ -494,49 +541,8 @@ int main(int argument_count, char **arguments)
             "state all four or none\n", mesh_fields);
         return 2;
     }
-    {
-        const char *env_socket = getenv("SPARK_WEIGHTD_SOCKET");
-        const char *env_ceiling = getenv("SPARK_WEIGHTD_DEVICE_BYTES_MAX");
-        const char *env_mesh_dir = getenv("SPARK_WEIGHTD_MESH_DIR");
-        const char *env_doorbell_cpu = doorbell_cpu_flag != 0 ? doorbell_cpu_flag : getenv("SPARK_WEIGHTD_MESH_DOORBELL_CPU");
-        weightd_mesh_launch.doorbell_cpu = -1;
-        if (env_doorbell_cpu != 0)
-        {
-            char *parse_end = 0;
-            long cpus = sysconf(_SC_NPROCESSORS_CONF);
-            unsigned long parsed = strtoul(env_doorbell_cpu, &parse_end, 10);
-            if (parse_end == env_doorbell_cpu || *parse_end != '\0' ||
-                env_doorbell_cpu[0] == '-' || cpus <= 0 || parsed >= (unsigned long)cpus)
-            {
-                fprintf(stderr, "weightd: bad mesh doorbell cpu '%s' (--mesh-doorbell-cpu or SPARK_WEIGHTD_MESH_DOORBELL_CPU, 0..%ld)\n",
-                    env_doorbell_cpu, cpus - 1);
-                return 2;
-            }
-            weightd_mesh_launch.doorbell_cpu = (int32_t)parsed;
-        }
-        if (weightd_mesh_launch.mesh_dir == 0 && env_mesh_dir != 0 &&
-            env_mesh_dir[0] != '\0')
-            weightd_mesh_launch.mesh_dir = env_mesh_dir;
-        if (!socket_set_by_flag && env_socket != 0 && env_socket[0] != '\0')
-        {
-            socket_path = env_socket;
-        }
-        if (env_ceiling != 0 && env_ceiling[0] != '\0')
-        {
-            uint64_t parsed = 0ull;
-            if (SparkWeightdParseCount(env_ceiling, &parsed) == 0 ||
-                parsed == 0ull)
-            {
-                fprintf(stderr, "weightd: bad SPARK_WEIGHTD_DEVICE_BYTES_MAX '%s'\n",
-                    env_ceiling);
-                return 2;
-            }
-            if (!ceiling_set_by_flag)
-            {
-                device_bytes_max = parsed;
-            }
-        }
-    }
+    if (SparkWeightdFallbacks(doorbell_cpu_flag, socket_set_by_flag, ceiling_set_by_flag, &socket_path, &device_bytes_max) != 0)
+        return 2;
 
     if (SparkWeightdKvSettings(argument_count,arguments,&kv_reserve_bytes,&load_pace_bytes_per_second,&kv_shared_window_bytes) != 0)
         return 2;
