@@ -429,6 +429,46 @@ Landed in the pull request that carries this page:
   wave of 96 short prompts, and a rank's went from 24-30 us to 20-25 us in
   decode. Counted with strace at one lane on Linux, the coordinator makes
   about 18 receives per frame instead of 99, and 5 polls instead of 2.
+  An independent review found no served-behaviour defect; its four small
+  findings are fixed (a malformed header buffered behind a processed
+  message now fails the session at the next progress, a prepared route's
+  deadline is anchored after the adapter's cache prepare again, and the
+  bench no longer idles 100 ms after a prefill round's last completion), and
+  `tests/test_host_turn_bench.py` now runs token continuations and
+  one-message progress through sixteen real ranks, which catches both
+  mutations the review showed the suite missed.
+- The packers (finding 6), on 2026-11-10. The fifteen stage packers of the
+  census are 8,077 lines instead of 12,622 on one core
+  (`tools/spark_pack_common.py`, `spark_pack_codecs.py`, `spark_pack_wire.py`,
+  `spark_pack_plan.py`): the safetensors reader, the codecs and requantizers,
+  the two pack wire formats, ck128 and the expert manifest, TP windows and
+  the no-clobber publish. The MiniMax and K3 DSpark packers, whose formats
+  nothing loads, are deleted with the K3 DSpark wire header. Every changed
+  packer writes the same bytes as before on 171 synthetic cases (638 files);
+  `tests/test_spark_pack_core.py` pins the core against the runtime's ck128,
+  stage-pack header and manifest loader. Left open: the TP16 packers and
+  `tools/spark_named_pack.py`, which write the packs the CUDA lanes load,
+  keep their own core; eight stage packers (Qwen 3.8 and 3.8-27B, Gemma 4,
+  MiMo 2.6, HY4, Laguna, Ling, the GLM 5.2 requantizer) write packs no CUDA
+  lane loads, and whether the Metal deployments load them decides whether
+  they stay. Found and kept byte for byte: Gemma 4's `.experts` manifests
+  are refused by the runtime loader (record count 0, 36-byte records),
+  Laguna's NVFP4 arm reserves one scale global per expert where its producer
+  writes two, Qwen3.8-27B's FP8 fused gate|up checkpoints fail their shape
+  check, and Qwen 3.8 FP8 is refused above TP1.
+- The wave boundary (2.2), on 2026-11-10. A wave no longer takes and drops
+  mesh activity through weightd, and rank 0 no longer broadcasts an epoch
+  that the other ranks spin on. The collective holds mesh activity for its
+  session, derives each wave's epoch on every rank from the submission's
+  request id (unique and increasing within an engine session, and the same
+  bytes on every rank) mixed with the rank map and degree, so ranks that
+  disagree on membership cannot pair a round, and seeds the round control
+  block with two copies and a memset. A new session clears its band's slot
+  tails before its first round, which is what the ever-rising epoch did for
+  an earlier session's tails. On the Qwen3.8-27B lane at TP16 the time from
+  a rank's completion to its next frame fell from 2.4-2.6 ms to 1.1 ms in
+  two runs, and the frame cycle from 60.9 ms to 60.4 and 58.5 ms; outputs
+  matched on every path.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
@@ -444,10 +484,17 @@ device library every adapter now loads (fixed).
 
 The second fleet run, Gemma 4 26B-A4B at 16 sequences, is in the same receipt: the work before the Metal line is bit-identical to `main` there too, sixteen streams gain 24%, and the Metal line's numerics leave one open defect (a short prompt's first token depends on its batch) that blocks the release until it is closed.
 
+Later on 2026-11-10 the same Qwen3.8-27B lane gated each landing against the
+previous one on the release kit's seven prompts and every path (chain,
+speculate, batch, sampled, sampled batch): step 7's inputs, the host turn,
+step 4 with the packers (frame costs within 0.05 ms of the previous head),
+and the wave boundary, twice. Every run matched token for token and
+logprob for logprob.
+
 Still open, in the order above:
 
-- Step 2, the collective half: the wave-boundary IPC and chain key,
-  `FinishAsync` for publish frames, 2.8, the two-phase commit's round trips
+- Step 2, the collective half: `FinishAsync` for publish frames, 2.8, the
+  two-phase commit's round trips
   (2.5), the stage serving adapter's own check, which runs again in
   `submit` on every rank (the rest of 2.9), and the hub drafter's
   synchronous call (2.11), which needs the draft bridge split into a
@@ -461,8 +508,8 @@ Still open, in the order above:
 - Step 6: placement as deployment data.
 
 Each of these changes the serving path's behaviour and none can be proven
-by a host test or a compile: they need a lane on the fleet, which the
-budget of 2026-11-10 did not allow.
+by a host test or a compile: each needs a lane on the fleet, as the landings
+above had.
 
 Found while deleting, and left: the committed static deployments
 `deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry
