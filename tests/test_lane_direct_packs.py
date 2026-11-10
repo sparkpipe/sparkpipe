@@ -122,6 +122,8 @@ class DirectPacks(unittest.TestCase):
         for name in ("sparkpipe_model_residentd", "weightd_warm", "libhidden_transport_spark_host_rdma_verbs.so",
                      "libk3_tp16_serving_adapter.so", stage_lane.MODELS["dsv41_flash"]["adapter"]):
             (firmware / name).write_text(name)
+        (firmware / "runtime_libs").mkdir()
+        (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("device")
         environment = {"PATH": f"{binary}:{os.environ['PATH']}", "HOME": str(fake), "TMPDIR": scratch, "FAKE_FLEET": str(fake)}
         return fake, firmware, environment
 

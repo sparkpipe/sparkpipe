@@ -93,7 +93,7 @@ render() {
 
 setup() {
   local generated rank host root pack state busy=""
-  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
   for rank in $(seq 0 15); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
@@ -107,9 +107,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
       scp -q "$STAGE_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/$ADAPTER_FILE"
+      scp -q "$STAGE_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
       scp -q "$STAGE_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
@@ -137,13 +138,14 @@ start() {
 }
 
 api_setup() {
-  : "${STAGE_API_FIRMWARE:?STAGE_API_FIRMWARE is the hub directory holding the x86 sparkpipe_model_api, sparkpipe_tokenize_prompt and the model adapter library}"
+  : "${STAGE_API_FIRMWARE:?STAGE_API_FIRMWARE is the hub directory holding the x86 sparkpipe_model_api, sparkpipe_tokenize_prompt, the model adapter library and runtime_libs/libsparkpipe_device_cuda.so}"
   local hub="${STAGE_HUB:-rtx5090}" api="${STAGE_MODEL}-kv-api" generated tokenizer_json sha
   tokenizer_json="$(model_field tokenizer_json)"
   generated="$(mktemp -d)"
-  $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib $api/runtime/tokenizer
+  $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib/runtime_libs $api/runtime/tokenizer
     install -m 755 $STAGE_API_FIRMWARE/sparkpipe_model_api $STAGE_API_FIRMWARE/sparkpipe_tokenize_prompt $api/bin/
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
+    install -m 755 $STAGE_API_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so $api/runtime/lib/runtime_libs/
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"
   mkdir -p "$generated/tokenizer"

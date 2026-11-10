@@ -213,10 +213,14 @@ def install(fail_host, process=None):
         for name in ["sparkpipe_weightd", "sparkpipe_model_residentd", "weightd_warm", "weightd_spine_budget.py",
                      "libhidden_transport_spark_host_rdma_verbs.so"] + libraries:
             (firmware / name).write_text(f"release {name}")
+        (firmware / "runtime_libs").mkdir()
+        (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("release device library")
         build_directory = work / "api-build"
         build_directory.mkdir()
         for name in ["sparkpipe_model_api", "sparkpipe_tokenize_prompt"] + libraries:
             (build_directory / name).write_text(f"hub {name}")
+        (build_directory / "runtime_libs").mkdir()
+        (build_directory / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("hub device library")
         for index in range(16):
             host = f"spark{HEX[index]}"
             if host != fail_host:

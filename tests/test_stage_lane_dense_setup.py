@@ -59,6 +59,7 @@ def main():
         firmware = fake / "firmware"
         for name in ("sparkpipe_model_residentd", "weightd_warm", "libhidden_transport_spark_host_rdma_verbs.so", model["adapter"]):
             write(firmware / name, "binary\n")
+        write(firmware / "runtime_libs" / "libsparkpipe_device_cuda.so", "binary\n")
         digests, sizes = {}, {}
         for rank in range(16):
             host = f"spark{HEX[rank]}"
