@@ -1199,29 +1199,25 @@ repository.
 
 ## Config
 
-`config/litellm-config.yaml` is generated, never edited by hand:
+`config/litellm-config.yaml` is maintained by hand. Every served model has a
+`hosted_vllm/<name>` route to the chat layer (`api_base`
+`http://127.0.0.1:8433/v1`, `api_key: none`) with `model_info.max_input_tokens`
+equal to its lane record's `context_tokens`, and a `<name>-bulk` twin to the
+same chat layer; `*` routes to `glm-5.3`. `litellm_settings` keeps
+`drop_params: true`, `num_retries: 0` (a retry would run a generation twice)
+and `request_timeout: 604800` (a request may wait a week in the queue), and
+`general_settings.cancel_on_disconnect: true` cancels the upstream call when
+the client leaves. `tests/test_litellm_queue_settings.py` checks all of this
+for this door and the chat door. To require a key, add
+`general_settings.master_key: os.environ/LITELLM_MASTER_KEY`, as
+`deployment/hub/litellm-chatui.yaml` has.
 
-```sh
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 \
-  --master-key --out config/litellm-config.yaml
-```
-
-The generator writes one `openai/<name>` deployment per `--pair` (or per
-`--registry models.json` entry, `[{"name": ..., "base_url": ...}]`), with
-`api_base` ending in `/v1`, `drop_params: true`, `num_retries: 1` and
-`request_timeout: 600`. `--master-key` adds bearer auth through
-`SPARK_LITELLM_MASTER_KEY`; the generator omits it by default, so always pass
-it for the door. Upstream calls send `SPARK_API_KEY`, which `model_api`
-ignores; set it to any value. Older setups named these `LITELLM_MASTER_KEY`
-and `SPARKPIPE_UPSTREAM_KEY`.
-
-Keep both secrets in their own mode-600 file outside the repository, not in
+Keep the key in its own mode-600 file outside the repository, not in
 the repository's `.env`, which also holds the GitHub PAT:
 
 ```sh
 mkdir -p ~/.config/sparkpipe
-( umask 077; printf 'SPARK_LITELLM_MASTER_KEY="sk-sparkpipe-%s"\nSPARK_API_KEY="unused"\n' \
+( umask 077; printf 'LITELLM_MASTER_KEY="sk-sparkpipe-%s"\n' \
     "$(openssl rand -hex 16)" > ~/.config/sparkpipe/litellm.env )
 ```
 
@@ -1254,7 +1250,7 @@ completions per listed model and requires identical output:
 
 ```sh
 python3 tools/model_api_smoke.py --endpoint http://127.0.0.1:4000 \
-  --token "$SPARK_LITELLM_MASTER_KEY"
+  --token "$LITELLM_MASTER_KEY"
 ```
 
 ## Postgres (virtual keys and spend logs)
@@ -1267,11 +1263,10 @@ Spark:
 brew install postgresql@16
 /opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 start
 /opt/homebrew/opt/postgresql@16/bin/createdb litellm
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 --master-key \
-  --database-url postgresql://mac@localhost:5432/litellm \
-  --out config/litellm-config.yaml
 ```
+
+and add `database_url: os.environ/DATABASE_URL` to `general_settings` in
+`config/litellm-config.yaml`.
 
 LiteLLM ships a prisma schema; generate the client and push the schema once:
 
@@ -1282,7 +1277,7 @@ PATH=~/litellm-venv/bin:$PATH DATABASE_URL=postgresql://mac@localhost:5432/litel
 ```
 
 Then start the proxy with `DATABASE_URL` exported next to
-`SPARK_LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
+`LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
 served the admin page, routed completions by name and wrote one
 `LiteLLM_SpendLogs` row per request.
 
@@ -1290,8 +1285,9 @@ served the admin page, routed completions by name and wrote one
 
 1. Bring the deployment's `model_api` up on a known host and port and record
    them with the deployment.
-2. Regenerate `config/litellm-config.yaml` with one `--pair` per route, the
-   existing ones included.
+2. Add the model's route and its `-bulk` twin to `config/litellm-config.yaml`
+   by hand, as described under Config, and run
+   `tests/test_litellm_queue_settings.py`.
 3. Restart the proxy.
 4. Prove routing: `GET /v1/models` through the door lists the name, and
    `tools/model_api_smoke.py` through the door passes.
