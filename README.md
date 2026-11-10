@@ -331,9 +331,10 @@ change its tokens. Decode graphs are captured for each row count. A frame
 that no graph covers enqueues the same launches in one pass and checks its
 collective rounds once, at the end of the frame.
 
-**The harness.** `tools/glm5_next_batch_roofline.cu` runs the real kernels
-on one GPU at any batch and context. It prints per-phase time against the
-memory bound, so the next bottleneck can be read off directly.
+**The roofline.** `tools/roofline_estimator.py` derives each lane's bytes
+per token from the pack layouts and prints receipted tokens per second
+against the measured memory bound, so the gap to the bound can be read off
+per lane.
 
 ## KV cache and model state
 
@@ -591,7 +592,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
 | 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
-| 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
+| 1 to 8 Mac Studios (Apple silicon) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 | Prefill accelerators (4 RTX 5080) | compute long prompts for a fleet and hand it the KV cache |
 
@@ -624,8 +625,8 @@ evidence rules.
 
 **Hub.** One host outside the Sparks publishes release roots, collects node
 heartbeats and serves the model API. In the reference fleet it is an x86
-workstation with an RTX 5090, so the API is built for x86 separately from
-the aarch64 Spark binaries. Host roles and the release procedure are in
+host, so the API is built for x86 separately from the aarch64 Spark
+binaries. Host roles and the release procedure are in
 [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
 
 ## Models
@@ -736,19 +737,20 @@ chat layer, in Korean and English, for accounts the operator approves
   current primary sources and cites them. Korean law comes from the national
   law database; each tool says where its queries go before it is ticked.
 
-## Fleet-hours
+## Renting a fleet
 
-HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from Seoul, first of all to Korean companies whose data must stay in Korea. The terms, the Fleet List and the privacy policy are on [sparkpipe.ai](https://sparkpipe.ai), in Korean and English: visitors from Korean addresses get the Korean pages first, everyone else the English ones, and an EN / 한국어 switch on every page keeps their choice.
+HYOR AI Tech Ltd. rents whole SparkPipe fleets from Seoul to engineers and small teams who work all day in a large codebase with coding agents: companies, professionals and independent developers, not household consumers. The product is defined by [sparkpipe.ai](https://sparkpipe.ai) and the SparkPipe Customer Agreement published there, in Korean and English: visitors from Korean addresses get the Korean pages first, everyone else the English ones, and an EN / 한국어 switch on every page keeps their choice. Code follows the site and the Agreement; where they disagree, the code is wrong.
 
-- **A fleet-hour** is one entire fleet for sixty minutes. During it the fleet serves only the customer's requests, with the model the customer chose from the [Fleet List](https://sparkpipe.ai/fleets.html).
-- **Two ways to buy:**
-  - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
-  - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
-- **Self-serve:** an account is a verified email address, signed in to with one-time codes. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account while signed in, or through the API with its access tokens. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
-- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); any customer may pay in USDC or USDT through our payment processor, CoinPayments, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
-- **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
-- **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
-- **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
+- **A fleet of your own, by the week.** A Week runs from Monday 00:00 to Sunday 24:00 KST and pins one entire fleet to the customer: nobody else's requests run on it and nobody else can book its hours. Seven days cost the price of six. The customer keeps the fleet by booking the next Week before 00:00 on the Sunday of its last booked Week, up to 52 Weeks ahead, and every Week held ahead raises the discount on Weeks and hours. When every fleet is taken, the customer joins the waitlist.
+- **Hours.** Hour Fleets are booked by the hour, and so is any other serving fleet that nobody holds, up to the end of the current Week, for example as a burst beside a pinned fleet.
+- **Pairs and teams.** Fleets come in pairs on a shared switch: the holder of a pair's A fleet may also pin its B fleet for the same Weeks. At least a quarter of the serving fleets always stay open for hours. A team of three to five shares a fleet, each member with their own sign-in and keys.
+- **Hour-credits.** Everything is paid in hour-credits (HC), prepaid in any quantity. The HC price, the HC for an Hour and a Week, the discounts, each fleet's Rate and the maintenance allowance are published settings on the site; what a customer has bought keeps its price.
+- **What stays on the fleet.** The fleet keeps its cache and the customer's storage from turn to turn and Week to Week, with no copies off the fleet and no backups. They are deleted when another customer's booking of the fleet starts, or 24 hours after the customer's last hour. The customer can export its storage at any time and leaves with its data.
+- **Self-serve.** An account is a verified email address, signed in to with one-time codes. The customer accepts the Agreement, buys HC, books Weeks and hours and joins the waitlist in its account, or through the API with its access tokens. A sandbox runs every flow with no money.
+- **Access.** The access tokens a customer issues reach the fleet it holds at that moment through the SparkPipe API, which loads the model the request names; outside its bookings they reach nothing.
+- **Payment.** Prepaid, in won through Toss Payments (card, bank transfer, virtual account or easy pay), in USDC or USDT through CoinPayments, or in US dollars by bank transfer from abroad. Korean VAT applies except to a zero-rated transfer from a customer with no place of business in Korea.
+- **Records and credits.** Every payment, HC lot, booking, waitlist entry and credit is a line in an append-only, hash-chained ledger; a customer downloads its own entries with proof that they were not altered. Downtime is credited in HC automatically, from the fleet's own records.
+- **Responsibility.** We provide capacity only. The customer decides what runs, answers for its users, and carries any AI-law duties toward them.
 
 ## Repository
 
@@ -773,7 +775,7 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the USDC and USDT checkout (`buy.html`), the customer account (`account.html`) and the two-year planner (`two-year.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the HC checkout (`buy.html`), the customer account with bookings and the waitlist (`market.html`), the payment status page (`account.html`), the sandbox (`market-test.html`) and the cost check (`compare.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those
