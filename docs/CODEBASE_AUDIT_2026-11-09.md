@@ -641,6 +641,13 @@ load (chain decode at about 1,000 tokens of context, identical output).
 - A step with logprobs is 5.4 ms longer than a chain step, and that is the
   logprobs path, not the cost of a separate submission: a chain's first step
   costs under 2 ms more than its others.
+- Where memory sits matters a little. The first gigabyte or so that a
+  process allocates on the device reads about 8% slower than what it
+  allocates after it (the build host: 140 us against 129 for 26 MiB; taking
+  and freeing 2 GiB first makes the next allocation fast from its start). On
+  two Sparks, whose free memory is fragmented, the same trick gave 0 and
+  2.4%, and their fast level is 134 to 135 us. An extra telemetry query loop
+  on every node, at 1 or 10 Hz, does not move a round.
 
 Still open, by what the meter says each is worth on a decode step:
 
