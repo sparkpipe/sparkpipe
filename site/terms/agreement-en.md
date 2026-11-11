@@ -1,6 +1,6 @@
 # SparkPipe Customer Agreement
 
-Version of 10 November 2026
+Version of 12 November 2026
 
 ## Parties
 
