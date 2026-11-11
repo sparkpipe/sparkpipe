@@ -183,14 +183,18 @@ its node's weightd, acquires one mesh lane, creates the device collective on
 that lane exactly as a serving rank does and times graph-captured rounds.
 
 ```sh
-build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS
+build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB]
 ```
 
 `RANK_MAP` lists the physical mesh rank of each TP rank, comma separated, as a
 stage config's `device_collective.mesh_ranks` does; `START_UNIX_MS` makes every
 rank start its timed interval at the same moment. Run one per rank on a lane no
-serving process holds. These are collective component measurements, not
-serving throughput.
+serving process holds. `WORK_KIB` puts a memory-bound kernel in front of every
+round: round `r` reads its own `WORK_KIB` window of a private buffer, so a
+launch reads `ROUNDS x WORK_KIB` cold, as a decode step reads its weights.
+With it the result shows how long each rank waits for the slowest one, round
+by round. These are collective component measurements, not serving
+throughput.
 
 ## GLM firmware build for development and PR testing
 
