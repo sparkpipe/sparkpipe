@@ -594,9 +594,9 @@ roofline. The ranks spend 34% of a step in collectives: 7.2 ms of peer wait
 over the 128 all-reduces of the model's 64 layers, 57 us a round. This
 family already issues two rounds a layer, so its gain is in the time of a
 round (the publish fused into the producing kernel, the wait into the
-consumer's prologue, and the skew between ranks), which is worth five times
-everything the host protocol costs; the commit round trips (2.5) are within
-that 2 to 3%.
+consumer's prologue, and the skew between ranks): 7.4 ms a step against
+the 0.4 to 1.0 ms that host and wire take, inside which the commit round
+trips (2.5) sit.
 
 Still open, by what the meter says each is worth on a decode step:
 
