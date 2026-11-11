@@ -72,6 +72,7 @@ typedef struct SparkModelResidentClientView
 	uint32_t max_sequence_positions;
 	uint32_t reserved0;
 	uint64_t client_generation;
+	uint64_t submission_id_floor;
 	uint64_t submitted_count;
 	uint64_t prepared_count;
 	uint64_t continued_count;

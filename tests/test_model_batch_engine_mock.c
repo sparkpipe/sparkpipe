@@ -309,6 +309,40 @@ static void TestDriveUntilTerminal(SparkModelBatchEngine *engine, TestBatchState
 	}
 }
 
+static void TestScenarioSubmissionFloor(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngine *engine;
+	uint64_t lowest;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetSubmissionFloor(1u,1000737u);
+	TestSubmit(engine,1u,900u,2u);
+	TestDriveUntilTerminal(engine,&state,1u,400u);
+	lowest = MockResidentClientTakeLowestSubmissionId();
+	CHECK(state.completed_events[1] == 1u && lowest > 1000737u && lowest != UINT64_MAX,
+		"submission floor: an engine numbers every submission above the highest id a rank reports, as after another client used the rank");
+	MockResidentClientSetSubmissionFloor(2u,5000000u);
+	TestSubmit(engine,2u,901u,2u);
+	TestDriveUntilTerminal(engine,&state,2u,400u);
+	lowest = MockResidentClientTakeLowestSubmissionId();
+	CHECK(state.completed_events[2] == 1u && lowest > 5000000u && lowest != UINT64_MAX,
+		"submission floor: a rank that reports a higher id inside the session lifts the numbering at once");
+	MockResidentClientSetSubmissionFloor(1u,10u);
+	MockResidentClientSetSubmissionFloor(2u,10u);
+	TestSubmit(engine,3u,902u,2u);
+	TestDriveUntilTerminal(engine,&state,3u,400u);
+	lowest = MockResidentClientTakeLowestSubmissionId();
+	CHECK(state.completed_events[3] == 1u && lowest > 5000000u && lowest != UINT64_MAX && SparkModelBatchEnginePeekSubmissionId(engine) > 5000000u,
+		"submission floor: lower floors never pull the numbering back");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioHappyPath(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -2900,6 +2934,7 @@ static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeploy
 static void TestScenarioDraftWaitFreesEngine(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioDraftNeverAnswers(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioDraftWaitCancelled(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioDraftTwoLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
@@ -2937,6 +2972,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioDraftWaitFreesEngine(&deployment,runtime_root);
 		TestScenarioDraftNeverAnswers(&deployment,runtime_root);
 		TestScenarioDraftWaitCancelled(&deployment,runtime_root);
+		TestScenarioDraftTwoLanes(&deployment,runtime_root);
 		TestScenarioTreeVerify(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
@@ -3675,6 +3711,39 @@ static void TestScenarioDraftWaitCancelled(const SparkModelResidentDeployment *d
 	TestDraftStop(&server);
 }
 
+static void TestScenarioDraftTwoLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows,shared;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	engine = TestDraftedEngine(deployment,runtime_root,&state,&server,TEST_DRAFT_CORRECT,0u,script);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return;
+	}
+	TestSubmitPrompt(engine,1u,930u,60u,script,44u);
+	TestSubmitPrompt(engine,2u,931u,60u,script,50u);
+	TestDriveUntilTerminal(engine,&state,2u,6000u);
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"two drafted lanes: engine view");
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,60u) != 0u &&
+		TestScriptedOutputMatches(&state,2u,script,50u,60u) != 0u,"two drafted lanes: both requests emit exactly the model's greedy stream");
+	CHECK(shared != 0u && rows > 2u * submissions,"two drafted lanes: frames shared by the two requests carry model drafts");
+	CHECK(view.speculative_draft_token_count != 0u && view.speculative_accepted_token_count == view.speculative_draft_token_count && server.bad_requests == 0u,
+		"two drafted lanes: asked one after the other, each request's answer is planned into its own lane and every draft is kept");
+	CHECK(server.requests >= 2u * shared && server.connections == 1u,"two drafted lanes: a shared frame asks once per lane over the one connection");
+	MockResidentClientSetStepDelay(0u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+}
+
 static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	uint32_t script[256],index,submissions,rows,tree_frames,branches;
@@ -4157,6 +4226,7 @@ int main(void)
 	TestScenarioHappyPath(&deployment,runtime_root);
 	deployment.nodes[0].runtime_root = coordinator_root;
 	TestScenarioEventDeadlines(&deployment,runtime_root);
+	TestScenarioSubmissionFloor(&deployment,runtime_root);
 	TestScenarioHappyPath(&deployment,runtime_root);
 	TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
 	TestScenarioRankDiesMidDecode(&deployment,runtime_root);

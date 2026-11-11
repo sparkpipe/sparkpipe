@@ -1229,6 +1229,27 @@ static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
     CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_DUPLICATE,"duplicate mapping is rejected");
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK,"fresh dense mesh can start a chain");
     CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends");
+    {
+        const uint64_t first = SparkTpDeviceCollectiveChainEpoch(&collective);
+        const uint64_t past_chain_id = SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK + 6u;
+        CHECK(first != 0u && SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first,"the same request keeps its epoch");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,5000u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4958u,"a later request's epoch rises by the distance between the requests");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,4999u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4958u,"an earlier request is refused and the epoch stays, as when a client restarts its numbering");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,5001u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4959u,"the collective serves the next rising request after a refusal");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,past_chain_id) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + past_chain_id - 42u,"the epoch keeps rising past the 24 bits of a chain identity");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX + 1u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + past_chain_id - 42u,"a request past the epoch range is refused");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) <= UINT64_C(0xffffffff) &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) > first + past_chain_id - 42u,"the last request of the range maps to an epoch of 32 bits");
+        CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends after the range checks");
+    }
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0 && mock_clients_live == before,"mapping owner and lane released");
     errno = 0;

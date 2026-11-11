@@ -111,6 +111,8 @@ static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
 static uint32_t mock_logprob_stride;
 static uint32_t mock_max_sequence_positions[64];
+static uint64_t mock_submission_floors[MOCK_RESIDENT_MAX_RANKS];
+static uint64_t mock_lowest_submission_id = UINT64_MAX;
 static uint32_t mock_logprob_corrupt;
 static uint32_t mock_max_tokens_per_sequence;
 static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
@@ -462,6 +464,8 @@ void MockResidentClientReset(void)
 	mock_logprob_corrupt = 0u;
 	mock_max_tokens_per_sequence = 0u;
 	memset(mock_max_sequence_positions,0,sizeof(mock_max_sequence_positions));
+	memset(mock_submission_floors,0,sizeof(mock_submission_floors));
+	mock_lowest_submission_id = UINT64_MAX;
 	memset(mock_registry,0,sizeof(mock_registry));
 }
 
@@ -644,6 +648,8 @@ static SparkStatus MockResidentClientEnqueue(
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
+	if ( submission->submission_id < mock_lowest_submission_id )
+		mock_lowest_submission_id = submission->submission_id;
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
 	if ( client->stage_index == 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->lane_count > mock_max_decode_lanes )
@@ -836,6 +842,7 @@ SparkStatus SparkModelResidentClientGetView(
 	memset(view,0,sizeof(*view));
 	view->connected = client->connected;
 	view->client_generation = client->client_generation;
+	view->submission_id_floor = client->stage_index < MOCK_RESIDENT_MAX_RANKS ? mock_submission_floors[client->stage_index] : 0u;
 	view->queue_capacity = 64u;
 	view->pending_submission_count = client->inflight_count;
 	view->max_active_sequence_count = 4u;
@@ -850,6 +857,19 @@ void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t po
 {
 	if ( stage_index < 64u )
 		mock_max_sequence_positions[stage_index] = positions;
+}
+
+void MockResidentClientSetSubmissionFloor(uint32_t stage_index, uint64_t floor)
+{
+	if ( stage_index < MOCK_RESIDENT_MAX_RANKS )
+		mock_submission_floors[stage_index] = floor;
+}
+
+uint64_t MockResidentClientTakeLowestSubmissionId(void)
+{
+	const uint64_t lowest = mock_lowest_submission_id;
+	mock_lowest_submission_id = UINT64_MAX;
+	return(lowest);
 }
 
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)

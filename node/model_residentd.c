@@ -229,6 +229,7 @@ typedef struct SparkModelResidentdSequenceSlot
 
 typedef struct SparkModelResidentdRuntime
 {
+	uint64_t submission_id_floor;
 	SparkModelServingAdapterDynamicLibrary adapter_library;
 	void *adapter_state;
 	SparkHiddenTransportDynamicLibrary transport_library;
@@ -1996,6 +1997,7 @@ static SparkStatus SparkModelResidentdFinishHello(SparkModelResidentdRuntime *ru
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
+	ack.submission_id_floor = runtime->submission_id_floor;
 	status = SparkModelResidentdQueueRawLocked(runtime,&ack,sizeof(ack));
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -2273,7 +2275,11 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	if ( queue_status == SPARK_STATUS_OK && route != 0 && route->active != 0u && route->state == SPARK_MODEL_RESIDENTD_ROUTE_FAILED )
 		route->failure_delivered = 1u;
 	if ( queue_status == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+	{
 		runtime->client.last_submission_id = submission.submission_id;
+		if ( submission.submission_id > runtime->submission_id_floor )
+			runtime->submission_id_floor = submission.submission_id;
+	}
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( queue_status != SPARK_STATUS_OK && route != 0 && status == SPARK_STATUS_OK )
 	{
@@ -2383,6 +2389,8 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 	{
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING;
 		runtime->client.last_submission_id = submission.submission_id;
+		if ( submission.submission_id > runtime->submission_id_floor )
+			runtime->submission_id_floor = submission.submission_id;
 	}
 	else
 	{

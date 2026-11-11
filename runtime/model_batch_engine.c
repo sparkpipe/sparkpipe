@@ -4466,7 +4466,7 @@ static SparkStatus SparkModelBatchDispatchKind(
 	SparkModelServingSubmission submission;
 	SparkStatus status;
 	uint32_t lane_count;
-	uint64_t now_ns,dispatch_ns;
+	uint64_t now_ns,dispatch_ns,floor;
 	*dispatched_out = 0u;
 	now_ns = SparkMonotonicNs();
 	if ( engine->circuit_open_until_ns != 0u && now_ns < engine->circuit_open_until_ns )
@@ -4479,6 +4479,9 @@ static SparkStatus SparkModelBatchDispatchKind(
 	state = SparkModelBatchReserveSubmission(engine,work_kind);
 	if ( state == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
+	floor = SparkModelPipelineClientSubmissionFloor(engine->pipeline);
+	if ( engine->next_submission_id < floor )
+		engine->next_submission_id = floor;
 	engine->next_submission_id++;
 	if ( engine->next_submission_id == 0u )
 	{

@@ -68,6 +68,7 @@ struct SparkModelResidentClient
 	uint32_t pending_count;
 	uint32_t prepared_count;
 	uint64_t client_generation;
+	uint64_t submission_id_floor;
 	uint64_t input_epoch;
 	uint32_t max_sequence_positions;
 	uint64_t session_epoch;
@@ -368,6 +369,7 @@ static SparkStatus SparkModelResidentClientHandshake(
 	{
 		client->client_generation = ack.client_generation;
 		client->max_sequence_positions = ack.max_sequence_positions;
+		client->submission_id_floor = ack.submission_id_floor;
 	}
 	SPARK_RETURN(status);
 }
@@ -1285,6 +1287,7 @@ SparkStatus SparkModelResidentClientGetView(
 	view->prepared_submission_count = client->prepared_count;
 	view->max_sequence_positions = client->max_sequence_positions;
 	view->client_generation = client->client_generation;
+	view->submission_id_floor = client->submission_id_floor;
 	view->submitted_count = client->submitted_count;
 	view->prepared_count = client->prepared_total;
 	view->continued_count = client->continued_total;

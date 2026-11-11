@@ -908,6 +908,20 @@ uint64_t SparkModelPipelineClientSessionFingerprint(
 	return(pipeline != 0 ? pipeline->session_fingerprint : 0u);
 }
 
+uint64_t SparkModelPipelineClientSubmissionFloor(
+	const SparkModelPipelineClient *pipeline)
+{
+	SparkModelResidentClientView view;
+	uint64_t floor = 0u;
+	uint32_t rank;
+	if ( pipeline == 0 )
+		return(0u);
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		if ( SparkModelResidentClientGetView(pipeline->clients[rank],&view) == SPARK_STATUS_OK && view.submission_id_floor > floor )
+			floor = view.submission_id_floor;
+	return(floor);
+}
+
 SparkStatus SparkModelPipelineClientRecover(SparkModelPipelineClient *pipeline)
 {
 	if ( pipeline == 0 )

@@ -1490,10 +1490,9 @@ static SparkStatus StageRunnerCheckResident(SparkStageRunnerState *state)
 
 static SparkStatus StageRunnerChainBegin(SparkStageRunnerState *state, uint64_t request_id)
 {
-	const uint64_t key = request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK;
 	SparkStatus status = StageRunnerVerifyCollectives(state, state->stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
-		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
+		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id);
 	return status;
 }
 

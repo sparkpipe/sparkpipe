@@ -78,6 +78,7 @@ static uint32_t g_connect_rank_hint;
 static volatile uint64_t g_broadcast_count;
 static volatile uint32_t g_shipper_stop;
 static volatile uint32_t g_shipper_hold;
+static volatile uint32_t g_fallen_tags;
 static volatile uint32_t g_shipper_paused;
 
 extern uint32_t cuda_stub_roundloop_launches;
@@ -367,6 +368,11 @@ static void *FuzzShipperMain(void *argument)
 			}
 			if ( stable == 0u || tag == 0ull || tag == seen[rank] )
 				continue;
+			if ( tag < seen[rank] )
+			{
+				__sync_add_and_fetch(&g_fallen_tags,1u);
+				continue;
+			}
 			if ( slot_index >= SPARK_WEIGHTD_MESH_SLOTS_PER_BAND ||
 			     bytes == 0ull ||
 			     bytes + 16ull > SPARK_WEIGHTD_MESH_SLOT_BYTES )
@@ -480,6 +486,14 @@ typedef struct FuzzTask
 } FuzzTask;
 
 static FuzzTask g_tasks[FUZZ_MAX_RANKS];
+
+static uint64_t g_request_block;
+
+static uint64_t FuzzRequests(void)
+{
+	g_request_block += 4096u;
+	return(g_request_block);
+}
 
 static void *FuzzChainMain(void *data)
 {
@@ -729,7 +743,7 @@ static void FuzzS25S3(void)
 {
 	uint32_t run[FUZZ_MAX_RANKS] = {0};
 	uint32_t run_count = FuzzAllRanks(run);
-	uint64_t request = 700000u;
+	uint64_t request = FuzzRequests();
 	uint64_t completions_before[FUZZ_MAX_RANKS];
 	uint64_t stub_rounds_before;
 	uint32_t launches_before;
@@ -843,7 +857,7 @@ static void FuzzGraphPath(void)
 	uint64_t progress = 0ull;
 	uint32_t i;
 	uint32_t pad_calls = cuda_stub_mesh_seq_pad_calls;
-    static uint64_t request = 2000000u;
+    uint64_t request = FuzzRequests();
     CHECK(FuzzRunSet(FuzzChainMain,request++,run,run_count,"graph-chain",0u,-1),
         "graph path starts from a shared request generation");
     g_capture_rank = 0u;
@@ -885,7 +899,7 @@ static void FuzzBasic(void)
 	uint32_t run[FUZZ_MAX_RANKS];
 	uint32_t run_count = FuzzAllRanks(run);
 	uint32_t i, rank;
-	uint64_t request = 1000u;
+	uint64_t request = FuzzRequests();
 	for ( i = 0u; i < 8u; i++ )
 	{
 		uint64_t ordinal = 16ull * (uint64_t)i + 1ull;
@@ -1028,7 +1042,7 @@ static uint32_t FuzzRun(uint32_t rounds, uint32_t seed, uint32_t kill_percent)
 	uint32_t run_count = FuzzAllRanks(run);
 	uint32_t unrecovered = 0u;
 	uint32_t recovery_pending = 0u;
-	uint64_t request = 500000u;
+	uint64_t request = FuzzRequests();
 	uint32_t round;
     g_seed = seed;
     g_schedule = seed;
@@ -1230,8 +1244,8 @@ static void FuzzRejections(void)
     CHECK(SparkTpDeviceCollectiveEnqueueRounds(&task->rank->collective,&valid,UINT32_MAX) ==
         SPARK_STATUS_CAPACITY_EXCEEDED,"round generation exhaustion rejects before device access");
     CHECK(SparkTpDeviceCollectiveChainKey(&task->rank->collective,
-        SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
-        "unrepresentable request identity rejects");
+        SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX + 1u) == SPARK_STATUS_INVALID_ARGUMENT,
+        "a request identity past the epoch range rejects");
 }
 
 static void FuzzSourceLifetime(void);
@@ -1522,7 +1536,7 @@ static void FuzzActivityLifetime(void)
     cuda_stub_stream_query_result = 600;
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
         SPARK_STATUS_BUSY,"pending GPU work cannot release the stream");
-    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400000u) ==
+    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,FuzzRequests()) ==
         SPARK_STATUS_BUSY,"pending GPU work cannot rearm cancellation");
     CHECK(SparkTpDeviceCollectiveGraphPreLaunch(&g_ranks[0].collective,(void *)0x2) ==
         SPARK_STATUS_BUSY,"another stream cannot inherit pending collective ownership");
@@ -1551,7 +1565,7 @@ static void FuzzActivityLifetime(void)
     CHECK(SparkTpDeviceCollectiveEndChain(&g_ranks[0].collective,(void *)0x1) ==
         SPARK_STATUS_OK && g_activity_calls == calls,"repeated local end sends no RPC");
     begins = g_activity_begins;
-    CHECK(FuzzRunSet(FuzzChainMain,2400001u,run,count,"activity-chain",0u,-1),
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"activity-chain",0u,-1),
         "the next chain starts on every rank");
     CHECK(g_activity_begins == begins && g_activity_calls == calls && g_broadcast_count == broadcasts,
         "a chain key sends no mesh RPC and no broadcast while the session's activity is up");
@@ -1586,7 +1600,7 @@ static void FuzzActivityLifetime(void)
         "destruction ends the session's activity before closing connection");
     FuzzResetRank(0u);
     g_activity_fail = 1u;
-    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,2400003u) ==
+    CHECK(SparkTpDeviceCollectiveChainKey(&g_ranks[0].collective,FuzzRequests()) ==
         SPARK_STATUS_IO_ERROR && g_broadcast_count == broadcasts,
         "a failed activity start cannot key a chain");
     g_activity_fail = 0u;
@@ -1596,7 +1610,7 @@ static void FuzzMandatoryFaults(void)
 {
     uint32_t run[FUZZ_MAX_RANKS], peers[FUZZ_MAX_RANKS];
     uint32_t count = FuzzAllRanks(run), rank, scenario;
-    uint64_t request = 1100000u;
+    uint64_t request = FuzzRequests();
     FuzzConfiguration();
     FuzzRejections();
     FuzzCompletionCapacity();
@@ -1673,7 +1687,7 @@ static void FuzzMandatoryFaults(void)
             CHECK(FuzzSumOk(rank,scenario),"recovered output contains every fresh contribution");
         }
     }
-    FuzzNumerics(1300000u,1400000u,1u);
+    FuzzNumerics(FuzzRequests(),1400000u,1u);
 }
 
 static void FuzzLegacyCallbacks(uint32_t enabled);
@@ -1685,7 +1699,7 @@ static void FuzzTreeCases(void)
     FuzzCase("tree-native-operations-without-legacy-callbacks");
     FuzzLegacyCallbacks(0u);
     g_logical_rows = 3u;
-    FuzzNumerics(1600000u,1700000u,3u);
+    FuzzNumerics(FuzzRequests(),1700000u,3u);
     g_rows = 1u;
     g_logical_rows = 3u;
     FuzzGraphPath();
@@ -1693,7 +1707,7 @@ static void FuzzTreeCases(void)
     for ( rank = 0u; rank < count; rank++ )
         g_ranks[rank].partial[1] = FuzzBf16FromFloat(rank == 0u ? 256.0f :
             rank == 1u ? 1.0f : rank == 2u ? -256.0f : rank == 3u ? 1.0f : 0.0f);
-    CHECK(FuzzRunSet(FuzzChainMain,1800000u,run,count,"tree-rounding-chain",0u,-1),"rounding generation aligns");
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-rounding-chain",0u,-1),"rounding generation aligns");
     CHECK(FuzzRunSet(FuzzRoundMain,1800001u,run,count,"tree-rounding",0u,-1),"tree rounding operation terminates");
     for ( rank = 0u; rank < count; rank++ )
     {
@@ -1704,12 +1718,12 @@ static void FuzzTreeCases(void)
             g_ranks[rank].partial[i] = FuzzBf16FromFloat((float)(rank + 1u));
     }
     FuzzCase("tree-missing-peer-cancel-and-recovery");
-    CHECK(FuzzRunSet(FuzzChainMain,1800002u,run,count,"tree-missing-chain",0u,-1),"missing-peer generation aligns");
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-missing-chain",0u,-1),"missing-peer generation aligns");
     for ( rank = 0u; rank < count; rank++ ) if ( rank != count - 1u ) peers[n++] = rank;
     CHECK(FuzzRunSet(FuzzRoundMain,1800003u,peers,n,"tree-missing",0u,-1),"missing tree peer terminates bounded");
     for ( rank = 0u; rank < n; rank++ )
         CHECK(g_tasks[peers[rank]].status == SPARK_STATUS_IO_ERROR,"missing tree contribution is terminal, never success");
-    CHECK(FuzzRunSet(FuzzChainMain,1800004u,run,count,"tree-loop-chain",0u,-1),"tree round-loop generation aligns");
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-loop-chain",0u,-1),"tree round-loop generation aligns");
     CHECK(FuzzLaunchRounds(1800005u,3u,1u,"tree-loop"),"tree round-loop completes");
     for ( rank = 0u; rank < count; rank++ )
     {
@@ -1717,7 +1731,7 @@ static void FuzzTreeCases(void)
         CHECK(FuzzSumOk(rank,1u),"tree device rounds retain every contribution");
     }
     FuzzHoldShipper(1u);
-    CHECK(FuzzRunSet(FuzzChainMain,1800006u,run,count,"tree-cancel-chain",0u,-1),"tree cancellation generation aligns");
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-cancel-chain",0u,-1),"tree cancellation generation aligns");
     FuzzLaunchRoundsAsync(1800007u,3u,2u);
     usleep(50000);
     FuzzCancelAll();
@@ -1725,7 +1739,7 @@ static void FuzzTreeCases(void)
     for ( rank = 0u; rank < count; rank++ )
         CHECK(g_tasks[rank].status == SPARK_STATUS_IO_ERROR,"cancelled tree is terminal, never success");
     FuzzHoldShipper(0u);
-    CHECK(FuzzRunSet(FuzzChainMain,1800008u,run,count,"tree-recover-chain",0u,-1),"tree recovery generation aligns");
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-recover-chain",0u,-1),"tree recovery generation aligns");
     CHECK(FuzzRunSet(FuzzRoundMain,1800009u,run,count,"tree-recover",3u,-1),"tree recovers after cancellation");
     for ( rank = 0u; rank < count; rank++ )
     {
@@ -1767,7 +1781,7 @@ static void FuzzTreeLargePayloads(void)
                     ((uint64_t *)g_input_override[rank])[i] = ((uint64_t)(rank + 1u) << 48u) + i;
             memset(g_output_override[rank],0xa5,(size_t)output_elements * 2u + 16u);
         }
-        CHECK(FuzzRunSet(FuzzChainMain,2300000u + operation,run,count,"large-chain",operation,-1),
+        CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"large-chain",operation,-1),
             "large payload generation aligns");
         CHECK(FuzzRunSet(FuzzRoundMain,2300010u + operation,run,count,"large-tree",operation,-1),
             "large tree payload finishes bounded");
@@ -1813,7 +1827,7 @@ static void FuzzTreeQualification(void)
     FuzzCase("logical-batch-requires-tree-fanout");
     g_rows = 1u;
     g_logical_rows = 3u;
-    CHECK(FuzzRunSet(FuzzChainMain,1500000u,run,count,"tree-chain",0u,-1),
+    CHECK(FuzzRunSet(FuzzChainMain,FuzzRequests(),run,count,"tree-chain",0u,-1),
         "logical batch generation establishes");
     before = __sync_add_and_fetch(&g_payload_deliveries,0u);
     CHECK(FuzzRunSet(FuzzRoundMain,1500001u,run,count,"tree-required",0u,-1),
@@ -1860,7 +1874,7 @@ static uint32_t BenchRun(uint32_t rounds)
 	if ( times == 0 )
 		return(1u);
 	ordinal = 1ull;
-	uint64_t request = 900000u;
+	uint64_t request = FuzzRequests();
 	request++;
 	if ( FuzzRunSet(FuzzChainMain, request, run, run_count, "bench-chain",
 	        0u, -1) == 0u )
@@ -2004,6 +2018,7 @@ int main(int argc, char **argv)
     }
 	g_shipper_stop = 1u;
 	pthread_join(shipper, 0);
+	CHECK(g_fallen_tags == 0u,"every publication's tag rose above its cell's last one, which the mesh requires to ship it");
 	for ( rank = 0u; rank < ranks; rank++ )
 	{
 		if ( g_ranks[rank].collective.implementation != 0 )

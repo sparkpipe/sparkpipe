@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 27u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 28u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -86,6 +86,7 @@ typedef struct SparkModelResidentIpcHelloAck
 	char model_revision[SPARK_MODEL_RESIDENT_IPC_REVISION_BYTES];
 	char artifact_sha256[SPARK_MODEL_RESIDENT_IPC_SHA256_BYTES];
 	uint64_t session_epoch;
+	uint64_t submission_id_floor;
 } SparkModelResidentIpcHelloAck;
 
 typedef struct SparkModelResidentIpcSubmit

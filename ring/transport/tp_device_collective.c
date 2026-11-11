@@ -381,7 +381,6 @@ static void SparkTpDeviceCollectiveInvokeCompletion(
 }
 
 #define SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS 10u
-#define SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN UINT64_C(0xffffffff)
 #define SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE \
     (1ull << SPARK_TP_DEVICE_COLLECTIVE_WAVE_STRIDE_BITS)
 #define SPARK_TP_DEVICE_COLLECTIVE_ROUND_SPIN_TIMEOUT_NS (120ull * 1000000000ull)
@@ -650,7 +649,7 @@ static uint64_t SparkTpDeviceCollectiveWaveEpoch(
     mix ^= mix >> 33u;
     mix *= UINT64_C(0xff51afd7ed558ccd);
     mix ^= mix >> 33u;
-    return 1ull + (mix % SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN + request_id) % SPARK_TP_DEVICE_COLLECTIVE_EPOCH_SPAN;
+    return 1ull + mix % SPARK_TP_DEVICE_COLLECTIVE_EPOCH_KEYS + request_id;
 }
 
 static SparkStatus SparkTpDeviceCollectiveSeedEpoch(
@@ -689,13 +688,27 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollectiveImplementation *implementation;
     SparkStatus status;
     uint64_t epoch;
-    if ( collective == 0 || collective->implementation == 0 ||
-         request_id > SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK )
+    if ( collective == 0 || collective->implementation == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
+    if ( request_id > SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX )
+    {
+        fprintf(stderr,"COLLECTIVE-EPOCH-RANGE rank=%u band=%u request=%llu limit=%llu: the rank's epochs are used up, restart the lane\n",
+            implementation->tp_rank,SparkTpDeviceCollectiveBandIndex(implementation),(unsigned long long)request_id,
+            (unsigned long long)SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
     if ( implementation->mesh_buffer == 0 ||
          implementation->capture_armed != 0u )
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+    epoch = SparkTpDeviceCollectiveWaveEpoch(implementation,request_id);
+    if ( epoch < implementation->chain_epoch )
+    {
+        fprintf(stderr,"COLLECTIVE-EPOCH-FELL rank=%u band=%u request=%llu epoch=%llu last=%llu: request ids rise for as long as a rank lives\n",
+            implementation->tp_rank,SparkTpDeviceCollectiveBandIndex(implementation),(unsigned long long)request_id,
+            (unsigned long long)epoch,(unsigned long long)implementation->chain_epoch);
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
     status = implementation->active_stream_valid != 0u ?
         SparkTpDeviceCollectiveStreamTerminal(implementation->active_stream) : SPARK_STATUS_OK;
     if ( status == SPARK_STATUS_OK && implementation->hardware_wait != 0u )
@@ -706,7 +719,6 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         status = SparkTpDeviceCollectiveEnsureCells(implementation);
     if ( status != SPARK_STATUS_OK )
         return status;
-    epoch = SparkTpDeviceCollectiveWaveEpoch(implementation,request_id);
     if ( epoch != implementation->chain_epoch )
     {
         status = SparkTpDeviceCollectiveSeedEpoch(implementation,epoch);
@@ -714,7 +726,8 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
             return status;
     }
     implementation->chain_key =
-        (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) | request_id;
+        (epoch << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) |
+        (request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK);
     return SPARK_STATUS_OK;
 }
 
