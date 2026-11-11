@@ -635,8 +635,9 @@ load (chain decode at about 1,000 tokens of context, identical output).
 - With the prefetch the step follows the rank that publishes last. It has no
   wait to fill, so it reads cold: 16.8 ms a step on a heavy rank, plus 0.9
   publishing and summing, a bound near 17.7 ms for this pack; the lane is at
-  20.15 and a heavy rank's memory still idles about 3 ms a step. A larger
-  prefetch budget (16 or 20 MiB against 12) changes nothing.
+  20.15 and a heavy rank's memory still idles about 3 ms a step. A prefetch
+  budget of 16 MiB against 12 gives the same and 20 MiB slightly worse
+  (20.37).
 - A step with logprobs is 5.4 ms longer than a chain step, and that is the
   logprobs path, not the cost of a separate submission: a chain's first step
   costs under 2 ms more than its others.
