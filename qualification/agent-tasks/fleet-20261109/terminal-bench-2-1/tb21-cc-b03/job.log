@@ -1,0 +1,244 @@
+Inference credentials: 1 mappings across 6 trials
+claude-code / anthropic (6 trials): ANTHROPIC_AUTH_TOKEN → ANTHROPIC_AUTH_TOKEN; base URL=http://192.168.5.2:18433 (ANTHROPIC_BASE_URL); API format=anthropic_messages (agent_default)
+Skipping image OS validation for alexgshaw/regex-log:20251031: docker inspect returned 1
+Skipping image OS validation for alexgshaw/train-fasttext:20251031: docker inspect returned 1
+Skipping image OS validation for alexgshaw/qemu-startup:20251031: docker inspect returned 1
+Skipping image OS validation for alexgshaw/hf-model-inference:20260430: docker inspect returned 1
+Skipping image OS validation for alexgshaw/db-wal-recovery:20251031: docker inspect returned 1
+Skipping image OS validation for alexgshaw/portfolio-optimization:20251031: docker inspect returned 1
+Running command: apt-get update && apt-get install -y curl nodejs npm
+Running command: apt-get update && apt-get install -y curl nodejs npm procps
+Running command: apt-get update && apt-get install -y curl nodejs npm
+Running command: apt-get update && apt-get install -y curl nodejs npm procps
+Running command: apt-get update && apt-get install -y curl nodejs npm procps
+Running command: apt-get update && apt-get install -y curl nodejs npm procps
+Command failed
+Trial qemu-startup__xPzcM8z failed: Command failed (exit 100): apt-get update && apt-get install -y curl nodejs npm procps
+stdout: Hit:1 http://deb.debian.org/debian bullseye InRelease
+Get:2 http://deb.debian.org/debian-security bullseye-security InRelease [27.1 kB]
+Hit:3 http://deb.debian.org/debian bullseye-updates InRelease
+Get:4 http://deb.debian.org/debian-security bullseye ... [50426 chars truncated] ... deb.debian.org/debian-security/pool/updates/main/n/nodejs/nodejs_12.22.12%7edfsg-1%7edeb11u8_amd64.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/node-form-data/node-form-data_3.0.0-2%2bdeb11u1_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/node-tar/node-tar_6.0.5%2bds1%2b%7ecs11.3.9-1%2bdeb11u3_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/nodejs/nodejs-doc_12.22.12%7edfsg-1%7edeb11u8_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+
+stderr: None
+Collecting main service artifacts
+Not retrying trial because the maximum number of retries has been reached
+Command outputs captured
+Running command: set -euo pipefail; if command -v apk &> /dev/null; then  npm install -g @anthropic-ai/claude-code@2.1.311; else  curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- 2.1.311; fi && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && export PATH="$HOME/.local/bin:$PATH" && claude --version
+Command outputs captured
+Running command: mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills && if [ -d ~/.claude/skills ]; then cp -r ~/.claude/skills/. $CLAUDE_CONFIG_DIR/skills/ 2>/dev/null || true; fi && mkdir -p /tmp/claude-code-settings
+Command outputs captured
+Running command: export PATH="$HOME/.local/bin:$PATH"; claude_code_instruction_74995197e1f5411d95da736dec94884e="$CLAUDE_CODE_INSTRUCTION_74995197E1F5411D95DA736DEC94884E"; unset CLAUDE_CODE_INSTRUCTION_74995197E1F5411D95DA736DEC94884E; printf "%s" "$claude_code_instruction_74995197e1f5411d95da736dec94884e" | claude --verbose --output-format=stream-json --settings /tmp/claude-code-settings/settings.json --effort max --permission-mode=bypassPermissions --print 2>&1 | tee /logs/agent/claude-code.txt
+Command outputs captured
+Running command: set -euo pipefail; if command -v apk &> /dev/null; then  npm install -g @anthropic-ai/claude-code@2.1.311; else  curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- 2.1.311; fi && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && export PATH="$HOME/.local/bin:$PATH" && claude --version
+Command outputs captured
+Running command: mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills && if [ -d ~/.claude/skills ]; then cp -r ~/.claude/skills/. $CLAUDE_CONFIG_DIR/skills/ 2>/dev/null || true; fi && mkdir -p /tmp/claude-code-settings
+Command outputs captured
+Running command: export PATH="$HOME/.local/bin:$PATH"; claude_code_instruction_1a78bead9ddc448da82483178eacaf55="$CLAUDE_CODE_INSTRUCTION_1A78BEAD9DDC448DA82483178EACAF55"; unset CLAUDE_CODE_INSTRUCTION_1A78BEAD9DDC448DA82483178EACAF55; printf "%s" "$claude_code_instruction_1a78bead9ddc448da82483178eacaf55" | claude --verbose --output-format=stream-json --settings /tmp/claude-code-settings/settings.json --effort max --permission-mode=bypassPermissions --print 2>&1 | tee /logs/agent/claude-code.txt
+Command outputs captured
+Running command: set -euo pipefail; if command -v apk &> /dev/null; then  npm install -g @anthropic-ai/claude-code@2.1.311; else  curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- 2.1.311; fi && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && export PATH="$HOME/.local/bin:$PATH" && claude --version
+Command outputs captured
+Running command: mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills && if [ -d ~/.claude/skills ]; then cp -r ~/.claude/skills/. $CLAUDE_CONFIG_DIR/skills/ 2>/dev/null || true; fi && mkdir -p /tmp/claude-code-settings
+Command outputs captured
+Running command: export PATH="$HOME/.local/bin:$PATH"; claude_code_instruction_17c3f156927644fe8e16ba14aeae2968="$CLAUDE_CODE_INSTRUCTION_17C3F156927644FE8E16BA14AEAE2968"; unset CLAUDE_CODE_INSTRUCTION_17C3F156927644FE8E16BA14AEAE2968; printf "%s" "$claude_code_instruction_17c3f156927644fe8e16ba14aeae2968" | claude --verbose --output-format=stream-json --settings /tmp/claude-code-settings/settings.json --effort max --permission-mode=bypassPermissions --print 2>&1 | tee /logs/agent/claude-code.txt
+Trial regex-log__d6L2ybs failed: Agent setup timed out after 360.0 seconds
+Collecting main service artifacts
+Command outputs captured
+Running command: set -euo pipefail; if command -v apk &> /dev/null; then  npm install -g @anthropic-ai/claude-code@2.1.311; else  curl -fsSL https://downloads.claude.ai/claude-code-releases/bootstrap.sh | bash -s -- 2.1.311; fi && echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && export PATH="$HOME/.local/bin:$PATH" && claude --version
+Not retrying trial because the maximum number of retries has been reached
+Command outputs captured
+Running command: mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills && if [ -d ~/.claude/skills ]; then cp -r ~/.claude/skills/. $CLAUDE_CONFIG_DIR/skills/ 2>/dev/null || true; fi && mkdir -p /tmp/claude-code-settings
+Command outputs captured
+Running command: export PATH="$HOME/.local/bin:$PATH"; claude_code_instruction_9aab309d35da46e092a4b7af4072c5e9="$CLAUDE_CODE_INSTRUCTION_9AAB309D35DA46E092A4B7AF4072C5E9"; unset CLAUDE_CODE_INSTRUCTION_9AAB309D35DA46E092A4B7AF4072C5E9; printf "%s" "$claude_code_instruction_9aab309d35da46e092a4b7af4072c5e9" | claude --verbose --output-format=stream-json --settings /tmp/claude-code-settings/settings.json --effort max --permission-mode=bypassPermissions --print 2>&1 | tee /logs/agent/claude-code.txt
+Command outputs captured
+Running command: rm -rf /tmp/claude-code-settings
+Command outputs captured
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Wrote Claude Code trajectory to /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03/hf-model-inference__aLtsYyK/agent/trajectory.json
+Collecting main service artifacts
+Command outputs captured
+Running command: rm -rf /tmp/claude-code-settings
+Command outputs captured
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Wrote Claude Code trajectory to /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03/db-wal-recovery__acTYyBj/agent/trajectory.json
+Collecting main service artifacts
+Command outputs captured
+Running command: rm -rf /tmp/claude-code-settings
+Command outputs captured
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Wrote Claude Code trajectory to /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03/portfolio-optimization__h6rQz2C/agent/trajectory.json
+Collecting main service artifacts
+Running command: rm -rf /tmp/claude-code-settings
+Command outputs captured
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Cannot estimate Claude cost for model 'deepseek-v4.1-flash': litellm.BadRequestError: LLM Provider NOT provided. Pass in the LLM provider you are trying to call. You passed model=deepseek-v4.1-flash
+ Pass model as E.g. For 'Huggingface' inference endpoints pass in `completion(model='huggingface/starcoder',..)` Learn more: https://docs.litellm.ai/docs/providers
+Wrote Claude Code trajectory to /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03/train-fasttext__heYoKEk/agent/trajectory.json
+Collecting main service artifacts
+Exception AgentTimeoutError is in exclude_exceptions, not retrying
+Not retrying trial because the exception is not in include_exceptions or the maximum number of retries has been reached
