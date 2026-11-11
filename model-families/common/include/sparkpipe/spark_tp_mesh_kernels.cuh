@@ -1048,19 +1048,24 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
     SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,uint64_t timeout_ns,
     LmWeightPrefetchGroup *prefetch,uint32_t resume,uint32_t view,uint32_t early)
 {
+    __shared__ uint32_t peers_landed;
     const uint32_t lane = threadIdx.x;
     const volatile uint64_t *tail,*cancel;
     uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other,base;
     uint32_t missing,first,step;
+    if ( lane == 0u ) peers_landed = 0u;
+    __syncthreads();
     if ( blockIdx.x != 0u || SparkTpLdcvU64(&control->error_word) != 0u ) return;
     if ( lane >= 32u )
     {
+        const volatile uint32_t *stop = &peers_landed;
         const uint32_t spans = prefetch->count;
         const uint64_t extent = LmWeightPrefetchExtent(prefetch,spans),stride = (uint64_t)(blockDim.x - 32u) * LM_WEIGHT_PREFETCH_PIECE_BYTES;
-        for ( uint64_t position = (resume != 0u ? prefetch->progress : 0u) + (uint64_t)(lane - 32u) * LM_WEIGHT_PREFETCH_PIECE_BYTES; position < extent; position += stride )
-            LmWeightPrefetchPiece(prefetch,spans,position);
+        uint64_t position = resume != 0u ? prefetch->progress : 0u;
+        for ( ; position < extent && *stop == 0u; position += stride )
+            LmWeightPrefetchPiece(prefetch,spans,position + (uint64_t)(lane - 32u) * LM_WEIGHT_PREFETCH_PIECE_BYTES);
         if ( lane == 32u )
-            prefetch->progress = extent;
+            prefetch->progress = position < extent ? position : extent;
         return;
     }
     if ( early != 0u )
@@ -1094,6 +1099,8 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
         if ( fault == tag ) diag = seen;
         break;
     }
+    if ( lane == 0u )
+        *(volatile uint32_t *)&peers_landed = 1u;
     if ( early == 0u )
         LmDependentRelease();
     if ( fault == 0u && lane < SPARK_TP_MESH_ROUND_CONTROL_PEERS && landed != UINT64_MAX && landed > base )

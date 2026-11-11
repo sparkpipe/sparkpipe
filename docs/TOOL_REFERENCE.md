@@ -822,7 +822,9 @@ For `single`, `chain` and `verify` it splits a pass into the memory floor,
 collectives (the share of its step that the rank with the most own work
 spends in collectives, applied to the frame's service time), the rank's
 remainder, host and wire, and the gap, and
-states the pass's share of the one-token roofline. A chain counts each step as
+states the pass's share of the one-token roofline. When the rank's own work
+is shorter than its floor, its waits prefetched part of the weights, and the
+remainder reads `less N of the floor read during the waits`. A chain counts each step as
 a pass; a verify frame is one pass that yields its kept tokens, so its share
 can exceed 100%. A frame whose gap is over half its service time waited behind
 other work and is left out of the split and counted. The rank windows mix

@@ -198,9 +198,9 @@ decode graph's GEMVs register their weights, so the wait in front of a window
 prefetches it; 0 or absent leaves every read cold. On the sixteen Sparks on
 2026-11-11, `1 1 5120 128 32` (a 5,120-value all-reduce, 128 rounds a
 launch) took 25.8 us a round alone (19.6 waiting for the fifteen peers), 156
-us with `WORK_KIB` 26624 and no prefetch (122 reading, 28 waiting) and 139
-to 141 with the prefetch. These are collective component measurements, not
-serving throughput.
+us with `WORK_KIB` 26624 and no prefetch (122 reading, 28 waiting) and 144
+with the prefetch. These are collective component measurements, not serving
+throughput.
 
 ## GLM firmware build for development and PR testing
 

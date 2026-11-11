@@ -608,6 +608,39 @@ things stand out in the rank logs.
   late in each round: 5.9 ms a step. The commit round trips (2.5) sit
   inside the 0.4 to 1.0 ms of host and wire.
 
+The second point was taken apart on 2026-11-11 with `build/mesh_round_bench`
+on the sixteen Sparks and with five firmware builds on the same lane and
+load (chain decode at about 1,000 tokens of context, identical output).
+
+- The network part of a round is 25.8 us for this family's 5,120-value sum:
+  2.8 publishing, 19.6 until the fifteenth peer has landed, 2.7 summing. It
+  is 16.6 us for 1,024 values and 34.4 for 8,192, and the two-hop form is a
+  flat 44 us, so the switch between them at 10,240 values is where it should
+  be. weightd posts a round to its fifteen peers in 0.9 us, within 1 us of
+  the doorbell. A graph node costs 0.54 us and a decode step has 1,601.
+- The rest of the wait is ranks finishing their own work at different times.
+  Identical ranks reproduce it: with a cold 26 MiB read in front of every
+  round each rank waits 28 us, not 19.6. A node's cold read runs at 225 to
+  230 GB/s and differs by 5 to 8% between places in memory, and on a Spark
+  about one read in a hundred falls in a burst that takes 10 to 80% longer
+  (0.35 to 0.7% of its read time; a kernel that reads no memory does not see
+  them). With sixteen ranks a round meets one of those often.
+- A rank that waits can read its next weights meanwhile, and a prefetch
+  during idle memory time comes off the next read one for one, up to the
+  20 MiB the cache holds. The arrival kernel issued its prefetch hints from
+  the warp that polls, which paced the hints and slowed the poll. On its own
+  warp, until the peers land: 21.03 to 20.15 ms a token, 47.5 to 49.6 tok/s;
+  with no prefetch at all the lane takes 22.05. The table and the bench
+  numbers are in the kernel playbook, section 2.7.
+- With the prefetch the step follows the rank that publishes last. It has no
+  wait to fill, so it reads cold: 16.8 ms a step on a heavy rank, plus 0.9
+  publishing and summing, a bound near 17.7 ms for this pack; the lane is at
+  20.15 and a heavy rank's memory still idles about 3 ms a step. A larger
+  prefetch budget (16 or 20 MiB against 12) changes nothing.
+- A step with logprobs is 5.4 ms longer than a chain step, and that is the
+  logprobs path, not the cost of a separate submission: a chain's first step
+  costs under 2 ms more than its others.
+
 Still open, by what the meter says each is worth on a decode step:
 
 - Step 3, the second half, and then the collective plan from the schedule:

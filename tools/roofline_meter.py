@@ -218,7 +218,8 @@ def render(summary: dict, label: str) -> list:
             continue
         parts = entry["decomposition"]
         total = parts["total_ms"]
-        share = ", ".join(f"{names[name]} {value:.2f} ({100.0 * value / total:.0f}%)" for name, value in parts.items() if name != "total_ms")
+        share = ", ".join(f"less {-value:.2f} ({100.0 * -value / total:.0f}%) of the floor read during the waits" if name == "rank_other_ms" and value < 0.0
+                          else f"{names[name]} {value:.2f} ({100.0 * value / total:.0f}%)" for name, value in parts.items() if name != "total_ms")
         roofline = f"; {100.0 * entry['of_roofline']:.0f}% of the one-token roofline" if "of_roofline" in entry else ""
         contended = f"; {entry['contended_frames']} frames that waited behind other work left out" if entry["contended_frames"] else ""
         lines.append(f"{kind}: {total:.2f} ms a pass for {entry['per_pass']['tokens']:.2f} tokens, {entry['ms_per_token']:.2f} ms a token{roofline}: {share}{contended}")

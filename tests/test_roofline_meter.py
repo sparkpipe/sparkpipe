@@ -77,6 +77,10 @@ with tempfile.TemporaryDirectory() as directory:
           and "chain: 20.27 ms a pass for 1.00 tokens" in text.stdout and "69% of the one-token roofline" in text.stdout
           and "1 frames that waited behind other work left out" in text.stdout, "the text report names the rounds, the chain's pass and its share of the roofline")
 
+    ahead = run("--api-log", str(api), "--rank-log", str(rank), "--node-gb-per-token", "5.0", "--read-gb-s", "243")
+    check(ahead.returncode == 0 and "memory floor 20.58 (79%), collectives 9.17 (35%), less 4.74 (18%) of the floor read during the waits, host and wire 1.00 (4%)" in ahead.stdout,
+          "a rank whose own work is under its floor read part of the floor during its waits, and the report says how much")
+
     heavy = Path(directory) / "heavy.log"
     light = Path(directory) / "light.log"
     heavy.write_text("WD-SPINE-PRIVATE spans=1 bytes=3500000000\n"

@@ -748,19 +748,15 @@ struct Probe
             REQUIRE(plans[rank].groups==1u && plans[rank].dropped==0u && plans[rank].host[0].count==1u && plans[rank].host[0].total==bytes);
         }
     }
-    void PrefetchReached(std::vector<LmWeightPrefetchPlan> &plans,uint64_t bytes)
+    std::vector<uint64_t> PrefetchProgress(std::vector<LmWeightPrefetchPlan> &plans)
     {
-        const uint64_t extent=(bytes+LM_WEIGHT_PREFETCH_PIECE_BYTES-1u)&~static_cast<uint64_t>(LM_WEIGHT_PREFETCH_PIECE_BYTES-1u);
+        std::vector<uint64_t> progress(degree);
         for (uint32_t rank=0u;rank<degree;rank++)
         {
             LmWeightPrefetchGroup group={};CUDA(cudaMemcpy(&group,plans[rank].device,sizeof(group),cudaMemcpyDeviceToHost));
-            if (group.progress!=extent)
-            {
-                std::fprintf(stderr,"FAIL prefetch rank=%u reached %llu of %llu bytes\n",rank,(unsigned long long)group.progress,(unsigned long long)extent);
-                std::exit(1);
-            }
-            group.progress=0u;CUDA(cudaMemcpy(plans[rank].device,&group,sizeof(group),cudaMemcpyHostToDevice));
+            progress[rank]=group.progress;group.progress=0u;CUDA(cudaMemcpy(plans[rank].device,&group,sizeof(group),cudaMemcpyHostToDevice));
         }
+        return progress;
     }
     void PrefetchFree(std::vector<LmWeightPrefetchPlan> &plans,std::vector<uint8_t *> &weights)
     {
@@ -768,24 +764,33 @@ struct Probe
     }
     void Prefetch()
     {
+        const uint64_t small=99984u,large=LM_WEIGHT_PREFETCH_BUDGET_BYTES,piece=LM_WEIGHT_PREFETCH_PIECE_BYTES;
         std::vector<LmWeightPrefetchPlan> plans(4u);std::vector<uint8_t *> weights(4u,nullptr);
-        Setup(4u,1u,1u,513u,3u);Data(30u);PrefetchCapture(plans,weights,99984u);
+        Setup(4u,1u,1u,513u,3u);Data(30u);PrefetchCapture(plans,weights,small);
         for (uint32_t replay=0u;replay<2u;replay++)
         {
             if (replay!=0u) { Setup(4u,1u,1u,513u,3u,true);Data(31u); }
             StartWorker();uint64_t begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
-            PrefetchReached(plans,99984u);
+            for (uint64_t reached:PrefetchProgress(plans)) REQUIRE(reached==((small+piece-1u)&~(piece-1u)));
         }
         PrefetchFree(plans,weights);
         completed_cases++;std::puts("PASS a graph's mesh waits prefetch the weights registered after them to the end of their group on every replay, and the sums stay exact");
-        Setup(4u,1u,1u,513u,1u);Data(32u);PrefetchCapture(plans,weights,UINT64_C(4)<<20);
+        Setup(4u,1u,1u,513u,1u);Data(32u);PrefetchCapture(plans,weights,large);
         StartWorker();uint64_t begin=Now(),shipped_before=transfers.load();launch_count++;
         for (uint32_t rank=0u;rank+1u<degree;rank++) LaunchRank(rank,true);
         while (transfers.load()<shipped_before+degree-1u) REQUIRE(Now()-begin<UINT64_C(10000000000));
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
         LaunchRank(degree-1u,true);Wait(begin);Verify();EndWorker();
-        PrefetchReached(plans,UINT64_C(4)<<20);PrefetchFree(plans,weights);
-        completed_cases++;std::puts("PASS a rank whose peers had all landed before its wait began still prefetches its whole group");
+        std::vector<uint64_t> reached=PrefetchProgress(plans);
+        for (uint32_t rank=0u;rank+1u<degree;rank++) REQUIRE(reached[rank]==large);
+        if (reached[degree-1u]>=large)
+        {
+            std::fprintf(stderr,"FAIL prefetch: the rank whose peers had landed before its wait began still prefetched its whole %llu-byte group\n",(unsigned long long)large);
+            std::exit(1);
+        }
+        PrefetchFree(plans,weights);
+        completed_cases++;std::printf("PASS ranks that wait prefetch their whole group; the rank whose peers had already landed stopped at %llu of %llu bytes\n",
+            (unsigned long long)reached[degree-1u],(unsigned long long)large);
     }
     void Timings()
     {

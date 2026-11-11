@@ -718,31 +718,44 @@ waits on the tails itself (`own_wait`).
   prefetch.** `cp.async.bulk.prefetch.L2` blocks while memory is busy: one
   thread issues 12 MiB in 16 KiB pieces in about 39 us whether one, 8 or 32
   threads share the work. Issued from the polling warp, eight pieces a poll,
-  it paced the prefetch by the poll loop and slowed the poll. The second warp
-  runs straight through the group, up to `LM_WEIGHT_PREFETCH_BUDGET_BYTES`
-  (12 MiB), whether or not the peers have landed.
+  it was paced by the poll loop and slowed the poll. The second warp issues
+  the group at memory speed, up to `LM_WEIGHT_PREFETCH_BUDGET_BYTES`
+  (12 MiB), and stops when the polling warp has seen every peer land; the
+  next wait of the same group resumes where it stopped.
   - Measured on a GB10 (2026-11-11): a cold 26 MiB read takes about 120 us
     (225 to 230 GB/s). After a prefetch of its first N MiB the read is
     shorter by the time the prefetch took, up to about 20 MiB, which is what
-    the cache holds; all 26 MiB cached read in 36 us. Hints for pieces of
-    256 KiB or more load little or nothing.
+    the cache holds; all 26 MiB cached read in 36 us. A hint is as reliable
+    as a load: over 6,280 reads a node, under 1% ran more than 15 us over
+    the median after either. Hints for pieces of 256 KiB or more load little
+    or nothing.
   - A prefetch only pays in time when memory would otherwise be idle. Hints
     for a kernel's own data inside that kernel do not make its cold read
     faster, and hints for the next round's weights issued during the current
     round's read are evicted by it and cost their full time: the round bench
     went from 156 to 189-240 us a round.
-  - The whole group, not as much as the wait allows: a rank whose peers
-    landed before it began to wait has no wait to fill, and with a
-    wait-bounded prefetch it stays the slowest rank round after round while
-    the others wait for it with their caches full.
-    `tp_mesh_hardware_probe --prefetch` holds one rank back and checks that
-    it still reaches the end of its group.
-  - Measured with `mesh_round_bench` on the sixteen Sparks, a 5,120-value
-    all-reduce after a cold 26 MiB read every round: 156 us a round with no
-    prefetch, 146 to 151 with the prefetch on the polling warp, 139 to 141
-    with it on its own warp. Budgets of 8 to 20 MiB and 8 to 224 prefetch
-    threads stayed within 138 to 148 us.
+  - The rank that publishes last has no wait to fill, so it reads its next
+    weights cold and the step follows it. Running the whole group there
+    regardless of the peers moves that rank's read into the arrival kernel
+    without shortening it, and holds its combine behind the prefetch.
+    `tp_mesh_hardware_probe --prefetch` holds one rank back and checks both
+    sides: the ranks that waited reach the end of their group, the rank whose
+    peers had landed stops.
+  - Qwen3.8-27B (BF16, TP16, chain decode at about 1,000 tokens of context,
+    2026-11-11, the same lane and load for each build, identical output):
 
+    | Prefetch during the wait | ms a token | heavy rank: own, wait, combine (ms a step) |
+    |---|---:|---|
+    | none | 22.05 | 16.81, 4.13, 0.44 |
+    | on the polling warp, eight pieces a poll | 21.03 | 15.74, 4.04, 0.44 |
+    | own warp, whole group regardless of the peers | 20.39 | 10.81, 7.09, 1.83 |
+    | own warp, until the peers land | 20.15 | 13.45, 5.41, 0.58 |
+
+  - `mesh_round_bench` on the sixteen Sparks, a 5,120-value all-reduce after
+    a cold 26 MiB read every round, ranks identical: 156 us a round with no
+    prefetch, 146 to 151 on the polling warp, 144 on its own warp until the
+    peers land, 139 to 141 for the whole group. The bench and the lane
+    disagree on the last two; the lane decides.
 - **A spinning kernel releases its dependents only when they are small.**
   A released dependent becomes resident at once and spins in its own wait.
   - Large combines (up to 192 blocks) pinned the GPU this way: every rank
