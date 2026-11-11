@@ -78,8 +78,8 @@ public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
 for one and then gets 429 `busy` with an integer `Retry-After` and
 `x-should-retry: true`. Background requests (`<model>-bulk`,
 `X-SparkPipe-Priority: background` or `metadata["x-sparkpipe-priority"]`,
-Claude Code's compaction and auxiliary calls, and chat-memory jobs, which
-take a sequence at the gate like any request) leave two sequences for
+and chat-memory jobs, which take a sequence at the gate like any request;
+a harness's own marks never make a request background) leave two sequences for
 interactive ones, and a freed sequence goes to a waiting interactive request
 first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
@@ -630,7 +630,8 @@ prompt. The non-streamed body and the last stream event carry the
 `pack`, prompt, cached, prefill and replayed tokens, `queue_ms`,
 `prefill_ms`, `ttft_ms`, `output_tokens`, `decode_tps`, `draft_accept`,
 `cold_prefill_ms_estimate`, `priority`, `session`, `agent`), and the chat
-layer logs it as a `request_record` line. `X-SparkPipe-Request`, `-Model`,
+layer keeps it as the request's record (Request records, below), never in
+its log. `X-SparkPipe-Request`, `-Model`,
 `-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms`, `-Fleet` and `-Pack` come with the
 headers. `cold_prefill_ms_estimate` applies the measured cold prefill rate
 of the model near this prompt length (cold requests of 512 tokens or more,
@@ -638,6 +639,39 @@ in quarter-octave length buckets, used within two buckets) to the cached
 tokens; with no measurement near that length it is null. `draft_accept` is
 null until the engine reports draft and accepted tokens per request. `pack`
 names the pack version the request ran on (`core@3672dbc4f1f9`), or is null.
+
+### Request records
+
+The operational record of each request (the `sparkpipe` object above, with
+`at`, `account`, `member`, `key` and `shape`) is a line of
+`request-records/<owner>/<day>.jsonl` next to the config, or in the config's
+`records.directory`; the hub's config keeps them in
+`/srv/workspace/sparkpipe/request-records`, beside the replay store but not
+inside it. `<owner>` is `account-<id>` for a gateway request, `key-<id>`
+for a direct key and `own` for our own requests. The folder is mode 700 and
+its files mode 600. It is not working state: the chat layer refuses a
+records directory inside the replay store, and a wipe does not touch it. A
+record holds counts, times and ids, never prompt text, reply text or token
+numbers, and nothing of it goes to stderr, so the chat layer's log keeps no
+copy; the log lines keep only the model, counts, times and settings. Day
+files are deleted 366 days after their day (checked hourly).
+
+When a customer asks in writing to have the records of its requests deleted
+(Data Processing Agreement clause 9.3: within 30 days), run on the hub, as
+the chat layer's user, in `~/sparkpipe-chat`, with the config the
+`sparkpipe-chat` unit serves:
+
+```sh
+python3 chat_frontend.py --config config.json --erase-records AC... --note "request of 2027-01-03"
+```
+
+It deletes that account's folder, appends `{account, at, records, note}` to
+`erasures.jsonl` in the records folder and prints `request_records_erased`
+with the count. Records of later requests are kept again. The chat layer may
+keep running: the erasure, each record write and the pruning of year-old
+days take an exclusive lock on `.lock` in the records folder, so an erasure
+never races a request being recorded. The VPS's copy is deleted with
+`sparkpipe_pay.py erase-records` (`docs/PAYMENTS.md`).
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
 `"priority": "background"`, `<model>-bulk`, Claude Code's

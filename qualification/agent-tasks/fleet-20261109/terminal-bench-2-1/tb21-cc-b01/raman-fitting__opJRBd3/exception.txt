@@ -1,0 +1,22 @@
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/trial/single_step.py", line 76, in _run_agent
+    await self._run_agent_phase(
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/trial/trial.py", line 769, in _run_agent_phase
+    await asyncio.wait_for(
+  File "/Users/cem/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 194, in wrapper
+    return await fn(self, instruction, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/claude_code.py", line 2205, in run
+    await self.exec_as_agent(
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 1081, in exec_as_agent
+    return await self._exec(
+           ^^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 1048, in _exec
+    raise self._classify_exec_error(command, result)
+harbor.agents.installed.base.UnknownApiError: Command failed (exit 1): export PATH="$HOME/.local/bin:$PATH"; claude_code_instruction_dcd92dcbd95e4c2db276acbf643f7c0f="$CLAUDE_CODE_INSTRUCTION_DCD92DCBD95E4C2DB276ACBF643F7C0F"; unset CLAUDE_CODE_INSTRUCTION_DCD92DCBD95E4C2DB276ACBF643F7C0F; printf "%s" "$claude_code_instruction_dcd92dcbd95e4c2db276acbf643f7c0f" | claude --verbose --output-format=stream-json --settings /tmp/claude-code-settings/settings.json --effort max --permission-mode=bypassPermissions --print 2>&1 | tee /logs/agent/claude-code.txt
+stdout: [claude-code:unrecognized_model] {"model":"deepseek-v4.1-flash","query_source":"sdk"}
+{"duration_api_ms":219546,"stop_reason":"stop_sequence","session_id":"204cd0d6-ac72-4488-9918-b03658a5eaf0","total_cost_usd":0.4222377500000001,"usage":{"input_toke ... [1208 chars truncated] ... 0,"budget":0},"by_type":{}},"safety_stops":0,"is_error":true,"num_turns":12,"subtype":"success","api_error_status":400,"result":"API Error: 400 deepseek-v4.1-flash does not take images","type":"result","duration_ms":257418,"uuid":"533a037f-2d04-4a80-902a-09c8b5dc4562","queued_turn_count":0,"result_index":0,"model_usage_since_last_result":{"deepseek-v4.1-flash":{"inputTokens":424,"outputTokens":6656,"cacheReadInputTokens":215423,"cacheCreationInputTokens":23361,"webSearchRequests":0,"costUSD":0.4222377500000001,"contextWindow":1048576,"maxOutputTokens":32000,"thinkingTokens":0,"cacheCreationEphemeral5mInputTokens":0,"cacheCreationEphemeral1hInputTokens":0,"canonicalModel":"deepseek-v4.1-flash","provider":"firstParty","costBasis":"unknown"}}}
+stderr: None

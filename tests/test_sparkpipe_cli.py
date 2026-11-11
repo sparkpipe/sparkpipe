@@ -7,6 +7,7 @@ import http.server
 import io
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -1430,10 +1431,151 @@ def check_package(failures):
         expect(failures, ran.returncode == 0 and ran.stdout.strip() == f"sparkpipe {release}", f"pip install of the wheel does not give a sparkpipe command: {ran.stdout} {ran.stderr}")
 
 
+def site_prices():
+    text = (ROOT / "site" / "compare-prices.js").read_text(encoding="utf-8")
+    body = text[text.index("=") + 1:].strip().rstrip(";")
+    return json.loads(re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', body))
+
+
+def claude_row(mid, ts, inp, w5, rd, out, model="claude-opus-5-5"):
+    return {"type": "assistant", "sessionId": "s1", "isSidechain": False, "requestId": "r" + mid, "timestamp": ts,
+            "message": {"id": mid, "model": model, "usage": {"input_tokens": inp, "cache_creation_input_tokens": w5, "cache_read_input_tokens": rd, "output_tokens": out,
+                                                            "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": 0}}}}
+
+
+def codex_event(ts, total, inp, cached, out):
+    return {"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": total},
+                                                                                            "last_token_usage": {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}}}}
+
+
+def compare_logs(claude, codex):
+    rows = [claude_row("m1", "2026-11-03T09:00:00Z", 10, 120000, 0, 500), claude_row("m1", "2026-11-03T09:00:00Z", 10, 120000, 0, 900),
+            claude_row("m2", "2026-11-03T09:02:00Z", 20, 2000, 120000, 800), claude_row("m3", "2026-11-03T10:45:00Z", 10, 122500, 0, 700),
+            claude_row("m4", "2026-11-04T09:00:00Z", 10, 125000, 0, 600, model="claude-sonnet-5-5")]
+    events = [{"timestamp": "2026-11-03T11:00:00Z", "type": "session_meta", "payload": {"id": "c1"}},
+              {"timestamp": "2026-11-03T11:00:00Z", "type": "turn_context", "payload": {"model": "gpt-5.3-codex"}},
+              codex_event("2026-11-03T11:00:05Z", 50000, 50000, 0, 1000), codex_event("2026-11-03T11:00:06Z", 50000, 50000, 0, 1000),
+              codex_event("2026-11-03T11:20:00Z", 101000, 51000, 1000, 500)]
+    for folder, name, lines in ((claude, "claude.jsonl", rows), (codex, "rollout.jsonl", events)):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("\n".join(json.dumps(line) for line in lines) + "\nnot json\n")
+    (claude / "notes.txt").write_text(json.dumps(rows[0]) + "\n")
+
+
+def anthropic(model, inp=0, w5=0, w1=0, read=0, out=0, at=1, session="s"):
+    return {"kind": "anthropic", "model": model, "time": at, "session": session, "input": inp, "w5": w5, "w1": w1, "read": read, "output": out}
+
+
+def openai(model, inp=0, cached=0, out=0, at=1, session="c"):
+    return {"kind": "openai", "model": model, "time": at, "session": session, "input": inp, "cached": cached, "output": out}
+
+
+def check_compare_units(failures):
+    expect(failures, cli.API_PRICES == site_prices(), "the CLI's API prices differ from site/compare-prices.js")
+    for raw, name in (("claude-opus-5-5", "Claude Opus 5.5"), ("claude-opus-5-5-20261101", "Claude Opus 5.5"), ("claude-opus-5-5[1m]", "Claude Opus 5.5"),
+                      ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "Claude Haiku 4.5"), ("claude-sonnet-4-5@20250929", "Claude Sonnet 4.5"),
+                      ("claude-opus-4-1-2025-08-05-v2", "Claude Opus 4.1"), ("Claude-Opus-5", "Claude Opus 5"), ("claude-opus-5-5x", None), ("claude-foo-9", None)):
+        found = cli.price_entry(cli.API_PRICES["anthropic"], cli.priced_model(raw))
+        expect(failures, (found and found["name"]) == name, f"{raw} is priced as {found and found['name']}, not {name}")
+    for raw, name in (("gpt-5.4-mini", "GPT-5.4 mini"), ("gpt-5.4-mini-2026-01-01", "GPT-5.4 mini"), ("gpt-5.4", "GPT-5.4"), ("gpt-5.3-codex", "GPT-5.3 Codex"), ("o3", None)):
+        found = cli.price_entry(cli.API_PRICES["openai"], raw)
+        expect(failures, (found and found["name"]) == name, f"{raw} is priced as {found and found['name']}, not {name}")
+    expect(failures, cli.request_rates(anthropic("claude-haiku-5-5", inp=1, w5=99999))[1]["input"] == 0.1
+           and cli.request_rates(anthropic("claude-haiku-5-5", inp=1, w5=99999, read=1))[1]["input"] == 0.5, "long-context rates do not start above 100,000 prompt tokens")
+    expect(failures, cli.request_rates(openai("gpt-6-astra", inp=272000))[1]["input"] == 10 and cli.request_rates(openai("gpt-6-astra", inp=272001))[1]["input"] == 20,
+           "OpenAI long-context rates do not start above 272,000 input tokens")
+    expect(failures, abs(cli.request_cost(openai("gpt-5.5-pro", inp=1000, cached=400, out=10), cli.price_entry(cli.API_PRICES["openai"], "gpt-5.5-pro")) - (1000 * 30 + 10 * 180) / 1e6) < 1e-12,
+           "a model without a cache-read price is not charged full input")
+    hour = anthropic("claude-opus-5-5", inp=10, w1=20000, at=10)
+    expect(failures, cli.rewrite(hour, 3600, cli.request_rates(hour)[1])[0] is None and cli.rewrite(hour, 3601, cli.request_rates(hour)[1])[0] == 20000,
+           "a request that wrote a one-hour cache counts as a rewrite before an hour has passed")
+    small = anthropic("claude-opus-5-5", w5=9999, at=10)
+    half = anthropic("claude-opus-5-5", w5=10000, read=10001, at=10)
+    expect(failures, cli.rewrite(small, 301, cli.request_rates(small)[1])[0] is None and cli.rewrite(half, 301, cli.request_rates(half)[1])[0] is None,
+           "a small prompt, or one mostly read from the cache, counts as a rewrite")
+    expect(failures, [cli.usd(v) for v in (0.125, 1.005, 11.985, 99.994, 100.5, 2160.0, 0)] == ["$0.13", "$1.01", "$11.99", "$99.99", "$101", "$2,160", "$0.00"],
+           "dollars are not rounded as the page rounds them")
+    expect(failures, (cli.stamp_ms("2026-11-03T09:00:00Z"), cli.stamp_ms("2026-11-03T18:00:00.250+09:00"), cli.stamp_ms("2026-11-03"), cli.stamp_ms("soon"), cli.stamp_ms(None))
+           == (1793696400000, 1793696400250, 1793664000000, 0, 0), "log timestamps are not read as the page reads them")
+
+
+@contextlib.contextmanager
+def utc():
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("TZ")
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+
+@scenario
+def check_compare(failures, home, fake):
+    with utc():
+        compare_runs(failures, home, fake)
+
+
+def compare_runs(failures, home, fake):
+    claude, codex = home.home / ".claude" / "projects" / "p1", home.home / ".codex" / "sessions" / "2026" / "11" / "03"
+    compare_logs(claude, codex)
+    old = home.home / ".claude" / "projects" / "p0" / "old.jsonl"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps(claude_row("m9", "2026-09-01T09:00:00Z", 10, 0, 0, 100)) + "\n")
+    os.utime(old, (time.time() - 40 * 86400, time.time() - 40 * 86400))
+    code, out, err = home.run("compare", "--json")
+    report = json.loads(out) if code == 0 else {}
+    expect(failures, code == 0 and report["total_usd"] == 1.809355 and report["rewrites"] == {"requests": 3, "tokens": 297500, "saved_usd": 0.96675}
+           and (report["files"], report["requests"], report["sessions"], report["days_worked"]) == (2, 6, 2, 2) and report["fleet_week"] is None,
+           f"compare does not give the page's totals: {code} {err} {out[:400]}")
+    expect(failures, code == 0 and [(m["name"], m["requests"], m["uncached_input"], m["cache_writes"], m["cache_reads"], m["output"], m["cost_usd"]) for m in report["models"]]
+           == [("Claude Opus 5.5", 3, 40, 244500, 120000, 2400, 1.29466), ("Claude Sonnet 5.5", 1, 10, 125000, 0, 600, 0.31852), ("GPT-5.3 Codex", 2, 100000, 0, 1000, 1500, 0.196175)],
+           f"compare does not give the page's model table: {report.get('models')}")
+    expect(failures, not fake.requests, "compare sends something while signed out")
+    code, out, _ = home.run("compare")
+    lines = [" ".join(line.split()) for line in out.splitlines()]
+    expect(failures, code == 0 and "Total $1.81" in lines and "Per day worked $0.90" in lines and "Scaled to a week $12.67" in lines
+           and "Requests that wrote their context again after a pause 3" in lines and "Tokens written again 297,500" in lines and "Saved had they been cache reads $0.97" in lines
+           and "Claude Opus 5.5 3 40 244,500 120,000 2,400 $1.29" in lines and "GPT-5.3 Codex 2 100,000 0 1,000 1,500 $0.20" in lines
+           and "Period 2026-11-03 – 2026-11-04 (1 day)" in lines and any("sparkpipe login" in line for line in lines), f"compare prints {out}")
+    code, out, _ = home.run("compare", "--json", "--days", "60")
+    expect(failures, code == 0 and json.loads(out)["requests"] == 7, "compare --days does not widen the window to older logs")
+    home.signed_in(fake.url)
+    fake.route("GET", "/market/state", (200, {}, {"account": {"email": "dev@acme.example"}, "bookings": {"weekHC": 144, "hourHC": 1},
+                                                  "hc": {"prices": [{"from": 1, "usd": 20}, {"from": 1000, "usd": 15}]}}))
+    code, out, _ = home.run("compare")
+    lines = [" ".join(line.split()) for line in out.splitlines()]
+    sent = fake.requests
+    expect(failures, code == 0 and "A week of a SparkPipe fleet $2,160" in lines and "Shared by three to five engineers, each $432 – $720" in lines
+           and len(sent) == 1 and sent[0]["path"] == "/market/state" and sent[0]["headers"].get("authorization") == "Bearer " + SESSION and not sent[0]["raw"],
+           f"compare signed in does not price a fleet week from the account, or sends more: {out} {sent}")
+    fake.route("GET", "/market/state", (500, {}, {"error": "down"}))
+    code, out, err = home.run("compare")
+    expect(failures, code == 0 and "$1.81" in out and "fleet week is left out" in err and "A week of a SparkPipe fleet" not in out, f"a market failure stops compare: {code} {err}")
+    other = home.root / "elsewhere"
+    compare_logs(other / "projects" / "p", other / "sessions")
+    code, out, _ = home.run("compare", "--json", "--claude", other / "projects", "--claude", claude, "--codex", other / "sessions", "--codex", other / "sessions")
+    expect(failures, code == 0 and json.loads(out)["requests"] == 6, "compare counts the same request twice from two folders, or misses one")
+    code, out, _ = home.run("compare", "--json", env={"CLAUDE_CONFIG_DIR": str(other), "CODEX_HOME": str(home.root / "none")})
+    expect(failures, code == 0 and json.loads(out)["requests"] == 4, "compare does not read CLAUDE_CONFIG_DIR/projects")
+    code, _, err = home.run("compare", "--claude", home.root / "missing")
+    expect(failures, code == 1 and "is not a folder" in err, f"compare accepts a folder that does not exist: {err}")
+    code, _, err = home.run("compare", "--days", "0")
+    expect(failures, code == 1 and "--days" in err, "compare accepts --days 0")
+    empty = home.root / "empty"
+    empty.mkdir()
+    code, _, err = home.run("compare", "--claude", empty, "--codex", empty)
+    expect(failures, code == 1 and "No Claude Code or Codex requests" in err and "Traceback" not in err, f"compare without logs: {err}")
+
+
 def main():
     failures = []
     for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_fleet, check_setup_schemas, check_setup_undo,
-                  check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_package):
+                  check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_compare_units, check_compare, check_package):
         try:
             check(failures)
         except Exception as error:
@@ -1448,7 +1590,7 @@ def main():
           "refusing files it cannot merge safely; tokens only in the macOS keychain or secret-tool, never on a command line; fetch, ls, resume and cancel sending a token only to its own host "
           "and following no redirect; storage sync by pages of changes, resuming from the last whole page, skipping files it already has, confined to the destination, to a directory or s3://; "
           "the proxy taking only its own local key, local host names and no web pages, forwarding only inference paths and the Responses WebSocket, retrying 429 and streaming; "
-          "errors without tracebacks or secrets; a reproducible sdist and wheel that pip installs as the sparkpipe command")
+          "errors without tracebacks or secrets; compare pricing local Claude Code and Codex logs as the site's cost check does, from the same price table, sending nothing but the session; a reproducible sdist and wheel that pip installs as the sparkpipe command")
     return 0
 
 

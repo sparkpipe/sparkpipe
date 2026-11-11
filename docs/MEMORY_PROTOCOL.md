@@ -69,7 +69,7 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 - **forget** deletes every identity whose scope is `scope` or starts with `scope/` (its members), sessions included, before it answers. The chat layer calls it for `DELETE /v1/cache` and reports memory as deleted only after the answer.
 - A session the chat layer never releases is dropped after the program's `session_seconds`.
 - The program keeps each identity's memory apart. The chat layer passes the identity on every request and never reads memory's store.
-- `POST /v1/sparkpipe/memory/import` on the chat layer hands a client's conversation to `import`, with its headers, after resolving the model.
+- `POST /v1/sparkpipe/memory/import` on the chat layer hands a client's conversation to `import`, with its headers, after resolving the model. The body may set `timeout_seconds`, how long the chat layer waits for the program (3,900 by default); a long history can need more.
 
 **The chat layer's engine services, which the program calls on `host_url`:**
 

@@ -113,7 +113,10 @@ byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier. A pack directory holds the pack and every file the engine opens
 beside it, all real files, and a lane names the pack by that path: no lane,
 launcher or harness reaches a weight file or a configuration through a
-symlink ([`docs/LANES.md`](docs/LANES.md)).
+symlink ([`docs/LANES.md`](docs/LANES.md)). A node keeps only the files a lane
+names, their companions and a short reasoned keep list of staged packs;
+`tools/node_pack_prune.py` lists everything else and deletes it on the
+owner's order.
 
 Every model serves at its publisher's full precision by default whenever it
 fits one fleet: BF16, or the format it was trained or released in (A.X K2's
@@ -244,9 +247,10 @@ class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
 and above is interactive, which is what a request gets when it names
 nothing; below is background. The chat layer maps `x-sparkpipe-priority:
 interactive|background` (a header, or the same key in the request's
-`metadata`), Claude Code's compaction and auxiliary calls, a background
-key, `<model>-bulk` and chat-memory jobs onto these priorities. Greedy output
-does not depend on the class.
+`metadata`), a background key, `<model>-bulk` and chat-memory jobs onto
+these priorities. A harness's own marks, such as Claude Code's compaction
+and auxiliary calls, never lower a request's priority. Greedy output does
+not depend on the class.
 
 - While background work runs, `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES`
   (2) resident sequences stay free for interactive requests: background

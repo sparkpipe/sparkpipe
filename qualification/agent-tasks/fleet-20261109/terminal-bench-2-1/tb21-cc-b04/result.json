@@ -1,0 +1,56 @@
+{
+    "id": "1b37e136-ae7e-4fc2-8554-b4d0114a8c21",
+    "started_at": "2026-11-09T20:16:07.104870",
+    "updated_at": "2026-11-09T21:20:12.021674",
+    "finished_at": "2026-11-09T21:20:12.021674",
+    "n_total_trials": 6,
+    "stats": {
+        "n_completed_trials": 6,
+        "n_errored_trials": 4,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "claude-code__deepseek-v4.1-flash__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 5,
+                "n_errors": 4,
+                "metrics": [
+                    {
+                        "mean": 0.3333333333333333
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "regex-chess__T47SzzD",
+                            "sam-cell-seg__LaCMqqB",
+                            "install-windows-3.11__pqDPVzx"
+                        ],
+                        "1.0": [
+                            "mteb-leaderboard__q6BUy9D",
+                            "circuit-fibsqrt__wZSDcwP"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentTimeoutError": [
+                        "regex-chess__T47SzzD"
+                    ],
+                    "AgentSetupTimeoutError": [
+                        "merge-diff-arc-agi-task__u2fNNzs"
+                    ],
+                    "UnknownApiError": [
+                        "sam-cell-seg__LaCMqqB",
+                        "install-windows-3.11__pqDPVzx"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 7964344,
+        "n_cache_tokens": 7568857,
+        "n_output_tokens": 293078,
+        "cost_usd": 9.18610525
+    }
+}

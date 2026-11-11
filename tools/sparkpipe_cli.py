@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import calendar
 import contextlib
 import getpass
 import hashlib
@@ -7,6 +8,7 @@ import hmac
 import http.client
 import http.server
 import json
+import math
 import os
 import re
 import secrets
@@ -22,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 try:
@@ -1634,6 +1636,385 @@ def proxy(ctx):
     return 0
 
 
+API_PRICES = {
+    "checked": "2026-11-05",
+    "sources": {"anthropic": "https://platform.claude.com/docs/en/about-claude/pricing", "openai": "https://developers.openai.com/api/docs/pricing"},
+    "anthropic": [
+        {"id": "claude-fable-5-1", "name": "Claude Fable 5.1", "input": 10, "write5m": 12.5, "write1h": 20, "read": 0.25, "output": 50},
+        {"id": "claude-mythos-5-1", "name": "Claude Mythos 5.1", "input": 10, "write5m": 12.5, "write1h": 20, "read": 0.25, "output": 50},
+        {"id": "claude-fable-5", "name": "Claude Fable 5", "input": 10, "write5m": 12.5, "write1h": 20, "read": 1, "output": 50},
+        {"id": "claude-mythos-5", "name": "Claude Mythos 5", "input": 10, "write5m": 12.5, "write1h": 20, "read": 1, "output": 50},
+        {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "input": 4, "write5m": 5, "write1h": 8, "read": 0.2, "output": 20},
+        {"id": "claude-opus-5", "name": "Claude Opus 5", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-8", "name": "Claude Opus 4.8", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-7", "name": "Claude Opus 4.7", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-5", "name": "Claude Opus 4.5", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-1", "name": "Claude Opus 4.1", "input": 15, "write5m": 18.75, "write1h": 30, "read": 1.5, "output": 75},
+        {"id": "claude-opus-4", "name": "Claude Opus 4", "input": 15, "write5m": 18.75, "write1h": 30, "read": 1.5, "output": 75},
+        {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "input": 2, "write5m": 2.5, "write1h": 4, "read": 0.1, "output": 10},
+        {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "input": 2, "write5m": 2.5, "write1h": 4, "read": 0.2, "output": 10},
+        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-sonnet-4", "name": "Claude Sonnet 4", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "input": 0.1, "write5m": 0.125, "write1h": 0.2, "read": 0.01, "output": 0.5, "long": {"over": 100000, "input": 0.5, "write5m": 0.625, "write1h": 1, "read": 0.05, "output": 2.5}},
+        {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "input": 1, "write5m": 1.25, "write1h": 2, "read": 0.1, "output": 5},
+        {"id": "claude-3-5-haiku", "name": "Claude Haiku 3.5", "input": 0.8, "write5m": 1, "write1h": 1.6, "read": 0.08, "output": 4},
+    ],
+    "openai": [
+        {"id": "gpt-6-astra", "name": "GPT-6 Astra", "input": 10, "cached": 1, "output": 50, "long": {"over": 272000, "input": 20, "cached": 2, "output": 75}},
+        {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol", "input": 2, "cached": 0.1, "output": 10, "long": {"over": 272000, "input": 4, "cached": 0.2, "output": 15}},
+        {"id": "gpt-6.1-terra", "name": "GPT-6.1 Terra", "input": 1, "cached": 0.05, "output": 5, "long": {"over": 272000, "input": 2, "cached": 0.1, "output": 7.5}},
+        {"id": "gpt-6-luna", "name": "GPT-6 Luna", "input": 0.1, "cached": 0.01, "output": 0.5, "long": {"over": 272000, "input": 0.2, "cached": 0.02, "output": 0.75}},
+        {"id": "gpt-6-sol", "name": "GPT-6 Sol", "input": 2, "cached": 0.2, "output": 10, "long": {"over": 272000, "input": 4, "cached": 0.4, "output": 15}},
+        {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "input": 4, "cached": 0.4, "output": 20, "long": {"over": 272000, "input": 8, "cached": 0.8, "output": 30}},
+        {"id": "gpt-5.6-terra", "name": "GPT-5.6 Terra", "input": 2, "cached": 0.2, "output": 12, "long": {"over": 272000, "input": 4, "cached": 0.4, "output": 18}},
+        {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "input": 0.2, "cached": 0.02, "output": 1.2, "long": {"over": 272000, "input": 0.4, "cached": 0.04, "output": 1.8}},
+        {"id": "gpt-5.5", "name": "GPT-5.5", "input": 5, "cached": 0.5, "output": 30, "long": {"over": 272000, "input": 10, "cached": 1, "output": 45}},
+        {"id": "gpt-5.5-pro", "name": "GPT-5.5 Pro", "input": 30, "cached": None, "output": 180, "long": {"over": 272000, "input": 60, "cached": None, "output": 270}},
+        {"id": "gpt-5.4", "name": "GPT-5.4", "input": 2.5, "cached": 0.25, "output": 15, "long": {"over": 272000, "input": 5, "cached": 0.5, "output": 22.5}},
+        {"id": "gpt-5.4-pro", "name": "GPT-5.4 Pro", "input": 30, "cached": None, "output": 180, "long": {"over": 272000, "input": 60, "cached": None, "output": 270}},
+        {"id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "input": 0.75, "cached": 0.075, "output": 4.5},
+        {"id": "gpt-5.4-nano", "name": "GPT-5.4 nano", "input": 0.2, "cached": 0.02, "output": 1.25},
+        {"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex", "input": 1.75, "cached": 0.175, "output": 14},
+        {"id": "gpt-5.2", "name": "GPT-5.2", "input": 1.75, "cached": 0.175, "output": 14},
+        {"id": "gpt-5.2-pro", "name": "GPT-5.2 Pro", "input": 21, "cached": None, "output": 168},
+        {"id": "gpt-5.1", "name": "GPT-5.1", "input": 1.25, "cached": 0.125, "output": 10},
+        {"id": "gpt-5", "name": "GPT-5", "input": 1.25, "cached": 0.125, "output": 10},
+        {"id": "gpt-5-mini", "name": "GPT-5 mini", "input": 0.25, "cached": 0.025, "output": 2},
+        {"id": "gpt-5-nano", "name": "GPT-5 nano", "input": 0.05, "cached": 0.005, "output": 0.4},
+        {"id": "gpt-5-pro", "name": "GPT-5 Pro", "input": 15, "cached": None, "output": 120},
+    ],
+}
+COMPARE_PROMPT = 10000
+COMPARE_TTL = 300
+COMPARE_TTL_1H = 3600
+PRICE_SUFFIX = re.compile(r"(-[0-9]{8}|-[0-9]{4}-[0-9]{2}-[0-9]{2})?(-v[0-9]+)?")
+STAMP = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})(?:T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?")
+LOG_MARKS = (b'"assistant"', b"token_count", b"session_meta", b"turn_context")
+
+
+def truthy(value):
+    return not (value is None or value is False or value == "" or (isinstance(value, (int, float)) and value == 0))
+
+
+def tokens(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def refuse_constant(name):
+    raise ValueError(name)
+
+
+def stamp_ms(value):
+    found = STAMP.fullmatch(value) if isinstance(value, str) else None
+    if not found:
+        return 0
+    year, month, day, hour, minute, second, fraction, zone = found.groups()
+    try:
+        moment = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0))
+    except ValueError:
+        return 0
+    if hour is not None and zone is None:
+        seconds = int(time.mktime(moment.timetuple()))
+    else:
+        offset = 0 if zone in (None, "Z") else (1 if zone[0] == "+" else -1) * (int(zone[1:3]) * 3600 + int(zone[4:6]) * 60)
+        seconds = calendar.timegm(moment.timetuple()) - offset
+    return seconds * 1000 + int((fraction or "")[:3].ljust(3, "0"))
+
+
+def local_date(ms):
+    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+
+
+def priced_model(value):
+    text = str(value).lower() if truthy(value) else ""
+    start = text.find("claude-")
+    if start > 0:
+        text = text[start:]
+    return re.split(r"[\[@:]", text)[0]
+
+
+def price_entry(table, model):
+    best = None
+    for entry in table:
+        if model.startswith(entry["id"]) and PRICE_SUFFIX.fullmatch(model[len(entry["id"]):]) and (best is None or len(entry["id"]) > len(best["id"])):
+            best = entry
+    return best
+
+
+def request_rates(request):
+    entry = price_entry(API_PRICES[request["kind"]], request["model"])
+    if entry is None:
+        return None
+    prompt = request["input"] + request["w5"] + request["w1"] + request["read"] if request["kind"] == "anthropic" else request["input"]
+    long = entry.get("long")
+    return entry, long if long and prompt > long["over"] else entry
+
+
+def request_cost(request, rates):
+    if request["kind"] == "anthropic":
+        return (request["input"] * rates["input"] + request["w5"] * rates["write5m"] + request["w1"] * rates["write1h"] + request["read"] * rates["read"]
+                + request["output"] * rates["output"]) / 1e6
+    cached = 0 if rates.get("cached") is None else min(request["cached"], request["input"])
+    return ((request["input"] - cached) * rates["input"] + cached * (rates.get("cached") or 0) + request["output"] * rates["output"]) / 1e6
+
+
+def claude_session(row):
+    side = ":" + str(row.get("agentId") or "side") if truthy(row.get("isSidechain")) else ""
+    return str(row.get("sessionId") or "") + side
+
+
+def claude_line(row, found):
+    message = row.get("message")
+    usage, model = (message.get("usage"), message.get("model")) if isinstance(message, dict) else (None, None)
+    if row.get("type") != "assistant" or not truthy(usage) or not isinstance(model, str) or not model or model.startswith("<"):
+        return False
+    usage = usage if isinstance(usage, dict) else {}
+    cache = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    written, hour, five = tokens(usage.get("cache_creation_input_tokens")), tokens(cache.get("ephemeral_1h_input_tokens")), cache.get("ephemeral_5m_input_tokens")
+    request = {"kind": "anthropic", "model": priced_model(model), "time": stamp_ms(row.get("timestamp")), "session": claude_session(row),
+               "input": tokens(usage.get("input_tokens")), "w5": tokens(five) if five is not None else max(0, written - hour), "w1": hour,
+               "read": tokens(usage.get("cache_read_input_tokens")), "output": tokens(usage.get("output_tokens"))}
+    key = f"{message.get('id') or row.get('uuid')}|{row.get('requestId') or ''}"
+    old = found.get(key)
+    if old is None or request["output"] >= old["output"]:
+        found[key] = request
+    return True
+
+
+def codex_line(row, state, found):
+    payload = row.get("payload") if truthy(row.get("payload")) else {}
+    if not isinstance(payload, dict):
+        return False
+    if row.get("type") == "session_meta" and truthy(payload.get("id")):
+        state["session"] = str(payload["id"])
+    if row.get("type") == "turn_context" and truthy(payload.get("model")):
+        state["model"] = str(payload["model"]).lower()
+    info = payload.get("info")
+    if payload.get("type") != "token_count" or not isinstance(info, dict) or not truthy(info.get("last_token_usage")):
+        return False
+    total = info.get("total_token_usage")
+    signature = json.dumps(total if truthy(total) else info["last_token_usage"], separators=(",", ":"), ensure_ascii=False)
+    if signature == state["last"]:
+        return False
+    state["last"] = signature
+    usage = info["last_token_usage"] if isinstance(info["last_token_usage"], dict) else {}
+    found.append({"kind": "openai", "model": state["model"] or "unknown", "time": stamp_ms(row.get("timestamp")), "session": state["session"],
+                  "input": tokens(usage.get("input_tokens")), "cached": tokens(usage.get("cached_input_tokens")), "output": tokens(usage.get("output_tokens"))})
+    return True
+
+
+def log_rows(path):
+    with open(path, "rb") as handle:
+        for number, raw in enumerate(handle):
+            if not any(mark in raw for mark in LOG_MARKS):
+                continue
+            text = raw.decode("utf-8", "replace")
+            try:
+                row = json.loads(text[1:] if number == 0 and text.startswith("﻿") else text, parse_constant=refuse_constant)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def read_log(path, found):
+    state, any_request = {"model": "", "session": path.name, "last": None}, False
+    for row in log_rows(path):
+        any_request = claude_line(row, found["claude"]) or any_request
+        any_request = codex_line(row, state, found["codex"]) or any_request
+    found["files"] += any_request
+
+
+def log_folders(given, default):
+    if not given:
+        return [default] if default.is_dir() else []
+    for folder in given:
+        if not Path(folder).is_dir():
+            raise Failure(f"{folder} is not a folder.")
+    return [Path(folder) for folder in given]
+
+
+def log_files(folders, since):
+    seen, files = set(), []
+    for folder in folders:
+        for root, subfolders, names in os.walk(folder):
+            subfolders.sort()
+            for name in sorted(names):
+                path = Path(root) / name
+                try:
+                    fresh = path.suffix.lower() == ".jsonl" and path.is_file() and path.stat().st_mtime >= since
+                except OSError:
+                    continue
+                if fresh and os.path.realpath(path) not in seen:
+                    seen.add(os.path.realpath(path))
+                    files.append(path)
+    return files
+
+
+def usage_rows(requests):
+    models, sessions, days, unpriced = {}, {}, set(), {}
+    figures = {"total": 0, "first": None, "last": None}
+    for request in requests:
+        rates = request_rates(request)
+        row = models.setdefault(request["model"], {"id": request["model"], "name": rates[0]["name"] if rates else request["model"], "requests": 0,
+                                                   "uncached_input": 0, "cache_writes": 0, "cache_reads": 0, "output": 0, "cost": 0 if rates else None})
+        row["requests"] += 1
+        row["output"] += request["output"]
+        if request["kind"] == "anthropic":
+            row["uncached_input"], row["cache_writes"], row["cache_reads"] = row["uncached_input"] + request["input"], row["cache_writes"] + request["w5"] + request["w1"], row["cache_reads"] + request["read"]
+        else:
+            row["uncached_input"], row["cache_reads"] = row["uncached_input"] + request["input"] - request["cached"], row["cache_reads"] + request["cached"]
+        if rates:
+            cost = request_cost(request, rates[1])
+            row["cost"] += cost
+            figures["total"] += cost
+        else:
+            unpriced[request["model"]] = True
+        sessions.setdefault(request["session"], []).append(request)
+        if request["time"]:
+            figures["first"] = min(figures["first"] or request["time"], request["time"])
+            figures["last"] = max(figures["last"] or request["time"], request["time"])
+            days.add(local_date(request["time"]))
+    return sorted(models.values(), key=lambda row: -(row["cost"] or 0)), sessions, len(days), list(unpriced), figures
+
+
+def rewrite(request, gap, rates):
+    if request["kind"] == "anthropic":
+        written = request["w5"] + request["w1"]
+        prompt = request["input"] + written + request["read"]
+        if gap > (COMPARE_TTL_1H if request["w1"] > 0 else COMPARE_TTL) and prompt >= COMPARE_PROMPT and written * 2 >= prompt:
+            return written, (request["w5"] * (rates["write5m"] - rates["read"]) + request["w1"] * (rates["write1h"] - rates["read"])) / 1e6 if rates else 0
+        return None, 0
+    uncached = request["input"] - request["cached"]
+    if gap > COMPARE_TTL and request["input"] >= COMPARE_PROMPT and uncached * 2 >= request["input"]:
+        return uncached, uncached * (rates["input"] - rates["cached"]) / 1e6 if rates and rates.get("cached") is not None else 0
+    return None, 0
+
+
+def rewrites(sessions):
+    found = {"requests": 0, "tokens": 0, "saved": 0}
+    for requests in sessions.values():
+        ordered = sorted(requests, key=lambda request: request["time"])
+        for previous, request in zip(ordered, ordered[1:]):
+            if not request["time"] or not previous["time"]:
+                continue
+            rates = request_rates(request)
+            written, saved = rewrite(request, (request["time"] - previous["time"]) / 1000, rates[1] if rates else None)
+            if written is not None:
+                found["requests"], found["tokens"], found["saved"] = found["requests"] + 1, found["tokens"] + written, found["saved"] + saved
+    return found
+
+
+def fleet_week(ctx):
+    if not ctx.mine().get("session"):
+        return None
+    try:
+        state = ctx.client().call("GET", "/market/state", auth="session")
+        hc = state["bookings"]["weekHC"]
+        week = float(hc) * float(state["hc"]["prices"][-1]["usd"])
+    except Failure as error:
+        sys.stderr.write(f"sparkpipe: the price of a fleet week is left out: {error}\n")
+        return None
+    except (KeyError, IndexError, TypeError, ValueError):
+        sys.stderr.write("sparkpipe: the price of a fleet week is left out: the market did not give the week's HC and the price of an HC.\n")
+        return None
+    return {"hc": hc, "usd": week, "per_engineer_usd": {"3": week / 3, "5": week / 5}}
+
+
+def compare_report(requests, files, week):
+    models, sessions, worked, unpriced, figures = usage_rows(requests)
+    first, last, total = figures["first"], figures["last"], figures["total"]
+    span = (last - first) / 86400000 if first is not None and last > first else 0
+    return {"files": files, "requests": len(requests), "sessions": len(sessions), "prices_checked": API_PRICES["checked"],
+            "period": {"first": local_date(first), "last": local_date(last), "days": max(1, math.floor(span + 0.5))} if first is not None else None,
+            "span_days": span, "days_worked": worked, "total_usd": total, "per_day_worked_usd": total / worked if worked else None,
+            "per_week_usd": total / span * 7 if span >= 1 else None, "rewrites": rewrites(sessions), "models": models, "unpriced": unpriced, "fleet_week": week}
+
+
+def money(value):
+    return None if value is None else round(value, 6)
+
+
+def compare_json(report):
+    week = report["fleet_week"]
+    found = dict(report, total_usd=money(report["total_usd"]), per_day_worked_usd=money(report["per_day_worked_usd"]), per_week_usd=money(report["per_week_usd"]),
+                 span_days=round(report["span_days"], 6), rewrites={"requests": report["rewrites"]["requests"], "tokens": report["rewrites"]["tokens"], "saved_usd": money(report["rewrites"]["saved"])},
+                 models=[dict({k: v for k, v in row.items() if k != "cost"}, cost_usd=money(row["cost"])) for row in report["models"]])
+    if week:
+        found["fleet_week"] = {"hc": week["hc"], "usd": money(week["usd"]), "per_engineer_usd": {k: money(v) for k, v in week["per_engineer_usd"].items()}}
+    return found
+
+
+def usd(value):
+    exact = Decimal(repr(value)).quantize(Decimal(1) if value >= 100 else Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "$" + format(exact, ",f")
+
+
+def whole(value):
+    return f"{math.floor(value + 0.5):,}"
+
+
+def counted(value, word):
+    return f"{whole(value)} {word}" + ("" if value == 1 else "s")
+
+
+def compare_facts(report):
+    period, saved = report["period"], report["rewrites"]
+    days = f"{period['days']} day" + ("" if period["days"] == 1 else "s") if period else ""
+    facts = [("Period", f"{period['first']} – {period['last']} ({days})" if period else "–"), ("Days worked", str(report["days_worked"])),
+             ("Total", usd(report["total_usd"])), ("Per day worked", usd(report["per_day_worked_usd"]) if report["per_day_worked_usd"] is not None else "–"),
+             ("Scaled to a week", usd(report["per_week_usd"]) if report["per_week_usd"] is not None else "–"),
+             ("Requests that wrote their context again after a pause", whole(saved["requests"])), ("Tokens written again", whole(saved["tokens"])),
+             ("Saved had they been cache reads", usd(saved["saved"]))]
+    week = report["fleet_week"]
+    if week:
+        facts += [("A week of a SparkPipe fleet", usd(week["usd"])), ("Shared by three to five engineers, each", f"{usd(week['per_engineer_usd']['5'])} – {usd(week['per_engineer_usd']['3'])}")]
+    return facts
+
+
+def model_table(models):
+    header = ("Model", "Requests", "Uncached input", "Cache writes", "Cache reads", "Output", "Cost")
+    body = [(row["name"], *(whole(row[k]) for k in ("requests", "uncached_input", "cache_writes", "cache_reads", "output")),
+             "no published price" if row["cost"] is None else usd(row["cost"])) for row in models]
+    widths = [max(len(line[i]) for line in (header, *body)) for i in range(len(header))]
+    return ["  ".join(cell.ljust(width) if i == 0 else cell.rjust(width) for i, (cell, width) in enumerate(zip(line, widths))) for line in (header, *body)]
+
+
+def compare_lines(report, signed_in):
+    facts = compare_facts(report)
+    width = max(len(label) for label, _ in facts)
+    lines = [f"Read {counted(report['files'], 'file')}: {counted(report['requests'], 'request')} in {counted(report['sessions'], 'session')}, on this machine only.",
+             f"Priced as Anthropic and OpenAI published their API prices on {report['prices_checked']}.", ""]
+    lines += [f"{label.ljust(width)}  {value}" for label, value in facts] + [""] + model_table(report["models"])
+    if report["unpriced"]:
+        lines.append("Requests on models without a published price are left out of the total: " + ", ".join(report["unpriced"]))
+    if not signed_in:
+        lines.append("Sign in with sparkpipe login to compare with the price of a fleet week.")
+    return lines
+
+
+def compare(ctx):
+    if ctx.args.days < 1:
+        raise Failure("--days must be 1 or more.")
+    folders = log_folders(ctx.args.claude, Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects")
+    folders += log_folders(ctx.args.codex, Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions")
+    found = {"claude": {}, "codex": [], "files": 0}
+    for path in log_files(folders, time.time() - ctx.args.days * 86400):
+        try:
+            read_log(path, found)
+        except OSError as error:
+            sys.stderr.write(f"sparkpipe: skipped {path}: {error.strerror or type(error).__name__}\n")
+    requests = list(found["claude"].values()) + found["codex"]
+    if not requests:
+        where = ", ".join(str(folder) for folder in folders) or "~/.claude/projects and ~/.codex/sessions"
+        raise Failure(f"No Claude Code or Codex requests in .jsonl files changed in the last {ctx.args.days} days under {where}. Name other folders with --claude or --codex.")
+    report = compare_report(requests, found["files"], fleet_week(ctx))
+    emit(ctx, compare_json(report), compare_lines(report, bool(ctx.mine().get("session"))))
+    return 0
+
+
 def leaf(group, name, run_, parents, text):
     command = group.add_parser(name, parents=parents, help=text, description=text)
     command.set_defaults(run=run_)
@@ -1725,6 +2106,13 @@ def token_commands(commands, base):
     leaf(tokens, "rm", tokens_rm, [base], "Remove a token").add_argument("name")
 
 
+def compare_command(commands, base):
+    command = leaf(commands, "compare", compare, [base], "What your Claude Code and Codex logs cost at API prices, read on this machine")
+    command.add_argument("--days", type=int, default=30, help="read logs changed in the last DAYS days (default 30)")
+    command.add_argument("--claude", action="append", metavar="DIR", help="a Claude Code projects folder (default ~/.claude/projects); repeat for more")
+    command.add_argument("--codex", action="append", metavar="DIR", help="a Codex sessions folder (default ~/.codex/sessions); repeat for more")
+
+
 def parser():
     base = argparse.ArgumentParser(add_help=False)
     base.add_argument("--api", help="the API address (default " + API + ")")
@@ -1738,6 +2126,7 @@ def parser():
     account_commands(commands, base)
     fleet_commands(commands, base, fleet)
     token_commands(commands, base)
+    compare_command(commands, base)
     return top
 
 

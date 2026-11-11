@@ -1755,7 +1755,7 @@ def erase_flows(failures, app, m, port, mailbox, O, X, owner, other, owner_key, 
     mailed = [rcpt for rcpt, mail in mailbox.mail if mail["Subject"] == "SparkPipe deleted the records of your requests"]
     asked = [mail.get_content() for rcpt, mail in mailbox.mail if rcpt == [app.cfg.notify] and mail["Subject"] == f"Erase the hub's request records of {O} within 30 days"]
     logged = [e["type"] for e in owner("GET", "/v1/audit?type=records.erased")[1]["data"]]
-    if [(l["account"], l["records"], l["by"]) for l in lines] != [(O, 3, O), (X, 0, "operator")] or mailed != [["owner@example.com"], ["outsider@example.com"]] or logged != ["records.erased"] or not asked or f"--erase-records {O}" not in asked[0] or sp.Book(app.cfg.path("ledger.jsonl")).erased != app.book.erased:
+    if [(l["account"], l["records"], l["by"]) for l in lines] != [(O, 3, O), (X, 0, "operator")] or mailed != [["owner@example.com"], ["outsider@example.com"]] or logged != ["records.erased"] or not asked or f"--config config.json --erase-records {O} --note " not in asked[0] or sp.Book(app.cfg.path("ledger.jsonl")).erased != app.book.erased:
         failures.append(f"an erasure is not recorded in the ledger and the audit log and emailed to the owner, or does not replay: {lines} {mailed} {logged}")
 
 

@@ -426,6 +426,7 @@ PYTHON_TESTS := \
 	tests/test_laguna_reference_fixture.py \
 	tests/test_kexaone2_reference_batch.py \
 	tests/test_api_stress.py \
+	tests/test_agent_turn_bench.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
@@ -748,8 +749,11 @@ PYTHON_TESTS := \
 	tests/test_lane_tools.py \
 	tests/test_lane_direct_packs.py \
 	tests/test_launchers_name_real_files.py \
+	tests/test_node_pack_prune.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_agent_task_eval.py \
+	tests/test_agent_endpoint_stub.py \
 	tests/test_chat_api_keys.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
