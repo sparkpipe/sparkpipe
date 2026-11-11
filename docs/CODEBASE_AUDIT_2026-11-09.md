@@ -595,7 +595,8 @@ the relay link, the tap dump, the drafter mix and the static tree header
 were reached only by their tests and by measurement tools written for them.
 The engine drafts through its own lookup and the bridge and verifies trees
 itself. The units, their tests, the tools that compiled or read them and
-the Python model of their chain policy are deleted, about 10,000 lines; the
+the Python model of their chain policy and K3's own test-only engine are
+deleted, about 11,700 lines; the
 lookup index keeps its linear-scan oracle. `docs/SPECULATION_UNIFIED_DESIGN.md`
 now describes speculation as built, and the 2026-09-28 plan and the taps
 contract of the retired GLM module are archived. Still to remove with the
@@ -605,11 +606,14 @@ roofline meter, which replaces them: the bake-off tools' log readers
 `tools/tp_chain_budget.py`), which parse lines no engine has printed since
 the per-family modules went on 2026-10-11.
 
-The release kit's `qualify` step activates
-each model on a fresh lane and a fresh API, so it never restarts an API
-under a serving lane; that check belongs there
-(`tools/release_capture.py` takes a list of prompts for it) and needs a
-production window to try.
+The release kit's `qualify` step activated each model on a fresh lane and
+a fresh API, so it never restarted an API under a serving lane, which is
+where the wave boundary's first epoch rule failed. It now restarts each
+model's API with the controller's own commands, waits for every rank and
+compares two prompts with the capture just taken (`scripts/release_rollout.sh`,
+`api_restart`; `restart` runs it alone). `tests/test_release_rollout.py`
+runs it against the fake fleet; its first run on the real controller is the
+next release.
 
 Found while deleting, and left: the committed static deployments
 `deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry

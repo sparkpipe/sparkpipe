@@ -65,7 +65,7 @@ residentds() { fan "pgrep -f '^[^ ]*bin/sparkpipe_model_[r]esidentd( |\$)' | wc 
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
 wd_is() { local s; s=$(running_wd); echo "$s" | grep -q "$1=16" && echo "$s" | grep -q "ready=16"; }
 controller_restart() { hub "cd ~/sparkpipe-swap && systemctl --user stop sparkpipe-swap && systemctl --user reset-failed sparkpipe-swap 2>/dev/null; systemd-run --user --unit=sparkpipe-swap --working-directory=/home/spec/sparkpipe-swap /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file $SWAP_TOKEN --host 127.0.0.1 --port 8440 >> swap.log 2>&1' > /dev/null && sleep 5 && echo controller restarted"; }
-swap_cmd() { hub "python3 -c \"import json,sys; d=json.load(open('/home/spec/sparkpipe-swap/model_swap.json')); print([m for m in d['models'] if m['id']=='$1'][0]['$2'])\""; }
+swap_cmd() { hub "python3 -c \"import json,os,sys; d=json.load(open(os.path.expanduser('~/sparkpipe-swap/model_swap.json'))); print([m for m in d['models'] if m['id']=='$1'][0]['$2'])\""; }
 
 capture() {
   local id=$1 tag=$2 port; port=$(field "$id" port)
@@ -76,6 +76,21 @@ capture() {
     qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
     deepseek-v4.1-flash) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
   esac
+}
+api_restart() {
+  local id=$1 port health i up=0
+  port=$(field "$id" port); health=$(swap_cmd "$id" health)
+  [ -n "$health" ] || { echo "API-RESTART-FAILED $id: the controller config has no health address for it"; return 1; }
+  hub "$(swap_cmd "$id" api_stop)"
+  hub "$(swap_cmd "$id" api_start)" > /dev/null 2>&1
+  for i in $(seq 1 90); do
+    hub "curl -s -m 3 $health | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get(\"ranks\") and d.get(\"connected_ranks\") == d.get(\"ranks\") else 1)' 2>/dev/null" && { up=1; break; }
+    sleep 2
+  done
+  [ "$up" = 1 ] || { echo "API-RESTART-FAILED $id: its API did not reach every rank within 180 s of the restart"; return 1; }
+  hub "cd $RD && timeout 1800 python3 kit/release_capture.py $port $id/restart.json kit/prompt_source.c $HUB_WORK/logs/$(field "$id" api).log capital,story > $id/restart.log 2>&1; rc=\$?; echo capture $id restart rc=\$rc; exit \$rc" || { echo "API-RESTART-FAILED $id: the capture after the restart failed"; return 1; }
+  hub "cd $RD && python3 kit/release_compare.py $id/restart.json $id/new.json > $id/restart-compare.log 2>&1; rc=\$?; tail -3 $id/restart-compare.log; exit \$rc" || { echo "API-RESTART-FAILED $id: the restarted API's outputs differ from the capture taken before the restart"; return 1; }
+  echo "api restart $id: outputs equal"
 }
 compare() {
   local id=$1 a=$2 b=$3
@@ -167,6 +182,7 @@ case "$step" in
       if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' $(lane_latest_log "\$HOME/$(field $id lane)/root") | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
+      api_restart "$id"
       hub "cd $RD/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --models-endpoint http://127.0.0.1:8433 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
       if [ -n "${COMPSEC:-}" ] || ! hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json > /dev/null 2>&1"; then
         eff=$(hub "cd $RD/tree && python3 tools/compsec_effort.py http://127.0.0.1:8433 $id") || { echo "COMPSEC-SKIPPED $id: no reasoning effort to run it with"; eff=""; }
@@ -177,6 +193,13 @@ case "$step" in
       fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
+  restart)
+    failed=0
+    for id in ${ONLY:-$MODELS}; do
+      stamp "restart $id"
+      api_restart "$id" || failed=1
+    done
+    [ "$failed" = 0 ] || exit 1 ;;
   rollback)
     U=$(backup_utc) || exit 1
     stamp "ROLLBACK to root.prev-$U and weightd $OLD_WD"
@@ -197,6 +220,6 @@ case "$step" in
     wd_is $OLD_WD || { echo "ROLLBACK-WEIGHTD-NOT-READY: weightd $OLD_WD is not ready on 16 nodes; the models were left down"; exit 1; }
     for id in ${ONLY:-$MODELS}; do activate "$id" && capture "$id" rolledback && compare "$id" old rolledback; done
     restore_max ;;
-  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|records|qualify|rollback"; exit 2 ;;
+  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|records|qualify|restart|rollback"; exit 2 ;;
 esac
 stamp "$step done ($(controller))"
