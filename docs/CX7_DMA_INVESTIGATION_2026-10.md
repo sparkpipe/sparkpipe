@@ -1590,9 +1590,14 @@ load.**
 tasks`. INFERENCE: it happened while the node was being restarted; lenovo7
 was shut down cleanly four minutes later.
 
-**The guard on the Lenovo units.** `spark-dma-guard.timer` is disabled on
-both, so the guard is armed only when someone starts the service. lenovo7
-ran without it from its reboot at 13:44 on 2026-11-11.
+**The guard on the Lenovo units.** On 2026-11-11 `spark-dma-guard.timer`
+was found disabled on both, so the guard had been armed only when someone
+started the service (both were started by hand on 2026-11-10 14:52), and
+lenovo7 ran without it from its reboot at 13:44 until 17:26. On the owner's
+order that day the timer was enabled on both hosts after `scan` reported no
+trigger in either boot's log; on lenovo7 it started the service at once
+(`event=start mode=armed`, received by the hub's listener), and lenovo9's
+running guard was left as it was.
 
 ## 19. Corrections to earlier statements
 
