@@ -577,7 +577,7 @@ before pipeline progress on every later pass. The engine now compares the
 session after pipeline progress too, and a comparison that ever finds
 submissions in flight fails the engine once and keeps the pipeline
 progressing. `TestScenarioRankReturnsDuringProgress` reproduces the order
-with the mock client and fails without the change. The pushed head
+with the mock client and fails without the change. The commit
 `3a1cff2da` passed the gate again on a fresh lane: seven of seven prompts
 on every path against the gated build, two of two after an API restart,
 three of three after each of two rank restarts, two session changes with

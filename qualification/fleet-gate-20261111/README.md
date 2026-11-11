@@ -16,7 +16,7 @@ sampled all at once).
 | gated | `7ceba5b55` | the drafter split and the epoch correction, firmware and API |
 | final API | `28503c91f` | the same firmware; the API's seed lands on the ranks' floor |
 | blocking API | not merged | `7ceba5b55` with the drafter call blocking again, for the arrival probe |
-| pushed head | `3a1cff2da` | firmware and API: the unused speculation code removed, the engine's session check, the release kit's API restart |
+| last gated | `3a1cff2da` | firmware and API: the unused speculation code removed, the engine's session check, the release kit's API restart |
 
 ## What the first try found
 
@@ -95,7 +95,7 @@ is no longer a waiting prefill when the stream's next frame is sized (three
 quarters of its frames carry 14 to 16 rows, where 128 of 132 carried 12). With the 100 ms drafter the stream gives up 8% to
 three times as many arrivals.
 
-## The pushed head
+## The last gated commit
 
 `3a1cff2da` was built again for the ranks and the hub and gated on a fresh
 start of the same lane (run `gh1111`).
@@ -131,3 +131,9 @@ Python and shell tests 504 pass. The other 34 cannot run there: 29 import
 the `tokenizers` module, which the build host lacks, and five list files
 with git, which an archive tree is not. All 34 pass in the workstation's
 checkout at the same commit. The loopback fuzz ran its 200 rounds.
+
+`main` was merged in afterwards (`4515d515c`; no serving-path source). The
+ranks' and the API's binaries built from the merged tree have the same code
+and data sections as those of `3a1cff2da`, so the gate above stands for it.
+At `b01e3c1ab` the build host passes 513 of 548 tests and the workstation
+the other 35.
