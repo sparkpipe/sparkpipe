@@ -47,7 +47,7 @@ Its outputs were not compared with a reference in this run.
 
 | Pack | Chain, ms a token | tok/s | Logprobs step, ms | Rank 0: own, wait, publish, combine |
 | --- | ---: | ---: | ---: | --- |
-| BF16 | 20.19 | 49.5 | 26.89 | 13.45, 5.41, 0.43, 0.58 |
+| BF16 | 20.19 | 49.5 | 26.89 | 13.78, 5.12, 0.42, 0.59 |
 | FP8 | 15.65 | 63.9 | 22.50 | 8.99, 5.37, 0.43, 0.61 |
 
 At 1.96 GB a pass the memory floor is 8.05 ms, so the FP8 chain is at 51% of
