@@ -816,6 +816,28 @@ the kinds differ much.
 Exit codes: 0; 1 when the API log has no `batch_step` line; 2 on a usage
 error. `tests/test_roofline_meter.py` covers it.
 
+### arrival_probe.py (tools/)
+
+Measures how long a short request waits beside a long stream, against an API
+on this host. It is the probe behind the drafter split's numbers
+(`qualification/fleet-gate-20261111/`).
+
+```sh
+tools/arrival_probe.py PORT TAG ROUNDS TOKENS
+```
+
+It runs one greedy stream of `TOKENS` tokens twice (with
+`draft_replay_server.py` behind the API, the first run teaches the drafter
+the stream and the second is drafted), then times a one-token request with a
+prompt of its own thirty times alone, and then sends such requests back to
+back while the stream runs, for `ROUNDS` streams. The arrivals turn
+speculation off for themselves, so they never ask the drafter.
+
+Lines, each starting `probe TAG`: `stream_learn` and `stream_drafted` with the
+drafted run's tok/s; `arrival_alone` and `arrival_during_stream` with n,
+median, mean, 90th percentile and maximum in ms; `stream_with_arrivals` with
+each stream's tokens, seconds and tok/s.
+
 ### draft_replay_server.py (tools/)
 
 A DFT3 draft server with no drafter model and no GPU, for gating the batch

@@ -66,7 +66,7 @@ engine retried it; the 849-token prompt resumed 848 tokens from the cache.
 
 ## Arrival probe
 
-`arrival_probe.py PORT TAG ROUNDS TOKENS` runs one greedy stream twice (the
+`tools/arrival_probe.py PORT TAG ROUNDS TOKENS` runs one greedy stream twice (the
 replay drafter learns it, then drafts it), measures a one-token request with
 a prompt of its own thirty times alone, and then sends such requests back to
 back while the stream runs, for ROUNDS streams. The draft server was
