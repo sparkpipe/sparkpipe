@@ -3,357 +3,214 @@
 The one authority for how speculation is built and where it is going.
 [README.md](../README.md#speculative-decoding) states the end state;
 [TECHDEBT.md](../TECHDEBT.md#speculation) lists the open gaps. Code facts
-were checked on 2026-09-28 against main `bbf5432`; line numbers are at that
-commit. Superseded designs are in `docs/archive/`
-(`SPECULATION_PROVIDER_DESIGN.md`, `SPECULATION_TREE_COMPOSITION_DESIGN.md`,
-`SPECULATION_SUBSYSTEM_BOUNDARY.md`); their still-valid parts are below.
+were checked on 2026-11-11. Superseded designs are in `docs/archive/`
+(`SPECULATION_PLAN.md`, `SPECULATION_TAPS.md`,
+`SPECULATION_PROVIDER_DESIGN.md`, `SPECULATION_TREE_COMPOSITION_DESIGN.md`,
+`SPECULATION_SUBSYSTEM_BOUNDARY.md`).
 
 ## Status
 
-- The served GLM 5.3 Flash (glm5_next, TP16) does not speculate (invariant
-  I42: current GLM targets are non-speculative). Its MTP path is TP1 only
-  ([below](#glm5_next-mtp-research-path)).
-- The RTX 5090 draft farm drafts for no served model. The DFT3 client
-  exists; only qwen38_27b calls it. No farm process was running on the hub
-  at 2026-09-28 09:00 UTC (`pgrep`).
-- No verify frame checks a tree. Every served acceptance is a chain.
+- Every model in the README model table verifies drafts taken from the
+  request's own context. Its serving adapter declares
+  `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
+- Four lanes also ask a draft model on the hub: Kimi K3, Kimi K3.1 Pro,
+  Qwen3.8-27B and DeepSeek V4.1 Flash (`draft_server` in
+  `deployment/lanes.json`).
+- Tree frames serve on the models whose adapter declares `TREE_VERIFY`
+  ([TREE_VERIFICATION_DESIGN.md](TREE_VERIFICATION_DESIGN.md) has the list).
+  Every other model verifies chains.
+- Speculative output equals output without speculation, token for token.
+  The release gate checks it on every lane
+  ([Guarantee](#guarantee-and-its-limit)).
 
 ## Architecture as built
 
-### Seam: the adapter's only speculation surface
+Speculation has two halves and one wire between them. The batch engine on
+the API host decides what to draft and how many rows a frame carries. The
+model's stage on the ranks computes the frame and keeps the rows the engine
+accepted. Drafts from a draft model arrive over the DFT3 draft bridge. No
+serving adapter holds speculation policy, and no family has a speculation
+switch of its own.
 
-`include/sparkpipe/spark_speculation_seam.h`, `src/spark_speculation_seam.c`
-(#788, `d93374b`). One seam per adapter. It owns one policy-engine instance
-and, when a remote source is enabled, a draft bridge
-(`SparkSpeculationSeamInitialize`, seam.c:345-471).
+### Batch engine: every draft is planned here
 
-Sources are bits of a mask (seam.h:14-29):
+`runtime/model_batch_engine.c`. When a decode submission is built,
+`SparkModelBatchPlanDrafts` plans the drafts of every lane in it. One lane
+goes through `SparkModelBatchPlanDraft`; two to four lanes share one verify
+frame through `SparkModelBatchPlanBatchDrafts`
+(`SPARK_MODEL_BATCH_VERIFY_LANES`). A submission with more lanes, or an
+adapter without the capability, gets a plain decode step.
 
-| Bit | Source | Kind |
+A draft has two sources.
+
+- **Lookup.** Each request keeps an index of its own tokens
+  (`SparkSpeculationLookupIndex*` in `src/spark_speculation_lookup_draft.c`,
+  3-token grams in 4,096 buckets). At the anchor it finds the most recent
+  longest suffix match among up to 64 candidates, of up to 64 tokens, and
+  drafts the tokens that followed it. A draft may run to 255 rows. The
+  ranked form returns the next-best matches that diverge from the first,
+  which become tree branches.
+- **Draft model.** With a `draft_server`, and when the lookup match is
+  shorter than 8 tokens, `SparkModelBatchPlanModelDraft` asks the draft
+  model for up to `depth` tokens (at most 16). At most two lanes are
+  drafted this way at once (`SPARK_MODEL_BATCH_MODEL_DRAFT_LANES`).
+
+The ask never blocks the engine. `SparkDraftBridgeRequestTree` sends the
+request and returns. A decode submission that still lacks its answer is
+taken back and decode is held for that progress pass, while prefill and the
+other work kinds dispatch. The engine adds the bridge's socket and time
+limit to the descriptors its caller waits on, and collects the answer on the
+next pass. One ask is outstanding at a time. Answers are kept for two
+requests, keyed by slot, request, generation and position, so a lane whose
+answer arrived while another lane was served still uses it. An ask that gets
+no answer in time is abandoned and the lane decodes plainly.
+
+### Frame choice: expected tokens per nanosecond
+
+`src/spark_speculation_frame.c`. `SparkSpeculationFrameChoose` picks the
+draft depth that maximizes expected tokens per nanosecond.
+
+- Survival comes from hazard tables per match class and depth bucket, kept
+  for the engine and for the request and decayed over frames. Lookup drafts
+  are classed by match length; draft-model nodes use the drafter's
+  confidence, calibrated per depth by what earlier frames observed against
+  what they predicted.
+- Cost comes from the frame times the engine measured, per row bucket and
+  context bucket, for single frames and for shared batch steps.
+- A lane whose speculative token rate falls under 0.97 of its plain rate
+  stops asking the draft model for 64 tokens, doubling to 1,024 while it
+  keeps losing. A failed or abandoned ask waits 8 tokens, doubling the same
+  way.
+
+### Tree frames
+
+`src/spark_speculation_tree_frame.c` builds the frame layout
+(`SparkSpeculationTreeLayoutBuild`) and resolves the accepted path
+(`SparkSpeculationTreeResolvePath`). `SparkModelBatchPlanBranches` adds up
+to three branches to the trunk, from the lookup's ranked alternates and the
+draft model's runner-up tokens. It keeps a branch only when the branch raises the
+frame's expected tokens per nanosecond and adds at least 0.05 expected
+tokens (`SPARK_MODEL_BATCH_TREE_MIN_GAIN`). A tree is refused, and the trunk served
+as a chain, when the adapter lacks `TREE_VERIFY`, when more than one lane is
+active or when the lane wants logprobs. The frame contract, the key mapping
+and the per-family state are in
+[TREE_VERIFICATION_DESIGN.md](TREE_VERIFICATION_DESIGN.md).
+
+### Model side: verify and keep
+
+A verify frame is one submission: the anchor row and one row per draft
+token. The stage computes every row in one pass, and the completion carries
+the target's token for each row. The engine accepts the longest path whose
+drafts equal the target's tokens and commits it plus the target's next
+token. The stage then keeps the accepted rows (`keep_rows`) and folds its
+recurrent and paged state to the last kept row. The chain frame contract is
+[SPECULATION_LONG_FRAMES.md](SPECULATION_LONG_FRAMES.md); the submission
+fields are in [INTERFACE_CONTRACTS.md](INTERFACE_CONTRACTS.md).
+
+A model supplies the verify frame in its stage and the fold of its own
+state. It supplies no policy.
+
+### Draft bridge: DFT3 client
+
+`include/sparkpipe/spark_draft_bridge.h`, `ring/transport/draft_bridge.c`.
+TCP with `TCP_NODELAY`, magic `DFT3`. `SparkDraftBridgeRequestTree` sends
+the committed tokens, optional tap rows, a source mask, a depth and a time
+budget, and returns at once. `SparkDraftBridgeReply` answers `PENDING` until
+the reply is whole and then returns scored nodes (`token_id`,
+`parent_index`, `depth`, `source_bit`, `score`); a tree may be 32 deep and
+4,096 nodes. One exchange is open at a time. `SparkDraftBridgePoll` gives
+the socket, the events and the time limit a caller waits for, and
+`SparkDraftBridgeCancel` abandons the exchange.
+
+### Draft server
+
+`tools/block_draftd.py` serves DFT3 on the hub, one process per drafted
+lane, started by `tools/hub_draftd.sh`. It serves one connection and one
+request at a time. The host, its drafters and their store are in
+[RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md).
+
+`tools/draft_replay_server.py` is a DFT3 server for gates. It drafts the
+continuation of any token stream an earlier request showed it, and can
+delay, corrupt or withhold replies.
+
+### Taps
+
+A drafter that reads the target's hidden rows gets them from one rank. The
+stage config's `taps` object names the rows (`entries`, a reduction and its
+layers, or `final`), the tap rank and where they go: a TCP `stream` to the
+drafter, or a `file`. The tap rank sends an `SPT2` hello with the model tag,
+the pack identity, the row shape and a fingerprint of the tap set, then one
+frame for each prefill wave, decode chain and verify frame with its request,
+sequence, first position and rows (`include/sparkpipe/spark_tap_stream.h`,
+`src/spark_tap_stream.c`). A verify frame sends only the rows that were
+kept. A stream that is down is retried and serving goes on without it.
+`tools/spec_offline/tapstream.py` reads the format.
+
+## Control
+
+| Where | Setting | Effect |
 | --- | --- | --- |
-| `0x1` | MTP | local |
-| `0x2` | DSPARK | local |
-| `0x4` | DFLASH2 | remote, needs hidden-tap rows |
-| `0x8` | NGRAM | remote, tap-free |
-| `0x10` | SUFFIX | remote, tap-free |
-| `0x20` | NGRAM3 | remote, tap-free |
+| Lane record, `draft_server` | `host`, `port`, `target_model`, `depth` (1-16), `wait_ms` (1-1000), `min_confidence` | The engine asks this draft model. Without the object the lane drafts from lookup only. |
+| Stage config, `taps` | `entries`, `stream` or `file`, `rank`, `window` | One rank sends hidden rows to the drafter or to a file. |
+| Request, `"speculation": false` | | The request decodes plainly. |
+| Adapter descriptor | `SPECULATIVE_VERIFY`, `TREE_VERIFY`, `tree_slot_grain` | What frames the model verifies. |
 
-Control is one env per family, `SPARK_<FAMILY>_SPECULATORS`:
+## Counters
 
-- unset or `1` selects the family default (`default_source_mask`,
-  seam.c:116-122);
-- `0` selects nothing;
-- anything else is parsed with `strtoull` base 0 (hex works). A bit outside
-  the family's available mask is `SCHEMA_ERROR` (seam.c:43-81).
-
-A remote bit requires `draft_bridge_host`/`draft_bridge_port` in the stage
-config; adapters that accept a bridge drop the remote bits from their
-available mask when the host is absent. DFLASH2 also requires
-`max_tap_row_count > 0` and aux layers in the model contract
-(seam.c:161-173).
-
-Retired and rejected with `SCHEMA_ERROR`: `SPARK_DSV4_DSPARK` (dsv4
-adapter.c:851-855), `SPARK_QWEN38_27B_SERVING_SPECULATE`,
-`SPARK_QWEN38_27B_SERVING_SPEC_METHOD` and
-`SPARK_QWEN38_27B_SERVING_SPECULATIVE_DRAFT_COUNT` (qwen38_27b
-adapter.c:502-520), `SPARK_K3_SERVING_SPECULATE` (k3 adapter.c:429-434).
-`SPARK_GLM5_NEXT_MTP=0|1` remains as an alias for the MTP bit; setting it
-together with `SPARK_GLM5_NEXT_SPECULATORS` is an error (glm5_next
-adapter.c:72-116).
-
-Lifecycle: `SparkSpeculationSeamStageLocalDraft` (a draft the model made),
-`SparkSpeculationSeamDraftRemoteChain` (ask the bridge),
-`SparkSpeculationSeamAcceptChain` (resolve the verifier's tokens, complete
-the round), `SparkSpeculationSeamCancelSequence`. A lane is one sequence
-slot (`lane_count` = the adapter's active-sequence capacity).
-
-### Policy engine: the one acceptance accounting
-
-`include/sparkpipe/spark_speculation_policy.h`,
-`src/spark_speculation_policy.c`, model-neutral. Greedy only: accept the
-longest matching path from the root, commit it plus one bonus token from
-the verifier.
-
-- `SparkSpeculationPolicyResolveVerifierTree` (policy.c:721) takes a parent
-  array: at most 32 nodes, one verifier row per node plus the root row.
-  `SparkSpeculationPolicyResolveVerifierTokens` (:834) is the chain case
-  (no parent array).
-- Production calls only the chain form: the seam's `AcceptChain`, dsv4
-  module.c:3366 and glm5_next module.c:2370. The tree form is exercised
-  only by `tests/test_speculation_tree_resolve.c`, which the Makefile does
-  not build (it passed when compiled by hand on the rtx5090, 2026-09-28).
-- Per-sequence state (`SparkSpeculationSequenceState`, policy.h:131-148)
-  stores draft ids and confidences only, no parents.
-- `SparkSpeculationModelContract` carries geometry, draft limits and the
-  hidden-tap layer ids (`aux_layer_ids`); validation is structural, with no
-  single-model constants (policy.c:6-52).
-
-### Draft bridge: DFT3 client to a remote drafter
-
-`include/sparkpipe/spark_draft_bridge.h`, `ring/transport/draft_bridge.c`
-(#786, `16fb012`). TCP (`SOCK_STREAM`, `TCP_NODELAY`; draft_bridge.c:201,
-256), magic `DFT3` (:20). `SparkDraftBridgeRequestTree` sends the committed
-tokens, optional tap rows, a source mask, a depth of at most 16 per request
-and a time budget, and returns at once; `SparkDraftBridgeReply` answers
-`PENDING` until the reply is whole and then returns scored nodes (`token_id`,
-`parent_index`, `depth`, `source_bit`, `score`); a tree may be up to 32 deep
-and 4096 nodes (bridge.h:26-31, 56-63). One exchange is open at a time.
-`SparkDraftBridgePoll` gives the socket, the events and the time limit a
-caller waits for, and `SparkDraftBridgeCancel` abandons the exchange. The
-batch engine uses the calls that way from its progress loop; the seam waits
-for the reply itself. The seam keeps one path: the deepest node, ties
-broken by score (`SparkSpeculationSeamExtractChain`, seam.c:202-270).
-
-The server is not in this repository. It lives on the hub in
-`~/draft_service` (`farm_server.py`, DFT3 wire format in
-`draft_protocol.py`); see [RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md).
-
-### Model side: verify and commit
-
-The model's multi-row frame computes the verifier's tokens and the model
-commits or rolls back its own state. glm5_next KDA state rolls back through
-the ReplaySSM fold `LmReplayFoldKernel` (`inference/kernels/linear_attn.cuh:93`,
-launched from `spark_glm5_next_resident_decode_stage_cuda.cu:803`). A model
-supplies three things: a model contract, a draft (local) or tap rows
-(remote), and its own state fold/rollback.
-
-### Legacy pieces still in the tree
-
-- Provider slot (`include/sparkpipe/spark_speculation_provider.h`,
-  `runtime/speculation_provider.c`): only user is qwen38_max's MTP shim
-  (qwen38_max adapter.c:244-279), which binds only when the MTP layer count
-  is nonzero (:358). Its `SPEC_METHOD`/`DRAFT_COUNT` schema is descriptor
-  data nothing reads.
-- `include/sparkpipe/spark_speculation_tree.h` (static tree shapes): reached
-  only through `spark_glm52_mtp_tree.h`, which only
-  `tests/test_glm52_mtp_tree.c` and `tests/test_speculation_tree_pin.c`
-  include.
-- `inference/kernels/speculate.cuh` (greedy and sampled verify kernels):
-  included by four unity files (common_glm_cuda_tree, glm5_next, laguna,
-  ling), launched nowhere.
-- `modules/glm52_dspark_draft_backend` (GLM 5.2 DSpark backend): no serving
-  path drives it; the glm52 adapter offers no source and declares
-  `max_speculative_token_count = 0` (glm52 adapter.c:179). GLM 5.2 weights
-  are deprecated.
-- The `SPARK_DSPARK_TARGET_*` switch in
-  `model-families/common/include/sparkpipe/spark_dspark_drafter.h:7-65`
-  (glm52, k3, dsv4-pro-0813). `Makefile:791` still passes
-  `-DSPARK_DSPARK_TARGET_GLM52=1` to `spark_speculation_policy.o`, which no
-  longer includes that header.
-
-### Tree plan, runtime form
-
-`include/sparkpipe/spark_speculation_tree.h` holds the static tree logic in
-two forms.
-
-- **Macro form.** Before the include, the includer defines
-  `SPARK_SPECULATION_TREE_CANDIDATE_COUNT`,
-  `SPARK_SPECULATION_TREE_VERIFIER_ROW_COUNT`,
-  `SPARK_SPECULATION_TREE_MAX_COMMITTED_TOKEN_COUNT`,
-  `SPARK_SPECULATION_TREE_CONTEXT_EXTENSION`,
-  `SPARK_SPECULATION_TREE_VOCAB_COUNT` and the row table
-  `SPARK_SPECULATION_TREE_NODE_ROWS`. A missing one is an `#error`.
-  `SparkSpeculationTreeTopologyIsValid`, `SparkSpeculationTreeResolve` and
-  the per-row helpers read these macros. The form also uses
-  `SPARK_SPECULATION_TREE_VERIFIER_INPUT_ROW` and
-  `SPARK_SPECULATION_TREE_RESOLUTION_NONE`, which the header does not check.
-  `spark_glm52_mtp_tree.h` sets both to 0.
-- **Runtime-plan form.** `SparkSpeculationTreePlan` stores the five shape
-  values, `row_count` and up to `SPARK_SPECULATION_TREE_MAX_PLAN_ROWS` (64)
-  `SparkSpeculationTreeNode` rows as fields. This lets a host-side
-  compositor build a tree that no includer defined.
-  `SparkSpeculationTreePlanTopologyIsValid` applies the same topology rules
-  to a plan, and `SparkSpeculationTreePlanResolve` resolves against one.
-  `SparkSpeculationTreePlanFromMacros` fills a plan from the includer's
-  macros.
-
-The macro functions do not call the plan functions. Each form has its own
-copy of the logic.
-
-The two resolvers differ in where they start and what they report on a
-miss. `SparkSpeculationTreeResolve` starts at
-`SPARK_SPECULATION_TREE_VERIFIER_INPUT_ROW` and reports
-`SPARK_SPECULATION_TREE_RESOLUTION_NONE` when no child matches.
-`SparkSpeculationTreePlanResolve` always starts at row 0 and reports path 0.
-They agree only while both macros are 0.
-
-Limits that apply to both forms or to the plan form:
-
-- Neither resolver validates the topology. `SparkSpeculationTreePlanResolve`
-  dereferences every row it walks, so validate a plan with
-  `SparkSpeculationTreePlanTopologyIsValid` before resolving it.
-- Both topology checks track candidate indices in a 32-bit mask, so
-  `candidate_count` must stay below 32.
-- The header requires all six macros, so even a plan-only consumer must
-  define them.
-
-`tests/test_speculation_tree_pin.c` checks that the two forms agree on the
-glm52 topology. It builds a plan with `SparkSpeculationTreePlanFromMacros`
-and checks three things:
-
-- the plan passes `SparkSpeculationTreePlanTopologyIsValid`;
-- its `row_count`, `candidate_count` and `max_committed_token_count` equal
-  the macros, and its rows equal the macro table byte for byte;
-- five fixed candidate and verifier vectors resolve through both forms to the
-  same `path_id`, `accepted_token_count`, `committed_token_count` and
-  `fallback_row_index`.
-
-That test is the plan form's only user. No compositor exists.
-
-## Per-family state
-
-| Family | Env | Available sources | Default | What runs |
-| --- | --- | --- | --- | --- |
-| dsv4 | `SPARK_DSV4_SPECULATORS` | DSPARK; tap-free remote with a bridge (adapter.c:196-200, 859-864) | all available | DSpark sets the module's `NODE_CONTEXT_FLAG_DSPARK` (:917); acceptance through the policy resolver (module.c:3366); no remote call site |
-| glm5_next | `SPARK_GLM5_NEXT_SPECULATORS` / `SPARK_GLM5_NEXT_MTP` | MTP; tap-free remote with a bridge (adapter.c:62-64, 427-429) | none (:104, :440) | MTP at TP1 only; no remote call site; no DFLASH2 source since `f301e1c` |
-| glm52 | `SPARK_GLM52_SPECULATORS` | none (adapter.c:351) | none | seam initialized, no source |
-| k3 | `SPARK_K3_SPECULATORS` | none (adapter.c:438) | none | engine verify commit and `K3AdaptiveDepth` (`model-families/k3/source/spec_verify.h`) run only in `tests/host_cuda/k3_*` |
-| qwen38_27b | `SPARK_QWEN38_27B_SPECULATORS` | MTP, DSPARK, DFLASH2; tap-free remote with a bridge (adapter.c:88-94, 564-566) | MTP (:568-569, :591) | one local method, or remote tap-free only; mixing or two local methods refused (:531, :542); the only remote consumer (:1549) |
-| qwen38_max | `SPARK_QWEN38_MAX_SPECULATORS` | none (adapter.c:72) | none | provider-slot shim, above |
-| qwen4_flash | `SPARK_QWEN4_FLASH_SPECULATORS` | none (adapter.c:58) | none | seam initialized, empty |
-| gemma4, laguna, ling, minimax, muse_glimmer | none | none | none | no seam |
-
-qwen38_27b DFlash2 cannot start. The adapter treats DFLASH2 as a local
-method, but the seam classifies it as a remote tap source. Without a bridge
-the adapter drops the bit (adapter.c:565-566) and `0x4` fails the parse
-(seam.c:77); with a bridge the seam requires tap rows that the adapter
-declares as `max_tap_row_count = 0` (seam.c:164-167). A probe on the rtx5090
-(2026-09-28) that replayed the adapter's masks against the real seam got
-`SCHEMA_ERROR` in both cases, while `0x1` and `0x2` initialized. No test
-covers `0x4`.
-
-## glm5_next MTP: research path
-
-MTP chain speculation (#815, `a4f1263`) drafts through layer 45, draft depth
-2 (`SPARK_GLM5_NEXT_RESIDENT_DECODE_STAGE_MTP_DRAFT_DEPTH`), gated by B1
-greedy token parity (`validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu`).
-It is off by default and cannot serve the TP16 engine:
-
-- TP1 only: init returns `UNSUPPORTED` when MTP is on and `tp_degree != 1`
-  (`SparkGlm5NextInitializeState`, module.c:4842-4846), or `SCHEMA_ERROR`
-  earlier if the pack has no layer-45 tensors (:4837-4841). The #815 commit
-  message puts full-model TP1 at 271-316 GiB, which does not fit one Spark.
-- MTP or speculative verify turns off the linear chain
-  (`SparkGlm5NextLinearEligible`, :2855-2858) and graph replay
-  (`chain->spec_verify == 0` in `SparkGlm5NextTpChainAdvance`, :3378), the
-  paths behind the measured 36 tok/s B1 (lead-dev measurement, 2026-09-28).
-- `SparkGlm5NextMtpDriveDraft` returns early unless the frame has one step
-  and one active sequence (:2216-2220).
-- The MTP layer's draft KV is one page per execution slot (TECHDEBT).
-- `tools/fleet_serve.sh:96` still defaults `SPARK_GLM5_NEXT_MTP` to `1`,
-  which fails init at TP16; the fleet-agent drop-in does not set it.
-
-TP16 serving would need a TP-sharded MTP head, draft and verify rows inside
-the graph chains, per-sequence draft KV, and a tree or chain verify that
-keeps the graph path.
-
-## Remote drafting on the RTX 5090
-
-As built, only qwen38_27b drafts remotely, and synchronously: decode frame,
-then a blocking `SparkSpeculationSeamDraftRemoteChain` with a 20 ms budget
-(`SPARK_QWEN38_27B_SERVING_SEAM_DRAFT_TIME_BUDGET_MS`), then verify of the
-returned chain. It sends no tap rows (adapter.c:1549-1551), so only NGRAM,
-SUFFIX and NGRAM3 can answer. `tests/test_qwen38_27b_remote_spec.c` covers
-this path against a stub server; the Makefile does not build it.
-
-Latency budget: busy-polled 64 B UDP round trip sparkf to rtx5090 is 22.6 us
-p50 / 25.2 us p99, and about 300 us p50 from other Sparks through sparkf
-(lead-dev measurements, 2026-09-28). The bridge is TCP, so these are lower
-bounds for DFT3. Arithmetic: a synchronous draft that uses its full 20 ms on
-a 23-24.5 ms GLM B1 step makes the step 43-44.5 ms, so it must commit at
-least 1.82-1.87 tokens per step just to break even, before verify-row cost.
-
-Before the 5090 can draft for GLM: a `SparkSpeculationSeamDraftRemoteChain`
-call site in the glm5_next adapter, tap capture inside the graph engine if a
-DFlash2 drafter is used (TECHDEBT: glm5_next has no DFlash2 source), and
-drafting pipelined one round ahead so the round trip hides behind the
-forward.
+The API's status and the engine's `batch_speculation` log line report
+frames, drafted and kept tokens, tree frames and kept branches, shared batch
+frames, and for the draft model its rounds, declines, unavailable and
+abandoned asks, backoffs and mean wait. Each frame's `batch_step` line
+carries its rows, drafts, kept rows, match class, expected tokens, predicted
+and measured time and draft wait. `tools/release_capture.py` records the
+counters per prompt next to the tokens.
 
 ## Guarantee and its limit
 
-Verification pins every emitted token to the target model's verify-frame
-output. That frame is multi-row, and batched serving is not batch-invariant:
-dense projections switch kernels above eight rows and attention depends on
-the wave (TECHDEBT, batch invariance items); COMPSEC concurrent runs differ
-(lead-dev, 2026-09-28). A speculative run can therefore differ from a B1
-non-speculative run, though not from the target's own multi-row output.
-TensorFold's rule applies: compare multi-row with one-row output at load and
-disable drafting when they differ (TECHDEBT). Adopt it as the gate for any
-speculation that claims unchanged output.
+Every emitted token is the target model's own token from the verify frame.
+Every verify-capable stage reproduces one-row decode bit for bit
+(`tests/test_gemma4_verify_frames.cu`, `tests/test_ling_verify_frames.cu`,
+`tests/test_glm52_verify_frames.cu`, `tests/test_hy4_verify_frames.cu`,
+`tests/test_qwen38_verify_frames.cu`, `tests/test_mimo26_verify_frames.cu`
+and the K3 and DeepSeek V4.1 Flash tests), so a speculative run emits the
+tokens of a run without speculation.
 
-## Direction: multi-drafter trees (not built)
+The release gate holds each lane to that: `tools/release_capture.py`
+captures every prompt with and without speculation and
+`tools/release_compare.py` requires the tokens to be equal. A lane with a
+draft model can also be captured against the replay drafter, once knowing
+nothing and once replaying the stream it was shown.
 
-The deliverable is tokens per second and latency on whichever topology wins;
-TP16, PP16 and TP4xPP4 are to be hill-climbed (user direction, 2026-09-28).
-Speculation therefore stays topology-neutral: verify rows are rows in
-whatever wave layout runs.
+The limit is acceptance, not output. A drafted token is kept only when it
+equals the token the target emits at that row, so sampled output is
+unchanged too, but fewer drafts survive as temperature rises.
 
-Premise (user, 2026-09-28): at small batch, decode is bandwidth-bound, so
-extra verify rows are nearly free until the batch reaches a compute ridge
-B*. A multi-drafter tree with conditional truncation and extension spends
-that spare compute. Target (user, 2026-09-28): approach the roughly 4x
-reported for TensorFold, at B8 and if possible B64. That figure is
-unverified; per I42, cite a TensorFold receipt before using it as a target.
-B* is unmeasured on GB10 for every served model and topology: measure
-verify-row cost against row count per topology, which sets the largest
-batch at which speculation pays.
+## Direction
 
-Why several drafters (from the 2026-08-30 addendum): a speculator cannot
-improve quality, only acceptance. Naive best-of-N costs N verifies; a tree
-built from the drafters' divergences verifies in one target pass with a
-tree-attention mask. Drafters approximate the same target, so their errors
-correlate and diversity beats count: the cross-drafter agreement matrix,
-free to measure during serving, picks the best diverse pair, often not the
-two individually best drafters. MTP is the natural trunk: near-free and
-differently correlated from external drafters.
+The deliverable is tokens per second and latency. Verify rows are nearly
+free at small batch, since dense weights are read once per frame, so
+several candidate continuations in one frame cost little.
 
-Gain model (arithmetic, i.i.d. per-position acceptance p, depth k, verify
-rows free): expected accepted draft tokens E = p(1-p^k)/(1-p), plus one
-bonus.
+Built: one tree from the lookup's alternates, the draft model's chain and
+its runner-up tokens (`--alternates` in `tools/block_draftd.py`, one-node
+branches), composed by expected gain.
 
-| p | E at k=4 | E at k=6 | E at k=8 |
-| --- | --- | --- | --- |
-| 0.70 | 1.77 | 2.06 | 2.20 |
-| 0.80 | 2.36 | 2.95 | 3.33 |
-| 0.85 | 2.71 | 3.53 | 4.12 |
+Not built:
 
-Raising p from 0.7 to 0.8-0.85 adds 0.59 (k=4) to 1.47 (k=6) tokens per
-step; the addendum's p range is an assumption, not a measurement. 4 tokens
-per step (E = 3) needs p ≥ 0.805 at k=6 or p ≥ 0.776 at k=8.
+- A second draft model on one lane. Drafters approximate the same target,
+  so their errors correlate; the agreement between two drafters on recorded
+  streams decides whether the second adds branches the first lacks.
+- Drafting one round ahead, so the round trip hides behind the frame in
+  flight.
+- Trees on the MLA and DSA families, which need per-path key mapping.
 
-Composition rules (carried over from the tree-composition design, re-based
-on the seam and bridge):
+## Removed on 2026-11-11
 
-1. The verifier row budget is hard. Composition chooses which nodes fill it,
-   never grows it; the budget per step comes from B and the measured ridge.
-2. Verify the tree instead of collapsing it: parents in the sequence state,
-   a tree `AcceptChain`, and a tree-attention verify frame
-   (`ResolveVerifierTree` already does the resolution).
-3. Local and remote sources together (qwen38_27b refuses the mix today),
-   merged by source priority and score into the row budget.
-4. Acceptance attributed per `source_bit`, so each source has a measured
-   rate that drives its budget and retirement.
-5. Conditional truncation and extension: depth follows recent acceptance and
-   draft confidence. Precedents: `K3AdaptiveDepth` (window 8, floor 4,
-   ceiling 7; `spec_verify.h:9-13`) and the DFT3 server's time-budgeted tree
-   growth.
-6. Draft one round ahead; a late remote round contributes no nodes and never
-   stalls the step.
-7. Host pins before any cell runs, including: a composed tree resolves
-   identically to the same tree resolved from one source.
-
-| Phase | Work | State |
-| --- | --- | --- |
-| P1 | Single-drafter acceptance and the agreement matrix on real inputs | not started (`experiments/` holds only a README) |
-| P2 | Offline replay: best diverse pair or triple | not started |
-| P3 | Tree verification in the target (rules 1-2) | resolver only |
-| P4 | Contextual router: per-position allocation from recent agreement and token entropy; retire drafters that stop paying | not started |
-
-## Cleanup still open
-
-Delete or adopt the provider slot and the qwen38_max shim,
-`spark_speculation_tree.h` and `speculate.cuh`; drop the `Makefile:791`
-flag; add `test_speculation_tree_resolve.c`,
-`test_speculation_headers_coexist.c` and `test_qwen38_27b_remote_spec.c` to
-the Makefile; fix the qwen38_27b DFLASH2 classification; drop the MTP
-default in `tools/fleet_serve.sh`.
+An earlier design put speculation in each serving adapter: a seam with a
+source mask per family (`SPARK_<FAMILY>_SPECULATORS`), a policy engine for
+acceptance, and n-gram, recorded, reference and relay draft sources under
+it. The per-family adapters that called it went on 2026-10-11, and the batch
+engine has planned every draft since. The seam, the policy engine, those
+draft sources, the drafter mix, the static tree header and the tools that
+replayed them were deleted with their tests; nothing in the serving path
+called them.

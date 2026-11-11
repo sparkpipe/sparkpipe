@@ -268,20 +268,19 @@ which could be mistaken for the qualified route.
   by the source row as well (`LmRouteSourceRow`). Otherwise another token's
   scale is applied, with no fault.
 
-**Speculative verify (`speculate.cuh`)**
+**Speculative verify**
 
-- **Greedy.** `LmSpeculativeVerifyGreedyKernel` accepts the longest prefix
-  where the draft matches the target argmax. At the divergence point it
-  writes the target argmax (the bonus token) and sets
-  `accepted_count = accepted + 1`. It then rolls `context_length` back by
-  `draft_length - accepted`.
-- **Sampled.** `LmSpeculativeVerifySampledKernel` accepts each draft token
-  with probability `min(1, p_target / p_draft)`. On rejection it resamples
-  from the positive part of `target - draft`.
-- **Cache rollback.** A rejected token's KV has already been written. The
-  context length is set from the accepted count, and nothing else.
-- **Where the rest lives.** The speculation seam, tree and policy are in
-  `include/sparkpipe/spark_speculation_*.h` and `src/spark_speculation_*.c`.
+- **Acceptance is on the host.** No kernel accepts drafts. A verify frame
+  computes each row as a one-row decode does and returns the target's token
+  per row; the batch engine keeps the longest path whose drafts equal those
+  tokens, plus the target's next token.
+- **Cache rollback.** A rejected row's KV has already been written. The
+  model's `keep_rows` hook sets the context length from the kept count and
+  folds recurrent state to the last kept row.
+- **Where the rest lives.** The batch engine plans drafts
+  (`runtime/model_batch_engine.c`); the lookup index, the frame cost model
+  and the tree frame layout are in `src/spark_speculation_*.c`
+  (`docs/SPECULATION_UNIFIED_DESIGN.md`).
 
 **GQA (`gqa.cuh`)**
 

@@ -1058,17 +1058,18 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
-- Tree verification is not wired. The policy engine resolves trees
-  (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
-  Sequence state stores chains, the seam collapses DFT3 trees to one chain
-  (`SparkSpeculationSeamExtractChain`), and no verify frame applies a
-  tree-attention mask. `spark_speculation_tree.h` has no production includer.
-- Build multi-drafter composition over the seam, after the single-drafter
-  agreement matrix is measured: verify the DFT3 tree instead of collapsing it,
-  allow local plus remote sources together, and attribute acceptance per
-  `source_bit`. `SparkSpeculationDrafterMix`
-  (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
-  a fallback source and has no production caller.
+- Tree frames serve only where the stage maps keys per path: Solar Open 2
+  on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
+  A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
+  Gemma 4 and MiMo share the GQA kernels that take the mapping, but their
+  stages lack the relocation and the capability
+  (`docs/TREE_VERIFICATION_DESIGN.md`, phases P3 and P5).
+- One draft model per lane. A second drafter on a lane waits for the
+  agreement between two drafters on recorded streams, which bounds what its
+  branches can add.
+- A draft is asked when its frame is built, so the frame waits for the
+  answer up to `wait_ms`. Asking one round ahead, while the previous frame
+  runs, is not built.
 - Speculation serves on every model in the README model table, whose
   adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:

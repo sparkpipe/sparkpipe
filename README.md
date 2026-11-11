@@ -463,24 +463,26 @@ reordering cannot deadlock the mesh.
 
 ## Speculative decoding
 
-Speculation goes through one seam per serving adapter. Each family has one
-source mask, `SPARK_<FAMILY>_SPECULATORS`, that selects its draft sources:
-local drafts the model makes itself (MTP heads, DSpark) and remote drafts
-from a drafter host through the DFT3 draft bridge (DFlash2, n-gram and suffix
-sources). One model-neutral policy engine does all acceptance accounting: the
-longest accepted path plus one bonus token, with a chain treated as a
-degenerate tree.
+The batch engine plans every draft and the model verifies it. A draft comes
+from the request's own context, as the tokens that followed the longest
+earlier match of the text just written, or from a draft model on a drafter
+host, asked through the DFT3 draft bridge without stopping the engine. For
+each frame the engine picks the depth, and the branches of a tree, that give
+the most expected tokens per second, from the acceptance and the frame times
+it has measured. The model keeps the longest path whose tokens it would have
+emitted itself, plus one token of its own, with a chain treated as a tree of
+one branch.
 
-A model customizes exactly three things:
+A model supplies two things:
 
-- a model contract: geometry, draft limits and hidden-tap layers;
-- a draft function, or the hidden-tap rows a remote drafter needs;
-- a fold/rollback for its own recurrent and paged state.
+- a verify frame in its stage, which computes several rows of one sequence
+  in one pass;
+- a fold of its own recurrent and paged state to the last kept row.
 
-**Sources.** A new method arrives as a new source behind the seam, not as
-edits to every family. A tree verifier checks several drafters' candidates
-in one target pass, and multi-drafter composition races decorrelated
-drafters and retires the ones that stop paying for themselves
+**Sources.** A new draft method arrives as a draft model behind the bridge,
+not as edits to every family. A tree frame checks several drafters'
+candidates in one target pass, and the engine stops asking a drafter that
+stops paying for itself
 ([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
 **Guarantees.** Verification pins every emitted token to the target model's

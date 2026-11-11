@@ -191,10 +191,10 @@ of the 17 completions change with batch composition.
 Support every speculation type — MTP, DFlash, DSpark, DFlash2, the
 coming DSpark2, and whatever follows — because not every model gets
 today's best. Design and direction:
-[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) (one
-speculation seam per adapter, one source mask per family, local drafts plus
-remote drafts through the DFT3 draft bridge; DSpark2 = a new source behind
-the seam, not five family edits).
+[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) (the batch
+engine plans every draft and the model verifies it; drafts come from the
+request's context and from draft models through the DFT3 draft bridge;
+DSpark2 = a new draft model behind the bridge, not five family edits).
 
 Direction (operator, 2026-09-28): the fleet has more compute than bandwidth
 below the batch size where decode turns compute-bound. Speculation can spend
@@ -272,11 +272,12 @@ TP8 deployment generators are gone; GLM Full's TP16 lane is rendered by
 
 ## SPECULATOR PORTFOLIO (operator)
 
-A dozen speculators incoming for head-to-head testing. The speculation
-seam ([`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md)) is
-the harness for it. The operator's multi-speculator-live idea is assessed as
-multi-drafter composition: see that doc's "Direction: multi-drafter trees"
-section.
+A dozen speculators incoming for head-to-head testing. The draft bridge
+and the draft server
+([`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md)) are the
+harness for it: a speculator is tested as a draft model on a lane. The
+operator's multi-speculator-live idea is assessed as multi-drafter
+composition: see that doc's "Direction" section.
 
 ## FLEET-HOURS TRACK
 

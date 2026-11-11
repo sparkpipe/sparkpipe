@@ -311,7 +311,6 @@ TEST_NAMES := \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
-    test_speculation_seam \
     test_row_layout_round_span \
     test_fabric_topology \
     test_release \
@@ -334,7 +333,6 @@ TEST_NAMES := \
 	test_kv_model_table \
     test_gemm_tile_k_fallback \
     test_serial_tp_replay \
-    test_speculation_tree_resolve \
     test_rope_plan \
     test_glm52_stagepack \
     test_tokenizer \
@@ -359,16 +357,8 @@ TEST_NAMES := \
     test_expert_working_set \
     test_weightd_mesh_mock \
     test_module_library \
-    test_speculation_reference_draft \
-    test_speculation_recorded_draft \
     test_speculation_lookup_draft \
     test_weightd_pacer \
-    test_speculation_ngram_draft \
-    test_speculation_drafter_mix \
-    test_speculation_relay_draft \
-    test_speculation_tap \
-    test_speculation_relay_link \
-    test_speculation_depth \
     test_speculation_frame \
     test_speculation_tree_frame \
     test_topk_exact_plan \
@@ -490,7 +480,6 @@ PYTHON_TESTS := \
 	tests/test_k3_driver_contracts.py \
 	tests/test_k3_device_combine.py \
 	tests/test_k3_stage_ordering.py \
-	tests/test_k3_engine.py \
 	tests/test_k3_head_rank_host.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
@@ -569,12 +558,9 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
-	tests/test_spec_tap_dump.py \
-	tests/test_glm5_next_spec_replay.py \
 	tests/test_spec_offline.py \
 	tests/test_spec_bakeoff.py \
 	tests/test_spec_bakeoff_corpus.py \
-	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \
@@ -704,7 +690,6 @@ PYTHON_TESTS := \
 	tests/test_glm53_contract.py \
 	tests/test_draftd_mtp_g8.py \
 	tests/test_glm53flash_mtp_reference.py \
-	tests/test_spec_recorded_drafts.py \
 	tests/test_glm5_next_geometry.py \
 	tests/test_head_host.py \
 	tests/test_sample_host.py \
@@ -789,7 +774,6 @@ PYTHON_TESTS := \
 	tests/test_host_turn_bench.py \
 	tests/test_draft_replay_server.py \
 	tests/test_tokenizer_text_prefix.py \
-	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
 	tests/test_ling_reference_agreement.py \
 	tests/test_mesh_lane_ladder_receipt.py \
@@ -920,7 +904,6 @@ MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_tokenizer_benchmark \
     build/test_hidden_transport \
     build/test_draft_bridge \
-    build/test_speculation_seam \
     build/test_tokenizer \
     build/test_tokenizer_sidecar \
     $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
@@ -1820,9 +1803,6 @@ build/test_draft_bridge: tests/test_draft_bridge.c ring/transport/draft_bridge.c
 build/test_row_layout_round_span: tests/test_row_layout_round_span.c include/sparkpipe/spark_row_layout.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_row_layout_round_span.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_speculation_seam: tests/test_speculation_seam.c ring/transport/draft_bridge.c include/sparkpipe/spark_speculation_seam.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_seam.c ring/transport/draft_bridge.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
-
 build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1886,9 +1866,6 @@ build/test_gemm_tile_k_fallback: tests/test_gemm_tile_k_fallback.c runtime/launc
 
 build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_replay.c tests/serial_tp_replay.h | build
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) tests/test_serial_tp_replay.c tests/serial_tp_replay.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -2026,20 +2003,8 @@ build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c include/sparkpipe/spark_speculation_reference_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_reference_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_recorded_draft: tests/test_speculation_recorded_draft.c include/sparkpipe/spark_speculation_recorded_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_recorded_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include/sparkpipe/spark_speculation_ngram_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_ngram_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_exact_plan.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topk_exact_plan.c $(LDFLAGS) -o $@
@@ -2049,21 +2014,6 @@ build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/s
 
 build/test_speculation_tree_frame: tests/test_speculation_tree_frame.c include/sparkpipe/spark_speculation_tree_frame.h include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tree_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
-
-build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_relay_draft: tests/test_speculation_relay_draft.c include/sparkpipe/spark_speculation_relay_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_tap: tests/test_speculation_tap.c include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tap.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_relay_link: tests/test_speculation_relay_link.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_link.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/spark_speculation_relay_probe: tools/spec_relay_probe.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tools/spec_relay_probe.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
 build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)

@@ -1,7 +1,6 @@
 #pragma once
 #include <stdio.h>
 #include "model-families/k3/source/layer.cuh"
-#include "model-families/k3/source/dspark.h"
 #include "inference/kernels/l2_load.cuh"
 #include "sparkpipe/spark_k3_family.h"
 

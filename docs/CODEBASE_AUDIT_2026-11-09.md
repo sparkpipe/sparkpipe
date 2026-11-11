@@ -589,14 +589,23 @@ Each of these changes the serving path's behaviour and none can be proven
 by a host test or a compile: each needs a lane on the fleet, as the landings
 above had.
 
-Found on 2026-11-11, and left: the speculation seam
-(`src/spark_speculation_seam.c`), the policy engine under it, the recorded,
-reference, n-gram and relay drafts and the drafter mix are reached only by
-their tests and two measurement tools (`tools/glm5_next_spec_replay.c`,
-`tools/spec_relay_probe.c`); the engine drafts through its own lookup and
-the bridge and verifies trees itself, while `TECHDEBT.md` still plans
-multi-drafter composition over the seam. About 3,200 lines and as many of
-tests wait for that decision. The release kit's `qualify` step activates
+Found on 2026-11-11 and removed the same day: the speculation seam, the
+policy engine under it, the recorded, reference, n-gram and relay drafts,
+the relay link, the tap dump, the drafter mix and the static tree header
+were reached only by their tests and by measurement tools written for them.
+The engine drafts through its own lookup and the bridge and verifies trees
+itself. The units, their tests, the tools that compiled or read them and
+the Python model of their chain policy are deleted, about 10,000 lines; the
+lookup index keeps its linear-scan oracle. `docs/SPECULATION_UNIFIED_DESIGN.md`
+now describes speculation as built, and the 2026-09-28 plan and the taps
+contract of the retired GLM module are archived. Still to remove with the
+roofline meter, which replaces them: the bake-off tools' log readers
+(`tools/spec_verify_bench.py log`, the acceptance half of
+`tools/spec_bakeoff.py`, `tools/spec_offline/cost.py` and
+`tools/tp_chain_budget.py`), which parse lines no engine has printed since
+the per-family modules went on 2026-10-11.
+
+The release kit's `qualify` step activates
 each model on a fresh lane and a fresh API, so it never restarts an API
 under a serving lane; that check belongs there
 (`tools/release_capture.py` takes a list of prompts for it) and needs a

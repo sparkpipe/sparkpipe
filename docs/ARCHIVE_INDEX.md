@@ -66,6 +66,16 @@ reason below. Two more were deleted instead of archived (end of this file).
 - SPECULATION_SUBSYSTEM_BOUNDARY.md (2026-09-28) — the 08-17
   "unified"-branch inventory and agent-lane ownership; its steps landed or
   were superseded. The live inventory is SPECULATION_UNIFIED_DESIGN.md.
+- SPECULATION_PLAN.md (2026-11-11) — the 2026-09-28 plan of record: drafts
+  relayed through rank 15, per-family verify switches and the GLM A/B arms.
+  The per-family engines it measured went on 2026-10-11; the batch engine
+  plans every draft now (SPECULATION_UNIFIED_DESIGN.md).
+- SPECULATION_TAPS.md (2026-11-11) — the 2026-09-29 contract for the GLM
+  Flash module's taps: `SPT1` datagrams over the sparkf-rtx5090 relay link,
+  the `SPTD` dump and the shadow-mode relay, with their measured round
+  trips. The module went on 2026-10-11 and the relay and dump code on
+  2026-11-11; taps now go over the `SPT2` stream
+  (SPECULATION_UNIFIED_DESIGN.md, Taps).
 
 ## Measurements/receipts (historical records, one-time)
 - DSPARK_* (5 receipts/runbooks), P1P2_*, RESIDENTD_B1_PROFILE,

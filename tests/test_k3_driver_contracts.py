@@ -122,8 +122,7 @@ def main():
             failures += 1
 
     # -- default off: the only assignment is the bind's propagation -----------
-    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu",
-                 "engine.h", "dspark.h"):
+    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for match in re.finditer(r"kda_state_bf16\s*=\s*([^;\n]+);", text):
             value = match.group(1).strip()
@@ -133,7 +132,7 @@ def main():
                       f"driver source may turn it on while launches refuse it")
                 failures += 1
 
-    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu", "engine.h"):
+    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for call in ("cudaMemcpy", "cudaMalloc", "cudaFree",
                      "cudaStreamSynchronize", "cudaDeviceSynchronize",

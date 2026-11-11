@@ -94,12 +94,11 @@ current authority.
 ## Speculation
 
 - [`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md):
-  speculation seam, source mask, draft bridge, per-family state and
-  direction.
+  speculation as built: the batch engine's draft planning, lookup and draft
+  model sources, the frame cost model, the draft bridge, control, the
+  guarantee and direction.
 - [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
   (fleet hub, model APIs, draft farm, drafter store).
-- [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
-  drafters per model, and the PR sequence.
 - [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
   frames over the production path: node table, slot and position split,
   ancestor attention, path-form `keep_rows`, composition, phases and gates.
