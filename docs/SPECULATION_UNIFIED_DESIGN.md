@@ -92,11 +92,16 @@ the verifier.
 
 `include/sparkpipe/spark_draft_bridge.h`, `ring/transport/draft_bridge.c`
 (#786, `16fb012`). TCP (`SOCK_STREAM`, `TCP_NODELAY`; draft_bridge.c:201,
-256), magic `DFT3` (:20). `SparkDraftBridgeProposeTree` sends the committed
-tokens, optional tap rows, a source mask, a depth of at most 8 per request
-and a time budget. It returns scored nodes (`token_id`, `parent_index`,
-`depth`, `source_bit`, `score`); a tree may be up to 32 deep and 4096 nodes
-(bridge.h:26-31, 56-63). The seam keeps one path: the deepest node, ties
+256), magic `DFT3` (:20). `SparkDraftBridgeRequestTree` sends the committed
+tokens, optional tap rows, a source mask, a depth of at most 16 per request
+and a time budget, and returns at once; `SparkDraftBridgeReply` answers
+`PENDING` until the reply is whole and then returns scored nodes (`token_id`,
+`parent_index`, `depth`, `source_bit`, `score`); a tree may be up to 32 deep
+and 4096 nodes (bridge.h:26-31, 56-63). One exchange is open at a time.
+`SparkDraftBridgePoll` gives the socket, the events and the time limit a
+caller waits for, and `SparkDraftBridgeCancel` abandons the exchange. The
+batch engine uses the calls that way from its progress loop; the seam waits
+for the reply itself. The seam keeps one path: the deepest node, ties
 broken by score (`SparkSpeculationSeamExtractChain`, seam.c:202-270).
 
 The server is not in this repository. It lives on the hub in

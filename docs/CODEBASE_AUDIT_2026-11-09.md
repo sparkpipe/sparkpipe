@@ -460,15 +460,71 @@ Landed in the pull request that carries this page:
   mesh activity through weightd, and rank 0 no longer broadcasts an epoch
   that the other ranks spin on. The collective holds mesh activity for its
   session, derives each wave's epoch on every rank from the submission's
-  request id (unique and increasing within an engine session, and the same
-  bytes on every rank) mixed with the rank map and degree, so ranks that
-  disagree on membership cannot pair a round, and seeds the round control
-  block with two copies and a memset. A new session clears its band's slot
+  request id (the same bytes on every rank) plus a key of the rank map and
+  degree, so ranks that disagree on membership cannot pair a round, and
+  seeds the round control block with two copies and a memset. A new session clears its band's slot
   tails before its first round, which is what the ever-rising epoch did for
   an earlier session's tails. On the Qwen3.8-27B lane at TP16 the time from
   a rank's completion to its next frame fell from 2.4-2.6 ms to 1.1 ms in
   two runs, and the frame cycle from 60.9 ms to 60.4 and 58.5 ms; outputs
   matched on every path.
+- The wave boundary's epoch, corrected on 2026-11-11. As landed the day
+  before, it stopped a lane at the first API restart: weightd ships and
+  acknowledges a publication only when its tag is greater than the cell's
+  last one, and keeps that state until the collective attaches again
+  (`node/weightd_mesh.c`, `issued` and `doorbell_posted`), while the epoch
+  came from the low 24 bits of the request id and the API numbers its
+  submissions from 1,000,000 again with every new engine session. After a
+  restart every tag was below the last one shipped, no round was
+  acknowledged and each wave failed on all sixteen ranks until the lane was
+  restarted; the 24-bit key would also have wrapped after 16.7 million
+  waves, and the membership key, taken modulo the whole range, could wrap
+  the epoch sooner. `main` is not affected: it keeps an ever-rising epoch in
+  the mesh and broadcasts it per wave. No gate had restarted the API inside a
+  lane cycle until the one for 2.11 did. Submission ids now rise for as long
+  as a rank lives: residentd reports the highest id it has accepted in its
+  hello acknowledgement (IPC ABI 28), the engine lifts its numbering above
+  the largest floor of its ranks before every dispatch, the runner hands the
+  collective the whole id, the epoch is 1 plus a membership key below 65,521
+  plus the id, which cannot wrap below an id of 2^32 - 65,522, and the
+  collective refuses a request whose epoch falls or leaves the range and
+  says so (`COLLECTIVE-EPOCH-FELL`, `COLLECTIVE-EPOCH-RANGE`). Epochs never
+  repeat within a rank's life, which is also what keeps an earlier
+  publication's slot tail from satisfying a later wait. The fuzz test's
+  shipper now refuses a fallen tag as weightd does, so the host suite fails
+  on this class of defect (608 checks with the guard off).
+- The hub drafter's call (2.11), on 2026-11-11. The draft bridge is a
+  request and a reply (`SparkDraftBridgeRequestTree`, `Reply`, `Cancel`,
+  `Poll`): it never blocks, holds one exchange at a time, and keeps the
+  connect and I/O limits as deadlines of the exchange. The engine asks at the
+  same point of a decode frame's plan, with the same depth, wait and limits.
+  A frame whose lane has no answer yet is not built: its submission slot,
+  selection ages, scan position and work-kind rotation are put back, and it
+  is planned again when the answer is in or its time limit passes. One ask
+  is outstanding at a time and the answers of two requests are kept, so two
+  lanes are still asked one after the other. While a frame waits, the engine
+  takes completions, admits and cancels requests and dispatches prefill,
+  release and publication work, keeping one submission slot for the waiting
+  frame; a request that leaves has its ask dropped. The draft socket and its
+  deadline are in the engine's poll set, so the API and the batch tool wake
+  on the answer. A draft is only ever verified, so tokens cannot change;
+  what changes is who waits for the drafter. On the Qwen3.8-27B lane, with a
+  drafter stand-in that replays streams it has seen
+  (`tools/draft_replay_server.py`, `docs/TOOL_REFERENCE.md`), a 384-token
+  stream drafted while one-token requests arrived back to back. With the
+  drafter answering in 100 ms, an arrival took 283 ms at the median (347 at
+  the 90th percentile, 395 at most) behind the blocking call and 93 ms (109,
+  133) with the split, and 141 arrivals completed during four streams
+  instead of 44; the stream ran at 92 tok/s instead of 101, sharing the GPUs
+  with three times the arrivals. With the drafter answering in 10 ms the
+  arrivals took the same time (130 and 132 ms) and the stream kept 182 tok/s
+  instead of 157, because arrivals that are dispatched at once no longer
+  count as waiting prefill when its next frame is sized. The stream alone is
+  unchanged (the wait for a draft is the drafter's), and the engine's mean
+  wait reads the same on both sides (10.35 and 10.38 ms, 100.41 and 100.40
+  ms). A drafter that does not answer costs the frame that asked its wait
+  plus 100 ms; it used to stop the engine's thread for that long, and for
+  200 ms more whenever the connection had to be opened.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
@@ -491,13 +547,22 @@ step 4 with the packers (frame costs within 0.05 ms of the previous head),
 and the wave boundary, twice. Every run matched token for token and
 logprob for logprob.
 
+On 2026-11-11 the gate gained two things. It restarts the API on the serving
+lane: six API sessions in one lane cycle, which is how the wave boundary's
+falling epoch was found and how its correction was proven (no epoch refusal
+and no failed round on the ranks, every request served). And it drafts
+through `tools/draft_replay_server.py`: the head with no drafter matches the
+previous head on the seven prompts and every path; with the drafter
+configured and knowing nothing, the same; with the drafter replaying the
+first run, every path still matches token for token and logprob for logprob
+while each prompt's speculating run verifies 23 to 146 model drafts in two
+to five frames and a 32 to 48 token reply takes 0.31-0.39 s instead of
+0.69-1.07 s.
+
 Still open, in the order above:
 
-- Step 2, the collective half: the two-phase commit's round trips (2.5)
-  and the hub drafter's synchronous call (2.11), which needs the draft
-  bridge split into a request and a reply without changing when, and with
-  which limits, drafts are asked for. Settled on 2026-11-10 without a code
-  change: `FinishAsync` (2.6) is mapped in `docs/ASYNC_KV_FINISH_DESIGN.md`,
+- Step 2, the collective half: the two-phase commit's round trips (2.5).
+  Settled on 2026-11-10 without a code change: `FinishAsync` (2.6) is mapped in `docs/ASYNC_KV_FINISH_DESIGN.md`,
   where the audit's bytes turn out to be on the `CACHE_PUBLISH` path, ten
   rules keep every result unchanged, and the Qwen3.8-27B lane measures 0.26
   ms per publishing lane and 0.2-0.4 ms per chain, under 1% of a frame, so
@@ -517,6 +582,19 @@ Still open, in the order above:
 Each of these changes the serving path's behaviour and none can be proven
 by a host test or a compile: each needs a lane on the fleet, as the landings
 above had.
+
+Found on 2026-11-11, and left: the speculation seam
+(`src/spark_speculation_seam.c`), the policy engine under it, the recorded,
+reference, n-gram and relay drafts and the drafter mix are reached only by
+their tests and two measurement tools (`tools/glm5_next_spec_replay.c`,
+`tools/spec_relay_probe.c`); the engine drafts through its own lookup and
+the bridge and verifies trees itself, while `TECHDEBT.md` still plans
+multi-drafter composition over the seam. About 3,200 lines and as many of
+tests wait for that decision. The release kit's `qualify` step activates
+each model on a fresh lane and a fresh API, so it never restarts an API
+under a serving lane; that check belongs there
+(`tools/release_capture.py` takes a list of prompts for it) and needs a
+production window to try.
 
 Found while deleting, and left: the committed static deployments
 `deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry

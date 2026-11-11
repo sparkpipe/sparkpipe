@@ -41,7 +41,7 @@ The two sources that pay first cost nothing new:
   `tools/spec_offline/block_drafter.py` scores 64 candidates; today
   `tools/block_draftd.py` emits only the argmax chain. The DFT3 protocol
   already carries trees (`SparkDraftBridgeNode.parent_index`, up to 32 deep
-  and 4096 nodes), and `SparkDraftBridgeProposeTree` already receives them;
+  and 4096 nodes), and `SparkDraftBridgeReply` already receives them;
   the engine cuts at the first node whose parent is not the previous row
   (`SparkModelBatchPlanModelDraft`).
 

@@ -89,7 +89,21 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the 5090.
   `10.10.250.2:7701`, the hub's 10 GbE link to sparkf (`eno1`). The 100G
   link it used until 2026-10-23 no longer reaches a Spark.
 - **Clients:** the K3 API (`~/k3-kv-api`, `draft_server` in its
-  `model_resident.json`) asks `127.0.0.1:7702` over DFT3.
+  `model_resident.json`) asks `127.0.0.1:7702` over DFT3. The API's engine
+  asks without waiting on the socket: it sends the request when a decode
+  frame's plan wants a model draft (one or two decoding lanes, no lookup
+  match of 8 or more, the request not backed off), leaves that frame
+  unbuilt, and plans it again when the answer is in. One request is
+  outstanding at a time, so two lanes are asked one after the other. While
+  the frame waits, the engine still takes completions, admits and cancels
+  requests and dispatches prefill, release and publication work. The ask
+  ends with a failure after the lane's `wait_ms` plus 100 ms (200 ms more
+  when the connection has to be opened first); the frame then decodes
+  without model drafts and the request backs off 8 tokens, doubling. A
+  request that is cancelled or fails while it waits has its ask dropped with
+  the connection, and the next ask reconnects. `batch_step` reports each
+  frame's wait as `draft_wait_ms`; `batch_speculation` reports the mean as
+  `wait_ms` and the dropped asks as `abandoned`.
 - **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
   `DRAFTD-TIMING` every 32 requests (queue, wait, compute, apply and total
   ms) and `DRAFTD-STATS` every 256 requests.
