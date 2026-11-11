@@ -177,13 +177,14 @@ kernel void spark_indexer_score_pooled(constant SparkIndexerParams &p [[buffer(0
 	device const ushort *head_weight [[buffer(2)]], device const ushort *pool [[buffer(3)]], device const uint *page_table [[buffer(4)]],
 	device const uint *sequence_of_row [[buffer(5)]], device const uint *row_positions [[buffer(6)]], device float *scores [[buffer(7)]],
 	device atomic_uint *error [[buffer(8)]], device const float *ape [[buffer(9)]], uint2 group [[threadgroup_position_in_grid]],
-	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
+	uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]], uint lane [[thread_index_in_simdgroup]],
 	uint simd [[simdgroup_index_in_threadgroup]], uint simds [[simdgroups_per_threadgroup]])
 {
+	const uint threads = group_size.x;
 	threadgroup float pool_key[SPARK_INDEXER_KERNEL_MAX_DIM];
 	threadgroup float scratch[32];
 	threadgroup ulong slots[SPARK_INDEXER_KERNEL_MAX_RATIO];
-	threadgroup uint failed;
+	threadgroup uint failed[1];
 	const uint row = group.y, pooled = group.x, ratio = max(p.key_ratio, 1u);
 	if ( row >= p.rows || pooled >= p.score_stride )
 		return;
@@ -196,17 +197,17 @@ kernel void spark_indexer_score_pooled(constant SparkIndexerParams &p [[buffer(0
 	}
 	if ( tid == 0u )
 	{
-		failed = 0u;
+		failed[0] = 0u;
 		for ( uint i = 0u; i < ratio; i++ )
 		{
 			ulong offset = 0ul;
 			if ( !SparkIndexerSlot(p, page_table, sequence_of_row[row], pooled * ratio + i, error, row, offset) )
-				failed = 1u;
+				failed[0] = 1u;
 			slots[i] = offset;
 		}
 	}
 	threadgroup_barrier(mem_flags::mem_threadgroup);
-	if ( failed != 0u )
+	if ( failed[0] != 0u )
 	{
 		if ( tid == 0u )
 			*score = -INFINITY;
