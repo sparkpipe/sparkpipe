@@ -4831,35 +4831,44 @@ static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 	}
 }
 
+static void SparkModelBatchObserveSession(SparkModelBatchEngine *engine)
+{
+	const uint64_t session_fingerprint = SparkModelPipelineClientSessionFingerprint(engine->pipeline);
+	SparkStatus status;
+	if ( engine->observed_control_generation == 0u )
+		engine->observed_control_generation = session_fingerprint;
+	if ( session_fingerprint == engine->observed_control_generation )
+		return;
+	status = SparkModelBatchInvalidateEngineSession(engine);
+	if ( status != SPARK_STATUS_OK )
+	{
+		if ( engine->failed_status == SPARK_STATUS_OK )
+			fprintf(stderr,"batch engine session changed %llu -> %llu with %u submissions in flight; the engine fails\n",
+				(unsigned long long)engine->observed_control_generation,
+				(unsigned long long)session_fingerprint,
+				engine->inflight_submission_count);
+		SparkModelBatchSetFailed(engine,status);
+		return;
+	}
+	fprintf(stderr,"batch engine session changed %llu -> %llu; resident bindings and pipeline transactions invalidated\n",
+		(unsigned long long)engine->observed_control_generation,
+		(unsigned long long)session_fingerprint);
+	engine->observed_control_generation = session_fingerprint;
+}
+
 SparkStatus SparkModelBatchEngineProgress(
 	SparkModelBatchEngine *engine,
 	uint32_t maximum_new_submission_count)
 {
 	SparkStatus status;
 	uint32_t bypass_counts[5],dispatched,kind,misses,rotation,step;
-	uint64_t session_fingerprint;
 	if ( engine == 0 || maximum_new_submission_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	engine->next_progress_ns = 0u;
 	engine->decode_held = 0u;
 	SparkModelBatchCollectDraft(engine);
 	(void)SparkModelPipelineClientRecover(engine->pipeline);
-	session_fingerprint = SparkModelPipelineClientSessionFingerprint(engine->pipeline);
-	if ( engine->observed_control_generation == 0u )
-		engine->observed_control_generation = session_fingerprint;
-	if ( session_fingerprint != engine->observed_control_generation )
-	{
-		fprintf(stderr,"batch engine session changed %llu -> %llu; resident bindings and pipeline transactions invalidated\n",
-			(unsigned long long)engine->observed_control_generation,
-			(unsigned long long)session_fingerprint);
-		status = SparkModelBatchInvalidateEngineSession(engine);
-		if ( status != SPARK_STATUS_OK )
-		{
-			SparkModelBatchSetFailed(engine,status);
-			SPARK_RETURN(status);
-		}
-		engine->observed_control_generation = session_fingerprint;
-	}
+	SparkModelBatchObserveSession(engine);
 	status = SparkModelPipelineClientProgress(engine->pipeline,engine->maximum_messages_per_rank);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -4870,6 +4879,7 @@ SparkStatus SparkModelBatchEngineProgress(
 		}
 		SPARK_RETURN(status);
 	}
+	SparkModelBatchObserveSession(engine);
 	if ( engine->failed_status != SPARK_STATUS_OK )
 	{
 		if ( engine->failed_status != SPARK_STATUS_IO_ERROR )

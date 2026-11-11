@@ -1950,6 +1950,32 @@ static void TestScenarioStalePrefixTerminates(const SparkModelResidentDeployment
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioRankReturnsDuringProgress(const SparkModelResidentDeployment *deployment, const char *runtime_root)
+{
+	TestBatchState state;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnect(deployment,&state,runtime_root);
+	if ( engine == 0 )
+		return;
+	TestSubmit(engine,1u,500u,3u);
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientKill(1u);
+	TestDrive(engine,20u);
+	CHECK( state.total_terminals == 0u,
+		"session: a dead rank holds the request without failing it");
+	MockResidentClientReviveAfter(1u,1u);
+	TestDriveUntilTerminal(engine,&state,1u,2000u);
+	CHECK( state.completed_events[1] == 1u && state.error_events[1] == 0u,
+		"session: a rank that returns during the engine's own pipeline progress starts a new session before anything is dispatched, and the request completes");
+	CHECK( SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.failed_status == SPARK_STATUS_OK,
+		"session: the engine is not failed after the rank returned");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRankKilledAndRevived(const SparkModelResidentDeployment *deployment, const char *runtime_root)
 {
 	TestBatchState state;
@@ -4237,6 +4263,7 @@ int main(void)
 	TestScenarioDeploymentPositionLimit(&deployment,runtime_root);
 	TestScenarioRankDiesMidDecode(&deployment,runtime_root);
 	TestScenarioRankKilledAndRevived(&deployment,runtime_root);
+	TestScenarioRankReturnsDuringProgress(&deployment,runtime_root);
 	TestScenarioCachedPrefixSessionReset(&deployment,runtime_root);
 	TestScenarioPrefixIndexSurvivesRestart(&deployment,runtime_root);
 	TestScenarioPeerPrefixIndex(&deployment,runtime_root);

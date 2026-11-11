@@ -56,6 +56,7 @@ void MockResidentClientDisconnect(uint32_t stage_index);
 void MockResidentClientDeliverStatus(uint32_t stage_index, const SparkModelServingAdapterSnapshot *snapshot);
 void MockResidentClientKill(uint32_t stage_index);
 void MockResidentClientRevive(uint32_t stage_index);
+void MockResidentClientReviveAfter(uint32_t stage_index, uint32_t failed_attempts);
 void MockResidentClientSetAutoTokens(uint32_t count);
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt);
 void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t positions);

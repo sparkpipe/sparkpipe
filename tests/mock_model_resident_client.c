@@ -62,6 +62,7 @@ struct SparkModelResidentClient
 	uint32_t failed;
 	uint32_t detected;
 	uint32_t stay_dead;
+	uint32_t revive_countdown;
 	uint64_t client_generation;
 	SparkModelResidentSubmitResultFunction submit_result_function;
 	void *submit_result_context;
@@ -424,6 +425,7 @@ void MockResidentClientKill(uint32_t stage_index)
 		c->connected = 0u;
 		c->detected = 0u;
 		c->stay_dead = 1u;
+		c->revive_countdown = 0u;
 		MockResidentClientDropInflight(c);
 	}
 }
@@ -433,6 +435,13 @@ void MockResidentClientRevive(uint32_t stage_index)
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	if ( c != 0 )
 		c->stay_dead = 0u;
+}
+
+void MockResidentClientReviveAfter(uint32_t stage_index, uint32_t failed_attempts)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c != 0 )
+		c->revive_countdown = failed_attempts + 1u;
 }
 
 void MockResidentClientReset(void)
@@ -479,7 +488,11 @@ static SparkStatus MockResidentClientEnsureConnected(SparkModelResidentClient *c
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	if ( c->stay_dead != 0u )
-		return(SPARK_STATUS_IO_ERROR);
+	{
+		if ( c->revive_countdown == 0u || --c->revive_countdown != 0u )
+			return(SPARK_STATUS_IO_ERROR);
+		c->stay_dead = 0u;
+	}
 	c->connected = 1u;
 	c->detected = 0u;
 	c->client_generation++;
