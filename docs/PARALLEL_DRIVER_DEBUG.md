@@ -183,7 +183,7 @@ its node's weightd, acquires one mesh lane, creates the device collective on
 that lane exactly as a serving rank does and times graph-captured rounds.
 
 ```sh
-build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB]
+build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB [PREFETCH]]
 ```
 
 `RANK_MAP` lists the physical mesh rank of each TP rank, comma separated, as a
@@ -193,8 +193,14 @@ serving process holds. `WORK_KIB` puts a memory-bound kernel in front of every
 round: round `r` reads its own `WORK_KIB` window of a private buffer, so a
 launch reads `ROUNDS x WORK_KIB` cold, as a decode step reads its weights.
 With it the result shows how long each rank waits for the slowest one, round
-by round. These are collective component measurements, not serving
-throughput.
+by round. `PREFETCH` 1 registers each window with the weight prefetch, as a
+decode graph's GEMVs register their weights, so the wait in front of a window
+prefetches it; 0 or absent leaves every read cold. On the sixteen Sparks on
+2026-11-11, `1 1 5120 128 32` (a 5,120-value all-reduce, 128 rounds a
+launch) took 25.8 us a round alone (19.6 waiting for the fifteen peers), 156
+us with `WORK_KIB` 26624 and no prefetch (122 reading, 28 waiting) and 139
+to 141 with the prefetch. These are collective component measurements, not
+serving throughput.
 
 ## GLM firmware build for development and PR testing
 

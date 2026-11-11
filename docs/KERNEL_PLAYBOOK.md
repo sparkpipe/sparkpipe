@@ -708,10 +708,40 @@ that disagrees on it fails to build. The consumers are:
 
 ## 2.7 Dependent launch around mesh waits (`spark_tp_mesh_kernels.cuh`)
 
-A mesh round runs publish, then arrival (one warp spinning on the peers'
-tails while it prefetches the next weights), then combine. The combine is
-the arrival's programmatic dependent, and it waits on the tails itself
-(`own_wait`).
+A mesh round runs publish, then arrival, then combine. The arrival is one
+block: its first warp spins on the peers' tails, and when the kernels after
+the round registered weights (`LmWeightPrefetchNote`), a second warp
+prefetches them. The combine is the arrival's programmatic dependent, and it
+waits on the tails itself (`own_wait`).
+
+- **The prefetch warp does not poll, and the polling warp does not
+  prefetch.** `cp.async.bulk.prefetch.L2` blocks while memory is busy: one
+  thread issues 12 MiB in 16 KiB pieces in about 39 us whether one, 8 or 32
+  threads share the work. Issued from the polling warp, eight pieces a poll,
+  it paced the prefetch by the poll loop and slowed the poll. The second warp
+  runs straight through the group, up to `LM_WEIGHT_PREFETCH_BUDGET_BYTES`
+  (12 MiB), whether or not the peers have landed.
+  - Measured on a GB10 (2026-11-11): a cold 26 MiB read takes about 120 us
+    (225 to 230 GB/s). After a prefetch of its first N MiB the read is
+    shorter by the time the prefetch took, up to about 20 MiB, which is what
+    the cache holds; all 26 MiB cached read in 36 us. Hints for pieces of
+    256 KiB or more load little or nothing.
+  - A prefetch only pays in time when memory would otherwise be idle. Hints
+    for a kernel's own data inside that kernel do not make its cold read
+    faster, and hints for the next round's weights issued during the current
+    round's read are evicted by it and cost their full time: the round bench
+    went from 156 to 189-240 us a round.
+  - The whole group, not as much as the wait allows: a rank whose peers
+    landed before it began to wait has no wait to fill, and with a
+    wait-bounded prefetch it stays the slowest rank round after round while
+    the others wait for it with their caches full.
+    `tp_mesh_hardware_probe --prefetch` holds one rank back and checks that
+    it still reaches the end of its group.
+  - Measured with `mesh_round_bench` on the sixteen Sparks, a 5,120-value
+    all-reduce after a cold 26 MiB read every round: 156 us a round with no
+    prefetch, 146 to 151 with the prefetch on the polling warp, 139 to 141
+    with it on its own warp. Budgets of 8 to 20 MiB and 8 to 224 prefetch
+    threads stayed within 138 to 148 us.
 
 - **A spinning kernel releases its dependents only when they are small.**
   A released dependent becomes resident at once and spins in its own wait.

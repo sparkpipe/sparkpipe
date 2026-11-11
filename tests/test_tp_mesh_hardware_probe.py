@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gpu_test_runner import ROOT, built_binary  # noqa: E402
 
 MODES = ("--run", "--peer-reduce", "--reduce-scatter", "--pipelined", "--all-to-all", "--pair-first", "--pair-first-gather", "--pair-first-boundary",
-         "--pair-allreduce")
+         "--pair-allreduce", "--prefetch")
 
 
 def main():

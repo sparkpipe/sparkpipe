@@ -308,15 +308,16 @@ struct Probe
         }
         return static_cast<double>(Now()-begin)/1e6;
     }
+    void LaunchRank(uint32_t rank,bool graph)
+    {
+        uint64_t begin=Now();
+        if (graph) CUDA(cudaGraphLaunch(ranks[rank].executable,ranks[rank].stream));else Enqueue(rank);
+        CUDA(cudaEventRecord(ranks[rank].done,ranks[rank].stream));enqueue_ns[rank]=Now()-begin;
+    }
     void Launch(bool graph)
     {
         launch_count++;
-        for (uint32_t rank=0u;rank<degree;rank++)
-        {
-            uint64_t begin=Now();
-            if (graph) CUDA(cudaGraphLaunch(ranks[rank].executable,ranks[rank].stream));else Enqueue(rank);
-            CUDA(cudaEventRecord(ranks[rank].done,ranks[rank].stream));enqueue_ns[rank]=Now()-begin;
-        }
+        for (uint32_t rank=0u;rank<degree;rank++) LaunchRank(rank,graph);
     }
     bool Done()
     {
@@ -730,6 +731,62 @@ struct Probe
         Setup(4u,1u,2u,513u,2u,true);Data(13u);StartWorker();begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
         completed_cases++;std::puts("PASS missing peer times out with output untouched, drains and recovers same executable");
     }
+    void PrefetchCapture(std::vector<LmWeightPrefetchPlan> &plans,std::vector<uint8_t *> &weights,uint64_t bytes)
+    {
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            plans[rank]={};plans[rank].host=static_cast<LmWeightPrefetchGroup *>(std::calloc(4u,sizeof(LmWeightPrefetchGroup)));REQUIRE(plans[rank].host!=nullptr);
+            CUDA(cudaMalloc(reinterpret_cast<void **>(&plans[rank].device),4u*sizeof(LmWeightPrefetchGroup)));plans[rank].capacity=4u;
+            CUDA(cudaMalloc(reinterpret_cast<void **>(&weights[rank]),bytes));
+            CUDA(cudaStreamSynchronize(ranks[rank].stream));
+            LmWeightPrefetchArm(&plans[rank],ranks[rank].stream);
+            CUDA(cudaStreamBeginCapture(ranks[rank].stream,cudaStreamCaptureModeThreadLocal));
+            Enqueue(rank);LmWeightPrefetchNote(ranks[rank].stream,weights[rank],bytes);
+            CUDA(cudaStreamEndCapture(ranks[rank].stream,&ranks[rank].graph));
+            CUDA(LmWeightPrefetchDisarm(&plans[rank],1u));
+            CUDA(cudaGraphInstantiate(&ranks[rank].executable,ranks[rank].graph,nullptr,nullptr,0u));
+            REQUIRE(plans[rank].groups==1u && plans[rank].dropped==0u && plans[rank].host[0].count==1u && plans[rank].host[0].total==bytes);
+        }
+    }
+    void PrefetchReached(std::vector<LmWeightPrefetchPlan> &plans,uint64_t bytes)
+    {
+        const uint64_t extent=(bytes+LM_WEIGHT_PREFETCH_PIECE_BYTES-1u)&~static_cast<uint64_t>(LM_WEIGHT_PREFETCH_PIECE_BYTES-1u);
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            LmWeightPrefetchGroup group={};CUDA(cudaMemcpy(&group,plans[rank].device,sizeof(group),cudaMemcpyDeviceToHost));
+            if (group.progress!=extent)
+            {
+                std::fprintf(stderr,"FAIL prefetch rank=%u reached %llu of %llu bytes\n",rank,(unsigned long long)group.progress,(unsigned long long)extent);
+                std::exit(1);
+            }
+            group.progress=0u;CUDA(cudaMemcpy(plans[rank].device,&group,sizeof(group),cudaMemcpyHostToDevice));
+        }
+    }
+    void PrefetchFree(std::vector<LmWeightPrefetchPlan> &plans,std::vector<uint8_t *> &weights)
+    {
+        for (uint32_t rank=0u;rank<degree;rank++) { CUDA(cudaFree(weights[rank]));CUDA(cudaFree(plans[rank].device));std::free(plans[rank].host); }
+    }
+    void Prefetch()
+    {
+        std::vector<LmWeightPrefetchPlan> plans(4u);std::vector<uint8_t *> weights(4u,nullptr);
+        Setup(4u,1u,1u,513u,3u);Data(30u);PrefetchCapture(plans,weights,99984u);
+        for (uint32_t replay=0u;replay<2u;replay++)
+        {
+            if (replay!=0u) { Setup(4u,1u,1u,513u,3u,true);Data(31u); }
+            StartWorker();uint64_t begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
+            PrefetchReached(plans,99984u);
+        }
+        PrefetchFree(plans,weights);
+        completed_cases++;std::puts("PASS a graph's mesh waits prefetch the weights registered after them to the end of their group on every replay, and the sums stay exact");
+        Setup(4u,1u,1u,513u,1u);Data(32u);PrefetchCapture(plans,weights,UINT64_C(4)<<20);
+        StartWorker();uint64_t begin=Now(),shipped_before=transfers.load();launch_count++;
+        for (uint32_t rank=0u;rank+1u<degree;rank++) LaunchRank(rank,true);
+        while (transfers.load()<shipped_before+degree-1u) REQUIRE(Now()-begin<UINT64_C(10000000000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        LaunchRank(degree-1u,true);Wait(begin);Verify();EndWorker();
+        PrefetchReached(plans,UINT64_C(4)<<20);PrefetchFree(plans,weights);
+        completed_cases++;std::puts("PASS a rank whose peers had all landed before its wait began still prefetches its whole group");
+    }
     void Timings()
     {
         Setup(16u,1u,1u,257u,91u);Data(20u);double construction=Capture();StartWorker();
@@ -761,9 +818,9 @@ int main(int argc,char **argv)
 {
     if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0 && std::strcmp(argv[1],"--reduce-scatter")!=0 &&
         std::strcmp(argv[1],"--pipelined")!=0 && std::strcmp(argv[1],"--pair-first")!=0 && std::strcmp(argv[1],"--pair-first-gather")!=0 &&
-        std::strcmp(argv[1],"--pair-allreduce")!=0 && std::strcmp(argv[1],"--pair-first-boundary")!=0))
+        std::strcmp(argv[1],"--pair-allreduce")!=0 && std::strcmp(argv[1],"--pair-first-boundary")!=0 && std::strcmp(argv[1],"--prefetch")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-allreduce | --pair-first-boundary\n",argv[0]);
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-allreduce | --pair-first-boundary | --prefetch\n",argv[0]);
         return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
@@ -779,6 +836,12 @@ int main(int argc,char **argv)
         return 2;
     }
     Probe probe;
+    if (std::strcmp(argv[1],"--prefetch")==0)
+    {
+        probe.Prefetch();
+        std::printf("PASS tp_mesh_hardware_probe prefetch cases=%u\n",probe.completed_cases);
+        return 0;
+    }
     if (std::strcmp(argv[1],"--pipelined")==0)
     {
         probe.Pipelined();
