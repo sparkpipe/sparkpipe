@@ -785,7 +785,7 @@ roofline, from lines the lane already writes. It runs nothing on the lane.
 
 ```sh
 tools/roofline_meter.py --api-log API.log [--rank-log RANK.log ...]
-    [--node-gb-per-token GB] [--read-gb-s 243] [--label TEXT] [--json]
+    [--node-gb-per-token GB] [--read-gb-s 243] [--rounds-per-step N] [--label TEXT] [--json]
 ```
 
 - From the API log it reads every `batch_step` line (the engine prints one for
@@ -794,9 +794,14 @@ tools/roofline_meter.py --api-log API.log [--rank-log RANK.log ...]
   time, host time (wall minus service), the gap since the request's previous
   frame and the draft wait.
 - From each rank log it reads `STAGE-STEP-TIMING` (the step and its time in
-  collectives: peer wait, source wait, copy and combine, and the rounds
-  counted in steps that did not replay a graph), `STAGE-CHAIN-HOST` and
-  `STAGE-WAVE-HOST` (the rank's host time around a chain and a prefill wave).
+  collectives: peer wait, source wait, copy and combine), `STAGE-CHAIN-HOST`
+  and `STAGE-WAVE-HOST` (the rank's host time around a chain and a prefill
+  wave).
+- `--rounds-per-step` is the number of collective rounds one decode step
+  issues, from the model's schedule (two all-reduces a layer for most
+  families); with it the report states the peer wait a round. The timing
+  line's own round counts include prefill waves, so the meter does not use
+  them.
 - `--node-gb-per-token` is what one node reads for one decode pass: a dense
   rank's weights without the embedding table (the `WD-SPINE-PRIVATE bytes=`
   line of its log is an upper bound), or the spine plus the active experts.

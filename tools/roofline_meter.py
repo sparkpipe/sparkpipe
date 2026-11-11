@@ -44,8 +44,7 @@ def read_rank(lines) -> dict:
         values = pairs(line)
         try:
             if line.startswith("STAGE-STEP-TIMING "):
-                result["windows"].append({name: number(values, name) for name in
-                                          ("steps", "graph_steps", "pair_allreduce", "allreduce", "submit_us", "source_wait_us", "peer_wait_us", "copy_us", "combine_us")})
+                result["windows"].append({name: number(values, name) for name in ("steps", "submit_us", "source_wait_us", "peer_wait_us", "copy_us", "combine_us")})
             elif line.startswith("STAGE-CHAIN-HOST "):
                 result["chains"].append({name: number(values, name) for name in ("chains", "mean_steps", "admit_ms", "submit_ms", "capture_ms", "sync_ms", "finish_ms")})
             elif line.startswith("STAGE-WAVE-HOST "):
@@ -60,14 +59,11 @@ def weighted(rows: list, weight: str, name: str) -> float:
     return sum(row[name] * row[weight] for row in rows) / total if total else 0.0
 
 
-def rank_step(ranks: list) -> dict | None:
+def rank_step(ranks: list, rounds: float | None) -> dict | None:
     windows = [window for rank in ranks for window in rank["windows"] if window["steps"] > 0]
     if not windows:
         return None
     step = {name: weighted(windows, "steps", name) / 1000.0 for name in ("submit_us", "source_wait_us", "peer_wait_us", "copy_us", "combine_us")}
-    eager = sum(window["steps"] - window["graph_steps"] for window in windows)
-    sums = sum(window["pair_allreduce"] + window["allreduce"] for window in windows)
-    rounds = sums / eager if eager > 0 and sums > 0 else None
     return {"steps": int(sum(window["steps"] for window in windows)), "windows": len(windows), "step_ms": step["submit_us"],
             "peer_wait_ms": step["peer_wait_us"], "source_wait_ms": step["source_wait_us"], "copy_ms": step["copy_us"], "combine_ms": step["combine_us"],
             "collective_ms": step["peer_wait_us"] + step["source_wait_us"] + step["copy_us"] + step["combine_us"],
@@ -106,8 +102,8 @@ def frame_kind(kind: str, frames: list) -> dict:
     return entry
 
 
-def summarize(api: dict, ranks: list, node_gb: float | None, read_gb_s: float) -> dict:
-    summary: dict = {"kinds": {kind: frame_kind(kind, frames) for kind, frames in sorted(api.items())}, "rank_step": rank_step(ranks),
+def summarize(api: dict, ranks: list, node_gb: float | None, read_gb_s: float, rounds: float | None = None) -> dict:
+    summary: dict = {"kinds": {kind: frame_kind(kind, frames) for kind, frames in sorted(api.items())}, "rank_step": rank_step(ranks, rounds),
                      "rank_chain_host": rank_host(ranks, "chains", "chains"), "rank_wave_host": rank_host(ranks, "waves", "prefill_waves"),
                      "ranks": len(ranks), "read_gb_s": read_gb_s, "node_gb_per_token": node_gb}
     floor = 1000.0 * node_gb / read_gb_s if node_gb else None
@@ -149,7 +145,7 @@ def render(summary: dict, label: str) -> list:
                      f"{entry['service_ms']:11.2f} {entry['host_ms']:8.2f} {entry['gap_ms']:7.2f} {entry['draft_wait_ms']:9.2f} {entry['context']:8.0f}")
     step = summary["rank_step"]
     if step is not None:
-        rounds = (f" over about {step['rounds_per_step']:.0f} rounds, {step['peer_wait_us_per_round']:.1f} us a round" if step["rounds_per_step"] else "")
+        rounds = (f" over {step['rounds_per_step']:.0f} rounds, {step['peer_wait_us_per_round']:.1f} us a round" if step["rounds_per_step"] else "")
         lines.append(f"rank step ({summary['ranks']} rank logs, {step['steps']} steps of every kind): {step['step_ms']:.2f} ms, {100.0 * summary['collective_share']:.0f}% in collectives: "
                      f"{step['peer_wait_ms']:.2f} peer wait{rounds} + {step['source_wait_ms']:.2f} source wait + {step['copy_ms']:.2f} copy + {step['combine_ms']:.2f} combine")
     for name, title in (("rank_chain_host", "rank host per chain"), ("rank_wave_host", "rank host per prefill wave")):
@@ -182,6 +178,7 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--rank-log", action="append", default=[])
     parser.add_argument("--node-gb-per-token", type=float, help="bytes one node reads for one decode step, in GB; without it no roofline is stated")
     parser.add_argument("--read-gb-s", type=float, help="a node's measured streaming read rate; default: the registry's")
+    parser.add_argument("--rounds-per-step", type=float, help="collective rounds one decode step issues, from the model's schedule; gives the peer wait a round")
     parser.add_argument("--label", default="lane")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -190,6 +187,8 @@ def main(argv: list | None = None) -> int:
     read_gb_s = args.read_gb_s if args.read_gb_s is not None else json.loads(REGISTRY.read_text())["peak_read_gb_s"]
     if read_gb_s <= 0.0:
         parser.error("--read-gb-s must be positive")
+    if args.rounds_per_step is not None and args.rounds_per_step <= 0.0:
+        parser.error("--rounds-per-step must be positive")
     with open(args.api_log, errors="replace") as handle:
         api = read_api(handle)
     if not api:
@@ -199,7 +198,7 @@ def main(argv: list | None = None) -> int:
     for path in args.rank_log:
         with open(path, errors="replace") as handle:
             ranks.append(read_rank(handle))
-    summary = summarize(api, ranks, args.node_gb_per_token, read_gb_s)
+    summary = summarize(api, ranks, args.node_gb_per_token, read_gb_s, args.rounds_per_step)
     print(json.dumps(summary, indent=1) if args.json else "\n".join(render(summary, args.label)))
     return 0
 

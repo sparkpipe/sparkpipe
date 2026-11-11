@@ -591,18 +591,21 @@ decode chain takes 22.2 ms a token, 60% of the roofline, of which 7.4 ms
 and wire; a single step with logprobs takes 28.3 ms, 47%, with 1.0 ms of
 host; a verify frame yields 16.8 tokens in 53.1 ms, 4.2 times the one-token
 roofline. The ranks spend 34% of a step in collectives: 7.2 ms of peer wait
-over about 208 rounds, 35 us a round. So on this lane the collective plan
-(rounds a layer, and the time of a round) is worth five times everything
-the host protocol costs, and the commit round trips (2.5) are within that
-2 to 3%.
+over the 128 all-reduces of the model's 64 layers, 57 us a round. This
+family already issues two rounds a layer, so its gain is in the time of a
+round (the publish fused into the producing kernel, the wait into the
+consumer's prologue, and the skew between ranks), which is worth five times
+everything the host protocol costs; the commit round trips (2.5) are within
+that 2 to 3%.
 
 Still open, by what the meter says each is worth on a decode step:
 
 - Step 3, the second half, and then the collective plan from the schedule:
   the runner's sequence-boundary split of a multi-sequence wave, GLM 5.3
   Full's wave chunking and DSV4.1's tail rows in the runner, K3's dispatch
-  loop; then two rounds a layer with the publish in the producing kernel and
-  the wait in the consumer's prologue. A third of the step is here.
+  loop; then two rounds a layer where a family issues more, with the publish
+  in the producing kernel and the wait in the consumer's prologue. A third
+  of the step is here.
 - Step 5: streamed prefill as a schedule backend, for the families whose
   prefill is bound by the wire.
 - Step 6: placement as deployment data.

@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
                     + "STAGE-STEP-TIMING rank=9 steps=64 graph_steps=62\n")
     empty.write_text("nothing here\n")
 
-    result = run("--api-log", str(api), "--rank-log", str(rank), "--node-gb-per-token", "3.4", "--read-gb-s", "243", "--json")
+    result = run("--api-log", str(api), "--rank-log", str(rank), "--node-gb-per-token", "3.4", "--read-gb-s", "243", "--rounds-per-step", "128", "--json")
     check(result.returncode == 0, "the meter reads an API log and a rank log")
     summary = json.loads(result.stdout)
     floor = 1000.0 * 3.4 / 243.0
@@ -55,8 +55,8 @@ with tempfile.TemporaryDirectory() as directory:
     rank_step = summary["rank_step"]
     check(rank_step["steps"] == 128 and close(rank_step["step_ms"], 24.0) and close(rank_step["collective_ms"], 8.8) and close(summary["collective_share"], 8.8 / 24.0),
           "the rank step and its share in collectives come from the timing windows; a window without its fields is ignored")
-    check(close(rank_step["rounds_per_step"], 258.0) and close(rank_step["peer_wait_us_per_round"], 8000.0 / 258.0),
-          "rounds a step are the sums counted in the steps that did not replay a graph")
+    check(close(rank_step["rounds_per_step"], 128.0) and close(rank_step["peer_wait_us_per_round"], 8000.0 / 128.0),
+          "the peer wait a round is the step's peer wait over the rounds the caller names")
     single = kinds["single"]["decomposition"]
     check(close(single["total_ms"], 26.1) and close(single["floor_ms"], floor) and close(single["collective_ms"], 25.0 * 8.8 / 24.0)
           and close(single["rank_other_ms"], 25.0 - floor - 25.0 * 8.8 / 24.0) and close(single["host_ms"], 1.0) and close(single["gap_ms"], 0.1),
@@ -72,12 +72,14 @@ with tempfile.TemporaryDirectory() as directory:
     check("decomposition" not in kinds["prefill"] and close(kinds["prefill"]["tokens_per_second"], 1000.0 * 1000.0 / 705.0), "prefill reports its rate and no decode split")
     check(close(summary["rank_chain_host"]["outside_submit_ms"], 0.36) and summary["rank_wave_host"]["frames"] == 16, "the rank's host time around a chain and a prefill wave is reported")
 
-    text = run("--api-log", str(api), "--rank-log", str(rank), "--node-gb-per-token", "3.4", "--read-gb-s", "243", "--label", "test lane")
-    check(text.returncode == 0 and text.stdout.startswith("roofline meter: test lane\n") and "over about 258 rounds, 31.0 us a round" in text.stdout
+    text = run("--api-log", str(api), "--rank-log", str(rank), "--node-gb-per-token", "3.4", "--read-gb-s", "243", "--rounds-per-step", "128", "--label", "test lane")
+    check(text.returncode == 0 and text.stdout.startswith("roofline meter: test lane\n") and "over 128 rounds, 62.5 us a round" in text.stdout
           and "chain: 20.27 ms a pass for 1.00 tokens" in text.stdout and "69% of the one-token roofline" in text.stdout
           and "1 frames that waited behind other work left out" in text.stdout, "the text report names the rounds, the chain's pass and its share of the roofline")
 
     plain = json.loads(run("--api-log", str(api), "--json").stdout)
+    unrounded = json.loads(run("--api-log", str(api), "--rank-log", str(rank), "--json").stdout)
+    check(unrounded["rank_step"]["rounds_per_step"] is None and unrounded["rank_step"]["peer_wait_us_per_round"] is None, "without the rounds no wait a round is stated")
     check(plain["floor_ms"] is None and plain["rank_step"] is None and "of_roofline" not in plain["kinds"]["single"]
           and close(plain["kinds"]["single"]["decomposition"]["service_ms"], 25.0), "without a rank log and the node's bytes the split is service, host and gap")
     missing = run("--api-log", str(empty))
