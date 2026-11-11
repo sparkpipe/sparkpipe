@@ -2,9 +2,11 @@
 #include "sparkpipe/spark_error_site.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_draft_bridge.h"
 
 #define SPARK_SPECULATION_SEAM_EMPTY_SEQUENCE_ID UINT64_MAX
@@ -269,6 +271,45 @@ static SparkStatus SparkSpeculationSeamExtractChain(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkSpeculationSeamAwaitReply(
+    SparkDraftBridge *bridge,
+    SparkDraftBridgeNode *nodes,
+    uint32_t *node_count,
+    SparkDraftBridgeProposalInfo *proposal_info)
+{
+    struct pollfd descriptor;
+    SparkStatus status;
+    uint64_t deadline_ns;
+    uint64_t now_ns;
+    uint32_t events;
+    int fd;
+
+    for (;;)
+    {
+        status = SparkDraftBridgeReply(bridge, nodes, node_count, proposal_info);
+        if (status != SPARK_STATUS_PENDING)
+        {
+            return status;
+        }
+        if (SparkDraftBridgePoll(bridge, &fd, &events, &deadline_ns) == 0u ||
+            fd < 0)
+        {
+            continue;
+        }
+        now_ns = SparkMonotonicNs();
+        memset(&descriptor, 0, sizeof(descriptor));
+        descriptor.fd = fd;
+        descriptor.events = (short)(
+            ((events & SPARK_DRAFT_BRIDGE_POLL_READ) != 0u ? POLLIN : 0) |
+            ((events & SPARK_DRAFT_BRIDGE_POLL_WRITE) != 0u ? POLLOUT : 0));
+        (void)poll(
+            &descriptor,
+            1u,
+            deadline_ns > now_ns ?
+                (int)((deadline_ns - now_ns) / UINT64_C(1000000)) + 1 : 0);
+    }
+}
+
 static SparkStatus SparkSpeculationSeamDraftCallback(
     void *context,
     const SparkSpeculationPolicyDraftRequest *request,
@@ -313,7 +354,7 @@ static SparkStatus SparkSpeculationSeamDraftCallback(
         depth = SPARK_DRAFT_BRIDGE_MAX_DEPTH;
     }
     node_count = 0u;
-    status = SparkDraftBridgeProposeTree(
+    status = SparkDraftBridgeRequestTree(
         seam->bridge,
         wire_source_mask,
         request->sequence_id,
@@ -328,10 +369,15 @@ static SparkStatus SparkSpeculationSeamDraftCallback(
         seam->draft_time_budget_ms,
         seam->draft_max_depth,
         0,
-        seam->nodes,
-        seam->draft_max_node_count,
-        &node_count,
-        &proposal_info);
+        seam->draft_max_node_count);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkSpeculationSeamAwaitReply(
+            seam->bridge,
+            seam->nodes,
+            &node_count,
+            &proposal_info);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;

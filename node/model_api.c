@@ -581,11 +581,11 @@ static int api_poll_timeout(uint32_t busy)
 
 static void api_poll_engine(uint32_t busy)
 {
-	SparkModelResidentClientPollDescriptor fds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
-	struct pollfd pfds[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u];
+	SparkModelResidentClientPollDescriptor fds[SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS];
+	struct pollfd pfds[SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS + 1u];
 	uint32_t count = 0u,index;
 	SparkStatus status;
-	status = SparkModelBatchEngineGetPollDescriptors(S.engine,fds,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&count);
+	status = SparkModelBatchEngineGetPollDescriptors(S.engine,fds,SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS,&count);
 	if ( status != SPARK_STATUS_OK )
 	{
 		api_logf("worker poll descriptors failed status=%u",(unsigned)status);

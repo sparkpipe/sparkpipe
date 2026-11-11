@@ -818,9 +818,13 @@ SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientPollDescriptor *descriptor)
 {
-	(void)client;
-	(void)descriptor;
-	return(SPARK_STATUS_UNSUPPORTED);
+	if ( client == 0 || descriptor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(descriptor,0,sizeof(*descriptor));
+	descriptor->abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
+	descriptor->descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_POLL_DESCRIPTOR_BYTES;
+	descriptor->fd = -1;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelResidentClientGetView(
