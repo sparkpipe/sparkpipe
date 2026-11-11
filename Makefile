@@ -787,6 +787,7 @@ PYTHON_TESTS := \
 	tests/test_spark_pack_common_extents.py \
 	tests/test_spark_pack_core.py \
 	tests/test_host_turn_bench.py \
+	tests/test_draft_replay_server.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \

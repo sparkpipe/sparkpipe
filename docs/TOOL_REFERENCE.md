@@ -780,6 +780,44 @@ and the element passes.
 
 ## Other tools
 
+### draft_replay_server.py (tools/)
+
+A DFT3 draft server with no drafter model and no GPU, for gating the batch
+engine's model drafts on a lane that has no drafter. Every draft request
+carries the request's committed tokens. The server keeps, per sampling rule
+(seed, inverse temperature, nucleus, top-k), the longest token stream it has
+been shown. A request whose committed tokens begin a kept stream gets the
+stream's next tokens as one draft chain, at most the request's depth and node
+capacity; any other request gets the anchor alone, which the engine declines
+without backing the request off. A deterministic stream therefore drafts
+perfectly the second time it runs.
+
+```sh
+tools/draft_replay_server.py --port PORT [--host 127.0.0.1] [--delay-ms MS] [--confidence 0.9]
+    [--wrong-every N] [--silent-every N] [--streams 256] [--report-every 64]
+```
+
+Point the API's `draft_server` block at the port (`depth` and `wait_ms` as the
+lane's drafter would have them), run the same requests twice and compare both
+runs with a run that has no draft server: the tokens must be equal, and the
+second run's `batch_speculation` line shows model frames and kept drafts.
+
+- `--delay-ms` holds every reply, to stand in for the drafter's latency.
+- `--wrong-every N` flips the low bit of every Nth draft token, so frames
+  reject drafts.
+- `--silent-every N` leaves every Nth request unanswered until the client
+  closes the connection, so the engine's time limit (the lane's `wait_ms`
+  plus 100 ms) is reached.
+- `--port 0` takes a free port; the first output line,
+  `DRAFT-REPLAY-READY host:port ...`, names it.
+
+It serves one connection at a time, as the drafters do, and prints
+`DRAFT-REPLAY requests= drafted= draft_tokens= unknown= bad= silent= streams=`
+every `--report-every` requests and when a connection closes. A request with
+another magic closes its connection; one whose anchor is not its last
+committed token, or that names no source, is answered with status 1.
+`tests/test_draft_replay_server.py` covers it.
+
 ### host_turn_bench.c (tests/)
 
 Measures what the host spends per frame on the serving path, with no GPU. The
