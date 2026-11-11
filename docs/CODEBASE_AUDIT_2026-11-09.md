@@ -565,6 +565,24 @@ while each prompt's speculating run verifies 23 to 146 model drafts in two
 to five frames and a 32 to 48 token reply takes 0.31-0.39 s instead of
 0.69-1.07 s.
 
+The rank restart exposed one more defect on the build host, in the
+loopback fuzz and not on the lane: a request hung when a stopped rank was
+killed and restarted under it. The pipeline publishes a new session inside
+its progress call, when every rank is connected again; the engine compared
+the session once per pass, before that call. When the last rank came back
+during the engine's own pipeline progress, the engine dispatched in the
+same pass with the bindings of the ended session, then found the new
+session with a submission in flight, refused to invalidate and returned
+before pipeline progress on every later pass. The engine now compares the
+session after pipeline progress too, and a comparison that ever finds
+submissions in flight fails the engine once and keeps the pipeline
+progressing. `TestScenarioRankReturnsDuringProgress` reproduces the order
+with the mock client and fails without the change. The pushed head
+`3a1cff2da` passed the gate again on a fresh lane: seven of seven prompts
+on every path against the gated build, two of two after an API restart,
+three of three after each of two rank restarts, two session changes with
+nothing in flight (`qualification/fleet-gate-20261111/`).
+
 Still open, in the order above:
 
 - Step 2, the collective half: the two-phase commit's round trips (2.5).
