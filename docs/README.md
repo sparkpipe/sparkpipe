@@ -97,8 +97,8 @@ current authority.
   speculation as built: the batch engine's draft planning, lookup and draft
   model sources, the frame cost model, the draft bridge, control, the
   guarantee and direction.
-- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
-  (fleet hub, model APIs, draft farm, drafter store).
+- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub
+  (release hub, model APIs, draft farm, drafter store).
 - [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
   frames over the production path: node table, slot and position split,
   ancestor attention, path-form `keep_rows`, composition, phases and gates.
@@ -119,6 +119,9 @@ current authority.
   and OOM recovery (PXE, then the brickproof controller).
 - [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
   each item exists, and the procedure for replacing or adding a node.
+- [`NODE_BRINGUP.md`](NODE_BRINGUP.md): a new node from its factory image to
+  the baseline: first contact over rail 2, keys and sudo, headless, the first
+  upgrade, the burn-in, and what went wrong on spark10.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
@@ -130,9 +133,6 @@ current authority.
 - [`SERVING_RELEASE_RECOVERY_20260924.md`](SERVING_RELEASE_RECOVERY_20260924.md):
   reproducing the `shared-serving-20260922` release (dated record; its
   replay needs an operator maintenance window).
-- [`operations/managed-driver-station.md`](operations/managed-driver-station.md):
-  the 2026-09-24 managed driver station layout (dated record; the fleet now
-  serves GLM 5.3 Flash under fleet-agent, see the runbook).
 
 ## Changing status
 

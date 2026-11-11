@@ -208,7 +208,9 @@ async def run(tmp):
             model = frontend.models["open"]
 
             def keyed(key):
-                return {"public_key": key, "engine_body": {"prompt_token_ids": prompt}, "public_cached": frontend.public_prefix_ledger(key, model).seen(prompt)[0]}
+                scope = frontend.scope_of(key, {})
+                return {"public_key": key, "public_scope": scope, "engine_body": {"prompt_token_ids": prompt},
+                        "public_cached": frontend.public_prefix_ledger(scope, model).seen(prompt)[0]}
             check(frontend.usage_block(engine_usage, 256, {})["prompt_tokens_details"]["cached_tokens"] == 192, "an internal request reports the engine's cached tokens")
             check(frontend.usage_block(engine_usage, 256, keyed(entry))["prompt_tokens_details"]["cached_tokens"] == 0,
                   "a key reports no cached tokens for a prefix only someone else sent")

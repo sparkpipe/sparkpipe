@@ -1398,26 +1398,26 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Fleet-hours
 
-Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, the checkout and account pages `site/buy.html`, `site/account.html` and `site/market.html`, the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) and the market `tools/sparkpipe_market.py` (`docs/FLEET_BOOKINGS.md`). They open email accounts, record the acceptance of the Customer Agreement, take card, stablecoin and SWIFT payments, issue HC in a hash-chained ledger, book Hours, Weeks and the waitlist, and email receipts.
 
 - **Measure gateway_capacity on the VPS and set it.** The gateway now refuses to start without `SPARKPIPE_GATEWAY_CAPACITY`, and neither `/etc/sparkpipe-pay/env` nor the sandbox's env has it yet. Measure it with `tools/gateway_capacity_check.py` against the sandbox on the VPS (`docs/PAYMENTS.md`, before the systemctl commands) and set both files before this release is deployed, or the live gateway stops at its next restart. Until it is measured, holders' share of the gateway (`docs/FLEET_API.md` §17) is only as good as the number written there.
 
-- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
-- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
+- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Customer Agreement is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses; changing the account email.
+- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
 - **Ledger.** The payment service's `ledger.jsonl` chains every order, invoice, payment and issue of hours. Still missing: reservations, displacement, credits and consumption in it, a published daily root and per-customer proofs. Until consumption is recorded, the 168- and 720-hour holding limits count every unexpired hour issued. Balances must come only from replaying it.
-- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
+- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry.
 - **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
 - **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
 - **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
 - **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
-- **Korean site.** The checkout, account and two-year pages (`site/buy.html`, `account.html`, `two-year.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
+- **Korean site.** The checkout and account pages (`site/buy.html`, `account.html`, `market.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
   - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
-  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
-  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain;
   - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
   - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
-- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
+- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## SparkPipe Chat
 
@@ -1500,6 +1500,20 @@ and the multidev docs on 2026-09-28. Line numbers are in
   setup of every lane, `release_compare` EXACT on every model against the
   linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
   and an audit with no `LINK` line.
+- Awaiting the owner's first prune (lane `tools/node-pack-prune`):
+  `tools/node_pack_prune.py` lists every file under a node's `sparkdata`
+  that no lane record, swap command, live config, agent root or keep-list
+  entry (`deployment/sparkdata_keep.json`) uses, and `--delete` removes them
+  on the owner's order, refusing open and recently modified entries and
+  every entry on a node that lacks a file a record names. The lead's
+  2026-11-02 dry run (`prune_packs.sh`) found 643 to 725 GB per node. Until
+  the DeepSeek V4.1 Flash pack directory step of `lanes/direct-pack-paths`
+  runs, every node lacks the engram files the record names, so the tool
+  reports them `MISSING` and deletes nothing there; the engram shards still
+  sit in `dsv41flash-1017.mxfp4.tp16` and would otherwise look unused. The
+  open-file check sees only the processes of the user that runs it, and
+  the nodes' `~/KEEP` files are not read: the repository's keep list
+  replaces them.
 - Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
   weight file or a configuration (`tests/test_no_weight_links.py` holds the
   tree to it; the only link sites left are the CUDA toolkit alias in
@@ -2093,8 +2107,8 @@ Metal backend and the single-Studio stage are in
   format per model, and the resumable request moves with its cache.
 - Run PP2 across hardware classes once routes waiting on transport input can
   be cancelled when a peer rank fails.
-- Measure each bridge when the Studios arrive: Studio 10GbE into the fabric;
-  IP over Thunderbolt from a Studio to the RTX 5090 host, on that host's
+- Measure each bridge on a Studio pool: Studio 10GbE into the fabric;
+  IP over Thunderbolt from a Studio to the hub, on that host's
   controller; the host's ConnectX-6 into the CRS804. Record the winners as
   named link classes in the deployment JSON.
 - Stand up reference nodes for every hardware combination the provider

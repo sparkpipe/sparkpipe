@@ -16,6 +16,7 @@ import queue
 import re
 import secrets
 import select
+import shlex
 import smtplib
 import socket
 import ssl
@@ -39,7 +40,9 @@ KRW = "KRW"
 CENT = Decimal("0.01")
 WON = Decimal("1")
 LEDGER_IDS = ("order", "invoice", "lot", "key", "ref", "booking", "job")
-TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md"}
+OWNER_LINES = ("order", "invoice", "invoice_failed", "invoice_state", "toss_state", "toss_payment", "swift_state", "payment", "refund", "tax_invoice", "hc_issued")
+OWNER_FIELDS = ("ip", "agent")
+TERMS = {"ko": "agreement-ko.md", "en": "agreement-en.md", "dpa_ko": "dpa-ko.md", "dpa_en": "dpa-en.md"}
 EVENTS = ["invoicePending", "invoicePaid", "invoiceCompleted", "invoiceCancelled", "invoiceTimedOut"]
 OPEN = {"unpaid", "pending", "paid"}
 CLOSED = {"cancelled", "timedout", "deleted", "failed"}
@@ -91,8 +94,9 @@ AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start",
            "/market/buy": ("hc.bought", ("lot", "hc", "order")), "/market/keys": ("key.created", ("id", "member", "scopes", "fleet")), "/market/keys/revoke": ("key.revoked", ("id",)),
            "/market/keys/rotate": ("key.rotated", ("id", "replaces")), "/market/sessions/revoke": ("session.revoked", ("id",)), "key_create": ("key.created", ("id", "member", "scopes", "fleet")),
            "key_revoke": ("key.revoked", ("id",)), "key_rotate": ("key.rotated", ("id", "replaces")), "webhook_put": ("webhook.set", ("id", "events")), "webhook_delete": ("webhook.deleted", ("id",))}
-LIMITS = {"code": (20, 600), "code-email": (5, 3600), "verify": (30, 600), "order": (10, 600), "read": (240, 600), "market": (240, 600), "gateway": (6000, 600)}
+LIMITS = {"code": (20, 600), "code-email-ip": (5, 3600), "code-email": (30, 3600), "invite": (20, 86400), "invite-email": (3, 86400), "verify": (30, 600), "order": (10, 600), "read": (240, 600), "market": (240, 600), "gateway": (6000, 600)}
 BODY_LIMIT = 32 * 1024 * 1024
+ORDER_HC_DIGITS = 9
 REPORT_LIMIT = 4 * 1024 * 1024
 ACCOUNT_LIMIT = 65536
 BEARER = "sps-"
@@ -230,16 +234,16 @@ def verified(cfg, headers, raw, now):
 
 
 def session_token(key, account, expires):
-    body = f"{account}.{expires}"
+    body = f"{account}.{expires}.{secrets.token_hex(16)}"
     return body + "." + hmac.new(key, body.encode(), hashlib.sha256).hexdigest()
 
 
 def session_account(key, token, now):
     parts = token.split(".") if isinstance(token, str) else []
-    if len(parts) != 3 or not parts[1].isdigit() or int(parts[1]) < now:
+    if len(parts) != 4 or not parts[1].isdigit() or int(parts[1]) < now:
         return None
-    good = hmac.new(key, f"{parts[0]}.{parts[1]}".encode(), hashlib.sha256).hexdigest()
-    return parts[0] if hmac.compare_digest(good.encode(), parts[2].encode()) else None
+    good = hmac.new(key, ".".join(parts[:3]).encode(), hashlib.sha256).hexdigest()
+    return parts[0] if hmac.compare_digest(good.encode(), parts[3].encode()) else None
 
 
 def code_digest(email, code):
@@ -544,7 +548,7 @@ class Book:
 
     def refresh(self):
         with self.lock:
-            if os.path.exists(self.path):
+            if os.path.exists(self.path) and os.path.getsize(self.path) != self.offset:
                 with open(self.path, "rb") as handle:
                     fcntl.flock(handle, fcntl.LOCK_SH)
                     self.catch_up(handle)
@@ -1069,6 +1073,9 @@ class Uptime:
             closed = [span for span in self.recent if span["end"] >= market.stamp(since)]
             return closed + [dict(entry["open"], end=None) for entry in self.state.values() if entry.get("open")]
 
+    def periods(self, since):
+        return market.joined(self.spans(since), timedelta(seconds=self.app.cfg.health_seconds))
+
     def entry(self, fleet):
         return self.state.get(fleet)
 
@@ -1135,7 +1142,9 @@ def won_field(value):
 
 def quantity_field(value, least):
     text = str(value).strip() if isinstance(value, (int, float, str)) and not isinstance(value, bool) else ""
-    if not re.fullmatch(r"[0-9]{1,9}(\.[0-9]{1,6})?", text) or Decimal(text) < least:
+    if re.fullmatch(rf"[0-9]{{{ORDER_HC_DIGITS + 1},}}(\.[0-9]{{1,6}})?", text):
+        raise Refusal(f"One order buys up to {ORDER_HC_DIGITS * '9'} HC; place another order for more.")
+    if not re.fullmatch(rf"[0-9]{{1,{ORDER_HC_DIGITS}}}(\.[0-9]{{1,6}})?", text) or Decimal(text) < least:
         raise Refusal(f"Buy at least {least} HC, to at most six decimal places.")
     return Decimal(text)
 
@@ -1154,9 +1163,11 @@ def coin_field(value):
 
 
 def statement(cfg, company, terms):
-    return (f"For {company}, I accept the SparkPipe Customer Agreement and confirm that {company} buys and uses SparkPipe for business, professional, commercial or independent research and development purposes, not as a household consumer. "
+    return (f"For {company}, I accept the SparkPipe Customer Agreement, with the Data Processing Agreement it incorporates, and confirm that {company} buys and uses SparkPipe for business, professional, commercial or independent research and development purposes, not as a household consumer. "
             f"Customer Agreement, Korean text, which prevails: SHA-256 {terms['ko']} ({cfg.public}/terms/agreement-ko.md). "
-            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md).")
+            f"English text: SHA-256 {terms['en']} ({cfg.public}/terms/agreement-en.md). "
+            f"Data Processing Agreement, Korean text, which prevails: SHA-256 {terms['dpa_ko']} ({cfg.public}/terms/dpa-ko.md). "
+            f"English text: SHA-256 {terms['dpa_en']} ({cfg.public}/terms/dpa-en.md).")
 
 
 def invoice_body(cfg, quote):
@@ -1290,6 +1301,12 @@ class App:
                 raise Refusal(text, 429, "busy")
             hits.append(now)
 
+    def forget_hits(self):
+        oldest = time.monotonic() - max(window for _, window in LIMITS.values())
+        with self.lock:
+            for key in [key for key, hits in self.hits.items() if not hits or hits[-1] < oldest]:
+                del self.hits[key]
+
     def throttle_gateway(self, account):
         holder, rented = self.market.gateway_share(account)
         if not holder:
@@ -1352,7 +1369,7 @@ class App:
     def require_terms(self, account, body, ip, agent):
         if not self.accepted(account, self.current_terms()):
             if body.get("accept") is not True:
-                raise Refusal("The Customer Agreement has changed since you accepted it. Accept the current text to continue.", 409, "terms")
+                raise Refusal("The Customer Agreement or its Data Processing Agreement has changed since you accepted them. Read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html, and accept the current texts to continue.", 409, "terms")
             self.accept(account, ip, agent)
 
     def resolve(self, subject):
@@ -1367,11 +1384,27 @@ class App:
         token = credential(headers)
         if token.startswith(BEARER):
             return self.bearer_actor(token)
-        jar = {}
+        cookie = self.cookie_value(headers)
+        record = self.sessions.get(market.key_digest(cookie)) if cookie else None
+        if record and record.get("revoked"):
+            return None
+        return self.resolve(session_account(self.key, cookie, int(clock().timestamp())))
+
+    def cookie_value(self, headers):
         for part in (headers.get("Cookie") or "").split(";"):
             name, _, value = part.strip().partition("=")
-            jar[name] = value
-        return self.resolve(session_account(self.key, jar.get(COOKIE), int(clock().timestamp())))
+            if name == COOKIE:
+                return value
+        return ""
+
+    def cookie_record(self, token, account, member, agent):
+        expires = datetime.fromtimestamp(int(token.split(".")[1]), timezone.utc)
+        return {"session": new_id("SE"), "account": account, "member": member, "device": agent[:100] or None, "cookie": True, "created": market.stamp(clock()), "expires": market.stamp(expires)}
+
+    def open_cookie(self, account, member, agent):
+        token = session_token(self.key, member, int(clock().timestamp()) + SESSION_SECONDS)
+        self.sessions.put(market.key_digest(token), self.cookie_record(token, account, member, agent))
+        return token
 
     def bearer_actor(self, token):
         record = self.sessions.get(market.key_digest(token))
@@ -1387,20 +1420,30 @@ class App:
         self.sessions.put(market.key_digest(token), {"session": new_id("SE"), "account": account, "member": member, "device": device, "created": market.stamp(now), "expires": expires})
         return token, expires
 
+    def end_cookie(self, ident, record):
+        with self.sessions.lock:
+            self.sessions.put(ident, dict(self.sessions.get(ident) or record, revoked=True))
+
     def sign_out(self, headers):
         token, found = credential(headers), self.actor(headers)
         if token.startswith(BEARER):
             self.sessions.drop(market.key_digest(token))
+        elif found:
+            cookie = self.cookie_value(headers)
+            self.end_cookie(market.key_digest(cookie), self.cookie_record(cookie, found[0], found[1], ""))
         if found:
             self.audit(found[0], found[1], "session.sign_out", {"via": "bearer" if token.startswith(BEARER) else "cookie"})
         return {"ok": True}
 
     def revoke_session(self, actor, found):
         account, member, role = actor
-        ident, _ = self.sessions.find(lambda record: record["session"] == found and record["account"] == account and (role == "owner" or record.get("member", account) == member))
+        ident, record = self.sessions.find(lambda record: record["session"] == found and record["account"] == account and not record.get("revoked") and (role == "owner" or record.get("member", account) == member))
         if not ident:
             raise Refusal("No active session with that id on this account.", 404)
-        self.sessions.drop(ident)
+        if record.get("cookie"):
+            self.end_cookie(ident, record)
+        else:
+            self.sessions.drop(ident)
         return {"id": found, "revoked": True}
 
     def require_role(self, actor, roles, what):
@@ -1413,8 +1456,8 @@ class App:
 
     def sessions_of(self, actor):
         now, (account, member, role) = clock(), actor
-        return sorted(({"id": r["session"], "member": r.get("member", account), "device": r["device"], "created": r["created"], "expires": r["expires"]} for r in self.sessions.values()
-                       if r["account"] == account and (role == "owner" or r.get("member", account) == member) and stamp_time(r["expires"]) > now), key=lambda r: (r["created"], r["id"]))
+        return sorted(({"id": r["session"], "member": r.get("member", account), "device": r["device"], "via": "cookie" if r.get("cookie") else "bearer", "created": r["created"], "expires": r["expires"]} for r in self.sessions.values()
+                       if r["account"] == account and not r.get("revoked") and (role == "owner" or r.get("member", account) == member) and stamp_time(r["expires"]) > now), key=lambda r: (r["created"], r["id"]))
 
     def principal(self, headers, ip, scope):
         token = credential(headers)
@@ -1446,14 +1489,15 @@ class App:
     def hooks_of(self, account):
         return sorted((w for w in self.hooks.values() if w["account"] == account), key=lambda w: w["webhook"])
 
-    def hook_view(self, hook):
+    def hook_view(self, hook, role="owner"):
         found = {"id": hook["webhook"], "events": hook["events"], "slack": hook["slack"], "created": hook["now"]}
         if hook["kind"] == "email":
             return dict(found, email=self.book.accounts[hook["account"]]["email"], always=list(market.REQUIRED_EMAIL))
-        return dict(found, url=hook["target"], hint=hook["hint"])
+        parts = urllib.parse.urlsplit(hook["target"])
+        return dict(found, url=hook["target"] if role in ("owner", "admin") else f"{parts.scheme}://{parts.netloc}/…", hint=hook["hint"])
 
-    def webhooks(self, account):
-        mine = [self.hook_view(w) for w in self.hooks_of(account)]
+    def webhooks(self, account, role):
+        mine = [self.hook_view(w, role) for w in self.hooks_of(account)]
         email = [] if any("email" in w for w in mine) else [{"email": self.book.accounts[account]["email"], "events": list(market.EMAIL_EVENTS), "always": list(market.REQUIRED_EMAIL), "default": True}]
         return {"object": "list", "data": mine + email, "events": list(market.EVENTS), "emailAlways": list(market.REQUIRED_EMAIL)}
 
@@ -1618,7 +1662,7 @@ class App:
             "key_create": lambda: self.market.create_key(account, body, member, role),
             "key_revoke": lambda: self.market.revoke_key(account, match.group(1), member, role),
             "key_rotate": lambda: self.market.rotate_key(account, match.group(1), member, role),
-            "webhooks": lambda: self.webhooks(account),
+            "webhooks": lambda: self.webhooks(account, role),
             "webhook_put": lambda: self.webhook_put(account, body),
             "webhook_delete": lambda: self.webhook_delete(account, match.group(1)),
             "members": lambda: self.members(account),
@@ -1626,7 +1670,8 @@ class App:
             "member_delete": lambda: self.member_delete(actor, match.group(1)),
             "audit": lambda: self.audit_list(account, query),
         }
-        if action in ACCOUNT_ROLES:
+        leaving = action == "member_delete" and match.group(1) == member
+        if action in ACCOUNT_ROLES and not leaving:
             self.require_role(actor, *ACCOUNT_ROLES[action])
         found = calls[action]()
         if action in AUDITED:
@@ -1639,10 +1684,13 @@ class App:
             raise Refusal("Sign in to continue.", 401)
         return found
 
-    def need_owner(self, headers, roles, what):
+    def need_role(self, headers, roles, what):
         found = self.need_actor(headers)
         self.require_role(found, roles, what)
-        return found[0]
+        return found
+
+    def need_owner(self, headers, roles, what):
+        return self.need_role(headers, roles, what)[0]
 
     def erase_records(self, account, by, note):
         now = self.market.now()
@@ -1652,7 +1700,7 @@ class App:
         self.audit(account, by, "records.erased", {"records": count, "through": line["data"]["through"]})
         self.mail(self.cfg.notify, f"Erase the hub's request records of {account} within 30 days",
                   f"{self.who(account)} had the records of its requests deleted on the VPS ({note[:200]}): {count} records up to {line['data']['through']}. "
-                  f"DPA clause 9.3 gives us 30 days for the hub's records too. On each hub, as the chat layer's user: python3 chat_frontend.py --config chat_frontend.json --erase-records {account} --note \"{note[:100]}\"")
+                  f"DPA clause 9.3 gives us 30 days for the hub's records too. On the hub, as the chat layer's user in ~/sparkpipe-chat: python3 chat_frontend.py --config config.json --erase-records {account} --note {shlex.quote(note[:100])}")
         self.mail(self.book.accounts[account]["email"], "SparkPipe deleted the records of your requests",
                   f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)} (Data Processing Agreement clause 9.3). "
                   f"Your bookings, payments and HC, which the law has us keep, are unchanged. Records of requests made from now on are kept for a year as before.{FOOTER}")
@@ -1687,8 +1735,12 @@ class App:
             other = self.pending_invite(email)
             if current or email in self.book.emails or (other and other["account"] != account):
                 raise Refusal("That email already belongs to a SparkPipe account or has a pending invitation from one.", 409, "email_taken")
+            if other and other["role"] == role:
+                return next(m for m in self.members(account)["data"] if m["id"] == other["invite"])
             if not other and len(self.members(account)["data"]) > MEMBERS_PER_ACCOUNT:
                 raise Refusal(f"An account has at most {MEMBERS_PER_ACCOUNT} members and invitations.", 409, "too_many")
+            self.throttle("invite", account)
+            self.throttle("invite-email", email)
             now = self.market.now()
             invite = {"invite": new_id("IV"), "account": account, "email": email, "role": role, "by": member, "expires": market.stamp(now + timedelta(days=INVITE_DAYS)), "now": market.stamp(now)}
             self.book.append("member_invite", invite)
@@ -1712,7 +1764,7 @@ class App:
                 for record in [r for r in self.book.market.keys.values() if r["member"] == ident and not r["revoked"]]:
                     self.book.append("api_key_revoke", {"key": record["key"]})
                 self.sessions.keep(lambda record: record.get("member") != ident)
-                self.audit(account, member, "member.removed", {"member": ident, "email": found["email"]})
+                self.audit(account, member, "member.left" if ident == member else "member.removed", {"member": ident, "email": found["email"]})
             elif invite and invite["account"] == account and invite["state"] == "invited":
                 self.book.append("member_remove", {"account": account, "invite": ident, "by": member})
                 self.audit(account, member, "member.invite_cancelled", {"invite": ident, "email": invite["email"]})
@@ -1723,13 +1775,19 @@ class App:
     def send_code(self, body, ip):
         self.throttle("code", ip)
         email = email_field(body.get("email"))
+        self.throttle("code-email-ip", (email, ip))
         self.throttle("code-email", email)
-        code = f"{secrets.randbelow(1000000):06d}"
         with self.lock:
             now = time.monotonic()
             for key in [k for k, v in self.codes.items() if v["expires"] < now]:
                 del self.codes[key]
-            self.codes[email] = {"hash": code_digest(email, code), "expires": now + CODE_SECONDS, "tries": 0}
+            entry = self.codes.get(email)
+            if entry and entry["tries"] < CODE_TRIES:
+                code = entry["code"]
+                entry["expires"] = now + CODE_SECONDS
+            else:
+                code = f"{secrets.randbelow(1000000):06d}"
+                self.codes[email] = {"code": code, "hash": code_digest(email, code), "expires": now + CODE_SECONDS, "tries": 0}
         if self.cfg.sandbox:
             return {"sent": False, "code": code}
         try:
@@ -1753,7 +1811,7 @@ class App:
             self.audit(account, member, "session.sign_in", {"via": "bearer", "device": device})
             return dict(summary, session=session, sessionExpires=expires), None
         self.audit(account, member, "session.sign_in", {"via": "cookie"})
-        return summary, session_token(self.key, subject, int(clock().timestamp()) + SESSION_SECONDS)
+        return summary, self.open_cookie(account, subject, agent)
 
     def check_code(self, body, ip, agent):
         self.throttle("verify", ip)
@@ -1765,30 +1823,36 @@ class App:
             good = bool(entry) and entry["expires"] >= time.monotonic() and entry["tries"] < CODE_TRIES and CODE.match(code) is not None and hmac.compare_digest(entry["hash"], code_digest(email, code))
             if entry and not good:
                 entry["tries"] += 1
-            if good:
-                del self.codes[email]
         if not good:
             raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
         with self.book.lock:
             account, member = self.book.emails.get(email), self.book.member_emails.get(email)
             invite = None if account or member else self.pending_invite(email)
+            opening = not account and not member and (bool(body.get("company")) or not invite)
+            if opening:
+                if not body.get("company"):
+                    raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
+                company = text_field(body.get("company"), "company's legal name, or your full name", 200)
+                if body.get("accept") is not True:
+                    raise Refusal("Accept the Customer Agreement and its Data Processing Agreement to open an account.", 409, "terms")
+            with self.lock:
+                if self.codes.get(email) is not entry:
+                    raise Refusal("That code is wrong or has expired. Ask for a new one.", 403)
+                del self.codes[email]
             if member:
                 return self.summary(self.resolve(member)), member
-            if invite:
+            if invite and not opening:
                 member = new_id("MB")
                 self.book.append("member", {"member": member, "account": invite["account"], "email": email, "role": invite["role"], "invite": invite["invite"]})
                 self.audit(invite["account"], member, "member.joined", {"member": member, "email": email, "role": invite["role"]})
                 self.mail(self.book.accounts[invite["account"]]["email"], f"{email} joined your SparkPipe account", f"{email} accepted your invitation and joined {self.book.accounts[invite['account']]['company']} as {invite['role']}. Members and their roles: {self.cfg.public}/market.html")
                 return self.summary(self.resolve(member)), member
-            if not account:
-                if not body.get("company"):
-                    raise Refusal("No account uses this email yet. Add your company's name to open one.", 404, "new")
-                company = text_field(body.get("company"), "company's legal name, or your full name", 200)
-                if body.get("accept") is not True:
-                    raise Refusal("Accept the Customer Agreement to open an account.", 409, "terms")
+            if opening:
                 account = new_id("AC")
                 self.book.append("account", {"account": account, "email": email, "company": company, "ip": ip, "agent": agent})
                 self.accept(account, ip, agent)
+                if invite:
+                    self.book.append("member_remove", {"account": invite["account"], "invite": invite["invite"], "by": "invitee", "declined": True})
                 self.mail(self.cfg.notify, f"New SparkPipe account: {company}", f"{company} <{email}> opened account {account}.")
                 log(f"account {account} opened")
             elif body.get("accept") is True and not self.accepted(account, self.current_terms()):
@@ -1874,10 +1938,11 @@ class App:
         shown["checkout"] = order["link"] if order["state"] in ("unpaid", "pending") else None
         return shown
 
-    def status(self, order_id):
+    def status(self, order_id, headers):
+        account = self.need_owner(headers, ("owner",), "Orders and payments")
         with self.book.lock:
             order = self.book.orders.get(order_id)
-            if not order:
+            if not order or order["account"] != account:
                 raise Refusal("No such order.", 404)
             return self.shown(order)
 
@@ -1932,7 +1997,8 @@ class App:
             return sandbox[path]()
         raise Refusal("Not found.", 404)
 
-    def ledger(self, account):
+    def ledger(self, actor):
+        account, _, role = actor
         lines, mine = [], {account}
         with self.book.lock:
             if os.path.exists(self.book.path):
@@ -1942,9 +2008,12 @@ class App:
                         data = line["data"]
                         ids = {data[name] for name in LEDGER_IDS if isinstance(data.get(name), str)}
                         if ("account" in data and data["account"] == account) or ("account" not in data and ids & mine):
-                            lines.append(line)
                             mine |= ids
-            return {"head": self.book.head, "count": self.book.count, "lines": lines}
+                            if role == "owner":
+                                lines.append(line)
+                            elif line["type"] not in OWNER_LINES:
+                                lines.append(dict(line, data={name: value for name, value in data.items() if name not in OWNER_FIELDS}))
+            return {"head": self.book.head, "count": self.book.count, "lines": lines, "complete": role == "owner"}
 
     def webhook(self, headers, raw):
         if not verified(self.cfg, headers, raw, clock()):
@@ -2115,12 +2184,11 @@ class App:
                 return self.back(order_id)
             if order["issued"] or order["state"] != "created" or order.get("payment_key") not in (None, key):
                 return self.back(order_id)
-            if amount != text_won(order["total"]):
-                self.book.append("toss_state", {"order": order_id, "state": "failed", "reason": "amount"})
-                log(f"order {order_id}: Toss Payments authorised {amount[:20]!r} KRW for an order of {order['total']} KRW; not confirmed")
-                return self.back(order_id)
-            if not order.get("payment_key"):
+            mismatch = amount != text_won(order["total"])
+            if not mismatch and not order.get("payment_key"):
                 self.book.append("toss_payment", {"order": order_id, "paymentKey": key})
+        if mismatch:
+            return self.toss_mismatch(order_id, key)
         reason = None
         try:
             remote = toss_call(self.cfg, "POST", "/v1/payments/confirm", {"paymentKey": key, "orderId": order_id, "amount": int(order["total"])}, "confirm-" + order_id)
@@ -2136,6 +2204,19 @@ class App:
             log(f"order {order_id}: confirm: {error}")
             return self.back(order_id)
         self.toss_apply(order_id, remote, reason)
+        return self.back(order_id)
+
+    def toss_mismatch(self, order_id, key):
+        try:
+            remote = toss_payment(self.cfg, key)
+        except (Declined, urllib.error.URLError, OSError, ValueError) as error:
+            log(f"order {order_id}: a success redirect with another amount and a payment key Toss Payments does not report: {error}")
+            return self.back(order_id)
+        with self.book.lock:
+            order = self.book.orders[order_id]
+            if remote.get("orderId") == order_id and str(remote.get("totalAmount")) != text_won(order["total"]) and order["state"] == "created" and not order["issued"]:
+                self.book.append("toss_state", {"order": order_id, "state": "failed", "reason": "amount"})
+                log(f"order {order_id}: Toss Payments authorised {remote.get('totalAmount')!r} KRW for an order of {order['total']} KRW; not confirmed")
         return self.back(order_id)
 
     def toss_fail(self, order_id, query):
@@ -2253,28 +2334,28 @@ class App:
 
     def refund(self, order_id, clause, amount, reason, account=None):
         order = self.book.orders.get(order_id)
-        swift = bool(order) and order.get("processor") == "swift"
-        if not order or not order["issued"] or not (swift or (order.get("processor") == "toss" and order.get("payment_key"))):
-            raise Refusal(f"{order_id} is not a Toss Payments or SWIFT payment that issued HC.")
+        manual = bool(order) and order.get("processor", "coinpayments") in ("swift", "coinpayments")
+        if not order or not order["issued"] or not (manual or (order.get("processor") == "toss" and order.get("payment_key"))):
+            raise Refusal(f"{order_id} is not a payment that issued HC.")
         if clause not in REFUND_CLAUSES or not reason:
             raise Refusal("Name the clause of the Customer Agreement that allows the refund (" + ", ".join(REFUND_CLAUSES) + ") and the reason.")
-        currency, unit, shown = (order["currency"], CENT, text_money) if swift else (KRW, WON, text_won)
-        remote = None if swift else toss_payment(self.cfg, order["payment_key"])
+        currency, unit, shown = (order.get("currency", "USD"), CENT, text_money) if manual else (KRW, WON, text_won)
+        remote = None if manual else toss_payment(self.cfg, order["payment_key"])
         if remote is not None and remote.get("orderId") != order_id:
             raise Refusal(f"Toss Payments does not report {order_id} for this payment key.")
-        balance = Decimal(order["received"]) - Decimal(order.get("refunded") or "0") if swift else Decimal(str(remote.get("balanceAmount") or 0))
-        amount = balance if amount == "all" else usd_field(amount) if swift else won_field(amount)
+        balance = Decimal(order["received"]) - Decimal(order.get("refunded") or "0") if manual else Decimal(str(remote.get("balanceAmount") or 0))
+        amount = balance if amount == "all" else usd_field(amount) if manual else won_field(amount)
         if not 0 < amount <= balance:
-            raise Refusal(f"Refund from {amount_text(unit, currency)} to {amount_text(balance, currency)}, what is left of this payment" + ("." if swift else " at Toss Payments."))
+            raise Refusal(f"Refund from {amount_text(unit, currency)} to {amount_text(balance, currency)}, what is left of this payment" + ("." if manual else " at Toss Payments."))
         if clause == "16.4" and amount > self.lapse_due(order_id):
             raise Refusal(f"Clause 16.4 refunds locked HC that lapsed: {amount_text(max(self.lapse_due(order_id), Decimal(0)), currency)} of this order is due.")
-        excess = Decimal(order["received"]) - Decimal(order["total"]) - sum((Decimal(r["amount"]) for r in order["refunds"] if r["clause"] == "3.5"), Decimal(0)) if swift else Decimal(0)
-        if swift and clause == "3.5" and amount > excess:
+        excess = Decimal(order["received"]) - Decimal(order["total"]) - sum((Decimal(r["amount"]) for r in order["refunds"] if r["clause"] == "3.5"), Decimal(0)) if manual else Decimal(0)
+        if manual and clause == "3.5" and amount > excess:
             raise Refusal(f"Clause 3.5 returns what arrived above the invoice total: {amount_text(max(excess, Decimal(0)), currency)} of this order is left to return.")
         if remote is not None and remote.get("method") == "가상계좌" and not account:
             raise Refusal("A virtual account payment is refunded to a bank account: give the bank code, the account number and the holder's name.")
         debit, lot, moment = Decimal(0), None, market.stamp(self.market.now())
-        if clause not in ("3.2", "16.4") and not (swift and clause == "3.5"):
+        if clause not in ("3.2", "16.4") and not (manual and clause == "3.5"):
             debit = (Decimal(order["hc"]) * amount / Decimal(order["total"])).quantize(market.HC_STEP, rounding=ROUND_CEILING)
             lot = next((found for found in self.book.market.lots[order["account"]] if found["ref"] == order_id and found["expires"] > moment), None)
             left = lot["hc"] if lot else Decimal(0)
@@ -2282,7 +2363,7 @@ class App:
                 most = (left * Decimal(order["total"]) / Decimal(order["hc"])).quantize(unit, rounding=ROUND_DOWN)
                 raise Refusal(f"Only {market.text_hc(left)} HC of this order is unspent, unlocked and not lapsed, which refunds at most {amount_text(most, currency)}.")
         rest = balance - amount
-        if not swift:
+        if not manual:
             body = {"cancelReason": f"Customer Agreement clause {clause}: {reason}"[:200], "refundableAmount": int(balance)}
             if amount < balance:
                 body["cancelAmount"] = int(amount)
@@ -2292,14 +2373,15 @@ class App:
             rest = Decimal(str(after.get("balanceAmount")))
             if rest != balance - amount:
                 raise Refusal(f"Toss Payments left {amount_text(rest, KRW)} of this payment instead of {amount_text(balance - amount, KRW)}; check it in the console before recording anything.", 502)
-        data = {"order": order_id, "account": order["account"], "processor": order["processor"], "amount": shown(amount), "balance": shown(rest), "clause": clause, "reason": reason, "hc": market.text_hc(debit)}
-        if not swift:
+        data = {"order": order_id, "account": order["account"], "processor": order.get("processor", "coinpayments"), "amount": shown(amount), "balance": shown(rest), "clause": clause, "reason": reason, "hc": market.text_hc(debit)}
+        if not manual:
             data["paymentKey"] = order["payment_key"]
         with self.book.lock:
             line = self.book.append("refund", data)
             if lot:
                 self.book.append("hc_debit", {"account": order["account"], "hc": market.text_hc(debit), "reason": "refund", "ref": order_id, "lot": lot["lot"], "now": moment})
-        way = "It goes back by SWIFT to the account it came from" if swift else "It goes back by the method you paid with, through Toss Payments"
+        way = {"swift": "It goes back by SWIFT to the account it came from", "coinpayments": "It goes back in the stablecoin you paid with, through CoinPayments, which emails you a link to name the wallet",
+               "toss": "It goes back by the method you paid with, through Toss Payments"}[order.get("processor", "coinpayments")]
         self.mail(order["email"], f"Refund: SparkPipe order {order_id}", "\n".join([
             f"We refunded {amount_text(amount, currency)} of order {order_id} under clause {clause} of the Customer Agreement: {reason}",
             "",
@@ -2345,6 +2427,7 @@ class App:
         self.notifier.deliveries.prune(clock())
         self.uptime.prune(self.market.now())
         self.sessions.keep(lambda record: stamp_time(record["expires"]) > clock())
+        self.forget_hits()
         self.notifier.sweep(self.market.now())
 
     def reconcile_forever(self):
@@ -2440,6 +2523,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.route("DELETE")
 
     def route(self, method):
+        self.server.app.book.refresh()
         parts = urllib.parse.urlsplit(self.path)
         scope = hub_scope(method, parts.path)
         if scope:
@@ -2465,7 +2549,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         routes = {
             "/account": lambda: app.summary(app.need_actor(self.headers)),
             "/market/state": lambda: app.market_state(app.actor(self.headers)),
-            "/market/ledger": lambda: app.ledger(app.need_owner(self.headers, ("owner", "admin"), "The ledger export")),
+            "/market/ledger": lambda: app.ledger(app.need_role(self.headers, ("owner", "admin"), "The ledger export")),
             "/status": app.market.status_page,
             "/toss/config": app.toss_config,
             "/swift/config": app.swift_config,
@@ -2482,7 +2566,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             match = ORDER_PATH.match(path)
             if not match:
                 return self.reply(404, {"error": "Not found."})
-            self.reply(200, app.status(match.group(1)))
+            self.reply(200, app.status(match.group(1), self.headers))
         except Refusal as error:
             self.refuse(error)
 
@@ -2992,6 +3076,8 @@ def refund(app, argv):
     flush(app)
     if found["processor"] == "swift":
         print(f"{argv[2]}: recorded a refund of {found['amount']} USD under clause {found['clause']}, {found['balance']} USD left, {found['hc']} HC debited. Send {found['amount']} USD by SWIFT to the account the payment came from.")
+    elif found["processor"] == "coinpayments":
+        print(f"{argv[2]}: recorded a refund of {found['amount']} USD under clause {found['clause']}, {found['balance']} USD left, {found['hc']} HC debited. Refund {found['amount']} USD of this invoice in CoinPayments.")
     else:
         print(f"{argv[2]}: refunded {found['amount']} KRW under clause {found['clause']}, {found['balance']} KRW left at Toss Payments, {found['hc']} HC debited")
     return 0

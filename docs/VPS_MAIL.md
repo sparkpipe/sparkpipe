@@ -21,10 +21,36 @@ STARTTLS. The certificate is sparkpipe.ai's Let's Encrypt certificate.
 | `rspamd-actions.conf` | `/etc/rspamd/local.d/actions.conf` | Spam scores: greylist from 4, a spam header from 6, reject from 15 |
 | `rspamd-redis.conf` | `/etc/rspamd/local.d/redis.conf` | rspamd's Redis on 127.0.0.1 |
 | `rspamd-dkim_signing.conf` | `/etc/rspamd/local.d/dkim_signing.conf` | DKIM signing for both domains (`docs/PAYMENTS.md`, "Mail") |
-| `certbot-reload-mail-services.sh` | `/etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh` | Reloads Postfix and Dovecot when the certificate renews |
+| `certbot-reload-mail-services.sh` | `/etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh` | Reloads Postfix and Dovecot when the certificate renews; a failed reload of one does not skip the other, and the hook then exits non-zero |
 
 The other files under `/etc/postfix`, `/etc/dovecot` and `/etc/rspamd`
 are the Ubuntu packages' own.
+
+Postfix sends with opportunistic TLS (`smtp_tls_security_level = may`):
+it uses STARTTLS whenever the receiving server offers it and delivers in
+plain text when it does not, so sign-in codes and receipts reach every
+mail server, as RFC 7435 recommends for public MX delivery.
+
+## DNS records
+
+The records at each domain's DNS host must read exactly as below. They
+are not deployed from the repository, so check them after any change at
+the DNS host with `dig +short TXT <name>`.
+
+| Name | Type | Value |
+|---|---|---|
+| `sparkpipe.ai` | MX | `sparkpipe.ai.`, the only exchange |
+| `sparkpipe.ai` | TXT | `v=spf1 ip4:27.102.120.99 -all` |
+| `_dmarc.sparkpipe.ai` | TXT | `v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:dmarc@sparkpipe.ai` |
+| `s202608._domainkey.sparkpipe.ai` | TXT | rspamd's sparkpipe.ai DKIM public key |
+| `hyor.io` | MX | `sparkpipe.ai.`, the only exchange |
+| `hyor.io` | TXT | `v=spf1 ip4:27.102.120.99 -all` |
+| `_dmarc.hyor.io` | TXT | `v=DMARC1; p=quarantine; adkim=r; aspf=r; rua=mailto:dmarc@hyor.io` |
+| `s202610._domainkey.hyor.io` | TXT | rspamd's hyor.io DKIM public key |
+
+The VPS is the only host that sends mail for either domain, so the SPF
+records name no other address, and DMARC reports go to the domain's own
+`dmarc@` mailbox, never to an outside address.
 
 ## What stays on the VPS
 
@@ -72,6 +98,7 @@ sudo install -m 644 deployment/vps/dovecot-10-auth.conf /etc/dovecot/conf.d/10-a
 sudo install -m 644 deployment/vps/dovecot-99-sparkpipe.conf /etc/dovecot/conf.d/99-sparkpipe.conf
 sudo install -m 644 deployment/vps/rspamd-actions.conf /etc/rspamd/local.d/actions.conf
 sudo install -m 644 deployment/vps/rspamd-redis.conf /etc/rspamd/local.d/redis.conf
+sudo install -m 644 deployment/vps/rspamd-dkim_signing.conf /etc/rspamd/local.d/dkim_signing.conf
 sudo install -m 755 deployment/vps/certbot-reload-mail-services.sh /etc/letsencrypt/renewal-hooks/deploy/reload-mail-services.sh
 sudo postfix check && sudo systemctl reload postfix
 sudo doveconf -n > /dev/null && sudo systemctl reload dovecot

@@ -1,0 +1,2 @@
+@anthropic-ai/claude-code-linux-arm64@2.1.311 2e2496c9a8065df93acb0fca2d341f59a6b8777649b2e025ab8c9bcd5eef61f3 package/claude
+@openai/codex@0.166.0-linux-arm64 f2e6c980c937e734644bed1b4a9a018d3e63a0ccbe71aafc85c86a8c6e4b462a package/vendor/aarch64-unknown-linux-musl/bin/codex

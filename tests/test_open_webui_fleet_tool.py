@@ -93,12 +93,12 @@ async def run():
         assert seen[-1][3] == {"host": "spark2", "command": "df -h", "timeout": 60, "as": "sandbox", "chat_id": "c1"}, seen[-1]
 
         count = len(seen)
-        assert "did not approve" in await tool.fleet_run("rtx5090", "systemctl --user restart sparkpipe-chat", elevated=True, __user__=ADMIN, __event_call__=reject, __chat_id__="c1")
+        assert "did not approve" in await tool.fleet_run("hub", "systemctl --user restart sparkpipe-chat", elevated=True, __user__=ADMIN, __event_call__=reject, __chat_id__="c1")
         assert all(path != "/v1/run" for _, path, *_ in seen[count:]), seen[count:]
         events.clear()
-        await tool.fleet_run("rtx5090", "systemctl --user restart sparkpipe-chat", elevated=True, __user__=ADMIN, __event_call__=approve, __chat_id__="c1")
+        await tool.fleet_run("hub", "systemctl --user restart sparkpipe-chat", elevated=True, __user__=ADMIN, __event_call__=approve, __chat_id__="c1")
         assert "spec" in events[0]["data"]["title"] and "restart sparkpipe-chat" in events[0]["data"]["message"], events
-        assert seen[-1][3] == {"host": "rtx5090", "command": "systemctl --user restart sparkpipe-chat", "timeout": 60, "as": "spec", "approved_by": "owner@example.test"}, seen[-1]
+        assert seen[-1][3] == {"host": "hub", "command": "systemctl --user restart sparkpipe-chat", "timeout": 60, "as": "spec", "approved_by": "owner@example.test"}, seen[-1]
 
         state["ready"] = False
         count = len(seen)

@@ -26,7 +26,7 @@ MANIFEST written last. Bare line references (`:NNN`) are to
 
 | Role | Host | What lives there |
 | --- | --- | --- |
-| Hub | `rtx5090`: x86_64, one RTX 5090 32 GB, user `spec`, tailscale `100.123.97.61` | `~/release/<root>/` served on `:8802` by the user unit `fleet-release` (`tools/fleet_release_serve.py`, installed as `~/fleet_release_serve.py`); `~/current/<host>.json` heartbeats; `~/release/qpn/<host>/` mesh records; the serving stack: swap controller, chat layer, LiteLLM and one model's engine API at a time (section 6) |
+| Hub | `rtx5090` (the operator's ssh alias, which carries the login and address): x86_64 | `~/release/<root>/` served on `:8802` by the user unit `fleet-release` (`tools/fleet_release_serve.py`, installed as `~/fleet_release_serve.py`); `~/current/<host>.json` heartbeats; `~/release/qpn/<host>/` mesh records; the serving stack: swap controller, chat layer, LiteLLM and one model's engine API at a time (section 6) |
 | Build host | `BUILD_HOST` of `scripts/release_build.sh` (default `lenovo7`): aarch64, `sm_121a`, not a fleet rank | `~/build-rp/fw-<sha>-src` build tree and `~/build-rp/fw-<sha>.out` log (section 4.1). The build host is not the hub: no agent reads its `~/release` |
 | Fleet | `spark0`-`spark9`, `sparka`-`sparkf` | `~/sparkdata/core/` core root, `~/sparkdata/weightd/` installed weightd, `~/sparkdata/<root>/` runtime root and packs, `~/current/<host>.json` local heartbeat |
 

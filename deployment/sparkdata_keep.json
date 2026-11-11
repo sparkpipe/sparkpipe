@@ -1,0 +1,44 @@
+{
+ "keep": [
+  {
+   "path": "core",
+   "since": "2026-11-02",
+   "reason": "the release core the fleet agent runs from and updates itself from (tools/fleet-agent.service, tools/fleet_sync.sh)"
+  },
+  {
+   "path": "weightd",
+   "since": "2026-11-02",
+   "reason": "the node's installed weightd binary and its state (docs/FLEET_RELEASE_RUNBOOK.md)"
+  },
+  {
+   "path": "swap",
+   "since": "2026-11-02",
+   "reason": "node tools the swap controller's commands call, such as weightd_warm (deployment/hub/model_swap.json)"
+  },
+  {
+   "path": "working-state",
+   "since": "2026-11-02",
+   "reason": "customer working state and storage; only its own deletion rules remove it (docs/WORKING_STATE.md)"
+  },
+  {
+   "path": "motif3.tp16",
+   "since": "2026-11-10",
+   "reason": "Motif 3 packs for the motif3 serving adapter on main (Makefile MOTIF3_TP16_SERVING_ADAPTER); no lane record serves it yet"
+  },
+  {
+   "path": "hy4.fp8.tp16",
+   "since": "2026-11-10",
+   "reason": "HY4 FP8 packs at the placement model_contracts/hy4_authoritative.json names, beside the MXFP8 build the hy4-preview record serves"
+  },
+  {
+   "path": "glm53flash.fp8.tp16.mtp",
+   "since": "2026-11-02",
+   "reason": "GLM 5.3 Flash MTP verify packs an agent root reads through SPARK_GLM5_NEXT_VERIFY_MTP_DIR (docs/SPECULATION_PLAN.md)"
+  },
+  {
+   "path": "k3.mxfp4.tp16/partner",
+   "since": "2026-11-10",
+   "reason": "each node's pair-partner K3 rank pack for the streamed-weights prefill engine (#1652); no lane record renders streamed_prefill yet"
+  }
+ ]
+}

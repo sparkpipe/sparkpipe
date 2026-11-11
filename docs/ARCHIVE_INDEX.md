@@ -194,6 +194,11 @@ reason below. Two more were deleted instead of archived (end of this file).
   tools/ling_multidev_build.sh) are gone; Ling now serves from stage-lanes
   through the swap controller and is released by scripts/release_rollout.sh.
   Its hub API step (LING_API_*), which built in the hub home, was dropped.
+- MANAGED_DRIVER_STATION_20260924.md (2026-11-10) — was
+  docs/operations/managed-driver-station.md: the 2026-09-24 station layout.
+  Its lane table names a MiniMax driver that is gone and lanes, ports and
+  a workstation station registry that deployment/lanes.json and
+  FLEET_RELEASE_RUNBOOK.md replace. Do not follow it.
 
 ## Deleted, not archived (2026-09-28)
 - STATUS.md (root) — README.md's Documentation section now does its job.

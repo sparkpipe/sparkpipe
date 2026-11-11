@@ -143,7 +143,7 @@ State on 6 November 2026:
 | H2 | Codex: `sparkpipe setup codex` (profile, provider, subagent model, MCP) and `GET /v1/codex/models` | `codex --profile sparkpipe` finishes a scripted session with tools and MCP, and knows the context window from the catalogue with no manual setting | M | C2, M1, L1 |
 | H3 | Codex WebSocket transport on `/v1/responses` | Codex with `supports_websockets` finishes the same session over WebSocket; time per turn recorded against HTTP | M | C2 |
 | H4 | OpenCode: `sparkpipe setup opencode`, the plugin, and the models.dev entries | OpenCode, through its `@ai-sdk/anthropic` provider, finishes a scripted session with tools, MCP and cache hits after the first turn. Sharing is disabled and no request leaves for opencode.ai | M | C1, M1, L1 |
-| H5 | Hint headers and affinity keys | Claude Code's compaction and auxiliary requests run at background priority. Its session and agent ids, Codex's `prompt_cache_key` and OpenCode's session keep each conversation on its pack version and fleet | S | C1, C2, E8, C9 |
+| H5 | Hint headers and affinity keys | Hint headers never lower priority: Claude Code's compaction and auxiliary requests and Codex's compaction run at interactive priority. Claude Code's session and agent ids, Codex's `prompt_cache_key` and OpenCode's session keep each conversation on its pack version and fleet | S | C1, C2, E8, C9 |
 | H6 | Release checks for the three | Each new release of Claude Code, Codex or OpenCode runs its scripted session against staging within a day: cache share, tool calls, MCP, subagents. The result goes on an internal status page before customers are told to upgrade | M | H1, H2, H4 |
 
 ## Site

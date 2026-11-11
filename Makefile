@@ -429,6 +429,7 @@ PYTHON_TESTS := \
 	tests/test_laguna_reference_fixture.py \
 	tests/test_kexaone2_reference_batch.py \
 	tests/test_api_stress.py \
+	tests/test_agent_turn_bench.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
@@ -538,10 +539,14 @@ PYTHON_TESTS := \
 	tests/test_router_precision_contract.py \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
+	tests/test_doc_paths_exist.py \
 	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
 	tests/test_status_truth.py \
+	tests/test_site_app_audit.py \
 	tests/test_site.py \
+	tests/test_site_legal_audit.py \
+	tests/test_site_marketing_audit.py \
 	tests/test_pay.py \
 	tests/test_market.py \
 	tests/test_gateway_holder_cap.py \
@@ -701,6 +706,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_prefix_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_open_webui_github_tool.py \
+	tests/test_open_webui_models_opt_in.py \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
 	tests/test_model_swap_deactivate.py \
@@ -739,8 +745,11 @@ PYTHON_TESTS := \
 	tests/test_lane_tools.py \
 	tests/test_lane_direct_packs.py \
 	tests/test_launchers_name_real_files.py \
+	tests/test_node_pack_prune.py \
 	tests/test_stage_lane_state_memory.py \
 	tests/test_lane_records.py \
+	tests/test_agent_task_eval.py \
+	tests/test_agent_endpoint_stub.py \
 	tests/test_chat_api_keys.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \

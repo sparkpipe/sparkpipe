@@ -47,6 +47,8 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 | `pending` | model | queued, running, foreground |
 | `foreground` | model, requests | — |
 | `cancel_all` | — | — |
+| `forget` | scope | — |
+| `expire` | wiped, held_until, now | — |
 | `session.claims` | session, call | claimed |
 | `session.can_continue` | session | can |
 | `session.continue_with` | session, content, reasoning, calls | messages |
@@ -62,10 +64,12 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 - **Notices** are sent in order, without waiting for an answer:
   - `foreground` carries the chat layer's count of requests in flight for a model, so a lost notice heals at the next one;
   - `cancel_all`;
-  - `session.release`.
+  - `session.release`;
+  - `expire`, sent when the working-state directive changes and on the chat layer's sweep: the program deletes every identity whose last use falls before `wiped`, or when `now` is 24 hours or more past the later of its last use and `held_until`, the same rule as the chat layer's own working state.
+- **forget** deletes every identity whose scope is `scope` or starts with `scope/` (its members), sessions included, before it answers. The chat layer calls it for `DELETE /v1/cache` and reports memory as deleted only after the answer.
 - A session the chat layer never releases is dropped after the program's `session_seconds`.
 - The program keeps each identity's memory apart. The chat layer passes the identity on every request and never reads memory's store.
-- `POST /v1/sparkpipe/memory/import` on the chat layer hands a client's conversation to `import`, with its headers, after resolving the model.
+- `POST /v1/sparkpipe/memory/import` on the chat layer hands a client's conversation to `import`, with its headers, after resolving the model. The body may set `timeout_seconds`, how long the chat layer waits for the program (3,900 by default); a long history can need more.
 
 **The chat layer's engine services, which the program calls on `host_url`:**
 

@@ -4,9 +4,17 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import re
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+import tokenizers
+import tokenizers.models
+import tokenizers.pre_tokenizers
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("chat_harness_fixture", ROOT / "tests" / "chat_harness_fixture.py")
@@ -207,6 +215,78 @@ async def gateway_rules(harness, check):
           "a new user on the fleet (a later wiped in the directive) deletes every earlier account's replay store")
 
 
+async def ledger_rules(harness, check):
+    engine = harness.engine
+    prompt = [{"role": "user", "content": "Shared document. " + LONG}]
+
+    async def cached(account):
+        engine.reply(ANSWER)
+        status, _, text = await harness.post("/v1/chat/completions", chat(prompt), account=account)
+        check(status == 200, f"the gateway request answers: {status} {text[:200]}")
+        return json.loads(text)["usage"]["prompt_tokens_details"]["cached_tokens"]
+    await cached("ledger-a")
+    cold = engine.usage[-1]["cached_tokens"]
+    seen = await cached("ledger-b")
+    check(engine.usage[-1]["cached_tokens"] >= cold + 128 and seen == 0,
+          f"one gateway key forwarding a second account reports no cached tokens for a prefix only the first account sent: {seen} {engine.usage[-1]}")
+    check(await cached("ledger-a") > 0, "the first account reports the cached tokens of its own prefix")
+    async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="ledger-b")) as response:
+        check(response.status == 200, "the second account deletes its cache")
+    check(await cached("ledger-a") > 0, "one account's DELETE /v1/cache leaves another account's cached count in place")
+    async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="ledger-a")) as response:
+        check(response.status == 200, "the first account deletes its cache")
+    check(await cached("ledger-a") == 0, "an account's own DELETE /v1/cache resets its cached count")
+
+
+class RecordingMemory:
+    def __init__(self, failing=False):
+        self.failing, self.calls, self.notices = failing, [], []
+
+    async def call(self, method, request=None, timeout=None):
+        self.calls.append((method, request))
+        if self.failing:
+            raise chat_frontend.RequestError(404, "unsupported", f"no method {method}")
+        return {}
+
+    def notify(self, method, request=None):
+        self.notices.append((method, request))
+
+
+async def memory_rules(harness, check):
+    frontend = harness.frontend
+    kept = frontend.memory
+    try:
+        frontend.memory = RecordingMemory()
+        async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="mem-a")) as response:
+            deleted = await response.json()
+        check(response.status == 200 and "memory" in deleted["deleted"] and "memory" not in deleted["not_deleted"] and
+              frontend.memory.calls == [("forget", {"scope": "account:mem-a"})],
+              f"DELETE /v1/cache asks the memory program to forget the account's scope now and lists memory as deleted: {deleted} {frontend.memory.calls}")
+        frontend.memory = RecordingMemory(failing=True)
+        async with harness.session.delete(harness.base + "/v1/cache", headers=harness.headers(account="mem-a")) as response:
+            deleted = await response.json()
+        check(response.status == 200 and "memory" in deleted["not_deleted"] and "memory" not in deleted["deleted"],
+              f"a memory program that cannot forget leaves memory listed as not deleted: {deleted}")
+        frontend.memory = RecordingMemory()
+        harness.directive(time.time() + 5, 0)
+        frontend.expire_working_state(time.time(), False)
+        notices = [request for method, request in frontend.memory.notices if method == "expire"]
+        check(len(notices) == 1 and set(notices[0]) == {"wiped", "held_until", "now"} and abs(notices[0]["wiped"] - time.time() - 5) < 2,
+              f"a change of user passes the working-state directive to the memory program: {frontend.memory.notices}")
+    finally:
+        frontend.memory = kept
+
+
+async def body_rules(harness, check):
+    raw = '{"model": "alpha", "messages": [{"role": "user", "content": "café"}]}'.encode("latin-1")
+    for path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/tokenize"):
+        headers = dict(harness.headers(account="acme"), **{"Content-Type": "application/json"})
+        async with harness.session.post(harness.base + path, data=raw, headers=headers) as response:
+            text = await response.text()
+            check(response.status == 400 and response.content_type == "application/json" and "error" in json.loads(text),
+                  f"a body that is not UTF-8 answers 400 in the shape's own error body on {path}, not a text 500: {response.status} {text[:200]}")
+
+
 async def isolation_rules(harness, check):
     engine, frontend = harness.engine, harness.frontend
     for name in ("a", "b"):
@@ -357,6 +437,17 @@ async def run(tmp, check):
         await harness.post("/v1/chat/completions", body)
         check(status == 200 and counted["tokens"] == engine.requests[-1]["prompt_token_ids"] and counted["count"] == len(counted["tokens"]),
               "tokenize renders messages with the model's template to exactly the engine's prompt")
+        sample = "hello world\n\n    indented\tline  "
+        status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "text": sample})
+        check(status == 200 and json.loads(text)["tokens"] == harness.frontend.models["alpha"].vocabulary.encode(sample, False),
+              f"tokenize off the event loop gives the same tokens as the in-loop encode: {text[:200]}")
+        spaced = tokenizers.Tokenizer(tokenizers.models.WordLevel({"a": 0, "b": 1, "[UNK]": 2}, unk_token="[UNK]"))
+        spaced.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
+        spaced.add_tokens([tokenizers.AddedToken("  ", normalized=False), tokenizers.AddedToken("\n\n", normalized=False)])
+        vocabulary = chat_frontend.TokenizersVocabulary.from_tokenizer(spaced)
+        check(vocabulary.spacing_pattern is not None and all(vocabulary.encode_released(piece) == vocabulary.encode(piece, False)
+                                                              for piece in ("a  b\n\na", "  a", "b\n\n", "", "a b c")),
+              "the released encode splits on spacing tokens exactly as the in-loop encode does")
         status, _, text = await harness.post("/v1/tokenize", {"model": "alpha", "text": "hello world"})
         tokens = json.loads(text)["tokens"]
         status, _, text = await harness.post("/v1/detokenize", {"model": "alpha", "tokens": tokens})
@@ -415,7 +506,55 @@ async def run(tmp, check):
         response.release()
         engine.hold = None
         await gateway_rules(harness, check)
+        await ledger_rules(harness, check)
+        await body_rules(harness, check)
         await isolation_rules(harness, check)
+        await record_rules(harness, check)
+        await memory_rules(harness, check)
+
+
+async def record_rules(harness, check):
+    folder = harness.tmp / chat_frontend.RECORDS_DIRECTORY
+    acme = sorted((folder / "account-acme").glob("*.jsonl"))
+    lines = [json.loads(line) for path in acme for line in path.read_text().splitlines()]
+    check(lines and all(line["account"] == "acme" and line["request"] and "prompt_tokens" in line and "ttft_ms" in line for line in lines)
+          and any((line["member"], line["key"]) == ("MBALICE", "k_ci") for line in lines),
+          f"each request's record is kept on the hub under its account, with its member and key: {lines[:2]}")
+    check(all(not isinstance(value, (list, dict)) for line in lines for value in line.values()), "a request record holds counts, times and ids, never token numbers or text")
+    check(folder.stat().st_mode & 0o777 == 0o700 and all(path.stat().st_mode & 0o777 == 0o600 for path in acme), "the request records are readable only by the chat layer's user")
+    check(any((folder / "account-bob").glob("*.jsonl")), "another account's requests are kept under that account")
+    config = harness.tmp / "erase.json"
+    config.write_text(json.dumps({"replay": {"directory": "state/replay"}}))
+    with harness.frontend.records.locked():
+        erasing = subprocess.Popen([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", "acme", "--note",
+                                    "written request of 3 January"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(3.0)
+        check(erasing.poll() is None and any((folder / "account-acme").glob("*.jsonl")),
+              f"--erase-records waits while the running chat layer holds the records lock, so an erasure and a record write never interleave: {erasing.poll()}")
+    stdout, stderr = erasing.communicate(timeout=60)
+    erased = subprocess.CompletedProcess(erasing.args, erasing.returncode, stdout, stderr)
+    told = json.loads(erased.stdout or "{}")
+    log = [json.loads(line) for line in (folder / "erasures.jsonl").read_text().splitlines()]
+    check(erased.returncode == 0 and told == {"event": "request_records_erased", "account": "acme", "records": len(lines)} and not (folder / "account-acme").exists()
+          and any((folder / "account-bob").glob("*.jsonl")) and [(e["account"], e["records"], e["note"]) for e in log] == [("acme", len(lines), "written request of 3 January")],
+          f"--erase-records deletes one account's request records, keeps every other account's and logs the erasure: {erased.returncode} {erased.stderr[-300:]} {told} {log}")
+    refused = [subprocess.run([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", account], capture_output=True, text=True, timeout=60).returncode
+               for account in ("../bob", "sparkpipe")]
+    check(refused == [1, 1] and any((folder / "account-bob").glob("*.jsonl")), f"--erase-records takes only a market account id: {refused}")
+    harness.engine.reply("Fine.")
+    await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "after"}]), account="acme")
+    check(len(list((folder / "account-acme").glob("*.jsonl"))) == 1, "requests after an erasure are kept again")
+    try:
+        chat_frontend.records_folder({"replay": {"directory": "state"}, "records": {"directory": "state/records"}}, harness.tmp)
+        inside = True
+    except SystemExit:
+        inside = False
+    check(not inside, "the request records cannot be kept inside the replay store, which is working state")
+    old = folder / "account-old"
+    old.mkdir()
+    (old / "2020-01-01.jsonl").write_text("{}\n")
+    harness.frontend.records.pruned = None
+    check(harness.frontend.records.prune(time.time()) == 1 and not old.exists() and any((folder / "account-bob").glob("*.jsonl")), "a request record is deleted a year after its day")
 
 
 def main():
@@ -423,6 +562,9 @@ def main():
     captured = io.StringIO()
     with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(captured):
         asyncio.run(run(Path(directory), check))
+    logged = captured.getvalue()
+    check("request_record" not in logged and not re.search(r"\[\s*\d+(\s*,\s*\d+){3,}\s*\]", logged) and "MBALICE" not in logged,
+          "the chat layer's log, which journald keeps, carries no request record, member or token numbers, so an erasure leaves no copy behind")
     if check.failures:
         print(captured.getvalue()[-4000:])
     check.finish("background requests leave two sequences for interactive ones; chat completions replays tool calls by id, reports cached tokens and the "
@@ -432,9 +574,10 @@ def main():
                  "gateway key must name a valid account, each account has its own replay store and alias table, X-SparkPipe-Allow-Swap 1 allows a swap and "
                  "background keys run below interactive ones; bad header values are not echoed; a failed controller falls back to the last residency and "
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
-                 "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
+                 "store failure still delivers the reply; a gateway account reports cached tokens only for prefixes it sent, and its DELETE /v1/cache clears only its own count; a body that is not UTF-8 gets 400 on every shape; DELETE /v1/cache asks memory to forget the scope and a change of user passes the directive to it; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
                  "its own conversation's turn and only for its own member (the gateway's X-SparkPipe-Member, across that member's keys), also through tokenize; an unreadable store falls back to a normal render; a key "
-                 "made with --priority background runs below interactive requests")
+                 "made with --priority background runs below interactive requests; request records are kept a year on the hub by account, outside the working state and out of "
+                 "the log, and --erase-records deletes one account's and logs the erasure")
 
 
 if __name__ == "__main__":

@@ -57,8 +57,10 @@ def heading_id(head, n):
 
 def body(md, ids=None):
     lines = md.splitlines()
-    title = lines[0][2:].strip()
-    lines = lines[1:]
+    if not lines[0].startswith("# ") or len(lines) < 3 or lines[1].strip() or not lines[2].strip() or lines[2].startswith("#") or (len(lines) > 3 and lines[3].strip()):
+        raise ValueError("the title must be followed by a blank line and a one-line version")
+    title, version = lines[0][2:].strip(), lines[2].strip()
+    lines = lines[3:]
     blocks, cur = [], []
     for line in lines + [""]:
         if line.strip() == "":
@@ -113,7 +115,7 @@ def body(md, ids=None):
         out.append("</section>")
     if ids is not None and len(found) != len(ids):
         raise ValueError(f"{len(found)} headings, but the twin has {len(ids)}")
-    return title, "\n".join(out), found
+    return title, version, "\n".join(out), found
 
 
 STYLE = """<style>
@@ -143,28 +145,28 @@ PAGES = [
         "title": "SparkPipe Customer Agreement", "other": "agreement-ko.html",
         "desc": "Draft SparkPipe Customer Agreement for hour-credits, hours on Hour Fleets, weeks on a pinned fleet and the waitlist, published for review.",
         "lead": "This Agreement is accepted online while signed in to the account, and we record the hashes of its exact texts. The Korean text prevails (clause 12.3).",
-        "version": "Version of 8 November 2026", "notice": "booking",
+        "notice": "booking",
     },
     {
         "src": "agreement-ko.md", "out": "agreement-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 고객 계약", "other": "agreement.html",
         "desc": "SparkPipe 시간 크레딧, 시간 플릿의 시간, 고정 플릿의 주 예약과 대기 명단에 관한 고객 계약 검토용 공개 문안.",
         "lead": "본 계약은 계정에 로그인한 상태에서 온라인으로 동의되며, 공급자는 그 정확한 문안의 해시를 기록한다. 국문본이 우선한다(제12.3조).",
-        "version": "2026년 11월 8일 판", "notice": "booking",
+        "notice": "booking",
     },
     {
         "src": "dpa-en.md", "out": "dpa.html", "lang": "en", "tag": "terms",
         "title": "SparkPipe Data Processing Agreement", "other": "dpa-ko.html",
         "desc": "Draft SparkPipe Data Processing Agreement for personal data processed on a customer's fleets, under GDPR Article 28, the UK GDPR and Korea's PIPA, published for review.",
         "lead": "This DPA is part of the Customer Agreement and applies whenever we process personal data for a customer on its fleets. The Korean text prevails (clause 11.4).",
-        "version": "Version of 8 November 2026", "notice": "review",
+        "notice": "review",
     },
     {
         "src": "dpa-ko.md", "out": "dpa-ko.html", "lang": "ko", "tag": "약관",
         "title": "SparkPipe 데이터 처리 계약", "other": "dpa.html",
         "desc": "고객의 플릿에서 처리하는 개인정보에 관한 SparkPipe 데이터 처리 계약 검토용 공개 문안. GDPR 제28조, 영국 GDPR, 개인정보 보호법.",
         "lead": "본 계약은 고객 계약의 일부이며, 공급자가 고객의 플릿에서 고객을 위하여 개인정보를 처리하는 모든 경우에 적용된다. 국문본이 우선한다(제11.4조).",
-        "version": "2026년 11월 8일 판", "notice": "review",
+        "notice": "review",
     },
 ]
 
@@ -207,13 +209,13 @@ def twin_ids(p):
     if p["lang"] == "en":
         return None
     twin = next(q for q in PAGES if q["out"] == p["other"])
-    return body((SRC / twin["src"]).read_text(encoding="utf-8"))[2]
+    return body((SRC / twin["src"]).read_text(encoding="utf-8"))[3]
 
 
 def page(p):
     md = (SRC / p["src"]).read_text(encoding="utf-8")
     try:
-        title, content, _ = body(md, twin_ids(p))
+        title, version, content, _ = body(md, twin_ids(p))
     except ValueError as error:
         raise ValueError(f"{p['src']}: {error}") from None
     nav = "".join(NAV[p["lang"]])
@@ -248,7 +250,7 @@ def page(p):
 <main class="wrap policy">
 <section>
 <h1>{inline(title)}</h1>
-<p class="effective">{p['version']}</p>
+<p class="effective">{inline(version)}</p>
 <p>{inline(p['lead'])}</p>
 </section>
 <div class="notice"><p>{NOTICE[p['notice']][p['lang']]}</p></div>

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""The fleet gateway answers only callers with its token, reads only the configured logs, and runs a command only on a known host after the shipped refusal rules: as spec only with an approver named, in the sandbox only inside a chat's live grant (refused before the grant, after a revoke or expiry, for unsaved chat ids, and beyond the grant cap), with the shipped sandbox properties and this host's home and group filled in; banned commands never reach a host, boot-path rules apply to sparks but not the hub, every run is audited in a private log, secrets in output are masked, long output is cut, and a command past its timeout is stopped together with the processes it started, on the hub and on a spark."""
+"""The fleet gateway answers only callers with its token, reads only the configured logs, and runs a command only on a known host after the shipped refusal rules: as spec only with an approver named, in the sandbox only inside a chat's live grant (refused before the grant, after a revoke or expiry, for unsaved chat ids, and beyond the grant cap), with the shipped sandbox properties and this host's home and group filled in; banned commands never reach a host (sync as any separate word, so a global sync is refused however it is started, over ssh or pdsh, in a loop, after a shell keyword or wrapper, or in a -c script, while a word that only contains sync is allowed, and the sandbox blocks the sync system calls), a body that is not a JSON object or a timeout that is not a finite number of at least 1 second is refused before the audit log, boot-path rules apply to sparks but not the hub, every run is audited in a private log, secrets in output are masked, long output is cut, and a command past its timeout is stopped together with the processes it started, on the hub and on a spark."""
 import asyncio
 import grp
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -27,6 +28,24 @@ FAKE_SSH = "\n".join([
     "open(os.environ['FAKE_SSH_LOG'], 'a').write('\\t'.join(['ssh', host, command]) + '\\n')",
     "env = dict(os.environ, HOME=os.path.join(os.environ['FAKE_HOMES'], host))",
     "sys.exit(subprocess.call(['bash', '-c', command], env=env))",
+])
+FAKE_TIMEOUT = "\n".join([
+    "import subprocess, sys",
+    "args = sys.argv[1:]",
+    "grace = None",
+    "if args[0] == '-k':",
+    "    grace, args = float(args[1]), args[2:]",
+    "child = subprocess.Popen(args[1:])",
+    "try:",
+    "    sys.exit(child.wait(float(args[0])))",
+    "except subprocess.TimeoutExpired:",
+    "    child.terminate()",
+    "try:",
+    "    child.wait(grace)",
+    "except subprocess.TimeoutExpired:",
+    "    child.kill()",
+    "    child.wait()",
+    "sys.exit(124)",
 ])
 FAKE_RUNNER = "\n".join([
     "import os, subprocess, sys",
@@ -57,6 +76,11 @@ async def run(tmp):
     (tmp / "shared-token").chmod(0o644)
     (tmp / "fake_ssh.py").write_text(FAKE_SSH)
     (tmp / "fake_runner.py").write_text(FAKE_RUNNER)
+    if shutil.which("timeout") is None:
+        (tmp / "bin").mkdir()
+        (tmp / "bin" / "timeout").write_text(f"#!{sys.executable}\n" + FAKE_TIMEOUT + "\n")
+        (tmp / "bin" / "timeout").chmod(0o755)
+        os.environ["PATH"] = str(tmp / "bin") + os.pathsep + os.environ.get("PATH", "")
     (tmp / "chat.log").write_text("first\nsecond LITELLM_MASTER_KEY=abcdef123456\nthird sk-abcdefghijklmnopqrstuvwx\n")
     (tmp / "logs").mkdir()
     (tmp / "logs" / "k3-kv-api.log").write_text("api one\napi two\n")
@@ -138,10 +162,27 @@ async def run(tmp):
             assert (await call("POST", "/v1/run", headers=auth, json={"host": "spark1", "command": "uptime"}))[0] == 400
             before = log.read_text()
             for host, command in (("spark1", "sync"), ("spark1", "pkill -f sf17_arm"), ("hub0", "cat ~/.env"), ("hub0", "cat /srv/workspace/sparkpipe/swap-controller/token"),
-                                  ("spark2", "sudo poweroff"), ("spark1", "crontab -l"), ("spark1", "rm -rf ~")):
+                                  ("spark2", "sudo poweroff"), ("spark1", "crontab -l"), ("spark1", "rm -rf ~"),
+                                  ("spark1", "/bin/sync"), ("spark1", "env sync"), ("hub0", "nice sync"), ("spark2", "bash -c 'sync'"), ("spark2", "echo / | xargs sync"),
+                                  ("spark1", "sudo -u root sync"), ("spark1", "nice -n 10 sync"), ("spark1", "ls; /usr/bin/sync"),
+                                  ("hub0", "ssh spark2 sync"), ("hub0", "ssh spark2 'sync'"), ("hub0", "for h in spark1 spark2; do ssh $h sync; done"), ("hub0", "pdsh -w spark[0-3] sync"),
+                                  ("spark2", "bash -c sync"), ("spark2", "sh -c sync"), ("spark1", "if true; then sync; fi"), ("spark1", "for i in 1; do sync; done"),
+                                  ("spark1", "X=1 sync"), ("spark1", "! sync"), ("spark1", "eval sync"), ("spark1", "watch sync"),
+                                  ("spark1", "flock /tmp/l sync"), ("spark1", "strace sync"), ("spark1", "doas sync"), ("spark2", "bash --norc -c 'sync'")):
                 status, body = await call("POST", "/v1/run", headers=auth, json={"host": host, "command": command, "approved_by": "admin@x"})
                 assert status == 403 and body["error"].startswith("refused:"), (host, command, body)
             assert log.read_text() == before, "a refused command reached a host"
+            audited = (tmp / "audit.jsonl").read_text()
+            for timeout in ("nan", "inf", -1, 0, 0.3, "0.9", "-0.5", True, [5], {"s": 1}):
+                status, body = await call("POST", "/v1/run", headers=auth, json={"host": "spark1", "command": "echo never", "timeout": timeout, "approved_by": "admin@x"})
+                assert status == 400 and "timeout" in body["error"], (timeout, status, body)
+            for document in ([], "uptime", 5, None):
+                for path in ("/v1/run", "/v1/grant"):
+                    status, body = await call("POST", path, headers=auth, json=document)
+                    assert status == 400 and "JSON object" in body["error"], (path, document, status, body)
+            assert log.read_text() == before and (tmp / "audit.jsonl").read_text() == audited, "an invalid request reached a host or the audit log"
+            for rest in ("rsync -a /tmp/a /tmp/b", "ls sync_dir", "python3 -m fsync_tool", "grep '[s]ync' log", "journalctl | grep -i '[s]ync'"):
+                assert not any(pattern.search(rest) for pattern, _ in fleet_gateway.Gateway(config).refuse), rest
 
             status, body = await call("POST", "/v1/run", headers=auth, json={"host": "hub0", "command": "crontab -l >/dev/null 2>&1; echo hub-ok", "approved_by": "admin@x"})
             assert status == 200 and "hub-ok" in body["output"] and body["as"] == "spec", body
@@ -179,7 +220,7 @@ async def run(tmp):
             spark_home = str(tmp / "homes" / "spark1")
             assert kind == "sandbox" and home == spark_home and command == "echo sandbox-ok", (kind, home, command)
             props = props.split("|")
-            for required in ("DynamicUser=yes", "IPAddressDeny=any", "RestrictAddressFamilies=AF_UNIX AF_NETLINK", "NoNewPrivileges=yes",
+            for required in ("DynamicUser=yes", "IPAddressDeny=any", "SystemCallFilter=~@reboot sync syncfs", "SystemCallErrorNumber=EPERM", "RestrictAddressFamilies=AF_UNIX AF_NETLINK", "NoNewPrivileges=yes",
                              "ProtectSystem=strict", "ProtectHome=read-only", "PrivateDevices=yes", "RuntimeMaxSec=25"):
                 assert required in props, (required, props)
             assert f"SupplementaryGroups={grp.getgrgid(os.getgid()).gr_name}" in props, props
@@ -207,7 +248,7 @@ async def run(tmp):
         audit = [json.loads(line) for line in (tmp / "audit.jsonl").read_text().splitlines()]
         refused = [entry for entry in audit if entry["event"] == "refused"]
         runs = [entry for entry in audit if entry["event"] == "run"]
-        assert len(refused) == 8 and all(entry["approved_by"] == "admin@x" for entry in refused + runs), audit
+        assert len(refused) == 32 and all(entry["approved_by"] == "admin@x" for entry in refused + runs), audit
         assert any(entry["as"] == "sandbox" and entry["chat_id"] == chat for entry in runs), runs
         assert any(entry["event"] == "grant" for entry in audit) and any(entry["event"] == "revoke" for entry in audit), audit
         assert sum(1 for entry in audit if entry["event"] == "done") == len(runs), audit

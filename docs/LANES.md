@@ -110,6 +110,58 @@ weight file, `<host> <record> <role> <path>`, with role `pack`, `experts`,
 file names. It reads nothing on the fleet: pruning and audits work from these
 names and never follow a link.
 
+## Unused files on the nodes
+
+A node keeps under `~/sparkdata` only what something uses:
+
+- the files the lane records name for that host, as `tools/lane_pack_files.py`
+  prints them (packs, their `.experts` and `.sha256`, pack siblings such as
+  the DeepSeek V4.1 engram files, and any other `sparkdata` path a rendered
+  config names, a partner pack for instance);
+- their companions: the same name with `.experts`, `.sha256`, `.verified`,
+  `.receipt.json`, `.ck128` or `.digest`;
+- the files the swap controller's commands name;
+- whatever a live config on the node names (`deployment.json`,
+  `config/*.json` and `lane.sh` in a lane root; `model_resident.json`,
+  `config/*.json` and the env files of a fleet agent root); a named directory
+  keeps its whole tree, and a file that only a live config names is reported,
+  because its record does not name it;
+- the entries of `deployment/sparkdata_keep.json`, each with a reason and the
+  date it was kept: staged packs that no lane serves yet and the
+  infrastructure directories (`core`, `weightd`, `swap`, `working-state`);
+- every FP8 build: a path with `fp8` in any of its names under `sparkdata`
+  (an FP8 or MXFP8 pack, an FP8 checkpoint). FP8 packs and checkpoints are
+  kept when disk is freed, so a new one needs no keep entry;
+- the fleet agent's roots: a directory with a release `MANIFEST`, or one
+  `~/.fleet_agent_roots` or the `fleet-agent` unit names. The release channel
+  owns them.
+
+```bash
+python3 tools/node_pack_prune.py
+python3 tools/node_pack_prune.py --host spark3
+python3 tools/node_pack_prune.py --delete
+```
+
+`tools/node_pack_prune.py` sends one scan to every node. The node walks its
+`sparkdata` without following a link and lists every other file, link and
+directory: `UNUSED <host> <bytes> <path>` (a directory whose whole tree is
+unused is one line), then `TOTAL <host>` with the unused bytes and the kept
+bytes by reason. It also prints `MISSING` for a file a record names that the
+node lacks, `LINKED` for one that is a symlink and `LIVE` for a file that
+only a live config names. The default is a dry run.
+
+`--delete` is the owner's command. Each node deletes its unused entries
+itself, after checking each one again: an entry that a running process holds
+open (a file descriptor, a mapping, a working directory or an executable in
+`/proc`, or `lsof` where there is no `/proc`) or that holds anything modified
+in the last hour is refused. The node walks the entry's tree again just
+before deleting it, so a file written into it after the scan stops the
+delete. A node that lacks any file a record names deletes nothing, since its
+layout is then not the one the records describe.
+Every refusal is a `REFUSED <host> <path>: <reason>` line and makes the
+command exit 1. A full `lane_config.py audit` reports each unused entry as
+`UNUSED <bytes> <host>:<path>` and each absent named file as `MISSING`.
+
 ## Commands
 
 ```bash
@@ -134,7 +186,10 @@ an operator's shell exports reaches a production `lane.sh`.
 - the weightd ceiling and KV reserve in every node's `weightd.log`;
 - lane roots and API directories that no record names;
 - every symlink under `~/stage-lanes` and `~/k3-lanes` (one `LINK` line
-  each; an audit of named records scans their lane roots).
+  each; an audit of named records scans their lane roots);
+- on a full audit, every unused entry under each node's `sparkdata`
+  (`UNUSED <bytes> <host>:<path>`) and every file a record names that the
+  node lacks (`MISSING`), as `tools/node_pack_prune.py` finds them.
 
 It prints one line per finding and exits non-zero when there is any.
 

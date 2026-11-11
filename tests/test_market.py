@@ -305,6 +305,8 @@ def opening(failures, app, m):
     early = person(app, "early", 50)
     if refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 11, 30, 23)), "hours": 1})) != (409, "not_open") or refused(lambda: m.book_hours(early, {"fleet": "F1", "start": slot(kst(2026, 12, 1)), "hours": 1})):
         failures.append("Hour Fleet hours open on hoursFrom and not before")
+    if refused(lambda: m.book_hours(early, {"fleet": "F4", "start": slot(kst(2026, 11, 29, 12)), "hours": 1})) != (409, "not_open"):
+        failures.append("Hours on a Fleet that is not an Hour Fleet are booked before hoursFrom")
     NOW[0] = kst(2026, 12, 25, 12)
     if refused(lambda: m.quote_weeks(early, {"fleet": "F3", "weeks": 1})) != (409, "not_open"):
         failures.append("a Week before weeksFrom is booked")
@@ -349,7 +351,12 @@ def weeks_and_hours(failures, app, m, port):
     quote = m.quote_weeks(H, {"fleet": "F3", "weeks": 3})
     if (quote["first"], quote["count"], quote["discount"], quote["price"], quote["extends"]) != (slot(kst(2027, 1, 11)), 4, "0.05", "410.400000", True):
         failures.append(f"an extension does not follow the booked Week, or its discount does not count the current Week: {quote}")
-    m.book_weeks(H, {"fleet": "F3", "weeks": 3})
+    stale = (refused(lambda: m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": slot(kst(2027, 1, 4)), "price": quote["price"]})),
+             refused(lambda: m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": quote["first"], "price": "1"})),
+             refused(lambda: m.book_hours(C, {"fleet": "F4", "start": slot(kst(2027, 1, 6, 13)), "hours": 2, "price": "1"})))
+    if stale != ((409, "quote_changed"),) * 3 or balance(app, H) != 10000 - 144:
+        failures.append(f"a booking whose quoted first Week or price no longer holds is charged: {stale}")
+    m.book_weeks(H, {"fleet": "F3", "weeks": 3, "first": quote["first"], "price": "410.4"})
     if refused(lambda: m.quote_weeks(H, {"fleet": "F3", "weeks": 50})) != (409, "too_far") or m.quote_weeks(H, {"fleet": "F3", "weeks": 49})["first"] != slot(kst(2027, 2, 1)):
         failures.append("an extension is not contiguous, or reaches past 52 Weeks after the current Week")
     if m.view(H)["pinned"] != [{"fleet": "F3", "weeks": 4, "through": slot(kst(2027, 2, 1)), "deadline": slot(kst(2027, 1, 31)), "canExtend": True, "autoExtend": 0, "autoExtendWaiting": None}]:
@@ -902,6 +909,54 @@ def pair_flows(failures, work):
         stopped = [n for n in notices(app, A2, "booking.deadline") if n["data"].get("reason") == "pair_not_held"]
         if app.book.market.extend.get((A2, "F2B"), {}).get("weeks", 0) != 0 or not stopped:
             failures.append("auto-extend on a pair does not stop when its partner's Weeks end")
+    finally:
+        server.shutdown()
+        mailbox.shutdown()
+
+
+def pair_deadline_flows(failures, work):
+    root = work / "pair-deadline"
+    site(root)
+    path = root / "site" / "pricing.js"
+    pricing = tp.read_pricing(path)
+    base = dict(pricing["fleets"][1])
+    pricing["fleets"] = [dict(base, id=f"F{n}{side}", name=f"Fleet {n}{side}", state="serving", hourFleet=side == "B", pair=f"F{n}{'B' if side == 'A' else 'A'}")
+                         for n in range(1, 5) for side in "AB"]
+    tp.write_pricing(path, pricing)
+    mailbox = tp.serve(tp.FakeSMTP, mail=[])
+    server, app, port = live(root, "data", mailbox)
+    m = app.market
+    try:
+        NOW[0] = kst(2027, 1, 6, 12)
+        A1, A2, O = (person(app, name, credits) for name, credits in (("a1", 2000), ("a2", 288), ("o", 1000)))
+        for fleet in ("F1A", "F1B"):
+            m.book_weeks(A1, {"fleet": fleet, "weeks": 2})
+            m.auto_extend(A1, {"fleet": fleet, "weeks_ahead": 0})
+        NOW[0] = kst(2027, 1, 12, 9)
+        if refused(lambda: m.book_hours(A1, {"fleet": "F2B", "start": slot(kst(2027, 1, 12, 12)), "hours": 1})):
+            failures.append("the Hours cap on Hour Fleets counts the account's pinned pair Weeks")
+        NOW[0] = kst(2027, 1, 13, 12)
+        for fleet in ("F3A", "F3B"):
+            m.book_weeks(A2, {"fleet": fleet, "weeks": 1})
+        NOW[0] = kst(2027, 1, 19, 12)
+        m.tick()
+        strangers = [refused(lambda: m.book_hours(O, {"fleet": fleet, "start": slot(kst(2027, 1, 25)), "hours": 1})) for fleet in ("F1B", "F3B")]
+        if strangers != [(409, "pinned"), (409, "pinned")]:
+            failures.append("another customer books Hours on a pinned B half in the Week after its holder's last Week, before the holder's Sunday 00:00 deadline")
+        quote = m.quote_weeks(A1, {"fleet": "F1A", "weeks": 1})
+        m.book_weeks(A1, {"fleet": "F1A", "weeks": 1, "first": quote["first"]})
+        if refused(lambda: m.book_weeks(A1, {"fleet": "F1A", "weeks": 1, "first": quote["first"]})) != (409, "quote_changed") or through(app, A1, "F1A") != kst(2027, 2, 1):
+            failures.append("a repeated Week booking with the quoted first Week books a second Week")
+        if refused(lambda: m.book_weeks(A1, {"fleet": "F1B", "weeks": 1})) or through(app, A1, "F1B") != kst(2027, 2, 1):
+            failures.append("the holder cannot extend its pinned B half before its Sunday 00:00 deadline")
+        app.market.credit(A2, Decimal(288), "top up")
+        m.tick()
+        if through(app, A2, "F3A") != kst(2027, 2, 1) or through(app, A2, "F3B") != kst(2027, 2, 1):
+            failures.append(f"auto-extend waiting on a short balance loses the pinned B half before the Sunday 00:00 deadline: {through(app, A2, 'F3B')}")
+        NOW[0] = kst(2027, 1, 31, 0, 30)
+        m.tick()
+        if refused(lambda: m.book_hours(O, {"fleet": "F1B", "start": slot(kst(2027, 2, 1, 1)), "hours": 1})):
+            failures.append("a B half whose holder did not book its next Week by the Sunday 00:00 deadline stays closed to Hours")
     finally:
         server.shutdown()
         mailbox.shutdown()
@@ -1665,6 +1720,10 @@ def team_flows(failures, work):
         NOW[0] += timedelta(days=8)
         if sign_in(port, mailbox, "cat@example.com")[1] != 404 or sign_in(port, mailbox, "dan@example.com")[1] != 404 or cancelled != 200 or any(x["state"] == "invited" for x in owner("GET", "/v1/members")[1]["data"]):
             failures.append(f"an invitation works after 7 days or after it was cancelled: {late} {gone}")
+        flips = [owner("POST", "/v1/members", {"email": "eve@example.com", "role": role})[0] for role in ("admin", "member", "admin", "member")]
+        app.mails.join()
+        if flips != [200, 200, 200, 429] or sum(rcpt == ["eve@example.com"] for rcpt, _ in mailbox.mail) != 3:
+            failures.append(f"one email receives more than 3 invitations a day: {flips}")
         replay = sp.Book(app.cfg.path("ledger.jsonl"))
         if {k: (v["role"], v["removed"]) for k, v in replay.members.items()} != {k: (v["role"], v["removed"]) for k, v in app.book.members.items()} or {k: v["state"] for k, v in replay.invites.items()} != {k: v["state"] for k, v in app.book.invites.items()}:
             failures.append("a replayed ledger gives different members or invitations")
@@ -1696,7 +1755,7 @@ def erase_flows(failures, app, m, port, mailbox, O, X, owner, other, owner_key, 
     mailed = [rcpt for rcpt, mail in mailbox.mail if mail["Subject"] == "SparkPipe deleted the records of your requests"]
     asked = [mail.get_content() for rcpt, mail in mailbox.mail if rcpt == [app.cfg.notify] and mail["Subject"] == f"Erase the hub's request records of {O} within 30 days"]
     logged = [e["type"] for e in owner("GET", "/v1/audit?type=records.erased")[1]["data"]]
-    if [(l["account"], l["records"], l["by"]) for l in lines] != [(O, 3, O), (X, 0, "operator")] or mailed != [["owner@example.com"], ["outsider@example.com"]] or logged != ["records.erased"] or not asked or f"--erase-records {O}" not in asked[0] or sp.Book(app.cfg.path("ledger.jsonl")).erased != app.book.erased:
+    if [(l["account"], l["records"], l["by"]) for l in lines] != [(O, 3, O), (X, 0, "operator")] or mailed != [["owner@example.com"], ["outsider@example.com"]] or logged != ["records.erased"] or not asked or f"--config config.json --erase-records {O} --note " not in asked[0] or sp.Book(app.cfg.path("ledger.jsonl")).erased != app.book.erased:
         failures.append(f"an erasure is not recorded in the ledger and the audit log and emailed to the owner, or does not replay: {lines} {mailed} {logged}")
 
 
@@ -1829,6 +1888,7 @@ def main():
         live_flows(failures, work)
         discount_flows(failures, work)
         pair_flows(failures, work)
+        pair_deadline_flows(failures, work)
         allocation_flows(failures, work)
         extension_flows(failures, work)
         notice_flows(failures, work)

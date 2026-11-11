@@ -459,8 +459,7 @@ float32.
 
 Shared conventions:
 
-- Build. The `run_*_test.sh` scripts, `run_fp8_rung.sh` and
-  `build_and_run_fwd.sh` compile in `~/hy4-gpu` with
+- Build. The `run_*_test.sh` scripts and `build_and_run_fwd.sh` compile in `~/hy4-gpu` with
   `nvcc -O2 -arch=sm_121 -fmad=false`. Every CUDA tool except
   `hy4_fp8_rung` includes `hy4_iq_dequant_vendor.h` from
   `tools/hy4_dequant/`, so the compiler must find that header (next to the
@@ -629,9 +628,8 @@ failed checkpoint save or a `.done` marker that cannot be written.
 
 Runs `SparkHy4GemvFp8GroupedKernel` on sampled rows of a placed FP8 rank pack
 and records how far each dot lies from a double-precision host dot. The
-kernel is defined in
-`modules/hy4_resident_decode_stage/source/spark_hy4_resident_decode_stage_cuda.cu`;
-`run_fp8_rung.sh` compiles a copy of that file into the same binary.
+kernel is defined in the tool itself, and no script in the tree builds it:
+compile `hy4_fp8_rung.cu` alone with nvcc.
 
 ```sh
 python3 tools/hy4_gpu/fp8_rung_manifest.py <pack> <manifest> <rank> <ranks>
@@ -1004,49 +1002,3 @@ setup fails.
 `SPARK_WEIGHTD_MESH_REGION_BYTES`, which `include/sparkpipe/spark_weightd.h`
 defines as 268632064, so the probe registers a smaller region than the
 transport does.
-
-### qwen38_27b_nvfp4_smoke.cu
-
-Checks the shared `SparkLmHostLaunchBatchedLinear` NVFP4 path
-(`SPARK_LM_WEIGHT_FORMAT_NVFP4_E2M1`) on a qwen38_27b FFN gate tensor,
-against a host dequant of the same pack bytes. It runs two batch sizes:
-4 rows, below `SPARK_LM_TILE` (16), which takes the scalar
-`SparkLmLinearKernel`; and 20 rows, which takes the tile path
-(`SparkLmExpertTileKernel`).
-
-```sh
-qwen38_27b_nvfp4_smoke <pack.q38sp> [layer]
-```
-
-The `layer` argument is accepted and ignored; the tool always uses layer 1.
-
-Pack parsing:
-
-- Header: tensor count u32 at byte 16, directory offset u64 at byte 104.
-- Directory entries of 56 bytes: kind, layer, format (u32 at 0, 4, 8), rows
-  u32 at 12, columns u32 at 16, payload offset and bytes (u64 at 24, 32),
-  scale offset and bytes (u64 at 40, 48).
-- The tool takes the first entry with kind 5 (FFN gate), layer 1 and format 8.
-
-Reference: `W[n][k] = e2m1(nibble) * e4m3(plane[n][k/16]) * weight_global`,
-with the low nibble holding the even column. The e4m3 plane is the first
-`rows * cols / 16` bytes of the scale segment. `weight_global` is the F32
-right after the plane. The input is a fixed pattern in [-1, 1], uploaded as
-bf16; the reference dot is computed in double from the unrounded input.
-
-An element is out of tolerance when its relative error exceeds 0.05 (the
-denominator is `max(|ref|, 1e-4)`) and its absolute error exceeds 1e-2. Any
-such element fails the leg. Lines: `SMOKE gemv rows4: ...`,
-`SMOKE tile rows20: ...`, `SMOKE PASS|FAIL`. Apart from the usage line, the
-tool's messages are written with a literal `\n` (the source escapes the
-backslash), so they arrive without line breaks.
-
-Exit codes: 0 when both legs pass; 1 when a leg fails or a launch fails; 2 on
-usage error, unreadable header, directory or segment, or no matching entry.
-
-Build with nvcc for `sm_121a`. `sparkpipe/spark_lm_kernels.cuh` is in
-`model-families/common/include` and includes
-`inference/kernels/activation.cuh` (relative to the repository root) and
-`sparkpipe/spark_head_screen.h` (under `include/`), so the repository root,
-`include/` and `model-families/common/include` must all be on the include path.
-

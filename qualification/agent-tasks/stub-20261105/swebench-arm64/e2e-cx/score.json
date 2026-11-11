@@ -1,0 +1,21 @@
+{
+ "label": "e2e-cx",
+ "harness": "codex",
+ "model": "stub-model",
+ "planned": 3,
+ "ran": 3,
+ "resolved": 2,
+ "pass_rate": 0.6667,
+ "empty_patches": 1,
+ "evaluation_errors": 0,
+ "infrastructure_failures": 0,
+ "agent_failures": 0,
+ "agent_timeouts": 0,
+ "resolved_ids": [
+  "psf__requests-2931",
+  "sympy__sympy-13480"
+ ],
+ "report": "runs/e2e-cx/eval/codex__stub-model.e2e-cx.json",
+ "report_sha256": "6bec6774b1898d85fdb0c43681f54a4eb7683b0bd69501a4a833b2c85c419c47",
+ "agent_seconds_median": 1.0
+}

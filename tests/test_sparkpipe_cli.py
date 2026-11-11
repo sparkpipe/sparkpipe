@@ -7,6 +7,7 @@ import http.server
 import io
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -341,7 +342,7 @@ def check_units(failures):
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
             "CLAUDE_CODE_SUBAGENT_MODEL": "kimi-k3+core", "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1", "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "1800000"}
     expect(failures, env == spec, f"the Claude Code environment differs from FLEET_API.md 3.3 and 3.8: {env}")
-    provider = dict(cli.codex_tables(cli.API)[0][1])
+    provider = dict(cli.codex_tables(cli.API, {})[0][1])
     expect(failures, provider == {"name": "SparkPipe", "base_url": "https://sparkpipe.ai/pay/api/v1", "env_key": "SPARKPIPE_API_KEY", "wire_api": "responses", "stream_idle_timeout_ms": 600000,
                                   "model_catalog_url": "https://sparkpipe.ai/pay/api/v1/codex/models"}, f"the Codex provider differs from FLEET_API.md 3.4: {provider}")
     profile = tomllib.loads(cli.codex_profile("kimi-k3+core", {"context_window": 1000000, "max_output_tokens": 32768, "sequences": 8}))
@@ -451,10 +452,14 @@ def check_keys(failures, home, fake):
            f"keys create: {made['body']} {out}")
     code, out, _ = home.run("keys", "create")
     expect(failures, code == 0 and fake.find("POST", "/market/keys")[-1]["body"] == {"note": DEVICE}, "keys create without a note does not name the device")
+    code, out, _ = home.run("keys", "show")
+    expect(failures, code == 0 and out == KEY + "\n", f"keys show does not print only this machine's key: {out!r}")
     code, out, _ = home.run("keys", "revoke", "KY0")
     expect(failures, code == 0 and fake.find("POST", "/market/keys/revoke")[-1]["body"] == {"id": "KY0"} and home.cfg()["key"] == KEY, "revoking another key changes this machine's")
     code, out, _ = home.run("keys", "revoke", "KY1")
     expect(failures, code == 0 and "key" not in home.cfg() and "sparkpipe login" in out, f"revoking this machine's key leaves it configured: {home.cfg()}")
+    code, out, err = home.run("keys", "show")
+    expect(failures, code == 1 and not out and "sparkpipe login" in err, "keys show without a key on this machine does not ask for a login")
     fake.route("GET", "/market/state", (200, {}, {"account": None}))
     code, _, err = home.run("keys", "ls")
     expect(failures, code == 1 and "expired" in err, "an expired session is not reported")
@@ -475,7 +480,7 @@ def check_status(failures, home, fake):
     fake.route("GET", "/market/state", lambda r: (200, {}, {"account": account if session_auth(r) else None}))
     fake.route("GET", "/v1/state", lambda r: (200, {}, state) if key_auth(r) else (401, {}, {"error": {"message": "bad key", "code": "invalid_key"}}))
     code, out, err = home.run("status", "--fleet", "F3")
-    for text in ("300.000000 HC", "Holding now: F3", "BK1", "book the next week by 2027-01-10T00:00Z", "position 2", "Customer Agreement has changed",
+    for text in ("300.000000 HC", "Holding now: F3", "BK1", "book the next week by 2027-01-10T00:00Z", "position 2", "Customer Agreement or its Data Processing Agreement has changed",
                  "Fleet F3", "kimi-k3", "500.0 GB of 4.0 TB", "pins: 1", "core@a41f09 (warm)", "run_1 review running", "2027-01-12T00:00Z"):
         expect(failures, text in out, f"status does not show {text!r}: {out} {err}")
     expect(failures, code == 0 and "BK0" not in out, "status lists ended bookings")
@@ -497,7 +502,7 @@ def check_book(failures, home, fake):
 
     def booked(request):
         if request["body"].get("accept") is not True and fake.terms:
-            return 409, {}, {"error": "The Customer Agreement has changed since you accepted it.", "reason": "terms"}
+            return 409, {}, {"error": "The Customer Agreement or its Data Processing Agreement has changed since you accepted them.", "reason": "terms"}
         return 200, {}, dict(plan, booking="BK9")
 
     fake.terms = False
@@ -512,7 +517,7 @@ def check_book(failures, home, fake):
     code, out, _ = home.run("book", "week", "F3", "4", answers=["y"])
     books = fake.find("POST", "/market/book-weeks")
     question = "".join(home.prompts[-1:])
-    expect(failures, code == 0 and "BK9" in out and "for 540.000000 HC (10% off)?" in question and [r["body"] for r in books] == [{"fleet": "F3", "weeks": 4}] and session_auth(books[0])
+    expect(failures, code == 0 and "BK9" in out and "for 540.000000 HC (10% off)?" in question and [r["body"] for r in books] == [{"fleet": "F3", "weeks": 4, "first": "2027-01-04T00:00Z", "price": "540.000000"}] and session_auth(books[0])
            and fake.find("POST", "/market/quote-weeks")[0]["body"] == {"fleet": "F3", "weeks": 4}, f"book week: {code} {out} {home.prompts}")
     fake.route("POST", "/market/quote-weeks", (200, {}, dict(plan, weeks=1, discount="0")))
     home.run("book", "week", "F3", "1", answers=["n"])
@@ -526,13 +531,16 @@ def check_book(failures, home, fake):
     code, _, err = home.run("book", "week", "F3", "4", "--yes")
     expect(failures, code == 1 and "--accept" in err, f"a booking under changed terms: {err}")
     code, out, _ = home.run("book", "week", "F3", "4", "--yes", "--accept")
-    expect(failures, code == 0 and fake.find("POST", "/market/book-weeks")[-1]["body"] == {"fleet": "F3", "weeks": 4, "accept": True}, "--accept is not sent with the booking")
+    expect(failures, code == 0 and fake.find("POST", "/market/book-weeks")[-1]["body"] == {"fleet": "F3", "weeks": 4, "first": "2027-01-04T00:00Z", "price": "540.000000", "accept": True}, "--accept is not sent with the booking")
     code, out, _ = home.run("book", "hours", "F1", "2027-01-05T10", "2", answers=["y"])
     expect(failures, code == 0 and "F1 for 2 hour(s) from 2027-01-05T10:00Z, for 2.400000 HC (20% off)?" in home.prompts[-1] and "BK8" in out
            and fake.find("POST", "/market/quote-hours")[0]["body"] == {"fleet": "F1", "start": "2027-01-05T10:00Z", "hours": 2}, f"book hours does not show the market's price and discount: {home.prompts[-1]}")
     for start in ("2027-01-05T10", "2027-01-05T10:00Z"):
         code, out, _ = home.run("book", "hours", "F1", start, "2", "--yes")
-        expect(failures, code == 0 and fake.find("POST", "/market/book-hours")[-1]["body"] == {"fleet": "F1", "start": "2027-01-05T10:00Z", "hours": 2} and "BK8" in out, f"book hours {start}: {out}")
+        expect(failures, code == 0 and fake.find("POST", "/market/book-hours")[-1]["body"] == {"fleet": "F1", "start": "2027-01-05T10:00Z", "hours": 2, "price": "2.400000"} and "BK8" in out, f"book hours {start}: {out}")
+    fake.route("POST", "/market/book-hours", (409, {}, {"error": "The quote changed: 2 hour(s) of F1 from 2027-01-05T10:00Z now costs 3.000000 HC. Nothing was booked.", "reason": "quote_changed"}))
+    code, _, err = home.run("book", "hours", "F1", "2027-01-05T10", "2", "--yes")
+    expect(failures, code == 1 and "now costs 3.000000 HC" in err, f"a booking whose quote changed does not show the new quote: {err}")
     count = len(fake.find("POST", "/market/book-hours"))
     code, _, err = home.run("book", "hours", "F1", "2027-01-05T10:30", "2", "--yes")
     expect(failures, code == 1 and len(fake.find("POST", "/market/book-hours")) == count, "a booking at a half hour is sent")
@@ -690,7 +698,8 @@ model_catalog_url = "{fake.url}/v1/codex/models\""""
     expect(failures, "profiles" not in tomllib.loads(profile.read_text()) and "--profile sparkpipe" in out, "the Codex profile is not a top-level overlay")
     saved = backups(path)
     expect(failures, len(saved) == 1 and saved[0].read_text() == CODEX_BEFORE and not backups(profile), f"setup codex keeps no backup of config.toml: {saved}")
-    expect(failures, KEY not in text + profile.read_text() and f"export SPARKPIPE_API_KEY={KEY}" in out, "setup codex writes the key into the config, or does not say where Codex reads it")
+    expect(failures, KEY not in text + profile.read_text() and KEY not in out and 'export SPARKPIPE_API_KEY="$(sparkpipe keys show)"' in out,
+           f"setup codex writes or prints the key, or does not say where Codex reads it: {out}")
     overlay_text = profile.read_text()
     home.run("setup", "codex")
     expect(failures, path.read_text() == text and profile.read_text() == overlay_text and len(backups(path)) == 1 and not backups(profile), "setup codex is not idempotent")
@@ -750,7 +759,7 @@ def check_setup_opencode(failures, home, fake):
         "model": main, "small_model": small, "share": "disabled",
     }
     expect(failures, code == 0 and after == wanted, f"setup opencode writes {after} ({err})")
-    expect(failures, KEY not in path.read_text() and "SPARKPIPE_API_KEY" in out, "setup opencode writes the key into the config")
+    expect(failures, KEY not in path.read_text() + out and "SPARKPIPE_API_KEY" in out, "setup opencode writes the key into the config or prints it")
     saved = backups(path)
     expect(failures, len(saved) == 1 and json.loads(saved[0].read_text()) == before, "setup opencode keeps no backup of the config it replaced")
     text = path.read_text()
@@ -803,6 +812,40 @@ OPENCODE_SHAPE = {"$schema": ("https://opencode.ai/config.json",), "model": str,
                                              "models": {"*": {"name": str, "limit": {"context": int, "output": int}}}}},
                   "agent": {name: {"model": str} for name in ("general", "explore", "compaction", "title", "summary")},
                   "mcp": {"sparkpipe": {"type": ("remote",), "url": str, "headers": {"*": str}, "enabled": bool}}}
+
+
+@scenario
+def check_setup_fleet(failures, home, fake):
+    home.signed_in(fake.url)
+    fake.route("GET", "/v1/models", lambda r: (200, {}, MODELS) if r["headers"].get("x-sparkpipe-fleet") == "F1A" else (409, {}, {"error": {"message": "Name a fleet.", "code": "fleet_required"}}))
+    fake.route("GET", "/v1/models/aliases", (200, {}, ALIASES))
+    for harness in ("claude-code", "codex", "opencode"):
+        code, out, err = home.run("setup", harness, "--fleet", "F1A")
+        expect(failures, code == 0 and "fleet F1A" in out, f"setup {harness} --fleet F1A: {out} {err}")
+    header = {"X-SparkPipe-Fleet": "F1A"}
+    settings = json.loads((home.home / ".claude" / "settings.json").read_text())
+    state = json.loads((home.home / ".claude.json").read_text())
+    codex = tomllib.loads((home.home / ".codex" / "config.toml").read_text())
+    opencode = json.loads((home.home / ".config" / "opencode" / "opencode.json").read_text())
+    found = {
+        "claude-code env": settings["env"].get("ANTHROPIC_CUSTOM_HEADERS") == "X-SparkPipe-Fleet: F1A",
+        "claude-code mcp": state["mcpServers"]["sparkpipe"]["headers"] == dict({"Authorization": "Bearer " + KEY}, **header),
+        "codex provider": codex["model_providers"]["sparkpipe"].get("http_headers") == header,
+        "codex mcp": codex["mcp_servers"]["sparkpipe"].get("http_headers") == header,
+        "opencode provider": opencode["provider"]["sparkpipe"]["options"].get("headers") == header,
+        "opencode mcp": opencode["mcp"]["sparkpipe"]["headers"] == dict({"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, **header),
+    }
+    expect(failures, all(found.values()), f"setup --fleet does not send the fleet from every harness: {[name for name, ok in found.items() if not ok]}")
+    fake.route("GET", "/v1/models", (200, {}, MODELS))
+    for harness in ("claude-code", "codex", "opencode"):
+        home.run("setup", harness)
+    settings = json.loads((home.home / ".claude" / "settings.json").read_text())
+    codex_text = (home.home / ".codex" / "config.toml").read_text()
+    opencode_text = (home.home / ".config" / "opencode" / "opencode.json").read_text()
+    expect(failures, "ANTHROPIC_CUSTOM_HEADERS" not in settings["env"] and "X-SparkPipe-Fleet" not in (home.home / ".claude.json").read_text() + codex_text + opencode_text,
+           "setup without --fleet keeps an earlier run's fleet")
+    code, _, _ = home.run("setup", "--undo")
+    expect(failures, code == 0 and not (home.home / ".claude" / "settings.json").exists() and not (home.home / ".codex" / "config.toml").exists(), "setup --undo leaves the fleet settings")
 
 
 @scenario
@@ -1018,6 +1061,11 @@ def change(path, data=None, kind="added"):
     return found
 
 
+def sync_key(fake, dest, fleet=""):
+    name = dest if isinstance(dest, str) else str(dest.resolve())
+    return json.dumps([fake.url, "dev@acme.example", fleet, "models/", name])
+
+
 def tree(root):
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in Path(root).rglob("*") if p.is_file()}
 
@@ -1031,7 +1079,7 @@ def check_storage_sync(failures, home, fake):
         None: {"data": [change("models/a.bin", first["models/a.bin"]), change("models/sub/b.json", first["models/sub/b.json"])], "until": "c1", "more": True},
         "c1": {"data": [change("models/sub/with space.txt", first["models/sub/with space.txt"])], "until": "c2", "more": False},
         "c2": {"data": [change("models/a.bin", kind="deleted"), change("models/sub/b.json", b'{"b": 2}', "changed")], "until": "c3", "more": False},
-        "c3": {"data": [change("models/a.bin", kind="deleted")], "until": "c4", "more": False},
+        "c3": {"data": [], "until": "c3", "more": False},
     }
     fake.route("GET", "/v1/storage/changes", lambda r: (200, {}, pages[r["query"].get("since", [None])[0]]))
     dest = home.root / "backup"
@@ -1041,19 +1089,27 @@ def check_storage_sync(failures, home, fake):
            f"storage sync pages: {[c['query'] for c in calls]} {err}")
     expect(failures, tree(dest) == {k[len("models/"):]: v for k, v in first.items()}, f"storage sync copies the wrong files: {sorted(tree(dest))}")
     expect(failures, "/v1/storage/models/sub/with%20space.txt" in [r["raw_path"] for r in fake.requests], "a storage path is not quoted")
-    expect(failures, home.cfg()["sync"] == {f"{fake.url} models/ {dest.resolve()}": "c2"} and "Copied 3 file(s)" in out, f"storage sync state: {home.cfg()['sync']} {out}")
+    expect(failures, home.cfg()["sync"] == {sync_key(fake, dest): {"since": "c2", "kept": []}} and "Copied 3 file(s)" in out, f"storage sync state: {home.cfg()['sync']} {out}")
     fake.route("GET", "/v1/storage/models/sub/b.json", (200, {}, b'{"b": 2}'))
     code, out, _ = home.run("storage", "sync", "models", str(dest))
     expect(failures, code == 0 and fake.find("GET", "/v1/storage/changes")[-1]["query"].get("since") == ["c2"] and (dest / "a.bin").exists()
-           and (dest / "sub/b.json").read_bytes() == b'{"b": 2}' and "--delete" in out, f"a second sync: {out}")
+           and (dest / "sub/b.json").read_bytes() == b'{"b": 2}' and "--delete" in out and home.cfg()["sync"][sync_key(fake, dest)] == {"since": "c3", "kept": ["models/a.bin"]},
+           f"a second sync: {out} {home.cfg()['sync']}")
     code, out, _ = home.run("storage", "sync", "models/", dest, "--delete")
-    expect(failures, code == 0 and not (dest / "a.bin").exists() and (dest / "sub/b.json").exists(), "storage sync --delete")
+    expect(failures, code == 0 and fake.find("GET", "/v1/storage/changes")[-1]["query"].get("since") == ["c3"] and not (dest / "a.bin").exists() and (dest / "sub/b.json").exists()
+           and "Deleted 1" in out and home.cfg()["sync"][sync_key(fake, dest)]["kept"] == [], f"storage sync --delete keeps a deletion an earlier sync listed: {out}")
+    before = len(fake.find("GET", "/v1/storage/changes"))
+    code, out, err = home.run("storage", "sync", "models/", dest, "--fleet", "F1B")
+    other = fake.find("GET", "/v1/storage/changes")[before:]
+    expect(failures, code == 0 and other and "since" not in other[0]["query"] and all(c["headers"].get("x-sparkpipe-fleet") == "F1B" for c in other)
+           and home.cfg()["sync"][sync_key(fake, dest, "F1B")]["since"] == "c2" and home.cfg()["sync"][sync_key(fake, dest)]["since"] == "c3",
+           f"another fleet's sync starts from this fleet's cursor: {[c['query'] for c in other]} {err}")
     for bad, reason in (("models/../../escape.txt", "unsafe"), ("other/x.txt", "outside")):
         fake.route("GET", "/v1/storage/changes", (200, {}, {"data": [change(bad, b"x")], "until": "z", "more": False}))
         fake.route("GET", "/v1/storage/" + bad, (200, {}, b"x"))
         target = home.root / ("bad-" + reason)
         code, _, err = home.run("storage", "sync", "models/", target)
-        expect(failures, code == 1 and reason in err and not list(home.root.rglob("escape.txt")) and f"{fake.url} models/ {target.resolve()}" not in home.cfg()["sync"],
+        expect(failures, code == 1 and reason in err and not list(home.root.rglob("escape.txt")) and sync_key(fake, target) not in home.cfg()["sync"],
                f"storage sync accepts the path {bad}: {err}")
     fake.route("GET", "/v1/storage/models/a.bin", (200, {}, first["models/a.bin"]))
     fake.route("GET", "/v1/storage/changes", (200, {}, {"data": [dict(change("models/a.bin", first["models/a.bin"]), sha256="0" * 64)], "until": "z", "more": False}))
@@ -1084,15 +1140,15 @@ def resumable(failures, home, fake):
     }
     fake.route("GET", "/v1/storage/changes", lambda r: (200, {}, pages[r["query"].get("since", [None])[0]]))
     dest = home.root / "resumable"
-    key = f"{fake.url} models/ {dest.resolve()}"
+    key = sync_key(fake, dest)
     code, out, err = home.run("storage", "sync", "models/", dest)
-    expect(failures, code == 1 and "unsafe" in err and "gone.bin: deleted on the fleet" in err and "moved.bin" in err and home.cfg()["sync"].get(key) == "r1"
+    expect(failures, code == 1 and "unsafe" in err and "gone.bin: deleted on the fleet" in err and "moved.bin" in err and home.cfg()["sync"].get(key, {}).get("since") == "r1"
            and tree(dest) == {"p1.bin": files["models/p1.bin"], "p2.bin": files["models/p2.bin"]}, f"a failed sync does not keep the cursor of its last whole page: {home.cfg()['sync'].get(key)} {err}")
     pages["r1"]["data"].pop()
     downloads = len(fake.find("GET", "/v1/storage/models/p2.bin"))
     code, out, err = home.run("storage", "sync", "models/", dest)
     expect(failures, code == 0 and fake.find("GET", "/v1/storage/changes")[-1]["query"].get("since") == ["r1"] and len(fake.find("GET", "/v1/storage/models/p2.bin")) == downloads
-           and "1 file(s) were already there" in out and home.cfg()["sync"][key] == "r2", f"a resumed sync downloads a file it already has: {out} {err}")
+           and "1 file(s) were already there" in out and home.cfg()["sync"][key]["since"] == "r2", f"a resumed sync downloads a file it already has: {out} {err}")
 
 
 def bucket_sync(failures, home, fake, first, pages):
@@ -1115,7 +1171,7 @@ def bucket_sync(failures, home, fake, first, pages):
     expect(failures, [t for c, t in timeouts if c == ["aws", "s3", "cp"]] == [None, None, None] and all(t == cli.TOOL_TIMEOUT for c, t in timeouts if c == ["aws", "s3api", "head-object"]),
            f"a bucket upload has a time limit: {timeouts}")
     cfg = home.cfg()
-    cfg["sync"].pop(f"{fake.url} models/ s3://bucket/backup")
+    cfg["sync"].pop(sync_key(fake, "s3://bucket/backup"))
     home.config.write_text(json.dumps(cfg))
     code, out, _ = home.run("storage", "sync", "models/", "s3://bucket/backup/")
     expect(failures, code == 0 and len([a for a in home.aws_log() if a[:2] == ["s3", "cp"]]) == 3 and "3 file(s) were already there" in out, f"a bucket sync copies files it already has: {out}")
@@ -1375,10 +1431,151 @@ def check_package(failures):
         expect(failures, ran.returncode == 0 and ran.stdout.strip() == f"sparkpipe {release}", f"pip install of the wheel does not give a sparkpipe command: {ran.stdout} {ran.stderr}")
 
 
+def site_prices():
+    text = (ROOT / "site" / "compare-prices.js").read_text(encoding="utf-8")
+    body = text[text.index("=") + 1:].strip().rstrip(";")
+    return json.loads(re.sub(r"([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:", r'\1"\2":', body))
+
+
+def claude_row(mid, ts, inp, w5, rd, out, model="claude-opus-5-5"):
+    return {"type": "assistant", "sessionId": "s1", "isSidechain": False, "requestId": "r" + mid, "timestamp": ts,
+            "message": {"id": mid, "model": model, "usage": {"input_tokens": inp, "cache_creation_input_tokens": w5, "cache_read_input_tokens": rd, "output_tokens": out,
+                                                            "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": 0}}}}
+
+
+def codex_event(ts, total, inp, cached, out):
+    return {"timestamp": ts, "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": total},
+                                                                                            "last_token_usage": {"input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out}}}}
+
+
+def compare_logs(claude, codex):
+    rows = [claude_row("m1", "2026-11-03T09:00:00Z", 10, 120000, 0, 500), claude_row("m1", "2026-11-03T09:00:00Z", 10, 120000, 0, 900),
+            claude_row("m2", "2026-11-03T09:02:00Z", 20, 2000, 120000, 800), claude_row("m3", "2026-11-03T10:45:00Z", 10, 122500, 0, 700),
+            claude_row("m4", "2026-11-04T09:00:00Z", 10, 125000, 0, 600, model="claude-sonnet-5-5")]
+    events = [{"timestamp": "2026-11-03T11:00:00Z", "type": "session_meta", "payload": {"id": "c1"}},
+              {"timestamp": "2026-11-03T11:00:00Z", "type": "turn_context", "payload": {"model": "gpt-5.3-codex"}},
+              codex_event("2026-11-03T11:00:05Z", 50000, 50000, 0, 1000), codex_event("2026-11-03T11:00:06Z", 50000, 50000, 0, 1000),
+              codex_event("2026-11-03T11:20:00Z", 101000, 51000, 1000, 500)]
+    for folder, name, lines in ((claude, "claude.jsonl", rows), (codex, "rollout.jsonl", events)):
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text("\n".join(json.dumps(line) for line in lines) + "\nnot json\n")
+    (claude / "notes.txt").write_text(json.dumps(rows[0]) + "\n")
+
+
+def anthropic(model, inp=0, w5=0, w1=0, read=0, out=0, at=1, session="s"):
+    return {"kind": "anthropic", "model": model, "time": at, "session": session, "input": inp, "w5": w5, "w1": w1, "read": read, "output": out}
+
+
+def openai(model, inp=0, cached=0, out=0, at=1, session="c"):
+    return {"kind": "openai", "model": model, "time": at, "session": session, "input": inp, "cached": cached, "output": out}
+
+
+def check_compare_units(failures):
+    expect(failures, cli.API_PRICES == site_prices(), "the CLI's API prices differ from site/compare-prices.js")
+    for raw, name in (("claude-opus-5-5", "Claude Opus 5.5"), ("claude-opus-5-5-20261101", "Claude Opus 5.5"), ("claude-opus-5-5[1m]", "Claude Opus 5.5"),
+                      ("us.anthropic.claude-haiku-4-5-20251001-v1:0", "Claude Haiku 4.5"), ("claude-sonnet-4-5@20250929", "Claude Sonnet 4.5"),
+                      ("claude-opus-4-1-2025-08-05-v2", "Claude Opus 4.1"), ("Claude-Opus-5", "Claude Opus 5"), ("claude-opus-5-5x", None), ("claude-foo-9", None)):
+        found = cli.price_entry(cli.API_PRICES["anthropic"], cli.priced_model(raw))
+        expect(failures, (found and found["name"]) == name, f"{raw} is priced as {found and found['name']}, not {name}")
+    for raw, name in (("gpt-5.4-mini", "GPT-5.4 mini"), ("gpt-5.4-mini-2026-01-01", "GPT-5.4 mini"), ("gpt-5.4", "GPT-5.4"), ("gpt-5.3-codex", "GPT-5.3 Codex"), ("o3", None)):
+        found = cli.price_entry(cli.API_PRICES["openai"], raw)
+        expect(failures, (found and found["name"]) == name, f"{raw} is priced as {found and found['name']}, not {name}")
+    expect(failures, cli.request_rates(anthropic("claude-haiku-5-5", inp=1, w5=99999))[1]["input"] == 0.1
+           and cli.request_rates(anthropic("claude-haiku-5-5", inp=1, w5=99999, read=1))[1]["input"] == 0.5, "long-context rates do not start above 100,000 prompt tokens")
+    expect(failures, cli.request_rates(openai("gpt-6-astra", inp=272000))[1]["input"] == 10 and cli.request_rates(openai("gpt-6-astra", inp=272001))[1]["input"] == 20,
+           "OpenAI long-context rates do not start above 272,000 input tokens")
+    expect(failures, abs(cli.request_cost(openai("gpt-5.5-pro", inp=1000, cached=400, out=10), cli.price_entry(cli.API_PRICES["openai"], "gpt-5.5-pro")) - (1000 * 30 + 10 * 180) / 1e6) < 1e-12,
+           "a model without a cache-read price is not charged full input")
+    hour = anthropic("claude-opus-5-5", inp=10, w1=20000, at=10)
+    expect(failures, cli.rewrite(hour, 3600, cli.request_rates(hour)[1])[0] is None and cli.rewrite(hour, 3601, cli.request_rates(hour)[1])[0] == 20000,
+           "a request that wrote a one-hour cache counts as a rewrite before an hour has passed")
+    small = anthropic("claude-opus-5-5", w5=9999, at=10)
+    half = anthropic("claude-opus-5-5", w5=10000, read=10001, at=10)
+    expect(failures, cli.rewrite(small, 301, cli.request_rates(small)[1])[0] is None and cli.rewrite(half, 301, cli.request_rates(half)[1])[0] is None,
+           "a small prompt, or one mostly read from the cache, counts as a rewrite")
+    expect(failures, [cli.usd(v) for v in (0.125, 1.005, 11.985, 99.994, 100.5, 2160.0, 0)] == ["$0.13", "$1.01", "$11.99", "$99.99", "$101", "$2,160", "$0.00"],
+           "dollars are not rounded as the page rounds them")
+    expect(failures, (cli.stamp_ms("2026-11-03T09:00:00Z"), cli.stamp_ms("2026-11-03T18:00:00.250+09:00"), cli.stamp_ms("2026-11-03"), cli.stamp_ms("soon"), cli.stamp_ms(None))
+           == (1793696400000, 1793696400250, 1793664000000, 0, 0), "log timestamps are not read as the page reads them")
+
+
+@contextlib.contextmanager
+def utc():
+    before = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("TZ")
+        else:
+            os.environ["TZ"] = before
+        time.tzset()
+
+
+@scenario
+def check_compare(failures, home, fake):
+    with utc():
+        compare_runs(failures, home, fake)
+
+
+def compare_runs(failures, home, fake):
+    claude, codex = home.home / ".claude" / "projects" / "p1", home.home / ".codex" / "sessions" / "2026" / "11" / "03"
+    compare_logs(claude, codex)
+    old = home.home / ".claude" / "projects" / "p0" / "old.jsonl"
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps(claude_row("m9", "2026-09-01T09:00:00Z", 10, 0, 0, 100)) + "\n")
+    os.utime(old, (time.time() - 40 * 86400, time.time() - 40 * 86400))
+    code, out, err = home.run("compare", "--json")
+    report = json.loads(out) if code == 0 else {}
+    expect(failures, code == 0 and report["total_usd"] == 1.809355 and report["rewrites"] == {"requests": 3, "tokens": 297500, "saved_usd": 0.96675}
+           and (report["files"], report["requests"], report["sessions"], report["days_worked"]) == (2, 6, 2, 2) and report["fleet_week"] is None,
+           f"compare does not give the page's totals: {code} {err} {out[:400]}")
+    expect(failures, code == 0 and [(m["name"], m["requests"], m["uncached_input"], m["cache_writes"], m["cache_reads"], m["output"], m["cost_usd"]) for m in report["models"]]
+           == [("Claude Opus 5.5", 3, 40, 244500, 120000, 2400, 1.29466), ("Claude Sonnet 5.5", 1, 10, 125000, 0, 600, 0.31852), ("GPT-5.3 Codex", 2, 100000, 0, 1000, 1500, 0.196175)],
+           f"compare does not give the page's model table: {report.get('models')}")
+    expect(failures, not fake.requests, "compare sends something while signed out")
+    code, out, _ = home.run("compare")
+    lines = [" ".join(line.split()) for line in out.splitlines()]
+    expect(failures, code == 0 and "Total $1.81" in lines and "Per day worked $0.90" in lines and "Scaled to a week $12.67" in lines
+           and "Requests that wrote their context again after a pause 3" in lines and "Tokens written again 297,500" in lines and "Saved had they been cache reads $0.97" in lines
+           and "Claude Opus 5.5 3 40 244,500 120,000 2,400 $1.29" in lines and "GPT-5.3 Codex 2 100,000 0 1,000 1,500 $0.20" in lines
+           and "Period 2026-11-03 – 2026-11-04 (1 day)" in lines and any("sparkpipe login" in line for line in lines), f"compare prints {out}")
+    code, out, _ = home.run("compare", "--json", "--days", "60")
+    expect(failures, code == 0 and json.loads(out)["requests"] == 7, "compare --days does not widen the window to older logs")
+    home.signed_in(fake.url)
+    fake.route("GET", "/market/state", (200, {}, {"account": {"email": "dev@acme.example"}, "bookings": {"weekHC": 144, "hourHC": 1},
+                                                  "hc": {"prices": [{"from": 1, "usd": 20}, {"from": 1000, "usd": 15}]}}))
+    code, out, _ = home.run("compare")
+    lines = [" ".join(line.split()) for line in out.splitlines()]
+    sent = fake.requests
+    expect(failures, code == 0 and "A week of a SparkPipe fleet $2,160" in lines and "Shared by three to five engineers, each $432 – $720" in lines
+           and len(sent) == 1 and sent[0]["path"] == "/market/state" and sent[0]["headers"].get("authorization") == "Bearer " + SESSION and not sent[0]["raw"],
+           f"compare signed in does not price a fleet week from the account, or sends more: {out} {sent}")
+    fake.route("GET", "/market/state", (500, {}, {"error": "down"}))
+    code, out, err = home.run("compare")
+    expect(failures, code == 0 and "$1.81" in out and "fleet week is left out" in err and "A week of a SparkPipe fleet" not in out, f"a market failure stops compare: {code} {err}")
+    other = home.root / "elsewhere"
+    compare_logs(other / "projects" / "p", other / "sessions")
+    code, out, _ = home.run("compare", "--json", "--claude", other / "projects", "--claude", claude, "--codex", other / "sessions", "--codex", other / "sessions")
+    expect(failures, code == 0 and json.loads(out)["requests"] == 6, "compare counts the same request twice from two folders, or misses one")
+    code, out, _ = home.run("compare", "--json", env={"CLAUDE_CONFIG_DIR": str(other), "CODEX_HOME": str(home.root / "none")})
+    expect(failures, code == 0 and json.loads(out)["requests"] == 4, "compare does not read CLAUDE_CONFIG_DIR/projects")
+    code, _, err = home.run("compare", "--claude", home.root / "missing")
+    expect(failures, code == 1 and "is not a folder" in err, f"compare accepts a folder that does not exist: {err}")
+    code, _, err = home.run("compare", "--days", "0")
+    expect(failures, code == 1 and "--days" in err, "compare accepts --days 0")
+    empty = home.root / "empty"
+    empty.mkdir()
+    code, _, err = home.run("compare", "--claude", empty, "--codex", empty)
+    expect(failures, code == 1 and "No Claude Code or Codex requests" in err and "Traceback" not in err, f"compare without logs: {err}")
+
+
 def main():
     failures = []
-    for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_schemas, check_setup_undo,
-                  check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_package):
+    for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_fleet, check_setup_schemas, check_setup_undo,
+                  check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_compare_units, check_compare, check_package):
         try:
             check(failures)
         except Exception as error:
@@ -1393,7 +1590,7 @@ def main():
           "refusing files it cannot merge safely; tokens only in the macOS keychain or secret-tool, never on a command line; fetch, ls, resume and cancel sending a token only to its own host "
           "and following no redirect; storage sync by pages of changes, resuming from the last whole page, skipping files it already has, confined to the destination, to a directory or s3://; "
           "the proxy taking only its own local key, local host names and no web pages, forwarding only inference paths and the Responses WebSocket, retrying 429 and streaming; "
-          "errors without tracebacks or secrets; a reproducible sdist and wheel that pip installs as the sparkpipe command")
+          "errors without tracebacks or secrets; compare pricing local Claude Code and Codex logs as the site's cost check does, from the same price table, sending nothing but the session; a reproducible sdist and wheel that pip installs as the sparkpipe command")
     return 0
 
 

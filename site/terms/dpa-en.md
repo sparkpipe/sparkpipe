@@ -1,5 +1,7 @@
 # SparkPipe Data Processing Agreement
 
+Version of 10 November 2026
+
 ## Parties and scope
 
 This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809 ("**we**"), and the Customer under the SparkPipe Customer Agreement (the "**Agreement**"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in providing the Fleets, Functions and API ("**Customer personal data**"). Terms defined in the Agreement have the same meaning here.
@@ -42,7 +44,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 5. Sub-processors
 
-5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines (Customer Agreement clause 7.8) is not a sub-processor: its licensor receives no Customer personal data.
+5.1. Customer authorises the sub-processor below. We use no other to process Customer personal data. A software module that runs on our machines is not a sub-processor and sends Customer personal data nowhere (Customer Agreement clause 7.8).
 
 | Sub-processor | Task | Location |
 | --- | --- | --- |
@@ -76,7 +78,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet and make no backup.
 
-9.3. Apart from working state, we keep an operational record of each request for 1 year: the model, token counts, timings and identifiers of the request, the session and the key. It holds no prompt or reply text and no token numbers. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.
+9.3. Apart from working state, we keep an operational record of each request for 1 year: the model, token counts, timings and identifiers of the request, the session, the key and the user under the Account who sent it. It holds no prompt or reply text and no token numbers. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.
 
 ## 10. Demonstrating compliance and audits
 

@@ -1,5 +1,7 @@
 # SparkPipe Customer Agreement
 
+Version of 10 November 2026
+
 ## Parties
 
 This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), a company organised under the laws of the Republic of Korea, business registration number 641-87-03809, of Building B, Unit 1522, 95 Hangang-daero (Raemian Yongsan The Central), Yongsan-gu, Seoul, Republic of Korea ("**we**"), and the company, professional or independent developer identified in the account that accepts it ("**Customer**").
@@ -10,7 +12,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 1.1. In this Agreement:
 
-- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published at sparkpipe.ai/fleets.html, which states the machines in each Fleet. The Fleet List may group Fleets in **pairs** of two halves: an **A half**, pinned by the Week, and a **B half**, which is an Hour Fleet. An **Hour Fleet** is a Fleet that the Fleet List marks as one; it is booked by the hour, and pinned only under clause 15.8.
+- **Fleet** means a group of computing machines that we operate ourselves as one unit in Korea and list on our **Fleet List**, published on our website, which states the machines in each Fleet. The Fleet List may group Fleets in **pairs** of two halves: an **A half**, pinned by the Week, and a **B half**, which is an Hour Fleet. An **Hour Fleet** is a Fleet that the Fleet List marks as one; it is booked by the hour, and pinned only under clause 15.8.
 - **Rate** means the number that the Fleet List gives each Fleet, which we set and may change as clause 9.2 provides. A Fleet's Rate is 1 unless the Fleet List states otherwise. A booking is priced at the Rate published when it is made.
 - **Hour-credit** (**HC**) means the prepaid unit in which Customer pays for bookings.
 - **Booking** means the right to use one entire Fleet for an hour (an **Hour**, clause 14) or for a Week (clause 15).
@@ -21,6 +23,8 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 - **KST** means Korea Standard Time (UTC+9). All times and days in this Agreement are in KST.
 
 1.2. **Orders.** Customer buys under this Agreement by purchasing HC through our website (an **Order**). We may also agree other terms with Customer in a written order signed by both parties, which prevails over this Agreement for the terms it states; it does not vary clause 5, 6, 8 or 12 unless it says so expressly.
+
+1.3. **Data Processing Agreement.** Our Data Processing Agreement (the **DPA**), published on our website with this Agreement and accepted with it, forms part of this Agreement. It governs the personal data we process on Customer's behalf.
 
 ## 2. Professional use and account
 
@@ -52,7 +56,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 4.1. We provide a service, not hardware. We keep ownership, possession and operation of every Fleet.
 
-4.2. **Availability.** We publish live capacity in machine-readable form at https://sparkpipe.ai/availability.txt, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is an Hour Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
+4.2. **Availability.** We publish live capacity in machine-readable form on our website, as it documents, regenerated at least every 30 seconds: each Fleet we operate, whether it is serving, and whether it is an Hour Fleet, pinned (clause 15) or available. Wherever this Agreement makes anything subject to availability, availability means what that publication shows when Customer books.
 
 4.3. **Maintenance.** We may take each Fleet out of service for maintenance for up to the maintenance allowance we publish in each Week. We announce each maintenance period at least 7 days ahead, choose the times of least use, and rotate those times across the hours of the day. A booked hour under maintenance is credited under clause 4.4 as if the Fleet were unavailable throughout it, unless we serve Customer on another Fleet in that hour under clause 15.7.
 
@@ -76,7 +80,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 6.3. **Working state is temporary.** Customer must treat its working state as temporary, also while it holds a Fleet for many Weeks ahead, and keep its own copies of anything it wants to keep. We recommend exporting Customer storage at least daily (clause 7.5). Working state may be lost to a failure of the Fleet, an event under clause 8.7, maintenance or any other cause, and nothing is returned when a Booking or this Agreement ends. We keep no copy of working state outside the Fleet that holds it, make no backup of it and use it for nothing but serving Customer. Before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image.
 
-6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data and Customer data as our published privacy policy states.
+6.4. We tell Customer without delay of any intrusion, any leak of its information and any unannounced interruption of the service. We handle account data, and Customer data, as our published privacy policy states, and personal data in Customer data also as the DPA states.
 
 6.5. **In Korea only.** We process requests and Customer data only on Fleets and servers that we operate in Korea, including servers we rent there, and we send no request, prompt, output or other Customer data to any other computing or AI service, in Korea or abroad. This does not apply to a transfer that Customer itself asks for, to or from a host it names, such as a download into its Customer storage, or an export or backup to its own storage.
 
@@ -100,7 +104,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 7.7. **Our software.** Customer must not copy, extract, decompile or reverse engineer software of the service or of the Functions, except software whose source code we publish, which its own licence governs, and except where the law allows it despite this clause. This clause does not limit Customer's rights in its data and outputs under clause 6.1 or their export under clause 7.5.
 
-7.8. **Modules.** Parts of the service may run as separately licensed software modules, our own or licensed from others, which our website lists. A module runs only on Fleets and servers we operate in Korea, processes Customer data only to serve Customer, and sends it nowhere else (clause 6.5). Modules are software of the service under clause 7.7. We may add, change or withdraw modules without amending this Agreement.
+7.8. **Modules.** Parts of the service may run as separately licensed software modules, which our website lists. A module runs only on Fleets and servers we operate in Korea, processes Customer data only to serve Customer, and sends it nowhere else (clause 6.5). Modules are software of the service under clause 7.7. We may add, change or withdraw modules without amending this Agreement.
 
 ## 8. Liability
 
@@ -130,7 +134,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 10.2. We may close the Account and end this Agreement by written notice: (a) if Customer materially breaches this Agreement and does not remedy the breach within 30 days after our written notice; or (b) at once, where a breach of clause 5.2 cannot be remedied, where Customer or a person that owns or controls it becomes subject to the sanctions in clause 5.2(d), or where a law, court or competent authority requires us to stop serving Customer.
 
-10.3. **Right of use only; no refunds.** HC and Bookings give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software or models or any intellectual property we own or license, are not a deposit, loan, security or investment, carry no expectation of profit from our efforts, and have no cash value. HC and Bookings cannot be moved to another account or withdrawn. **Every amount paid is non-refundable and non-cancellable**, except under clause 10.4 or 16.4 or where the law requires. Customer may not set off, deduct, counterclaim or withhold against any amount. We do not buy back HC or Bookings.
+10.3. **Right of use only; no refunds.** HC and Bookings give the right to use the service only. They give no ownership of, or rights in, our company, hardware, software or models or any intellectual property we own or license, are not a deposit, loan, security or investment, carry no expectation of profit from our efforts, and have no cash value. HC and Bookings cannot be moved to another account or withdrawn. **Every amount paid is non-refundable and non-cancellable**, except under clause 10.4 or 16.4 of this Agreement or clause 5.2 of the DPA, or where the law requires. Customer may not set off, deduct, counterclaim or withhold against any amount. We do not buy back HC or Bookings.
 
 10.4. If we stop offering service for HC, or close an Account other than for Customer's breach, we refund, at the price paid and within 60 days, the purchased HC not yet spent or lapsed and the HC spent on Bookings for hours that have not yet occurred, counting HC as spent from the oldest lot first. HC credited under clause 4.4 or 6.6 is not refunded.
 
@@ -138,7 +142,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 ## 11. General
 
-11.1. **Entire agreement.** This Agreement, with Customer's Orders and any written order under clause 1.2, is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation.
+11.1. **Entire agreement.** This Agreement, with the DPA, Customer's Orders and any written order under clause 1.2, is the whole agreement between the parties. Neither party relies on any pre-contractual statement, projection, benchmark or representation.
 
 11.2. **Amendment and waiver.** This Agreement changes only as clause 9 provides. A written order is made, and changed, only in writing signed by both parties. No conduct, delay or extension operates as a waiver.
 
@@ -182,7 +186,7 @@ This Agreement is made between **HYOR AI Tech Ltd.** (효르에이아이테크 �
 
 14.2. **Price.** Each Hour costs the HC we publish for an Hour, times the Fleet's Rate, less Customer's discount when it books. Customer's discount is the larger of (a) the discount we publish for the number of Customer's booked Weeks that have not ended, counting the current Week, on the Fleet where it holds the most, and (b) while Customer is on the waitlist, the discount for the number of Weeks its lock would book under clause 16.3 on a Fleet whose Rate is 1.
 
-14.3. **Final and consumed.** A Booking exists once our system confirms it and debits its HC, and is then final: it cannot be cancelled, moved or refunded, except under clause 10.4. A booked hour is consumed when it occurs, whether or not it is used. Requests still running at the end of a Booking have 30 seconds to finish. Loading a model counts as part of the Booking.
+14.3. **Final and consumed.** A Booking exists once our system confirms it and debits its HC, and is then final: it cannot be cancelled, moved or refunded, except under clause 10.4 of this Agreement or clause 5.2 of the DPA. A booked hour is consumed when it occurs, whether or not it is used. Requests still running at the end of a Booking have 30 seconds to finish. Loading a model counts as part of the Booking.
 
 14.4. **No displacement.** A confirmed Booking is never taken, moved or displaced, and is delivered on the Fleet it was made on, except on a suspension under clause 5.3, where maintenance overlaps it under clause 4.3, or where its Fleet cannot serve under clause 15.7.
 
