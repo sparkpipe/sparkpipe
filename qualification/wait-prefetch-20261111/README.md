@@ -65,6 +65,12 @@ no adapter error and no failed graph. The API logged one `batch_rejected`,
 a resume point the ranks no longer held, which the engine cleared and
 prefilled again; the gated run has one too.
 
+The branch head `77ec4690f` renames one kernel-local variable after
+`d619f5e61`. Its adapter library, built on the same host, has the same host
+code, device code and read-only data sections as the gated one (sha256 of
+`.text` `5f05b2baf52d250b...`, of `.nv_fatbin` `ca3bdaedfd6056f1...`, of
+`.rodata` `ac5d73ecca67aae5...`).
+
 ## The round alone
 
 `build/mesh_round_bench` on the sixteen Sparks on mesh lane 5, a 5,120-value
