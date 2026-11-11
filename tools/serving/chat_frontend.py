@@ -98,9 +98,9 @@ ALLOW_SWAP_VALUES = frozenset({"1", "true"})
 HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 FLEET_VALUE = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REQUEST_CLASS_HEADER = "x-claude-code-request-class"
-BACKGROUND_CLASSES = frozenset({"compaction", "auxiliary"})
+SIDE_CLASSES = frozenset({"compaction", "auxiliary"})
 SUBAGENT_HEADER = "x-openai-subagent"
-BACKGROUND_SUBAGENTS = frozenset({"compact"})
+SIDE_SUBAGENTS = frozenset({"compact"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
 MEMORY_HEADER = "X-SparkPipe-Memory"
 AGENT_HEADERS = ("x-claude-code-agent-id", "x-parent-session-id")
@@ -126,9 +126,9 @@ def clean_header(value, pattern=HEADER_VALUE):
     return value if isinstance(value, str) and pattern.fullmatch(value) is not None else None
 
 
-def harness_background(headers):
-    return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES
-            or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in BACKGROUND_SUBAGENTS)
+def harness_side_request(headers):
+    return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in SIDE_CLASSES
+            or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in SIDE_SUBAGENTS)
 
 
 def glob_match(pattern, name):
@@ -2092,8 +2092,6 @@ class Frontend:
         value = value or self.metadata_priority(metadata)
         if value:
             return INTERACTIVE_PRIORITY if value == "interactive" else BULK_PRIORITY
-        if harness_background(headers):
-            return BULK_PRIORITY
         if key is not None and key.get("priority") == "background":
             return BULK_PRIORITY
         return BULK_PRIORITY if bulk else INTERACTIVE_PRIORITY
@@ -2105,7 +2103,7 @@ class Frontend:
         return session, agent
 
     def api_memory(self, headers, scope, member, fallback):
-        if self.memory is None or (headers.get(MEMORY_HEADER) or "").strip().lower() != "on" or harness_background(headers):
+        if self.memory is None or (headers.get(MEMORY_HEADER) or "").strip().lower() != "on" or harness_side_request(headers):
             return None
         session, agent = self.affinity(headers, fallback)
         if session is None:

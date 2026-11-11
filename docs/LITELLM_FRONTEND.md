@@ -78,8 +78,8 @@ public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
 for one and then gets 429 `busy` with an integer `Retry-After` and
 `x-should-retry: true`. Background requests (`<model>-bulk`,
 `X-SparkPipe-Priority: background` or `metadata["x-sparkpipe-priority"]`,
-Claude Code's compaction and auxiliary calls, and chat-memory jobs, which
-take a sequence at the gate like any request) leave two sequences for
+and chat-memory jobs, which take a sequence at the gate like any request;
+a harness's own marks never make a request background) leave two sequences for
 interactive ones, and a freed sequence goes to a waiting interactive request
 first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
