@@ -720,8 +720,11 @@ waits on the tails itself (`own_wait`).
   threads share the work. Issued from the polling warp, eight pieces a poll,
   it was paced by the poll loop and slowed the poll. The second warp issues
   the group at memory speed, up to `LM_WEIGHT_PREFETCH_BUDGET_BYTES`
-  (12 MiB), and stops when the polling warp has seen every peer land; the
-  next wait of the same group resumes where it stopped.
+  (12 MiB), and stops when the polling warp's wait is over; the next wait
+  of the same group resumes where it stopped. Thirty-two threads issue 512
+  KiB between two looks at that flag, about 1.7 us: with 8 threads the
+  round bench prefetched a quarter less in the same wait and with 2 almost
+  nothing, because finding each piece then costs more than the memory.
   - Measured on a GB10 (2026-11-11): a cold 26 MiB read takes about 120 us
     (225 to 230 GB/s). After a prefetch of its first N MiB the read is
     shorter by the time the prefetch took, up to about 20 MiB, which is what
