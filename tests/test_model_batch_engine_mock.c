@@ -340,6 +340,12 @@ static void TestScenarioSubmissionFloor(const SparkModelResidentDeployment *depl
 	lowest = MockResidentClientTakeLowestSubmissionId();
 	CHECK(state.completed_events[3] == 1u && lowest > 5000000u && lowest != UINT64_MAX && SparkModelBatchEnginePeekSubmissionId(engine) > 5000000u,
 		"submission floor: lower floors never pull the numbering back");
+	MockResidentClientSetSubmissionFloor(0u,9000000u);
+	SparkModelBatchEngineSeedSubmissionId(engine,1000000u);
+	CHECK(SparkModelBatchEnginePeekSubmissionId(engine) == 9000000u,
+		"submission floor: seeding the numbering below a rank's floor lands on the floor, so the caller's log names the id that will be used");
+	SparkModelBatchEngineSeedSubmissionId(engine,9500000u);
+	CHECK(SparkModelBatchEnginePeekSubmissionId(engine) == 9500000u,"submission floor: a seed above every floor is taken as given");
 	SparkModelBatchEngineDestroy(engine);
 }
 

@@ -1897,6 +1897,7 @@ static void api_seed_submission_ids(void)
 	api_logf("submission_id_seeded next=%llu session=%llu (%s)",
 	    (unsigned long long)SparkModelBatchEnginePeekSubmissionId(S.engine),
 	    (unsigned long long)session,
+	    SparkModelBatchEnginePeekSubmissionId(S.engine) != seeded ? "above the highest submission the ranks have accepted" :
 	    seeded != 1000000u ? "continued within engine session, crash window skipped" :
 	        "rebased — new engine session");
 }

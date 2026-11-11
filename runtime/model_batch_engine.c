@@ -5032,10 +5032,14 @@ void SparkModelBatchEngineSeedSubmissionId(
 	SparkModelBatchEngine *engine,
 	uint64_t next_submission_id)
 {
+	uint64_t floor;
 	if ( engine == 0 || next_submission_id == 0u )
 		return;
 	if ( next_submission_id > engine->next_submission_id )
 		engine->next_submission_id = next_submission_id;
+	floor = SparkModelPipelineClientSubmissionFloor(engine->pipeline);
+	if ( engine->next_submission_id < floor )
+		engine->next_submission_id = floor;
 }
 
 uint64_t SparkModelBatchEnginePeekSubmissionId(
