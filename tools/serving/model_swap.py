@@ -383,6 +383,8 @@ class Swapper:
                 return web.json_response({"error": "body must be JSON"}, status=400)
         model_id = body.get("model") if isinstance(body, dict) else None
         if model_id is not None:
+            if not isinstance(model_id, str):
+                return web.json_response({"error": "model must be a string"}, status=400)
             if model_id not in self.models:
                 return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
             if model_id == self.active and self.state != "swapping":
@@ -402,6 +404,8 @@ class Swapper:
         except json.JSONDecodeError:
             return web.json_response({"error": "body must be JSON with a model"}, status=400)
         model_id = body.get("model") if isinstance(body, dict) else None
+        if not isinstance(model_id, str):
+            return web.json_response({"error": "body must be JSON with a model name string"}, status=400)
         if model_id not in self.models:
             return web.json_response({"error": f"model {model_id!r} is not configured; configured: {sorted(self.models)}"}, status=404)
         if model_id == self.active and self.state != "swapping":

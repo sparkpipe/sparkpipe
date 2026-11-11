@@ -43,7 +43,7 @@ ssh/entropy: ssh, pollinate.
 misc boot: systemd-pcrphase, setvtrgb, systemd-user-sessions, update-utmp-runlevel,
 systemd-update-utmp, blk-availability, cups-browsed, docker, podman, samba-ad-dc,
 ubuntu-advantage, apport, fwupd-refresh, cron, getty@tty1, serial-getty@ttyS0,
-user@1000, nvidia-dgx-telemetry, nvidia-spark-run-apt-upgrade-once, centaur-sparkring-agent,
+user@1000, nvidia-dgx-telemetry, nvidia-spark-run-apt-upgrade-once, an agent service,
 sparkpipe_model_residentd, sparkpipe-fsck-health, plymouth-quit, rpc-statd-notify,
 update-notifier-motd/download timers.
 

@@ -539,10 +539,14 @@ PYTHON_TESTS := \
 	tests/test_router_precision_contract.py \
 	tests/test_situ_activation.py \
 	tests/test_sources_exist.py \
+	tests/test_doc_paths_exist.py \
 	tests/test_unlinked_components.py \
 	tests/test_staging_manifest.py \
 	tests/test_status_truth.py \
+	tests/test_site_app_audit.py \
 	tests/test_site.py \
+	tests/test_site_legal_audit.py \
+	tests/test_site_marketing_audit.py \
 	tests/test_pay.py \
 	tests/test_market.py \
 	tests/test_gateway_holder_cap.py \
@@ -706,6 +710,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_prefix_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_open_webui_github_tool.py \
+	tests/test_open_webui_models_opt_in.py \
 	tests/test_model_swap_drain_quiet.py \
 	tests/test_model_swap_force.py \
 	tests/test_model_swap_deactivate.py \

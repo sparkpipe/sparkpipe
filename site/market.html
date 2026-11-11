@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="market.css?v=3">
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">account</span></a>
@@ -30,7 +31,7 @@
   </div>
 </header>
 
-<main class="wrap mk">
+<main id="main" class="wrap mk">
 <section class="co-head">
   <p class="label">Your account · <span class="signal live-only">live</span><span class="signal sandbox-only">sandbox</span></p>
   <h1>Your fleets.</h1>
@@ -73,7 +74,7 @@
         </ul>
         <p>The Customer Agreement governs, and its Korean text prevails.</p>
       </details>
-      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The Korean text prevails.</span></label>
+      <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a>, with the <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> it incorporates, for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts prevail.</span></label>
       <label id="code-row" hidden>6-digit code from your email<input id="code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>
       <p class="muted sandbox-only">In the sandbox the code is filled in for you and nothing is emailed. Use two browsers to act as two customers.</p>
       <button class="btn solid" type="submit" id="signin-go">Sign in</button>
@@ -83,6 +84,7 @@
       <p class="muted"><span id="me-company"></span> · <span id="me-email"></span></p>
       <div class="row"><div><span class="muted">Balance</span><div class="big-num"><span id="balance">0</span> <span class="muted">HC</span></div></div><div><span class="muted">Locked in the waitlist</span><div class="num" id="locked">0</div></div></div>
       <div class="scroll"><table><thead><tr><th>Lot</th><th>HC left</th><th>Lapses unless booked</th></tr></thead><tbody id="lots"></tbody></table></div>
+      <div class="form"><label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement or its Data Processing Agreement changed since you accepted them. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> (the Korean texts prevail) on behalf of my company.</span></label></div>
     </div>
   </section>
 
@@ -195,6 +197,7 @@
   <h2>Your ledger lines</h2>
   <p class="muted">Every payment, booking, lock and credit is a line in our append-only, hash-chained ledger. Download your own lines with their hashes.</p>
   <div class="row"><button class="btn small" type="button" id="ledger-load">Load</button><span class="num" id="ledger-head"></span></div>
+  <p class="muted" id="ledger-partial" hidden><b>Partial export.</b> As an admin you see the account's lines without its order, payment, refund and tax lines, and without the IP address and browser of the others. Every line keeps the hash of its full original, so a line with fields left out does not verify against the hash shown; the owner's export is complete.</p>
   <div class="scroll"><table><thead><tr><th>#</th><th>When (KST)</th><th>Type</th><th>Data</th><th>Hash</th></tr></thead><tbody id="ledger"></tbody></table></div>
 </section>
 </div>
@@ -206,8 +209,8 @@
     <nav aria-label="Footer"><a href="index.html">Home</a><a href="buy.html">Buy HC</a><a href="account.html">Payments</a><a href="fleets.html">Fleet List</a><a href="agreement.html">Customer Agreement</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
-<script src="pricing.js?v=2"></script>
-<script src="prices.js?v=3"></script>
-<script src="market.js?v=6"></script>
+<script src="pricing.js?v=3"></script>
+<script src="prices.js?v=4"></script>
+<script src="market.js?v=8"></script>
 </body>
 </html>

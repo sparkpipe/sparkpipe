@@ -27,12 +27,15 @@
   };
 
   const spend = async (path, body, method = 'POST') => {
+    const again = !$('reaccept').hidden && $('accept-again').checked;
     try {
-      return await call(method, path, body);
+      const result = await call(method, path, again ? Object.assign({}, body, { accept: true }) : body);
+      if (again) { $('reaccept').hidden = true; $('accept-again').checked = false; }
+      return result;
     } catch (error) {
       if (error.reason !== 'terms') throw error;
-      if (!confirm('The SparkPipe Customer Agreement has changed since you accepted it. Accept the current text (the Korean text prevails) and continue?')) throw error;
-      return call(method, path, Object.assign({}, body, { accept: true }));
+      $('reaccept').hidden = false;
+      throw new Error('The Customer Agreement or its Data Processing Agreement changed since you accepted them. Read both, tick the box under your balance to accept them, and try again.');
     }
   };
 
@@ -90,7 +93,13 @@
   const nowMs = () => (S.state ? parseUtc(S.state.now) : Date.now());
   const pct = (x) => Math.round(Number(x) * 100) + '%';
 
+  const busy = new Set();
   const act = async (flashId, work, done) => {
+    if (busy.has(flashId)) return;
+    busy.add(flashId);
+    const form = $(flashId).closest('form');
+    const buttons = form ? Array.from(form.querySelectorAll('button')) : [];
+    buttons.forEach((b) => { b.disabled = true; });
     say(flashId, 'Working…');
     try {
       const result = await work();
@@ -98,11 +107,14 @@
       await refresh();
     } catch (error) {
       say(flashId, error.message, 'error');
+    } finally {
+      buttons.forEach((b) => { b.disabled = false; });
+      busy.delete(flashId);
     }
   };
 
   const statusText = { 'hour-fleet': 'Hour Fleet', pinned: 'Pinned', free: 'Available' };
-  const waitingText = { terms: 'waiting for you to accept the current Customer Agreement', insufficient_hc: 'waiting for enough unlocked HC to book the next week' };
+  const waitingText = { terms: 'waiting for you to accept the current Customer Agreement and Data Processing Agreement', insufficient_hc: 'waiting for enough unlocked HC to book the next week' };
 
   const setAutoExtend = (fleet, weeks) => act('m-weeks', () => spend('/market/auto-extend', { fleet, weeks_ahead: weeks }, 'PUT'),
     (r) => (r.weeks_ahead ? `Auto-extend on ${fleet}: ${r.weeks_ahead} week${r.weeks_ahead === 1 ? '' : 's'} kept booked ahead${r.through ? `, booked through ${lastDay(r.through)}` : ''}.` : `Auto-extend on ${fleet} is off. Book the next week yourself to keep the fleet.`));
@@ -178,6 +190,7 @@
     $('me-email').textContent = me.email;
     $('balance').textContent = hc(me.balance);
     $('locked').textContent = hc(me.locked || 0) + ' HC';
+    if (me.termsCurrent === false) $('reaccept').hidden = false;
     fill('lots', (me.lots || []).map((l, i) => row([String(i + 1), hc(l.hc), kstDay(l.expires)])), 'No HC yet.');
     fill('bookings', (me.bookings || []).map((b) => row([kst(b.start), kst(b.end), b.fleet, b.kind === 'week' ? `${b.weeks} week${b.weeks === 1 ? '' : 's'}` : `${b.hours} hour${b.hours === 1 ? '' : 's'}`, hc(b.hc)])), 'No bookings yet.');
     $('waitlist-status').textContent = me.position ? `On the waitlist: ${hc(me.locked)} HC locked, position ${me.position}.` : 'Not on the waitlist.';
@@ -206,8 +219,9 @@
   function quoteWeeks() {
     const fleet = $('weeks-fleet').value;
     const weeks = Math.floor(Number($('weeks-count').value) || 0);
+    S.weeksFirst = null;
     quoteInto('weeks-quote', '/market/quote-weeks', fleet && weeks >= 1 ? { fleet, weeks } : null,
-      (q) => `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.first)} to ${lastDay(q.end)}: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off with ${q.count} weeks held` : ''}.`);
+      (q) => (S.weeksFirst = { fleet, weeks, first: q.first }) && `${weeks} week${weeks === 1 ? '' : 's'} from ${kstDay(q.first)} to ${lastDay(q.end)}: ${hc(q.price)} HC${Number(q.discount) ? `, ${pct(q.discount)} off with ${q.count} weeks held` : ''}.`);
   }
 
   function quoteHours() {
@@ -281,7 +295,10 @@
   $('hours-count').addEventListener('input', quoteHours);
   $('weeks').addEventListener('submit', (e) => {
     e.preventDefault();
-    act('m-weeks', () => spend('/market/book-weeks', { fleet: $('weeks-fleet').value, weeks: Math.floor(Number($('weeks-count').value)) }),
+    const fleet = $('weeks-fleet').value;
+    const weeks = Math.floor(Number($('weeks-count').value));
+    const quoted = S.weeksFirst && S.weeksFirst.fleet === fleet && S.weeksFirst.weeks === weeks ? { first: S.weeksFirst.first } : {};
+    act('m-weeks', () => spend('/market/book-weeks', Object.assign({ fleet, weeks }, quoted)),
       (r) => `Booked ${r.weeks} week${r.weeks === 1 ? '' : 's'} on ${r.fleet}, ${kstDay(r.first)} to ${lastDay(r.end)}, for ${hc(r.price)} HC.`);
   });
   $('hours-form').addEventListener('submit', (e) => {
@@ -361,7 +378,8 @@
   $('ledger-load').addEventListener('click', async () => {
     try {
       const data = await call('GET', '/market/ledger');
-      $('ledger-head').textContent = `${data.count} lines · head ${data.head.slice(0, 16)}…`;
+      $('ledger-head').textContent = `${data.count} lines · head ${data.head.slice(0, 16)}…${data.complete === false ? ' · partial' : ''}`;
+      $('ledger-partial').hidden = data.complete !== false;
       fill('ledger', data.lines.slice().reverse().map((l) => row([String(l.seq), kst(l.at), l.type, JSON.stringify(l.data).slice(0, 120), l.hash.slice(0, 12) + '…'])), 'No lines yet.');
     } catch (error) {
       $('ledger-head').textContent = error.message;

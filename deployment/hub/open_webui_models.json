@@ -9,7 +9,6 @@
       "usage": true
     },
     "defaultFeatureIds": [
-      "web_search",
       "code_interpreter"
     ],
     "builtinTools": {
@@ -23,7 +22,6 @@
       "knowledge": false
     },
     "toolIds": [
-      "github",
       "sparkpipe_chat_timer_tool"
     ]
   },

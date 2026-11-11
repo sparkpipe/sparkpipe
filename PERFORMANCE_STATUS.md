@@ -20,7 +20,7 @@ All figures: sixteen DGX Spark nodes at TP16, GPU clocks capped at
 | Compute | about 210 TFLOPS FP8 and 90 TFLOPS BF16 per node (measured cuBLASLt peaks) |
 | Network | per node, one 100 Gb/s switch port and one direct link to a pair partner (7 pairs); 98-109 Gb/s useful per link |
 | Collective latency | 16-rank all-gather 16 µs; 7 KB all-reduce 33-38 µs |
-| Hub | one x86 host with an RTX 5090: API, tokenizer and the draft model |
+| Hub | one x86 host: API, tokenizer and the draft model |
 
 The collective figures are from `mesh_round_bench` on PR #1490 (`af0cc3f8d`,
 2026-10-08); no receipt is committed.
@@ -147,7 +147,7 @@ nodes at the format's peak over 2 FLOPs per active parameter per token:
 Two draft sources serve, and the target model verifies every draft. Lookup
 copies drafts from the request's own context by suffix match and verifies up
 to 255 of them in one frame (K3 and GLM 5.3 Full). Model drafts come from the
-lightseek DFlash2 drafter on the hub's RTX 5090 (in production since
+lightseek DFlash2 drafter on the hub, where the fleet's drafts run (in production since
 2026-10-19; the RadixArk DSpark drafter before it), fed by hidden states from
 five K3 layers, when lookup has no match of at least 8 tokens (K3). The rows
 below were measured with the DSpark drafter; in a same-hold A/B, DFlash2 was

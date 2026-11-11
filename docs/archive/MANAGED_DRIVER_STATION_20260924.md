@@ -6,7 +6,7 @@ correctness are separate gates. Keep each driver's evidence explicit.
 
 ## Ownership and placement
 
-- RTX5090 runs every HTTP API and tokenizer as user `spec`.
+- The hub runs every HTTP API and tokenizer.
 - Sparks run one shared weightd per node plus independently named residents.
 - ARM/CUDA firmware builds run through the controller queue on a Spark.
 - `/Users/mac/.sparkpipe/station-20260924/station.json` is the installed station
@@ -15,7 +15,7 @@ correctness are separate gates. Keep each driver's evidence explicit.
   must descend from the registry's `core_commit` and change only its recorded
   `driver_paths` plus the two generated source inventory files. Run `check-driver` before scheduling its build.
 
-| Family | Lane | Sparks | RTX5090 port |
+| Family | Lane | Sparks | Hub port |
 |---|---:|---|---:|
 | GLM Flash | 0 | 0–f | 8433 |
 | Qwen 27B | 1 | 0–3 | 8401 |
