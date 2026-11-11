@@ -583,25 +583,41 @@ on every path against the gated build, two of two after an API restart,
 three of three after each of two rank restarts, two session changes with
 nothing in flight (`qualification/fleet-gate-20261111/`).
 
-Still open, in the order above:
+`tools/roofline_meter.py` now reads a lane's own logs and says where a
+frame's time goes. On the Qwen3.8-27B lane at `3a1cff2da` (BF16, TP16, the
+gate's traffic; 3.24 GB a node a pass over 243 GB/s is a 13.3 ms floor): a
+decode chain takes 22.2 ms a token, 60% of the roofline, of which 7.4 ms
+(33%) is collectives, 1.1 ms (5%) the rank's remainder and 0.4 ms (2%) host
+and wire; a single step with logprobs takes 28.3 ms, 47%, with 1.0 ms of
+host; a verify frame yields 16.8 tokens in 53.1 ms, 4.2 times the one-token
+roofline. The ranks spend 34% of a step in collectives: 7.2 ms of peer wait
+over about 208 rounds, 35 us a round. So on this lane the collective plan
+(rounds a layer, and the time of a round) is worth five times everything
+the host protocol costs, and the commit round trips (2.5) are within that
+2 to 3%.
 
-- Step 2, the collective half: the two-phase commit's round trips (2.5).
-  Settled on 2026-11-10 without a code change: `FinishAsync` (2.6) is mapped in `docs/ASYNC_KV_FINISH_DESIGN.md`,
-  where the audit's bytes turn out to be on the `CACHE_PUBLISH` path, ten
-  rules keep every result unchanged, and the Qwen3.8-27B lane measures 0.26
-  ms per publishing lane and 0.2-0.4 ms per chain, under 1% of a frame, so
-  it waits for the GLM 5 Next and K3 measurements; 2.8 was closed by step
-  2's runner half (every adapter mirror is pinned and the token upload no
-  longer drains); and the adapter's own check in `submit` (the rest of 2.9)
-  stays, because it fences a submission prepared before a reset and bounds
-  the buffers sized by `max_rows` for any caller that skips prepare, at the
-  cost of a few comparisons.
-- Step 3, the second half: the runner's sequence-boundary split of a
-  multi-sequence wave, GLM 5.3 Full's wave chunking and DSV4.1's tail rows in
-  the runner, K3's dispatch loop; then the collective plan from the
-  schedule.
-- Step 5: streamed prefill as a schedule backend.
+Still open, by what the meter says each is worth on a decode step:
+
+- Step 3, the second half, and then the collective plan from the schedule:
+  the runner's sequence-boundary split of a multi-sequence wave, GLM 5.3
+  Full's wave chunking and DSV4.1's tail rows in the runner, K3's dispatch
+  loop; then two rounds a layer with the publish in the producing kernel and
+  the wait in the consumer's prologue. A third of the step is here.
+- Step 5: streamed prefill as a schedule backend, for the families whose
+  prefill is bound by the wire.
 - Step 6: placement as deployment data.
+- Step 2, the collective half: the two-phase commit's round trips (2.5),
+  inside the 2 to 3% of a frame that host and wire take. Settled on
+  2026-11-10 without a code change: `FinishAsync` (2.6) is mapped in
+  `docs/ASYNC_KV_FINISH_DESIGN.md`, where the audit's bytes turn out to be
+  on the `CACHE_PUBLISH` path, ten rules keep every result unchanged, and
+  the Qwen3.8-27B lane measures 0.26 ms per publishing lane and 0.2-0.4 ms
+  per chain, under 1% of a frame, so it waits for the GLM 5 Next and K3
+  measurements; 2.8 was closed by step 2's runner half (every adapter mirror
+  is pinned and the token upload no longer drains); and the adapter's own
+  check in `submit` (the rest of 2.9) stays, because it fences a submission
+  prepared before a reset and bounds the buffers sized by `max_rows` for any
+  caller that skips prepare, at the cost of a few comparisons.
 
 Each of these changes the serving path's behaviour and none can be proven
 by a host test or a compile: each needs a lane on the fleet, as the landings

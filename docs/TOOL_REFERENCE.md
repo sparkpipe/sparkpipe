@@ -778,6 +778,44 @@ and the element passes.
 
 ## Other tools
 
+### roofline_meter.py (tools/)
+
+Says where a lane's frame time goes and how far its decode is from the memory
+roofline, from lines the lane already writes. It runs nothing on the lane.
+
+```sh
+tools/roofline_meter.py --api-log API.log [--rank-log RANK.log ...]
+    [--node-gb-per-token GB] [--read-gb-s 243] [--label TEXT] [--json]
+```
+
+- From the API log it reads every `batch_step` line (the engine prints one for
+  each frame that carries one sequence): per kind (`prefill`, `single`,
+  `chain`, `verify`) the frames, tokens, tokens per second, rows, service
+  time, host time (wall minus service), the gap since the request's previous
+  frame and the draft wait.
+- From each rank log it reads `STAGE-STEP-TIMING` (the step and its time in
+  collectives: peer wait, source wait, copy and combine, and the rounds
+  counted in steps that did not replay a graph), `STAGE-CHAIN-HOST` and
+  `STAGE-WAVE-HOST` (the rank's host time around a chain and a prefill wave).
+- `--node-gb-per-token` is what one node reads for one decode pass: a dense
+  rank's weights without the embedding table (the `WD-SPINE-PRIVATE bytes=`
+  line of its log is an upper bound), or the spine plus the active experts.
+  The floor is that over `--read-gb-s`, which defaults to the measured read
+  rate in `tools/spec_offline/models.json`.
+
+For `single`, `chain` and `verify` it splits a pass into the memory floor,
+collectives (the rank's share of step time in collectives, applied to the
+frame's service time), the rank's remainder, host and wire, and the gap, and
+states the pass's share of the one-token roofline. A chain counts each step as
+a pass; a verify frame is one pass that yields its kept tokens, so its share
+can exceed 100%. A frame whose gap is over half its service time waited behind
+other work and is left out of the split and counted. The rank windows mix
+every kind of step, so read the split from a log of one kind of traffic when
+the kinds differ much.
+
+Exit codes: 0; 1 when the API log has no `batch_step` line; 2 on a usage
+error. `tests/test_roofline_meter.py` covers it.
+
 ### draft_replay_server.py (tools/)
 
 A DFT3 draft server with no drafter model and no GPU, for gating the batch

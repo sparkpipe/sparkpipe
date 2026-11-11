@@ -782,6 +782,7 @@ PYTHON_TESTS := \
 	tests/test_spark_pack_core.py \
 	tests/test_host_turn_bench.py \
 	tests/test_draft_replay_server.py \
+	tests/test_roofline_meter.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_ling_verify_pack.py \
 	tests/test_ling_reference_agreement.py \
