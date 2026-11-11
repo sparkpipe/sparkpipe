@@ -19,6 +19,11 @@ prompts = {
     "copy": ("Here is a C excerpt.\n\n" + excerpt + "\n\nThe same excerpt again, unchanged:\n\n", 160),
 }
 SEED = 1234
+if len(sys.argv) > 5:
+    unknown = [name for name in sys.argv[5].split(",") if name not in prompts]
+    if unknown:
+        raise SystemExit(f"release_capture: unknown prompts {unknown}; the kit has {list(prompts)}")
+    prompts = {name: prompts[name] for name in sys.argv[5].split(",")}
 
 
 def post(text, tokens, **extra):
