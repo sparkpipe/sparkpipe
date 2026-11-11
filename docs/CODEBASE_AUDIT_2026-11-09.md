@@ -547,11 +547,17 @@ step 4 with the packers (frame costs within 0.05 ms of the previous head),
 and the wave boundary, twice. Every run matched token for token and
 logprob for logprob.
 
-On 2026-11-11 the gate gained two things. It restarts the API on the serving
-lane: six API sessions in one lane cycle, which is how the wave boundary's
-falling epoch was found and how its correction was proven (no epoch refusal
-and no failed round on the ranks, every request served). And it drafts
-through `tools/draft_replay_server.py`: the head with no drafter matches the
+On 2026-11-11 the gate gained three things. It restarts the API on the
+serving lane: six API sessions in one lane cycle, which is how the wave
+boundary's falling epoch was found and how its correction was proven (no
+epoch refusal and no failed round on the ranks, every request served; the
+restarted API numbers from 1,000,738, above the 737 submissions of the
+session before it, and two prompts match on every path). It restarts a
+rank under a serving API, rank 5 and then rank 0: the API reports fifteen
+ranks, reconnects within seconds, the restarted rank answers the first
+prefix restore with `PENDING` once and the engine retries it, and three
+prompts match on every path with the cached prefix of the long one in use.
+And it drafts through `tools/draft_replay_server.py`: the head with no drafter matches the
 previous head on the seven prompts and every path; with the drafter
 configured and knowing nothing, the same; with the drafter replaying the
 first run, every path still matches token for token and logprob for logprob
