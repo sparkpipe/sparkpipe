@@ -364,7 +364,7 @@ struct QwenDevice
 			return status;
 		SparkDeviceAttentionRopePrepare(&state->attention_shape, &state->rope);
 		status = SparkDeviceStageGeometry(&state->stage, geometry);
-		geometry->tree_verify = status == SPARK_STATUS_OK && !L::kPle ? 1u : 0u;
+		geometry->tree_verify = status == SPARK_STATUS_OK && !L::kPle && !L::kIndexer ? 1u : 0u;
 		return status;
 	}
 
@@ -561,6 +561,9 @@ struct QwenDevice
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the n-gram embedding needs the step's token ids");
 		if ( status == SPARK_STATUS_OK && L::kPle && frame->t.tree != 0u )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "the n-gram embedding hashes chains of rows; tree frames are refused");
+		if ( status == SPARK_STATUS_OK && L::kIndexer && frame->t.tree != 0u )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED,
+				"index keys pool at logical positions and a kept tree path does not store them again; tree frames are refused");
 		frame->sparse = 0u;
 		if constexpr ( L::kIndexer )
 			for ( uint32_t row = 0u; row < frame->t.rows && status == SPARK_STATUS_OK; row++ )

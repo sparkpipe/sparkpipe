@@ -154,19 +154,21 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 					total += shared_weight[h] * shared_relu[simd][h];
 				score = total * p.score_scale;
 			}
-			const uint g = lane % groups;
-			float sum = shared_weight[g] * shared_relu[simd][g];
-			sum = fma(shared_weight[g + groups], shared_relu[simd][g + groups], sum);
-			for ( uint t = 1u; t < tiles; t++ )
+			else
 			{
-				sum = fma(shared_weight[16u * t + g], shared_relu[simd][16u * t + g], sum);
-				sum = fma(shared_weight[16u * t + g + groups], shared_relu[simd][16u * t + g + groups], sum);
-			}
-			sum += simd_shuffle_xor(sum, ushort(1));
-			sum += simd_shuffle_xor(sum, ushort(2));
-			sum += simd_shuffle_xor(sum, ushort(4));
-			if ( p.weight_scale == 0.0f && p.heads_in_order == 0u )
+				const uint g = lane % groups;
+				float sum = shared_weight[g] * shared_relu[simd][g];
+				sum = fma(shared_weight[g + groups], shared_relu[simd][g + groups], sum);
+				for ( uint t = 1u; t < tiles; t++ )
+				{
+					sum = fma(shared_weight[16u * t + g], shared_relu[simd][16u * t + g], sum);
+					sum = fma(shared_weight[16u * t + g + groups], shared_relu[simd][16u * t + g + groups], sum);
+				}
+				sum += simd_shuffle_xor(sum, ushort(1));
+				sum += simd_shuffle_xor(sum, ushort(2));
+				sum += simd_shuffle_xor(sum, ushort(4));
 				score = sum * p.score_scale;
+			}
 		}
 		if ( lane == 0u )
 			scores[(ulong)row * p.score_stride + position] = score;

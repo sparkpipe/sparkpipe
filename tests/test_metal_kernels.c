@@ -7237,7 +7237,7 @@ int main(int argc, char **argv)
 	TestIndexerExpand();
 	TestIndexerScore(64u,0u);
 	TestIndexerScore(64u,1u);
-	TestIndexerScore(32u,2u);
+	TestIndexerScore(4u,2u);
 	TestIndexerAttention(8u,2u,128u);
 	TestIndexerAttention(16u,1u,512u);
 	TestPolyNorm(5u,1280u,0u,1u,1e6);

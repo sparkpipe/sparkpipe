@@ -1260,12 +1260,13 @@ SparkStatus SparkOpsIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 {
 	SparkDeviceBinding bindings[8];
 	SparkStatus status;
-	if ( params->rows == 0u || params->heads < 16u || params->heads % 16u != 0u || params->heads > SPARK_INDEXER_KERNEL_MAX_HEADS ||
+	if ( params->rows == 0u || params->heads == 0u || params->heads > SPARK_INDEXER_KERNEL_MAX_HEADS ||
+		(params->heads_in_order == 0u && params->weight_scale == 0.0f && params->heads % 16u != 0u) ||
 		params->head_dimension == 0u || params->head_dimension > SPARK_INDEXER_KERNEL_MAX_DIM ||
 		(uint64_t)params->heads * params->head_dimension > SPARK_INDEXER_KERNEL_MAX_QUERY || params->score_stride == 0u ||
 		params->query_stride < params->heads * params->head_dimension || (params->weight_stride != 0u && params->weight_stride < params->heads) ||
 		OpsIndexerPagesKnown(params,params->head_dimension) == 0u )
-		return(OpsRefuse("indexer_score","whole 16-head groups up to 128 heads, keys up to 256 wide with at most 8192 query values per row, "
+		return(OpsRefuse("indexer_score","up to 128 heads, in whole 16-head groups unless the heads sum in order or take a weight scale, keys up to 256 wide with at most 8192 query values per row, "
 			"a score stride and a configured page geometry"));
 	status = OpsNeed("indexer_score","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )

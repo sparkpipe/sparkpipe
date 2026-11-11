@@ -338,6 +338,8 @@ struct K3Device
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "mla_index_norm", "f32", kIndexDim * sizeof(float), &indexer->norm);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "mla_index_norm_bias", "f32", kIndexDim * sizeof(float), &indexer->bias);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageNoteKvRead(&state->stage, 0u, state->stage.shape->index_page_bytes / SPARK_DEVICE_RUNNER_PAGE_SLOTS);
 		return status;
 	}
 

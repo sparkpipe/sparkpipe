@@ -535,7 +535,11 @@ sqrt(128)` in head order (`heads_in_order`, one FP32 unit weight set shared
 by every row: `weight_f32` and `weight_shared`), keeps the 512 best, expands
 them with the row's open block into 2,051 positions
 (`SparkIndexerExpandPools`) and attends those with a key ratio of one
-(`SparkDeviceAttentionSelected`).
+(`SparkDeviceAttentionSelected`). Its four index heads take the in-order sum, so
+`SparkOpsIndexerScore` needs whole 16-head groups only for the tiled sum.
+Tree frames are refused on the indexer layout (`tree_verify` is off): index
+keys pool at logical positions, and a kept tree path does not store them
+again, so speculation runs as chains.
 
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)

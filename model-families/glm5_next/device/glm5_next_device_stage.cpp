@@ -309,6 +309,8 @@ struct Glm5NextDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_ape", "f32", (uint64_t)kPool * kIndexDim * sizeof(float),
 				&indexer->ape);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageNoteKvRead(&state->stage, 0u, state->stage.shape->index_page_bytes / SPARK_DEVICE_RUNNER_PAGE_SLOTS);
 		return status;
 	}
 
