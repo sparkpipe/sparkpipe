@@ -585,18 +585,28 @@ nothing in flight (`qualification/fleet-gate-20261111/`).
 
 `tools/roofline_meter.py` now reads a lane's own logs and says where a
 frame's time goes. On the Qwen3.8-27B lane at `3a1cff2da` (BF16, TP16, the
-gate's traffic; 3.24 GB a node a pass over 243 GB/s is a 13.3 ms floor): a
-decode chain takes 22.2 ms a token, 60% of the roofline, of which 7.4 ms
-(33%) is collectives, 1.1 ms (5%) the rank's remainder and 0.4 ms (2%) host
-and wire; a single step with logprobs takes 28.3 ms, 47%, with 1.0 ms of
-host; a verify frame yields 16.8 tokens in 53.1 ms, 4.2 times the one-token
-roofline. The ranks spend 34% of a step in collectives: 7.2 ms of peer wait
-over the 128 all-reduces of the model's 64 layers, 57 us a round. This
-family already issues two rounds a layer, so its gain is in the time of a
-round (the publish fused into the producing kernel, the wait into the
-consumer's prologue, and the skew between ranks): 7.4 ms a step against
-the 0.4 to 1.0 ms that host and wire take, inside which the commit round
-trips (2.5) sit.
+gate's traffic, all sixteen rank logs) a decode chain takes 22.2 ms a
+token. The heaviest rank reads 3.49 GB a pass, a 14.4 ms floor at 243
+GB/s, so the chain is at 65% of the roofline: 6.2 ms (28%) is collectives
+on that rank, 1.2 ms (5%) its remainder and 0.4 ms (2%) host and wire. A
+single step with logprobs is at 51%, with 1.0 ms of host; a verify frame
+yields 16.8 tokens in 53.1 ms, 4.5 times the one-token roofline. Two
+things stand out in the rank logs.
+
+- The ranks are not loaded alike. The pack splits the FFN's 136 blocks of
+  128 as nine on ranks 0 to 7 and eight on ranks 8 to 15
+  (`tools/qwen38_27b_tp16_pack.py`), so the first eight hold 3.49 GB
+  against 3.24 GB and do 16.8 to 17.5 ms of own work a step against 15.1
+  to 15.6; the other eight wait about 1.8 ms a step for them. An even
+  split, 1,088 columns a rank, would put every rank near 16.3 ms, about a
+  millisecond a step. It changes the pack and the order of the partial
+  sums, so it needs a repack and a new comparison with the reference.
+- A round's wait is the spread between peers more than the wire. This
+  family issues 128 rounds a step, two a layer. After its own publish the
+  heaviest rank sees the first peer's data in 8 us and the median peer's
+  in 15 us, and waits 46 us for all fifteen, because a different peer is
+  late in each round: 5.9 ms a step. The commit round trips (2.5) sit
+  inside the 0.4 to 1.0 ms of host and wire.
 
 Still open, by what the meter says each is worth on a decode step:
 

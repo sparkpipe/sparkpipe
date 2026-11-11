@@ -77,6 +77,29 @@ with tempfile.TemporaryDirectory() as directory:
           and "chain: 20.27 ms a pass for 1.00 tokens" in text.stdout and "69% of the one-token roofline" in text.stdout
           and "1 frames that waited behind other work left out" in text.stdout, "the text report names the rounds, the chain's pass and its share of the roofline")
 
+    heavy = Path(directory) / "heavy.log"
+    light = Path(directory) / "light.log"
+    heavy.write_text("WD-SPINE-PRIVATE spans=1 bytes=3500000000\n"
+                     "STAGE-STEP-ARRIVAL rank=0 steps=64 first_us=1280 peer_us=0,2560,3840\n"
+                     "STAGE-STEP-TIMING rank=0 steps=64 graph_steps=62 pair_allreduce=0 allreduce=516 submit_us=24000 graph_us=11 source_wait_us=0 "
+                     "peer_wait_us=6000 copy_us=500 combine_us=500\n")
+    light.write_text("WD-SPINE-PRIVATE spans=1 bytes=3250000000\n"
+                     "STAGE-STEP-ARRIVAL rank=2 steps=64 first_us=2560 peer_us=5120,3840,0\n"
+                     "STAGE-STEP-TIMING rank=2 steps=64 graph_steps=62 pair_allreduce=0 allreduce=516 submit_us=24000 graph_us=11 source_wait_us=0 "
+                     "peer_wait_us=8000 copy_us=500 combine_us=500\n")
+    uneven = run("--api-log", str(api), "--rank-log", str(light), "--rank-log", str(heavy), "--node-gb-per-token", "3.5", "--read-gb-s", "243", "--rounds-per-step", "128")
+    skew = json.loads(run("--api-log", str(api), "--rank-log", str(light), "--rank-log", str(heavy), "--node-gb-per-token", "3.5", "--read-gb-s", "243", "--json").stdout)
+    table = skew["rank_table"]
+    check([row["rank"] for row in table] == [0, 2] and close(table[0]["gb"], 3.5) and close(table[0]["own_ms"], 17.0) and close(table[1]["own_ms"], 15.0)
+          and close(table[1]["peer_wait_ms"], 8.0), "each rank log gives its rank, its weight bytes and its own work a step, listed by rank")
+    check(skew["slowest_rank"] == 0 and close(skew["collective_share"], 7.0 / 24.0)
+          and close(skew["kinds"]["single"]["decomposition"]["collective_ms"], 25.0 * 7.0 / 24.0),
+          "the split uses the collective share of the rank with the most own work, the one the others wait for")
+    check(close(table[0]["first_arrival_us"], 1280.0) and close(table[0]["median_arrival_us"], 3840.0) and close(table[0]["last_arrival_us"], 3840.0)
+          and close(table[1]["median_arrival_us"], 5120.0), "a rank's arrival line gives when its first, median and slowest peer land, leaving itself out")
+    check(uneven.returncode == 0 and "ranks: own work 15.00 ms a step on rank 2 to 17.00 on rank 0" in uneven.stdout and "weights 3.250 to 3.500 GB a rank" in uneven.stdout
+          and "peers land after a round's wait starts, in us, fastest to slowest rank log: first 10.0 to 20.0, median 30.0 to 40.0, last on average 30.0 to 40.0, all 46.9 to 62.5" in uneven.stdout,
+          "the text report names the slowest rank, the weight range and the arrivals a round")
     plain = json.loads(run("--api-log", str(api), "--json").stdout)
     unrounded = json.loads(run("--api-log", str(api), "--rank-log", str(rank), "--json").stdout)
     check(unrounded["rank_step"]["rounds_per_step"] is None and unrounded["rank_step"]["peer_wait_us_per_round"] is None, "without the rounds no wait a round is stated")

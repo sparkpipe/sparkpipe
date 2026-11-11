@@ -796,21 +796,32 @@ tools/roofline_meter.py --api-log API.log [--rank-log RANK.log ...]
 - From each rank log it reads `STAGE-STEP-TIMING` (the step and its time in
   collectives: peer wait, source wait, copy and combine), `STAGE-CHAIN-HOST`
   and `STAGE-WAVE-HOST` (the rank's host time around a chain and a prefill
-  wave).
+  wave), `WD-SPINE-PRIVATE` (the rank's weight bytes) and `STAGE-STEP-ARRIVAL`
+  (when each peer's data lands after the rank starts to wait).
+- With more than one rank log it lists every rank's weight bytes, own work a
+  step (the step without its time in collectives) and peer wait, and names
+  the rank with the most own work: the collectives hold every rank to that
+  rank's pace, so the others' extra wait is its extra work. Give it every
+  rank's log to see an uneven split.
+- It states, per round with `--rounds-per-step` and per step without, when
+  the first, the median and the on-average slowest peer land and when all
+  have, as a range over the rank logs.
 - `--rounds-per-step` is the number of collective rounds one decode step
   issues, from the model's schedule (two all-reduces a layer for most
   families); with it the report states the peer wait a round. The timing
   line's own round counts include prefill waves, so the meter does not use
   them.
-- `--node-gb-per-token` is what one node reads for one decode pass: a dense
-  rank's weights without the embedding table (the `WD-SPINE-PRIVATE bytes=`
-  line of its log is an upper bound), or the spine plus the active experts.
+- `--node-gb-per-token` is what the heaviest node reads for one decode pass:
+  a dense rank's weights without the embedding table (the `WD-SPINE-PRIVATE
+  bytes=` line of its log is an upper bound), or the spine plus the active
+  experts.
   The floor is that over `--read-gb-s`, which defaults to the measured read
   rate in `tools/spec_offline/models.json`.
 
 For `single`, `chain` and `verify` it splits a pass into the memory floor,
-collectives (the rank's share of step time in collectives, applied to the
-frame's service time), the rank's remainder, host and wire, and the gap, and
+collectives (the share of its step that the rank with the most own work
+spends in collectives, applied to the frame's service time), the rank's
+remainder, host and wire, and the gap, and
 states the pass's share of the one-token roofline. A chain counts each step as
 a pass; a verify frame is one pass that yields its kept tokens, so its share
 can exceed 100%. A frame whose gap is over half its service time waited behind

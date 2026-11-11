@@ -39,12 +39,19 @@ def read_api(lines) -> dict:
 
 
 def read_rank(lines) -> dict:
-    result: dict = {"windows": [], "chains": [], "waves": []}
+    result: dict = {"windows": [], "chains": [], "waves": [], "arrivals": [], "rank": None, "bytes": None}
     for line in lines:
         values = pairs(line)
         try:
             if line.startswith("STAGE-STEP-TIMING "):
                 result["windows"].append({name: number(values, name) for name in ("steps", "submit_us", "source_wait_us", "peer_wait_us", "copy_us", "combine_us")})
+                if result["rank"] is None and values.get("rank", "").isdigit():
+                    result["rank"] = int(values["rank"])
+            elif line.startswith("STAGE-STEP-ARRIVAL "):
+                result["arrivals"].append({"steps": number(values, "steps"), "first_us": number(values, "first_us"),
+                                           "peers": [float(value) for value in values["peer_us"].split(",")]})
+            elif line.startswith("WD-SPINE-PRIVATE ") and result["bytes"] is None:
+                result["bytes"] = number(values, "bytes")
             elif line.startswith("STAGE-CHAIN-HOST "):
                 result["chains"].append({name: number(values, name) for name in ("chains", "mean_steps", "admit_ms", "submit_ms", "capture_ms", "sync_ms", "finish_ms")})
             elif line.startswith("STAGE-WAVE-HOST "):
@@ -68,6 +75,29 @@ def rank_step(ranks: list, rounds: float | None) -> dict | None:
             "peer_wait_ms": step["peer_wait_us"], "source_wait_ms": step["source_wait_us"], "copy_ms": step["copy_us"], "combine_ms": step["combine_us"],
             "collective_ms": step["peer_wait_us"] + step["source_wait_us"] + step["copy_us"] + step["combine_us"],
             "rounds_per_step": rounds, "peer_wait_us_per_round": 1000.0 * step["peer_wait_us"] / rounds if rounds else None}
+
+
+def rank_table(ranks: list) -> list:
+    table = []
+    for index, rank in enumerate(ranks):
+        windows = [window for window in rank["windows"] if window["steps"] > 0]
+        if not windows:
+            continue
+        step = {name: weighted(windows, "steps", name) / 1000.0 for name in ("submit_us", "source_wait_us", "peer_wait_us", "copy_us", "combine_us")}
+        row = {"rank": rank["rank"] if rank["rank"] is not None else index, "gb": rank["bytes"] / 1e9 if rank["bytes"] else None,
+               "steps": int(sum(window["steps"] for window in windows)), "step_ms": step["submit_us"], "peer_wait_ms": step["peer_wait_us"],
+               "own_ms": step["submit_us"] - step["peer_wait_us"] - step["source_wait_us"] - step["copy_us"] - step["combine_us"]}
+        arrivals = [arrival for arrival in rank["arrivals"] if arrival["steps"] > 0 and len(arrival["peers"]) > 1]
+        if arrivals:
+            count = min(len(arrival["peers"]) for arrival in arrivals)
+            total = sum(arrival["steps"] for arrival in arrivals)
+            peers = [sum(arrival["peers"][peer] * arrival["steps"] for arrival in arrivals) / total for peer in range(count)]
+            others = sorted(value for peer, value in enumerate(peers) if peer != row["rank"] and value > 0.0)
+            if others:
+                row.update({"first_arrival_us": sum(arrival["first_us"] * arrival["steps"] for arrival in arrivals) / total,
+                            "median_arrival_us": others[len(others) // 2], "last_arrival_us": others[-1]})
+        table.append(row)
+    return sorted(table, key=lambda row: row["rank"])
 
 
 def rank_host(ranks: list, key: str, weight: str) -> dict | None:
@@ -105,12 +135,17 @@ def frame_kind(kind: str, frames: list) -> dict:
 def summarize(api: dict, ranks: list, node_gb: float | None, read_gb_s: float, rounds: float | None = None) -> dict:
     summary: dict = {"kinds": {kind: frame_kind(kind, frames) for kind, frames in sorted(api.items())}, "rank_step": rank_step(ranks, rounds),
                      "rank_chain_host": rank_host(ranks, "chains", "chains"), "rank_wave_host": rank_host(ranks, "waves", "prefill_waves"),
-                     "ranks": len(ranks), "read_gb_s": read_gb_s, "node_gb_per_token": node_gb}
+                     "ranks": len(ranks), "read_gb_s": read_gb_s, "node_gb_per_token": node_gb, "rank_table": rank_table(ranks)}
     floor = 1000.0 * node_gb / read_gb_s if node_gb else None
     summary["floor_ms"] = floor
     summary["floor_tokens_per_second"] = 1000.0 / floor if floor else None
     step = summary["rank_step"]
     share = step["collective_ms"] / step["step_ms"] if step is not None and step["step_ms"] > 0 else None
+    if summary["rank_table"]:
+        slowest = max(summary["rank_table"], key=lambda row: row["own_ms"])
+        summary["slowest_rank"] = slowest["rank"]
+        if slowest["step_ms"] > 0:
+            share = (slowest["step_ms"] - slowest["own_ms"]) / slowest["step_ms"]
     summary["collective_share"] = share
     for kind in DECODE_KINDS:
         entry = summary["kinds"].get(kind)
@@ -146,8 +181,27 @@ def render(summary: dict, label: str) -> list:
     step = summary["rank_step"]
     if step is not None:
         rounds = (f" over {step['rounds_per_step']:.0f} rounds, {step['peer_wait_us_per_round']:.1f} us a round" if step["rounds_per_step"] else "")
-        lines.append(f"rank step ({summary['ranks']} rank logs, {step['steps']} steps of every kind): {step['step_ms']:.2f} ms, {100.0 * summary['collective_share']:.0f}% in collectives: "
+        lines.append(f"rank step ({summary['ranks']} rank logs, {step['steps']} steps of every kind): {step['step_ms']:.2f} ms, {100.0 * step['collective_ms'] / step['step_ms']:.0f}% in collectives: "
                      f"{step['peer_wait_ms']:.2f} peer wait{rounds} + {step['source_wait_ms']:.2f} source wait + {step['copy_ms']:.2f} copy + {step['combine_ms']:.2f} combine")
+    table = summary["rank_table"]
+    if len(table) > 1:
+        slow = max(table, key=lambda row: row["own_ms"])
+        fast = min(table, key=lambda row: row["own_ms"])
+        sizes = [row["gb"] for row in table if row["gb"]]
+        weights = f"; weights {min(sizes):.3f} to {max(sizes):.3f} GB a rank" if sizes else ""
+        lines.append(f"ranks: own work {fast['own_ms']:.2f} ms a step on rank {fast['rank']} to {slow['own_ms']:.2f} on rank {slow['rank']}, "
+                     f"which the others wait for and whose {100.0 * summary['collective_share']:.0f}% in collectives the split below uses{weights}")
+        lines.append(f"{'rank':>5s} {'GB':>7s} {'own ms':>8s} {'peer wait ms':>13s} {'step ms':>8s}")
+        for row in table:
+            size = f"{row['gb']:7.3f}" if row["gb"] else f"{'':7s}"
+            lines.append(f"{row['rank']:5d} {size} {row['own_ms']:8.2f} {row['peer_wait_ms']:13.2f} {row['step_ms']:8.2f}")
+    landed = [row for row in table if "first_arrival_us" in row]
+    if landed:
+        rounds = step["rounds_per_step"] if step is not None and step["rounds_per_step"] else None
+        scale = rounds if rounds else 1.0
+        span = lambda name, unit=1.0: f"{min(row[name] for row in landed) * unit / scale:.1f} to {max(row[name] for row in landed) * unit / scale:.1f}"
+        lines.append(f"peers land after a {'round' if rounds else 'step'}'s wait starts, in us, fastest to slowest rank log: first {span('first_arrival_us')}, "
+                     f"median {span('median_arrival_us')}, last on average {span('last_arrival_us')}, all {span('peer_wait_ms', 1000.0)}")
     for name, title in (("rank_chain_host", "rank host per chain"), ("rank_wave_host", "rank host per prefill wave")):
         host = summary[name]
         if host is not None:
