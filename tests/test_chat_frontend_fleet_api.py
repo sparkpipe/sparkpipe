@@ -4,6 +4,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
+import re
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -416,6 +420,51 @@ async def run(tmp, check):
         engine.hold = None
         await gateway_rules(harness, check)
         await isolation_rules(harness, check)
+        await record_rules(harness, check)
+
+
+async def record_rules(harness, check):
+    folder = harness.tmp / chat_frontend.RECORDS_DIRECTORY
+    acme = sorted((folder / "account-acme").glob("*.jsonl"))
+    lines = [json.loads(line) for path in acme for line in path.read_text().splitlines()]
+    check(lines and all(line["account"] == "acme" and line["request"] and "prompt_tokens" in line and "ttft_ms" in line for line in lines)
+          and any((line["member"], line["key"]) == ("MBALICE", "k_ci") for line in lines),
+          f"each request's record is kept on the hub under its account, with its member and key: {lines[:2]}")
+    check(all(not isinstance(value, (list, dict)) for line in lines for value in line.values()), "a request record holds counts, times and ids, never token numbers or text")
+    check(folder.stat().st_mode & 0o777 == 0o700 and all(path.stat().st_mode & 0o777 == 0o600 for path in acme), "the request records are readable only by the chat layer's user")
+    check(any((folder / "account-bob").glob("*.jsonl")), "another account's requests are kept under that account")
+    config = harness.tmp / "erase.json"
+    config.write_text(json.dumps({"replay": {"directory": "state/replay"}}))
+    with harness.frontend.records.locked():
+        erasing = subprocess.Popen([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", "acme", "--note",
+                                    "written request of 3 January"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(3.0)
+        check(erasing.poll() is None and any((folder / "account-acme").glob("*.jsonl")),
+              f"--erase-records waits while the running chat layer holds the records lock, so an erasure and a record write never interleave: {erasing.poll()}")
+    stdout, stderr = erasing.communicate(timeout=60)
+    erased = subprocess.CompletedProcess(erasing.args, erasing.returncode, stdout, stderr)
+    told = json.loads(erased.stdout or "{}")
+    log = [json.loads(line) for line in (folder / "erasures.jsonl").read_text().splitlines()]
+    check(erased.returncode == 0 and told == {"event": "request_records_erased", "account": "acme", "records": len(lines)} and not (folder / "account-acme").exists()
+          and any((folder / "account-bob").glob("*.jsonl")) and [(e["account"], e["records"], e["note"]) for e in log] == [("acme", len(lines), "written request of 3 January")],
+          f"--erase-records deletes one account's request records, keeps every other account's and logs the erasure: {erased.returncode} {erased.stderr[-300:]} {told} {log}")
+    refused = [subprocess.run([sys.executable, str(chat_frontend.Path(chat_frontend.__file__)), "--config", str(config), "--erase-records", account], capture_output=True, text=True, timeout=60).returncode
+               for account in ("../bob", "sparkpipe")]
+    check(refused == [1, 1] and any((folder / "account-bob").glob("*.jsonl")), f"--erase-records takes only a market account id: {refused}")
+    harness.engine.reply("Fine.")
+    await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "after"}]), account="acme")
+    check(len(list((folder / "account-acme").glob("*.jsonl"))) == 1, "requests after an erasure are kept again")
+    try:
+        chat_frontend.records_folder({"replay": {"directory": "state"}, "records": {"directory": "state/records"}}, harness.tmp)
+        inside = True
+    except SystemExit:
+        inside = False
+    check(not inside, "the request records cannot be kept inside the replay store, which is working state")
+    old = folder / "account-old"
+    old.mkdir()
+    (old / "2020-01-01.jsonl").write_text("{}\n")
+    harness.frontend.records.pruned = None
+    check(harness.frontend.records.prune(time.time()) == 1 and not old.exists() and any((folder / "account-bob").glob("*.jsonl")), "a request record is deleted a year after its day")
 
 
 def main():
@@ -423,6 +472,9 @@ def main():
     captured = io.StringIO()
     with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(captured):
         asyncio.run(run(Path(directory), check))
+    logged = captured.getvalue()
+    check("request_record" not in logged and not re.search(r"\[\s*\d+(\s*,\s*\d+){3,}\s*\]", logged) and "MBALICE" not in logged,
+          "the chat layer's log, which journald keeps, carries no request record, member or token numbers, so an erasure leaves no copy behind")
     if check.failures:
         print(captured.getvalue()[-4000:])
     check.finish("background requests leave two sequences for interactive ones; chat completions replays tool calls by id, reports cached tokens and the "
@@ -434,7 +486,8 @@ def main():
                  "leaks nothing; overflow uses each shape's native signal; alias matching is linear and capped; the Codex catalogue parses as Codex's; a "
                  "store failure still delivers the reply; DELETE /v1/cache and a new user's wipe delete the replay store; a reply without a handle replays only "
                  "its own conversation's turn and only for its own member (the gateway's X-SparkPipe-Member, across that member's keys), also through tokenize; an unreadable store falls back to a normal render; a key "
-                 "made with --priority background runs below interactive requests")
+                 "made with --priority background runs below interactive requests; request records are kept a year on the hub by account, outside the working state and out of "
+                 "the log, and --erase-records deletes one account's and logs the erasure")
 
 
 if __name__ == "__main__":

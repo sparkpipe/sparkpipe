@@ -2,7 +2,9 @@ import argparse
 import asyncio
 import base64
 import codecs
+import contextlib
 import copy
+import fcntl
 import functools
 import hashlib
 import importlib.util
@@ -12,8 +14,10 @@ import math
 import os
 import re
 import resource
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from array import array
@@ -116,6 +120,10 @@ GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
 EXPIRY_SWEEP_SECONDS = 60.0
 OWN_SCOPE = "own"
+RECORD_DAYS = 366
+RECORD_PRUNE_SECONDS = 3600.0
+RECORDS_DIRECTORY = "request-records"
+RECORDS_LOCK = ".lock"
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -1794,6 +1802,78 @@ class MemoryHost:
                                                             request["trace"])}
 
 
+def utc_stamp(moment):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(moment))
+
+
+class RequestRecords:
+    def __init__(self, folder):
+        self.folder = Path(folder)
+        self.lock = threading.Lock()
+        self.pruned = None
+        self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.folder.chmod(0o700)
+
+    @staticmethod
+    def owner(scope):
+        return (scope or OWN_SCOPE).replace(":", "-")
+
+    @contextlib.contextmanager
+    def locked(self):
+        with self.lock:
+            descriptor = os.open(self.folder / RECORDS_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(descriptor)
+
+    def append(self, path, line):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def add(self, scope, record):
+        folder = self.folder / self.owner(scope)
+        with self.locked():
+            folder.mkdir(mode=0o700, exist_ok=True)
+            self.append(folder / (record["at"][:10] + ".jsonl"), record)
+
+    def erase(self, account, note, now):
+        folder = self.folder / self.owner("account:" + account)
+        with self.locked():
+            records = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in folder.glob("*.jsonl")) if folder.is_dir() else 0
+            if folder.is_dir():
+                shutil.rmtree(folder)
+            self.append(self.folder / "erasures.jsonl", {"account": account, "at": utc_stamp(now), "records": records, "note": note[:200]})
+        return records
+
+    def prune(self, now):
+        if self.pruned is not None and now - self.pruned < RECORD_PRUNE_SECONDS:
+            return 0
+        self.pruned, cutoff, removed = now, utc_stamp(now - RECORD_DAYS * 86400)[:10], 0
+        with self.locked():
+            for folder in [path for path in self.folder.iterdir() if path.is_dir()]:
+                for path in folder.glob("*.jsonl"):
+                    if path.stem < cutoff:
+                        path.unlink()
+                        removed += 1
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+        return removed
+
+
+def records_folder(config, base):
+    records = config.get("records") or {}
+    if not isinstance(records, dict) or set(records) - {"directory"}:
+        raise SystemExit("chat_frontend: records takes directory, where the request records are kept a year by account, outside the working state")
+    folder = (base / records.get("directory", RECORDS_DIRECTORY)).resolve()
+    replay = (config.get("replay") or {}).get("directory")
+    if replay and (folder == (base / replay).resolve() or (base / replay).resolve() in folder.parents):
+        raise SystemExit("chat_frontend: the request records must be kept outside the replay store, which is working state")
+    return folder
+
+
 class Frontend:
     memory = None
     commands = None
@@ -1853,6 +1933,7 @@ class Frontend:
                                                      repositories["max_packs"])
         self.pack_tasks = set()
         self.scope_keys = {}
+        self.records = RequestRecords(records_folder(config, base))
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
@@ -1933,7 +2014,27 @@ class Frontend:
             sweep = time.monotonic() - swept >= EXPIRY_SWEEP_SECONDS
             if sweep:
                 swept = time.monotonic()
+                self.prune_records(time.time())
             self.expire_working_state(time.time(), sweep)
+
+    def prune_records(self, now):
+        try:
+            removed = self.records.prune(now)
+        except OSError as error:
+            print(json.dumps({"event": "request_records_prune_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return
+        if removed:
+            print(json.dumps({"event": "request_records_pruned", "files": removed}), file=sys.stderr, flush=True)
+
+    def keep_record(self, plan, record, shape, headers):
+        scope, member = plan.get("gate", (OWN_SCOPE, None))
+        scope, key = scope or OWN_SCOPE, plan.get("public_key") or {}
+        found = dict(record, at=utc_stamp(time.time()), account=scope[len("account:"):] if scope.startswith("account:") else None, member=member, shape=shape,
+                     key=clean_header(headers.get(KEY_HEADER)) if key.get("gateway") is True else key.get("id"))
+        try:
+            self.records.add(scope, found)
+        except OSError as error:
+            print(json.dumps({"event": "request_record_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
 
     def model_for(self, body):
         name = body.get("model")
@@ -3089,8 +3190,7 @@ class Frontend:
         if assistant is not None:
             self.replay_record(model, plan, assistant, result, message_handles(assistant))
         record = self.request_record(model, plan, result, usage, started, headers)
-        print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
-              file=sys.stderr, flush=True)
+        self.keep_record(plan, record, shape, headers)
         return usage, record
 
     async def read_body(self, request):
@@ -3301,8 +3401,7 @@ class Frontend:
                 own = translated["messages"][translated["stored_from"]:] + [assistant]
                 self.store_safely(plan, self.replay.put_response, plan["scope"], plan.get("member"), turn.id, translated["previous_response_id"], model.id, own,
                                   reply)
-        print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
-              file=sys.stderr, flush=True)
+        self.keep_record(plan, record, shape, request.headers)
         self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         self.record_public_prefix(model, plan, result)
         if sink.streamed:
@@ -3853,8 +3952,20 @@ def main():
     parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
     parser.add_argument("--config", required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--erase-records", metavar="ACCOUNT", help="delete the request records of one market account, as its written request asks, and exit")
+    parser.add_argument("--note", default="", help="the written request an erasure answers")
     arguments = parser.parse_args()
+    if arguments.erase_records is not None:
+        if not working_state.valid_account(arguments.erase_records) or arguments.erase_records == working_state.OWN_ACCOUNT:
+            raise SystemExit("chat_frontend: --erase-records takes a market account id")
+        config_path = Path(arguments.config).resolve()
+        records = RequestRecords(records_folder(json.loads(config_path.read_text()), config_path.parent))
+        erased = records.erase(arguments.erase_records, arguments.note, time.time())
+        print(json.dumps({"event": "request_records_erased", "account": arguments.erase_records, "records": erased}), flush=True)
+        return
+    if arguments.port is None:
+        parser.error("--port is required to serve")
     try:
         loopback = ipaddress.ip_address(arguments.host).is_loopback
     except ValueError:

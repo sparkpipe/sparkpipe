@@ -1176,6 +1176,9 @@
   "budget_bytes": 8589934592,
   "directive": "/home/spec/sparkdata/working-state/directive"
  },
+ "records": {
+  "directory": "/srv/workspace/sparkpipe/request-records"
+ },
  "codex": {
   "instructions_file": "codex_instructions.md"
  },
