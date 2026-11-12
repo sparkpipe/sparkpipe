@@ -4,7 +4,7 @@ Version of 12 November 2026
 
 ## Parties and scope
 
-This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809 ("**we**"), and the Customer under the SparkPipe Customer Agreement (the "**Agreement**"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in providing the Fleets, Functions and API ("**Customer personal data**"). Terms defined in the Agreement have the same meaning here.
+This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.** (효르에이아이테크 유한회사), business registration number 641-87-03809 ("**we**"), and the Customer under the SparkPipe Customer Agreement (the "**Agreement**"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in renting the Fleets and providing the Extras, the preinstalled software, the Functions and the API ("**Customer personal data**"). Terms defined in the Agreement have the same meaning here.
 
 ## 1. Roles
 
@@ -16,7 +16,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 2. Instructions and purpose
 
-2.1. We process Customer personal data only on Customer's documented instructions. The Agreement, this DPA, the requests Customer sends, the Functions it starts or schedules and the settings it chooses are those instructions. Customer may give further reasonable instructions in writing.
+2.1. We process Customer personal data only on Customer's documented instructions. The Agreement, this DPA, the requests Customer sends, the software and Functions it runs, the Extras it uses and the settings it chooses are those instructions. Customer may give further reasonable instructions in writing.
 
 2.2. We use Customer personal data for nothing but serving Customer. We do not use it to train any model, sell it, combine it with other customers' data, or process it for any purpose of our own.
 
@@ -26,11 +26,11 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 | Item | Details |
 | --- | --- |
-| Purpose and nature | Serving Customer's requests to the models on the Fleets it holds, keeping its working state, and running the Functions it starts or schedules |
+| Purpose and nature | Renting Customer the Fleets it holds and providing the Extras it uses: running software on them for Customer, serving its requests, running the Functions it starts or schedules, and keeping its data |
 | Data subjects | Whoever Customer's requests, files and Functions concern, as Customer decides |
 | Personal data | Whatever personal data Customer sends or stores; special categories only if Customer sends them, at its own responsibility |
-| Duration | While Customer holds a Fleet, until the deletion in clause 9 |
-| Location | Only Fleets and servers we operate in Korea, including servers we rent there |
+| Duration | While Customer holds a Fleet or uses an Extra, until the deletion in clause 9 |
+| Location | Only Fleets, Extras and servers we operate in Korea, including servers we rent there |
 
 ## 3. Confidentiality and access
 
@@ -56,7 +56,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 6. Transfers
 
-6.1. We process Customer personal data only in Korea and transfer none of it abroad, except a transfer Customer asks for itself, to or from a host it names (Agreement clause 6.5).
+6.1. We process Customer personal data only in Korea and transfer none of it abroad, except a transfer Customer asks for itself, or that software Customer runs makes, to or from a host it names (Agreement clause 6.5).
 
 6.2. The European Commission and the United Kingdom have each recognised Korea as providing an adequate level of protection, so personal data from the EU, the EEA and the UK may come to a Fleet without other transfer safeguards. If either decision stops applying, the European Commission's standard contractual clauses (controller-to-processor or processor-to-processor, as the case may be) or the UK addendum to them apply between the parties, and we sign them on request.
 
@@ -76,7 +76,7 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 9.1. Customer can export its working state at any time while it holds the Fleet (Agreement clause 7.5).
 
-9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet and make no backup.
+9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet, except in an Extra Customer chooses, and make no backup. Data in an Extra is deleted when Customer stops using that Extra or the Agreement ends (Agreement clause 4.6).
 
 9.3. Apart from working state, we keep an operational record of each request for 1 year: the model, token counts, timings and identifiers of the request, the session, the key and the user under the Account who sent it. It holds no prompt or reply text and no token numbers. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.
 
@@ -98,20 +98,18 @@ This Data Processing Agreement ("**DPA**") is made between **HYOR AI Tech Ltd.**
 
 ## 12. Security measures
 
-12.1. **Isolation.** A Fleet a customer holds serves only that customer's requests. Each customer's working state is isolated from other customers and stays on the Fleet that holds it.
+12.1. **Measures.** We take at least the measures below, and the further measures our security page describes. We may change those measures without amending this DPA, but never so that they protect Customer personal data less.
 
-12.2. **Handover.** Working state is deleted at a change of customer, and before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image. The sandbox host that runs code for Functions is wiped at every change of customer.
+12.2. **Isolation.** A Fleet a customer holds runs only for that customer. Each customer's working state is isolated from other customers and stays on the Fleet that holds it, or in an Extra the customer chooses.
 
-12.3. **Sandbox.** Functions that build or run Customer code do so on a sandbox host attached to the Fleet, in a fresh virtual machine for each run, with no network access unless Customer allows it.
+12.3. **Handover.** Before another customer's Booking of a Fleet starts, we delete the previous customer's accounts and working state on it and restore its software to our own image.
 
 12.4. **Encryption in transit.** All traffic to our public endpoints uses HTTPS, and traffic between our servers runs through encrypted tunnels.
 
-12.5. **Keys and credentials.** API keys are stored only as hashes and can be limited by scope, Fleet, expiry and IP address and revoked at any time. A credential for another service is held in memory only while the request that carries it runs, and is never stored, logged or shown.
+12.5. **Keys and credentials.** API keys are stored only as hashes and can be revoked at any time. A credential for another service is held in memory only while the request that carries it runs, and is never stored, logged or shown.
 
-12.6. **Access control.** Only the people who operate SparkPipe can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins. We keep access records and review them after any incident.
+12.6. **Access control.** Only the people who operate SparkPipe can reach our systems, each with a personal key, and we keep access records and review them after any incident.
 
 12.7. **Physical security.** The Fleets are in premises we control in Korea, and our public server is in a data centre in Seoul.
 
-12.8. **Resilience.** Each node's working state is mirrored to its pair partner, so the failure of one node loses neither copy.
-
-12.9. **Transparency.** The source of the engine that serves the Fleets is public, so Customer can read what processes its data.
+12.8. **Transparency.** The source of our inference engine is public, so Customer can read what processes its data.
