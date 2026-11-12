@@ -36,12 +36,21 @@
 
 #define QH_INDEX_CHUNK 64u
 
+constexpr uint32_t QwenHybridGatherParts(uint32_t ranks, uint32_t width, uint32_t limit)
+{
+	uint32_t parts = ranks == 1u ? 1u : (width + limit - 1u) / limit;
+	while ( width % parts != 0u )
+		++parts;
+	return parts;
+}
+
 template<class G>
 struct QwenHybridShape : QwenHybridLayout<G>
 {
 	using Kv = LmKvHeads<16u, G::kKvHeads, G::kHeadDim, G::kPageSlots>;
-	static constexpr uint32_t kGatherParts = (QwenHybridLayout<G>::kQkvWidth / G::kTpDegree + G::kHidden - 1u) / G::kHidden;
-	static_assert(QwenHybridLayout<G>::kQkvWidth / G::kTpDegree % kGatherParts == 0u,
+	static constexpr uint32_t kGatherParts = QwenHybridGatherParts(G::kTpDegree, QwenHybridLayout<G>::kQkvWidth / G::kTpDegree, G::kHidden);
+	static_assert(QwenHybridLayout<G>::kQkvWidth / G::kTpDegree % kGatherParts == 0u &&
+		(G::kTpDegree == 1u || QwenHybridLayout<G>::kQkvWidth / G::kTpDegree / kGatherParts <= G::kHidden),
 		"a rank's fused attention rows gather as whole collective rows of at most the hidden width");
 	using IndexKv = LmKvGeometry<QwenHybridLayout<G>::kIndexer ? G::kIndexDim * 2u : 16u, G::kPageSlots / G::kIndexRatio, true>;
 	static_assert(!G::kMoe || LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_ROWS * G::kLocalExperts,
