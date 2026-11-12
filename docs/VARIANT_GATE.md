@@ -68,6 +68,10 @@ whether one is worse: the publisher's FP8 release of GLM 5.3 Flash measured
   many only one side lists.
 - KL is taken over the tokens both lists share plus one bucket for the rest,
   which bounds the true KL from below.
+- Where a model's next token ends the text, the API returns no token and no
+  log-probs. Such a position counts for top-1 agreement (both precisions
+  stop there, or they differ) and is left out of KL and NLL; `compare`
+  counts them.
 - Each request names the last 64-token boundary before its end as a cache
   point, so a document's next position resumes from the cache. Both
   precisions are scored the same way, and a resumed sequence must equal an
@@ -87,14 +91,15 @@ python3 tools/ab_corpus_retokenize.py --index CT-short.index.json --tokens CT-sh
 python3 tools/ab_api_score.py join --index C.index.json --tokens C.tokens.u32 --out-index J.index.json --out-tokens J.tokens.u32
 ```
 
-Then, on each precision's freshly set up lane in turn, in this order:
+Then, on each precision's lane in turn; the corpus run and the depth run each
+start on a freshly set up lane, and the suite follows the corpus run:
 
 ```bash
 python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index C.index.json --tokens C.tokens.u32 --out ARM.corpus.jsonl
-python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index J.index.json --tokens J.tokens.u32 \
-  --starts 4096:249856:4096 --count 48 --out ARM.depth.jsonl
 python3 tools/ds4_eval92.py --endpoint http://127.0.0.1:PORT --model MODEL --max-tokens 16000 --temperature 0 \
   --phases batch --concurrency 8 --out ARM.ds4
+python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index J.index.json --tokens J.tokens.u32 \
+  --starts 4096:249856:4096 --count 48 --out ARM.depth.jsonl
 ```
 
 The corpus run scores 64 positions a document (256, 272, ... 1264); the depth

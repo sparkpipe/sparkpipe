@@ -14,7 +14,10 @@ join     writes a one-document corpus: the documents of an index back to back,
 compare  pairs two score files position by position: top-1 agreement, a lower
          bound on KL(reference || arm), the corpus token's NLL change and
          next-token accuracy, each with a bootstrap bound whose unit is the
-         document (or the run of positions, for a joined corpus).
+         document (or the run of positions, for a joined corpus). Where a
+         model's next token ends the text the API lists no log-probs: the
+         position counts for top-1 agreement (both stop, or not) and is
+         left out of KL and NLL.
 gate     decides a variant from its comparisons (docs/VARIANT_GATE.md).
 
 usage:
@@ -131,10 +134,11 @@ def score(args):
                 continue
             reply = ask(args.endpoint, document["tokens"][:position], args.timeout)
             lists = reply.get("token_logprobs") or []
-            if len(lists) != 1 or not lists[0]:
+            stopped = not lists and reply.get("tokens") == [] and (reply.get("choices") or [{}])[0].get("finish_reason") == "stop"
+            if not stopped and (len(lists) != 1 or not lists[0]):
                 raise ScoreError(f"{document['id']}@{position}: the reply has no logprobs: {json.dumps(reply)[:300]}")
             row = {"document": document["id"], "stratum": document["stratum"], "start": start, "position": position,
-                   "truth": document["tokens"][position], "top": lists[0], "usage": reply.get("usage")}
+                   "truth": document["tokens"][position], "top": None if stopped else lists[0], "usage": reply.get("usage")}
             with lock:
                 stream.write(json.dumps(row, separators=(",", ":")) + "\n")
                 stream.flush()
@@ -209,6 +213,11 @@ def top_gap(table):
 
 
 def pair(reference, arm):
+    stopped = (reference["top"] is None, arm["top"] is None)
+    if any(stopped):
+        return {"near_tie": False, "agree": all(stopped), "kl": None, "reference_right": False, "arm_right": False, "truth_reference_only": False,
+                "truth_arm_only": False, "nll_reference": None, "nll_arm": None, "identical": all(stopped), "logprob_delta_max": 0.0,
+                "stopped": "both" if all(stopped) else "reference" if stopped[0] else "arm"}
     p, q = distribution(reference["top"]), distribution(arm["top"])
     truth = reference["truth"]
     listed_reference = p.get(truth) is not None
@@ -226,6 +235,7 @@ def pair(reference, arm):
         "nll_arm": -q[truth] if listed_reference and listed_arm else None,
         "identical": reference["top"] == arm["top"],
         "logprob_delta_max": max((abs(p[token] - q[token]) for token in shared), default=0.0),
+        "stopped": None,
     }
 
 
@@ -251,8 +261,8 @@ def summarize(pairs, seed, replicates):
 
     counted = column(lambda row: 0 if row["near_tie"] else 1)
     agreed = column(lambda row: 1 if row["agree"] and not row["near_tie"] else 0)
-    rows = column(lambda row: 1)
-    kl = column(lambda row: row["kl"])
+    rows = column(lambda row: 0 if row["kl"] is None else 1)
+    kl = column(lambda row: row["kl"] or 0.0)
     truth = column(lambda row: 0 if row["nll_reference"] is None else 1)
     nll_reference = column(lambda row: row["nll_reference"] or 0.0)
     nll_delta = column(lambda row: 0.0 if row["nll_reference"] is None else row["nll_arm"] - row["nll_reference"])
@@ -264,6 +274,9 @@ def summarize(pairs, seed, replicates):
         "identical_lists": sum(1 for row in pairs if row["identical"]),
         "logprob_delta_max": max(row["logprob_delta_max"] for row in pairs),
         "near_tie_positions": sum(1 for row in pairs if row["near_tie"]),
+        "stopped_by_both": sum(1 for row in pairs if row["stopped"] == "both"),
+        "stopped_by_reference_only": sum(1 for row in pairs if row["stopped"] == "reference"),
+        "stopped_by_arm_only": sum(1 for row in pairs if row["stopped"] == "arm"),
         "truth_listed_by_both": int(sum(truth)),
         "truth_listed_by_reference_only": sum(1 for row in pairs if row["truth_reference_only"]),
         "truth_listed_by_arm_only": sum(1 for row in pairs if row["truth_arm_only"]),
@@ -276,7 +289,7 @@ def summarize(pairs, seed, replicates):
     }
     measure = bound if len(names) > 1 else lambda columns, scale, seed, replicates: point(columns[0], columns[1], scale)
     out["top1_agreement_pct"] = measure([agreed, counted], 100.0, seed, replicates) if sum(counted) else point(agreed, counted, 100.0)
-    out["kl_lower_bound"] = measure([kl, rows], 1.0, seed, replicates)
+    out["kl_lower_bound"] = measure([kl, rows], 1.0, seed, replicates) if sum(rows) else point(kl, rows, 1.0)
     out["dnll_rel_pct"] = measure([nll_delta, nll_reference], 100.0, seed, replicates) if sum(nll_reference) > 0.0 else point(nll_delta, nll_reference, 100.0)
     return out
 

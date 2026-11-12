@@ -34,7 +34,9 @@ def logits(prompt, shift):
     return values
 
 
-def reply(prompt, shift):
+def reply(prompt, shift, stop_at):
+    if len(prompt) in stop_at:
+        return {"choices": [{"index": 0, "text": "", "finish_reason": "stop"}], "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0}, "tokens": [], "token_logprobs": []}
     values = logits(prompt, shift)
     lse = math.log(sum(math.exp(value) for value in values))
     ranked = sorted(range(VOCABULARY), key=lambda token: (-values[token], token))[:ab_api_score.TOP]
@@ -43,7 +45,7 @@ def reply(prompt, shift):
 
 
 class Api:
-    def __init__(self, shift):
+    def __init__(self, shift, stop_at=()):
         self.requests = []
         api = self
 
@@ -51,7 +53,7 @@ class Api:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 api.requests.append(body)
-                data = json.dumps(reply(body["prompt_token_ids"], shift)).encode()
+                data = json.dumps(reply(body["prompt_token_ids"], shift, stop_at)).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
@@ -132,7 +134,29 @@ def score_cases(work):
 
 
 def row(document, position, truth, top, start=0, stratum="prose"):
-    return {"document": document, "stratum": stratum, "start": start, "position": position, "truth": truth, "top": [top[0]] + top, "usage": None}
+    return {"document": document, "stratum": stratum, "start": start, "position": position, "truth": truth, "top": None if top is None else [top[0]] + top, "usage": None}
+
+
+def stop_cases(work, index, tokens):
+    plain, stopping = Api(0.0), Api(0.0, stop_at=(73, 79))
+    try:
+        for name, api in (("p", plain), ("q", stopping)):
+            done = run("score", "--endpoint", api.endpoint, "--index", index, "--tokens", tokens, "--starts", "70", "--stride", "3", "--count", "5", "--documents", "3", "--out", work / f"stop-{name}.jsonl")
+            check(done.returncode == 0 and len(rows(work / f"stop-{name}.jsonl")) == 15, f"stop: run {name} scores every position, also where the reply ends the text")
+    finally:
+        plain.close()
+        stopping.close()
+    scored = rows(work / "stop-q.jsonl")
+    check(all((scored[key]["top"] is None) == (key[1] in (73, 79)) for key in scored), "stop: a reply that ends the text with no token is recorded as a position without log-probs")
+    done = run("compare", work / "stop-p.jsonl", work / "stop-q.jsonl", "--out", work / "stop.json", "--replicates", "200")
+    overall = json.loads((work / "stop.json").read_text())["overall"]
+    check(done.returncode == 0 and overall["stopped_by_arm_only"] == 6 and overall["stopped_by_both"] == 0 and overall["stopped_by_reference_only"] == 0
+          and overall["identical_lists"] == 9 and abs(overall["top1_agreement_pct"]["estimate"] - 60.0) < 1e-9 and overall["kl_lower_bound"]["estimate"] == 0.0
+          and overall["truth_listed_by_both"] <= 9, "stop: a position only one run stops at is a top-1 disagreement and is left out of KL and NLL")
+    same = run("compare", work / "stop-q.jsonl", work / "stop-q.jsonl", "--out", work / "stop-same.json", "--replicates", "200")
+    overall = json.loads((work / "stop-same.json").read_text())["overall"]
+    check(same.returncode == 0 and overall["stopped_by_both"] == 6 and overall["identical_lists"] == 15 and overall["top1_agreement_pct"]["estimate"] == 100.0,
+          "stop: positions both runs stop at agree")
 
 
 def write(path, records):
@@ -274,6 +298,7 @@ def depth_cases(work, index, tokens):
 with tempfile.TemporaryDirectory() as directory:
     work = Path(directory)
     index, tokens = score_cases(work)
+    stop_cases(work, index, tokens)
     compare_cases(work)
     gate_cases(work)
     depth_cases(work, index, tokens)
