@@ -1,0 +1,7 @@
+== depth start 2026-11-12T02:49:02Z
+joined:fb1248163729b3c5 done, 2928 positions in 609 s
+runs/bf16.depth.jsonl: 2928 new positions, 2928 in all, 609 s
+== depth end 2026-11-12T02:59:11Z rc=0
+gate_arm.sh: line 19: port: unbound variable
+gate_arm.sh: line 20: syntax error near unexpected token `;;'
+gate_arm.sh: line 20: `           python3 tree/tools/prefill_probe.py $port corpus/joined.tokens.u32 8192 4 2>&1 | tail -2 ;;'

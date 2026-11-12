@@ -102,6 +102,9 @@ python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index J.i
   --starts 4096:249856:4096 --count 48 --out ARM.depth.jsonl
 ```
 
+The suite goes to the engine's chat endpoint, which renders the model's own
+template.
+
 The corpus run scores 64 positions a document (256, 272, ... 1264); the depth
 run scores 48 positions from every 4,096th token to the end of the window.
 The variant's lane is then set up again and scores its first documents a
@@ -118,5 +121,16 @@ python3 tools/ab_api_score.py gate --corpus corpus.json --repeat repeat.json --d
 
 `gate` exits 0 only when every check passes. A suite run with a failed
 request decides nothing and is refused. The receipt of a variant holds the
-score files, the comparisons, the suite summaries and the verdict
+comparisons, the suite summaries, the verdict and the score files' digests
 (`qualification/qwen38_27b/fp8-variant-20261112/`).
+
+## Open: what a variant may lose
+
+The first run, Qwen 3.8 27B FP8, fails the gate as written above: its NLL
+and its suite are inside, and its next-token accuracy is 0.18 points lower
+on the corpus and 0.72 at depth. The two accuracy checks ask whether a loss
+is detectable, and on thousands of positions a small one is; the depth NLL
+check asks for both bounds inside ±0.5% and its 61 runs leave the interval
+1.5 points wide. The checks were written before the run and are not changed
+by it. A quantized variant is expected to lose something; how much it may
+lose and still be offered is a product decision, and the checks follow it.
