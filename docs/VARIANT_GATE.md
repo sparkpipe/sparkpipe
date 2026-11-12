@@ -121,16 +121,17 @@ python3 tools/ab_api_score.py gate --corpus corpus.json --repeat repeat.json --d
 `gate` exits 0 when the repeat check holds and prints every figure as
 measured. A suite run with a failed request measures nothing and is refused.
 
-A suite's answers are generated several at a time. Run again in the same
-order on a lane set up afresh, a suite returns the same answers token for
-token. What moves its score is which answers generate beside each other,
-since a row's log-probs depend slightly on its neighbours and an answer runs
-to thousands of tokens. So each precision runs the suite in three orders,
-each on a lane set up afresh: as listed, `--order reversed` and
-`--order shuffled --order-seed 20261112`. `--suite` takes the runs of a side
-separated by commas and lists every run's score, the cases one side always
-answers and the other never, and the cases that change between runs of one
-side.
+A suite's answers are generated several at a time, and a prefill row's
+log-probs depend slightly on the rows beside it, so an answer could depend
+on which answers generate beside it. Each precision therefore runs the
+suite in three orders, each on a lane set up afresh: as listed,
+`--order reversed` and `--order shuffled --order-seed 20261112`. `--suite`
+takes the runs of a side separated by commas and lists every run's score,
+the cases one side always answers and the other never, and the cases that
+change between runs of one side. For Qwen 3.8 27B no case changes: both
+precisions return the same 92 answers token for token in all three orders
+and in a repeat of the first, so there a score belongs to the weights and
+not to the run.
 The receipt of a variant holds the comparisons, the suite summaries, the
 verdict and the score files' digests
 (`qualification/qwen38_27b/fp8-variant-20261112/`).
