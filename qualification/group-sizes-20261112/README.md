@@ -2,9 +2,9 @@
 
 Qwen 3.8 27B, the publisher's FP8 release (`Qwen/Qwen3.8-27B-FP8` at
 `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`), served by four-rank lanes on
-aligned groups of the sixteen Sparks, beside the 16-rank lane of the same
-weights. The plan these runs belong to is in `TECHDEBT.md`, "Group sizes and
-placement by usage".
+aligned groups of the sixteen Sparks and by a one-rank lane on one Spark,
+beside the 16-rank lane of the same weights. The plan these runs belong to
+is in `TECHDEBT.md`, "Group sizes and placement by usage".
 
 ## What ran
 
@@ -31,8 +31,14 @@ placement by usage".
   `STAGE_FIRST_NODE` 0, 4, 8 and 12 on mesh lanes 6, 7, 8 and 11; 8
   sequences, 1,024 rows, a 262,144-token window, at most 8,192 device KV
   pages. One hub API a lane, ports 8491 to 8494.
-- The production lane (Qwen 3.8 Max) stayed loaded and idle on every node. A
-  four-rank lane took about 15 GiB a node, which left 6.4 to 8.3 GiB.
+- The production lane (Qwen 3.8 Max) stayed loaded and idle on every node
+  for the four-rank speed runs. A four-rank lane took about 15 GiB a node,
+  which left 6.4 to 8.3 GiB.
+- The one-rank lane: `STAGE_MODEL=qwen38_27b_fp8_tp1` on spark0, the pack
+  `--tp-degree 1` writes (30,226,700,928 bytes,
+  `4189311b8b842af0c983f56dabac2fe1fa83d5910f5e64e663f0021461f48ff3`), the
+  adapter built from `c441363c8`. The swap controller had unloaded the
+  production lane (`/deactivate`); the one-rank lane took about 57 GiB.
 
 ## Speed
 
@@ -41,19 +47,29 @@ between them, from the API's token timestamps, 256 tokens, no speculation.
 Prefill is the wall time of one request of that many uncached tokens with one
 output token.
 
-| | Sixteen ranks, one lane | One four-rank lane (nodes 0-3) | Four lanes at once |
-| --- | ---: | ---: | ---: |
-| Decode, one stream a lane | 16.64 ms a token (60.1 tok/s) | 38.9 ms a token (25.7 tok/s) | 37.8-42.6 ms each, about 100 tok/s in all |
-| Decode, eight streams a lane | | 56.5 ms a token a stream (about 142 tok/s) | about 566 tok/s over 32 streams |
-| Prefill, 8,192 tokens | 2,580 tok/s | 1,764 tok/s | |
-| Prefill, 32,768 tokens | 2,612 tok/s | 1,649 tok/s | 1,593, 1,598 and 1,646 tok/s on the three cold lanes, about 6.4K in all |
+| | Sixteen ranks, one lane | One four-rank lane (nodes 0-3) | Four lanes at once | One rank (spark0) |
+| --- | ---: | ---: | ---: | ---: |
+| Decode, one stream a lane | 16.64 ms a token (60.1 tok/s) | 38.9 ms a token (25.7 tok/s) | 37.8-42.6 ms each, about 100 tok/s in all | 126.5 ms a token (7.9 tok/s) |
+| Decode, eight streams a lane | | 56.5 ms a token a stream (about 142 tok/s) | about 566 tok/s over 32 streams | 163.4 ms a token a stream (about 49 tok/s) |
+| Prefill, 8,192 tokens | 2,580 tok/s | 1,764 tok/s | | 861 tok/s |
+| Prefill, 32,768 tokens | 2,612 tok/s | 1,649 tok/s | 1,593, 1,598 and 1,646 tok/s on the three cold lanes, about 6.4K in all | 785 tok/s |
 
 The sixteen-rank column is the FP8 lane of the variant gate
 (`qualification/qwen38_27b/fp8-variant-20261112/`), the same weights, window
 and method, measured after its corpus and suite runs.
 
 - A rank of four reads 7.82 GB of weights a token; at 243 GB/s that is 32.2
-  ms, so one stream runs at 83% of the group's memory limit.
+  ms, so one stream runs at 83% of the group's memory limit. The one rank
+  reads 30.2 GB, 124.4 ms, and runs at 98% of it. Sixteen ranks read 1.96
+  GB, 8.05 ms, and run at 48%.
+- One rank has no rounds, so its 1,024-row prefill wave, 1.12 to 1.36 s, is
+  the whole model's compute: about 55 TFLOP in 1.2 s, 46 TFLOPS, a fifth of
+  the 210 TFLOPS the node's FP8 peak measures. A quarter of that work is
+  about 0.3 s of a four-rank wave's 0.53 to 0.56 s, and a sixteenth about
+  0.08 s of a sixteen-rank wave's 0.39 s: the rest is rounds.
+- Sixteen one-rank lanes would prefill about 12.6K tok/s between them and
+  decode about 126 tok/s over sixteen streams; that is sixteen times the
+  measured lane, not a run of sixteen.
 - A 1,024-row prefill wave took 530 to 560 ms on four ranks
   (`STAGE-WAVE-HOST submit_ms`); 2,612 tok/s on sixteen ranks is about 390
   ms a wave. One group prefills at 63% of the sixteen-rank rate, four groups
@@ -80,7 +96,12 @@ lane's NLL is not worse.
 
 ## What the runs found
 
-- The stage needed no change for four ranks.
+- The stage needed no change for four ranks or for one.
+- The runner refused every round but the BF16 sum when a lane had no
+  collective, so a one-rank lane failed its first request; a gather or an
+  all-to-all on one rank is now a local copy (`StageRunnerLoneRound` in
+  `inference/runner/stage_runner.cu`). The 16-rank adapter's GPU code is
+  unchanged by it.
 - weightd keeps the topology a mesh lane was first given until it restarts:
   `SparkWeightdMeshLaneConfigure` answers a different one with
   `SPARK_STATUS_UNSUPPORTED`. Lanes 9 and 10, which last ran 16 ranks, refused
