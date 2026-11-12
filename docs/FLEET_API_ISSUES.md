@@ -126,6 +126,18 @@ State on 6 November 2026:
 | X2 | Tiers B and C: the driver guide and review | A coding agent writes a tier B driver from the guide alone. Review and qualification pass, and the model serves through all three API shapes (Gate F) | M | X1 |
 | X3 | Private model lists | A customer model appears only in its account's listing, and is removed with the working state at a change of user | M | X1 |
 
+## Your own stack
+
+| ID | Issue | Done when | Size | Needs |
+| --- | --- | --- | --- | --- |
+| O1 | The user on every machine: one Linux user per account, login keys, `sparkpipe ssh` and the way in from outside | A key added through the API logs in to every machine of a held fleet within a minute, and is refused on a fleet the account does not hold | M | G4 |
+| O2 | The per-user firewall | From the user, connections to the hub, our other hosts, the facility's networks and another fleet fail on every port, the internet works, and the user cannot change the rules | S | O1 |
+| O3 | The user's toolchain | As the user, vLLM builds from source and serves across all sixteen machines over RDMA, and a CUDA container runs under rootless Podman | M | O1 |
+| O4 | Engine stop and start: the API, the CLI, the account-page button, the swap controller, the shares, mirroring, the pack space and the audit-log events | Stop frees the GPU and the cache space within a minute, and `--packs` the pack space. Start refuses while the user holds the GPU, copies the resident models' packs back when they were removed, then serves again with the user's storage intact | L | O1, E1 |
+| O5 | Credits follow the rental | Downtime comes from probes of the machines and of our network to them, so a software fault or a stopped engine records none while they are up (Agreement 4.4) | S | O4, G11 |
+| O6 | Reboots and the cleanup at a change of customer | `sparkpipe fleet reboot` restarts the named machines. After a change of customer no file, process, service or key of the user remains, and the machine audit passes | M | O1 |
+| O7 | Our engine from a user's own build | The user builds the engine from a checkout and serves a model on its fleet with no root and no hub | L | O3 |
+
 ## CLI
 
 | ID | Issue | Done when | Size | Needs |
@@ -150,11 +162,11 @@ State on 6 November 2026:
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| S1 | Account page: Functions, Your models, Team, Webhooks, Backups and Stats tabs | Each tab drives its API in the live service and the sandbox | L | F1, X3, G5, G7, P7, G3 |
+| S1 | Account page: Functions, Your models, Your stack, Team, Webhooks, Backups and Stats tabs | Each tab drives its API in the live service and the sandbox | L | F1, X3, O4, G5, G7, P7, G3 |
 | S2 | API reference on the site | A page built from `docs/FLEET_API.md`, in English and Korean, linked from the home page and the account page | M | |
 
 ## Acceptance tests
 
 | ID | Issue | Done when | Size | Needs |
 | --- | --- | --- | --- | --- |
-| T1 | Gates A–F and D2 of `docs/FLEET_API.md` §18 | Each gate run on Fleet 1 and recorded in `PERFORMANCE_STATUS.md` before 4 January 2027 | M | all |
+| T1 | Gates A–G and D2 of `docs/FLEET_API.md` §18 | Each gate run on Fleet 1 and recorded in `PERFORMANCE_STATUS.md` before 4 January 2027 | M | all |

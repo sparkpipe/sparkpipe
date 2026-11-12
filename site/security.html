@@ -66,7 +66,7 @@
     <h2>2. When a fleet changes hands</h2>
     <ul>
       <li>Your working state, the cache and your storage on the fleet, is deleted when another customer's booking of that fleet starts, or 24 hours after your last hour on it, whichever comes first, or sooner when you ask (clause 6.2).</li>
-      <li>Before another customer's booking starts, the fleet's software is restored to our own image (clause 6.3), so nothing you ran, including a driver for your own model, can reach the next customer.</li>
+      <li>Before another customer's booking starts, we stop everything your own account on the machines runs, delete the account with its files, restart the machines and restore the fleet's software to our own image (clause 6.3), so nothing you ran, including a driver for your own model or your own software, can reach the next customer.</li>
       <li>The sandbox host that runs code for your Functions is wiped at every change of customer as well.</li>
     </ul>
   </section>
@@ -82,8 +82,19 @@
     </ul>
   </section>
 
+  <section id="own-software">
+    <h2>4. Your own software</h2>
+    <ul>
+      <li>On a fleet you hold you have your own account on every machine, without administrative rights, to install and run your own software, such as your own build of vLLM or of our engine. You alone decide what runs on the fleets you hold (Agreement clause 5.1).</li>
+      <li>Our engine runs under an account of its own. Neither account can read the other's files.</li>
+      <li>While our engine runs, your account has a small share of each machine and no GPU, so it cannot slow down or stop the engine that serves you. Stop our engine with one command and your account has the whole fleet: the GPUs, the memory, the links between the machines, and the cache and storage space, and if you ask, the space our model packs use too. Start it again and it copies its packs back if they were removed and loads its models, with an empty cache.</li>
+      <li>A firewall on each machine, which your account cannot change, lets your software reach the internet and the machines of your own fleet, and nothing else: not our other machines and not other customers' fleets. What your own software sends, and where, is up to you.</li>
+      <li>While our engine is stopped, nothing on the fleet is mirrored, so a failed machine loses what was on it: keep your own copies.</li>
+    </ul>
+  </section>
+
   <section id="credentials">
-    <h2>4. Keys and credentials</h2>
+    <h2>5. Keys and credentials</h2>
     <ul>
       <li><b>API keys</b> are stored only as SHA-256 hashes, never the key itself. Each key can be limited by scope, fleet, expiry and IP address, and revoked at any time.</li>
       <li><b>A token for another service,</b> such as Hugging Face, comes with each download request, is used only with the host it is for, is held in memory only while that download runs, and is never stored, logged or shown (clause 6.7).</li>
@@ -92,14 +103,14 @@
   </section>
 
   <section id="records">
-    <h2>5. What we record</h2>
+    <h2>6. What we record</h2>
     <p>The payment service that carries your API requests passes requests and replies between your tools and your fleet without storing them. Apart from your working state, we keep only the records below. The <a href="privacy.html#data">privacy policy</a> lists every kind of data and its legal basis.</p>
     <div class="scroll">
     <table>
       <tr><th>Record</th><th>What it holds</th><th>Kept</th></tr>
       <tr><td>Operational record of each request</td><td>Model, token counts, timings, and the identifiers of the request, session and key. No prompt or reply text and no token numbers</td><td>1 year, or deleted within 30 days when you ask in writing</td></tr>
       <tr><td>Working state on your fleet</td><td>The computed cache of your requests; the token numbers of replies, so that a reply sent back is processed with exactly the same tokens; conversations stored for Responses requests that do not set "store" to false; your files</td><td>Until another customer's booking starts, 24 hours after your last hour, or sooner when you ask</td></tr>
-      <tr><td>Access logs</td><td>IP address, time, requested address, response code and size, referring page, browser</td><td>3 months, as Korean law requires</td></tr>
+      <tr><td>Access logs</td><td>IP address, time, requested address, response code and size, referring page, browser; for a login to your own account on a fleet's machines, the account and key used</td><td>3 months, as Korean law requires</td></tr>
       <tr><td>Account, payments and bookings</td><td>The account, orders, hour-credits, bookings and the acceptance of our terms</td><td>5 years, as Korean tax law requires</td></tr>
       <tr><td>Notices to your account</td><td>Each event and its delivery</td><td>30 days</td></tr>
     </table>
@@ -107,9 +118,10 @@
   </section>
 
   <section id="access">
-    <h2>6. Who can reach the machines</h2>
+    <h2>7. Who can reach the machines</h2>
     <ul>
       <li>Only the people who operate SparkPipe can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins.</li>
+      <li>On a fleet you hold, you log in to your own account on its machines with SSH keys you add. That account reaches nothing of ours beyond those machines (section 4).</li>
       <li>They access stored data only to run the service, give support, keep it secure or meet a legal obligation.</li>
       <li>The fleets are in premises we control in Korea. Our public server, which ends HTTPS and forwards traffic to the fleets through an encrypted tunnel, is in a data centre in Seoul.</li>
       <li>All traffic to sparkpipe.ai is encrypted with HTTPS, and traffic between our servers runs through encrypted tunnels.</li>
@@ -118,25 +130,25 @@
   </section>
 
   <section id="incidents">
-    <h2>7. Incidents and outages</h2>
+    <h2>8. Incidents and outages</h2>
     <ul>
       <li>We tell you without delay of any intrusion, any leak of your information and any unannounced interruption of the service (clause 6.4).</li>
-      <li>Each node's cache and storage is mirrored to its pair partner, so a failed node loses neither. If an event destroys both copies of part of your working state, we tell you what was lost and credit 24 hours of the fleet (clause 6.6).</li>
-      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). If your fleet cannot serve, we serve you on another free fleet without its working state, or credit the hours (clause 15.7).</li>
+      <li>Each node's cache and storage is mirrored to its pair partner, so a failed node loses neither, except while you have stopped our engine (section 4). If an event destroys both copies of part of your working state, we tell you what was lost and credit 24 hours of the fleet (clause 6.6).</li>
+      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). Downtime means the fleet's machines, or our network to them, failing; a fault in software, ours or yours, is not downtime. If your fleet is down, we give you another free fleet without its working state, or credit the hours (clause 15.7).</li>
     </ul>
   </section>
 
   <section id="source">
-    <h2>8. Read what runs</h2>
+    <h2>9. Read what runs</h2>
     <ul>
-      <li>The engine that serves your fleet is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the Functional Source License with an added permission. You can read it, build it and run it on your own hardware.</li>
+      <li>The engine that serves your fleet is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the Functional Source License with an added permission. You can read it, build it and run it on your own hardware, or in your own account on a fleet you hold.</li>
       <li>Some parts of the service run as separately licensed modules, which are not public. They run only on our machines in Korea and send nothing elsewhere (Agreement clause 7.8). Today there is one: memory, which keeps long conversations within reach for SparkPipe Chat and for API sessions that turn it on.</li>
       <li>You can always leave with your data: export your storage, cache snapshots, draft model and adapters, and restore them to any fleet you hold, or take them home.</li>
     </ul>
   </section>
 
   <section id="report">
-    <h2>9. Reporting a vulnerability</h2>
+    <h2>10. Reporting a vulnerability</h2>
     <p>Write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a> with what you found and how to reproduce it. We reply, and tell you when it is fixed. Please do not test against fleets other customers hold.</p>
   </section>
 </main>
