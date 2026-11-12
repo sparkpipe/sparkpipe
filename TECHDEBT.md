@@ -501,7 +501,8 @@ throughput on one fleet.
   label from the build. The 8-rank, 4-rank and 1-rank adapters compile with
   no stage change; on two ranks a rank's attention rows are wider than a
   collective row, so the gather splits them (`kGatherParts`). The 16-rank
-  adapters keep the gated builds' code sections.
+  adapters keep the gated builds' GPU code and read-only data; their host
+  code differs only in the line numbers its failure sites record.
 - `tools/qwen38_27b_tp16_pack.py --tp-degree 2|4|8` writes group packs whose
   FFN share is the union of consecutive sixteenths.
 - `tools/stage_lane.py` and `tools/stage_lane.sh` place a lane of an entry's

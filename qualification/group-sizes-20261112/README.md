@@ -51,7 +51,7 @@ largest group, and the fleet does most on the smallest that is fast enough.
 - The one-rank lane: `STAGE_MODEL=qwen38_27b_fp8_tp1` on spark0, the pack
   `--tp-degree 1` writes (30,226,700,928 bytes,
   `4189311b8b842af0c983f56dabac2fe1fa83d5910f5e64e663f0021461f48ff3`), the
-  adapter built from `c441363c8`. The swap controller had unloaded the
+  adapter built from `c59889ffd`. The swap controller had unloaded the
   production lane (`/deactivate`); the one-rank lane took about 57 GiB.
 - Two two-rank lanes: `STAGE_MODEL=qwen38_27b_fp8_tp2` on nodes 0-1 and 2-3,
   mesh lanes 13 and 14, the packs `--tp-degree 2` writes (15,633,786,752
@@ -63,7 +63,7 @@ largest group, and the fleet does most on the smallest that is fast enough.
 - One eight-rank lane: `STAGE_MODEL=qwen38_27b_fp8_tp8` on nodes 0-7, mesh
   lane 8, the packs `--tp-degree 8` writes (3,910,542,080 bytes on ranks 0
   to 3 and 3,651,019,520 on ranks 4 to 7), the adapter built from
-  `c441363c8`
+  `c59889ffd`
   (`42fd0f80e8fe1f812ad96a30bde07409c90fd07a75ce0c51b5d587d58b57cacb`):
 
   | Rank | SHA-256 |
@@ -79,6 +79,14 @@ largest group, and the fleet does most on the smallest that is fast enough.
 
   The production lane was unloaded for the two-rank and eight-rank runs as
   well, and reloaded through the swap controller after them.
+- The adapters were built as the work went, from `7d9d37944` (four ranks),
+  `c59889ffd` (one and eight) and `1f8d8f063` (two). Built again from
+  `0f1d80cfc`, each has the GPU code and read-only data of the build that
+  was measured (`.nv_fatbin` and `.rodata` equal); the host code differs
+  only in the line numbers its failure sites record, 27 `mov` immediates
+  in the 16-rank and one-rank adapters. The same holds for the 16-rank
+  adapters of Qwen 3.8 Max and Flash, which share the stage. The Qwen
+  verify-frames GPU test passes on the build host at `0f1d80cfc`.
 
 ## Speed
 
