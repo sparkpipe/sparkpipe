@@ -618,15 +618,15 @@ A held fleet is also the account's to run its own software on: its own build of 
 - **What the user can run.** The GPU, RDMA verbs over the fleet's links with no locked-memory limit, the CUDA toolkit that matches the driver, compilers, Python and rootless Podman with the NVIDIA container device interface. User services run with `systemctl --user` and keep running after logout.
 - **Shares.**
   - While our engine runs: 2 CPU cores and 4 GB of memory on each machine, and no GPU. That is enough to log in, edit and copy files without slowing the engine.
-  - While our engine is stopped: every core, the GPU, the memory up to what the system keeps, the links, and the cache and storage space, 1.5 TB per node, unmirrored (Fleet List).
+  - While our engine is stopped: every core, the GPU, the memory up to what the system keeps, the links, and the cache and storage space, 1.5 TB per node, unmirrored (Fleet List). With `--packs`, also the 2 TB per node that holds our model packs.
 - **Stop and start.** `POST /v1/engine/stop` and `POST /v1/engine/start` act on the fleet the key names, and `GET /v1/engine` reports its state. `sparkpipe engine stop`, `engine start`, `engine status` and a button on the account page do the same.
-  - Stop drains requests for up to 30 seconds, unloads every model on every machine through the swap controller, stops our mirroring and opens the full share. Requests to the fleet then answer `engine_stopped`.
-  - Start refuses with `409`, saying why, while a process of the user holds the GPU or while the user's files outside the cache space exceed the published customer storage. Otherwise it empties the cache space, narrows the share, resumes mirroring and loads the fleet's resident models from the packs on the machines: 16–79 s a model for the models timed so far (§8). The cache starts cold.
+  - Stop drains requests for up to 30 seconds, unloads every model on every machine through the swap controller, stops our mirroring and opens the full share. `sparkpipe engine stop --packs` (`{"packs": true}`) also deletes the fleet's model packs and gives their space to the user. Requests to the fleet then answer `engine_stopped`.
+  - Start refuses with `409`, saying why, while a process of the user holds the GPU or while the user's files outside the cache space exceed the published customer storage. Otherwise it empties the cache space, and the pack space if it was handed over, copying the resident models' packs back over the facility network first (K3's are about 100 GB per node). Then it narrows the share, resumes mirroring and loads the resident models: 16–79 s a model for the models timed so far (§8). The cache starts cold.
   - Both are recorded in the account's audit log (§12) and the morning report.
 - **Network.** A firewall on each machine, which the user cannot change, lets the user's processes reach the internet and the fleet's own machines on any port, and nothing else: not the hub, our other hosts, the facility's networks or other fleets. Only our engine's service user talks to the hub. Internet bandwidth is shared and not promised (§6.1).
 - **Our engine from your own build.** The engine builds and runs as an ordinary user from a source checkout, with no root and no hub. The user can run a fork on the fleet while ours is stopped, measure it, and send changes back as pull requests.
 - **What only we do.** Reboots and driver changes, because they need root. `POST /v1/fleet/reboot {"machines": [...]}` (`sparkpipe fleet reboot`) restarts the named machines. A driver change is a support request, done at a time the account picks.
-- **Credits.** A fleet whose engine the customer stopped is still available, so downtime (Agreement clause 4.4) counts only failures of the machines and of our network to them. If a machine fails while nothing is mirrored, clause 6.6 applies as written.
+- **Credits.** Downtime (Agreement clause 4.4) counts only failures of the machines and of our network to them, never a fault in software, so a fleet whose engine the customer stopped is still available. If a machine fails while nothing is mirrored, clause 6.6 applies as written.
 - **At a change of customer.** We stop the user's processes, delete the user and its files, empty the cache and storage space, restart the machines, run the machine audit (`tools/devcycle/ds4_spark_brickproof.py`) and restore our image before the next booking (Agreement clause 6.3).
 
 
@@ -773,7 +773,7 @@ A held fleet is then never lost to a forgotten Sunday.
 | Context | The model's served window (Fleet List) | |
 | Storage | 4 TB per fleet | §6 |
 | The account's user while our engine runs | 2 CPU cores and 4 GB of memory on each machine, no GPU | §9.1 |
-| The account's user while our engine is stopped | Every core, the GPU, the memory up to what the system keeps, and the cache and storage space, 1.5 TB per node, unmirrored | §9.1, Fleet List |
+| The account's user while our engine is stopped | Every core, the GPU, the memory up to what the system keeps, and the cache and storage space, 1.5 TB per node, unmirrored; with `--packs`, also the pack space, 2 TB per node | §9.1, Fleet List |
 | Gateway requests, account holding an active rental | `SPARKPIPE_GATEWAY_CAPACITY` / N per 10 minutes, N = Fleets with an active rental now (at least 1) | `throttle_gateway` in `tools/sparkpipe_pay.py`; capacity measured with `tools/gateway_capacity_check.py` |
 | Gateway requests, any other account | 6,000 per 10 minutes | `LIMITS["gateway"]` in `tools/sparkpipe_pay.py` |
 

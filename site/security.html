@@ -87,7 +87,7 @@
     <ul>
       <li>On a fleet you hold you have your own account on every machine, without administrative rights, to install and run your own software, such as your own build of vLLM or of our engine. You alone decide what runs on the fleets you hold (Agreement clause 5.1).</li>
       <li>Our engine runs under an account of its own. Neither account can read the other's files.</li>
-      <li>While our engine runs, your account has a small share of each machine and no GPU, so it cannot slow down or stop the engine that serves you. Stop our engine with one command and your account has the whole fleet: the GPUs, the memory, the links between the machines, and the cache and storage space. Start it again and it loads its models back, with an empty cache.</li>
+      <li>While our engine runs, your account has a small share of each machine and no GPU, so it cannot slow down or stop the engine that serves you. Stop our engine with one command and your account has the whole fleet: the GPUs, the memory, the links between the machines, and the cache and storage space, and if you ask, the space our model packs use too. Start it again and it copies its packs back if they were removed and loads its models, with an empty cache.</li>
       <li>A firewall on each machine, which your account cannot change, lets your software reach the internet and the machines of your own fleet, and nothing else: not our other machines and not other customers' fleets. What your own software sends, and where, is up to you.</li>
       <li>While our engine is stopped, nothing on the fleet is mirrored, so a failed machine loses what was on it: keep your own copies.</li>
     </ul>
@@ -134,7 +134,7 @@
     <ul>
       <li>We tell you without delay of any intrusion, any leak of your information and any unannounced interruption of the service (clause 6.4).</li>
       <li>Each node's cache and storage is mirrored to its pair partner, so a failed node loses neither, except while you have stopped our engine (section 4). If an event destroys both copies of part of your working state, we tell you what was lost and credit 24 hours of the fleet (clause 6.6).</li>
-      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). If your fleet cannot serve, we serve you on another free fleet without its working state, or credit the hours (clause 15.7).</li>
+      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). Downtime means the fleet's machines, or our network to them, failing; a fault in software, ours or yours, is not downtime. If your fleet is down, we give you another free fleet without its working state, or credit the hours (clause 15.7).</li>
     </ul>
   </section>
 

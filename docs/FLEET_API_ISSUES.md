@@ -133,8 +133,8 @@ State on 6 November 2026:
 | O1 | The user on every machine: one Linux user per account, login keys, `sparkpipe ssh` and the way in from outside | A key added through the API logs in to every machine of a held fleet within a minute, and is refused on a fleet the account does not hold | M | G4 |
 | O2 | The per-user firewall | From the user, connections to the hub, our other hosts, the facility's networks and another fleet fail on every port, the internet works, and the user cannot change the rules | S | O1 |
 | O3 | The user's toolchain | As the user, vLLM builds from source and serves across all sixteen machines over RDMA, and a CUDA container runs under rootless Podman | M | O1 |
-| O4 | Engine stop and start: the API, the CLI, the account-page button, the swap controller, the shares, mirroring and the audit-log events | Stop frees the GPU and the cache space within a minute. Start refuses while the user holds the GPU, then serves again with the user's storage intact | L | O1, E1 |
-| O5 | Credits follow the switch | A fleet whose engine the customer stopped records no downtime while its machines and network are up | S | O4, G11 |
+| O4 | Engine stop and start: the API, the CLI, the account-page button, the swap controller, the shares, mirroring, the pack space and the audit-log events | Stop frees the GPU and the cache space within a minute, and `--packs` the pack space. Start refuses while the user holds the GPU, copies the resident models' packs back when they were removed, then serves again with the user's storage intact | L | O1, E1 |
+| O5 | Credits follow the rental | Downtime comes from probes of the machines and of our network to them, so a software fault or a stopped engine records none while they are up (Agreement 4.4) | S | O4, G11 |
 | O6 | Reboots and the cleanup at a change of customer | `sparkpipe fleet reboot` restarts the named machines. After a change of customer no file, process, service or key of the user remains, and the machine audit passes | M | O1 |
 | O7 | Our engine from a user's own build | The user builds the engine from a checkout and serves a model on its fleet with no root and no hub | L | O3 |
 
