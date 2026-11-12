@@ -446,9 +446,10 @@ throughput on one fleet.
 - **Weights are sixteenths.** Every pack is cut by consecutive rows, heads
   and vocabulary, so a rank of a group of G nodes holds 16/G consecutive
   sixteenths and every tensor of a wider rank is a concatenation of the
-  16-rank slices. A node stores only the sixteenths of the smallest group it
-  serves. weightd lays each tensor's slices out in rank order, so the wider
-  groups a node also serves read the same memory.
+  16-rank slices (a fused tensor, segment by segment; checked on a node for
+  Qwen 3.8 27B's 4-rank pack). A node stores only the sixteenths of the
+  smallest group it serves. weightd lays each tensor's slices out in rank
+  order, so the wider groups a node also serves read the same memory.
 - **The KV cache is sixteen position shards.** Rank r of 16 holds the
   positions with position mod 16 = r (`include/sparkpipe/spark_kv_shard.h`),
   which fixes the position's shard for 8, 4 and 2 as well. A cached context
