@@ -241,7 +241,14 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
   - Without Wi-Fi, open the step 5 tunnel and add
     `--apt-proxy socks5h://127.0.0.1:1080`. The tool accepts only a loopback
     proxy.
-  - Run `apply --nodes sparkN`, reboot the node, then `audit --nodes sparkN`.
+  - Run `apply --nodes sparkN`. On a new node its post-apply audit reports
+    only `spark-firewall.service:enabled:inactive`, because the firewall
+    starts at the next boot. Reboot the node, wait more than a minute (the DMA
+    guard timer starts the guard 60 seconds after boot), then run
+    `audit --nodes sparkN`.
+  - The DMA guard reports to the hub's LAN address. A staged node with no LAN
+    or Wi-Fi cannot reach it, and the guard stays armed regardless.
+  - spark11 and spark12 passed the staged audit on 2026-11-12.
 - A new node has no predecessor, so baseline step 3 (identity) does not apply:
   the node keeps its own host keys.
 
@@ -288,7 +295,8 @@ store (`sparkpipe-coord/holdwork/burnin/`).
 
 | Node | Date | Peers | Result |
 |---|---|---|---|
-| spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 88 TB over RDMA. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
+| spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 89 TB each way per link. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
+| spark11, spark12 | 2026-11-12 | each other | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers, 0 RoCE retransmit and sequence errors (snapshotted before and after). perftest per link, both directions: writes 130.6 Gb/s, reads 65.3 Gb/s; 89.5 TB each way per link (vport counters). GPU 4,277 and 4,263 passes, `bad=0`, at most 66 and 68 °C at 2535 MHz. fio 1,406 GiB of verified writes `err=0` and about 93.6 TiB of reads on each. |
 
 ## Vendor notes
 
