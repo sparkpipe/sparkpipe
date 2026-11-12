@@ -477,9 +477,10 @@ throughput on one fleet.
   node has the most room and keeps large holes for large models.
 - **One request, two group sizes.** One stream decodes faster on more
   nodes, because each node reads fewer weight bytes a token (Qwen 3.8 27B
-  FP8: 60.1 tok/s on sixteen nodes, 25.7 on four, 7.9 on one). Many prompts
-  or streams at once go faster on small groups, which have less wire or
-  none. The scheduler picks per phase: prefill on small groups in parallel,
+  FP8: 60.1 tok/s on sixteen nodes, 43.7 on eight, 25.7 on four, 14.3 on
+  two, 7.9 on one). Many prompts or streams at once go faster on small
+  groups: a group of two or more pays the same wire time a wave whatever
+  its size, and a single node pays none. The scheduler picks per phase: prefill on small groups in parallel,
   decode on the group size that gives the speed asked for, the KV move in
   between.
 - **One prompt across groups.** Tensor parallelism cannot make one prompt's
@@ -497,30 +498,37 @@ throughput on one fleet.
 ### What exists (branch `topology/group-sizes`)
 
 - Qwen 3.8 27B's module takes its rank count, weight codec, adapter id and KV
-  label from the build. The 4-rank and 1-rank adapters compile with no stage
-  change, and the 16-rank adapters keep the gated builds' code sections.
+  label from the build. The 8-rank, 4-rank and 1-rank adapters compile with
+  no stage change; on two ranks a rank's attention rows are wider than a
+  collective row, so the gather splits them (`kGatherParts`). The 16-rank
+  adapters keep the gated builds' code sections.
 - `tools/qwen38_27b_tp16_pack.py --tp-degree 2|4|8` writes group packs whose
   FFN share is the union of consecutive sixteenths.
 - `tools/stage_lane.py` and `tools/stage_lane.sh` place a lane of an entry's
   `ranks` on the group that starts at `first_node`; a one-rank lane has no
   collective. Every 16-rank record renders the bytes it rendered before.
 - Four four-rank lanes of Qwen 3.8 27B FP8 served at once on the sixteen
-  Sparks on 2026-11-12, and a one-rank lane on one
-  (`qualification/group-sizes-20261112/README.md`). The common runner gives
-  a one-rank lane's rounds as local copies.
+  Sparks on 2026-11-12, two two-rank lanes at once, an eight-rank lane and
+  a one-rank lane (`qualification/group-sizes-20261112/README.md`). The
+  common runner gives a one-rank lane's rounds as local copies.
 
 ### Still to build, in order
 
-1. Qwen 3.8 27B FP8 has run at 16, 4 and 1 by one method
-   (`qualification/group-sizes-20261112/README.md`): one stream 60.1, 25.7
-   and 7.9 tok/s, at 48%, 83% and 98% of the memory limit; prefill 2,612,
-   1,649 and 785 tok/s a lane. One prompt prefills fastest on sixteen ranks
-   and the fleet prefills most as sixteen one-rank lanes (about 12.6K
-   tok/s). Two things hold prefill down. A 1,024-row wave is 80% rounds on
-   sixteen ranks and about 45% on four. And the whole model's wave takes
-   1.2 s on one node, 46 TFLOPS, a fifth of the node's FP8 peak: the FP8
-   prefill kernels. Do the same for the other models that fit a small
-   group, and for 2 and 8 ranks.
+1. Qwen 3.8 27B FP8 has run at 16, 8, 4, 2 and 1 by one method
+   (`qualification/group-sizes-20261112/README.md`): one stream 60.1, 43.7,
+   25.7, 14.3 and 7.9 tok/s, the weight read being 48%, 70%, 83%, 92% and
+   98% of the token; one prompt's prefill 2,612, 2,532, 1,649, 1,061 and
+   785 tok/s. Each doubling up to eight nodes makes a stream 1.7 to 1.8
+   times faster and a prompt's prefill 1.35 to 1.55 times faster; sixteen
+   adds 1.37 and 1.03. The fleet does most as sixteen one-rank lanes (about
+   126 tok/s over sixteen streams, 12.6K tok/s of prefill; a product, not a
+   run). Two things hold prefill down. Every group of two to sixteen pays
+   0.24 to 0.31 s a 1,024-row wave beyond its share of the compute: the
+   rounds move the same rows whatever the number of ranks. And the whole
+   model's wave takes 1.2 to 1.3 s on one node, 42 to 46 TFLOPS, a fifth
+   of the node's FP8 peak: the FP8 prefill kernels. Do the same for the
+   other models that fit a small group. The sizes are options a user picks
+   from by these figures, like precisions; none is the one right size.
 2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
    CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
    shards its small KV sixteen ways, which costs it two to three rounds a
@@ -544,9 +552,9 @@ throughput on one fleet.
    bound of 0.0012 and no position bit-identical, and the four-rank NLL is
    0.08% lower. Either the rounds carry one partial per sixteenth, which
    gives the sixteen-rank bits at every size and keeps its sixteen
-   roundings, or each group size is a build the variant gate passes on its
-   own and a cache moved between sizes mixes two approximations that close.
-   The measurements favour the second.
+   roundings, or each group size is a variant measured on its own
+   (`docs/VARIANT_GATE.md`) and a cache moved between sizes mixes two
+   approximations that close. The measurements favour the second.
 5. weightd: one arena per model built from sixteenth files, shared by every
    group size a node serves; no second copy on NVMe or in memory.
 6. The KV index on the hub and the mover between nodes; the KV identity
