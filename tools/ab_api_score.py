@@ -18,7 +18,12 @@ compare  pairs two score files position by position: top-1 agreement, a lower
          model's next token ends the text the API lists no log-probs: the
          position counts for top-1 agreement (both stop, or not) and is
          left out of KL and NLL.
-gate     decides a variant from its comparisons (docs/VARIANT_GATE.md).
+gate     checks that a variant repeats itself bit for bit and lists what its
+         comparisons measured; a variant is offered with those figures
+         (docs/VARIANT_GATE.md). A suite takes one run a side or several:
+         every run's score, the change in cases with a bootstrap bound whose
+         unit is the case, the cases only one side answers, and the same for
+         each family of cases the suite names.
 
 usage:
   ab_api_score.py score --endpoint URL --index I --tokens T --out ROWS.jsonl
@@ -27,7 +32,7 @@ usage:
   ab_api_score.py join --index I --tokens T --out-index I2 --out-tokens T2 [--length N]
   ab_api_score.py compare REFERENCE.jsonl ARM.jsonl [--unit document|run] [--out CMP.json]
   ab_api_score.py gate --corpus CMP.json --repeat CMP.json [--depth CMP.json]
-      [--suite NAME=REFERENCE_SUMMARY.json:ARM_SUMMARY.json ...] [--out VERDICT.json]
+      [--suite NAME=REFERENCE_SUMMARY.json[,...]:ARM_SUMMARY.json[,...] ...] [--out VERDICT.json]
 """
 from __future__ import annotations
 
@@ -48,13 +53,11 @@ TOP = 20
 BLOCK = 64
 CORPUS_FORMAT = "sparkpipe-ab-corpus-v1"
 COMPARISON_FORMAT = "sparkpipe-ab-api-comparison-v1"
-VERDICT_FORMAT = "sparkpipe-variant-gate-v1"
+VERDICT_FORMAT = "sparkpipe-variant-gate-v2"
 SEED = 20260929
 REPLICATES = 10000
 LEVEL = 0.95
 NEAR_TIE_NATS = 0.001
-DNLL_REL_PCT_ABS = 0.5
-MCNEMAR_ALPHA = 0.05
 DEPTH_BINS = (0, 16384, 65536, 131072)
 
 
@@ -336,78 +339,117 @@ def load_comparison(path):
     return report
 
 
-def nll_check(name, report):
-    change = report["overall"]["dnll_rel_pct"]
-    if change["lower"] is None:
-        return {"check": name, "passed": False, "detail": "no bootstrap bound: the comparison needs at least two units that list the corpus token in both runs"}
-    inside = -DNLL_REL_PCT_ABS < change["lower"] and change["upper"] < DNLL_REL_PCT_ABS
-    return {"check": name, "passed": inside, "dnll_rel_pct": change, "margin_pct": DNLL_REL_PCT_ABS,
-            "detail": f"the corpus token's NLL changes by {change['estimate']:+.4f}% [{change['lower']:+.4f}, {change['upper']:+.4f}] against a margin of +/-{DNLL_REL_PCT_ABS}%"}
+def figure(value, digits=4, signed=False, unit=""):
+    if value["estimate"] is None:
+        return "n/a"
+    form = f"{{:{'+' if signed else ''}.{digits}f}}"
+    text = form.format(value["estimate"]) + unit
+    return text if value["lower"] is None else f"{text} [{form.format(value['lower'])}, {form.format(value['upper'])}]"
 
 
-def accuracy_check(name, report):
+def measured(name, report):
     overall = report["overall"]
-    worse = overall["accuracy_only_reference"] > overall["accuracy_only_arm"] and overall["accuracy_mcnemar_p"] < MCNEMAR_ALPHA
-    return {"check": name, "passed": not worse, "only_reference": overall["accuracy_only_reference"], "only_arm": overall["accuracy_only_arm"],
-            "mcnemar_p": overall["accuracy_mcnemar_p"],
-            "detail": f"next-token accuracy {overall['reference_accuracy_pct']:.3f}% against {overall['arm_accuracy_pct']:.3f}%: {overall['accuracy_only_reference']} positions only the reference predicts, "
-                      f"{overall['accuracy_only_arm']} only the variant, exact McNemar p {overall['accuracy_mcnemar_p']:.4f}"}
+    return [
+        {"measure": f"{name} NLL", "dnll_rel_pct": overall["dnll_rel_pct"], "positions": overall["truth_listed_by_both"],
+         "detail": f"the corpus token's NLL changes by {figure(overall['dnll_rel_pct'], signed=True, unit='%')} over the {overall['truth_listed_by_both']} positions both list it at"},
+        {"measure": f"{name} next token", "reference_pct": overall["reference_accuracy_pct"], "arm_pct": overall["arm_accuracy_pct"],
+         "only_reference": overall["accuracy_only_reference"], "only_arm": overall["accuracy_only_arm"], "mcnemar_p": overall["accuracy_mcnemar_p"],
+         "detail": f"right at {overall['reference_accuracy_pct']:.3f}% of {overall['positions']} positions at the reference and {overall['arm_accuracy_pct']:.3f}% at the variant: "
+                   f"{overall['accuracy_only_reference']} only the reference predicts, {overall['accuracy_only_arm']} only the variant (exact McNemar p {overall['accuracy_mcnemar_p']:.4f})"},
+        {"measure": f"{name} agreement", "top1_agreement_pct": overall["top1_agreement_pct"], "kl_lower_bound": overall["kl_lower_bound"],
+         "detail": f"the same best token at {figure(overall['top1_agreement_pct'], 2, unit='%')} of positions, KL lower bound {figure(overall['kl_lower_bound'])}"},
+    ]
 
 
-def suite_check(spec):
-    import ab_stats
-    name, _, paths = spec.partition("=")
-    left, _, right = paths.partition(":")
-    if not name or not left or not right:
-        raise ScoreError(f"--suite takes NAME=REFERENCE_SUMMARY.json:ARM_SUMMARY.json, not {spec!r}")
+def suite_runs(name, text):
+    paths = [path for path in text.split(",") if path]
     runs = []
-    for path in (left, right):
+    for path in paths:
         summary = json.loads(Path(path).read_text(encoding="utf-8"))
         results = {record["id"]: record for record in summary["results"]}
         if len(results) != len(summary["results"]):
             raise ScoreError(f"{path}: a case appears twice")
+        if not results:
+            raise ScoreError(f"{path}: the run holds no cases")
         failed = sorted(case for case, record in results.items() if record.get("status") != "ok")
         if failed:
-            raise ScoreError(f"{path}: {len(failed)} cases did not complete ({', '.join(failed[:4])}); a suite with errors decides nothing")
+            raise ScoreError(f"{path}: {len(failed)} cases did not complete ({', '.join(failed[:4])}); a suite with failed requests measures nothing")
+        if runs and set(results) != set(runs[0]):
+            raise ScoreError(f"suite {name}: {path} holds other cases than {paths[0]}")
         runs.append(results)
-    if set(runs[0]) != set(runs[1]):
-        raise ScoreError(f"suite {name}: the two runs hold different cases")
-    lost = sum(1 for case in runs[0] if runs[0][case]["passed"] and not runs[1][case]["passed"])
-    gained = sum(1 for case in runs[0] if runs[1][case]["passed"] and not runs[0][case]["passed"])
-    p = ab_stats.mcnemar_exact(lost, gained)
-    passed = [sum(1 for record in run.values() if record["passed"]) for run in runs]
-    return {"check": f"suite {name}", "passed": not (lost > gained and p < MCNEMAR_ALPHA), "cases": len(runs[0]), "reference_passed": passed[0], "arm_passed": passed[1],
-            "only_reference": lost, "only_arm": gained, "mcnemar_p": p,
-            "detail": f"{passed[0]} of {len(runs[0])} against {passed[1]}: {lost} cases only the reference answers, {gained} only the variant, exact McNemar p {p:.4f}"}
+    return runs
+
+
+def suite_measure(label, cases, sides, seed, replicates):
+    import ab_stats
+    marks = [[[bool(run[case]["passed"]) for run in side] for case in cases] for side in sides]
+    scores = [[sum(1 for case in side if case[index]) for index in range(len(side[0]))] for side in marks]
+    rates = [[sum(case) / len(case) for case in side] for side in marks]
+    only = [sum(1 for here, there in zip(marks[first], marks[second]) if all(here) and not any(there)) for first, second in ((0, 1), (1, 0))]
+    changing = [sum(1 for case in side if any(case) and not all(case)) for side in marks]
+    if len(cases) > 1:
+        drawn = ab_stats.bounds(ab_stats.difference_statistic, [rates[1], rates[0]], seed, replicates, LEVEL)
+        change = {key: len(cases) * drawn[key] for key in ("estimate", "lower", "upper")}
+    else:
+        change = {"estimate": rates[1][0] - rates[0][0], "lower": None, "upper": None}
+    single = len(sides[0]) == 1 and len(sides[1]) == 1
+    p = ab_stats.mcnemar_exact(only[0], only[1]) if single else None
+    listed = [", ".join(str(score) for score in side) for side in scores]
+    detail = f"{listed[0]} of {len(cases)} at the reference and {listed[1]} at the variant, a change of {figure(change, 1, signed=True)} cases"
+    if single:
+        detail += f": {only[0]} only the reference answers, {only[1]} only the variant (exact McNemar p {p:.4f})"
+    else:
+        detail += (f" a run: {only[0]} the reference always answers and the variant never, {only[1]} the reverse; "
+                   f"{changing[0]} change between reference runs, {changing[1]} between variant runs")
+    return {"measure": label, "cases": len(cases), "reference_runs": scores[0], "arm_runs": scores[1],
+            "reference_passed": sum(scores[0]) / len(scores[0]), "arm_passed": sum(scores[1]) / len(scores[1]), "change_cases": change,
+            "only_reference": only[0], "only_arm": only[1], "reference_changing": changing[0], "arm_changing": changing[1], "mcnemar_p": p, "detail": detail}
+
+
+def measured_suite(spec, seed, replicates):
+    name, _, paths = spec.partition("=")
+    left, _, right = paths.partition(":")
+    if not name or not left or not right:
+        raise ScoreError(f"--suite takes NAME=REFERENCE_SUMMARY.json[,...]:ARM_SUMMARY.json[,...], not {spec!r}")
+    sides = [suite_runs(name, left), suite_runs(name, right)]
+    if set(sides[0][0]) != set(sides[1][0]):
+        raise ScoreError(f"suite {name}: the two sides hold different cases")
+    cases = list(sides[0][0])
+    measures = [suite_measure(f"suite {name}", cases, sides, seed, replicates)]
+    families = {}
+    for case in cases:
+        families.setdefault(sides[0][0][case].get("family"), []).append(case)
+    if None not in families and len(families) > 1:
+        measures += [suite_measure(f"suite {name}, {family}", members, sides, seed, replicates) for family, members in families.items()]
+    return measures
 
 
 def gate(args):
     corpus, repeat = load_comparison(args.corpus), load_comparison(args.repeat)
-    checks = []
     same = repeat["overall"]["identical_lists"] == repeat["overall"]["positions"]
-    checks.append({"check": "repeat", "passed": same, "positions": repeat["overall"]["positions"], "identical_lists": repeat["overall"]["identical_lists"],
-                   "logprob_delta_max": repeat["overall"]["logprob_delta_max"],
-                   "detail": f"{repeat['overall']['identical_lists']} of {repeat['overall']['positions']} repeated positions return the same tokens and log-probs"
-                             + ("" if same else f"; the largest log-prob difference is {repeat['overall']['logprob_delta_max']:.3g}")})
-    checks.append(nll_check("corpus NLL", corpus))
-    checks.append(accuracy_check("corpus next-token accuracy", corpus))
+    checks = [{"check": "repeat", "passed": same, "positions": repeat["overall"]["positions"], "identical_lists": repeat["overall"]["identical_lists"],
+               "logprob_delta_max": repeat["overall"]["logprob_delta_max"],
+               "detail": f"{repeat['overall']['identical_lists']} of {repeat['overall']['positions']} repeated positions return the same tokens and log-probs"
+                         + ("" if same else f"; the largest log-prob difference is {repeat['overall']['logprob_delta_max']:.3g}")}]
+    measures = measured("corpus", corpus)
     if args.depth:
         depth = load_comparison(args.depth)
         if depth["unit"] != "run":
             raise ScoreError(f"{args.depth}: the depth comparison is made with --unit run")
-        checks.append(nll_check("depth NLL", depth))
-        checks.append(accuracy_check("depth next-token accuracy", depth))
-    checks += [suite_check(spec) for spec in args.suite]
-    verdict = {"format": VERDICT_FORMAT, "passed": all(check["passed"] for check in checks), "checks": checks,
-               "criteria": {"dnll_rel_pct_abs": DNLL_REL_PCT_ABS, "mcnemar_alpha": MCNEMAR_ALPHA, "bound_level": LEVEL, "near_tie_nats": NEAR_TIE_NATS},
-               "reported": {"top1_agreement_pct": corpus["overall"]["top1_agreement_pct"], "kl_lower_bound": corpus["overall"]["kl_lower_bound"]},
+        measures += measured("depth", depth)
+    for spec in args.suite:
+        measures += measured_suite(spec, corpus["seed"], corpus["replicates"])
+    verdict = {"format": VERDICT_FORMAT, "intact": all(check["passed"] for check in checks), "checks": checks, "measured": measures,
+               "method": {"bound_level": LEVEL, "near_tie_nats": NEAR_TIE_NATS, "seed": corpus["seed"], "replicates": corpus["replicates"]},
                "inputs": {"corpus": str(args.corpus), "repeat": str(args.repeat), "depth": str(args.depth) if args.depth else None, "suites": list(args.suite)}}
     if args.out:
         Path(args.out).write_text(json.dumps(verdict, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     for check in checks:
         print(("PASS " if check["passed"] else "FAIL ") + f"{check['check']}: {check['detail']}")
-    print("VARIANT GATE " + ("PASS" if verdict["passed"] else "FAIL"))
-    return 0 if verdict["passed"] else 1
+    for measure in measures:
+        print(f"MEASURED {measure['measure']}: {measure['detail']}")
+    print("VARIANT INTACT: the figures above are what it offers" if verdict["intact"] else "VARIANT BROKEN: it does not repeat itself")
+    return 0 if verdict["intact"] else 1
 
 
 def main():

@@ -228,8 +228,11 @@ def shifted(count, factor, flip=()):
     return reference, arm
 
 
-def suite(path, passed):
-    Path(path).write_text(json.dumps({"format": "sparkpipe-ds4-eval92-phase-v1", "results": [{"id": f"case-{index}", "status": "ok", "passed": flag} for index, flag in enumerate(passed)]}))
+def suite(path, passed, families=()):
+    records = [{"id": f"case-{index}", "status": "ok", "passed": flag} for index, flag in enumerate(passed)]
+    for record, family in zip(records, families):
+        record["family"] = family
+    Path(path).write_text(json.dumps({"format": "sparkpipe-ds4-eval92-phase-v1", "results": records}))
 
 
 def gate_cases(work):
@@ -248,28 +251,62 @@ def gate_cases(work):
           and abs(far_report["estimate"] - 3.0) < 1e-6, "gate: a model whose log-probs are scaled by 1.001 or 1.03 shows an NLL change of 0.1% or 3%")
     passing = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--out", work / "verdict.json")
     verdict = json.loads((work / "verdict.json").read_text())
-    check(passing.returncode == 0 and verdict["passed"] and "VARIANT GATE PASS" in passing.stdout and [item["check"] for item in verdict["checks"]] == ["repeat", "corpus NLL", "corpus next-token accuracy"]
-          and verdict["criteria"] == {"dnll_rel_pct_abs": 0.5, "mcnemar_alpha": 0.05, "bound_level": 0.95, "near_tie_nats": 0.001},
-          "gate: a variant whose repeat is identical and whose NLL bound is inside 0.5% passes, and the verdict records the criteria")
-    failing = run("gate", "--corpus", work / "g-far.json", "--repeat", work / "g-repeat.json")
-    check(failing.returncode == 1 and "FAIL corpus NLL" in failing.stdout and "VARIANT GATE FAIL" in failing.stdout, "gate: an NLL bound outside 0.5% fails")
+    check(passing.returncode == 0 and verdict["intact"] and "VARIANT INTACT" in passing.stdout and [item["check"] for item in verdict["checks"]] == ["repeat"]
+          and [item["measure"] for item in verdict["measured"]] == ["corpus NLL", "corpus next token", "corpus agreement"]
+          and verdict["method"] == {"bound_level": 0.95, "near_tie_nats": 0.001, "seed": 20260929, "replicates": 400},
+          "gate: a variant whose repeat is identical is intact; its NLL, next-token accuracy and agreement are listed as measured, with the method")
+    check("MEASURED corpus NLL: the corpus token's NLL changes by +0.1000%" in passing.stdout, "gate: the measured NLL change is printed with its bounds")
+    far_run = run("gate", "--corpus", work / "g-far.json", "--repeat", work / "g-repeat.json")
+    check(far_run.returncode == 0 and "MEASURED corpus NLL: the corpus token's NLL changes by +3.0000%" in far_run.stdout and "VARIANT INTACT" in far_run.stdout,
+          "gate: an NLL 3% higher is a figure the variant offers, not a refusal")
     unstable = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-close.json")
-    check(unstable.returncode == 1 and "FAIL repeat" in unstable.stdout, "gate: a repeat that returns other log-probs fails")
+    check(unstable.returncode == 1 and "FAIL repeat" in unstable.stdout and "VARIANT BROKEN" in unstable.stdout, "gate: a repeat that returns other log-probs is the one refusal")
     _, flipped = shifted(12, 1.001, flip={(document, 0) for document in range(9)})
     write(work / "g-flip.jsonl", flipped)
     run("compare", work / "g-ref.jsonl", work / "g-flip.jsonl", "--out", work / "g-flip.json", "--replicates", "400")
     worse = run("gate", "--corpus", work / "g-flip.json", "--repeat", work / "g-repeat.json")
-    check(worse.returncode == 1 and "FAIL corpus next-token accuracy" in worse.stdout, "gate: nine positions only the reference predicts and none the other way fail next-token accuracy")
+    check(worse.returncode == 0 and "MEASURED corpus next token: right at 100.000% of 96 positions at the reference and 90.625% at the variant: 9 only the reference predicts, 0 only the variant" in worse.stdout,
+          "gate: nine positions only the reference predicts are counted and listed")
     suite(work / "s-ref.json", [True] * 20)
     suite(work / "s-near.json", [False] * 3 + [True] * 17)
     suite(work / "s-lost.json", [False] * 8 + [True] * 12)
     near = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref.json'}:{work / 's-near.json'}")
-    check(near.returncode == 0 and "PASS suite tasks: 20 of 20 against 17" in near.stdout, "gate: three cases lost of twenty is no significant regression")
-    lost = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref.json'}:{work / 's-lost.json'}")
-    check(lost.returncode == 1 and "FAIL suite tasks" in lost.stdout, "gate: eight cases lost and none gained is a regression")
+    check(near.returncode == 0 and "MEASURED suite tasks: 20 of 20 at the reference and 17 at the variant, a change of -3.0 [" in near.stdout
+          and "] cases: 3 only the reference answers, 0 only the variant (exact McNemar p 0.2500)" in near.stdout and "MEASURED suite tasks," not in near.stdout,
+          "gate: a suite is listed with both scores, the change in cases with its bounds and the cases only one side answers")
+    lost = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref.json'}:{work / 's-lost.json'}", "--out", work / "verdict-lost.json")
+    lost_verdict = json.loads((work / "verdict-lost.json").read_text())
+    lost_change = lost_verdict["measured"][-1]["change_cases"]
+    check(lost.returncode == 0 and lost_verdict["measured"][-1]["only_reference"] == 8 and lost_verdict["measured"][-1]["arm_passed"] == 12
+          and lost_verdict["measured"][-1]["reference_runs"] == [20] and lost_verdict["measured"][-1]["arm_runs"] == [12]
+          and abs(lost_change["estimate"] + 8.0) < 1e-9 and lost_change["lower"] < -8.0 < lost_change["upper"] < 0.0
+          and abs(lost_verdict["measured"][-1]["mcnemar_p"] - 2 / 256) < 1e-12, "gate: eight cases lost of twenty are a figure with its bounds and its exact test, not a refusal")
+    suite(work / "s-ref2.json", [False] + [True] * 19)
+    suite(work / "s-near2.json", [False] * 4 + [True] * 16)
+    several = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite",
+                  f"tasks={work / 's-ref.json'},{work / 's-ref2.json'}:{work / 's-near.json'},{work / 's-near2.json'}", "--out", work / "verdict-several.json")
+    several_verdict = json.loads((work / "verdict-several.json").read_text())["measured"][-1]
+    check(several.returncode == 0 and "MEASURED suite tasks: 20, 19 of 20 at the reference and 17, 16 at the variant, a change of -3.0 [" in several.stdout
+          and "] cases a run: 2 the reference always answers and the variant never, 0 the reverse; 1 change between reference runs, 1 between variant runs" in several.stdout
+          and several_verdict["reference_runs"] == [20, 19] and several_verdict["arm_runs"] == [17, 16] and several_verdict["reference_passed"] == 19.5
+          and several_verdict["arm_passed"] == 16.5 and several_verdict["mcnemar_p"] is None and several_verdict["only_reference"] == 2
+          and several_verdict["reference_changing"] == 1 and several_verdict["arm_changing"] == 1,
+          "gate: a suite run several times a side lists every run, the mean change, the cases one side always answers and the other never, and the cases that change between runs")
+    kinds = ["first"] * 10 + ["second"] * 10
+    suite(work / "s-ref-kinds.json", [True] * 20, kinds)
+    suite(work / "s-near-kinds.json", [False] * 3 + [True] * 17, kinds)
+    by_family = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref-kinds.json'}:{work / 's-near-kinds.json'}",
+                    "--out", work / "verdict-kinds.json")
+    check(by_family.returncode == 0 and "MEASURED suite tasks, first: 10 of 10 at the reference and 7 at the variant, a change of -3.0 [" in by_family.stdout
+          and "MEASURED suite tasks, second: 10 of 10 at the reference and 10 at the variant, a change of +0.0 [+0.0, +0.0] cases: 0 only the reference answers, 0 only the variant" in by_family.stdout
+          and [item["measure"] for item in json.loads((work / "verdict-kinds.json").read_text())["measured"]][-3:] == ["suite tasks", "suite tasks, first", "suite tasks, second"],
+          "gate: a suite whose cases name families is listed whole and then family by family")
+    suite(work / "s-short.json", [True] * 19)
+    uneven = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref.json'},{work / 's-short.json'}:{work / 's-near.json'}")
+    check(uneven.returncode == 2 and "holds other cases" in uneven.stderr, "gate: runs of one side that hold different cases are refused")
     Path(work / "s-error.json").write_text(json.dumps({"results": [{"id": "case-0", "status": "error", "passed": False}]}))
     broken = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--suite", f"tasks={work / 's-ref.json'}:{work / 's-error.json'}")
-    check(broken.returncode == 2 and "did not complete" in broken.stderr, "gate: a suite run with a failed case decides nothing")
+    check(broken.returncode == 2 and "did not complete" in broken.stderr, "gate: a suite run with a failed request measures nothing and is refused")
 
 
 def depth_cases(work, index, tokens):
@@ -295,7 +332,8 @@ def depth_cases(work, index, tokens):
     refused = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--depth", work / "g-close.json")
     check(refused.returncode == 2 and "--unit run" in refused.stderr, "depth: the gate refuses a depth comparison whose unit is the document")
     accepted = run("gate", "--corpus", work / "g-close.json", "--repeat", work / "g-repeat.json", "--depth", work / "depth.json")
-    check("depth NLL" in accepted.stdout and "depth next-token accuracy" in accepted.stdout, "depth: the gate holds the depth comparison to the same NLL margin")
+    check(accepted.returncode == 0 and "MEASURED depth NLL" in accepted.stdout and "MEASURED depth next token" in accepted.stdout and "MEASURED depth agreement" in accepted.stdout,
+          "depth: the gate lists the depth comparison's figures beside the corpus ones")
 
 
 with tempfile.TemporaryDirectory() as directory:

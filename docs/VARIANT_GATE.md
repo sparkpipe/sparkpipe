@@ -1,10 +1,12 @@
-# Variant accuracy gate
+# Variant measurement
 
 A precision variant (`qwen3.8-27b-fp8`, README "Packs and Models") is offered
-only after it passes this gate against the full-precision lane of the same
-model, both run from the same firmware build on the same fleet. The gate goes
-through the serving API, so it needs no special build and holds for any model
-and backend.
+with its measured figures against the full-precision lane of the same model,
+both run from the same firmware build on the same fleet. Nothing is refused
+for losing accuracy: a quantized variant is expected to lose a little, and
+the figures are what the user chooses by. One thing is refused, a variant
+that does not repeat itself. The measurement goes through the serving API,
+so it needs no special build and holds for any model and backend.
 
 ## What a variant is
 
@@ -20,7 +22,7 @@ releases each precision's device KV pool under its own name, and the KV
 identity digest already differs through the adapter id and the pack digest: a
 variant never opens the other precision's KV pages or snapshots.
 
-## Checks
+## What is measured
 
 `tools/ab_api_score.py` scores a frozen token corpus one position at a time:
 the document's tokens before the position as `prompt_token_ids`, one greedy
@@ -34,32 +36,28 @@ positions scored eight documents at a time differed from the same positions
 scored alone at 2 positions (the best token's log-prob by 0.003, a tail
 token's by 0.13; mean KL 2.6e-6), and both of those ran a 17-row prefill
 beside other requests' rows. Scored alone, in a fixed order on a fresh lane,
-a run repeats bit for bit, which the repeat check holds the variant to.
-`--concurrency` is for a quick look, not for a gate run.
+a run repeats bit for bit. `--concurrency` is for a quick look.
 
-| Check | Passes when |
+| | |
 | --- | --- |
-| Repeat | the variant, set up afresh and asked its first documents again, returns the same tokens and log-probs at every position |
-| Corpus NLL | both one-sided 95% bounds of the relative change in the corpus token's NLL lie inside ±0.5% |
-| Corpus next-token accuracy | the variant does not lose significantly: exact McNemar p ≥ 0.05 on the positions only one of the two predicts, or the variant predicts more |
-| Depth NLL and accuracy | the same two checks on positions deep in one long document, to the end of the window |
-| Suite | on each task suite, run at both precisions with the same settings, the variant does not lose significantly (exact McNemar, α 0.05) |
+| **Refused** | |
+| Repeat | the variant, set up afresh and asked its first documents again, does not return the same tokens and log-probs at every position |
+| **Published** | |
+| NLL | the relative change in the corpus token's NLL, with one-sided 95% bounds |
+| Next token | how often each precision's best token is the corpus token, and the positions only one of the two predicts |
+| Agreement | how often the two pick the same best token, and a lower bound on KL(reference ‖ variant) |
+| Depth | the same three on positions deep in one long document, to the end of the window |
+| Suites | each task suite's score at both precisions, run by run, the change in cases with its bounds and the cases only one of the two answers; the same for each family of cases the suite names |
+| Speed | decode, prefill and memory of both lanes |
 
 The bounds are bootstrap bounds: 10,000 replicates, seed 20260929, the more
-conservative of the percentile and BCa bound. The unit is the document, or
-for the depth comparison the run of positions, since rows of one document are
-not independent.
-
-The numbers are not chosen per variant. The ±0.5% NLL margin, α 0.05, the
-bootstrap and the 0.001-nat near-tie rule are the ones frozen for the
-quantization A/B in `qualification/ab/flash-w1/PLAN.json`.
-
-Top-1 agreement (positions whose two best reference tokens are within 0.001
-nats left out) and a lower bound on KL(reference ‖ variant) are reported and
-not gated. They say how often the two precisions answer differently, not
-whether one is worse: the publisher's FP8 release of GLM 5.3 Flash measured
-96.8% agreement and KL 0.0087 with its NLL unchanged
-(`qualification/ab/flash-w1/REPORT.md`).
+conservative of the percentile and BCa bound. The unit is the document, for
+the depth comparison the run of positions, since rows of one document are
+not independent, and for a suite the case. The 0.001-nat near-tie rule and the bootstrap come from the
+quantization A/B plan (`qualification/ab/flash-w1/PLAN.json`). An exact
+McNemar p is printed beside every count of positions or cases only one side
+gets; it says how surely a difference is there, not whether it matters to a
+given user.
 
 ## What the method cannot see
 
@@ -68,14 +66,14 @@ whether one is worse: the publisher's FP8 release of GLM 5.3 Flash measured
   many only one side lists.
 - KL is taken over the tokens both lists share plus one bucket for the rest,
   which bounds the true KL from below.
-- Where a model's next token ends the text, the API returns no token and no
-  log-probs. Such a position counts for top-1 agreement (both precisions
-  stop there, or they differ) and is left out of KL and NLL; `compare`
-  counts them.
 - Each request names the last 64-token boundary before its end as a cache
   point, so a document's next position resumes from the cache. Both
   precisions are scored the same way, and a resumed sequence must equal an
   uninterrupted one by the driver contract.
+- Where a model's next token ends the text, the API returns no token and no
+  log-probs. Such a position counts for the best-token figures (both
+  precisions stop there, or they differ) and is left out of KL and NLL;
+  `compare` counts them.
 
 ## Running it
 
@@ -109,7 +107,7 @@ The corpus run scores 64 positions a document (256, 272, ... 1264); the depth
 run scores 48 positions from every 4,096th token to the end of the window.
 The variant's lane is then set up again and scores its first documents a
 second time (`--documents 16`, another output file) for the repeat check.
-The verdict:
+The figures:
 
 ```bash
 python3 tools/ab_api_score.py compare BF16.corpus.jsonl VARIANT.corpus.jsonl --out corpus.json
@@ -119,18 +117,23 @@ python3 tools/ab_api_score.py gate --corpus corpus.json --repeat repeat.json --d
   --suite ds4-eval-92=BF16.ds4/batch/summary.json:VARIANT.ds4/batch/summary.json --out verdict.json
 ```
 
-`gate` exits 0 only when every check passes. A suite run with a failed
-request decides nothing and is refused. The receipt of a variant holds the
-comparisons, the suite summaries, the verdict and the score files' digests
+`gate` exits 0 when the repeat check holds and prints every figure as
+measured. A suite run with a failed request measures nothing and is refused.
+A suite's answers are generated several at a time and run to thousands of
+tokens, so its score moves from run to run; `--suite` takes several runs a
+side, separated by commas, and then lists every run's score, the cases one
+side always answers and the other never, and the cases that change between
+runs of one side.
+The receipt of a variant holds the comparisons, the suite summaries, the
+verdict and the score files' digests
 (`qualification/qwen38_27b/fp8-variant-20261112/`).
 
-## Open: what a variant may lose
+## How this came to be
 
-The first run, Qwen 3.8 27B FP8, fails the gate as written above: its NLL
-and its suite are inside, and its next-token accuracy is 0.18 points lower
-on the corpus and 0.72 at depth. The two accuracy checks ask whether a loss
-is detectable, and on thousands of positions a small one is; the depth NLL
-check asks for both bounds inside ±0.5% and its 61 runs leave the interval
-1.5 points wide. The checks were written before the run and are not changed
-by it. A quantized variant is expected to lose something; how much it may
-lose and still be offered is a product decision, and the checks follow it.
+The first version of this page, written before the first run, also refused a
+variant whose NLL bounds left ±0.5% or whose next-token accuracy or suite
+score was significantly lower. Qwen 3.8 27B FP8 failed three of those checks:
+its next-token accuracy is 0.18 points lower on the corpus and 0.72 at
+depth, and the depth NLL interval was wider than the margin. The owner
+decided on 2026-11-12 that these are figures to publish, not grounds to
+refuse: quantify everything and let the user choose.

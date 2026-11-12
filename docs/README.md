@@ -70,6 +70,9 @@ current authority.
   consolidation plan.
 - [`T1_REFERENCE_COMPARE.md`](T1_REFERENCE_COMPARE.md): T1 reference-decoder
   comparison contract.
+- [`VARIANT_GATE.md`](VARIANT_GATE.md): how a precision variant is measured
+  against the full-precision lane, what is published and the one thing a
+  variant is refused for.
 - [`SERVING_FUZZ_COVERAGE.md`](SERVING_FUZZ_COVERAGE.md): serving coverage
   map and runtime contract.
 - [`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md): the LiteLLM door.

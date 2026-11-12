@@ -1107,15 +1107,19 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     entry per variant, first for the packs already on every node: GLM 5.3
     FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4.
     Qwen 3.8 27B FP8 has them as `qwen3.8-27b-fp8`, with its own KV label,
-    and its gate has run (`qualification/qwen38_27b/fp8-variant-20261112/`):
-    NLL +0.28% [+0.13, +0.45] and the task suite inside the gate, next-token
-    accuracy 0.18 points lower on short contexts and 0.72 deep in a long
-    one, which the gate as written fails. Whether a variant may lose a
-    measurable amount, and how much, is the owner's to set
-    (`docs/VARIANT_GATE.md`); the record does not deploy before that. Its
-    hub drafter is not wired: the variant drafts from the request's own
-    context only, and the drafter of `qwen3.8-27b` has not been measured on
-    FP8 hidden states;
+    and its figures are measured
+    (`qualification/qwen38_27b/fp8-variant-20261112/`): decode 23% faster,
+    prefill 14% slower, 1.5 GiB a node less; NLL +0.28% [+0.13, +0.45];
+    next-token accuracy 0.18 points lower on short contexts and 0.72 deep in
+    a long one; ds4-eval 92 at 79 against 74, the whole difference in GPQA
+    Diamond (23 against 18 of 25). The owner decided on 2026-11-12 that a
+    variant is offered with its measured figures for the user to choose by,
+    and refused only when it does not repeat itself
+    (`docs/VARIANT_GATE.md`). The record is not deployed, and the Fleet
+    List's row and its sentence that a variant "passes the same accuracy
+    check" are the owner's to publish. Its hub drafter is not wired: the
+    variant drafts from the request's own context only, and the drafter of
+    `qwen3.8-27b` has not been measured on FP8 hidden states;
   - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide
     blocks with FP8 scales) for models with no publisher or community
     variant: K-EXAONE 2.0, Solar Open 2, Gemma 4, Ling 3.0, Laguna, Muse
@@ -1126,11 +1130,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     K-EXAONE 2.0, Muse Glimmer) moved onto the codec layer, one PR a family,
     and a dry-law check that no stage or packer names a format;
   - the Fleet List's per-variant speed, accuracy and cache capacity
-    generated from the gate's receipts instead of written by hand. The gate
-    itself exists (`tools/ab_api_score.py`, `docs/VARIANT_GATE.md`: paired
-    NLL and distribution comparison, the depth comparison, ds4-eval 92). It
-    asks one request a scored position; prompt log-probs from one prefill
-    pass would score a corpus in the time of prefilling it;
+    generated from the measurement's receipts instead of written by hand.
+    The measurement itself exists (`tools/ab_api_score.py`,
+    `docs/VARIANT_GATE.md`: paired NLL and distribution comparison, the
+    depth comparison, ds4-eval 92 by family and over several runs). It asks
+    one request a scored position; prompt log-probs from one prefill pass
+    would score a corpus in the time of prefilling it;
   - an EXL3 codec on both backends, once a survey shows which models have
     good EXL3 builds;
   - Qwen 3.8 Max's FP8 default needs two fleets (the pipeline item under
