@@ -195,6 +195,115 @@ class NodeBaselineContractTest(unittest.TestCase):
                 self.assertLess(max(index for index,name in enumerate(order) if name == "install_assets"),order.index("heal_time_sync"))
                 self.assertIn(("enable_policy_services",(rank,node)),calls)
 
+    def test_node_numbers_split_the_fleet_from_staged_nodes(self) -> None:
+        for node,number,staged in (("spark0",0,False),("sparkf",15,False),("spark10",16,True),("spark1f",31,True),("spark20",32,True),("SPARK12",18,True)):
+            with self.subTest(node=node):
+                self.assertEqual(MODULE.node_number(node),number)
+                self.assertEqual(MODULE.node_is_staged(node),staged)
+        for invalid in ("spark01","sparkg","spark100","node10","spark"):
+            with self.subTest(invalid=invalid),self.assertRaises(MODULE.BrickproofError):
+                MODULE.node_number(invalid)
+        self.assertEqual(MODULE.recovery_network_for_node("spark11"),{"node_id":"spark11"})
+        with self.assertRaises(MODULE.BrickproofError):
+            MODULE.spark_rank("spark11")
+
+    def test_staged_grub_keeps_recovery_settings_without_a_management_address(self) -> None:
+        source = 'GRUB_DEFAULT="x"\nGRUB_CMDLINE_LINUX_DEFAULT="quiet ip=10.20.0.27::10.20.0.1:255.255.255.0:spark11:enP7s7:none console=ttyS0"\n'
+        once = MODULE.canonical_grub(source,{"node_id":"spark11"})
+        tokens = MODULE.shell_assignment(once,"GRUB_CMDLINE_LINUX_DEFAULT").split()
+        self.assertEqual(MODULE.shell_assignment(once,"GRUB_DEFAULT"),"0")
+        self.assertFalse(any(token.startswith("ip=") for token in tokens))
+        for token in ("console=tty0","console=ttyS0,921600","fsck.mode=skip","fsck.repair=no"):
+            self.assertIn(token,tokens)
+        self.assertEqual(MODULE.canonical_grub(once,{"node_id":"spark11"}),once)
+
+    def test_staged_hosts_resolve_the_node_name_on_loopback_and_carry_no_fleet_aliases(self) -> None:
+        factory = "127.0.0.1\tlocalhost\n127.0.0.1       spark11\n::1     ip6-localhost ip6-loopback\n"
+        once = MODULE.canonical_hosts(factory,{"spark11","cube-48d2"},MODULE.node_alias_lines("spark11"))
+        entries = MODULE.hosts_entries(once)
+        self.assertIn(("127.0.1.1",("spark11",)),entries)
+        self.assertIn(("127.0.0.1",("localhost",)),entries)
+        self.assertNotIn(("127.0.0.1",("spark11",)),entries)
+        self.assertFalse(MODULE.fleet_aliases() & {alias for _address,aliases in entries for alias in aliases})
+        self.assertEqual(MODULE.canonical_hosts(once,{"spark11"},MODULE.node_alias_lines("spark11")),once)
+        self.assertEqual(MODULE.node_alias_lines("spark3"),MODULE.fleet_alias_lines())
+
+    def test_staged_assets_are_the_network_independent_subset(self) -> None:
+        sources = dict(MODULE.ASSET_SOURCES)
+        sources.update({f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf":"" for unit in MODULE.BOOT_TIMEOUT_SOURCES})
+        for path in MODULE.STAGED_ASSET_DESTINATIONS:
+            with self.subTest(path=path):
+                self.assertIn(path,sources)
+                self.assertNotRegex(path,r"ceph|osd|fabric|roce|hub-route|timesyncd|resolved")
+        assets = {path:{"text":"x\n","mode":0o644} for path in sources}
+        self.assertEqual(sorted(MODULE.staged_assets(assets)),sorted(MODULE.STAGED_ASSET_DESTINATIONS))
+        del assets[MODULE.DMA_GUARD_RUNTIME]
+        with self.assertRaises(MODULE.BrickproofError):
+            MODULE.staged_assets(assets)
+
+    def test_staged_services_skip_fabric_hub_ceph_and_hub_time(self) -> None:
+        with mock.patch.object(MODULE,"run") as run,mock.patch.object(MODULE,"disable_persistent_unit") as disable:
+            MODULE.enable_policy_services(None,"spark11")
+        commands = [" ".join(call.args[0]) for call in run.call_args_list]
+        disabled = [call.args[0] for call in disable.call_args_list]
+        for absent in ("fabric","hub-route","osd-guard","ceph","roce-qos","timesyncd"):
+            with self.subTest(absent=absent):
+                self.assertFalse([line for line in commands + disabled if absent in line])
+        for present in ("systemctl enable spark-firewall.service","systemctl restart earlyoom.service","systemctl restart ssh-emergency.service",
+                        "loginctl enable-linger spark11","systemctl set-default multi-user.target","systemctl enable --now fstrim.timer"):
+            with self.subTest(present=present):
+                self.assertIn(present,commands)
+
+    def staged_apply(self,fsids: list[str]) -> list[tuple[str,tuple[object,...]]]:
+        with tempfile.TemporaryDirectory() as directory:
+            assets = {path:{"text":"s\n","mode":0o644} for path in MODULE.STAGED_ASSET_DESTINATIONS}
+            assets["/fleet-only"] = {"text":"f\n","mode":0o644}
+            payload = {"assets":assets,"linked_rank_assets":{"/route":{"text":"r\n","mode":0o644}},"fleet_public_key":"ssh-ed25519 AAAA test",
+                       "node_layout_roots":["extnvme"],"recovery_network":{"node_id":"spark11"},"source_commit":"abc","apt_proxy":"socks5h://127.0.0.1:1080"}
+            calls = []
+            names = (
+                "install_packages","install_required_kernel_modules","install_node_identity","atomic_write",
+                "install_sshd_config","install_recovery_keys","install_grub_policy","install_efi_boot_order",
+                "rebuild_initramfs","decouple_optional_boot_work","install_ceph_policy","retire_stale_snap_units",
+                "install_node_layout","heal_time_sync",
+            )
+            patches = [mock.patch.object(MODULE,name,side_effect=lambda *args,_name=name,**_kwargs: calls.append((_name,args)) or []) for name in names]
+            patches.append(mock.patch.object(MODULE,"install_assets",side_effect=lambda assets: calls.append(("install_assets",tuple(sorted(assets))))))
+            patches.append(mock.patch.object(MODULE,"enable_policy_services",side_effect=lambda value,node_id: calls.append(("enable_policy_services",(value,node_id)))))
+            patches.append(mock.patch.object(MODULE,"run",side_effect=lambda argv,**_kwargs: calls.append(("run",tuple(argv)))))
+            patches.append(mock.patch.object(MODULE,"command",return_value="0"))
+            patches.append(mock.patch.object(MODULE,"ceph_fsids",return_value=fsids))
+            patches.append(mock.patch.object(MODULE.os,"geteuid",return_value=0))
+            ruleset = Path(directory) / "spark-firewall.nft"
+            ruleset.write_text("table inet spark_guard {}\n")
+            patches.append(mock.patch.object(MODULE,"FIREWALL_RULESET",ruleset))
+            patches.append(mock.patch.object(MODULE,"reset_vanished_failed_units",return_value=[]))
+            for patch in patches:
+                patch.start()
+            try:
+                result = MODULE.remote_apply(payload)
+            finally:
+                for patch in patches:
+                    patch.stop()
+            self.assertEqual(result["profile"],"staged")
+            return(calls)
+
+    def test_staged_apply_installs_only_network_independent_policy(self) -> None:
+        calls = self.staged_apply([])
+        names = [name for name,_args in calls]
+        for absent in ("install_efi_boot_order","install_ceph_policy","heal_time_sync"):
+            self.assertNotIn(absent,names)
+        self.assertNotIn(("run",(MODULE.NETWORK_MANAGER_RUNTIME,"--network-manager")),calls)
+        self.assertEqual([args for name,args in calls if name == "install_assets"],[tuple(sorted(MODULE.STAGED_ASSET_DESTINATIONS))])
+        self.assertIn(("install_packages",("socks5h://127.0.0.1:1080",)),calls)
+        self.assertIn(("enable_policy_services",(None,"spark11")),calls)
+        self.assertIn(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY)),calls)
+        self.assertLess(names.index("enable_policy_services"),calls.index(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY))))
+
+    def test_staged_apply_refuses_a_node_that_holds_a_ceph_cluster(self) -> None:
+        with self.assertRaises(MODULE.BrickproofError):
+            self.staged_apply([MODULE.CEPH_CLUSTER_FSID])
+
     def test_switched_fabric_network_manager_mode_writes_the_fleet_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             conf = Path(directory) / "conf.d"

@@ -140,6 +140,15 @@ ASSET_SOURCES.update({
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}.target.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-cluster-start-after-ssh.conf",0o644),
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}@.service.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-daemon-start-after-ssh.conf",0o644),
 })
+STAGED_ASSET_DESTINATIONS = (
+    "/usr/local/bin/sparkpipe_fsck_health.sh",
+    "/etc/systemd/system/sparkpipe-fsck-health.service",
+    "/etc/systemd/system/sparkpipe-fsck-health.timer",
+    "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf",
+    "/etc/systemd/system/spark-firewall.service",
+    DMA_GUARD_RUNTIME,
+    *(f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf" for unit in BOOT_TIMEOUT_SOURCES),
+)
 LINKED_RANK_ASSET_SOURCES = {
     "/etc/systemd/system/sparkpipe-hub-route.service": ("tools/devcycle/fleet/sparkpipe-hub-route.service",0o644),
     "/etc/systemd/system/sparkpipe-hub-route.service.d/10-retry.conf": ("tools/devcycle/fleet/sparkpipe-hub-route-retry.conf",0o644),
@@ -313,13 +322,19 @@ def recovery_ip_token(recovery_network: object) -> str:
     return(f"ip={values[0]}::{values[1]}:{values[2]}:{values[3]}:{values[4]}:none")
 
 
+def recovery_ip_tokens(recovery_network: object) -> tuple[str,...]:
+    if isinstance(recovery_network,dict) and node_is_staged(str(recovery_network.get("node_id",""))):
+        return(())
+    return((recovery_ip_token(recovery_network),))
+
+
 def canonical_grub(text: str,recovery_network: object) -> str:
     cmdline = shell_assignment(text,"GRUB_CMDLINE_LINUX_DEFAULT")
     tokens = shlex.split(cmdline)
     tokens = [token for token in tokens if not token.startswith(("ip=","fsck.mode=","fsck.repair=","console=ttyS0"))]
     if "console=tty0" not in tokens:
         tokens.append("console=tty0")
-    tokens.extend(("console=ttyS0,921600",recovery_ip_token(recovery_network),"fsck.mode=skip","fsck.repair=no"))
+    tokens.extend(("console=ttyS0,921600",*recovery_ip_tokens(recovery_network),"fsck.mode=skip","fsck.repair=no"))
     text = set_shell_assignment(text,"GRUB_CMDLINE_LINUX_DEFAULT",shlex.join(tokens))
     return(set_shell_assignment(text,"GRUB_DEFAULT","0"))
 
@@ -417,19 +432,28 @@ def package_verification_lines(name: str) -> tuple[str,...]:
     return(tuple(line for line in text.splitlines() if line.strip()))
 
 
-def install_packages() -> None:
+def apt_proxy_options(proxy: str) -> list[str]:
+    if not proxy:
+        return([])
+    if not re.fullmatch(r"(?:socks5h|http)://127\.0\.0\.1:[0-9]{1,5}",proxy):
+        raise BrickproofError(f"apt proxy must be a loopback socks5h or http URL: {proxy}")
+    return(["-o",f"Acquire::http::Proxy={proxy}","-o",f"Acquire::https::Proxy={proxy}"])
+
+
+def install_packages(apt_proxy: str = "") -> None:
     packages = list(required_packages(os.uname().release))
     for release in kernel_releases():
         packages.extend(kernel_packages(release))
     packages = list(dict.fromkeys(packages))
     missing = [name for name in packages if not package_installed(name)]
     environment = {**os.environ,"DEBIAN_FRONTEND":"noninteractive"}
+    proxy = apt_proxy_options(apt_proxy)
     if missing:
-        run(["apt-get","install","-y","-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*missing],timeout=900,env=environment)
+        run(["apt-get","install","-y",*proxy,"-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*missing],timeout=900,env=environment)
     damaged = [name for release in kernel_releases() for name in kernel_packages(release) if package_verification_lines(name)]
     damaged = list(dict.fromkeys(damaged))
     if damaged:
-        run(["apt-get","install","--reinstall","-y","-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*damaged],timeout=900,env=environment)
+        run(["apt-get","install","--reinstall","-y",*proxy,"-o","Dpkg::Options::=--force-confdef","-o","Dpkg::Options::=--force-confold",*damaged],timeout=900,env=environment)
 
 
 def rebuild_initramfs() -> None:
@@ -457,10 +481,19 @@ def fleet_aliases() -> set[str]:
     return({alias for line in fleet_alias_lines() for alias in line.split()[1:]})
 
 
-def canonical_hosts(text: str,removed_aliases: set[str]) -> str:
+def staged_alias_lines(node_id: str) -> tuple[str,...]:
+    return((f"127.0.1.1 {node_id}",))
+
+
+def node_alias_lines(node_id: str) -> tuple[str,...]:
+    return(staged_alias_lines(node_id) if node_is_staged(node_id) else fleet_alias_lines())
+
+
+def canonical_hosts(text: str,removed_aliases: set[str],alias_lines: tuple[str,...] | None = None) -> str:
     output = []
     managed_end = ""
-    aliases_to_replace = fleet_aliases() | removed_aliases
+    alias_lines = fleet_alias_lines() if alias_lines is None else alias_lines
+    aliases_to_replace = fleet_aliases() | {alias for line in alias_lines for alias in line.split()[1:]} | removed_aliases
     for line in text.splitlines():
         stripped = line.strip()
         if managed_end:
@@ -482,7 +515,7 @@ def canonical_hosts(text: str,removed_aliases: set[str]) -> str:
     if managed_end:
         raise BrickproofError(f"unterminated hosts block: expected {managed_end}")
     rendered = "\n".join(output).rstrip()
-    block = "\n".join((HOSTS_BLOCK_BEGIN,*fleet_alias_lines(),HOSTS_BLOCK_END))
+    block = "\n".join((HOSTS_BLOCK_BEGIN,*alias_lines,HOSTS_BLOCK_END))
     return(f"{rendered}\n\n{block}\n" if rendered else f"{block}\n")
 
 
@@ -496,17 +529,38 @@ def spark_rank(node: str) -> int:
     return(rank)
 
 
+def node_number(node: str) -> int:
+    match = re.fullmatch(r"spark(0|[1-9a-f][0-9a-f]?)",node.casefold())
+    if match is None:
+        raise BrickproofError(f"invalid Spark node id: {node}")
+    return(int(match.group(1),16))
+
+
+def node_is_staged(node: str) -> bool:
+    return(node_number(node) > MAX_SPARK_RANK)
+
+
+def staged_assets(assets: object) -> dict[str,object]:
+    if not isinstance(assets,dict):
+        raise BrickproofError("payload assets are invalid")
+    missing = [path for path in STAGED_ASSET_DESTINATIONS if path not in assets]
+    if missing:
+        raise BrickproofError(f"payload lacks staged assets: {missing}")
+    return({path:assets[path] for path in STAGED_ASSET_DESTINATIONS})
+
+
 def install_node_identity(payload: dict[str,object]) -> bool:
     hostname = str(payload["recovery_network"]["node_id"])
-    rank = spark_rank(hostname)
+    staged = node_is_staged(hostname)
+    rank = None if staged else spark_rank(hostname)
     previous_hostname = command(["hostname","-s"],check=False)
     changed = previous_hostname != hostname
     if changed:
         run(["hostnamectl","set-hostname",hostname])
     atomic_write(Path("/etc/hostname"),f"{hostname}\n",0o644)
-    rank_changed = atomic_write(NODE_RANK_PATH,f"{rank}\n",0o644)
+    rank_changed = False if rank is None else atomic_write(NODE_RANK_PATH,f"{rank}\n",0o644)
     hosts = Path("/etc/hosts")
-    hosts_changed = atomic_write(hosts,canonical_hosts(hosts.read_text(),{hostname,previous_hostname}),0o644)
+    hosts_changed = atomic_write(hosts,canonical_hosts(hosts.read_text(),{hostname,previous_hostname},node_alias_lines(hostname)),0o644)
     return(changed or hosts_changed or rank_changed)
 
 
@@ -770,7 +824,7 @@ def install_ceph_policy(
     return(changes)
 
 
-def enable_policy_services(rank: int,node_id: str = "") -> None:
+def enable_policy_services(rank: int | None,node_id: str = "") -> None:
     run(["systemctl","daemon-reload"])
     run(["sysctl","--system"],timeout=180)
     run(["udevadm","control","--reload"])
@@ -782,23 +836,26 @@ def enable_policy_services(rank: int,node_id: str = "") -> None:
     disable_persistent_unit("sparkpipe-fsck-health.service")
     run(["systemctl","enable","--now","sparkpipe-fsck-health.timer"])
     run(["systemctl","enable","serial-getty@ttyS0.service"])
-    disable_persistent_unit("ds4-switched-fabric.service")
-    disable_persistent_unit("ds4-rail2-fabric.service")
-    for unit in RETIRED_FABRIC_UNITS:
-        run(["systemctl","disable","--now",unit],check=False)
-        disable_persistent_unit(unit)
-    run(["systemctl","enable","--now","ds4-switched-fabric.timer"])
-    run(["systemctl","enable","--now","ds4-rail2-fabric.timer"])
-    if rank == HUB_GATEWAY_RANK:
-        disable_persistent_unit("sparkpipe-hub-route.service")
-    else:
-        run(["systemctl","enable","sparkpipe-hub-route.service"])
+    if rank is not None:
+        disable_persistent_unit("ds4-switched-fabric.service")
+        disable_persistent_unit("ds4-rail2-fabric.service")
+        for unit in RETIRED_FABRIC_UNITS:
+            run(["systemctl","disable","--now",unit],check=False)
+            disable_persistent_unit(unit)
+        run(["systemctl","enable","--now","ds4-switched-fabric.timer"])
+        run(["systemctl","enable","--now","ds4-rail2-fabric.timer"])
+        if rank == HUB_GATEWAY_RANK:
+            disable_persistent_unit("sparkpipe-hub-route.service")
+        else:
+            run(["systemctl","enable","sparkpipe-hub-route.service"])
     run(["systemctl","enable","spark-firewall.service"])
-    run(["systemctl","enable","--now","spark-osd-guard-scan.timer"])
-    run(["systemctl","enable","restart-resolved.service","ds4-ceph-warm-mount.service","sparkpipe-roce-qos.service"])
+    if rank is not None:
+        run(["systemctl","enable","--now","spark-osd-guard-scan.timer"])
+        run(["systemctl","enable","restart-resolved.service","ds4-ceph-warm-mount.service","sparkpipe-roce-qos.service"])
     if node_id:
         run(["loginctl","enable-linger",node_id])
-    run(["systemctl","restart","systemd-timesyncd.service"])
+    if rank is not None:
+        run(["systemctl","restart","systemd-timesyncd.service"])
     run(["systemctl","unmask","fstrim.service"])
     run(["systemctl","enable","--now","fstrim.timer"])
     run(["systemctl","reset-failed","fstrim.service","fstrim.timer"],check=False)
@@ -845,16 +902,21 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     memory_current = int(command(["systemctl","show","user-1000.slice","-p","MemoryCurrent","--value"]) or "0")
     if memory_current >= 108 * 1024 * 1024 * 1024:
         raise BrickproofError(f"user-1000.slice already uses {memory_current} bytes; refusing a 108G cap")
-    install_packages()
+    node_id = str(payload["recovery_network"]["node_id"])
+    staged = node_is_staged(node_id)
+    if staged and ceph_fsids():
+        raise BrickproofError(f"staged node {node_id} holds a Ceph cluster; only the spark0-sparkf fleet runs Ceph")
+    install_packages(str(payload.get("apt_proxy","")))
     install_required_kernel_modules()
     identity_changed = install_node_identity(payload)
-    rank = spark_rank(str(payload["recovery_network"]["node_id"]))
-    install_assets(payload["assets"])
-    if rank != HUB_GATEWAY_RANK:
+    rank = None if staged else spark_rank(node_id)
+    install_assets(staged_assets(payload["assets"]) if staged else payload["assets"])
+    if rank is not None and rank != HUB_GATEWAY_RANK:
         install_assets(payload["linked_rank_assets"])
-    layout_created = install_node_layout(str(payload["recovery_network"]["node_id"]),payload["node_layout_roots"])
-    time_sync_restarted = heal_time_sync()
-    run([NETWORK_MANAGER_RUNTIME,"--network-manager"],timeout=120)
+    layout_created = install_node_layout(node_id,payload["node_layout_roots"])
+    time_sync_restarted = False if staged else heal_time_sync()
+    if not staged:
+        run([NETWORK_MANAGER_RUNTIME,"--network-manager"],timeout=120)
     atomic_write(Path("/etc/systemd/system/user-1000.slice.d/20-ds4-brickproof.conf"),USER_SLICE,0o644)
     atomic_write(Path("/etc/default/earlyoom"),EARLYOOM_DEFAULT,0o644)
     atomic_write(Path("/etc/sysctl.d/90-sparkpipe-no-thrash.conf"),NO_THRASH_SYSCTL,0o644)
@@ -869,15 +931,15 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
             legacy_timeout.unlink()
     keys_changed = install_recovery_keys(str(payload["fleet_public_key"]))
     grub_changed = install_grub_policy(payload["recovery_network"])
-    efi_boot_order_changed = install_efi_boot_order()
+    efi_boot_order_changed = False if staged else install_efi_boot_order()
     rebuild_initramfs()
     decouple_optional_boot_work()
-    ceph_changes = install_ceph_policy()
+    ceph_changes = [] if staged else install_ceph_policy()
     snap_units_retired = retire_stale_snap_units() + reset_vanished_failed_units()
-    enable_policy_services(rank,str(payload["recovery_network"]["node_id"]))
+    enable_policy_services(rank,node_id)
     run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
-    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"source_commit":payload["source_commit"]})
+    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"profile":"staged" if staged else "fleet","source_commit":payload["source_commit"]})
 
 
 def read_optional(path: Path) -> str:
@@ -917,6 +979,14 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
     return(failures,observations)
 
 
+def audit_gpu() -> tuple[list[str],dict[str,object]]:
+    gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
+    observations: dict[str,object] = {"gpu":gpu.stdout.decode("utf-8",errors="replace").strip()}
+    if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
+        return(["gpu-unhealthy"],observations)
+    return([],observations)
+
+
 def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     failures = []
     observations: dict[str,object] = {}
@@ -934,10 +1004,9 @@ def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
     rail2_failures,rail2_observations = audit_rail2(spark_rank(node_id))
     failures.extend(rail2_failures)
     observations.update(rail2_observations)
-    gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
-    observations["gpu"] = gpu.stdout.decode("utf-8",errors="replace").strip()
-    if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
-        failures.append("gpu-unhealthy")
+    gpu_failures,gpu_observations = audit_gpu()
+    failures.extend(gpu_failures)
+    observations.update(gpu_observations)
     tailscale = run(["tailscale","status","--json"],timeout=30,check=False)
     try:
         status = json.loads(tailscale.stdout.decode("utf-8"))
@@ -1028,13 +1097,44 @@ def asset_drift(assets: dict[str,dict[str,object]]) -> list[str]:
     return(drifted)
 
 
+def audit_ceph(observations: dict[str,object]) -> list[str]:
+    failures = []
+    ceph_states = ceph_unit_file_states()
+    observations["ceph_unit_states"] = ceph_states
+    unmasked = sorted(unit for unit in CEPH_MASK_UNITS if ceph_states.get(unit) != "masked")
+    if unmasked:
+        failures.append("ceph-package-units-unmasked:" + ",".join(unmasked))
+    if ceph_states.get("ceph.target") != "enabled":
+        failures.append(f"ceph.target:{ceph_states.get('ceph.target','missing')}")
+    for fsid in ceph_fsids():
+        daemons = ceph_daemons(fsid)
+        enabled_instances = ceph_enabled_instances(fsid)
+        observations[f"ceph:{fsid}"] = daemons
+        if ceph_states.get(f"ceph-{fsid}.target") != "enabled":
+            failures.append(f"ceph-{fsid}.target:{ceph_states.get(f'ceph-{fsid}.target','missing')}")
+        for daemon in daemons:
+            unit = f"ceph-{fsid}@{daemon}.service"
+            state = (is_enabled(unit),service_value(unit,"ActiveState"))
+            required = daemon.startswith(CEPH_REQUIRED_DAEMON_PREFIXES)
+            if (required and state != ("enabled","active")) or (state[0] == "enabled" and state[1] != "active"):
+                failures.append(f"ceph-daemon:{daemon}:{state[0]}:{state[1]}")
+        failures.extend(f"ceph-stray-unit:{unit}" for unit in ceph_stray_units(fsid,daemons,enabled_instances))
+        log_dir = CEPH_LOG_ROOT / fsid
+        owner = directory_owner(log_dir)
+        if owner != f"{CEPH_UID}:{CEPH_UID}":
+            failures.append(f"ceph-log-dir:{owner}")
+    return(failures)
+
+
 def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     public_key = str(payload["fleet_public_key"])
     failures = []
     observations: dict[str,object] = {}
     required_module_state: dict[str,object] = {}
     node_id = str(payload["recovery_network"]["node_id"])
-    rank = spark_rank(node_id)
+    staged = node_is_staged(node_id)
+    rank = None if staged else spark_rank(node_id)
+    observations["profile"] = "staged" if staged else "fleet"
     observations["swappiness"] = command(["sysctl","-n","vm.swappiness"],check=False)
     observations["panic"] = command(["sysctl","-n","kernel.panic"],check=False)
     running_kernel = running_kernel_release()
@@ -1090,6 +1190,8 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         "ssh.service","spark-dma-guard.timer","spark-osd-guard-scan.timer","restart-resolved.service","ds4-ceph-warm-mount.service",
         "sparkpipe-hub-route.service",
     )}
+    if staged:
+        expected_unit_states = {unit:"enabled" for unit in ("serial-getty@ttyS0.service","sparkpipe-fsck-health.timer","ssh.service","spark-dma-guard.timer")}
     if rank == HUB_GATEWAY_RANK:
         del expected_unit_states["sparkpipe-hub-route.service"]
     for unit,expected in expected_unit_states.items():
@@ -1107,7 +1209,8 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         failures.append(f"fstrim.timer:{fstrim_timer}")
     cmdline_tokens = shlex.split(read_optional(Path("/proc/cmdline")))
     runtime_masks = {token.split("=",1)[1] for token in cmdline_tokens if token.startswith("systemd.mask=")}
-    for unit in ("ds4-switched-fabric.service","ds4-rail2-fabric.service","sparkpipe-fsck-health.service"):
+    fabric_units = () if staged else ("ds4-switched-fabric.service","ds4-rail2-fabric.service")
+    for unit in (*fabric_units,"sparkpipe-fsck-health.service"):
         state = is_enabled(unit)
         links = [str(path) for path in persistent_unit_links(unit)]
         observations[f"{unit}.enabled"] = state
@@ -1122,7 +1225,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         observations[f"{unit}.enabled"] = state
         if state != "masked":
             failures.append(f"optional-boot-unit:{unit}={state}")
-    for unit in ("ds4-switched-fabric.service","ds4-rail2-fabric.service"):
+    for unit in fabric_units:
         before = service_value(unit,"Before")
         timeout = service_value(unit,"TimeoutStartUSec")
         installed = read_optional(Path("/etc/systemd/system") / unit)
@@ -1167,8 +1270,10 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     for token in ("fsck.mode=skip","fsck.repair=no"):
         if token not in shlex.split(cmdline):
             failures.append(f"grub-missing:{token}")
-    expected_recovery_ip = recovery_ip_token(payload["recovery_network"])
-    if expected_recovery_ip not in shlex.split(cmdline):
+    if staged:
+        if any(token.startswith("ip=") for token in shlex.split(cmdline)):
+            failures.append("grub-staged-ip")
+    elif recovery_ip_token(payload["recovery_network"]) not in shlex.split(cmdline):
         failures.append("grub-recovery-ip")
     if not any(token.startswith("console=ttyS0") for token in shlex.split(cmdline)):
         failures.append("grub-missing:serial")
@@ -1178,8 +1283,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     observations["efi_boot"] = efi_boot
     try:
         efi_order,efi_entries = parse_efi_boot_entries(efi_boot)
-        desired_efi = desired_efi_boot_order(efi_boot)
-        if efi_order != desired_efi:
+        if not staged and efi_order != desired_efi_boot_order(efi_boot):
             failures.append("efi-pxe-not-first")
     except BrickproofError as error:
         failures.append(f"efi-boot:{error}")
@@ -1193,12 +1297,12 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     observations["hostname"] = command(["hostname","-s"],check=False)
     if observations["hostname"] != payload["recovery_network"]["node_id"]:
         failures.append(f"hostname:{observations['hostname']}")
-    expected_rank = str(spark_rank(str(payload["recovery_network"]["node_id"])))
+    expected_rank = "" if rank is None else str(rank)
     observations["node_rank"] = read_optional(NODE_RANK_PATH).strip()
     if observations["node_rank"] != expected_rank:
         failures.append(f"node-rank:{observations['node_rank']}")
     hosts = read_optional(Path("/etc/hosts"))
-    if hosts_entries(hosts) != hosts_entries(canonical_hosts(hosts,{node_id})):
+    if hosts_entries(hosts) != hosts_entries(canonical_hosts(hosts,{node_id},node_alias_lines(node_id))):
         failures.append("hosts-loopback-alias")
     observations["kernel"] = command(["uname","-r"],check=False)
     observations["system_state"] = command(["systemctl","is-system-running"],check=False)
@@ -1220,26 +1324,27 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     observations["dma_guard"] = {"active":service_value("spark-dma-guard.service","ActiveState"),"mode":dma_guard_mode()}
     if observations["dma_guard"] != {"active":"active","mode":"armed"}:
         failures.append(f"dma-guard:{observations['dma_guard']['active']}:{observations['dma_guard']['mode'] or 'no-start'}")
-    expected_assets = dict(payload["assets"])
-    if rank != HUB_GATEWAY_RANK:
+    expected_assets = staged_assets(payload["assets"]) if staged else dict(payload["assets"])
+    if rank is not None and rank != HUB_GATEWAY_RANK:
         expected_assets.update(payload["linked_rank_assets"])
     drifted = asset_drift(expected_assets)
     observations["asset_drift"] = drifted
     failures.extend(f"asset-drift:{path}" for path in drifted)
-    network_manager = command(["NetworkManager","--print-config"],check=False)
-    missing_unmanaged = sorted(set(FABRIC_INTERFACES) - unmanaged_interfaces(network_manager))
-    observations["networkmanager_managed_fabric"] = missing_unmanaged
-    if missing_unmanaged:
-        failures.append("fabric-managed:" + ",".join(missing_unmanaged))
-    if not uplink_assume_disabled(network_manager):
-        failures.append("uplink-assume-enabled")
-    active_profiles = command(["nmcli","-t","-f","NAME,DEVICE","connection","show","--active"],check=False).splitlines()
     default_routes = command(["ip","-4","route","show","default"],check=False).splitlines()
     observations["default_routes"] = default_routes
-    if rank != HUB_GATEWAY_RANK and f"{UPLINK_PROFILE}:{MANAGEMENT_INTERFACE}" not in active_profiles:
-        failures.append("uplink-profile-inactive")
-    if rank != HUB_GATEWAY_RANK and not uplink_default_route_present(default_routes):
-        failures.append("uplink-default-route")
+    if not staged:
+        network_manager = command(["NetworkManager","--print-config"],check=False)
+        missing_unmanaged = sorted(set(FABRIC_INTERFACES) - unmanaged_interfaces(network_manager))
+        observations["networkmanager_managed_fabric"] = missing_unmanaged
+        if missing_unmanaged:
+            failures.append("fabric-managed:" + ",".join(missing_unmanaged))
+        if not uplink_assume_disabled(network_manager):
+            failures.append("uplink-assume-enabled")
+        active_profiles = command(["nmcli","-t","-f","NAME,DEVICE","connection","show","--active"],check=False).splitlines()
+        if rank != HUB_GATEWAY_RANK and f"{UPLINK_PROFILE}:{MANAGEMENT_INTERFACE}" not in active_profiles:
+            failures.append("uplink-profile-inactive")
+        if rank != HUB_GATEWAY_RANK and not uplink_default_route_present(default_routes):
+            failures.append("uplink-default-route")
     stale_snaps = stale_snap_units()
     observations["stale_snap_units"] = stale_snaps
     failures.extend(f"stale-snap-unit:{unit}" for unit in stale_snaps)
@@ -1248,7 +1353,7 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     if memtotal < MIN_MEMTOTAL_KB:
         failures.append(f"firmware-carveout:{memtotal}")
     observations["ntp"] = [command(["timedatectl","show-timesync","-p","ServerName","--value"],check=False),command(["timedatectl","show","-p","NTPSynchronized","--value"],check=False)]
-    if observations["ntp"][0] not in NTP_SERVERS or observations["ntp"][1] != "yes":
+    if not staged and (observations["ntp"][0] not in NTP_SERVERS or observations["ntp"][1] != "yes"):
         failures.append(f"ntp:{observations['ntp'][0] or 'none'}:{observations['ntp'][1]}")
     observations["watchdog"] = [command(["systemctl","show","-p",name,"--value"],check=False) for name in ("RuntimeWatchdogUSec","RebootWatchdogUSec")]
     if observations["watchdog"] != ["10min","5min"]:
@@ -1260,42 +1365,21 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     failures.extend(f"missing-package:{name}" for name in FLEET_TOOL_PACKAGES if not package_installed(name))
     if not FIREWALL_RULESET.is_file():
         failures.append(f"firewall-ruleset-missing:{FIREWALL_RULESET}")
-    for unit in ("spark-firewall.service","sparkpipe-roce-qos.service"):
+    for unit in ("spark-firewall.service",) if staged else ("spark-firewall.service","sparkpipe-roce-qos.service"):
         state = (is_enabled(unit),service_value(unit,"ActiveState"))
         if state != ("enabled","active"):
             failures.append(f"{unit}:{state[0]}:{state[1]}")
     observations["linger"] = command(["loginctl","show-user",node_id,"-p","Linger","--value"],check=False)
     if observations["linger"] != "yes":
         failures.append(f"linger:{observations['linger'] or 'none'}")
-    ceph_states = ceph_unit_file_states()
-    observations["ceph_unit_states"] = ceph_states
-    unmasked = sorted(unit for unit in CEPH_MASK_UNITS if ceph_states.get(unit) != "masked")
-    if unmasked:
-        failures.append("ceph-package-units-unmasked:" + ",".join(unmasked))
-    if ceph_states.get("ceph.target") != "enabled":
-        failures.append(f"ceph.target:{ceph_states.get('ceph.target','missing')}")
-    for fsid in ceph_fsids():
-        daemons = ceph_daemons(fsid)
-        enabled_instances = ceph_enabled_instances(fsid)
-        observations[f"ceph:{fsid}"] = daemons
-        if ceph_states.get(f"ceph-{fsid}.target") != "enabled":
-            failures.append(f"ceph-{fsid}.target:{ceph_states.get(f'ceph-{fsid}.target','missing')}")
-        for daemon in daemons:
-            unit = f"ceph-{fsid}@{daemon}.service"
-            state = (is_enabled(unit),service_value(unit,"ActiveState"))
-            required = daemon.startswith(CEPH_REQUIRED_DAEMON_PREFIXES)
-            if (required and state != ("enabled","active")) or (state[0] == "enabled" and state[1] != "active"):
-                failures.append(f"ceph-daemon:{daemon}:{state[0]}:{state[1]}")
-        failures.extend(f"ceph-stray-unit:{unit}" for unit in ceph_stray_units(fsid,daemons,enabled_instances))
-        log_dir = CEPH_LOG_ROOT / fsid
-        owner = directory_owner(log_dir)
-        if owner != f"{CEPH_UID}:{CEPH_UID}":
-            failures.append(f"ceph-log-dir:{owner}")
+    if staged:
+        failures.extend(f"ceph-on-staged-node:{fsid}" for fsid in ceph_fsids())
+    else:
+        failures.extend(audit_ceph(observations))
     for path in (*retired_paths(),*(Path("/etc/systemd/system") / unit for unit in OBSOLETE_CEPH_STARTUP_UNITS),LEGACY_CEPH_WARM_STORAGE_MARKER):
         if path.exists() or path.is_symlink():
             failures.append(f"retired-path-present:{path}")
-    hardware_failures,hardware_observations = audit_fleet_hardware(
-        str(payload["recovery_network"]["node_id"]))
+    hardware_failures,hardware_observations = audit_gpu() if staged else audit_fleet_hardware(node_id)
     failures.extend(hardware_failures)
     observations.update(hardware_observations)
     for root in payload["node_layout_roots"]:
@@ -1348,6 +1432,8 @@ def build_payload(repo: Path,ref: str) -> dict[str,object]:
 
 
 def recovery_network_for_node(node: str) -> dict[str,str]:
+    if node_is_staged(node):
+        return({"node_id":node.casefold()})
     rank = spark_rank(node)
     return({
         "address":f"{MANAGEMENT_PREFIX}.{MANAGEMENT_ADDRESS_BASE + rank}",
@@ -1377,7 +1463,10 @@ def remote_action(host: str,action: str,payload: dict[str,object]) -> dict[str,o
 
 def emergency_probe(host: str,identity: Path) -> str:
     detail = ""
-    for target in (host,f"{host}.local",f"{LAN_PREFIX}.{LAN_ADDRESS_BASE + spark_rank(host)}"):
+    targets = [host,f"{host}.local"]
+    if not node_is_staged(host):
+        targets.append(f"{LAN_PREFIX}.{LAN_ADDRESS_BASE + spark_rank(host)}")
+    for target in targets:
         result = run(["ssh","-T","-p","2222","-i",str(identity),"-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o",f"HostKeyAlias={host}-emergency","-o","StrictHostKeyChecking=accept-new","-o","ConnectTimeout=8",f"root@{target}","true"],timeout=20,check=False)
         if result.returncode == 0:
             return("ok")
@@ -1425,6 +1514,9 @@ def parse_nodes(value: str) -> tuple[str,...]:
 def controller_main(args: argparse.Namespace) -> int:
     nodes = parse_nodes(args.nodes)
     payload = build_payload(args.sparkpipe_repo,args.source_ref)
+    if args.apt_proxy:
+        apt_proxy_options(args.apt_proxy)
+        payload["apt_proxy"] = args.apt_proxy
     documents = []
     errors = []
     if not args.recovery_identity.is_file():
@@ -1482,6 +1574,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sparkpipe-repo",type=Path,default=DEFAULT_SPARKPIPE_REPO)
     parser.add_argument("--source-ref",default="origin/main")
     parser.add_argument("--recovery-identity",type=Path,default=DEFAULT_RECOVERY_IDENTITY)
+    parser.add_argument("--apt-proxy",default="")
     return(parser.parse_args())
 
 

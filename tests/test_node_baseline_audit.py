@@ -34,7 +34,8 @@ Boot0004* ubuntu\tHD(1,GPT,x)/File(\\EFI\\ubuntu\\shimaa64.efi)
 class Node:
     def __init__(self,node: str = "spark3") -> None:
         self.node = node
-        self.rank = MODULE.spark_rank(node)
+        self.rank = None if MODULE.node_is_staged(node) else MODULE.spark_rank(node)
+        self.fsids = [] if self.rank is None else [FSID]
         self.commands = {
             "sysctl -n vm.swappiness":"10","sysctl -n kernel.panic":"60","sysctl -n kernel.softlockup_panic":"1",
             "sysctl -n kernel.hung_task_panic":"1","sysctl -n net.core.default_qdisc":"fq_codel",
@@ -96,14 +97,14 @@ class Node:
         if text in ("/root/.ssh/authorized_keys","/etc/dropbear/initramfs/authorized_keys"):
             return(PUBLIC_KEY + "\n")
         if text == "/etc/default/grub":
-            token = MODULE.recovery_ip_token(MODULE.recovery_network_for_node(self.node))
-            return(f'GRUB_DEFAULT=0\nGRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS0,921600 {token} fsck.mode=skip fsck.repair=no"\n')
+            tokens = " ".join(MODULE.recovery_ip_tokens(MODULE.recovery_network_for_node(self.node)))
+            return(f'GRUB_DEFAULT=0\nGRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS0,921600 {tokens} fsck.mode=skip fsck.repair=no"\n')
         if text == "/etc/hosts":
-            return(MODULE.canonical_hosts("127.0.0.1\tlocalhost\n",{self.node}))
+            return(MODULE.canonical_hosts("127.0.0.1\tlocalhost\n",{self.node},MODULE.node_alias_lines(self.node)))
         if text == "/proc/meminfo":
             return(f"MemTotal:       {self.memtotal} kB\n")
         if text == "/etc/ds4-node-rank":
-            return(f"{self.rank}\n")
+            return("" if self.rank is None else f"{self.rank}\n")
         if text.startswith("/etc/systemd/system/ds4-"):
             return("[Service]\nTimeoutStartSec=60\n")
         return("")
@@ -113,7 +114,7 @@ class Node:
             root = Path(directory)
             payload = root / "payload.json"
             payload.write_text(json.dumps({
-                "assets":{"/a":{"text":"a\n","mode":0o644}},
+                "assets":{"/a":{"text":"a\n","mode":0o644},**{path:{"text":"s\n","mode":0o644} for path in MODULE.STAGED_ASSET_DESTINATIONS}},
                 "linked_rank_assets":{"/route":{"text":"r\n","mode":0o644}},
                 "node_layout_roots":["extnvme","kvcache","sparkdata","srcdata"],
                 "fleet_public_key":PUBLIC_KEY,
@@ -141,8 +142,9 @@ class Node:
                 mock.patch.object(MODULE,"kernel_module_loaded",side_effect=lambda module: module not in self.unloaded_modules),
                 mock.patch.object(MODULE,"directory_owner",side_effect=lambda path: self.ceph_log_owner),
                 mock.patch.object(MODULE,"audit_fleet_hardware",return_value=([],{})),
+                mock.patch.object(MODULE,"audit_gpu",return_value=([],{})),
                 mock.patch.object(MODULE,"ceph_unit_file_states",return_value=states),
-                mock.patch.object(MODULE,"ceph_fsids",return_value=[FSID]),
+                mock.patch.object(MODULE,"ceph_fsids",return_value=self.fsids),
                 mock.patch.object(MODULE,"ceph_daemons",return_value=["osd.3"]),
                 mock.patch.object(MODULE,"ceph_enabled_instances",return_value=self.enabled_instances),
                 mock.patch.object(MODULE,"asset_drift",side_effect=lambda assets: [path for path in self.drift if path in assets]),
@@ -236,6 +238,43 @@ class RemoteAuditTest(unittest.TestCase):
             node.unit_states["sparkpipe-hub-route.service"] = "not-found"
         self.assert_adds(detach,set(),node="sparkf")
 
+    def test_a_healthy_staged_node_audits_clean_without_fleet_network_or_ceph(self) -> None:
+        for node in ("spark10","spark11","spark1f","spark20"):
+            with self.subTest(node=node):
+                staged = Node(node)
+                staged.commands["NetworkManager --print-config"] = FACTORY_NETWORK_MANAGER
+                staged.commands["nmcli -t -f NAME,DEVICE connection show --active"] = "Wired connection 5:enp1s0f1np1"
+                staged.commands["ip -4 route show default"] = ""
+                staged.commands["timedatectl show-timesync -p ServerName --value"] = "ntp.ubuntu.com"
+                staged.commands["timedatectl show -p NTPSynchronized --value"] = "no"
+                staged.commands["efibootmgr -v"] = "BootCurrent: 0004\nBootOrder: 0004\nBoot0004* ubuntu\tHD(1,GPT,x)\n"
+                for unit in ("ds4-switched-fabric.timer","ds4-rail2-fabric.timer","spark-osd-guard-scan.timer","restart-resolved.service",
+                             "ds4-ceph-warm-mount.service","sparkpipe-hub-route.service","sparkpipe-roce-qos.service",
+                             "ds4-switched-fabric.service","ds4-rail2-fabric.service"):
+                    staged.unit_states.pop(unit,None)
+                self.assertEqual(staged.audit(),set())
+
+    def test_staged_rules_report_their_own_failures(self) -> None:
+        def grub_with_ip(node: Node) -> None:
+            original = node.read_optional
+            node.read_optional = lambda path: original(path).replace("fsck.mode=skip","ip=10.20.0.27::10.20.0.1:255.255.255.0:spark11:enP7s7:none fsck.mode=skip") if str(path) == "/etc/default/grub" else original(path)
+        def ranked(node: Node) -> None:
+            original = node.read_optional
+            node.read_optional = lambda path: "17\n" if str(path) == "/etc/ds4-node-rank" else original(path)
+        cases = (
+            (lambda n: setattr(n,"fsids",[FSID]),{f"ceph-on-staged-node:{FSID}"}),
+            (grub_with_ip,{"grub-staged-ip"}),
+            (ranked,{"node-rank:17"}),
+            (lambda n: n.unit_states.__setitem__("spark-firewall.service","disabled"),{"spark-firewall.service:disabled:active"}),
+            (lambda n: n.commands.__setitem__("journalctl -b -u spark-dma-guard.service -o cat --no-pager",""),{"dma-guard:active:no-start"}),
+            (lambda n: n.unit_states.__setitem__("plymouth-quit-wait.service","static"),{"optional-boot-unit:plymouth-quit-wait.service=static"}),
+            (lambda n: setattr(n,"drift",[MODULE.DMA_GUARD_RUNTIME]),{f"asset-drift:{MODULE.DMA_GUARD_RUNTIME}"}),
+            (lambda n: setattr(n,"drift",["/a","/route"]),set()),
+        )
+        for change,expected in cases:
+            with self.subTest(expected=sorted(expected)):
+                self.assert_adds(change,expected,node="spark11")
+
     def test_guard_mode_falls_back_to_the_state_file_after_journal_vacuum(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / "boots.json"
@@ -253,7 +292,7 @@ class ControllerTest(unittest.TestCase):
     def arguments(self,directory: str,action: str,nodes: str) -> object:
         identity = Path(directory) / "identity"
         identity.write_text("key\n")
-        return(mock.Mock(action=action,nodes=nodes,canary="spark0",jobs=1,sparkpipe_repo=Path(directory),source_ref="HEAD",recovery_identity=identity))
+        return(mock.Mock(action=action,nodes=nodes,canary="spark0",jobs=1,sparkpipe_repo=Path(directory),source_ref="HEAD",recovery_identity=identity,apt_proxy=""))
 
     def test_apply_stops_after_the_first_failure_and_keeps_a_receipt(self) -> None:
         applied = []
@@ -307,6 +346,28 @@ class ControllerTest(unittest.TestCase):
         with mock.patch.object(MODULE,"run",side_effect=run):
             self.assertEqual(MODULE.emergency_probe("sparkf",Path("/k")),"ok")
         self.assertEqual(targets,["root@sparkf","root@sparkf.local"])
+
+    def test_emergency_probe_of_a_staged_node_has_no_lan_fallback(self) -> None:
+        targets = []
+        with mock.patch.object(MODULE,"run",side_effect=lambda argv,**_k: (targets.append(argv[-2]),mock.Mock(returncode=255,stdout=b"",stderr=b"refused"))[1]):
+            self.assertEqual(MODULE.emergency_probe("spark11",Path("/k")),"refused")
+        self.assertEqual(targets,["root@spark11","root@spark11.local"])
+
+    def test_the_apt_proxy_reaches_the_payload_only_as_a_loopback_url(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payloads = []
+            arguments = self.arguments(directory,"audit","spark11")
+            arguments.apt_proxy = "socks5h://127.0.0.1:1080"
+            with mock.patch.object(MODULE,"build_payload",return_value={}), \
+                    mock.patch.object(MODULE,"audit_one",side_effect=lambda host,payload,_identity: payloads.append(dict(payload)) or {"node":host,"failures":[]}), \
+                    mock.patch.object(MODULE,"write_receipt",return_value=Path(directory) / "r.json"):
+                self.assertEqual(MODULE.controller_main(arguments),0)
+            self.assertEqual(payloads,[{"apt_proxy":"socks5h://127.0.0.1:1080"}])
+            arguments.apt_proxy = "socks5h://192.168.50.9:1080"
+            with mock.patch.object(MODULE,"build_payload",return_value={}),self.assertRaises(MODULE.BrickproofError):
+                MODULE.controller_main(arguments)
+        self.assertEqual(MODULE.apt_proxy_options(""),[])
+        self.assertEqual(MODULE.apt_proxy_options("http://127.0.0.1:3128"),["-o","Acquire::http::Proxy=http://127.0.0.1:3128","-o","Acquire::https::Proxy=http://127.0.0.1:3128"])
 
     def test_child_processes_get_no_terminal_input(self) -> None:
         with mock.patch.object(MODULE.subprocess,"run",return_value=mock.Mock(returncode=0,stdout=b"",stderr=b"")) as call:
