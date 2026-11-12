@@ -476,12 +476,19 @@ throughput on one fleet.
   ledger of free memory per node, picks the aligned group whose tightest
   node has the most room and keeps large holes for large models.
 - **One request, two group sizes.** One stream decodes faster on more
-  nodes, because each node reads fewer weight bytes a token (Qwen 3.8 27B:
-  49.6 tok/s on sixteen nodes, a memory limit near 4.5 on one). Prefill and
-  many streams at once go faster on small groups, which have less wire or
+  nodes, because each node reads fewer weight bytes a token (Qwen 3.8 27B
+  FP8: 60.1 tok/s on sixteen nodes, 25.7 on four, 7.9 on one). Many prompts
+  or streams at once go faster on small groups, which have less wire or
   none. The scheduler picks per phase: prefill on small groups in parallel,
   decode on the group size that gives the speed asked for, the KV move in
   between.
+- **One prompt across groups.** Tensor parallelism cannot make one prompt's
+  prefill much faster at any group size: every round moves about twice the
+  hidden payload per rank. Groups that each hold the whole model can take
+  consecutive row chunks of the same prompt, each chunk one layer behind the
+  one before it, and pass on only that layer's K/V and the recurrent state
+  at the chunk boundary, a few MB a chunk a layer. One prompt's prefill then
+  grows with the number of groups. Not built and not measured.
 - **API.** Placement is managed inside. A request may say what it wants
   (interactive or batch); the holder of a fleet may declare a plan (models
   to keep warm, pins, priorities) and read what is loaded where. No request
@@ -498,18 +505,22 @@ throughput on one fleet.
   `ranks` on the group that starts at `first_node`; a one-rank lane has no
   collective. Every 16-rank record renders the bytes it rendered before.
 - Four four-rank lanes of Qwen 3.8 27B FP8 served at once on the sixteen
-  Sparks on 2026-11-12 (`qualification/group-sizes-20261112/README.md`): one
-  stream 25.7 tok/s a group against 60.1 on sixteen ranks, at 83% of the
-  group's memory limit; prefill 1,649 tok/s at 32K on one group against
-  2,612 on sixteen ranks, and about 6.4K tok/s over the four.
+  Sparks on 2026-11-12, and a one-rank lane on one
+  (`qualification/group-sizes-20261112/README.md`). The common runner gives
+  a one-rank lane's rounds as local copies.
 
 ### Still to build, in order
 
-1. Run Qwen 3.8 27B FP8 on one node, and record prefill and decode at 16,
-   4 and 1 by one method: the speed at each group size is the input every
-   placement rule above needs. A four-rank prefill wave of 1,024 rows takes
-   530 to 560 ms against about 390 ms on sixteen ranks; the one-rank run,
-   which has no rounds, says how much of that is the rounds.
+1. Qwen 3.8 27B FP8 has run at 16, 4 and 1 by one method
+   (`qualification/group-sizes-20261112/README.md`): one stream 60.1, 25.7
+   and 7.9 tok/s, at 48%, 83% and 98% of the memory limit; prefill 2,612,
+   1,649 and 785 tok/s a lane. One prompt prefills fastest on sixteen ranks
+   and the fleet prefills most as sixteen one-rank lanes (about 12.6K
+   tok/s). Two things hold prefill down. A 1,024-row wave is 80% rounds on
+   sixteen ranks and about 45% on four. And the whole model's wave takes
+   1.2 s on one node, 46 TFLOPS, a fifth of the node's FP8 peak: the FP8
+   prefill kernels. Do the same for the other models that fit a small
+   group, and for 2 and 8 ranks.
 2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
    CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
    shards its small KV sixteen ways, which costs it two to three rounds a
@@ -527,14 +538,15 @@ throughput on one fleet.
    `node/weightd_mesh.c` answers another with `SPARK_STATUS_UNSUPPORTED`); a
    free lane has to take a new one.
 4. Decide what a group size is numerically, then build it. Today the group
-   size changes the result as a precision change does: on 1,024 positions
-   the four-rank and sixteen-rank lanes of the same FP8 weights agree on the
-   best token at 99.0%, with a KL lower bound of 0.009 and no position
-   bit-identical, and the four-rank NLL is not worse. Either the rounds
-   carry one partial per sixteenth, which gives the sixteen-rank bits at
-   every size and keeps its sixteen roundings, or each group size is its
-   own variant with its own accuracy gate and a cache moved between sizes
-   is a mix of the two. The full-corpus comparison comes first.
+   size changes the result about half as much as FP8 against BF16 does: on
+   the 12,800 corpus positions the four-rank and sixteen-rank lanes of the
+   same FP8 weights agree on the best token at 99.37%, with a KL lower
+   bound of 0.0012 and no position bit-identical, and the four-rank NLL is
+   0.08% lower. Either the rounds carry one partial per sixteenth, which
+   gives the sixteen-rank bits at every size and keeps its sixteen
+   roundings, or each group size is a build the variant gate passes on its
+   own and a cache moved between sizes mixes two approximations that close.
+   The measurements favour the second.
 5. weightd: one arena per model built from sixteenth files, shared by every
    group size a node serves; no second copy on NVMe or in memory.
 6. The KV index on the hub and the mover between nodes; the KV identity

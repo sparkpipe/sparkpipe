@@ -79,20 +79,25 @@ and method, measured after its corpus and suite runs.
 
 ## Numbers against the 16-rank lane
 
-The 4-rank lane and the 16-rank lane hold the same weights and scored the
-same 1,024 positions (16 documents, `tools/ab_api_score.py`):
+The lanes hold the same weights and scored the same positions
+(`tools/ab_api_score.py`): the four-rank lanes all 12,800 corpus positions of
+the variant gate, the one-rank lane the first 16 documents.
 
-| | 4 ranks against 16 ranks |
-| --- | ---: |
-| Positions with the same tokens and log-probs | 0 of 1,024 |
-| Top-1 agreement | 99.02% [98.73, 99.32] |
-| KL lower bound, mean | 0.0090 (median 6.5e-5; one position 8.4) |
-| Corpus token's NLL, 4 ranks relative to 16 | -0.57% [-1.73, -0.06] |
+| | 4 ranks against 16 | 1 rank against 16 | 1 rank against 4 |
+| --- | ---: | ---: | ---: |
+| Positions | 12,800 | 1,024 | 1,024 |
+| Same tokens and log-probs | none | none | none |
+| Same best token | 99.37% [99.24, 99.48] | 99.22% [98.92, 99.51] | 99.32% [98.83, 99.71] |
+| KL lower bound | 0.0012 [0.0003, 0.0037] | 0.0018 [0.0002, 0.0057] | 0.0029 [0.0002, 0.0126] |
+| NLL of the smaller group, relative | -0.082% [-0.199, -0.019] | -0.384% [-0.950, -0.039] | +0.224% [-0.110, +0.943] |
+| Next token right | 68.438% against 68.383% | 64.746% against 64.746% | 64.746% against 64.941% |
 
-Every round adds BF16-rounded partials, sixteen of them on 16 ranks and four
-on 4, so the two lanes round differently at every layer. On these 16
-documents the difference is the size of a precision change, and the 4-rank
-lane's NLL is not worse.
+Every round adds BF16-rounded partials, sixteen of them on 16 ranks, four on
+4 and none on 1, so the lanes round differently at every layer and no
+position comes out bit-identical. The difference is about half the size of
+the FP8-against-BF16 one on the same corpus (same best token 98.12%, KL
+0.0027, NLL +0.283%), and the smaller group is not worse: its NLL is equal
+or slightly lower.
 
 ## What the runs found
 
