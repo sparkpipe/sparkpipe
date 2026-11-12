@@ -56,7 +56,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
-TP_DEGREES = (1, 16)
+TP_DEGREES = (1, 2, 4, 8, 16)
+SIXTEENTHS = 16
 NAME = "qwen38_27b"
 BLOCK = 128
 GDN_KEY_DIM = 128
@@ -146,9 +147,11 @@ def window(total, rank):
 
 def ffn_window(rank):
     blocks = FFN // BLOCK
-    base, extra = divmod(blocks, TP)
-    first = rank * base + min(rank, extra)
-    return first * BLOCK, (base + (1 if rank < extra else 0)) * BLOCK
+    parts = SIXTEENTHS if blocks >= SIXTEENTHS else TP
+    base, extra = divmod(blocks, parts)
+    first, last = (part * parts // TP for part in (rank, rank + 1))
+    first, last = (part * base + min(part, extra) for part in (first, last))
+    return first * BLOCK, (last - first) * BLOCK
 
 
 class RankPacks:
