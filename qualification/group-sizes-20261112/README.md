@@ -41,17 +41,23 @@ between them, from the API's token timestamps, 256 tokens, no speculation.
 Prefill is the wall time of one request of that many uncached tokens with one
 output token.
 
-| | One four-rank lane (nodes 0-3) | Four lanes at once |
-| --- | ---: | ---: |
-| Decode, one stream a lane | 38.9 ms a token (25.7 tok/s) | 37.8-42.6 ms each, about 100 tok/s in all |
-| Decode, eight streams a lane | 56.5 ms a token a stream (about 142 tok/s) | about 566 tok/s over 32 streams |
-| Prefill, 8,192 tokens | 1,764 tok/s | |
-| Prefill, 32,768 tokens | 1,649 tok/s | 1,593, 1,598 and 1,646 tok/s on the three cold lanes, about 6.4K in all |
+| | Sixteen ranks, one lane | One four-rank lane (nodes 0-3) | Four lanes at once |
+| --- | ---: | ---: | ---: |
+| Decode, one stream a lane | 16.64 ms a token (60.1 tok/s) | 38.9 ms a token (25.7 tok/s) | 37.8-42.6 ms each, about 100 tok/s in all |
+| Decode, eight streams a lane | | 56.5 ms a token a stream (about 142 tok/s) | about 566 tok/s over 32 streams |
+| Prefill, 8,192 tokens | 2,580 tok/s | 1,764 tok/s | |
+| Prefill, 32,768 tokens | 2,612 tok/s | 1,649 tok/s | 1,593, 1,598 and 1,646 tok/s on the three cold lanes, about 6.4K in all |
+
+The sixteen-rank column is the FP8 lane of the variant gate
+(`qualification/qwen38_27b/fp8-variant-20261112/`), the same weights, window
+and method, measured after its corpus and suite runs.
 
 - A rank of four reads 7.82 GB of weights a token; at 243 GB/s that is 32.2
   ms, so one stream runs at 83% of the group's memory limit.
 - A 1,024-row prefill wave took 530 to 560 ms on four ranks
-  (`STAGE-WAVE-HOST submit_ms`).
+  (`STAGE-WAVE-HOST submit_ms`); 2,612 tok/s on sixteen ranks is about 390
+  ms a wave. One group prefills at 63% of the sixteen-rank rate, four groups
+  at 2.5 times it.
 - The fourth lane's first prefill request reused 8,191 cached tokens and is
   left out of the prefill row.
 

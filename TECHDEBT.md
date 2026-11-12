@@ -499,17 +499,17 @@ throughput on one fleet.
   collective. Every 16-rank record renders the bytes it rendered before.
 - Four four-rank lanes of Qwen 3.8 27B FP8 served at once on the sixteen
   Sparks on 2026-11-12 (`qualification/group-sizes-20261112/README.md`): one
-  stream 25.7 tok/s a group, 83% of the group's memory limit; prefill 1,649
-  tok/s at 32K on one group, as fast as sixteen ranks, and about 6.4K tok/s
-  over the four.
+  stream 25.7 tok/s a group against 60.1 on sixteen ranks, at 83% of the
+  group's memory limit; prefill 1,649 tok/s at 32K on one group against
+  2,612 on sixteen ranks, and about 6.4K tok/s over the four.
 
 ### Still to build, in order
 
 1. Run Qwen 3.8 27B FP8 on one node, and record prefill and decode at 16,
    4 and 1 by one method: the speed at each group size is the input every
    placement rule above needs. A four-rank prefill wave of 1,024 rows takes
-   530 to 560 ms, as a sixteen-rank one does; the one-rank run, which has no
-   rounds, says how much of that is the rounds.
+   530 to 560 ms against about 390 ms on sixteen ranks; the one-rank run,
+   which has no rounds, says how much of that is the rounds.
 2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
    CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
    shards its small KV sixteen ways, which costs it two to three rounds a
