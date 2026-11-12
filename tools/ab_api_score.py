@@ -6,7 +6,9 @@ score    sends one greedy request per scored position of a frozen corpus
          prompt_token_ids, max_tokens 1, the top 20 log-probs, no speculation.
          Each request names the last 64-token boundary before its end as a
          cache point, so the next position of the same document resumes there.
-         A rerun appends only the missing positions.
+         A rerun appends only the missing positions. A gate run asks one
+         request at a time: a row's log-probs depend slightly on the rows
+         that share its prefill wave (docs/VARIANT_GATE.md).
 join     writes a one-document corpus: the documents of an index back to back,
          for scoring positions deep in a long context.
 compare  pairs two score files position by position: top-1 agreement, a lower

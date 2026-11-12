@@ -10,7 +10,7 @@ whether the fleet still matches.
 | Field | Meaning |
 |---|---|
 | `launcher` | `stage_lane` (started by the `lane.sh` that `tools/stage_lane.sh` renders) or `k3_lane` (started by the swap entry's own commands) |
-| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes |
+| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes. A precision variant (`qwen3.8-27b-fp8`) is its own entry and record on its model's mesh lane ([VARIANT_GATE.md](VARIANT_GATE.md)) |
 | `lane` | weightd mesh lane; ports and the collective identifier follow from it |
 | `runtime_root`, `weightd_socket` | per-node root (`{host}` is substituted) and weightd socket |
 | `sequences`, `rows`, `shared_rows` | resident sequences, rows per wave, rows of the shared prefill half |

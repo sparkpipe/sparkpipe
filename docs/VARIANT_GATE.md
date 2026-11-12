@@ -25,11 +25,21 @@ variant never opens the other precision's KV pages or snapshots.
 `tools/ab_api_score.py` scores a frozen token corpus one position at a time:
 the document's tokens before the position as `prompt_token_ids`, one greedy
 token, the top 20 log-probs, no speculation. Both precisions score the same
-positions and `compare` pairs them.
+positions, in the same order, one request at a time, each on a lane that has
+served nothing since it was set up, and `compare` pairs them.
+
+One request at a time is part of the method. A row's log-probs depend
+slightly on the rows that share its prefill wave: on the BF16 lane, 96
+positions scored eight documents at a time differed from the same positions
+scored alone at 2 positions (the best token's log-prob by 0.003, a tail
+token's by 0.13; mean KL 2.6e-6), and both of those ran a 17-row prefill
+beside other requests' rows. Scored alone, in a fixed order on a fresh lane,
+a run repeats bit for bit, which the repeat check holds the variant to.
+`--concurrency` is for a quick look, not for a gate run.
 
 | Check | Passes when |
 | --- | --- |
-| Repeat | the variant, asked the same positions twice, returns the same tokens and log-probs at every one |
+| Repeat | the variant, set up afresh and asked its first documents again, returns the same tokens and log-probs at every position |
 | Corpus NLL | both one-sided 95% bounds of the relative change in the corpus token's NLL lie inside ±0.5% |
 | Corpus next-token accuracy | the variant does not lose significantly: exact McNemar p ≥ 0.05 on the positions only one of the two predicts, or the variant predicts more |
 | Depth NLL and accuracy | the same two checks on positions deep in one long document, to the end of the window |
@@ -65,26 +75,33 @@ whether one is worse: the publisher's FP8 release of GLM 5.3 Flash measured
 
 ## Running it
 
+The corpus is the frozen CT-short corpus (200 documents: recent and old arXiv
+prose and C sources, `qualification/ab/corpora/CT-short.index.json`), put into
+the model's tokenizer, and the same documents back to back as one long
+document for the depth comparison:
+
 ```bash
 python3 tools/ab_corpus_retokenize.py --index CT-short.index.json --tokens CT-short.tokens.u32 \
   --source-tokenizer GLM/tokenizer.json --target-tokenizer MODEL/tokenizer.json --target-name MODEL \
-  --minimum-tokens 1040 --out-index C.index.json --out-tokens C.tokens.u32
+  --out-index C.index.json --out-tokens C.tokens.u32
 python3 tools/ab_api_score.py join --index C.index.json --tokens C.tokens.u32 --out-index J.index.json --out-tokens J.tokens.u32
 ```
 
-Then, with each precision's lane serving in turn on its API port:
+Then, on each precision's freshly set up lane in turn, in this order:
 
 ```bash
-python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index C.index.json --tokens C.tokens.u32 \
-  --count 48 --concurrency 8 --out ARM.corpus.jsonl
+python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index C.index.json --tokens C.tokens.u32 --out ARM.corpus.jsonl
 python3 tools/ab_api_score.py score --endpoint http://127.0.0.1:PORT --index J.index.json --tokens J.tokens.u32 \
-  --starts 4096:245760:4096 --count 48 --out ARM.depth.jsonl
+  --starts 4096:249856:4096 --count 48 --out ARM.depth.jsonl
 python3 tools/ds4_eval92.py --endpoint http://127.0.0.1:PORT --model MODEL --max-tokens 16000 --temperature 0 \
   --phases batch --concurrency 8 --out ARM.ds4
 ```
 
-The variant scores its first documents a second time (`--documents 16`, another
-output file) for the repeat check. The verdict:
+The corpus run scores 64 positions a document (256, 272, ... 1264); the depth
+run scores 48 positions from every 4,096th token to the end of the window.
+The variant's lane is then set up again and scores its first documents a
+second time (`--documents 16`, another output file) for the repeat check.
+The verdict:
 
 ```bash
 python3 tools/ab_api_score.py compare BF16.corpus.jsonl VARIANT.corpus.jsonl --out corpus.json
