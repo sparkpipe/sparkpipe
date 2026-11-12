@@ -8,8 +8,10 @@ fi
 : "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
+STAGE_FIRST_NODE="${STAGE_FIRST_NODE:-0}"
 LANE_TOOL=stage_lane
-LANE_RANKS=16
+LANE_RANKS="$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(len(stage_lane.lane_hosts(stage_lane.MODELS['$STAGE_MODEL'], $STAGE_FIRST_NODE)))")"
+LAST_RANK=$((LANE_RANKS - 1))
 . "$HERE/lane_run_log.sh"
 . "$HERE/lane_weights.sh"
 HEX=0123456789abcdef
@@ -17,16 +19,16 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-${STAGE_MODEL//_/-}-rd$STAGE_LANE"
 model_field() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(stage_lane.MODELS['$STAGE_MODEL']['$1'])"; }
 ADAPTER_FILE="$(model_field adapter)"
-host_of() { echo "spark${HEX:$1:1}"; }
+host_of() { echo "spark${HEX:$((STAGE_FIRST_NODE + $1)):1}"; }
 root_of() { echo "/home/$1/stage-lanes/$STAGE_MODEL/lane$STAGE_LANE/root"; }
-weight_files_of() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(' '.join(stage_lane.rank_weight_files(stage_lane.MODELS['$STAGE_MODEL'], $1)))"; }
+weight_files_of() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(' '.join(stage_lane.rank_weight_files(stage_lane.MODELS['$STAGE_MODEL'], $1, $STAGE_FIRST_NODE)))"; }
 pack_of() { weight_files_of "$1" | cut -d' ' -f1; }
 KV_LABEL="$(model_field kv_label)"
 PIDS=()
 
 join_ranks() {
   local label="$1" rank failed=""
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     wait "${PIDS[$rank]}" || failed="$failed $(host_of "$rank")"
   done
   PIDS=()
@@ -77,7 +79,7 @@ render() {
     python3 "$HERE/stage_lane.py" --record "$STAGE_RECORD" --output-dir "$1"
     return
   fi
-  python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" \
+  python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" --first-node "$STAGE_FIRST_NODE" \
     --sequences "${STAGE_SEQUENCES:-8}" --rows "${STAGE_ROWS:-1024}" --kv-pages "${STAGE_KV_PAGES:-64}" \
     ${STAGE_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$STAGE_KV_PHYSICAL_PAGES_CAP"} \
     ${STAGE_KV_LOGICAL_PAGES:+--kv-logical-pages "$STAGE_KV_LOGICAL_PAGES"} \
@@ -93,7 +95,7 @@ render() {
 setup() {
   local generated rank host root pack state busy=""
   : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
     case "$state" in active|activating|deactivating|reloading|refreshing) busy="$busy $host($state)" ;; esac
@@ -101,7 +103,7 @@ setup() {
   [ -z "$busy" ] || { echo "stage_lane setup: $UNIT is running on:$busy; setup rewrites the lane's pack digest and clears its KV cache, snapshots and links, so stop the lane first (stage_lane.sh stop)" >&2; exit 1; }
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
@@ -127,7 +129,7 @@ start() {
   local rank host root run_id
   run_id="$(lane_run_id "${STAGE_RUN_ID:-}")" || exit 2
   echo "stage_lane: $STAGE_MODEL run $run_id; rank logs are $(lane_log_file "$run_id") under each lane root"
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     $SSH "$host" "$root/lane.sh start $run_id" < /dev/null &
@@ -165,7 +167,7 @@ api_setup() {
 
 status() {
   local rank host
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     printf '%s %s\n' "$host" "$($SSH "$host" "systemctl --user show $UNIT -p ActiveState --value; tail -1 $(lane_latest_log "$(root_of "$host")") 2>/dev/null | cut -c1-160" | tr '\n' ' ')"
   done
@@ -173,7 +175,7 @@ status() {
 
 stop() {
   local rank host root
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     $SSH "$host" "if [ -x $root/lane.sh ]; then $root/lane.sh stop; else systemctl --user stop $UNIT 2>/dev/null; ! systemctl --user is-active -q $UNIT; fi" < /dev/null &
@@ -185,7 +187,7 @@ stop() {
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   lane-scripts)
-    for rank in $(seq 0 15); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
+    for rank in $(seq 0 $LAST_RANK); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
   setup) setup ;;
   start) start ;;
   status) status ;;

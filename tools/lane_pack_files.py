@@ -49,9 +49,9 @@ def lane_files(record_id: str) -> list[tuple[str, str, str, str]]:
         directory = Path(temporary)
         stage_lane.write_lane(args, directory)
         deployment = json.loads((directory / "deployment.json").read_text())
-        for rank, host in enumerate(stage_lane.HOSTS):
+        for rank, host in enumerate(stage_lane.lane_hosts(model, args.first_node)):
             adapter = json.loads((directory / f"adapter.{host}.json").read_text())
-            files = stage_lane.rank_weight_files(model, rank)
+            files = stage_lane.rank_weight_files(model, rank, args.first_node)
             if adapter["stage_pack_path"] != files[0]:
                 raise SystemExit(f"{record_id}: {host} adapter.json names {adapter['stage_pack_path']}, not the rank pack {files[0]}")
             rows += [(host, record_id, ROLES[index] if index < len(ROLES) else "sibling", path) for index, path in enumerate(files)]

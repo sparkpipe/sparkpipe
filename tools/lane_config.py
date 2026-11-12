@@ -210,7 +210,7 @@ def draftd_start(record_id: str) -> int:
 def node_files(record_id: str, directory: Path) -> dict[str, dict[str, Path]]:
     lane = record(record_id)
     result = {}
-    for host in stage_lane.HOSTS:
+    for host in stage_lane.lane_hosts(stage_lane.MODELS[lane["model"]], lane.get("first_node", 0)):
         root = lane["runtime_root"].format(host=host)
         files = {f"{root}/deployment.json": directory / "deployment.json",
                  f"{root}/config/adapter.json": directory / f"adapter.{host}.json"}
@@ -490,8 +490,8 @@ def main() -> int:
         return 0
     if lane["launcher"] != "stage_lane":
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
-    values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],
-              "STAGE_MEMORY_MAX": lane["memory_max"]}
+    values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_FIRST_NODE": lane.get("first_node", 0),
+              "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"], "STAGE_MEMORY_MAX": lane["memory_max"]}
     print("\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items()))
     return 0
 
