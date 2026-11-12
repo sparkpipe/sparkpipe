@@ -40,6 +40,9 @@ template<class G>
 struct QwenHybridShape : QwenHybridLayout<G>
 {
 	using Kv = LmKvHeads<16u, G::kKvHeads, G::kHeadDim, G::kPageSlots>;
+	static constexpr uint32_t kGatherParts = (QwenHybridLayout<G>::kQkvWidth / G::kTpDegree + G::kHidden - 1u) / G::kHidden;
+	static_assert(QwenHybridLayout<G>::kQkvWidth / G::kTpDegree % kGatherParts == 0u,
+		"a rank's fused attention rows gather as whole collective rows of at most the hidden width");
 	using IndexKv = LmKvGeometry<QwenHybridLayout<G>::kIndexer ? G::kIndexDim * 2u : 16u, G::kPageSlots / G::kIndexRatio, true>;
 	static_assert(!G::kMoe || LM_SKINNY_ROWS_WIDE * G::kTopK <= LM_SKINNY_ROWS * G::kLocalExperts,
 		"a 16-row verify chunk keeps its routes on the grouped skinny expert variants whose per-route sums match one-row decode");
@@ -670,7 +673,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( Linear(state, layer->mix_weight, layer->mix_scale, state->normed, state->attn_local, rows, G::kHidden,
 			state->attn_rows, Exact(step), sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, state->attn_rows, state->attn_local, state->attn_gathered);
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows * S::kGatherParts, state->attn_rows / S::kGatherParts,
+			state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		LmRankMajorRowsKernel<QH_THREADS><<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
