@@ -120,6 +120,9 @@ def score_cases(work):
         check(resumed.returncode == 0 and len(api.requests) == 49 and rows(work / "a.jsonl") == scored, "score: a rerun over a cut file asks only the missing positions")
         parallel = run(*common, "--out", work / "c.jsonl", "--concurrency", "4")
         check(parallel.returncode == 0 and rows(work / "c.jsonl") == scored, "score: four documents at a time give the same rows as one")
+        part = run(*common, "--out", work / "p.jsonl", "--skip", "2", "--documents", "3")
+        check(part.returncode == 0 and rows(work / "p.jsonl") == {key: value for key, value in scored.items() if key[0] in ("doc:2", "doc:3", "doc:4")},
+              "score: --skip and --documents score a run of documents, with the rows the whole run gives them")
         short = run("score", "--endpoint", api.endpoint, "--index", index, "--tokens", tokens, "--starts", "190", "--stride", "3", "--count", "5", "--out", work / "s.jsonl")
         check(short.returncode == 2 and "does not fit" in short.stderr, "score: positions past a document's end are refused")
         overlap = run("score", "--endpoint", api.endpoint, "--index", index, "--tokens", tokens, "--starts", "70,76", "--stride", "3", "--count", "5", "--out", work / "o.jsonl")

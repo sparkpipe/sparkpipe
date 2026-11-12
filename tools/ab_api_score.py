@@ -23,7 +23,7 @@ gate     decides a variant from its comparisons (docs/VARIANT_GATE.md).
 usage:
   ab_api_score.py score --endpoint URL --index I --tokens T --out ROWS.jsonl
       [--starts 256 | --starts FIRST:LAST:STEP] [--stride 16] [--count 64]
-      [--documents N] [--concurrency N] [--timeout S]
+      [--skip N] [--documents N] [--concurrency N] [--timeout S]
   ab_api_score.py join --index I --tokens T --out-index I2 --out-tokens T2 [--length N]
   ab_api_score.py compare REFERENCE.jsonl ARM.jsonl [--unit document|run] [--out CMP.json]
   ab_api_score.py gate --corpus CMP.json --repeat CMP.json [--depth CMP.json]
@@ -118,8 +118,7 @@ def ask(endpoint, prompt, timeout):
 
 def score(args):
     _, documents = load_corpus(args.index, args.tokens)
-    if args.documents:
-        documents = documents[:args.documents]
+    documents = documents[args.skip:args.skip + args.documents] if args.documents else documents[args.skip:]
     starts = parse_starts(args.starts)
     out = Path(args.out)
     done = set(read(out)) if out.exists() else set()
@@ -423,6 +422,7 @@ def main():
     command.add_argument("--stride", type=int, default=16)
     command.add_argument("--count", type=int, default=64)
     command.add_argument("--documents", type=int, default=0)
+    command.add_argument("--skip", type=int, default=0)
     command.add_argument("--concurrency", type=int, default=1)
     command.add_argument("--timeout", type=float, default=1800.0)
     command = sub.add_parser("join")
