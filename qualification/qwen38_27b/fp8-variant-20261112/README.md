@@ -97,7 +97,7 @@ there, not whether it matters to a given user.
 
 ## Suite and reference
 
-ds4-eval 92, one run a precision, 8 at a time, temperature 0, 16,000 tokens
+ds4-eval 92 in its listed order, 8 at a time, temperature 0, 16,000 tokens
 an answer:
 
 | Family | Cases | BF16 | FP8 | Both | Only BF16 | Only FP8 | Neither | Change in cases |
@@ -113,12 +113,20 @@ an answer:
   same, three cases each way.
 - No request failed; one FP8 answer ran to the token limit.
   `bf16.ds4/summary.json`, `fp8.ds4/summary.json`.
-- One run a precision does not say how much a score moves from run to run.
-  Eight answers are generated at a time, a row's log-probs depend slightly
-  on the rows beside it (below), and over thousands of generated tokens a
-  small difference can change an answer. The Fleet List carries an earlier
-  run of the same suite at these two precisions, on an earlier build and 16
-  at a time: BF16 78, FP8 76, 7 cases only BF16 and 5 only FP8.
+- The score does not move from run to run. Each precision ran the suite a
+  second time in the same order, on a lane set up afresh that had served
+  nothing else, and returned the same 92 answers token for token: the same
+  extracted answer and the same number of generated tokens in every case,
+  292,523 tokens at BF16 and 315,157 at FP8 both times
+  (`bf16.ds4/summary.2.json`, `fp8.ds4/summary.2.json`). So 79 against 74
+  is what these two precisions answer in this order, not a draw.
+- What can move a score is which answers generate beside each other: eight
+  are generated at a time and a row's log-probs depend slightly on the rows
+  beside it (below). This receipt holds the listed order and its repeat;
+  the reversed and shuffled orders of `docs/VARIANT_GATE.md` are not in it
+  yet. The Fleet List carries an earlier run of the same suite at these two
+  precisions, on an earlier build and 16 at a time: BF16 78, FP8 76, 7
+  cases only BF16 and 5 only FP8.
 - Both lanes return the 71 greedy tokens of the numpy FP8 reference on its
   three chat prompts (`qualification/qwen38_27b/reference/reference3_fp8_numpy.json`).
 
