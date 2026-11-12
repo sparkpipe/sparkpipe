@@ -403,6 +403,7 @@ PYTHON_TESTS := \
 	tests/test_reference_flash.py \
 	tests/test_ab_verdict.py \
 	tests/test_ab_api_score.py \
+	tests/test_ds4_eval92_order.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \
 	tests/test_ab_suite_compare.py \

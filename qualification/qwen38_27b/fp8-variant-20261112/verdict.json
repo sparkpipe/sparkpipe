@@ -15,7 +15,7 @@
   "depth": "depth.json",
   "repeat": "repeat.json",
   "suites": [
-   "ds4-eval-92=bf16.ds4/summary.json:fp8.ds4/summary.json"
+   "ds4-eval-92=bf16.ds4/summary.json,bf16.ds4/summary.reversed.json,bf16.ds4/summary.shuffled.json:fp8.ds4/summary.json,fp8.ds4/summary.reversed.json,fp8.ds4/summary.shuffled.json"
   ]
  },
  "intact": true,
@@ -90,6 +90,8 @@
    "arm_changing": 0,
    "arm_passed": 74.0,
    "arm_runs": [
+    74,
+    74,
     74
    ],
    "cases": 92,
@@ -98,14 +100,16 @@
     "lower": -10.999999999999998,
     "upper": 0.0
    },
-   "detail": "79 of 92 at the reference and 74 at the variant, a change of -5.0 [-11.0, +0.0] cases: 8 only the reference answers, 3 only the variant (exact McNemar p 0.2266)",
-   "mcnemar_p": 0.2265625,
+   "detail": "79, 79, 79 of 92 at the reference and 74, 74, 74 at the variant, a change of -5.0 [-11.0, +0.0] cases a run: 8 the reference always answers and the variant never, 3 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
    "measure": "suite ds4-eval-92",
    "only_arm": 3,
    "only_reference": 8,
    "reference_changing": 0,
    "reference_passed": 79.0,
    "reference_runs": [
+    79,
+    79,
     79
    ]
   },
@@ -113,6 +117,8 @@
    "arm_changing": 0,
    "arm_passed": 18.0,
    "arm_runs": [
+    18,
+    18,
     18
    ],
    "cases": 25,
@@ -121,14 +127,16 @@
     "lower": -10.0,
     "upper": -1.9999999999999991
    },
-   "detail": "23 of 25 at the reference and 18 at the variant, a change of -5.0 [-10.0, -2.0] cases: 5 only the reference answers, 0 only the variant (exact McNemar p 0.0625)",
-   "mcnemar_p": 0.0625,
+   "detail": "23, 23, 23 of 25 at the reference and 18, 18, 18 at the variant, a change of -5.0 [-10.0, -2.0] cases a run: 5 the reference always answers and the variant never, 0 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
    "measure": "suite ds4-eval-92, GPQA Diamond",
    "only_arm": 0,
    "only_reference": 5,
    "reference_changing": 0,
    "reference_passed": 23.0,
    "reference_runs": [
+    23,
+    23,
     23
    ]
   },
@@ -136,6 +144,8 @@
    "arm_changing": 0,
    "arm_passed": 22.0,
    "arm_runs": [
+    22,
+    22,
     22
    ],
    "cases": 25,
@@ -144,14 +154,16 @@
     "lower": 0.0,
     "upper": 0.0
    },
-   "detail": "22 of 25 at the reference and 22 at the variant, a change of +0.0 [+0.0, +0.0] cases: 0 only the reference answers, 0 only the variant (exact McNemar p 1.0000)",
-   "mcnemar_p": 1.0,
+   "detail": "22, 22, 22 of 25 at the reference and 22, 22, 22 at the variant, a change of +0.0 [+0.0, +0.0] cases a run: 0 the reference always answers and the variant never, 0 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
    "measure": "suite ds4-eval-92, SuperGPQA",
    "only_arm": 0,
    "only_reference": 0,
    "reference_changing": 0,
    "reference_passed": 22.0,
    "reference_runs": [
+    22,
+    22,
     22
    ]
   },
@@ -159,6 +171,8 @@
    "arm_changing": 0,
    "arm_passed": 17.0,
    "arm_runs": [
+    17,
+    17,
     17
    ],
    "cases": 25,
@@ -167,14 +181,16 @@
     "lower": -4.999999999999999,
     "upper": 3.0
    },
-   "detail": "18 of 25 at the reference and 17 at the variant, a change of -1.0 [-5.0, +3.0] cases: 3 only the reference answers, 2 only the variant (exact McNemar p 1.0000)",
-   "mcnemar_p": 1.0,
+   "detail": "18, 18, 18 of 25 at the reference and 17, 17, 17 at the variant, a change of -1.0 [-5.0, +3.0] cases a run: 3 the reference always answers and the variant never, 2 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
    "measure": "suite ds4-eval-92, AIME2025",
    "only_arm": 2,
    "only_reference": 3,
    "reference_changing": 0,
    "reference_passed": 18.0,
    "reference_runs": [
+    18,
+    18,
     18
    ]
   },
@@ -182,6 +198,8 @@
    "arm_changing": 0,
    "arm_passed": 17.0,
    "arm_runs": [
+    17,
+    17,
     17
    ],
    "cases": 17,
@@ -190,14 +208,16 @@
     "lower": 0.0,
     "upper": 4.000000000000001
    },
-   "detail": "16 of 17 at the reference and 17 at the variant, a change of +1.0 [+0.0, +4.0] cases: 0 only the reference answers, 1 only the variant (exact McNemar p 1.0000)",
-   "mcnemar_p": 1.0,
+   "detail": "16, 16, 16 of 17 at the reference and 17, 17, 17 at the variant, a change of +1.0 [+0.0, +4.0] cases a run: 0 the reference always answers and the variant never, 1 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
    "measure": "suite ds4-eval-92, COMPSEC",
    "only_arm": 1,
    "only_reference": 0,
    "reference_changing": 0,
    "reference_passed": 16.0,
    "reference_runs": [
+    16,
+    16,
     16
    ]
   }

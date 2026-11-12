@@ -47,7 +47,7 @@ a run repeats bit for bit. `--concurrency` is for a quick look.
 | Next token | how often each precision's best token is the corpus token, and the positions only one of the two predicts |
 | Agreement | how often the two pick the same best token, and a lower bound on KL(reference ‖ variant) |
 | Depth | the same three on positions deep in one long document, to the end of the window |
-| Suites | each task suite's score at both precisions, run by run, the change in cases with its bounds and the cases only one of the two answers; the same for each family of cases the suite names |
+| Suites | each task suite's score at both precisions in several orders of its cases, the change in cases with its bounds, the cases one precision always answers and the other never, and the cases that change with the order; the same for each family of cases the suite names |
 | Speed | decode, prefill and memory of both lanes |
 
 The bounds are bootstrap bounds: 10,000 replicates, seed 20260929, the more
@@ -114,16 +114,24 @@ python3 tools/ab_api_score.py compare BF16.corpus.jsonl VARIANT.corpus.jsonl --o
 python3 tools/ab_api_score.py compare VARIANT.corpus.jsonl VARIANT.repeat.jsonl --out repeat.json
 python3 tools/ab_api_score.py compare BF16.depth.jsonl VARIANT.depth.jsonl --unit run --out depth.json
 python3 tools/ab_api_score.py gate --corpus corpus.json --repeat repeat.json --depth depth.json \
-  --suite ds4-eval-92=BF16.ds4/batch/summary.json:VARIANT.ds4/batch/summary.json --out verdict.json
+  --suite ds4-eval-92=BF16.ds4/batch/summary.json,BF16.reversed.ds4/batch/summary.json,BF16.shuffled.ds4/batch/summary.json:VARIANT.ds4/batch/summary.json,VARIANT.reversed.ds4/batch/summary.json,VARIANT.shuffled.ds4/batch/summary.json \
+  --out verdict.json
 ```
 
 `gate` exits 0 when the repeat check holds and prints every figure as
 measured. A suite run with a failed request measures nothing and is refused.
-A suite's answers are generated several at a time and run to thousands of
-tokens, so its score moves from run to run; `--suite` takes several runs a
-side, separated by commas, and then lists every run's score, the cases one
-side always answers and the other never, and the cases that change between
-runs of one side.
+
+A suite's answers are generated several at a time, and a prefill row's
+log-probs depend slightly on the rows beside it, so an answer could depend
+on which answers generate beside it. Each precision therefore runs the
+suite in three orders, each on a lane set up afresh: as listed,
+`--order reversed` and `--order shuffled --order-seed 20261112`. `--suite`
+takes the runs of a side separated by commas and lists every run's score,
+the cases one side always answers and the other never, and the cases that
+change between runs of one side. For Qwen 3.8 27B no case changes: both
+precisions return the same 92 answers token for token in all three orders
+and in a repeat of the first, so there a score belongs to the weights and
+not to the run.
 The receipt of a variant holds the comparisons, the suite summaries, the
 verdict and the score files' digests
 (`qualification/qwen38_27b/fp8-variant-20261112/`).

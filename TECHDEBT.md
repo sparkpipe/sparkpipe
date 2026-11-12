@@ -1272,12 +1272,15 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     prefill 14% slower, 1.5 GiB a node less; NLL +0.28% [+0.13, +0.45];
     next-token accuracy 0.18 points lower on short contexts and 0.72 deep in
     a long one; ds4-eval 92 at 79 against 74, the whole difference in GPQA
-    Diamond (23 against 18 of 25). The owner decided on 2026-11-12 that a
+    Diamond (23 against 18 of 25), with the same 92 answers token for token
+    in three orders of the cases and a repeat. The owner decided on
+    2026-11-12 that a
     variant is offered with its measured figures for the user to choose by,
     and refused only when it does not repeat itself
     (`docs/VARIANT_GATE.md`). The record is not deployed, and the Fleet
-    List's row and its sentence that a variant "passes the same accuracy
-    check" are the owner's to publish. Its hub drafter is not wired: the
+    List's row is the owner's to publish; the Fleet List's wording that a
+    variant is measured and offered is PR 1930. Its hub drafter is not
+    wired: the
     variant drafts from the request's own context only, and the drafter of
     `qwen3.8-27b` has not been measured on FP8 hidden states;
   - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide

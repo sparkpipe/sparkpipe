@@ -21,7 +21,7 @@ on the same sixteen Sparks from one firmware build:
 | NLL of the corpus token, short contexts | 0.932 nats | +0.283% [+0.133, +0.449] | |
 | NLL of the corpus token, deep in the window | | -0.291% [-1.082, +0.464] | not resolved: the interval spans zero |
 | Same best token as BF16 | | 98.12% short, 94.50% deep | |
-| ds4-eval 92 | 79 | 74 | 8 cases only BF16 answers, 3 only FP8 (p 0.23) |
+| ds4-eval 92, the same in three orders | 79 | 74 | 8 cases only BF16 answers, 3 only FP8 (p 0.23) |
 | of which GPQA Diamond, 25 cases | 23 | 18 | 5 only BF16, none only FP8 (p 0.06) |
 | of which the other three families, 67 cases | 56 | 56 | 3 only BF16, 3 only FP8 |
 
@@ -97,8 +97,9 @@ there, not whether it matters to a given user.
 
 ## Suite and reference
 
-ds4-eval 92, one run a precision, 8 at a time, temperature 0, 16,000 tokens
-an answer:
+ds4-eval 92, 8 at a time, temperature 0, 16,000 tokens an answer, in three
+orders of its cases: as listed, reversed, and shuffled with seed 20261112.
+Every order gives this table:
 
 | Family | Cases | BF16 | FP8 | Both | Only BF16 | Only FP8 | Neither | Change in cases |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
@@ -113,12 +114,23 @@ an answer:
   same, three cases each way.
 - No request failed; one FP8 answer ran to the token limit.
   `bf16.ds4/summary.json`, `fp8.ds4/summary.json`.
-- One run a precision does not say how much a score moves from run to run.
-  Eight answers are generated at a time, a row's log-probs depend slightly
-  on the rows beside it (below), and over thousands of generated tokens a
-  small difference can change an answer. The Fleet List carries an earlier
-  run of the same suite at these two precisions, on an earlier build and 16
-  at a time: BF16 78, FP8 76, 7 cases only BF16 and 5 only FP8.
+- The score moves neither from run to run nor with the order of the cases.
+  Each precision ran the suite four times, each on a lane set up afresh
+  that had served nothing else: as listed, as listed again, reversed and
+  shuffled. All four runs return the same 92 answers token for token: the
+  same extracted answer and the same number of generated tokens in every
+  case, 292,523 tokens at BF16 and 315,157 at FP8 every time
+  (`summary.json`, `summary.2.json`, `summary.reversed.json` and
+  `summary.shuffled.json` under `bf16.ds4/` and `fp8.ds4/`). Eight answers
+  generate at a time, so each order puts other answers side by side, and
+  none changes. So 79 against 74 is what these two sets of weights answer
+  on these 92 questions, not a draw.
+- The reversed and shuffled runs read case files in those orders, the
+  orders `tools/ds4_eval92.py --order reversed` and `--order shuffled
+  --order-seed 20261112` submit.
+- The Fleet List carries an earlier run of the same suite at these two
+  precisions, on an earlier build and 16 at a time: BF16 78, FP8 76, 7
+  cases only BF16 and 5 only FP8.
 - Both lanes return the 71 greedy tokens of the numpy FP8 reference on its
   three chat prompts (`qualification/qwen38_27b/reference/reference3_fp8_numpy.json`).
 
@@ -179,7 +191,8 @@ by SHA-256.
 - A row's log-probs depend slightly on the rows sharing its prefill wave: 96
   BF16 positions scored eight documents at a time differed from the same
   positions scored alone at 2 (a tail token by 0.13 nats, mean KL 2.6e-6).
-  Scored alone on a fresh lane a run repeats bit for bit.
+  Scored alone on a fresh lane a run repeats bit for bit. The suite's
+  answers did not show it: no answer changed with the order of the cases.
 - BF16's first depth attempt stopped at position 8,576, where the model's
   next token ends the text and the API returns no token and no log-probs.
   The scorer now records such a position; BF16's depth run was made again on
