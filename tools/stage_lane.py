@@ -62,6 +62,17 @@ QWEN38_27B = {
     "recurrent_bytes": 48 * (3 * 128 * 128 * 4 + 640 * 4 * 2),
 }
 
+QWEN38_27B_FP8 = {
+    **QWEN38_27B,
+    "swap_id": "qwen3.8-27b-fp8",
+    "api_port": 8482,
+    "kv_label": "qwen38_27b_fp8_stage",
+    "node_memory_bytes": 15 << 30,
+    "pack": "sparkdata/qwen38_27b.fp8.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_27b_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_fp8.kv_bf16",
+}
+
 DSV41_FLASH = {
     "swap_id": "deepseek-v4.1-flash",
     "api_port": 8463,
@@ -431,6 +442,7 @@ MODELS = {
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
+    "qwen38_27b_fp8": QWEN38_27B_FP8,
 }
 for model_name, model_fields in MODELS.items():
     if not model_fields.get("tokenizer_json", "/home/").startswith(INFERENCE_ROOTS):

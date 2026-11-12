@@ -666,6 +666,7 @@ model's cached prefixes come back from the KV snapshot store.
 | `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
 | `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
 | `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-27b-fp8` | Qwen 3.8 27B, FP8 variant | `qwen38` | 256K | yes |
 | `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
@@ -680,9 +681,13 @@ model's cached prefixes come back from the KV snapshot store.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
-- **Precision variants:** every row is the publisher's precision; the 8-bit
-  and 4-bit variants of a model serve under its name with `-fp8`, `-nvfp4` or
-  `-mxfp4` appended (Packs, above).
+- **Precision variants:** a row whose name ends in `-fp8`, `-nvfp4` or
+  `-mxfp4` is the 8-bit or 4-bit variant of the model above it (Packs,
+  above); every other row is the publisher's precision. A variant is its own
+  lane record on its model's mesh lane, with its own pack, adapter build and
+  KV label, and it passes the accuracy gate against the full-precision lane
+  before its record lands ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)).
+  `qwen3.8-27b-fp8` is the publisher's FP8 release.
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.
