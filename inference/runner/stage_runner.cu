@@ -631,11 +631,30 @@ static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, uint32_t
 		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements ? 1u : 0u;
 }
 
+static SparkStatus StageRunnerLoneRound(SparkStageRunnerState *state, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
+	const uint64_t element_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? sizeof(uint64_t) :
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32 ? sizeof(float) : sizeof(uint16_t);
+	if ( stage == SPARK_STAGE_RUNNER_ROUND_FINISH || local == full || elements == 0u )
+		return SPARK_STATUS_OK;
+	if ( local == 0 || full == 0 ||
+		cudaMemcpyAsync(full, local, elements * element_bytes, cudaMemcpyDeviceToDevice, (cudaStream_t)stream_void) != cudaSuccess )
+	{
+		state->tp_collective_failed = 1u;
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkStatus status;
+	if ( state->device_collective_created == 0 && state->tp_degree == 1u )
+		return StageRunnerLoneRound(state, stream_void, operation, stage, rows, row_elements, local, full);
 	if ( state->device_collective_created == 0 )
 	{
 		state->tp_collective_failed = 1u;
