@@ -89,7 +89,8 @@ def qwen38_27b_fp8_group(ranks: int, api_port: int) -> dict:
         "node_memory_bytes": (13 << 30) + (32 << 30) // ranks,
         "pack": f"sparkdata/qwen38_27b.fp8.tp{ranks}/packs/qwen38_27b.tp{ranks}.rank{{rank:02d}}.pack",
         "adapter": f"libqwen38_27b_tp{ranks}_serving_adapter.so",
-        "kv_page_bytes": 16 * 64 * 4096 // ranks,
+        "kv_page_bytes": QWEN38_27B["kv_page_bytes"] * WORLD // ranks,
+        "recurrent_bytes": QWEN38_27B["recurrent_bytes"] * WORLD // ranks,
     }
 
 DSV41_FLASH = {
