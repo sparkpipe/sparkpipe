@@ -25,6 +25,11 @@ tools/fleet_post_reboot.sh spark8
 Apply changes boot behaviour (masks, GRUB, the EFI order, the initramfs). Run
 it on one node, reboot that node, and audit it before the others.
 
+Nodes from `spark10` up belong to later fleets and are staged. The same tool
+gives them the network-independent part of this policy, with no Ceph, fabric,
+hub or management-network items
+([NODE_BRINGUP.md, step 7](NODE_BRINGUP.md#7-hand-off-to-the-baseline)).
+
 ## What the baseline holds
 
 | Item | Installed by | Why |
