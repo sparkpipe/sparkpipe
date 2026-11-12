@@ -164,7 +164,7 @@ The hub posts each pair-loss report to `POST /hub/pair-loss` with the upstream k
 
 ## Uptime and the downtime credit (clause 4.4)
 
-Clause 4.4 credits, from our own records, every hour of a Booking touched by a period of more than 15 consecutive minutes in which the Fleet was unavailable or unreachable. These are the records.
+Clause 4.4 credits, from our own records, every hour of a Booking touched by a period of more than 15 consecutive minutes in which the Fleet was unavailable or unreachable. A Fleet is unavailable only when its machines, or our network to them, fail, not because of software. The probes below ask the hub's software, so they also record periods in which only software failed, and those are credited too: more than the clause requires. O5 (`docs/FLEET_API_ISSUES.md`) replaces them with probes of the machines and the network. These are the records.
 
 - **Probes.** Every `SPARKPIPE_PAY_HEALTH_SECONDS` (30) seconds the live service asks the hub of each serving Fleet, over its tunnel, for two read-only answers (10-second timeout each), and makes no other call: `GET /health`, where the chat layer asks each configured model's engine and lists each one's `status`, and `GET /v1/sparkpipe/status`, the chat layer's public view of its model control (`state` of `idle`, `swapping` or `failed`, and `models` with the resident one marked `active`). `/health` answers 503 whenever any configured model is not loaded, which on a Fleet that keeps one model resident is nearly always, so its overall answer is not used. Fleets that share a hub share one probe. The Fleet is up when:
   - a swap is under way (`state: swapping`): requests wait for the model, they do not fail;
@@ -182,7 +182,7 @@ Clause 4.4 credits, from our own records, every hour of a Booking touched by a p
 
 ## Failover (clause 15.7)
 
-If a Fleet that a customer holds cannot serve, clause 15.7 lets us serve the customer on another Fleet that is free, without its working state. The gateway does that by itself.
+If a Fleet that a customer holds is unavailable, clause 15.7 lets us give the customer the use of another Fleet that is free, without its working state. The gateway does that by itself whenever the probes below find the Fleet down, whatever the cause.
 
 - **When.** A Fleet is down while its uptime records hold an open period: a failed probe, or a connection to its hub that the gateway could not open. A request whose hub refuses the connection marks the Fleet down at once and is sent again, before any of its body is read, to the Fleet below.
 - **Which Fleet.** The first Fleet in Fleet List order, other Fleets before Hour Fleets, that is serving, up by its own probes (in the sandbox: not taken down), not booked or under maintenance now, and not serving another account's failover in the current hour. The choice is a `failover` ledger line (`failover`, `account`, `from`, `to`, `start`), and the account keeps that Fleet while the failover lasts.
