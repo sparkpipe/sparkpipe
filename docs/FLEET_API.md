@@ -41,6 +41,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Functions | `GET /v1/functions`, `POST /v1/functions/{name}/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/log`, `DELETE /v1/runs/{id}`, `GET/PUT/DELETE /v1/schedules`, `GET /v1/reports/{date}` |
 | Draft models | `GET /v1/drafters`, `PUT /v1/drafters/active` |
 | Customer models | `GET/POST /v1/custom-models`, `DELETE /v1/custom-models/{id}` |
+| Your own stack | `GET /v1/engine`, `POST /v1/engine/stop`, `POST /v1/engine/start`, `GET/POST /v1/fleet/ssh-keys`, `DELETE /v1/fleet/ssh-keys/{id}`, `POST /v1/fleet/reboot` |
 | Codebase tools (MCP) | `POST /mcp` (Streamable HTTP), and `sparkpipe mcp` for stdio |
 | Batch jobs | `GET/POST /v1/batches`, `GET/DELETE /v1/batches/{id}` |
 | Teams, keys, audit | `GET/POST /v1/members`, `DELETE /v1/members/{id}`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `GET /v1/audit` |
@@ -607,6 +608,27 @@ The product promise is that a team can serve its own model on its own fleet, lis
 - **API.** `POST /v1/custom-models {"name", "tier", "base", "path", "contract"}` packs and qualifies the model and adds it to the account's model list. `DELETE` removes it.
 - **Isolation.** A customer model is working state. Clause 6.3 of the Agreement restores the fleet's software image before another customer's booking starts, which covers tier B and C code.
 
+### 9.1 Your own stack
+
+A held fleet is also the account's to run its own software on: its own build of vLLM, a fork of our engine, or anything else, next to our engine or instead of it. The customer alone decides what runs on the fleets it holds (Agreement clause 5.1), so this needs no other term.
+
+- **The user.** One Linux user per SparkPipe account, the same on every machine of a held fleet, with no root and no sudo.
+  - It logs in over SSH with the login keys the account adds (`POST /v1/fleet/ssh-keys`, `sparkpipe ssh-keys add`); `sparkpipe ssh [MACHINE]` opens a session on a machine of the fleet the key names.
+  - Our engine runs under a service user of its own, and neither user can read the other's files.
+- **What the user can run.** The GPU, RDMA verbs over the fleet's links with no locked-memory limit, the CUDA toolkit that matches the driver, compilers, Python and rootless Podman with the NVIDIA container device interface. User services run with `systemctl --user` and keep running after logout.
+- **Shares.**
+  - While our engine runs: 2 CPU cores and 4 GB of memory on each machine, and no GPU. That is enough to log in, edit and copy files without slowing the engine.
+  - While our engine is stopped: every core, the GPU, the memory up to what the system keeps, the links, and the cache and storage space, 1.5 TB per node, unmirrored (Fleet List).
+- **Stop and start.** `POST /v1/engine/stop` and `POST /v1/engine/start` act on the fleet the key names, and `GET /v1/engine` reports its state. `sparkpipe engine stop`, `engine start`, `engine status` and a button on the account page do the same.
+  - Stop drains requests for up to 30 seconds, unloads every model on every machine through the swap controller, stops our mirroring and opens the full share. Requests to the fleet then answer `engine_stopped`.
+  - Start refuses with `409`, saying why, while a process of the user holds the GPU or while the user's files outside the cache space exceed the published customer storage. Otherwise it empties the cache space, narrows the share, resumes mirroring and loads the fleet's resident models from the packs on the machines: 16–79 s a model for the models timed so far (§8). The cache starts cold.
+  - Both are recorded in the account's audit log (§12) and the morning report.
+- **Network.** A firewall on each machine, which the user cannot change, lets the user's processes reach the internet and the fleet's own machines on any port, and nothing else: not the hub, our other hosts, the facility's networks or other fleets. Only our engine's service user talks to the hub. Internet bandwidth is shared and not promised (§6.1).
+- **Our engine from your own build.** The engine builds and runs as an ordinary user from a source checkout, with no root and no hub. The user can run a fork on the fleet while ours is stopped, measure it, and send changes back as pull requests.
+- **What only we do.** Reboots and driver changes, because they need root. `POST /v1/fleet/reboot {"machines": [...]}` (`sparkpipe fleet reboot`) restarts the named machines. A driver change is a support request, done at a time the account picks.
+- **Credits.** A fleet whose engine the customer stopped is still available, so downtime (Agreement clause 4.4) counts only failures of the machines and of our network to them. If a machine fails while nothing is mirrored, clause 6.6 applies as written.
+- **At a change of customer.** We stop the user's processes, delete the user and its files, empty the cache and storage space, restart the machines, run the machine audit (`tools/devcycle/ds4_spark_brickproof.py`) and restore our image before the next booking (Agreement clause 6.3).
+
 
 ## 10. Codebase tools over MCP
 
@@ -718,6 +740,9 @@ Deliveries run in parallel and are retried when a receiver fails, so they can ar
 | `sparkpipe storage sync PATH DEST [--delete]` | §6 daily backup. It keeps a cursor per API, account, fleet, path and destination, so one fleet's or account's sync never skips another's changes. Files deleted on the fleet are kept in `DEST` and remembered until a run with `--delete` removes them |
 | `sparkpipe drafter ls`, `drafter use` | §8 |
 | `sparkpipe models add`, `models rm` | §9 |
+| `sparkpipe engine status`, `engine stop`, `engine start` | §9.1 |
+| `sparkpipe ssh-keys add FILE`, `ssh-keys ls`, `ssh-keys rm ID`, `sparkpipe ssh [MACHINE]` | §9.1: login keys, and an SSH session on a machine of the fleet the key names |
+| `sparkpipe fleet reboot MACHINE...` | §9.1 |
 | `sparkpipe keys ls`, `keys create`, `keys revoke`, `keys show` | Keys, with `--fleet` and `--allow-swap`; `keys show` prints this machine's key for `$(sparkpipe keys show)` in a shell profile |
 | `sparkpipe wipe [--storage]` | §4.4 |
 | `sparkpipe proxy` | A local Anthropic- and OpenAI-compatible endpoint on `127.0.0.1` that adds the key and fleet, retries `429` with `retry-after`, and serves tools that cannot set headers. It forwards only the inference paths of §2, the alias table `GET /v1/models/aliases` that `sparkpipe setup` reads, and `/mcp`, including the `/v1/responses` WebSocket. Clients send a random key it prints at each start, and it refuses requests addressed to another host name or carrying an `Origin`, so other local users and web pages cannot borrow the account's key |
@@ -747,6 +772,8 @@ A held fleet is then never lost to a forgotten Sunday.
 | Pins | Half the fleet's cache | §4.3 |
 | Context | The model's served window (Fleet List) | |
 | Storage | 4 TB per fleet | §6 |
+| The account's user while our engine runs | 2 CPU cores and 4 GB of memory on each machine, no GPU | §9.1 |
+| The account's user while our engine is stopped | Every core, the GPU, the memory up to what the system keeps, and the cache and storage space, 1.5 TB per node, unmirrored | §9.1, Fleet List |
 | Gateway requests, account holding an active rental | `SPARKPIPE_GATEWAY_CAPACITY` / N per 10 minutes, N = Fleets with an active rental now (at least 1) | `throttle_gateway` in `tools/sparkpipe_pay.py`; capacity measured with `tools/gateway_capacity_check.py` |
 | Gateway requests, any other account | 6,000 per 10 minutes | `LIMITS["gateway"]` in `tools/sparkpipe_pay.py` |
 
@@ -757,7 +784,7 @@ The gateway's limits:
 - Both limits answer 429 `busy` with `Retry-After: 60` in each shape's error body.
 
 Errors use each API shape's own error body, with these `type` or `code` values:
-- `fleet_required`, `fleet_not_held`, `fleet_down`, `model_not_loaded`;
+- `fleet_required`, `fleet_not_held`, `fleet_down`, `engine_stopped`, `model_not_loaded`;
 - `image_not_supported`, `context_too_long`, `busy`;
 - `request_cancelled`, `request_not_found`;
 - `invalid_request`, `invalid_key`, `upstream_error`.
@@ -781,6 +808,7 @@ Owners are components, so the work splits into parallel sessions with no shared 
 | 7 | CLI | `tools/sparkpipe_cli.py` and its tests | 3; grows with each component |
 | 8 | Drafters | Productize `drafter/nightly-retrain` with the acceptance gate (§8) | 5 |
 | 9 | Customer models | A packer per family (tier A), the driver guide and review (tiers B and C) | 6 |
+| 10 | Your own stack | The user on every machine with its login keys and the way in, the per-user firewall, the shares, stop and start through the swap controller with mirroring and credits following the switch, reboots, the cleanup at a change of customer, and our engine running from a user's own build | 3, 7 |
 
 Acceptance tests, each recorded in `PERFORMANCE_STATUS.md`, all passed before 4 January 2027:
 
@@ -804,3 +832,9 @@ Acceptance tests, each recorded in `PERFORMANCE_STATUS.md`, all passed before 4 
   - The morning report is ready by 08:30.
 - **Gate A also covers losing a pair:** one node pair fails during the session. The loss is reported, the 24-hour credit appears within an hour, and the rebuild Function restores the session's pack and conversation before its next turn.
 - **Gate F (customer models).** A tier A fine-tune and a tier B model each go from upload to the account's model list, pass qualification, and serve through all three API shapes.
+- **Gate G (your own stack).** On a fleet held by a test account:
+  - the account's user builds vLLM from source and serves a model across all sixteen machines;
+  - from the user, connections to the hub, our other hosts, the facility's networks and another fleet all fail, and the internet works;
+  - `engine start` refuses while the user holds the GPU, then brings our engine back serving, with the user's storage intact;
+  - the user builds our engine from its own checkout and serves a model with it;
+  - at a change of customer nothing of the user remains, and the machine audit passes.
