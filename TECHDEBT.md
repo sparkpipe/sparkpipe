@@ -497,22 +497,44 @@ throughput on one fleet.
 - `tools/stage_lane.py` and `tools/stage_lane.sh` place a lane of an entry's
   `ranks` on the group that starts at `first_node`; a one-rank lane has no
   collective. Every 16-rank record renders the bytes it rendered before.
+- Four four-rank lanes of Qwen 3.8 27B FP8 served at once on the sixteen
+  Sparks on 2026-11-12 (`qualification/group-sizes-20261112/README.md`): one
+  stream 25.7 tok/s a group, 83% of the group's memory limit; prefill 1,649
+  tok/s at 32K on one group, as fast as sixteen ranks, and about 6.4K tok/s
+  over the four.
 
 ### Still to build, in order
 
-1. Run Qwen 3.8 27B FP8 on one group of four and on one node, and record
-   prefill and decode at 16, 4 and 1: the speed at each group size is the
-   input every placement rule above needs, and nobody has it.
+1. Run Qwen 3.8 27B FP8 on one node, and record prefill and decode at 16,
+   4 and 1 by one method: the speed at each group size is the input every
+   placement rule above needs. A four-rank prefill wave of 1,024 rows takes
+   530 to 560 ms, as a sixteen-rank one does; the one-rank run, which has no
+   rounds, says how much of that is the rounds.
 2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
    CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
    shards its small KV sixteen ways, which costs it two to three rounds a
    layer; the November audit's fix is to keep a KV that small whole on each
-   rank of a group, in GPU memory only.
+   rank of a group, in GPU memory only. Built for four ranks the stage
+   fails two static assertions: a rank's attention records and its index
+   query pack no longer fit a collective row of the hidden width. Both
+   belong to the exchange the whole KV removes. Its rank pack is 20.6 GB at
+   sixteen ranks, so a rank of four holds about 82 GB and the group shares
+   its nodes with no other model.
 3. Rank count as data for every family: the stages that refuse a degree
    other than 16, the packers, the release kit, and a record field for a
-   lane's group.
-4. Per-sixteenth partials in the rounds, and a gate that the same request
-   returns the same log-probs at 16, 8, 4, 2 and 1.
+   lane's group. weightd keeps the topology a mesh lane was first given
+   until it restarts (`SparkWeightdMeshLaneConfigure` in
+   `node/weightd_mesh.c` answers another with `SPARK_STATUS_UNSUPPORTED`); a
+   free lane has to take a new one.
+4. Decide what a group size is numerically, then build it. Today the group
+   size changes the result as a precision change does: on 1,024 positions
+   the four-rank and sixteen-rank lanes of the same FP8 weights agree on the
+   best token at 99.0%, with a KL lower bound of 0.009 and no position
+   bit-identical, and the four-rank NLL is not worse. Either the rounds
+   carry one partial per sixteenth, which gives the sixteen-rank bits at
+   every size and keeps its sixteen roundings, or each group size is its
+   own variant with its own accuracy gate and a cache moved between sizes
+   is a mix of the two. The full-corpus comparison comes first.
 5. weightd: one arena per model built from sixteenth files, shared by every
    group size a node serves; no second copy on NVMe or in memory.
 6. The KV index on the hub and the mover between nodes; the KV identity
