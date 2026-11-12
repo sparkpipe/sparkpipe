@@ -425,17 +425,22 @@ The measure is a public four-Spark TP4 release of the same model (its
 reference build of 2026-11-07, its page read on 2026-11-12), against DeepSeek
 V4.1 Flash on our sixteen:
 
-| | Reference, 4 Sparks | SparkPipe, 16 Sparks |
-| --- | ---: | ---: |
-| Decode step | 21.05 ms | 23.5 ms (42.5-42.7 tok/s, no drafts, 1M cached context) |
-| One stream with drafts | 82.6 tok/s | 47.5-55.8 tok/s |
-| Eight streams | 207.4 tok/s | 151-153 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 1,599 tok/s |
-| Prefill, 1M prompt | 6,012 tok/s | 1,287 tok/s (814 s) |
+| | Reference, 4 Sparks | SparkPipe, 4 Sparks | SparkPipe, 16 Sparks |
+| --- | ---: | ---: | ---: |
+| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-35.1 ms | 21.5-21.8 ms |
+| One stream with drafts | 82.6 tok/s | not wired | 62-64 tok/s |
+| Eight streams | 207.4 tok/s with drafts | 96-112 tok/s without | 151-153 tok/s with |
+| Prefill, 32K prompt | 8,508 tok/s | 1,897 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 1,888 tok/s | 2,337 tok/s |
+| Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-Ours are the 2026-10-24 batch sweep and the 2026-11-01 prefill run
-(`PERFORMANCE_STATUS.md`). The first goal is to match the reference head to
-head on one group of four Sparks; four such groups then give four times its
+The four-Spark column is the first lane of 2026-11-12
+(`qualification/dsv41_flash/group4-20261112/`), the sixteen-Spark column
+that day's production lane, its eight streams the 2026-10-24 sweep and its
+1M prompt the 2026-11-01 run. The reference's 21.05 ms, which an earlier
+version of this table set against our single stream, is its mean step over
+twenty batch shapes. The first goal is to match the reference head to head
+on one group of four Sparks; four such groups then give four times its
 throughput on one fleet.
 
 ### The plan
@@ -530,16 +535,42 @@ throughput on one fleet.
    of the node's FP8 peak: the FP8 prefill kernels. Do the same for the
    other models that fit a small group. The sizes are options a user picks
    from by these figures, like precisions; none is the one right size.
-2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
-   CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
-   shards its small KV sixteen ways, which costs it two to three rounds a
-   layer; the November audit's fix is to keep a KV that small whole on each
-   rank of a group, in GPU memory only. Built for four ranks the stage
-   fails two static assertions: a rank's attention records and its index
-   query pack no longer fit a collective row of the hidden width. Both
-   belong to the exchange the whole KV removes. Its rank pack is 20.6 GB at
-   sixteen ranks, so a rank of four holds about 82 GB and the group shares
-   its nodes with no other model.
+2. DeepSeek V4.1 Flash on one group of four, against the table above. The
+   first lane runs (`dsv41_flash_tp4`, nodes 0-3; the receipt above). The
+   module takes its rank count from the build (16, 8 or 4). Under sixteen a
+   rank keeps the whole context and attends with its own heads, so the
+   query all-gather, the record exchange and the pair gather are gone: a
+   layer has the attention all-reduce and the two MoE rounds, the eight
+   index layers one more. The model with its 203 GB of engram tables is
+   larger than four Sparks' memory, so the group reads engram rows from
+   disk (`runtime/row_file.c`), as the reference does; a rank holds a
+   76 GB pack and about 83 GiB in all. What is open, in the order the
+   traces give:
+   - prefill is at 22% of the reference. A 1,024-row wave spends 157 ms
+     reading every routed expert once (a cost a wave, so waves are now
+     4,096 rows, the framework's limit), about 150 ms in rounds whose rows
+     go in pieces of about 24 that are each waited for, 100 ms in a
+     sliding-window fold without tensor cores, 62 ms in dense linears at
+     about 40 TFLOPS and about 110 ms in mixing, norms and assembly. The
+     round pieces are the mesh's, and every model's wave pays them: the
+     0.3 s a wave of step 1;
+   - drafts are not wired to the group lane, and the sixteen-rank lane's
+     62-64 tok/s with drafts is below the reference's 82.6 on a step that
+     is 10 ms shorter, so the gap is in how many drafted tokens a step
+     keeps;
+   - a step of eight streams reads up to eight times a stream's expert
+     bytes: 72 to 83 ms;
+   - a captured decode step scores the whole window's stride on every
+     rank (3 ms a step at 262,144 tokens); the scoring can be split by
+     position again while the KV stays whole;
+   - engram rows are fetched when a step needs them, not ahead of a
+     prompt's waves;
+   - four ranks give the corpus token 1.17% [+0.40, +1.98] more NLL than
+     sixteen with the same next-token accuracy, and two wave sizes of the
+     same four-rank lane differ by as much: the model's FP8 activations
+     turn any reordering into another sample. Which sample is nearer the
+     publisher's code is not measured; the stored reference tokens and T1
+     fixtures are of an earlier checkpoint.
 3. Rank count as data for every family: the stages that refuse a degree
    other than 16, the packers, the release kit, and a record field for a
    lane's group. weightd keeps the topology a mesh lane was first given

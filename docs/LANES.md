@@ -86,7 +86,13 @@ and its engram shard whole, so its pack directory holds a zero-range
 `.experts` manifest for the pack and for the shard, and the shard, its digest
 and the engram hash tables under the names the engine opens:
 `engram.spengram`, `engram.spengram.digest`, `engram.spengram.experts` and
-`engram_tables.bin`.
+`engram_tables.bin`. A group of four (`dsv41_flash_tp4`) cannot hold the
+203 GB of engram tables in memory beside its packs, so its engine reads the
+table rows a step needs from `engram.spengram` on disk (direct reads behind
+a row cache) and loads only the shard's scales and small tensors; its pack
+directory holds the pack with a zero-range `.experts` manifest, the shard
+cut for four ranks (`tools/dsv41_flash_engram_shard.py --ranks 4`, which
+writes no manifest for it), its digest and `engram_tables.bin`.
 
 The lane root holds only small real files: binaries, the rendered
 configuration, `lane.sh`, `packs/pack.sha256` (the one digest
