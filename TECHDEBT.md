@@ -412,7 +412,124 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
   paths must move together because they agree bit for bit.
 
+## Group sizes and placement by usage
+
+Decided on 2026-11-12. Every CUDA lane runs at TP16 on all sixteen Sparks,
+also for models that fit on four, two or one. That costs a single request
+nothing it could not have, and it costs the fleet most of its throughput:
+one TP16 engine serves where four, eight or sixteen smaller ones could.
+
+The measure is a public four-Spark TP4 release of the same model (its
+reference build of 2026-11-07, its page read on 2026-11-12), against DeepSeek
+V4.1 Flash on our sixteen:
+
+| | Reference, 4 Sparks | SparkPipe, 16 Sparks |
+| --- | ---: | ---: |
+| Decode step | 21.05 ms | 23.5 ms (42.5-42.7 tok/s, no drafts, 1M cached context) |
+| One stream with drafts | 82.6 tok/s | 47.5-55.8 tok/s |
+| Eight streams | 207.4 tok/s | 151-153 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 1,599 tok/s |
+| Prefill, 1M prompt | 6,012 tok/s | 1,287 tok/s (814 s) |
+
+Ours are the 2026-10-24 batch sweep and the 2026-11-01 prefill run
+(`PERFORMANCE_STATUS.md`). The first goal is to match the reference head to
+head on one group of four Sparks; four such groups then give four times its
+throughput on one fleet.
+
+### The plan
+
+- **Aligned groups.** A model runs on a group of 16, 8, 4, 2 or 1 nodes:
+  0-f; 0-7 or 8-f; 0-3, 4-7, 8-b or c-f; a pair; one node. The pairs are
+  the nodes joined by a direct link, where there is one.
+- **Weights are sixteenths.** Every pack is cut by consecutive rows, heads
+  and vocabulary, so a rank of a group of G nodes holds 16/G consecutive
+  sixteenths and every tensor of a wider rank is a concatenation of the
+  16-rank slices (a fused tensor, segment by segment; checked on a node for
+  Qwen 3.8 27B's 4-rank pack). A node stores only the sixteenths of the
+  smallest group it serves. weightd lays each tensor's slices out in rank
+  order, so the wider groups a node also serves read the same memory.
+- **The KV cache is sixteen position shards.** Rank r of 16 holds the
+  positions with position mod 16 = r (`include/sparkpipe/spark_kv_shard.h`),
+  which fixes the position's shard for 8, 4 and 2 as well. A cached context
+  is stored once on NVMe as those shards, wherever it was last used; the
+  hub's prefix index records which nodes hold which shards; a group that
+  needs a context it does not hold has it moved, not recomputed (DeepSeek
+  V4.1 Flash, 1M tokens: about 3 GB against 814 s of prefill; Qwen 3.8 27B,
+  256K tokens: about 17 GB against about 140 s). A context is replicated
+  only in GPU memory, and only while several groups use it at once.
+- **The same bits at every group size.** A round today adds the sixteen
+  ranks' BF16 partials in rank order
+  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). A
+  wider rank keeps one BF16 partial per sixteenth and the round carries all
+  of them, so the sum is the 16-rank sum whatever the group size, and a
+  cached context is exactly reusable across sizes. The KV identity digest
+  then stops naming the shard degree (`runtime/stage_kv_binding.c`).
+- **Placement follows usage.** How many groups hold a model, and of what
+  size, follows demand: a model used now and then sits on one group, a
+  model many agents saturate spreads until spreading stops paying. Idle
+  nodes are free, so an operation takes every idle node that speeds it up
+  at all; nodes two things want go to the one that gains more per GB and
+  node-second; a load must be expected to pay for itself before it starts,
+  and an eviction waits for demand to stay low. Admission works from a
+  ledger of free memory per node, picks the aligned group whose tightest
+  node has the most room and keeps large holes for large models.
+- **One request, two group sizes.** One stream decodes faster on more
+  nodes, because each node reads fewer weight bytes a token (Qwen 3.8 27B:
+  49.6 tok/s on sixteen nodes, a memory limit near 4.5 on one). Prefill and
+  many streams at once go faster on small groups, which have less wire or
+  none. The scheduler picks per phase: prefill on small groups in parallel,
+  decode on the group size that gives the speed asked for, the KV move in
+  between.
+- **API.** Placement is managed inside. A request may say what it wants
+  (interactive or batch); the holder of a fleet may declare a plan (models
+  to keep warm, pins, priorities) and read what is loaded where. No request
+  names nodes.
+
+### What exists (branch `topology/group-sizes`)
+
+- Qwen 3.8 27B's module takes its rank count, weight codec, adapter id and KV
+  label from the build. The 4-rank and 1-rank adapters compile with no stage
+  change, and the 16-rank adapters keep the gated builds' code sections.
+- `tools/qwen38_27b_tp16_pack.py --tp-degree 2|4|8` writes group packs whose
+  FFN share is the union of consecutive sixteenths.
+- `tools/stage_lane.py` and `tools/stage_lane.sh` place a lane of an entry's
+  `ranks` on the group that starts at `first_node`; a one-rank lane has no
+  collective. Every 16-rank record renders the bytes it rendered before.
+
+### Still to build, in order
+
+1. Run Qwen 3.8 27B FP8 on one group of four and on one node, and record
+   prefill and decode at 16, 4 and 1: the speed at each group size is the
+   input every placement rule above needs, and nobody has it.
+2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
+   CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
+   shards its small KV sixteen ways, which costs it two to three rounds a
+   layer; the November audit's fix is to keep a KV that small whole on each
+   rank of a group, in GPU memory only.
+3. Rank count as data for every family: the stages that refuse a degree
+   other than 16, the packers, the release kit, and a record field for a
+   lane's group.
+4. Per-sixteenth partials in the rounds, and a gate that the same request
+   returns the same log-probs at 16, 8, 4, 2 and 1.
+5. weightd: one arena per model built from sixteenth files, shared by every
+   group size a node serves; no second copy on NVMe or in memory.
+6. The KV index on the hub and the mover between nodes; the KV identity
+   without the shard degree.
+7. Several engines of one model behind one API name: a router that sends a
+   conversation to the group holding its cache.
+8. The placement controller: the per-node memory ledger, load and evict by
+   demand with hysteresis, the fleet plan and the status view. It replaces
+   the swap controller's one-model, one-number admission.
+9. The scheduler choosing a group per phase.
+
+Two engines active on one GPU stall each other unless they share a process
+or an MPS daemon (Multi-model serving, below); groups of different models
+on the same node need that fixed or must not be active at once.
+
 ## Placement beyond TP16
+
+The next placement work is the section above. The pipeline items below stay
+as recorded debt for models too large for a group.
 
 - GLM 5.3 Flash serves only at TP16. Measure B1 latency and aggregate
   throughput from B8 to B1024 for TP16, TP4 x PP4 and PP16 once each runs,
