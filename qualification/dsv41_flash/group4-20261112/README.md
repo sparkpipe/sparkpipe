@@ -10,23 +10,26 @@ and no lane record names it.
 The measure is a public four-Spark TP4 release of the same model (its
 reference build of 2026-11-07, its page read again on 2026-11-12).
 
-| | Reference, 4 Sparks | This lane, 4 Sparks | Sixteen-rank lane, same day |
-| --- | ---: | ---: | ---: |
-| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2, 35.1, 34.5 ms | 21.5-21.8 ms |
-| One stream with drafts | 82.6 tok/s | not run | 62-64 tok/s |
-| Eight streams, no drafts | | 96-112 tok/s | not run |
-| Eight streams with drafts | 207.4 tok/s | not run | 151-153 tok/s (2026-10-24) |
-| Prefill, 8,192 tokens | | 1,742 tok/s | 2,189 tok/s |
-| Prefill, 32,768 tokens | 8,508 tok/s | 1,897 tok/s | 2,373 tok/s |
-| Prefill, 131,072 tokens | 8,657 tok/s | 1,888 tok/s | 2,337 tok/s |
-| Memory a node | 71.67 GiB of model, 10.5 GiB of KV | 83 GiB in use, 32 GiB free | |
+| | Reference, 4 Sparks | This lane, first pass | This lane, second pass | Sixteen-rank lane, same day |
+| --- | ---: | ---: | ---: | ---: |
+| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2, 35.1, 34.5 ms | 32.2, 33.3, 34.2 ms | 21.5-21.8 ms |
+| One stream with drafts | 82.6 tok/s | not run | not run | 62-64 tok/s |
+| Eight streams, no drafts | | 96-112 tok/s | not run again | not run |
+| Eight streams with drafts | 207.4 tok/s | not run | not run | 151-153 tok/s (2026-10-24) |
+| Prefill, 8,192 tokens | | 1,742 tok/s | 2,374 tok/s | 2,189 tok/s |
+| Prefill, 32,768 tokens | 8,508 tok/s | 1,897 tok/s | 2,651, 2,695 tok/s | 2,373 tok/s |
+| Prefill, 131,072 tokens | 8,657 tok/s | 1,888 tok/s | 2,498 tok/s | 2,337 tok/s |
+| Memory a node | 71.67 GiB of model, 10.5 GiB of KV | 83 GiB in use, 32 GiB free | 83 GiB in use, 32 GiB free | |
+
+The second pass is the code of `003bd08b2`, measured the same day; its
+section is at the end. The sections between describe the first pass.
 
 - The reference's 21.05 ms is its mean step over twenty batch shapes; its
   single stream steps in 31.79 ms on prose and 34.75 ms on code. One stream
   on this lane is level with that. An earlier version of the plan compared
   21.05 ms with our single stream.
-- Prefill is at 22% of the reference and decode with drafts is not wired on
-  this lane. Both are below.
+- Prefill was at 22% of the reference in the first pass and is at 31% in
+  the second; decode with drafts is not wired on this lane. Both are below.
 - The sixteen-rank 131,072-token run reused 8,191 cached tokens; its rate is
   over the 122,881 it computed.
 
@@ -192,3 +195,134 @@ document from token 256, `probe.index.json`, tokens SHA-256
   slices). The sixteen-rank lane has not been run on the fleet from this
   tree.
 - The lane has no record, no swap entry and no release row.
+
+## Second pass: prefill
+
+Three changes to the rank's code, measured on the same lane shape (8
+sequences, waves of at most 4,096 rows, 1,024 KV pages a sequence) with the
+same requests. The adapter that ran is SHA-256
+`e4906b24561220bf54a5f0f5fced9b16cf8503abfb2d3416e163928495477e55`; a
+rebuild at `003bd08b2` (`55f2afa4b9d2…`) has the same `.text`, `.rodata`
+and `.nv_fatbin` (`3dd709ba9f5d…`, `942fc89626c0…`, `357ab45c3623…`). The
+other firmware is the first pass's.
+
+| | 8,192 tokens | 32,768 tokens | 131,072 tokens | One stream |
+| --- | ---: | ---: | ---: | ---: |
+| First pass | 1,742 tok/s | 1,897 | 1,888 | 32.2, 35.1, 34.5 ms |
+| Window fold as matrix products | 1,960 | 2,209, 2,352 | | |
+| and MoE activations as FP8 codes | 2,053 | 2,323, 2,466 | 2,384 | 32.0, 33.3, 34.0 ms |
+| and engram rows fetched ahead | 2,374 | 2,651, 2,695 | 2,498 | 32.2, 33.3, 34.2 ms |
+
+- **Window fold.** A committed wave folds its 128 window keys as two matrix
+  products over blocks of 128 rows on the stream GEMM (scores against the
+  block's 255 keys, then values), and the merge takes the result as a
+  second record source. The first pass's trace had the fold at 100 ms a
+  1,024-row wave; a 4,096-row wave spends about 96 ms in it now, 39 of
+  them in the merge that reads both sources.
+  Steps of at most 16 rows and verify steps keep the sequential fold. The
+  wave fold rounds each weight to BF16 against the window's maximum, the
+  sequential fold against the running maximum; on the build host
+  (`tests/test_dsv41_window_fold.cu`) their attention outputs differ by at
+  most one BF16 step and 90% of the outputs are the same bits.
+- **MoE activations.** A rank sent every peer its slice of each routed
+  expert's activations in BF16, and the receiver quantized them to FP8
+  before the down projection. It sends the FP8 codes and one exponent a
+  block of 32 instead: the same values (`tests/test_dsv41_flash_moe_slices.cu`
+  at four ranks, bit for bit), 3,064 elements a row a peer instead of
+  4,736. A row now costs a rank 41 KB a layer on the wire instead of 51.
+- **Engram rows.** A wave waited about 135 ms at each of the two engram
+  layers for its 98,304 table rows to come off the disk, 16% of the wave
+  with the GPU idle. The row ids depend only on the wave's tokens, so they
+  are hashed when the wave begins and a thread reads both tables while the
+  first layers run. The first table is still about 63 ms short at layer 1
+  and the second is ready when its layer comes.
+
+The lane repeats itself: the 2,112 scored positions below came back as the
+same bytes (score file SHA-256 `3ca04f8ca886…`) from three starts of the
+lane, with the fold alone, with the FP8 codes and with the fetch ahead. So
+the last two changes do not move a log-prob.
+
+### Where a 4,096-row wave goes now
+
+A CUPTI trace of rank 0 over six waves of a 32,768-token prompt
+(`prefill-kernels.second.txt`; a wave takes 1.55 s, the GPU is busy 88% of
+it):
+
+| | ms a wave | |
+| --- | ---: | --- |
+| Rounds | 386 | 10,950 pieces of 131 KB a wave, five kernels a piece; 192 ms of it waiting for arrivals |
+| Routed experts | 267 | 48 calls of 5.5 ms: each reads every expert of a layer whatever the wave holds |
+| Dense linears | 181 | |
+| Hyper-connection mixing and post | 140 | |
+| Window fold with its merge | 96 | |
+| MoE assembly (send, assemble, finalize, gather, routes) | 74 | |
+| Sparse attention | 55 | |
+| Norms | 52 | |
+| Index scoring and top-k | 48 | |
+| Idle | 190 | 112 ms in gaps under 5 µs between 51,400 kernels, 74 ms waiting for the first engram table's rows |
+
+The API's own step times for 4,096-row waves in the untraced runs: median
+1.43 s, a tenth of them under 1.29 s and a tenth over 2.0 s (a checkpoint
+every 16,384 tokens, the last wave of a prompt, a longer context).
+
+### Tried and set aside
+
+- Replaying a large round's kernels as a captured CUDA graph, and launching
+  the per-piece kernels as dependent launches so each is scheduled while
+  its predecessor runs: 2,401 to 2,545 and 2,396 to 2,557 tok/s at 32,768
+  tokens against 2,323 to 2,466, about 3% each. The time between a round's
+  kernels is not the host's launch cost. Neither is in the code.
+- Mesh slots of 1 MiB instead of 256 KiB, so that a round goes in a quarter
+  of the pieces: `SPARK_WEIGHTD_MESH_SLOT_ROWS` 32, 41,230 checks of
+  `tests/test_weightd_mesh_mock.c` pass with the layout pinned anew. It
+  cannot be measured on the fleet from a lane: a lane uses the node's
+  released weightd, and the layout is that daemon's. It needs 1.2 GB more
+  pinned memory a node and a release. Not in the code.
+
+### Against the sixteen-rank lane, second pass
+
+The same 2,112 positions (`four-vs-sixteen.second.json`; score file
+`3ca04f8ca886…` against the sixteen-rank `0826bdd32e50…`):
+
+| | Sixteen ranks | Four ranks, second pass | |
+| --- | ---: | ---: | --- |
+| Next token right | 79.12% | 79.40% | 14 positions only sixteen predicts, 20 only four (p 0.39) |
+| NLL of the corpus token | 0.620 nats | -0.84% [-1.56, -0.11] | over the 2,036 positions both list it at |
+| Same best token | | 97.02% [96.16, 97.77] | |
+| KL lower bound | | 0.0091 [0.0078, 0.0104] | |
+
+| | Positions | NLL, four relative to sixteen |
+| --- | ---: | --- |
+| Code | 1,280 | -1.37% [-2.48, -0.20] |
+| Prose, 2001 | 96 | -0.66% [-1.68, +0.99] |
+| Prose, 2026-07 | 736 | -0.49% [-1.50, +0.49] |
+
+Against the first pass's own scores (`second-vs-first.json`) the corpus
+token's NLL is 1.88% lower [-2.70, -1.07], on code 3.25% lower [-4.73,
+-1.60]. Only the window fold of committed waves changed between the two
+(the other two changes do not move a log-prob), so on this sample weights
+rounded against the window's maximum serve the model better than weights
+rounded against a running maximum, by more than the two folds differ on
+random data. Why is not established. The first pass's 1.17% above sixteen
+ranks was this fold; the sixteen-rank lane still folds each rank's eight
+keys sequentially. The publisher's code remains the arbiter and has not
+been run on these positions.
+
+### Open after the second pass
+
+- The rounds: 386 ms of a 1.55 s wave on the GPU and most of the gaps. A
+  piece is half a mesh slot, 131 KB, and costs five kernels; a row sends
+  41 KB a layer. Larger slots need a weightd release (above). The
+  attention all-reduce could become a gather of the output projection's
+  FP8 inputs (6 KB a row a layer instead of 15) if a rank held the whole
+  second output projection for waves: a pack change, 1.3 GB a rank.
+- Routed experts: 5.5 ms a call for 64 rows an expert in 128-row tiles.
+  Waves of 16,384 rows, the reference's size, would fill the tiles; the
+  framework's limit is 4,096.
+- Dense linears, hyper-connection kernels, the merge's second read, the
+  first engram table's last 63 ms, the checkpoint every 16,384 tokens.
+- Everything in "Open" above that is not prefill: drafts, eight streams,
+  the window's stride in a captured step, the sixteen-rank lane from this
+  tree (its adapter keeps 290 of 298 kernels against `179436031`'s: the two
+  MoE exchange kernels take two more arguments and four fold kernels are
+  added that sixteen ranks do not call), the lane's record.

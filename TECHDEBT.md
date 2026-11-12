@@ -427,15 +427,17 @@ V4.1 Flash on our sixteen:
 
 | | Reference, 4 Sparks | SparkPipe, 4 Sparks | SparkPipe, 16 Sparks |
 | --- | ---: | ---: | ---: |
-| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-35.1 ms | 21.5-21.8 ms |
+| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.2 ms | 21.5-21.8 ms |
 | One stream with drafts | 82.6 tok/s | not wired | 62-64 tok/s |
 | Eight streams | 207.4 tok/s with drafts | 96-112 tok/s without | 151-153 tok/s with |
-| Prefill, 32K prompt | 8,508 tok/s | 1,897 tok/s | 2,373 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 1,888 tok/s | 2,337 tok/s |
+| Prefill, 32K prompt | 8,508 tok/s | 2,651-2,695 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 2,498 tok/s | 2,337 tok/s |
 | Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-The four-Spark column is the first lane of 2026-11-12
-(`qualification/dsv41_flash/group4-20261112/`), the sixteen-Spark column
+The four-Spark column is the lane of 2026-11-12 after its second pass
+(`qualification/dsv41_flash/group4-20261112/`; the first pass prefilled at
+1,897 and 1,888 tok/s and its eight streams are the figure shown), the
+sixteen-Spark column
 that day's production lane, its eight streams the 2026-10-24 sweep and its
 1M prompt the 2026-11-01 run. The reference's 21.05 ms, which an earlier
 version of this table set against our single stream, is its mean step over
@@ -546,14 +548,22 @@ throughput on one fleet.
    disk (`runtime/row_file.c`), as the reference does; a rank holds a
    76 GB pack and about 83 GiB in all. What is open, in the order the
    traces give:
-   - prefill is at 22% of the reference. A 1,024-row wave spends 157 ms
-     reading every routed expert once (a cost a wave, so waves are now
-     4,096 rows, the framework's limit), about 150 ms in rounds whose rows
-     go in pieces of about 24 that are each waited for, 100 ms in a
-     sliding-window fold without tensor cores, 62 ms in dense linears at
-     about 40 TFLOPS and about 110 ms in mixing, norms and assembly. The
+   - prefill is at 31% of the reference (22% in the first pass). The
+     second pass folds a wave's window as matrix products, sends the MoE
+     activations as FP8 codes and reads a wave's engram rows ahead. A
+     4,096-row wave takes 1.55 s: 386 ms in rounds (10,950 pieces of
+     131 KB, five kernels a piece), 267 ms reading every routed expert
+     once a call (64 rows an expert in 128-row tiles: waves of 16,384 rows
+     would fill them, the framework's limit is 4,096), 181 ms in dense
+     linears, 140 ms in hyper-connection mixing, 96 ms in the fold, and
+     190 ms idle, 112 of them in the gaps between 51,400 kernels. The
      round pieces are the mesh's, and every model's wave pays them: the
-     0.3 s a wave of step 1;
+     0.3 s a wave of step 1. A piece is half a mesh slot. Slots of 1 MiB
+     pass the mesh's mock tests and would quarter the pieces; a lane
+     cannot try them, because the layout belongs to the node's released
+     weightd: it is a release, with 1.2 GB more pinned memory a node.
+     Replaying a round as a captured graph and chaining its kernels as
+     dependent launches gave 3% each and are not in the code;
    - drafts are not wired to the group lane, and the sixteen-rank lane's
      62-64 tok/s with drafts is below the reference's 82.6 on a step that
      is 10 ms shorter, so the gap is in how many drafted tokens a step
@@ -565,10 +575,13 @@ throughput on one fleet.
      position again while the KV stays whole;
    - engram rows are fetched when a step needs them, not ahead of a
      prompt's waves;
-   - four ranks give the corpus token 1.17% [+0.40, +1.98] more NLL than
-     sixteen with the same next-token accuracy, and two wave sizes of the
-     same four-rank lane differ by as much: the model's FP8 activations
-     turn any reordering into another sample. Which sample is nearer the
+   - with the wave fold four ranks give the corpus token 0.84% less NLL
+     than sixteen [-1.56, -0.11] and 1.88% less than the first pass
+     [-2.70, -1.07], whose sequential fold gave 1.17% more than sixteen.
+     The wave fold rounds each window weight against the window's
+     maximum, the sequential fold against a running maximum; why the
+     model does better with the first is not established, and the
+     sixteen-rank lane still folds sequentially. Which is nearer the
      publisher's code is not measured; the stored reference tokens and T1
      fixtures are of an earlier checkpoint.
 3. Rank count as data for every family: the stages that refuse a degree
