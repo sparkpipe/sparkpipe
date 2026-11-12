@@ -1,27 +1,34 @@
-# Qwen 3.8 27B FP8 variant: gate run of 2026-11-12
+# Qwen 3.8 27B FP8 variant: measured on 2026-11-12
 
 The variant `qwen3.8-27b-fp8` (the publisher's FP8 release,
 `Qwen/Qwen3.8-27B-FP8` at `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a`) against
 the full-precision lane `qwen3.8-27b` (the publisher's BF16 weights,
 `Qwen/Qwen3.8-27B` at `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`), by
-`docs/VARIANT_GATE.md` as it stood before the run.
+`docs/VARIANT_GATE.md`.
 
-**The gate as written fails: three of its six checks.** The variant's NLL is
-inside the margin on the corpus and its task suite does not lose
-significantly, but it predicts the next token measurably less often, on
-short contexts and more so deep in a long one.
+The variant repeats itself bit for bit (1,024 of 1,024 positions on a lane
+set up afresh), so it is intact. What it gives and what it costs, both lanes
+on the same sixteen Sparks from one firmware build:
 
-| Check | Result | |
-| --- | --- | --- |
-| Repeat | pass | 1,024 of 1,024 positions bit-identical on a fresh lane |
-| Corpus NLL | pass | +0.283% [+0.133, +0.449] against ±0.5% |
-| Corpus next-token accuracy | **fail** | 68.562% against 68.383%: 64 positions only BF16 predicts, 41 only FP8, exact McNemar p 0.0313 |
-| Depth NLL | **fail** | -0.291% [-1.082, +0.464] against ±0.5%: the lower bound is outside |
-| Depth next-token accuracy | **fail** | 61.407% against 60.690%: 26 only BF16, 5 only FP8, p 0.0002 |
-| Suite, ds4-eval 92 | pass | 79 against 74: 8 only BF16, 3 only FP8, p 0.2266 |
+| | BF16 | FP8 | |
+| --- | ---: | ---: | --- |
+| Decode, one stream | 48.7 tok/s | 60.1 tok/s | 23% faster |
+| Decode, eight streams (the suite run) | 223.8 tok/s | 270.8 tok/s | 21% faster |
+| Prefill, 32,768 tokens | 3,026 tok/s | 2,612 tok/s | 14% slower |
+| Memory a node at start | 5.8 GiB | 4.3 GiB | 1.5 GiB less |
+| Next token right, 12,800 short contexts | 68.562% | 68.383% | 0.18 points lower: 64 positions only BF16 predicts, 41 only FP8 (p 0.031) |
+| Next token right, 2,928 positions deep in the window | 61.407% | 60.690% | 0.72 points lower: 26 only BF16, 5 only FP8 (p 0.0002) |
+| NLL of the corpus token, short contexts | 0.932 nats | +0.283% [+0.133, +0.449] | |
+| NLL of the corpus token, deep in the window | | -0.291% [-1.082, +0.464] | not resolved: the interval spans zero |
+| Same best token as BF16 | | 98.12% short, 94.50% deep | |
+| ds4-eval 92 | 79 | 74 | 8 cases only BF16 answers, 3 only FP8 (p 0.23) |
+| of which GPQA Diamond, 25 cases | 23 | 18 | 5 only BF16, none only FP8 (p 0.06) |
+| of which the other three families, 67 cases | 56 | 56 | 3 only BF16, 3 only FP8 |
 
 `verdict.json` is the tool's output. Intervals are one-sided 95% bootstrap
-bounds, 10,000 replicates, seed 20260929.
+bounds, 10,000 replicates, seed 20260929; p is the exact McNemar test on the
+positions or cases only one side gets, and says how surely a difference is
+there, not whether it matters to a given user.
 
 ## What ran
 
@@ -90,10 +97,28 @@ bounds, 10,000 replicates, seed 20260929.
 
 ## Suite and reference
 
-- ds4-eval 92: BF16 79 (GPQA Diamond 23, SuperGPQA 22, AIME 2025 18, COMPSEC
-  16), FP8 74 (18, 22, 17, 17); right at both 71. No request failed; one FP8
-  answer ran to the token limit. `bf16.ds4/summary.json`,
-  `fp8.ds4/summary.json`.
+ds4-eval 92, one run a precision, 8 at a time, temperature 0, 16,000 tokens
+an answer:
+
+| Family | Cases | BF16 | FP8 | Both | Only BF16 | Only FP8 | Neither | Change in cases |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| All | 92 | 79 | 74 | 71 | 8 | 3 | 10 | -5.0 [-11.0, +0.0], p 0.2266 |
+| GPQA Diamond | 25 | 23 | 18 | 18 | 5 | 0 | 2 | -5.0 [-10.0, -2.0], p 0.0625 |
+| SuperGPQA | 25 | 22 | 22 | 22 | 0 | 0 | 3 | 0 |
+| AIME 2025 | 25 | 18 | 17 | 15 | 3 | 2 | 5 | -1.0 [-5.0, +3.0], p 1 |
+| COMPSEC | 17 | 16 | 17 | 16 | 0 | 1 | 0 | +1.0 [+0.0, +4.0], p 1 |
+
+- The whole of the difference is in one family: on GPQA Diamond FP8 answers
+  five cases fewer and none more; on the other 67 cases the two score the
+  same, three cases each way.
+- No request failed; one FP8 answer ran to the token limit.
+  `bf16.ds4/summary.json`, `fp8.ds4/summary.json`.
+- One run a precision does not say how much a score moves from run to run.
+  Eight answers are generated at a time, a row's log-probs depend slightly
+  on the rows beside it (below), and over thousands of generated tokens a
+  small difference can change an answer. The Fleet List carries an earlier
+  run of the same suite at these two precisions, on an earlier build and 16
+  at a time: BF16 78, FP8 76, 7 cases only BF16 and 5 only FP8.
 - Both lanes return the 71 greedy tokens of the numpy FP8 reference on its
   three chat prompts (`qualification/qwen38_27b/reference/reference3_fp8_numpy.json`).
 
@@ -159,5 +184,11 @@ by SHA-256.
   next token ends the text and the API returns no token and no log-probs.
   The scorer now records such a position; BF16's depth run was made again on
   a fresh lane, as FP8's was.
-- The two next-token checks test whether a loss is detectable, not whether
-  it is large. On 12,800 positions a loss of 0.18 points is detectable.
+- The run was made against the first version of `docs/VARIANT_GATE.md`,
+  which refused a variant whose NLL bounds left ±0.5% or whose next-token
+  accuracy or suite score was significantly lower. This variant failed three
+  of those checks (next-token accuracy on the corpus and at depth, and the
+  width of the depth NLL interval). The owner decided on 2026-11-12 that the
+  figures are published for the user to choose by, and that only a variant
+  that does not repeat itself is refused; the page and the tool now say so,
+  and `verdict.json` is the tool's output on the same score files.

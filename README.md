@@ -126,9 +126,10 @@ their own served names (`glm-5.3-fp8`, `glm-5.3-nvfp4`), so the user chooses
 between speed, cache capacity and full precision. A variant is the
 publisher's or a vetted community release with pinned provenance where one
 exists, and otherwise the output of the shared quantizing packer; every
-variant passes the accuracy gate against the full-precision model before it
-is offered, and the Fleet List gives its measured speed, accuracy and cache
-capacity. A model that does not fit one fleet at full precision (Qwen 3.8
+variant is measured against the full-precision model by one method before it
+is offered ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)), and the Fleet
+List gives its measured speed, accuracy and cache capacity for the user to
+choose by. A model that does not fit one fleet at full precision (Qwen 3.8
 Max) serves the best variant that does. Formats live in one codec layer per
 backend (`inference/kernels/weight_codec.cuh` on CUDA,
 `inference/runner/device_layers.c` on Metal): no model stage names a format,
@@ -685,9 +686,10 @@ model's cached prefixes come back from the KV snapshot store.
   `-mxfp4` is the 8-bit or 4-bit variant of the model above it (Packs,
   above); every other row is the publisher's precision. A variant is its own
   lane record on its model's mesh lane, with its own pack, adapter build and
-  KV label, and it passes the accuracy gate against the full-precision lane
-  before its record lands ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)).
-  `qwen3.8-27b-fp8` is the publisher's FP8 release.
+  KV label, and its record lands with its measured figures against the
+  full-precision lane ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)).
+  `qwen3.8-27b-fp8` is the publisher's FP8 release
+  ([figures](qualification/qwen38_27b/fp8-variant-20261112/README.md)).
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.
