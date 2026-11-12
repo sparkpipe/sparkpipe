@@ -1,0 +1,35 @@
+{
+ "block_tokens": 64,
+ "builder_commit": "e4cf62f330ae9a4fce013254613a71c44c6fa6a1",
+ "corpus_sha256": "fb1248163729b3c58fdc192f9c52eefb53d05b24948e9c62313790e0dbc5d825",
+ "document_tokens": 255989,
+ "documents": [
+  {
+   "id": "joined:fb1248163729b3c5",
+   "stratum": "joined",
+   "offset": 0,
+   "length": 255989,
+   "tokens_sha256": "fb1248163729b3c58fdc192f9c52eefb53d05b24948e9c62313790e0dbc5d825",
+   "source": {
+    "corpus_sha256": "fb1248163729b3c58fdc192f9c52eefb53d05b24948e9c62313790e0dbc5d825",
+    "documents": 200
+   }
+  }
+ ],
+ "format": "sparkpipe-ab-corpus-v1",
+ "name": "CT-short-joined",
+ "notes": [
+  "prose-recent: arXiv 2607.x (July 2026), CC-BY/BY-SA/CC0 only; newest papers in secemp9/arxiv-complete@cee89483; GLM-5.3 was published about 2026-08, so these may or may not predate its training cutoff (unverified). prose-old: arXiv astro-ph/0101 (January 2001), almost certainly in pre-training data; the contrast measures the contamination effect (memorized text understates KL and flips). Report the strata separately.",
+  "code: SparkPipe C/CUDA sources at 266b6adbc (not public), leading include/pragma lines stripped so documents do not share a first block.",
+  "on-policy stratum is a separate corpus (CT-onpolicy), generated from the production API by the lead; its dNLL never enters a verdict.",
+  "retokenized from zai-org/GLM-5.3-Flash@04c4e9e95c5da8862dced7e5056455116f83a7e0 tokenizer.json by decoding each document and encoding it with Qwen/Qwen3.8-27B tokenizer.json, cut to 1280 tokens",
+  "the documents of CT-short (fb1248163729b3c58fdc192f9c52eefb53d05b24948e9c62313790e0dbc5d825) back to back, cut to 255989 tokens"
+ ],
+ "skipped": [],
+ "strata": {
+  "joined": 1
+ },
+ "tokenizer": "Qwen/Qwen3.8-27B tokenizer.json",
+ "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+ "total_tokens": 255989
+}

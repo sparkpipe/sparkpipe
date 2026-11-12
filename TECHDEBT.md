@@ -1256,7 +1256,17 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   precision"): only each model's default precision serves. Still to build:
   - one lane record, swap entry, chat-layer and LiteLLM name and Open WebUI
     entry per variant, first for the packs already on every node: GLM 5.3
-    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4;
+    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4.
+    Qwen 3.8 27B FP8 has them as `qwen3.8-27b-fp8`, with its own KV label,
+    and its gate has run (`qualification/qwen38_27b/fp8-variant-20261112/`):
+    NLL +0.28% [+0.13, +0.45] and the task suite inside the gate, next-token
+    accuracy 0.18 points lower on short contexts and 0.72 deep in a long
+    one, which the gate as written fails. Whether a variant may lose a
+    measurable amount, and how much, is the owner's to set
+    (`docs/VARIANT_GATE.md`); the record does not deploy before that. Its
+    hub drafter is not wired: the variant drafts from the request's own
+    context only, and the drafter of `qwen3.8-27b` has not been measured on
+    FP8 hidden states;
   - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide
     blocks with FP8 scales) for models with no publisher or community
     variant: K-EXAONE 2.0, Solar Open 2, Gemma 4, Ling 3.0, Laguna, Muse
@@ -1266,10 +1276,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     DeepSeek V4.1 Flash, HY4, MiMo, Gemma 4, Ling 3.0, Laguna, Solar Open 2,
     K-EXAONE 2.0, Muse Glimmer) moved onto the codec layer, one PR a family,
     and a dry-law check that no stage or packer names a format;
-  - the accuracy gate per variant (paired NLL and distribution comparison,
-    the long-context depth comparison, ds4-eval 92) and the Fleet List's
-    per-variant speed, accuracy and cache capacity generated from its
-    receipts instead of written by hand;
+  - the Fleet List's per-variant speed, accuracy and cache capacity
+    generated from the gate's receipts instead of written by hand. The gate
+    itself exists (`tools/ab_api_score.py`, `docs/VARIANT_GATE.md`: paired
+    NLL and distribution comparison, the depth comparison, ds4-eval 92). It
+    asks one request a scored position; prompt log-probs from one prefill
+    pass would score a corpus in the time of prefilling it;
   - an EXL3 codec on both backends, once a survey shows which models have
     good EXL3 builds;
   - Qwen 3.8 Max's FP8 default needs two fleets (the pipeline item under
