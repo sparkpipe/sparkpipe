@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <pthread.h>
 
 #include "runtime/launch.h"
 #include "inference/runner/stage_model_cuda.cuh"
@@ -104,7 +105,9 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_LOCAL_EXPERTS (D41_EXPERTS / D41_TP)
 #define D41_EXPERT_SLICE (D41_MOE_INTER / D41_TP)
 #define D41_HIDDEN_SLICE (D41_HIDDEN / D41_TP)
-#define D41_MOE_ROW_ELEMENTS (D41_TOPK * D41_EXPERT_SLICE + D41_HIDDEN_SLICE)
+#define D41_MOE_CODES (D41_TP != 16u && D41_EXPERT_SLICE % (2u * D41_FP8_BLOCK) == 0u ? 1u : 0u)
+#define D41_MOE_ROUTE_ELEMENTS (D41_MOE_CODES != 0u ? D41_EXPERT_SLICE / 2u + D41_EXPERT_SLICE / (2u * D41_FP8_BLOCK) : D41_EXPERT_SLICE)
+#define D41_MOE_ROW_ELEMENTS ((D41_TOPK * D41_MOE_ROUTE_ELEMENTS + D41_HIDDEN_SLICE + 7u) / 8u * 8u)
 #define D41_WO_A_ROWS (D41_OGROUPS * D41_OLORA / D41_TP)
 #define D41_RING_ROWS (D41_WINDOW / D41_KV_TP)
 #define D41_VERIFY_ROWS SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS
@@ -118,6 +121,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_ENGRAM_CACHE_ROWS 1048576u
 #define D41_ENGRAM_READERS 32u
 #define D41_SELECT_BYTES (1ull << 30)
+#define D41_FOLD_GROUPS ((LM_STREAM_SHARED_LIMIT - LM_STREAM_STAGE_BUDGET) / 4u - 1u)
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
 #define D41_SKINNY_EXPERT_ROWS 16u
@@ -195,6 +199,14 @@ typedef struct D41EngramCall
 	uint32_t which, rows;
 } D41EngramCall;
 
+typedef struct D41EngramAhead
+{
+	pthread_t thread;
+	pthread_mutex_t lock;
+	pthread_cond_t wake, done;
+	uint32_t started, stop, busy, pending, finished, failed, rows;
+} D41EngramAhead;
+
 typedef struct D41Engram
 {
 	const uint8_t *payload, *scale;
@@ -254,6 +266,8 @@ struct D41ModelState : CudaStageState
 	uint16_t *verify_window;
 	float *verify_c_kv, *verify_c_score;
 	float *records_send, *records_received;
+	D41WindowFoldPlan fold;
+	uint32_t fold_capacity;
 	uint16_t *attn_merged, *attn_gathered, *group_input, *wo_a_out, *partial;
 	float *pre_init;
 	uint32_t max_positions;
@@ -268,6 +282,10 @@ struct D41ModelState : CudaStageState
 	uint8_t *engram_rows, *engram_rows_host, *engram_resident;
 	uint64_t engram_resident_bytes;
 	D41EngramCall *engram_calls;
+	D41EngramAhead engram_ahead;
+	int64_t *engram_ahead_ids_host[2], *engram_ahead_ids[2];
+	uint8_t *engram_ahead_rows_host[2], *engram_ahead_rows[2];
+	uint32_t engram_ahead_step;
 	volatile uint32_t engram_failed;
 	uint32_t select_rows;
 	uint16_t *wo_a_group;
@@ -511,6 +529,92 @@ static void CUDART_CB D41EngramFetch(void *argument)
 		state->engram_failed = 1u;
 }
 
+static void *D41EngramAheadWork(void *argument)
+{
+	D41ModelState *state = (D41ModelState *)argument;
+	D41EngramAhead *ahead = &state->engram_ahead;
+	pthread_mutex_lock(&ahead->lock);
+	for ( ;; )
+	{
+		while ( ahead->stop == 0u && ahead->pending == 0u )
+			pthread_cond_wait(&ahead->wake, &ahead->lock);
+		if ( ahead->stop != 0u )
+			break;
+		const uint32_t which = (ahead->pending & 1u) != 0u ? 0u : 1u, rows = ahead->rows;
+		ahead->pending &= ~(1u << which);
+		ahead->busy = 1u;
+		pthread_mutex_unlock(&ahead->lock);
+		const SparkStatus status = SparkRowFileFetch(state->engram_file[which], state->engram_ahead_ids_host[which],
+			(uint64_t)rows * D41_ENGRAM_COLUMNS, (int64_t)state->engram[which].first_row, state->engram_ahead_rows_host[which], D41_ENGRAM_HEAD_DIM);
+		pthread_mutex_lock(&ahead->lock);
+		ahead->busy = 0u;
+		ahead->finished |= 1u << which;
+		if ( status != SPARK_STATUS_OK )
+			ahead->failed |= 1u << which;
+		pthread_cond_broadcast(&ahead->done);
+	}
+	pthread_mutex_unlock(&ahead->lock);
+	return 0;
+}
+
+static void CUDART_CB D41EngramAheadStart(void *argument)
+{
+	const D41EngramCall *call = (const D41EngramCall *)argument;
+	D41EngramAhead *ahead = &call->state->engram_ahead;
+	pthread_mutex_lock(&ahead->lock);
+	while ( ahead->busy != 0u )
+		pthread_cond_wait(&ahead->done, &ahead->lock);
+	ahead->rows = call->rows;
+	ahead->pending = 3u;
+	ahead->finished = 0u;
+	ahead->failed = 0u;
+	pthread_cond_signal(&ahead->wake);
+	pthread_mutex_unlock(&ahead->lock);
+}
+
+static void CUDART_CB D41EngramAheadJoin(void *argument)
+{
+	const D41EngramCall *call = (const D41EngramCall *)argument;
+	D41EngramAhead *ahead = &call->state->engram_ahead;
+	pthread_mutex_lock(&ahead->lock);
+	while ( (ahead->finished & (1u << call->which)) == 0u )
+		pthread_cond_wait(&ahead->done, &ahead->lock);
+	if ( (ahead->failed & (1u << call->which)) != 0u )
+		call->state->engram_failed = 1u;
+	pthread_mutex_unlock(&ahead->lock);
+}
+
+static void D41EngramHash(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, int64_t *ids, cudaStream_t stream)
+{
+	const D41Engram *engram = &state->engram[which];
+	LmNgramHashKernel<<<(step->rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
+		state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
+		(const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
+		engram->multipliers, engram->primes, engram->offsets, ids, step->rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad, -1, 0u);
+}
+
+static D41EngramCall *D41EngramCallOf(D41ModelState *state, uint32_t which, uint32_t rows)
+{
+	D41EngramCall *call = &state->engram_calls[(uint64_t)which * (state->max_rows + 1u) + rows];
+	call->state = state;
+	call->which = which;
+	call->rows = rows;
+	return call;
+}
+
+static SparkStatus D41EngramAheadBegin(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+{
+	state->engram_ahead_step = 0u;
+	if ( state->engram_ahead.started == 0u || step->rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS )
+		return SPARK_STATUS_OK;
+	for ( uint32_t which = 0u; which < 2u; ++which )
+		D41EngramHash(state, which, step, state->engram_ahead_ids[which], stream);
+	if ( cudaLaunchHostFunc(stream, D41EngramAheadStart, D41EngramCallOf(state, 0u, step->rows)) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	state->engram_ahead_step = step->rows;
+	return D41Launched();
+}
+
 static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows;
@@ -518,20 +622,22 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	const uint32_t split = rows <= D41_ENGRAM_SPLIT_ROWS ? 1u : 0u;
 	const uint32_t ar_rows = split != 0u ? 2u * rows : (rows * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	const uint32_t ar_width = split != 0u ? D41_ENGRAM_HALF : D41_HIDDEN;
+	const uint32_t ahead = state->engram_ahead_step == rows ? 1u : 0u;
 	SparkStatus status;
-	LmNgramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
-		state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
-		(const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
-		engram->multipliers, engram->primes, engram->offsets, state->engram_ids, rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad,
-		-1, 0u);
+	if ( ahead == 0u )
+		D41EngramHash(state, which, step, state->engram_ids, stream);
 	cudaMemsetAsync(state->engram_embed, 0, (uint64_t)ar_rows * ar_width * sizeof(uint16_t), stream);
-	if ( D41_ENGRAM_DISK )
+	if ( ahead != 0u )
 	{
-		D41EngramCall *call = &state->engram_calls[(uint64_t)which * (state->max_rows + 1u) + rows];
-		call->state = state;
-		call->which = which;
-		call->rows = rows;
-		if ( cudaLaunchHostFunc(stream, D41EngramFetch, call) != cudaSuccess )
+		if ( cudaLaunchHostFunc(stream, D41EngramAheadJoin, D41EngramCallOf(state, which, rows)) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LmNgramGatherFetchedE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ahead_ids[which],
+			state->engram_ahead_rows[which], engram->scale, state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS,
+			D41_ENGRAM_HEAD_DIM);
+	}
+	else if ( D41_ENGRAM_DISK )
+	{
+		if ( cudaLaunchHostFunc(stream, D41EngramFetch, D41EngramCallOf(state, which, rows)) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LmNgramGatherFetchedE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ids, state->engram_rows, engram->scale,
 			state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS, D41_ENGRAM_HEAD_DIM);
@@ -823,6 +929,17 @@ static SparkStatus D41Partials(D41ModelState *state, uint32_t index, const Spark
 	return D41Launched();
 }
 
+static SparkStatus D41FoldPlan(D41ModelState *state, const SparkStageRunnerStep *step, uint32_t lanes, cudaStream_t stream)
+{
+	state->fold.groups = 0u;
+	if ( step->rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS || state->row_invariant != 0u || D41WindowFoldGroups(step->rows, lanes) > state->fold_capacity )
+		return SPARK_STATUS_OK;
+	if ( D41WindowFoldPlanLaunch(&state->fold, step->sequence_row_begin, step->sequence_row_indices, lanes, step->rows, D41_LOCAL_HEADS, stream) !=
+		cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
 {
@@ -876,11 +993,16 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		D41WindowFoldWholeKernel<<<dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream>>>(state->records_received, D41_LOCAL_HEADS, state->q_local,
 			state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
-	else
+	else if ( state->fold.groups == 0u )
 		D41WindowFoldKernel<<<dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream>>>(state->records_received, stride, D41_LOCAL_HEADS, state->q_local,
 			query_stride, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, qk_scale,
 			D41_LOCAL_HEADS, 1u);
+	if ( rows > SPARK_STAGE_RUNNER_GRAPH_ROWS && state->fold.groups != 0u &&
+		D41WindowFoldWaveLaunch(&state->fold, state->q_local, state->window_kv, ring, step->positions, state->row_ordinal, step->sequence_row_begin,
+			step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, rows, D41_LOCAL_HEADS, qk_scale,
+			state->records_received + stride, sms, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -894,8 +1016,12 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
-	D41MergeSinkKernel<<<dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
-		state->attn_merged);
+	if ( rows > SPARK_STAGE_RUNNER_GRAPH_ROWS && state->fold.groups != 0u )
+		D41MergeWindowSinkKernel<<<dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream>>>(state->records_received, state->records_received + stride,
+			state->fold.row_packed, D41_LOCAL_HEADS, layer->sink, state->attn_merged);
+	else
+		D41MergeSinkKernel<<<dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
+			state->attn_merged);
 	D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
@@ -1061,7 +1187,7 @@ static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint
 static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
-	const uint64_t stride = (uint64_t)rows * D41_MOE_ROW_ELEMENTS, shared_offset = (uint64_t)routes * D41_EXPERT_SLICE;
+	const uint64_t stride = (uint64_t)rows * D41_MOE_ROW_ELEMENTS, shared_offset = (uint64_t)routes * D41_MOE_ROUTE_ELEMENTS;
 	SparkStatus status;
 	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
@@ -1088,7 +1214,8 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	if ( D41Linear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41MoeSendKernel<<<dim3(D41Blocks(D41_HIDDEN), routes + rows), D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight,
-		state->shared_out, state->moe_send, routes, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT);
+		state->shared_out, state->moe_send, routes, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS,
+		D41_MOE_CODES);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, rows, D41_MOE_ROW_ELEMENTS, state->moe_send,
@@ -1096,7 +1223,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	D41ActAssembleQdqKernel<<<dim3(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received, state->expert_act,
-		D41_EXPERT_SLICE, D41_MOE_INTER, stride);
+		D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1279,7 +1406,7 @@ static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep 
 	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio2, tail->rows, 2u);
 	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio1, tail->rows, 1u);
 	LmRowLanesKernel<<<1u, 256u, 0, stream>>>(tail->sequence_row_begin, tail->sequence_row_indices, state->row_lane, state->row_ordinal);
-	return D41Launched();
+	return D41FoldPlan(state, tail, 1u, stream);
 }
 
 static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
@@ -1408,6 +1535,11 @@ struct D41Cuda : CudaStage<D41Cuda>
 		D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio1, rows, 1u);
 		LmRowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
 			state->row_ordinal);
+		status = D41FoldPlan(state, step, step->sequences, stream);
+		if ( status == SPARK_STATUS_OK )
+			status = D41EngramAheadBegin(state, step, stream);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio2,
 			state->context_slots, 2u);
 		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
@@ -1650,6 +1782,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 	const uint64_t r = state->max_rows, s = state->slots, routes = r * D41_TOPK;
 	const uint64_t destination = D41DestinationStride(state->max_rows, D41_LOCAL_HEADS) * sizeof(float), scored = state->select_rows;
 	const uint64_t exchanged = D41_WHOLE ? 0u : D41_TP;
+	const uint64_t fold = state->fold_capacity, fold_rows = fold != 0u ? r * D41_LOCAL_HEADS : 0u;
 	const uint64_t engram_rows = (r * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	(void)lane;
 	const CudaStageSlice plan[] =
@@ -1685,7 +1818,13 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->verify_window, (uint64_t)D41_LAYERS * D41_VERIFY_ROWS * D41_HEAD_DIM * 2u },
 		{ (void **)&state->verify_c_kv, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
 		{ (void **)&state->verify_c_score, (uint64_t)D41_PAIR_CACHES * D41_VERIFY_ROWS * D41_HEAD_DIM * 4u },
-		{ (void **)&state->records_send, exchanged * destination }, { (void **)&state->records_received, (D41_WHOLE ? 1u : D41_TP) * destination },
+		{ (void **)&state->records_send, exchanged * destination }, { (void **)&state->records_received, (D41_WHOLE ? 2u : D41_TP) * destination },
+		{ (void **)&state->fold.group_offset, fold != 0u ? (fold + 1u) * 4u : 0u }, { (void **)&state->fold.source_map, fold_rows * 4u },
+		{ (void **)&state->fold.row_packed, fold != 0u ? r * 4u : 0u }, { (void **)&state->fold.block_lane, fold * 4u },
+		{ (void **)&state->fold.block_first, fold * 4u },
+		{ (void **)&state->fold.keys, fold * D41K_FOLD_SPAN * D41_HEAD_DIM * 2u },
+		{ (void **)&state->fold.keys_transposed, fold * D41K_FOLD_SPAN * D41_HEAD_DIM * 2u },
+		{ (void **)&state->fold.scores, fold_rows * D41K_FOLD_SPAN * 4u }, { (void **)&state->fold.weights, fold_rows * D41K_FOLD_SPAN * 2u },
 		{ (void **)&state->landing, exchanged * SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(state->max_positions, 1u) * D41_HIDDEN * 2u },
 		{ (void **)&state->ring_send, (D41_WHOLE ? 0u : 1u) * (uint64_t)D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
 		{ (void **)&state->ring_landing, exchanged * D41_RING_LANDING_ROWS * D41_HIDDEN * 2u },
@@ -1837,8 +1976,25 @@ inline void D41Cuda::Release(D41ModelState *state)
 {
 	if ( state->engram_pack != 0 )
 		SparkWeightdLazyPackDestroy(state->engram_pack);
+	if ( state->engram_ahead.started != 0u )
+	{
+		pthread_mutex_lock(&state->engram_ahead.lock);
+		state->engram_ahead.stop = 1u;
+		pthread_cond_signal(&state->engram_ahead.wake);
+		pthread_mutex_unlock(&state->engram_ahead.lock);
+		pthread_join(state->engram_ahead.thread, 0);
+		pthread_cond_destroy(&state->engram_ahead.done);
+		pthread_cond_destroy(&state->engram_ahead.wake);
+		pthread_mutex_destroy(&state->engram_ahead.lock);
+	}
 	for ( uint32_t which = 0u; which < 2u; ++which )
+	{
 		SparkRowFileClose(state->engram_file[which]);
+		if ( state->engram_ahead_ids_host[which] != 0 )
+			(void)cudaFreeHost(state->engram_ahead_ids_host[which]);
+		if ( state->engram_ahead_rows_host[which] != 0 )
+			(void)cudaFreeHost(state->engram_ahead_rows_host[which]);
+	}
 	if ( state->engram_ids_host != 0 )
 		(void)cudaFreeHost(state->engram_ids_host);
 	if ( state->engram_rows_host != 0 )
@@ -1942,6 +2098,8 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 	state->shard.grain = D41_GRAIN;
 	state->local_score_stride = ((SparkKvShardGatherKeys(state->shard, state->max_positions) + 63u) / 64u) * 64u;
 	state->select_rows = state->max_rows;
+	state->fold_capacity = !D41_WHOLE || state->max_rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS ? 0u :
+		state->max_rows / D41K_FOLD_BLOCK + state->slots < D41_FOLD_GROUPS ? state->max_rows / D41K_FOLD_BLOCK + state->slots : D41_FOLD_GROUPS;
 	if ( D41_WHOLE && (uint64_t)state->select_rows * state->local_score_stride * sizeof(float) > D41_SELECT_BYTES )
 		state->select_rows = (uint32_t)(D41_SELECT_BYTES / ((uint64_t)state->local_score_stride * sizeof(float)));
 	if ( state->select_rows == 0u )
@@ -2251,6 +2409,25 @@ static SparkStatus D41EngramBuffers(D41ModelState *state)
 	if ( cudaHostGetDevicePointer((void **)&state->engram_ids, state->engram_ids_host, 0u) != cudaSuccess ||
 		cudaHostGetDevicePointer((void **)&state->engram_rows, state->engram_rows_host, 0u) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( state->max_rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS )
+		return SPARK_STATUS_OK;
+	for ( uint32_t which = 0u; which < 2u; ++which )
+	{
+		if ( cudaHostAlloc((void **)&state->engram_ahead_ids_host[which], ids, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
+			cudaHostAlloc((void **)&state->engram_ahead_rows_host[which], rows, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		memset(state->engram_ahead_ids_host[which], 0, ids);
+		memset(state->engram_ahead_rows_host[which], 0, rows);
+		if ( cudaHostGetDevicePointer((void **)&state->engram_ahead_ids[which], state->engram_ahead_ids_host[which], 0u) != cudaSuccess ||
+			cudaHostGetDevicePointer((void **)&state->engram_ahead_rows[which], state->engram_ahead_rows_host[which], 0u) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	pthread_mutex_init(&state->engram_ahead.lock, 0);
+	pthread_cond_init(&state->engram_ahead.wake, 0);
+	pthread_cond_init(&state->engram_ahead.done, 0);
+	if ( pthread_create(&state->engram_ahead.thread, 0, D41EngramAheadWork, state) != 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state->engram_ahead.started = 1u;
 	return SPARK_STATUS_OK;
 }
 

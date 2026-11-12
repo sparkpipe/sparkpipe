@@ -9,6 +9,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/ngram_hash.cuh"
+#include "inference/kernels/stream_gemm.cuh"
 #include "dsv41_flash_kernels.cuh"
 
 #define D41K_THREADS 256u
@@ -443,6 +444,195 @@ static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wav
 		target[c] = wave_kv[(uint64_t)row * D41K_LATENT + c];
 }
 
+#define D41K_FOLD_BLOCK 128u
+#define D41K_FOLD_SPAN (2u * D41K_FOLD_BLOCK)
+#define D41K_FOLD_WARPS (D41K_THREADS / 32u)
+
+static __global__ void D41FoldPlanKernel(const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
+	uint32_t lanes, uint32_t rows, uint32_t heads, uint32_t groups, uint32_t *__restrict__ group_offset, uint32_t *__restrict__ source_map,
+	uint32_t *__restrict__ row_packed, uint32_t *__restrict__ block_lane, uint32_t *__restrict__ block_first)
+{
+	if ( threadIdx.x == 0u )
+	{
+		uint32_t block = 0u;
+		for ( uint32_t lane = 0u; lane < lanes; ++lane )
+		{
+			const uint32_t begin = sequence_row_begin[lane], count = sequence_row_begin[lane + 1u] - begin;
+			for ( uint32_t first = 0u; first < count && block < groups; first += D41K_FOLD_BLOCK, ++block )
+			{
+				group_offset[block] = (begin + first) * heads;
+				block_lane[block] = lane;
+				block_first[block] = first;
+			}
+		}
+		for ( ; block < groups; ++block )
+		{
+			group_offset[block] = rows * heads;
+			block_lane[block] = D41K_NO_ROW;
+			block_first[block] = 0u;
+		}
+		group_offset[groups] = rows * heads;
+	}
+	for ( uint32_t packed = threadIdx.x; packed < rows; packed += blockDim.x )
+	{
+		const uint32_t row = sequence_row_indices[packed];
+		row_packed[row] = packed;
+		for ( uint32_t head = 0u; head < heads; ++head )
+			source_map[packed * heads + head] = row * heads + head;
+	}
+}
+
+static __global__ void D41FoldKeysKernel(const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
+	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *__restrict__ block_lane,
+	const uint32_t *__restrict__ block_first, uint16_t *__restrict__ keys, uint16_t *__restrict__ keys_transposed)
+{
+	const uint32_t block = blockIdx.y, column = blockIdx.x, lane = block_lane[block];
+	if ( lane == D41K_NO_ROW )
+		return;
+	const uint32_t begin = sequence_row_begin[lane], count = sequence_row_begin[lane + 1u] - begin;
+	const uint32_t wave_first = positions[sequence_row_indices[begin]];
+	const int64_t position = (int64_t)wave_first + block_first[block] + column - (int64_t)(D41K_FOLD_BLOCK - 1u);
+	const uint16_t *source = 0;
+	if ( position >= (int64_t)wave_first )
+	{
+		if ( position - wave_first < count )
+			source = wave_kv + (uint64_t)sequence_row_indices[begin + (uint32_t)(position - wave_first)] * D41K_LATENT;
+	}
+	else if ( position >= 0 )
+		source = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((uint32_t)position % ring_rows) * D41K_LATENT;
+	uint16_t *row_out = keys + ((uint64_t)block * D41K_FOLD_SPAN + column) * D41K_LATENT;
+	uint16_t *column_out = keys_transposed + (uint64_t)block * D41K_LATENT * D41K_FOLD_SPAN + column;
+	for ( uint32_t element = threadIdx.x; element < D41K_LATENT; element += blockDim.x )
+	{
+		const uint16_t value = source != 0 ? source[element] : (uint16_t)0u;
+		row_out[element] = value;
+		column_out[(uint64_t)element * D41K_FOLD_SPAN] = value;
+	}
+}
+
+static __global__ void D41FoldWeightsKernel(const float *__restrict__ scores, const uint32_t *__restrict__ positions,
+	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ row_ordinal, uint32_t heads, uint32_t packed_rows,
+	float qk_scale, uint16_t *__restrict__ weights, float *__restrict__ records)
+{
+	const uint32_t lane = threadIdx.x % 32u, packed = blockIdx.x * D41K_FOLD_WARPS + threadIdx.x / 32u;
+	if ( packed >= packed_rows )
+		return;
+	const uint32_t row = sequence_row_indices[packed / heads], position = positions[row], within = row_ordinal[row] % D41K_FOLD_BLOCK;
+	const uint32_t last = within + D41K_FOLD_BLOCK - 1u, first = position >= D41K_FOLD_BLOCK - 1u ? within : last - position;
+	const float *score = scores + (uint64_t)packed * D41K_FOLD_SPAN;
+	uint16_t *weight = weights + (uint64_t)packed * D41K_FOLD_SPAN;
+	float value[D41K_FOLD_SPAN / 32u], top = -INFINITY, sum = 0.0f;
+	for ( uint32_t part = 0u; part < D41K_FOLD_SPAN / 32u; ++part )
+	{
+		const uint32_t column = part * 32u + lane;
+		value[part] = column >= first && column <= last ? score[column] * qk_scale : -INFINITY;
+		top = fmaxf(top, value[part]);
+	}
+	for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+		top = fmaxf(top, __shfl_xor_sync(0xffffffffu, top, offset));
+	for ( uint32_t part = 0u; part < D41K_FOLD_SPAN / 32u; ++part )
+	{
+		const float add = value[part] == -INFINITY ? 0.0f : __expf(value[part] - top);
+		sum += add;
+		weight[part * 32u + lane] = LmFloatToBf16(SparkMathAttentionValueWeight(add));
+	}
+	for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+		sum += __shfl_xor_sync(0xffffffffu, sum, offset);
+	if ( lane == 0u )
+	{
+		records[(uint64_t)packed * D41K_RECORD] = top;
+		records[(uint64_t)packed * D41K_RECORD + 1u] = sum;
+	}
+}
+
+typedef struct D41WindowFoldPlan
+{
+	uint32_t *group_offset, *source_map, *row_packed, *block_lane, *block_first;
+	uint16_t *keys, *keys_transposed, *weights;
+	float *scores;
+	uint32_t groups;
+} D41WindowFoldPlan;
+
+static inline uint32_t D41WindowFoldGroups(uint32_t rows, uint32_t lanes)
+{
+	return rows / D41K_FOLD_BLOCK + lanes;
+}
+
+static inline cudaError_t D41WindowFoldPlanLaunch(D41WindowFoldPlan *plan, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
+	uint32_t lanes, uint32_t rows, uint32_t heads, cudaStream_t stream)
+{
+	plan->groups = D41WindowFoldGroups(rows, lanes);
+	D41FoldPlanKernel<<<1u, D41K_THREADS, 0, stream>>>(sequence_row_begin, sequence_row_indices, lanes, rows, heads, plan->groups, plan->group_offset,
+		plan->source_map, plan->row_packed, plan->block_lane, plan->block_first);
+	return cudaPeekAtLastError();
+}
+
+static inline int32_t D41WindowFoldWaveLaunch(const D41WindowFoldPlan *plan, const uint16_t *query, const uint16_t *wave_kv, const uint16_t *ring,
+	const uint32_t *positions, const uint32_t *row_ordinal, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
+	const uint32_t *recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t rows, uint32_t heads, float qk_scale, float *window,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	const uint32_t packed = rows * heads;
+	LmStreamGemmArguments args;
+	int32_t status;
+	D41FoldKeysKernel<<<dim3(D41K_FOLD_SPAN, plan->groups), D41K_THREADS, 0, stream>>>(wave_kv, ring, positions, sequence_row_begin,
+		sequence_row_indices, recurrent_slot, ring_slot_stride, ring_rows, plan->block_lane, plan->block_first, plan->keys, plan->keys_transposed);
+	memset(&args, 0, sizeof(args));
+	args.activation = query;
+	args.weight = (const uint8_t *)plan->keys;
+	args.group_row_offset = plan->group_offset;
+	args.source_row_map = plan->source_map;
+	args.output_f32 = plan->scores;
+	args.weight_group_bytes = (uint64_t)D41K_FOLD_SPAN * D41K_LATENT * sizeof(uint16_t);
+	args.rows = packed;
+	args.groups = plan->groups;
+	args.input_dimension = D41K_LATENT;
+	args.output_dimension = D41K_FOLD_SPAN;
+	args.output_row_stride = D41K_FOLD_SPAN;
+	status = LmStreamGemmLaunch<LmBf16Format>(&args, multiprocessors, stream);
+	if ( status != LM_LAUNCH_OK )
+		return status;
+	D41FoldWeightsKernel<<<(packed + D41K_FOLD_WARPS - 1u) / D41K_FOLD_WARPS, D41K_THREADS, 0, stream>>>(plan->scores, positions, sequence_row_indices,
+		row_ordinal, heads, packed, qk_scale, plan->weights, window);
+	args.activation = plan->weights;
+	args.weight = (const uint8_t *)plan->keys_transposed;
+	args.source_row_map = 0;
+	args.output_f32 = window;
+	args.input_dimension = D41K_FOLD_SPAN;
+	args.output_dimension = D41K_LATENT;
+	args.output_row_stride = D41K_RECORD;
+	args.output_column_offset = 2u;
+	return LmStreamGemmLaunch<LmBf16Format>(&args, multiprocessors, stream);
+}
+
+static __global__ void D41MergeWindowSinkKernel(const float *__restrict__ records, const float *__restrict__ window,
+	const uint32_t *__restrict__ row_packed, uint32_t heads, const float *__restrict__ sink, uint16_t *__restrict__ output)
+{
+	__shared__ float scales[2];
+	__shared__ float denominator_shared;
+	const uint32_t row = blockIdx.x, head = blockIdx.y;
+	const uint64_t base = ((uint64_t)row * heads + head) * D41K_RECORD, window_base = ((uint64_t)row_packed[row] * heads + head) * D41K_RECORD;
+	if ( threadIdx.x == 0u )
+	{
+		const float listed = records[base], near = window[window_base];
+		const float top = fmaxf(fmaxf(-1.0e30f, listed), near);
+		float denominator = 0.0f;
+		scales[0] = listed == -INFINITY ? 0.0f : __expf(listed - top);
+		scales[1] = near == -INFINITY ? 0.0f : __expf(near - top);
+		denominator = fmaf(records[base + 1u], scales[0], denominator);
+		denominator = fmaf(window[window_base + 1u], scales[1], denominator);
+		denominator_shared = denominator + __expf(sink[head] - top);
+	}
+	__syncthreads();
+	for ( uint32_t element = threadIdx.x; element < D41K_LATENT; element += blockDim.x )
+	{
+		float merged = fmaf(records[base + 2u + element], scales[0], 0.0f);
+		merged = fmaf(window[window_base + 2u + element], scales[1], merged);
+		output[((uint64_t)row * heads + head) * D41K_LATENT + element] = LmFloatToBf16(merged / denominator_shared);
+	}
+}
+
 static __global__ void D41MergeSinkKernel(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
 	const float *__restrict__ sink, uint16_t *__restrict__ output)
 {
@@ -560,7 +750,7 @@ static __global__ void D41ScaleRowsKernel(uint16_t *__restrict__ data, uint64_t 
 
 static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
 	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t slice, uint32_t hidden_slice, uint32_t degree,
-	uint64_t destination_stride, float limit)
+	uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
 {
 	const uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( blockIdx.y < routes )
@@ -570,23 +760,50 @@ static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, co
 			return;
 		const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * slice + element], gate_up[(uint64_t)route * 2u * slice + slice + element],
 			packed_weight[route], limit);
+		if ( codes == 0u )
+		{
+			for ( uint32_t destination = 0u; destination < degree; ++destination )
+				send[(uint64_t)destination * destination_stride + (uint64_t)route * slice + element] = value;
+			return;
+		}
+		const float activation = LmBf16ToFloat(value);
+		float amax = fabsf(activation);
+		for ( uint32_t offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u )
+			amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset));
+		const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+		const uint8_t code = LmFloatToE4m3(fminf(fmaxf(activation / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
+		const uint8_t exponent = (uint8_t)(__float_as_uint(scale) >> 23u);
 		for ( uint32_t destination = 0u; destination < degree; ++destination )
-			send[(uint64_t)destination * destination_stride + (uint64_t)route * slice + element] = value;
+		{
+			uint8_t *bytes = (uint8_t *)(send + (uint64_t)destination * destination_stride);
+			bytes[(uint64_t)route * slice + element] = code;
+			if ( element % SPARK_DSV41_FLASH_FP8_BLOCK == 0u )
+				bytes[(uint64_t)routes * slice + (uint64_t)route * (slice / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK] = exponent;
+		}
 		return;
 	}
 	const uint32_t row = blockIdx.y - routes;
 	if ( element >= hidden_slice * degree )
 		return;
-	send[(uint64_t)(element / hidden_slice) * destination_stride + (uint64_t)routes * slice + (uint64_t)row * hidden_slice + element % hidden_slice] =
-		shared[(uint64_t)row * hidden_slice * degree + element];
+	send[(uint64_t)(element / hidden_slice) * destination_stride + (uint64_t)routes * route_elements + (uint64_t)row * hidden_slice +
+		element % hidden_slice] = shared[(uint64_t)row * hidden_slice * degree + element];
 }
 
 static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t slice, uint32_t width,
-	uint64_t source_stride)
+	uint64_t source_stride, uint32_t routes, uint32_t codes)
 {
 	const uint32_t route = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = element / slice;
 	if ( element >= width )
 		return;
+	if ( codes != 0u )
+	{
+		const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
+		const uint32_t within = element - source * slice;
+		const uint32_t exponent = bytes[(uint64_t)routes * slice + (uint64_t)route * (slice / SPARK_DSV41_FLASH_FP8_BLOCK) +
+			within / SPARK_DSV41_FLASH_FP8_BLOCK];
+		act[(uint64_t)route * width + element] = LmFloatToBf16(LmE4m3ToFloat(bytes[(uint64_t)route * slice + within]) * __uint_as_float(exponent << 23u));
+		return;
+	}
 	act[(uint64_t)route * width + element] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(
 		received[(uint64_t)source * source_stride + (uint64_t)route * slice + element - source * slice]));
 }

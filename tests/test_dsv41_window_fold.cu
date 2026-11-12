@@ -11,6 +11,8 @@
 #define LATENT 512u
 #define RING 8u
 #define WINDOW 128u
+#define WAVE_WORST 0.03125
+#define WAVE_MEAN 0.001
 
 #define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
 #define CUDA(call) REQUIRE((call) == cudaSuccess)
@@ -173,6 +175,118 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	return differing != 0u ? 1u : 0u;
 }
 
+struct Wave
+{
+	uint32_t lanes, count[2], first[2], heads;
+};
+
+static float FromBf16(uint16_t value)
+{
+	const uint32_t bits = (uint32_t)value << 16u;
+	float result;
+	memcpy(&result, &bits, 4u);
+	return result;
+}
+
+template<class T>
+static T *Scratch(size_t count)
+{
+	T *device;
+	CUDA(cudaMalloc((void **)&device, count * sizeof(T) + 16u));
+	CUDA(cudaMemset(device, 0x5a, count * sizeof(T)));
+	return device;
+}
+
+static uint32_t RunWave(const Wave &w, uint32_t perturb)
+{
+	const uint32_t rows = w.count[0] + (w.lanes > 1u ? w.count[1] : 0u), heads = w.heads, packed = rows * heads;
+	const uint64_t stride = (uint64_t)rows * heads * D41K_RECORD;
+	std::vector<uint16_t> query = Values((size_t)packed * LATENT, 41u + rows);
+	std::vector<uint16_t> wave = Values((size_t)rows * LATENT, 43u + w.first[0]);
+	std::vector<uint16_t> ring = Values((size_t)2u * WINDOW * LATENT, 47u + w.first[1]);
+	std::vector<uint32_t> positions(rows), lanes(rows), ordinals(rows), begin = {0u, w.count[0], rows}, indices(rows), slot = {1u, 0u};
+	std::vector<float> sink(heads), records(stride);
+	int device = 0, multiprocessors = 0;
+	CUDA(cudaGetDevice(&device));
+	CUDA(cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, device));
+	for ( uint32_t lane = 0u, at = 0u; lane < w.lanes; ++lane )
+		for ( uint32_t ordinal = 0u; ordinal < w.count[lane]; ++ordinal, ++at )
+		{
+			const uint32_t row = rows - 1u - at;
+			indices[at] = row;
+			positions[row] = w.first[lane] + ordinal;
+			lanes[row] = lane;
+			ordinals[row] = ordinal;
+		}
+	for ( uint32_t head = 0u; head < heads; ++head )
+		sink[head] = (float)((int32_t)(Mix(head ^ 0x77u) & 0xffu) - 128) / 32.0f;
+	for ( uint64_t index = 0u; index < stride; ++index )
+		records[index] = (float)((int32_t)((Mix(index ^ 0x6161u) >> 40u) & 0xffffu) - 32768) / 8192.0f;
+	for ( uint64_t base = 0u; base < stride; base += D41K_RECORD )
+	{
+		const uint64_t z = Mix(base ^ 0x99u);
+		records[base] = (z & 3u) == 0u ? -INFINITY : (float)((int32_t)((z >> 8u) & 0xffu) - 128) / 8.0f;
+		records[base + 1u] = records[base] == -INFINITY ? 0.0f : 1.0f + (float)((z >> 20u) & 0xffu) / 8.0f;
+		if ( records[base] == -INFINITY )
+			for ( uint32_t element = 0u; element < D41K_LATENT; ++element )
+				records[base + 2u + element] = 0.0f;
+	}
+	uint16_t *query_d = Device(query), *wave_d = Device(wave), *ring_d = Device(ring);
+	uint32_t *positions_d = Device(positions), *lanes_d = Device(lanes), *ordinals_d = Device(ordinals), *begin_d = Device(begin),
+		*indices_d = Device(indices), *slot_d = Device(slot);
+	float *sink_d = Device(sink), *sequential_d = Device(records), *listed_d = Device(records);
+	float *window_d = Scratch<float>(stride);
+	uint16_t *expected_d = Scratch<uint16_t>((size_t)packed * LATENT), *merged_d = Scratch<uint16_t>((size_t)packed * LATENT);
+	D41WindowFoldPlan plan;
+	const uint32_t groups = D41WindowFoldGroups(rows, w.lanes);
+	const float scale = 1.0f / sqrtf((float)LATENT);
+	plan.group_offset = Scratch<uint32_t>(groups + 1u);
+	plan.source_map = Scratch<uint32_t>(packed);
+	plan.row_packed = Scratch<uint32_t>(rows);
+	plan.block_lane = Scratch<uint32_t>(groups);
+	plan.block_first = Scratch<uint32_t>(groups);
+	plan.keys = Scratch<uint16_t>((size_t)groups * D41K_FOLD_SPAN * LATENT);
+	plan.keys_transposed = Scratch<uint16_t>((size_t)groups * D41K_FOLD_SPAN * LATENT);
+	plan.scores = Scratch<float>((size_t)packed * D41K_FOLD_SPAN);
+	plan.weights = Scratch<uint16_t>((size_t)packed * D41K_FOLD_SPAN);
+	ReferenceWindowFoldKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, heads, query_d, (uint64_t)packed * LATENT, wave_d, ring_d,
+		positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, WINDOW * LATENT, WINDOW, WINDOW, 1u, 0u, scale, heads, 1u);
+	D41MergeSinkKernel<<<dim3(rows, heads), D41K_THREADS>>>(sequential_d, stride, 1u, heads, sink_d, expected_d);
+	CUDA(cudaGetLastError());
+	if ( perturb != 0u )
+	{
+		const uint16_t bumped = (uint16_t)(wave[(size_t)(rows / 2u) * LATENT + 5u] ^ 0x0100u);
+		CUDA(cudaMemcpy(wave_d + (size_t)(rows / 2u) * LATENT + 5u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
+	}
+	CUDA(D41WindowFoldPlanLaunch(&plan, begin_d, indices_d, w.lanes, rows, heads, 0));
+	REQUIRE(D41WindowFoldWaveLaunch(&plan, query_d, wave_d, ring_d, positions_d, ordinals_d, begin_d, indices_d, slot_d, WINDOW * LATENT, WINDOW, rows,
+		heads, scale, window_d, (uint32_t)multiprocessors, 0) == LM_LAUNCH_OK);
+	D41MergeWindowSinkKernel<<<dim3(rows, heads), D41K_THREADS>>>(listed_d, window_d, plan.row_packed, heads, sink_d, merged_d);
+	CUDA(cudaGetLastError());
+	CUDA(cudaDeviceSynchronize());
+	std::vector<uint16_t> expected((size_t)packed * LATENT), merged((size_t)packed * LATENT);
+	CUDA(cudaMemcpy(expected.data(), expected_d, expected.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	CUDA(cudaMemcpy(merged.data(), merged_d, merged.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
+	double worst = 0.0, total = 0.0;
+	uint64_t same = 0u;
+	for ( size_t index = 0u; index < expected.size(); ++index )
+	{
+		const double difference = fabs((double)FromBf16(expected[index]) - (double)FromBf16(merged[index]));
+		worst = difference > worst ? difference : worst;
+		total += difference;
+		same += expected[index] == merged[index] ? 1u : 0u;
+	}
+	const double mean = total / (double)expected.size();
+	cudaFree(query_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(positions_d); cudaFree(lanes_d); cudaFree(ordinals_d); cudaFree(begin_d);
+	cudaFree(indices_d); cudaFree(slot_d); cudaFree(sink_d); cudaFree(sequential_d); cudaFree(listed_d); cudaFree(window_d); cudaFree(expected_d);
+	cudaFree(merged_d); cudaFree(plan.group_offset); cudaFree(plan.source_map); cudaFree(plan.row_packed); cudaFree(plan.block_lane);
+	cudaFree(plan.block_first); cudaFree(plan.keys); cudaFree(plan.keys_transposed); cudaFree(plan.scores); cudaFree(plan.weights);
+	printf("wave lanes %u rows %u+%u first %u/%u heads %u%s: worst %.5f mean %.6f, %llu of %llu outputs the same bits\n", w.lanes, w.count[0],
+		w.lanes > 1u ? w.count[1] : 0u, w.first[0], w.first[1], heads, perturb != 0u ? " (perturbed key)" : "", worst, mean,
+		(unsigned long long)same, (unsigned long long)expected.size());
+	return worst > WAVE_WORST || mean > WAVE_MEAN ? 1u : 0u;
+}
+
 static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, uint32_t pad)
 {
 	const uint64_t span = (uint64_t)rows * heads * D41K_RECORD, stride = span + pad, total = stride * destinations;
@@ -218,13 +332,24 @@ int main(void)
 	for ( const Case &c : cases )
 		failures += RunCase(c, 0u);
 	const uint32_t sensitive = RunCase(cases[1], 1u) != 0u && RunCase(cases[8], 1u) != 0u ? 1u : 0u;
+	const Wave waves[] = {
+		{1u, {17u, 0u}, {0u, 0u}, 16u},
+		{1u, {128u, 0u}, {5u, 0u}, 16u},
+		{1u, {1024u, 0u}, {33000u, 0u}, 16u},
+		{2u, {300u, 77u}, {5u, 70000u}, 16u},
+		{2u, {129u, 255u}, {126u, 127u}, 8u},
+	};
+	uint32_t waves_off = 0u;
+	for ( const Wave &w : waves )
+		waves_off += RunWave(w, 0u);
+	const uint32_t wave_sensitive = RunWave(waves[3], 1u);
 	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
-	if ( failures != 0u || sensitive == 0u || unset != 0u )
+	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u )
 	{
-		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten\n",
-			failures, sensitive != 0u ? "detected" : "not detected", unset);
+		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u wave folds off the sequential fold's attention output, a perturbed wave key %s\n",
+			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected");
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the wave fold's matrix products give the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows and early positions; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }
