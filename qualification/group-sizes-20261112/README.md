@@ -138,8 +138,11 @@ requests in flight for 1,164 s, came to 270.8 tok/s with prefill.
   (one lane had its prompts cached).
   Two two-rank lanes served together: a 32,768-token prefill at 1,074 tok/s
   on one while the other prefilled 24,577 uncached tokens at 1,025, and one
-  stream at 14.3 to 14.4 tok/s on each. Lanes on different nodes do not slow
-  each other.
+  stream at 14.3 to 14.4 tok/s on each: the pairs did not slow each other.
+  Among the four four-rank lanes the slowest stream ran 10% slower than the
+  lane on nodes 0-3 did alone (42.6 against 38.9 ms a token), on another
+  group of nodes; the runs do not separate that group's own speed from the
+  lanes' effect on each other.
 - **Sixteen nodes, by layout.** One stream a lane and one prompt a lane; a
   product of lanes is marked where the lanes did not run together:
 
