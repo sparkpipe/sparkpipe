@@ -313,6 +313,118 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	}
 }
 
+#define D41K_WINDOW_KEYS 128u
+#define D41K_WINDOW_BATCH 16u
+
+static __device__ __forceinline__ const uint16_t *D41WindowKey(const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ slot_ring,
+	const uint32_t *__restrict__ lane_rows, uint32_t wave_first, uint32_t window, uint32_t at)
+{
+	return at >= wave_first ? wave_kv + (uint64_t)lane_rows[at - wave_first] * D41K_LATENT : slot_ring + (uint64_t)(at % window) * D41K_LATENT;
+}
+
+static __global__ void D41WindowFoldWholeKernel(float *__restrict__ records, uint32_t heads, const uint16_t *__restrict__ query,
+	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
+	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
+	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t window,
+	float qk_scale)
+{
+	__shared__ float warp_sums[D41K_WINDOW_KEYS][D41K_THREADS / 32u];
+	__shared__ float scores[D41K_WINDOW_KEYS];
+	__shared__ float keep[D41K_WINDOW_KEYS];
+	__shared__ float added[D41K_WINDOW_KEYS];
+	__shared__ float folded[2];
+	const uint32_t row = blockIdx.x, head = blockIdx.y, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	const uint32_t position = positions[row], lane = row_lane[row];
+	const uint32_t wave_first = position - row_ordinal[row];
+	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
+	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
+	const uint16_t *q = query + ((uint64_t)row * heads + head) * D41K_LATENT;
+	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
+	float *record = records + ((uint64_t)row * heads + head) * D41K_RECORD;
+	const float carried_max = record[0], carried_sum = record[1];
+	float accumulator[D41K_LATENT / D41K_THREADS], query_value[D41K_LATENT / D41K_THREADS];
+	uint16_t value[D41K_WINDOW_BATCH][D41K_LATENT / D41K_THREADS];
+	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+	{
+		accumulator[e] = record[2u + threadIdx.x + e * D41K_THREADS];
+		query_value[e] = LmBf16ToFloat(q[threadIdx.x + e * D41K_THREADS]);
+	}
+	for ( uint32_t base = 0u; base < count; base += D41K_WINDOW_BATCH )
+	{
+		const uint32_t batch = count - base < D41K_WINDOW_BATCH ? count - base : D41K_WINDOW_BATCH;
+		for ( uint32_t j = 0u; j < batch; ++j )
+		{
+			const uint16_t *k = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + base + j);
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+				value[j][e] = k[threadIdx.x + e * D41K_THREADS];
+		}
+		for ( uint32_t j = 0u; j < batch; ++j )
+		{
+			float partial = 0.0f;
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+				partial += query_value[e] * LmBf16ToFloat(value[j][e]);
+			for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+				partial += __shfl_down_sync(0xffffffffu, partial, offset);
+			if ( lane_index == 0u )
+				warp_sums[base + j][warp] = partial;
+		}
+	}
+	__syncthreads();
+	if ( threadIdx.x < count )
+	{
+		float total = 0.0f;
+		for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
+			total += warp_sums[threadIdx.x][w];
+		scores[threadIdx.x] = total * qk_scale;
+	}
+	__syncthreads();
+	if ( threadIdx.x < count )
+	{
+		float before = carried_max;
+		for ( uint32_t j = 0u; j < threadIdx.x; ++j )
+			before = fmaxf(before, scores[j]);
+		const float top = fmaxf(before, scores[threadIdx.x]);
+		keep[threadIdx.x] = before == -INFINITY ? 0.0f : __expf(before - top);
+		added[threadIdx.x] = __expf(scores[threadIdx.x] - top);
+		if ( threadIdx.x + 1u == count )
+			folded[0] = top;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		float running_sum = carried_sum;
+		for ( uint32_t j = 0u; j < count; ++j )
+			running_sum = running_sum * keep[j] + added[j];
+		folded[1] = running_sum;
+		if ( count == 0u )
+			folded[0] = carried_max;
+	}
+	for ( uint32_t base = 0u; base < count; base += D41K_WINDOW_BATCH )
+	{
+		const uint32_t batch = count - base < D41K_WINDOW_BATCH ? count - base : D41K_WINDOW_BATCH;
+		for ( uint32_t j = 0u; j < batch; ++j )
+		{
+			const uint16_t *k = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + base + j);
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+				value[j][e] = k[threadIdx.x + e * D41K_THREADS];
+		}
+		for ( uint32_t j = 0u; j < batch; ++j )
+		{
+			const float kept = keep[base + j], weight = SparkMathAttentionValueWeight(added[base + j]);
+			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+				accumulator[e] = accumulator[e] * kept + weight * LmBf16ToFloat(value[j][e]);
+		}
+	}
+	__syncthreads();
+	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+		record[2u + threadIdx.x + e * D41K_THREADS] = accumulator[e];
+	if ( threadIdx.x == 0u )
+	{
+		record[0] = folded[0];
+		record[1] = folded[1];
+	}
+}
+
 static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
@@ -388,6 +500,14 @@ static __global__ void D41GroupInputKernel(const uint16_t *__restrict__ gathered
 		const uint32_t rank = first_rank + index / width_per_rank, element = index % width_per_rank;
 		group_input[(uint64_t)row * width_per_rank * ranks + index] = gathered[((uint64_t)rank * rows + row) * width_per_rank + element];
 	}
+}
+
+static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uint32_t source_stride, uint16_t *__restrict__ target,
+	uint32_t target_stride, uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
+		target[(uint64_t)row * target_stride + index] = source[(uint64_t)row * source_stride + index];
 }
 
 static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ input, uint16_t *__restrict__ output,

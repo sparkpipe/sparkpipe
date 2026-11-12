@@ -2,18 +2,20 @@
 """Engram row-shard cutter + verifier for DeepSeek-V4.1-Flash (operator row-shard ruling).
 
 Cuts the two host-resident engram hash tables (layers 1/14) plus their replicated
-small tensors out of the warm checkpoint into 16 per-mesh-rank shard files
-(TP8xPP2 = 16 sparks, one rank per spark). Wire format: stagepack header/entry
+small tensors out of the warm checkpoint into one shard file per rank of the
+group (16 by default, `--ranks N` for a smaller group). Wire format: stagepack header/entry
 structs with an engram tensor-kind space; embed entries carry the fp8 payload
 plane plus the E8M0 scale plane sliced by rank; wkv/q_weight/k_weight ride
 replicated and are served from the weightd spine. The .experts manifest keys
 (layer, row-block) groups with weight+scale ranges so the driver leases rows
-through the expert-pool seam.
+through the expert-pool seam. A group under sixteen reads its table rows from
+disk, not through weightd, so its shards carry no manifest.
 
 Partition is the reference ParallelEngramEmbedding layout: rows_per_rank =
-ceil(entries / 16), rank r owns rows [r*part, min(entries, (r+1)*part)),
+ceil(entries / ranks), rank r owns rows [r*part, min(entries, (r+1)*part)),
 owner(id) = id // part.
 
+  --ranks N                    before the subcommand: cut or verify the shards of an N-rank group
   selftest                     fabricate a tiny checkpoint in a temp dir, cut + verify round-trip
   cut WARM_DIR OUT_DIR [SPEC]  cut shards + .experts + engram_receipt.json; SPEC = "all" (default),
                                a rank ("3"), a range ("2-5"), or comma mix ("0,7-9"); each rank is
@@ -78,11 +80,12 @@ def fail(message: str):
     raise ShardFailure(message)
 
 
-def rows_per_rank(entries: int, ranks: int = RANKS) -> int:
+def rows_per_rank(entries: int, ranks: int | None = None) -> int:
+    ranks = RANKS if ranks is None else ranks
     return (entries + ranks - 1) // ranks
 
 
-def rank_rows(entries: int, rank: int, ranks: int = RANKS) -> int:
+def rank_rows(entries: int, rank: int, ranks: int | None = None) -> int:
     part = rows_per_rank(entries, ranks)
     return max(0, min(part, entries - rank * part))
 
@@ -473,7 +476,7 @@ def cmd_cut(warm_dir: str, out_dir: str, entries_map: dict[int, int],
         header = build_header(rank, len(entries), file_bytes, contract,
                               config_hex, "0" * 64)
         shard = write_shard(out_dir, rank, header, entries, wanted, entries_map)
-        manifest = write_manifest(shard, entries)
+        manifest = write_manifest(shard, entries) if RANKS == 16 else {"records": 0}
         by_rank[rank] = {
             "rank": rank, "path": os.path.basename(shard["path"]),
             "file_bytes": shard["file_bytes"],
@@ -590,9 +593,11 @@ def cmd_verify(warm_dir: str, out_dir: str, entries_map: dict[int, int]) -> dict
             remote = read_range(source["path"], source["data_start"] + source["end"] - tail_len, tail_len)
             if tail != remote:
                 fail(f"rank{rank}: spine tail mismatch kind {kind}")
-        records = load_manifest(path + ".experts")
+        if RANKS != 16 and os.path.exists(path + ".experts"):
+            fail(f"rank{rank}: a shard of a group under sixteen carries no manifest")
+        records = load_manifest(path + ".experts") if RANKS == 16 else []
         expect_records = 0
-        for kind in EMBED_KINDS:
+        for kind in EMBED_KINDS if RANKS == 16 else ():
             entry = next(e for e in entries if e["kind"] == kind)
             blocks = (entry["rows"] + BLOCK_ROWS - 1) // BLOCK_ROWS
             expect_records += blocks * 2
@@ -706,6 +711,12 @@ def cmd_selftest() -> int:
 
 
 def main(argv: list[str]) -> int:
+    global RANKS
+    if len(argv) >= 2 and argv[0] == "--ranks":
+        if argv[1] not in ("16", "8", "4"):
+            fail(f"--ranks {argv[1]}: a group has 16, 8 or 4 ranks")
+        RANKS = int(argv[1])
+        argv = argv[2:]
     if len(argv) == 1 and argv[0] == "selftest":
         return cmd_selftest()
     if len(argv) in (3, 4) and argv[0] == "cut":

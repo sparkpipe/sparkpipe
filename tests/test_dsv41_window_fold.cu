@@ -104,7 +104,7 @@ static T *Device(const std::vector<T> &host)
 
 struct Case
 {
-	uint32_t rows, heads, heads_per_destination, record_heads, record_copies, rank, first_position, ring_stride;
+	uint32_t rows, heads, heads_per_destination, record_heads, record_copies, rank, first_position, ring_stride, whole;
 };
 
 static uint32_t RunCase(const Case &c, uint32_t perturb)
@@ -115,7 +115,8 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	const uint64_t record_floats = (uint64_t)(c.heads / c.record_heads) * c.record_copies * destination_stride;
 	std::vector<uint16_t> query = Values((size_t)destinations * query_rank_stride, 11u + c.rows);
 	std::vector<uint16_t> wave = Values((size_t)c.rows * LATENT, 23u + c.rank);
-	std::vector<uint16_t> ring = Values((size_t)2u * RING * LATENT, 37u + c.first_position);
+	const uint32_t degree = c.whole != 0u ? 1u : DEGREE, ring_rows = c.whole != 0u ? WINDOW : RING;
+	std::vector<uint16_t> ring = Values((size_t)2u * ring_rows * LATENT, 37u + c.first_position);
 	std::vector<uint32_t> positions(c.rows), lanes(c.rows, 0u), ordinals(c.rows), begin = {0u, c.rows}, indices(c.rows), slot = {1u};
 	for ( uint32_t row = 0u; row < c.rows; ++row )
 	{
@@ -138,7 +139,7 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	float *reference_d = Device(records), *candidate_d = Device(records);
 	const float scale = 1.0f / sqrtf((float)LATENT);
 	ReferenceWindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(reference_d, destination_stride, c.heads_per_destination, query_d,
-		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, RING, WINDOW, DEGREE, c.rank,
+		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree, c.rank,
 		scale, c.record_heads, c.record_copies);
 	CUDA(cudaGetLastError());
 	if ( perturb != 0u )
@@ -148,9 +149,13 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 		bumped = (uint16_t)(wave[3u] ^ 0x0100u);
 		CUDA(cudaMemcpy(wave_d + 3u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
-	D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
-		query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, RING, WINDOW, DEGREE, c.rank,
-		scale, c.record_heads, c.record_copies);
+	if ( c.whole == 1u )
+		D41WindowFoldWholeKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d, lanes_d,
+			ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
+	else
+		D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
+			query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree,
+			c.rank, scale, c.record_heads, c.record_copies);
 	CUDA(cudaGetLastError());
 	CUDA(cudaDeviceSynchronize());
 	std::vector<float> reference(record_floats), candidate(record_floats);
@@ -161,9 +166,10 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 		differing += memcmp(&reference[index], &candidate[index], sizeof(float)) != 0 ? 1u : 0u;
 	cudaFree(query_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(positions_d); cudaFree(lanes_d); cudaFree(ordinals_d);
 	cudaFree(begin_d); cudaFree(indices_d); cudaFree(slot_d); cudaFree(reference_d); cudaFree(candidate_d);
-	printf("case rows %u heads %u record_heads %u copies %u rank %u first %u%s: %llu of %llu floats differ\n", c.rows, c.heads, c.record_heads,
-		c.record_copies, c.rank, c.first_position, perturb != 0u ? " (perturbed keys)" : "", (unsigned long long)differing,
-		(unsigned long long)record_floats);
+	printf("case rows %u heads %u record_heads %u copies %u rank %u first %u%s%s: %llu of %llu floats differ\n", c.rows, c.heads, c.record_heads,
+		c.record_copies, c.rank, c.first_position, c.whole == 1u ? " (whole window, one pass)" : c.whole == 2u ? " (whole window, chunks)" : "",
+		perturb != 0u ? " (perturbed keys)" : "",
+		(unsigned long long)differing, (unsigned long long)record_floats);
 	return differing != 0u ? 1u : 0u;
 }
 
@@ -192,18 +198,26 @@ static uint32_t InitCase(uint32_t rows, uint32_t heads, uint32_t destinations, u
 int main(void)
 {
 	const Case cases[] = {
-		{1u, 64u, 4u, 4u, 1u, 0u, 9999u, RING * LATENT},
-		{1u, 64u, 4u, 8u, 2u, 7u, 70000u, RING * LATENT},
-		{6u, 64u, 4u, 8u, 2u, 15u, 4096u, RING * LATENT},
-		{17u, 64u, 4u, 4u, 1u, 3u, 123457u, RING * LATENT},
-		{1024u, 4u, 4u, 4u, 1u, 9u, 33000u, 0u},
-		{256u, 4u, 4u, 4u, 1u, 0u, 5u, 0u},
-		{3u, 64u, 4u, 4u, 1u, 14u, 2u, RING * LATENT},
+		{1u, 64u, 4u, 4u, 1u, 0u, 9999u, RING * LATENT, 0u},
+		{1u, 64u, 4u, 8u, 2u, 7u, 70000u, RING * LATENT, 0u},
+		{6u, 64u, 4u, 8u, 2u, 15u, 4096u, RING * LATENT, 0u},
+		{17u, 64u, 4u, 4u, 1u, 3u, 123457u, RING * LATENT, 0u},
+		{1024u, 4u, 4u, 4u, 1u, 9u, 33000u, 0u, 0u},
+		{256u, 4u, 4u, 4u, 1u, 0u, 5u, 0u, 0u},
+		{3u, 64u, 4u, 4u, 1u, 14u, 2u, RING * LATENT, 0u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 9999u, WINDOW * LATENT, 1u},
+		{6u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 1u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 1u},
+		{2u, 8u, 8u, 8u, 1u, 0u, 0u, WINDOW * LATENT, 1u},
+		{1024u, 16u, 16u, 16u, 1u, 0u, 33000u, 0u, 1u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 2u},
+		{1024u, 16u, 16u, 16u, 1u, 0u, 33000u, 0u, 2u},
+		{17u, 8u, 8u, 8u, 1u, 0u, 123457u, WINDOW * LATENT, 2u},
 	};
 	uint32_t failures = 0u;
 	for ( const Case &c : cases )
 		failures += RunCase(c, 0u);
-	const uint32_t sensitive = RunCase(cases[1], 1u);
+	const uint32_t sensitive = RunCase(cases[1], 1u) != 0u && RunCase(cases[8], 1u) != 0u ? 1u : 0u;
 	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
 	if ( failures != 0u || sensitive == 0u || unset != 0u )
 	{
@@ -211,6 +225,6 @@ int main(void)
 			failures, sensitive != 0u ? "detected" : "not detected", unset);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }
