@@ -428,8 +428,8 @@ V4.1 Flash on our sixteen:
 | | Reference, 4 Sparks | SparkPipe, 4 Sparks | SparkPipe, 16 Sparks |
 | --- | ---: | ---: | ---: |
 | One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.4 ms | 21.5-21.8 ms |
-| One stream with drafts | 82.6 tok/s | not wired | 62-64 tok/s |
-| Eight streams | 207.4 tok/s with drafts | 96-112 tok/s without | 151-153 tok/s with |
+| One stream with drafts | 82.6 tok/s | 71 tok/s over eight prompts (45 to 114) | 62-64 tok/s |
+| Eight streams | 207.4 tok/s with drafts | 94 tok/s without, 91 with (seven streams) | 151-153 tok/s with |
 | Prefill, 32K prompt | 8,508 tok/s | 3,117 tok/s | 2,373 tok/s |
 | Prefill, 131K prompt | 8,657 tok/s | 2,693 tok/s | 2,337 tok/s |
 | Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
@@ -577,10 +577,24 @@ throughput on one fleet.
      over both rails. Replaying a round as a captured graph and chaining
      its kernels as dependent launches gave 3% each and are not in the
      code;
-   - drafts are not wired to the group lane, and the sixteen-rank lane's
-     62-64 tok/s with drafts is below the reference's 82.6 on a step that
-     is 10 ms shorter, so the gap is in how many drafted tokens a step
-     keeps;
+   - the wave's linears and routed experts multiply in BF16: the stream
+     GEMM and the expert cell kernel turn the FP8 and MXFP4 weights into
+     BF16 pairs for `LmMmaBf16`, at 40 to 54 TFLOPS. A node's measured
+     peaks are 90 TFLOPS in BF16 and 210 in FP8
+     ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)), the linears'
+     weights are FP8 and their inputs block-scaled FP8, and
+     `inference/kernels/mma.cuh` has the block-scaled forms
+     (`LmMmaMxf8Mxf8`, `LmMmaMxf8Mxf4`), which no wave kernel uses. Dense
+     linears and experts are 1.5 s of a 16,384-row wave's 5.4 s. How the
+     reference spends its 1.9 s has not been measured;
+   - drafts run on the group lane by configuration (a lane record with
+     taps and a draft server, the sixteen-rank lane's drafter): one stream
+     decodes at 71 tok/s over eight prompts against 30 without, the same
+     text. A verify row costs 5.5 ms, because every rank reads its slice
+     of six more experts for it, so a drafted step takes 50 to 80 ms where
+     a plain one takes 32, and drafts stop paying by three streams (seven
+     streams: 94 tok/s without, 91 with). The lane has no record in
+     `deployment/lanes.json` yet;
    - a step of eight streams reads up to eight times a stream's expert
      bytes: 72 to 83 ms;
    - a captured decode step scores the whole window's stride on every

@@ -505,3 +505,51 @@ stride of 65,536 would save three in four; a later request that shares a
 prefix would then resume up to 65,535 tokens before its first new token
 instead of up to 16,383. Not changed.
 
+## Drafts, 2026-11-13
+
+The stage taps hidden states and verifies drafted rows at any rank count.
+What the lane lacked was configuration and a drafter; no code changed.
+
+- A lane record gives each rank's adapter the taps (the outputs of layers 36
+  to 38, sent by rank 3 to the hub's 100G address) and the API its draft
+  server: five drafts a step, of which the engine's frame planner verifies
+  as many as its measured costs justify. `lane-record.drafts.json` is the
+  record that ran. It is not in `deployment/lanes.json`, so the swap
+  controller does not know this lane yet.
+- The drafter is the sixteen-rank lane's, DSpark for this checkpoint, as a
+  second instance of the hub's drafter service on its own unit and ports.
+
+One stream, eight 96-token prompts (three of LaTeX prose, five of code), 256
+tokens each, greedy, the adapter of the fourth pass with 4,096-row waves:
+
+| | All eight prompts | A prompt |
+| --- | ---: | ---: |
+| Without drafts | 30.3 tok/s | 28.8 to 31.3 |
+| With drafts | 71.3 tok/s | 45.4 to 114.1 |
+
+- The drafted text is the plain text on all eight prompts, and on seven
+  streams at once.
+- Over the session the engine verified 681 frames holding 3,605 drafted
+  tokens and kept 2,482 of them.
+- A plain step takes 32 ms. A step that kept one to three tokens took 50 to
+  57 ms (median), one that kept five or six 60 to 62, nine to eleven 72 to
+  82, eighteen 127, twenty-seven 150. A verify row costs about 5.5 ms: every
+  rank reads its slice of six more experts for it, 1.06 GB a row a rank.
+- Another stream costs what a draft row costs, so drafts stop paying as
+  streams are added:
+
+| Streams | Without drafts | With drafts |
+| --- | ---: | ---: |
+| 1 | 30.3 tok/s | 71.3 |
+| 3 | 65.7 | 67.6 |
+| 7 | 94.1 | 90.9 |
+
+- Prefill with the taps on is unchanged: 2,655 and 2,904 tok/s at 8,192 and
+  32,768 tokens.
+
+The reference reports 82.6 tok/s for one stream with drafts and 207.4 for
+eight, on its own prompts; these prompts are not its prompts. A row needs
+4.25 GB of expert weights over the group whoever reads them, which this
+lane reads at about four fifths of the nodes' memory bandwidth. How the
+reference's eight-stream figure fits those bytes is not established here.
+

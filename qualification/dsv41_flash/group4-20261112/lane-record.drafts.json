@@ -1,0 +1,33 @@
+{
+ "deepseek-v4.1-flash-tp4": {
+  "launcher": "stage_lane",
+  "model": "dsv41_flash_tp4",
+  "lane": 6,
+  "first_node": 0,
+  "runtime_root": "/home/{host}/stage-lanes/dsv41_flash_tp4/lane6/root",
+  "weightd_socket": "/tmp/spark_weightd.sock",
+  "sequences": 8,
+  "rows": 4096,
+  "context_tokens": 262144,
+  "kv_physical_pages_cap": 8192,
+  "kv_logical_pages": 32768,
+  "state_budget_bytes": 12884901888,
+  "taps": {
+   "entries": "o36,o37,o38",
+   "stream": "10.10.201.250:7731",
+   "rank": 3,
+   "window": 128
+  },
+  "memory_max": "32G",
+  "tokenizer_sha256": "3bbe031d05c81f60a90e07974bf0b61560cacb7b4dcbdb99c02e555d831b3d54",
+  "text_prompt_prefix_token_ids": [],
+  "draft_server": {
+   "host": "127.0.0.1",
+   "port": 7732,
+   "target_model": "deepseek-v4.1-flash",
+   "depth": 5,
+   "wait_ms": 30,
+   "min_confidence": 0.05
+  }
+ }
+}
