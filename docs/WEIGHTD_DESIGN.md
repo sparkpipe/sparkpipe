@@ -708,12 +708,16 @@ unique physical ranks in 0–15, and match the daemon's physical rank and
 configured participant mask; the adapter refuses any other map at configure.
 Startup logs the resolved map and physical peer mask. TP groups with different mappings require separate lane profiles.
 
-Each daemon fixes a lane's topology on its first configured reservation.
-Changing its root, membership, order or degree returns `UNSUPPORTED`, even
-while idle. Changing profiles requires draining all dependent residents and
-starting a fresh daemon. A healthy same-profile restart preserves source
-tags and request watermarks and must wait for that lane's activity,
-doorbells, hardware gates and transfer completions to drain. Outstanding raw
+Each daemon keeps a lane's topology while the lane is in use. A reservation
+with another root, membership, order or degree returns `UNSUPPORTED` while
+the lane has activity, doorbells, hardware gates or transfer completions
+outstanding. Once the lane has drained, the daemon resets its cells, logs
+`WD-LANE-TOPOLOGY` and takes the new topology, so a group of four can use a
+lane number between two runs of the sixteen-rank model that owns it. Until
+2026-11 a changed topology was refused even on a drained lane, and a group
+lane left the lane's own model unable to start on those nodes until the
+daemon was replaced. A same-profile restart keeps the topology and must
+wait for the same drain. Outstanding raw
 mesh RPC writes conservatively block all lane reconfiguration. A null
 reservation topology is allocation-only and cannot begin GPU mesh activity.
 
