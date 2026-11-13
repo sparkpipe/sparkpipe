@@ -246,7 +246,11 @@ It starts that rank's private weightd and residentd, exchanges only its own
 mesh records, and runs the real model_batch client on the coordinator. Because
 of the private weightd it cannot run on a Spark the fleet agent manages: any
 other `sparkpipe_weightd` process stops the agent from managing that node
-([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)). It accepts
+([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)). Any weightd, a
+private one included, applies the node's KV cache rule from its first minute:
+it deletes the KV cache files under its user's home directory that nothing has
+used for a day, so look for stores worth keeping (`find ~ -name .kvs-lock`)
+before starting one on a development machine. It accepts
 replica lanes 0-7 only. Every
 participant stays in its queue cgroup. Read-only peer file transfers do not
 launch remote inference. Completion requires exact reference tokens for every

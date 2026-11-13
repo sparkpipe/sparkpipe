@@ -353,7 +353,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     config.combine_bf16_function = 0;
     config.combine_u64_max_function = 0;
     config.combine_gather_bf16_function = 0;
-    config.max_active_sequence_count = 4100u;
+    config.max_active_sequence_count = 16400u;
     config.wait_mode = 7u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&collective) == SPARK_STATUS_INVALID_ARGUMENT,
         "unknown wait mode fails instead of silently selecting spin");
@@ -430,17 +430,17 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_INVALID_ARGUMENT,
         "a submission row width wider than the collective's is refused");
     submission.row_elements = 0u;
-    submission.active_sequence_count = 4096u;
+    submission.active_sequence_count = 16384u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
-        cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 262144u,
+        cuda_stub_mesh_hardware_logical_rows == 1u && cuda_stub_mesh_hardware_elements == 1048576u,
         "a single-sequence wave larger than one slot runs as chunked direct hardware rounds");
-    CHECK(SparkTpMeshDirectChunks(262144u,2u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u &&
-        SparkTpMeshDirectChunks(131072u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
-        SparkTpMeshDirectChunks(1048576u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 8u &&
+    CHECK(SparkTpMeshDirectChunks(1048576u,2u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u &&
+        SparkTpMeshDirectChunks(524288u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectChunks(4194304u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 8u &&
         SparkTpMeshDirectChunks(4096u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
-        SparkTpMeshDirectChunks(65536u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
-        SparkTpMeshDirectChunks(65536u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u,
-        "direct chunk geometry: eight 16384-wide BF16 rows fit one slot, larger payloads split into slot-sized chunks");
+        SparkTpMeshDirectChunks(262144u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectChunks(262144u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u,
+        "direct chunk geometry: thirty-two 16384-wide BF16 rows fit one slot, larger payloads split into slot-sized chunks");
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK &&
         cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER),
         "an attached collective launches with the slice and peer routes fixed at attach");
@@ -491,22 +491,22 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
     CHECK(SparkTpMeshRsagSlice(131068u,16u) == 8192u && SparkTpMeshRsagSlice(513u,16u) == 36u &&
         SparkTpMeshRsagSlice(49152u,3u) == 16384u && SparkTpMeshRsagSlice(49153u,4u) % 4u == 0u,
         "slices are whole 8-byte words and cover the chunk");
-    CHECK(SparkTpMeshDirectPipelined(16u * 131096u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
-        SparkTpMeshDirectPipelined(16u * 131100u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
-        SparkTpMeshDirectPipelined(16u * 131100u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
-        SparkTpMeshDirectPipelined(16u * 131100u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
-        SparkTpMeshPipelineChunks(131097u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
-        SparkTpMeshPipelineChunks(196608u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
-        SparkTpMeshPipelineChunks(196609u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
-        SparkTpMeshPipelineChunks(26u * 65536u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
-        "only all-gathers whose local part exceeds one whole slot pipeline, in 65536-element half chunks");
-    CHECK(SparkTpMeshGatherPairFirst(16u * 131100u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
-        SparkTpMeshGatherPairFirst(16u * 458752u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
-        SparkTpMeshGatherPairFirst(6u * 131100u,6u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
-        SparkTpMeshGatherPairFirst(16u * 131096u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-        SparkTpMeshGatherPairFirst(2u * 262144u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-        SparkTpMeshGatherPairFirst(5u * 131100u,5u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-        SparkTpMeshGatherPairFirst(16u * 131102u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u,
+    CHECK(SparkTpMeshDirectPipelined(16u * 524312u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 524316u,16u,0u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
+        SparkTpMeshDirectPipelined(16u * 524316u,16u,1u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshDirectPipelined(16u * 524316u,16u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u &&
+        SparkTpMeshPipelineChunks(524313u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(786432u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(786433u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 4u &&
+        SparkTpMeshPipelineChunks(26u * 262144u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 26u,
+        "only all-gathers whose local part exceeds one whole slot pipeline, in 262144-element half chunks");
+    CHECK(SparkTpMeshGatherPairFirst(16u * 524316u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 1835008u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(6u * 524316u,6u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshGatherPairFirst(16u * 524312u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(2u * 1048576u,2u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(5u * 524316u,5u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshGatherPairFirst(16u * 524318u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u,
         "a pipelined all-gather goes pair-first over an even degree of 4 or more when each rank's part is whole 8-byte words");
     {
         char path_log[] = "/tmp/spark-tp-pipe-XXXXXX";
@@ -516,7 +516,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         SparkStatus status;
         FILE *file;
         submission.logical_sequence_count = 1u;
-        submission.active_sequence_count = 4096u;
+        submission.active_sequence_count = 16384u;
         CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"pipelined path log capture opens");
         status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u);
         fflush(stderr);
@@ -525,13 +525,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         (void)close(fd);
         file = fopen(path_log,"r");
         while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
-            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=4 elements=524288 ") != 0 ? 1u : 0u;
+            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=4 elements=2097152 ") != 0 ? 1u : 0u;
         if ( file != 0 )
             (void)fclose(file);
         (void)unlink(path_log);
         CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == 0u &&
-            cuda_stub_mesh_hardware_elements == 524288u && cuda_stub_mesh_hardware_logical_rows == 1u,
-            "an all-gather of 262144 local elements runs pipelined as four half-slot chunks and says so");
+            cuda_stub_mesh_hardware_elements == 2097152u && cuda_stub_mesh_hardware_logical_rows == 1u,
+            "an all-gather of 1048576 local elements runs pipelined as four half-slot chunks and says so");
     }
     {
         uint32_t calls_before = cuda_stub_mesh_hardware_calls;
@@ -567,15 +567,15 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             "a reduce-scatter input must split into equal 8-byte aligned rank segments");
         submission.row_elements = 0u;
         submission.active_sequence_count = 2u;
-        CHECK(SparkTpMeshScatterChunks(16u * 131072u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
-            SparkTpMeshScatterChunks(16u * 131076u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
-            SparkTpMeshScatterChunks(16u * 7168u * 64u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 4u,
+        CHECK(SparkTpMeshScatterChunks(16u * 524288u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
+            SparkTpMeshScatterChunks(16u * 524292u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
+            SparkTpMeshScatterChunks(16u * 7168u * 256u,16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 4u,
             "a reduce-scatter carries one staging slot of each rank segment per round");
-        CHECK(SparkTpMeshScatterPipelined(16u * 131072u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-            SparkTpMeshScatterPipelined(16u * 131076u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
-            SparkTpMeshScatterPipelined(16u * 131076u,0u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-            SparkTpMeshPipelineChunks(7168u * 64u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 7u,
-            "a reduce-scatter pipelines in 65536-element half chunks once each rank segment needs three of them");
+        CHECK(SparkTpMeshScatterPipelined(16u * 524288u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+            SparkTpMeshScatterPipelined(16u * 524292u,16u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+            SparkTpMeshScatterPipelined(16u * 524292u,0u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+            SparkTpMeshPipelineChunks(7168u * 256u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 7u,
+            "a reduce-scatter pipelines in 262144-element half chunks once each rank segment needs three of them");
         {
             char path_log[] = "/tmp/spark-tp-rs-XXXXXX";
             int fd = mkstemp(path_log),saved = dup(2);
@@ -583,7 +583,7 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             uint32_t pipelined = 0u;
             SparkStatus status;
             FILE *file;
-            submission.active_sequence_count = 4100u;
+            submission.active_sequence_count = 16400u;
             CHECK(fd >= 0 && saved >= 0 && dup2(fd,2) == 2,"pipelined reduce-scatter path log capture opens");
             status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16);
             fflush(stderr);
@@ -592,13 +592,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             (void)close(fd);
             file = fopen(path_log,"r");
             while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
-                pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=4 path=reduce-scatter-pipelined phases=3 elements=262400 ") != 0 ? 1u : 0u;
+                pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=4 path=reduce-scatter-pipelined phases=3 elements=1049600 ") != 0 ? 1u : 0u;
             if ( file != 0 )
                 (void)fclose(file);
             (void)unlink(path_log);
             CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
-                cuda_stub_mesh_hardware_elements == 262400u && (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
-                "a reduce-scatter of 131200-element rank segments runs pipelined as three half-slot chunks and says so");
+                cuda_stub_mesh_hardware_elements == 1049600u && (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
+                "a reduce-scatter of 524800-element rank segments runs pipelined as three half-slot chunks and says so");
             CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_OK &&
                 cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
                 (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
@@ -607,13 +607,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         }
         cuda_stub_mesh_hardware_calls = calls_before;
     }
-    CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 8192u &&
-        SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,2u) == 65544u &&
+    CHECK(SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,16u) == 32768u &&
+        SparkTpMeshAllToAllSliceElements(SPARK_WEIGHTD_MESH_SLOT_BYTES,2u) == 262152u &&
         SparkTpMeshAllToAllChunks(4112u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 1u &&
-        SparkTpMeshAllToAllChunks(32896u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 5u &&
-        SparkTpMeshAllToAllChunks(263168u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 33u &&
+        SparkTpMeshAllToAllChunks(32896u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 2u &&
+        SparkTpMeshAllToAllChunks(263168u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 9u &&
         SparkTpMeshAllToAllChunks(0u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 0u,
-        "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/5/33 rounds");
+        "all-to-all slices are 16-byte aligned 1/degree shares of a slot; partials of 1/8/64 rows take 1/2/9 rounds");
     submission.active_sequence_count = 2u;
     CHECK(cuda_stub_mesh_hardware_calls == 16u && cuda_stub_mesh_publish_calls == old_publish,
         "hardware capture never dispatches spinning publish or wait path");
@@ -871,7 +871,7 @@ static void TestPairAllReduce(SparkTpDeviceCollectiveConfig config,void *mesh)
     const uint32_t width = 2048u;
     for ( uint32_t which = 0u; which < 3u; which++ )
     {
-        const uint32_t degree = degrees[which],rows = 65u * degree;
+        const uint32_t degree = degrees[which],rows = ((uint32_t)(SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) / width) + 1u) * degree;
         const uint64_t total = (uint64_t)rows * width;
         uint16_t *inputs = malloc((size_t)(degree * total * sizeof(uint16_t)));
         uint16_t *pair = malloc((size_t)(total * sizeof(uint16_t))),*plain = malloc((size_t)(total * sizeof(uint16_t)));
@@ -963,7 +963,7 @@ static void TestPairAllReduce(SparkTpDeviceCollectiveConfig config,void *mesh)
             "a spinning collective has no pair-first routes: the pair-first all-reduce is refused"};
         for ( uint32_t which = 0u; which < 3u; which++ )
         {
-            const uint32_t degree = unpaired[which][0],rows = 65u * (degree < 4u ? 4u : degree);
+            const uint32_t degree = unpaired[which][0],rows = ((uint32_t)(SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) / 2048u) + 1u) * (degree < 4u ? 4u : degree);
             uint16_t *buffer = calloc((size_t)rows * 2048u,sizeof(uint16_t));
             SparkTpDeviceCollective collective;
             memset(&pair_mesh,0,sizeof(pair_mesh));
@@ -1027,10 +1027,10 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
         cuda_stub_mesh_hardware_slice_routes == (SPARK_TP_MESH_ROUTES_SLICE | SPARK_TP_MESH_ROUTES_PEER) &&
         cuda_stub_mesh_hardware_staging == mock_staging_mapping && cuda_stub_mesh_hardware_elements == 1024u * 64u,
         "a large sum launches with peer routes and this band's staging");
-    CHECK(SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2097152u &&
-        SparkTpMeshDirectPeerCapacity(4u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 524288u &&
-        SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) == 131096u,
-        "a peer reduce-scatter chunk carries one staging slot per peer: 2,097,152 BF16 values at TP16, 16x the slot chunk");
+    CHECK(SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 8388608u &&
+        SparkTpMeshDirectPeerCapacity(4u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2097152u &&
+        SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u) == 524312u,
+        "a peer reduce-scatter chunk carries one staging slot per peer: 8,388,608 BF16 values at TP16, 16x the slot chunk");
     submission.active_sequence_count = 128u;
     submission.logical_sequence_count = 2u;
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITY_SLICE_ROUTES;
@@ -1041,18 +1041,18 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
     request->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES | SPARK_WEIGHTD_MESH_CAPABILITY_PAIR_LINK;
     CHECK(SparkTpMeshAllToAllPeerChunks(4112u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
         SparkTpMeshAllToAllPeerChunks(32896u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 1u &&
-        SparkTpMeshAllToAllPeerChunks(526336u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&
-        SparkTpMeshAllToAllPeerChunks(530448u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&
-        SparkTpMeshAllToAllPeerChunks(2105344u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 17u &&
-        SparkTpMeshAllToAllPeerChunks(4210688u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 33u &&
+        SparkTpMeshAllToAllPeerChunks(526336u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
+        SparkTpMeshAllToAllPeerChunks(530448u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 2u &&
+        SparkTpMeshAllToAllPeerChunks(2105344u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 5u &&
+        SparkTpMeshAllToAllPeerChunks(4210688u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 9u &&
         SparkTpMeshAllToAllPeerChunks(0u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) == 0u &&
-        SparkTpMeshAllToAllChunks(526336u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 65u &&
-        SparkTpMeshAllToAllChunks(4210688u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 514u,
-        "peer all-to-all rounds for 1/8/128/129/512/1024 kv_shard rows are 1/1/5/5/17/33 (slice routes 65 at 128 rows, 514 at 1024)");
-    CHECK(SparkTpMeshAllToAllPipelined(131072u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
-        SparkTpMeshAllToAllPipelined(131073u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
-        SparkTpMeshPipelineChunks(131073u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
-        SparkTpMeshPipelineChunks(8421376u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 129u,
+        SparkTpMeshAllToAllChunks(526336u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 17u &&
+        SparkTpMeshAllToAllChunks(4210688u,16u,SPARK_WEIGHTD_MESH_SLOT_BYTES) == 129u,
+        "peer all-to-all rounds for 1/8/128/129/512/1024 kv_shard rows are 1/1/2/2/5/9 (slice routes 17 at 128 rows, 129 at 1024)");
+    CHECK(SparkTpMeshAllToAllPipelined(524288u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 0u &&
+        SparkTpMeshAllToAllPipelined(524289u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 1u &&
+        SparkTpMeshPipelineChunks(524289u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 3u &&
+        SparkTpMeshPipelineChunks(8421376u,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) == 33u,
         "an all-to-all of three half-slot chunks or more runs pipelined, and it takes one round per half slot");
     memset(request,0,sizeof(*request));
     SparkTpDeviceCollectiveDestroy(&collective);
@@ -1062,7 +1062,7 @@ static void TestPeerRoutes(SparkTpDeviceCollectiveConfig config,void *mesh)
 
 static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void *mesh)
 {
-    static const uint32_t rows[4] = {1u,8u,9u,128u};
+    static const uint32_t rows[4] = {1u,32u,33u,128u};
     void *local = 0,*output = 0;
     uint32_t index;
     config.local_hidden_dimension = 16384u;
@@ -1090,7 +1090,7 @@ static void TestSpinSingleSequenceWave(SparkTpDeviceCollectiveConfig config,void
         submission.completion_function = TestComplete;
         status = SparkTpDeviceCollectiveEnqueue(&collective,&submission,
             SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16);
-        if ( rows[index] <= 8u )
+        if ( rows[index] <= 32u )
             CHECK(status == SPARK_STATUS_BUSY && cuda_stub_mesh_tree_calls == tree_calls,
                 "a single-sequence spin wave that fits one slot keeps the host round and waits for its absent peer");
         else

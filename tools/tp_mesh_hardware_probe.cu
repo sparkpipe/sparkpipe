@@ -412,7 +412,7 @@ struct Probe
         uint32_t saved=routes;
         routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER;
         for (uint32_t n:{2u,4u,5u,16u})
-            for (uint64_t per:{UINT64_C(4),UINT64_C(1028),capacity,capacity+148u,UINT64_C(7168)*2u,UINT64_C(131076),UINT64_C(196612),UINT64_C(7168)*64u})
+            for (uint64_t per:{UINT64_C(4),UINT64_C(1028),capacity,capacity+148u,UINT64_C(7168)*2u,capacity+4u,capacity/2u*3u+4u,capacity/2u*7u})
             {
                 uint64_t count=per*n;
                 if (count*2u>tensor_bytes) continue;
@@ -429,7 +429,7 @@ struct Probe
         uint32_t saved=routes;
         for (uint32_t route_set:{SPARK_TP_MESH_ROUTES_SLICE,SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER})
             for (uint32_t n:{4u,5u,16u})
-                for (uint64_t count:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,UINT64_C(524288),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
+                for (uint64_t count:{UINT64_C(18432),UINT64_C(49152),SparkTpMeshDirectCapacity(SPARK_WEIGHTD_MESH_SLOT_BYTES,1u)+4099u,SparkTpMeshDirectPeerCapacity(4u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES),SparkTpMeshDirectPeerCapacity(16u,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+4099u})
                 {
                     if (count*2u>tensor_bytes) continue;
                     routes=route_set;
@@ -450,10 +450,11 @@ struct Probe
     }
     void PairFirst()
     {
+        const uint64_t half=SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES/2u;
         uint32_t saved=routes;
         routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR_FIRST;
         for (uint32_t n:{4u,6u,16u})
-            for (uint64_t per:{UINT64_C(131076),UINT64_C(196612),UINT64_C(7168)*64u})
+            for (uint64_t per:{2u*half+4u,3u*half+4u,7u*half})
             {
                 uint64_t count=per*n;
                 if (count*2u>tensor_bytes) continue;
@@ -469,7 +470,7 @@ struct Probe
         uint32_t saved=routes;
         routes=SPARK_TP_MESH_ROUTES_SLICE|SPARK_TP_MESH_ROUTES_PEER|SPARK_TP_MESH_ROUTES_PAIR_FIRST;
         for (uint32_t n:{4u,6u,16u})
-            for (uint64_t local:{3u*half,3u*half+4u,5u*half+76u,UINT64_C(7168)*64u,11u*half+16u})
+            for (uint64_t local:{3u*half,3u*half+4u,5u*half+76u,7u*half,11u*half+16u})
                 for (uint64_t delay:{UINT64_C(0),UINT64_C(150000)})
                 {
                     if (local*n*2u>tensor_bytes) continue;
